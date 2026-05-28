@@ -77,7 +77,10 @@ async function main(): Promise<void> {
     const results = await page.evaluate(`(async () => {
       const worker = new Worker('/workers/pyodide-worker.js');
       let nextId = 0;
+      let nextHttpRequestId = 0;
       const pending = new Map();
+      const listeners = new Map();
+      const requestWaiters = new Map();
       const createRuntimeCommandStdinPipeFromText = (text) => {
         const encoded = new TextEncoder().encode(text);
         const capacity = Math.max(65536, encoded.byteLength + 1);
@@ -99,6 +102,42 @@ async function main(): Promise<void> {
           request.events.push(payload);
           return;
         }
+        if (type === 'kernel-http-listen') {
+          const info = {
+            id: payload.listenerId,
+            pid: 100,
+            host: (payload.options && payload.options.host) || '127.0.0.1',
+            port: Number(payload.options && payload.options.port),
+            protocol: 'http',
+            startedAt: new Date().toISOString(),
+          };
+          listeners.set(payload.listenerId, { commandId: id, info });
+          request.events.push({ type: 'kernel-http-listen', info });
+          worker.postMessage({
+            id,
+            type: 'kernel-http-listen-result',
+            payload: { type: 'kernel-http-listen-result', listenerId: payload.listenerId, info },
+          });
+          return;
+        }
+        if (type === 'kernel-http-close') {
+          listeners.delete(payload.listenerId);
+          request.events.push({ type: 'kernel-http-close', listenerId: payload.listenerId });
+          return;
+        }
+        if (type === 'kernel-http-response') {
+          const waiter = requestWaiters.get(payload.requestId);
+          requestWaiters.delete(payload.requestId);
+          if (waiter) waiter.resolve(payload.response);
+          return;
+        }
+        if (type === 'kernel-http-error') {
+          const waiter = requestWaiters.get(payload.requestId);
+          requestWaiters.delete(payload.requestId);
+          if (waiter) waiter.reject(new Error(String(payload.error || 'kernel-http-error')));
+          else request.reject(new Error(String(payload.error || 'kernel-http-error')));
+          return;
+        }
         pending.delete(id);
         if (type === 'error') {
           request.reject(new Error(String((payload && payload.error) || 'Python worker error')));
@@ -108,7 +147,17 @@ async function main(): Promise<void> {
       };
       worker.onerror = (event) => {
         for (const request of pending.values()) {
+          clearTimeout(request.timeoutId);
           request.reject(new Error(event.message || 'Python worker error'));
+        }
+        pending.clear();
+      };
+
+      const terminateWorker = () => {
+        worker.terminate();
+        for (const request of pending.values()) {
+          clearTimeout(request.timeoutId);
+          request.reject(new Error('worker terminated'));
         }
         pending.clear();
       };
@@ -122,6 +171,7 @@ async function main(): Promise<void> {
           }, timeoutMs);
           pending.set(id, {
             events: [],
+            timeoutId,
             resolve: (value) => {
               clearTimeout(timeoutId);
               resolve(value);
@@ -133,6 +183,34 @@ async function main(): Promise<void> {
           });
           worker.postMessage({ id, type, payload });
         });
+
+      const dispatchHttp = (port, request, timeoutMs = 30000) => {
+        const entry = [...listeners.entries()].find(([, value]) => Number(value.info.port) === Number(port));
+        if (!entry) return Promise.reject(new Error('listener not found on port ' + port));
+        const [listenerId, value] = entry;
+        const requestId = 'http-' + (++nextHttpRequestId);
+        return new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            requestWaiters.delete(requestId);
+            reject(new Error('kernel http request timed out'));
+          }, timeoutMs);
+          requestWaiters.set(requestId, {
+            resolve: (response) => {
+              clearTimeout(timeoutId);
+              resolve(response);
+            },
+            reject: (error) => {
+              clearTimeout(timeoutId);
+              reject(error);
+            },
+          });
+          worker.postMessage({
+            id: value.commandId,
+            type: 'kernel-http-request',
+            payload: { type: 'kernel-http-request', listenerId, requestId, request },
+          });
+        });
+      };
 
       await send('init', {}, 120000);
 
@@ -859,8 +937,65 @@ async function main(): Promise<void> {
         outsideCwdError = error instanceof Error ? error.message : String(error);
       }
 
-      worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError };
+      const asgiRunPromise = send('execute-project-python', {
+        source: 'file',
+        scriptPath: '/workspace/app.py',
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        project: {
+          cwd: '/workspace',
+          files: [
+            {
+              path: 'app.py',
+              contents: [
+                'from fastapi import FastAPI',
+                'import uvicorn',
+                '',
+                'app = FastAPI()',
+                'items = []',
+                '',
+                '@app.post("/enqueue")',
+                'def enqueue(item):',
+                '    items.append(item)',
+                '    return {"size": len(items)}',
+                '',
+                '@app.get("/dequeue")',
+                'def dequeue():',
+                '    return items.pop(0) if items else None',
+                '',
+                'uvicorn.run(app, host="127.0.0.1", port=8765)',
+                '',
+              ].join('\\n'),
+            },
+          ],
+        },
+      }, 120000);
+      for (let attempt = 0; attempt < 100 && ![...listeners.values()].some((listener) => listener.info.port === 8765); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      const asgiEnqueue = await dispatchHttp(8765, {
+        method: 'POST',
+        url: 'http://localhost:8765/enqueue',
+        path: '/enqueue',
+        headers: { 'content-type': 'application/json' },
+        body: '{"id":1}',
+      });
+      const asgiDequeue = await dispatchHttp(8765, {
+        method: 'GET',
+        url: 'http://localhost:8765/dequeue',
+        path: '/dequeue',
+        headers: {},
+        body: '',
+      });
+      terminateWorker();
+      try {
+        await asgiRunPromise;
+      } catch (error) {
+        // Terminating the worker is how this smoke test stops the long-lived server.
+      }
+
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError, asgiEnqueue, asgiDequeue };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -880,6 +1015,8 @@ async function main(): Promise<void> {
       providerKernelVirtualMutationRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
       outsideCwdError: string;
+      asgiEnqueue: { status: number; headers?: Record<string, string>; body?: string };
+      asgiDequeue: { status: number; headers?: Record<string, string>; body?: string };
     };
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
@@ -1577,6 +1714,14 @@ async function main(): Promise<void> {
     assertCondition(
       results.outsideCwdError.includes('Project cwd must stay inside the workspace'),
       `Python project worker should reject cwd outside workspace: ${results.outsideCwdError}`
+    );
+    assertCondition(
+      results.asgiEnqueue.status === 200 && results.asgiEnqueue.body === '{"size":1}\n',
+      `Python project ASGI shim should enqueue through TraceKernel HTTP: ${JSON.stringify(results.asgiEnqueue)}`
+    );
+    assertCondition(
+      results.asgiDequeue.status === 200 && results.asgiDequeue.body === '{"id":1}\n',
+      `Python project ASGI shim should dequeue through TraceKernel HTTP: ${JSON.stringify(results.asgiDequeue)}`
     );
   } finally {
     await browser.close();

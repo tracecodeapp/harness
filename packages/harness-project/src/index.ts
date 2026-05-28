@@ -83,6 +83,13 @@ import type {
   RuntimeKernelHostConfig,
   RuntimeKernelHostInfo,
   RuntimeKernelInfo,
+  RuntimeKernelHttpBridge,
+  RuntimeKernelHttpHandler,
+  RuntimeKernelHttpListenOptions,
+  RuntimeKernelHttpListenerHandle,
+  RuntimeKernelHttpListenerInfo,
+  RuntimeKernelHttpRequest,
+  RuntimeKernelHttpResponse,
   RuntimeKernelUserConfig,
   RuntimeKernelUserInfo,
   RuntimeKernelWorkspaceConfig,
@@ -539,6 +546,7 @@ const TRACEKERNEL_SHELL_COMMAND_REWRITES = new Map([
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = { id: 'principal', kind: 'principal' };
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = { id: 'system', kind: 'system' };
 const TRACEKERNEL_EVENT_LOG_LIMIT = 256;
+const TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT = 256;
 const TRACEKERNEL_ZOMBIE_RETENTION_MS = 30_000;
 const TRACEKERNEL_SIGNAL_NUMBERS = new Map<string, number>([
   ['SIGHUP', 1],
@@ -638,6 +646,22 @@ interface RuntimeKernelEventRecord {
   type: string;
   pid?: number;
   detail?: Record<string, unknown>;
+}
+
+interface RuntimeKernelHttpListenerRecord {
+  info: RuntimeKernelHttpListenerInfo;
+  handler: RuntimeKernelHttpHandler;
+}
+
+interface RuntimeKernelHttpRequestRecord {
+  seq: number;
+  time: string;
+  listenerId?: string;
+  pid?: number;
+  method: string;
+  url: string;
+  status?: number;
+  error?: string;
 }
 
 interface RuntimeLazyCommand {
@@ -5831,12 +5855,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
   private readonly anyProcessWaiters: Array<(process: RuntimeKernelProcessRecord) => void> = [];
   private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
+  private readonly httpListeners = new Map<string, RuntimeKernelHttpListenerRecord>();
+  private readonly httpRequestLog: RuntimeKernelHttpRequestRecord[] = [];
   private readonly readonlyFiles = new Set<string>();
   private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
   private readonlySuspendDepth = 0;
   private nextCommandId = 1;
   private nextPid = 100;
   private nextKernelEventSeq = 1;
+  private nextHttpListenerSeq = 1;
+  private nextHttpRequestSeq = 1;
   private destroyed = false;
   private terminalVerbose = false;
 
@@ -5898,6 +5926,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           ...request,
           ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
           ...(signal ? { signal } : {}),
+          kernelHttp: this.createKernelHttpBridge(),
           onEvent: (event) => {
             this.handleRuntimeCommandEvent(event);
           },
@@ -5938,6 +5967,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles) : []),
       defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
       defineCommand('bg', async (args) => this.runKernelJobPlacement(args, 'bg')),
+      defineCommand('curl', async (args) => this.runKernelCurl(args)),
       defineCommand('fg', async (args) => this.runKernelJobPlacement(args, 'fg')),
       defineCommand('kill', async (args) => this.runKernelKill(args, 'kill')),
       defineCommand('jobs', async (args) => this.runKernelJobs(args)),
@@ -6019,6 +6049,153 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private currentRuntimeIo(): RuntimeProjectLiveIoController | undefined {
     return this.currentCommandContext()?.runtimeIo;
+  }
+
+  private createKernelHttpBridge(): RuntimeKernelHttpBridge {
+    return {
+      listen: (options, handler) => this.registerHttpListener(options, handler),
+    };
+  }
+
+  private normalizeHttpHost(host: string | undefined): string {
+    const normalized = (host ?? '127.0.0.1').trim().toLowerCase();
+    if (!normalized || normalized === '0.0.0.0' || normalized === '::' || normalized === '*') return '127.0.0.1';
+    if (normalized === 'localhost') return '127.0.0.1';
+    return normalized;
+  }
+
+  private normalizeHttpPort(port: number): number {
+    const normalized = Math.trunc(Number(port));
+    if (!Number.isFinite(normalized) || normalized < 1 || normalized > 65535) {
+      throw Object.assign(new Error(`EADDRNOTAVAIL: invalid port '${port}'`), { code: 'EADDRNOTAVAIL' });
+    }
+    return normalized;
+  }
+
+  private httpListenerKey(host: string, port: number, protocol: 'http'): string {
+    return `${protocol}:${host}:${port}`;
+  }
+
+  private registerHttpListener(
+    options: RuntimeKernelHttpListenOptions,
+    handler: RuntimeKernelHttpHandler
+  ): RuntimeKernelHttpListenerHandle {
+    const context = this.currentCommandContext();
+    if (!context) {
+      throw Object.assign(new Error('EINVAL: listen requires an active tracekernel process'), { code: 'EINVAL' });
+    }
+    const protocol = options.protocol ?? 'http';
+    const host = this.normalizeHttpHost(options.host);
+    const port = this.normalizeHttpPort(options.port);
+    const key = this.httpListenerKey(host, port, protocol);
+    if (this.httpListeners.has(key)) {
+      throw Object.assign(new Error(`EADDRINUSE: address already in use ${host}:${port}`), { code: 'EADDRINUSE' });
+    }
+    const info: RuntimeKernelHttpListenerInfo = {
+      id: `http-${this.nextHttpListenerSeq++}`,
+      pid: context.process.pid,
+      host,
+      port,
+      protocol,
+      startedAt: new Date().toISOString(),
+    };
+    this.httpListeners.set(key, { info, handler });
+    this.recordKernelEvent('net-listen', context.process.pid, { id: info.id, protocol, host, port });
+    let closed = false;
+    return {
+      id: info.id,
+      info,
+      close: () => {
+        if (closed) return;
+        closed = true;
+        const current = this.httpListeners.get(key);
+        if (current?.info.id === info.id) {
+          this.httpListeners.delete(key);
+          this.recordKernelEvent('net-close', info.pid, { id: info.id, protocol, host, port });
+        }
+      },
+    };
+  }
+
+  private closeHttpListenersForProcess(pid: number): void {
+    for (const [key, listener] of this.httpListeners) {
+      if (listener.info.pid !== pid) continue;
+      this.httpListeners.delete(key);
+      this.recordKernelEvent('net-close', pid, {
+        id: listener.info.id,
+        protocol: listener.info.protocol,
+        host: listener.info.host,
+        port: listener.info.port,
+      });
+    }
+  }
+
+  private findHttpListener(url: URL): RuntimeKernelHttpListenerRecord | undefined {
+    if (url.protocol !== 'http:') return undefined;
+    const host = this.normalizeHttpHost(url.hostname);
+    const port = this.normalizeHttpPort(url.port ? Number(url.port) : 80);
+    return this.httpListeners.get(this.httpListenerKey(host, port, 'http'));
+  }
+
+  private recordHttpRequest(entry: Omit<RuntimeKernelHttpRequestRecord, 'seq' | 'time'>): void {
+    this.httpRequestLog.push({
+      seq: this.nextHttpRequestSeq++,
+      time: new Date().toISOString(),
+      ...entry,
+    });
+    if (this.httpRequestLog.length > TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT) {
+      this.httpRequestLog.splice(0, this.httpRequestLog.length - TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT);
+    }
+  }
+
+  private async dispatchHttpRequest(request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse> {
+    let url: URL;
+    try {
+      url = new URL(request.url);
+    } catch {
+      return { status: 400, body: 'curl: invalid URL\n' };
+    }
+    const listener = this.findHttpListener(url);
+    if (!listener) {
+      this.recordHttpRequest({
+        method: request.method,
+        url: request.url,
+        error: 'ECONNREFUSED',
+      });
+      return { status: 0, body: `curl: (7) Failed to connect to ${url.hostname} port ${url.port || '80'}: Connection refused\n` };
+    }
+    try {
+      const response = await listener.handler(request);
+      const status = Math.trunc(Number(response.status)) || 200;
+      this.recordHttpRequest({
+        listenerId: listener.info.id,
+        pid: listener.info.pid,
+        method: request.method,
+        url: request.url,
+        status,
+      });
+      this.recordKernelEvent('net-request', listener.info.pid, {
+        id: listener.info.id,
+        method: request.method,
+        url: request.url,
+        status,
+      });
+      return {
+        status,
+        ...(response.headers ? { headers: response.headers } : {}),
+        ...(response.body !== undefined ? { body: response.body } : {}),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.recordHttpRequest({
+        listenerId: listener.info.id,
+        pid: listener.info.pid,
+        method: request.method,
+        url: request.url,
+        error: message,
+      });
+      return { status: 500, body: `${message}\n` };
+    }
   }
 
   recordKernelCommandError(error: unknown): void {
@@ -6242,6 +6419,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (procPath === '/proc/tracekernel/events') return this.renderProcEvents();
     if (procPath === '/proc/tracekernel/inodes') return this.fs.renderInodes();
     if (procPath === '/proc/tracekernel/locks') return this.renderProcLocks();
+    if (procPath === '/proc/tracekernel/net/listeners') return this.renderProcHttpListeners();
+    if (procPath === '/proc/tracekernel/net/requests') return this.renderProcHttpRequests();
     if (procPath === '/proc/tracekernel/processes') return this.renderProcProcesses();
     if (procPath === '/proc/tracekernel/sched') return this.renderProcScheduler();
 
@@ -6287,8 +6466,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         { name: 'events', kind: 'file' },
         { name: 'inodes', kind: 'file' },
         { name: 'locks', kind: 'file' },
+        { name: 'net', kind: 'directory' },
         { name: 'processes', kind: 'file' },
         { name: 'sched', kind: 'file' },
+      ];
+    }
+    if (procPath === '/proc/tracekernel/net') {
+      return [
+        { name: 'listeners', kind: 'file' },
+        { name: 'requests', kind: 'file' },
       ];
     }
     const fdDirMatch = procPath.match(/^\/proc\/([1-9][0-9]*)\/(fd|fdinfo)$/);
@@ -6419,6 +6605,35 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return ['path\tactive\twaiting\treaders\twriter\twaiting_readers\twaiting_writers', ...rows].join('\n') + '\n';
   }
 
+  private renderProcHttpListeners(): string {
+    const rows = [...this.httpListeners.values()]
+      .map((listener) => listener.info)
+      .sort((left, right) => left.port - right.port || left.host.localeCompare(right.host))
+      .map((listener) => [
+        listener.id,
+        listener.pid,
+        listener.protocol,
+        listener.host,
+        listener.port,
+        listener.startedAt,
+      ].join('\t'));
+    return ['id\tpid\tproto\thost\tport\tstarted', ...rows].join('\n') + '\n';
+  }
+
+  private renderProcHttpRequests(): string {
+    const rows = this.httpRequestLog.map((request) => [
+      request.seq,
+      request.time,
+      request.listenerId ?? '',
+      request.pid ?? '',
+      request.method,
+      request.url,
+      request.status ?? '',
+      request.error ?? '',
+    ].join('\t'));
+    return ['seq\ttime\tlistener\tpid\tmethod\turl\tstatus\terror', ...rows].join('\n') + '\n';
+  }
+
   private renderProcScheduler(): string {
     const active = this.activeProcessRecords();
     const scheduler = this.commandScheduler.snapshot();
@@ -6470,6 +6685,96 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       preserveScriptPath: true,
     });
     return result ?? { stdout: '', stderr: `bash: ${expandedInvocation.scriptFile}: Exec format error\n`, exitCode: 126 };
+  }
+
+  private async runKernelCurl(args: string[]): Promise<RuntimeCommandResult> {
+    let method: string | undefined;
+    let body: string | undefined;
+    let includeHeaders = false;
+    const headers: Record<string, string> = {};
+    const urls: string[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index] ?? '';
+      if (arg === '-s' || arg === '--silent' || arg === '-L' || arg === '--location') continue;
+      if (arg === '-i' || arg === '--include') {
+        includeHeaders = true;
+        continue;
+      }
+      if (arg === '-X' || arg === '--request') {
+        const next = args[++index];
+        if (!next) return { stdout: '', stderr: 'curl: option requires an argument -- X\n', exitCode: 2 };
+        method = next.toUpperCase();
+        continue;
+      }
+      if (arg.startsWith('-X') && arg.length > 2) {
+        method = arg.slice(2).toUpperCase();
+        continue;
+      }
+      if (arg === '-H' || arg === '--header') {
+        const next = args[++index];
+        if (!next) return { stdout: '', stderr: 'curl: option requires an argument -- H\n', exitCode: 2 };
+        const separator = next.indexOf(':');
+        if (separator !== -1) {
+          headers[next.slice(0, separator).trim().toLowerCase()] = next.slice(separator + 1).trim();
+        }
+        continue;
+      }
+      if (arg === '-d' || arg === '--data' || arg === '--data-raw' || arg === '--data-binary') {
+        const next = args[++index];
+        if (next === undefined) return { stdout: '', stderr: 'curl: option requires an argument -- d\n', exitCode: 2 };
+        body = body === undefined ? next : `${body}&${next}`;
+        method ??= 'POST';
+        headers['content-type'] ??= 'application/x-www-form-urlencoded';
+        continue;
+      }
+      if (arg.startsWith('--data=')) {
+        const next = arg.slice('--data='.length);
+        body = body === undefined ? next : `${body}&${next}`;
+        method ??= 'POST';
+        headers['content-type'] ??= 'application/x-www-form-urlencoded';
+        continue;
+      }
+      if (arg.startsWith('-')) {
+        return { stdout: '', stderr: `curl: unsupported option: ${arg}\n`, exitCode: 2 };
+      }
+      urls.push(arg);
+    }
+    if (urls.length !== 1) {
+      return {
+        stdout: '',
+        stderr: urls.length === 0 ? 'curl: no URL specified\n' : 'curl: multiple URLs are not supported by tracekernel curl\n',
+        exitCode: 2,
+      };
+    }
+    let url: URL;
+    try {
+      url = new URL(urls[0]!);
+    } catch {
+      return { stdout: '', stderr: `curl: (3) URL rejected: ${urls[0]}\n`, exitCode: 3 };
+    }
+    const response = await this.dispatchHttpRequest({
+      method: method ?? 'GET',
+      url: url.toString(),
+      path: `${url.pathname}${url.search}`,
+      headers,
+      ...(body !== undefined ? { body } : {}),
+    });
+    if (response.status === 0) {
+      return { stdout: '', stderr: response.body ?? 'curl: connection failed\n', exitCode: 7 };
+    }
+    const responseHeaders = includeHeaders
+      ? [
+          `HTTP/1.1 ${response.status}`,
+          ...Object.entries(response.headers ?? {}).map(([name, value]) => `${name}: ${value}`),
+          '',
+          '',
+        ].join('\n')
+      : '';
+    return {
+      stdout: `${responseHeaders}${response.body ?? ''}`,
+      stderr: '',
+      exitCode: 0,
+    };
   }
 
   private async runTraceKernelCtl(args: string[]): Promise<RuntimeCommandResult> {
@@ -7626,6 +7931,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       }
       throw error;
     }).finally(() => {
+      this.closeHttpListenersForProcess(process.pid);
       cleanupExternalSignal?.();
       const retainProcessOnExit = process.signal || options.retainOnExit === true;
       process.state = retainProcessOnExit ? 'zombie' : 'exited';

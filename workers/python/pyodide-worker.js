@@ -1282,10 +1282,108 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
   };
 }
 
+class TraceKernelHttpBridge {
+  constructor(messageId) {
+    this.messageId = messageId;
+    this.nextListenerId = 1;
+    this.listeners = new Map();
+    this.listenerInfo = new Map();
+  }
+
+  listen(optionsJson, handler) {
+    const options = typeof optionsJson === 'string' ? JSON.parse(optionsJson) : optionsJson || {};
+    const listenerId = `python-http-${this.nextListenerId++}`;
+    this.listeners.set(listenerId, handler);
+    this.listenerInfo.set(listenerId, {
+      id: listenerId,
+      pid: 0,
+      host: options.host || '127.0.0.1',
+      port: Number(options.port),
+      protocol: options.protocol || 'http',
+      startedAt: new Date().toISOString(),
+    });
+    self.postMessage({
+      id: this.messageId,
+      type: 'kernel-http-listen',
+      payload: {
+        type: 'kernel-http-listen',
+        listenerId,
+        options,
+      },
+    });
+    return {
+      id: listenerId,
+      close: () => {
+        this.listeners.delete(listenerId);
+        this.listenerInfo.delete(listenerId);
+        self.postMessage({
+          id: this.messageId,
+          type: 'kernel-http-close',
+          payload: { type: 'kernel-http-close', listenerId },
+        });
+      },
+    };
+  }
+
+  updateListenerInfo(listenerId, info) {
+    this.listenerInfo.set(listenerId, info);
+  }
+
+  failListener(listenerId) {
+    this.listeners.delete(listenerId);
+    this.listenerInfo.delete(listenerId);
+  }
+
+  async handleRequest(listenerId, requestId, request) {
+    const handler = this.listeners.get(listenerId);
+    if (!handler) {
+      self.postMessage({
+        id: this.messageId,
+        type: 'kernel-http-error',
+        payload: {
+          type: 'kernel-http-error',
+          requestId,
+          listenerId,
+          error: `TraceKernel HTTP listener not found: ${listenerId}`,
+        },
+      });
+      return;
+    }
+    try {
+      const rawResponse = await handler(JSON.stringify(request));
+      const response = typeof rawResponse === 'string' ? JSON.parse(rawResponse) : rawResponse;
+      self.postMessage({
+        id: this.messageId,
+        type: 'kernel-http-response',
+        payload: {
+          type: 'kernel-http-response',
+          requestId,
+          response,
+        },
+      });
+    } catch (error) {
+      self.postMessage({
+        id: this.messageId,
+        type: 'kernel-http-error',
+        payload: {
+          type: 'kernel-http-error',
+          requestId,
+          listenerId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+}
+
+const activeProjectHttpBridges = new Map();
+
 async function executeProjectPython(request, messageId) {
   await loadPyodideInstance();
 
   const requestJson = JSON.stringify(request ?? {});
+  const httpBridge = new TraceKernelHttpBridge(messageId);
+  activeProjectHttpBridges.set(messageId, httpBridge);
   const projectOutputEvents = [];
   self.__tracecodeProjectEvent = (event) => {
     const payload = typeof event === 'string' ? JSON.parse(event) : event;
@@ -1320,6 +1418,7 @@ async function executeProjectPython(request, messageId) {
     return JSON.stringify(mutationTarget);
   };
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
+  self.__tracecodeKernelHttpListen = (optionsJson, handler) => httpBridge.listen(optionsJson, handler);
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
     request?.stdinPipe
@@ -1432,6 +1531,173 @@ def _emit_project_event(_event):
         _js_self.__tracecodeProjectEvent(json.dumps(_event))
     except Exception:
         pass
+
+class _TraceKernelHttpHandle:
+    def __init__(self, _js_handle):
+        self._js_handle = _js_handle
+        self.closed = False
+
+    def close(self):
+        if self.closed:
+            return None
+        self.closed = True
+        try:
+            self._js_handle.close()
+        except Exception:
+            pass
+        return None
+
+def _install_tracekernel_asgi_modules():
+    import asyncio
+    import inspect
+    import types
+    import urllib.parse
+
+    async def _maybe_await(_value):
+        if inspect.isawaitable(_value):
+            return await _value
+        return _value
+
+    def _json_response(_value, _status=200):
+        return {
+            "status": int(_status),
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps(_value, separators=(",", ":")) + "\\n",
+        }
+
+    class FastAPI:
+        def __init__(self):
+            self.routes = []
+
+        def route(self, path, methods=None):
+            _methods = [str(_method).upper() for _method in (methods or ["GET"])]
+            def _decorator(_func):
+                for _method in _methods:
+                    self.routes.append((_method, str(path), _func))
+                return _func
+            return _decorator
+
+        def get(self, path):
+            return self.route(path, ["GET"])
+
+        def post(self, path):
+            return self.route(path, ["POST"])
+
+        async def __call__(self, scope, receive, send):
+            _method = str(scope.get("method", "GET")).upper()
+            _path = str(scope.get("path", "/"))
+            _target = None
+            for _route_method, _route_path, _func in self.routes:
+                if _route_method == _method and _route_path == _path:
+                    _target = _func
+                    break
+            if _target is None:
+                await send({"type": "http.response.start", "status": 404, "headers": [(b"content-type", b"text/plain")]})
+                await send({"type": "http.response.body", "body": b"Not Found\\n"})
+                return
+            _body = b""
+            while True:
+                _message = await receive()
+                if _message.get("type") != "http.request":
+                    break
+                _body += _message.get("body", b"")
+                if not _message.get("more_body"):
+                    break
+            _headers = {name.decode("latin1").lower(): value.decode("latin1") for name, value in scope.get("headers", [])}
+            _kwargs = {}
+            if _method in ("POST", "PUT", "PATCH"):
+                _content_type = _headers.get("content-type", "")
+                if "application/json" in _content_type and _body:
+                    _kwargs["item"] = json.loads(_body.decode("utf-8"))
+                elif _body:
+                    _kwargs["body"] = _body.decode("utf-8")
+            _result = await _maybe_await(_target(**_kwargs))
+            _response = _json_response(_result)
+            await send({
+                "type": "http.response.start",
+                "status": _response["status"],
+                "headers": [(key.encode("latin1"), value.encode("latin1")) for key, value in _response["headers"].items()],
+            })
+            await send({"type": "http.response.body", "body": _response["body"].encode("utf-8")})
+
+    async def _tracekernel_asgi_dispatch(_app, _request_json):
+        _request = json.loads(str(_request_json))
+        _parsed = urllib.parse.urlsplit(str(_request.get("url") or "http://localhost/"))
+        _path = str(_request.get("path") or (_parsed.path or "/"))
+        _query = ""
+        if "?" in _path:
+            _path, _query = _path.split("?", 1)
+        elif _parsed.query:
+            _query = _parsed.query
+        _headers = [
+            (str(_name).lower().encode("latin1"), str(_value).encode("latin1"))
+            for _name, _value in (_request.get("headers") or {}).items()
+        ]
+        _body = str(_request.get("body") or "").encode("utf-8")
+        _sent = []
+        _received = False
+        async def _receive():
+            nonlocal _received
+            if _received:
+                return {"type": "http.disconnect"}
+            _received = True
+            return {"type": "http.request", "body": _body, "more_body": False}
+        async def _send(_message):
+            _sent.append(_message)
+        _scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": str(_request.get("method") or "GET").upper(),
+            "scheme": "http",
+            "path": _path or "/",
+            "raw_path": (_path or "/").encode("utf-8"),
+            "query_string": _query.encode("utf-8"),
+            "headers": _headers,
+        }
+        await _maybe_await(_app(_scope, _receive, _send))
+        _status = 200
+        _response_headers = {}
+        _chunks = []
+        for _message in _sent:
+            if _message.get("type") == "http.response.start":
+                _status = int(_message.get("status") or 200)
+                for _name, _value in _message.get("headers") or []:
+                    _response_headers[_name.decode("latin1").lower()] = _value.decode("latin1")
+            elif _message.get("type") == "http.response.body":
+                _chunks.append(bytes(_message.get("body") or b""))
+        return json.dumps({
+            "status": _status,
+            "headers": _response_headers,
+            "body": b"".join(_chunks).decode("utf-8", "replace"),
+        })
+
+    async def _tracekernel_serve_asgi(_app, host="127.0.0.1", port=8000):
+        from pyodide.ffi import create_proxy
+        async def _handler(_request_json):
+            return await _tracekernel_asgi_dispatch(_app, _request_json)
+        _handler_proxy = create_proxy(_handler)
+        _js_handle = _js_self.__tracecodeKernelHttpListen(json.dumps({
+            "host": str(host or "127.0.0.1"),
+            "port": int(port),
+            "protocol": "http",
+        }), _handler_proxy)
+        _handle = _TraceKernelHttpHandle(_js_handle)
+        try:
+            while not _handle.closed:
+                await asyncio.sleep(0.05)
+        finally:
+            _handler_proxy.destroy()
+
+    def _uvicorn_run(_app, host="127.0.0.1", port=8000, **_kwargs):
+        return asyncio.get_event_loop().run_until_complete(_tracekernel_serve_asgi(_app, host=host, port=port))
+
+    _fastapi_module = types.ModuleType("fastapi")
+    _fastapi_module.FastAPI = FastAPI
+    sys.modules.setdefault("fastapi", _fastapi_module)
+    _uvicorn_module = types.ModuleType("uvicorn")
+    _uvicorn_module.run = _uvicorn_run
+    sys.modules["uvicorn"] = _uvicorn_module
 
 def _project_relative_path_from_absolute(_absolute_path):
     try:
@@ -2953,6 +3219,7 @@ try:
         _script_dir = os.path.dirname(os.path.abspath(_script_absolute_path))
         if _script_dir and _script_dir not in sys.path:
             sys.path.insert(0, _script_dir)
+    _install_tracekernel_asgi_modules()
     sys.argv = _project_argv()
     sys.stdin = _TraceProjectInputStream()
     with contextlib.redirect_stdout(_stdout), contextlib.redirect_stderr(_stderr):
@@ -3015,6 +3282,8 @@ json.dumps({
     delete self.__tracecodeRuntimeKernelOpenTarget;
     delete self.__tracecodeRuntimeKernelMutationTarget;
     delete self.__tracecodeInstallProjectFsMutationEvents;
+    delete self.__tracecodeKernelHttpListen;
+    activeProjectHttpBridges.delete(messageId);
   }
 }
 
@@ -3145,6 +3414,25 @@ let messageQueue = Promise.resolve();
 // Message handler
 self.onmessage = function(event) {
   const messageData = event.data;
+  const { id, type, payload } = messageData || {};
+  if (type === 'kernel-http-request') {
+    if (payload?.type === 'kernel-http-request') {
+      void activeProjectHttpBridges.get(id)?.handleRequest(payload.listenerId, payload.requestId, payload.request);
+    }
+    return;
+  }
+  if (type === 'kernel-http-listen-result') {
+    if (payload?.type === 'kernel-http-listen-result') {
+      activeProjectHttpBridges.get(id)?.updateListenerInfo(payload.listenerId, payload.info);
+    }
+    return;
+  }
+  if (type === 'kernel-http-error') {
+    if (payload?.type === 'kernel-http-error' && payload.listenerId) {
+      activeProjectHttpBridges.get(id)?.failListener(payload.listenerId);
+    }
+    return;
+  }
   messageQueue = messageQueue
     .then(() => processMessage(messageData))
     .catch((error) => {

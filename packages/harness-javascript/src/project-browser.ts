@@ -7,6 +7,12 @@ import type {
   RuntimeFileMutationPhase,
   RuntimeKernelDeviceInfo,
   RuntimeKernelDevicePath,
+  RuntimeKernelHttpBridge,
+  RuntimeKernelHttpListenerHandle,
+  RuntimeKernelHttpListenOptions,
+  RuntimeKernelHttpProtocolMessage,
+  RuntimeKernelHttpRequest,
+  RuntimeKernelHttpResponse,
   RuntimeKernelInfo,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
@@ -1255,6 +1261,241 @@ function createUrlApi() {
   };
 }
 
+function createListenerMap() {
+  const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+  const on = (event: string, listener: (...args: unknown[]) => void) => {
+    const next = listeners.get(event) ?? [];
+    next.push(listener);
+    listeners.set(event, next);
+    return api;
+  };
+  const removeListener = (event: string, listener: (...args: unknown[]) => void) => {
+    const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== listener);
+    if (next.length === 0) listeners.delete(event);
+    else listeners.set(event, next);
+    return api;
+  };
+  const emit = (event: string, ...args: unknown[]): boolean => {
+    const current = listeners.get(event) ?? [];
+    for (const listener of current) listener(...args);
+    return current.length > 0;
+  };
+  const api = {
+    on,
+    addListener: on,
+    removeListener,
+    off: removeListener,
+    once: (event: string, listener: (...args: unknown[]) => void) => {
+      const wrapped = (...args: unknown[]) => {
+        removeListener(event, wrapped);
+        listener(...args);
+      };
+      return on(event, wrapped);
+    },
+    emit,
+  };
+  return api;
+}
+
+function createIncomingMessage(request: RuntimeKernelHttpRequest) {
+  const events = createListenerMap();
+  let encoding: string | undefined;
+  let bodyRead = false;
+  let bodyScheduled = false;
+  const body = request.body ?? '';
+  const formatBody = () => encoding ? body : BrowserBuffer.from(body);
+  const scheduleBody = (): void => {
+    if (bodyScheduled) return;
+    bodyScheduled = true;
+    queueMicrotask(() => {
+      if (body && !bodyRead) {
+        bodyRead = true;
+        events.emit('data', formatBody());
+      }
+      events.emit('end');
+    });
+  };
+  const message = {
+    method: request.method,
+    url: request.path,
+    headers: request.headers ?? {},
+    httpVersion: '1.1',
+    socket: { remoteAddress: '127.0.0.1' },
+    setEncoding: (nextEncoding: string) => {
+      encoding = nextEncoding;
+      return message;
+    },
+    read: () => {
+      if (bodyRead) return null;
+      bodyRead = true;
+      return formatBody();
+    },
+    on: (event: string, listener: (...args: unknown[]) => void) => {
+      events.on(event, listener);
+      if (event === 'data' || event === 'end') scheduleBody();
+      return message;
+    },
+    addListener: (event: string, listener: (...args: unknown[]) => void) => message.on(event, listener),
+    once: (event: string, listener: (...args: unknown[]) => void) => {
+      events.once(event, listener);
+      if (event === 'data' || event === 'end') scheduleBody();
+      return message;
+    },
+    removeListener: events.removeListener,
+    off: events.removeListener,
+    [Symbol.asyncIterator]: async function* () {
+      if (body && !bodyRead) {
+        bodyRead = true;
+        yield formatBody();
+      }
+    },
+  };
+  return message;
+}
+
+function createServerResponse(resolve: (response: RuntimeKernelHttpResponse) => void) {
+  const events = createListenerMap();
+  const headers: Record<string, string> = {};
+  const chunks: string[] = [];
+  let ended = false;
+  const response = {
+    statusCode: 200,
+    statusMessage: 'OK',
+    headersSent: false,
+    writableEnded: false,
+    setHeader: (name: string, value: unknown) => {
+      headers[String(name).toLowerCase()] = String(value);
+      return response;
+    },
+    getHeader: (name: string) => headers[String(name).toLowerCase()],
+    removeHeader: (name: string) => {
+      delete headers[String(name).toLowerCase()];
+    },
+    writeHead: (statusCode: number, reasonOrHeaders?: string | Record<string, unknown>, maybeHeaders?: Record<string, unknown>) => {
+      response.statusCode = Number(statusCode) || 200;
+      response.headersSent = true;
+      const nextHeaders = typeof reasonOrHeaders === 'object' && reasonOrHeaders !== null ? reasonOrHeaders : maybeHeaders;
+      for (const [name, value] of Object.entries(nextHeaders ?? {})) headers[name.toLowerCase()] = String(value);
+      return response;
+    },
+    write: (chunk: unknown, encoding?: string | (() => void), callback?: () => void) => {
+      chunks.push(textFromBytes(bytesFromFsWriteValue(chunk, typeof encoding === 'string' ? encoding : undefined)));
+      const done = typeof encoding === 'function' ? encoding : callback;
+      done?.();
+      return true;
+    },
+    end: (chunk?: unknown, encoding?: string | (() => void), callback?: () => void) => {
+      if (ended) return response;
+      if (chunk !== undefined && chunk !== null) response.write(chunk, typeof encoding === 'string' ? encoding : undefined);
+      ended = true;
+      response.writableEnded = true;
+      const done = typeof encoding === 'function' ? encoding : callback;
+      done?.();
+      events.emit('finish');
+      events.emit('close');
+      resolve({ status: response.statusCode, headers, body: chunks.join('') });
+      return response;
+    },
+    on: events.on,
+    addListener: events.addListener,
+    once: events.once,
+    removeListener: events.removeListener,
+    off: events.off,
+    emit: events.emit,
+  };
+  return response;
+}
+
+function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: AbortSignal | undefined) {
+  const activeHandles = new Set<RuntimeKernelHttpListenerHandle>();
+  const closeWaiters: Array<() => void> = [];
+  const notifyCloseWaiters = (): void => {
+    if (activeHandles.size > 0) return;
+    while (closeWaiters.length > 0) closeWaiters.shift()?.();
+  };
+  const closeHandle = (handle: RuntimeKernelHttpListenerHandle): void => {
+    if (!activeHandles.delete(handle)) return;
+    handle.close();
+    notifyCloseWaiters();
+  };
+  const closeAll = (): void => {
+    for (const handle of [...activeHandles]) closeHandle(handle);
+  };
+  signal?.addEventListener('abort', closeAll, { once: true });
+
+  const createServer = (requestListener?: (request: unknown, response: unknown) => unknown) => {
+    const events = createListenerMap();
+    let handle: RuntimeKernelHttpListenerHandle | null = null;
+    const server = {
+      listening: false,
+      listen: (...args: unknown[]) => {
+        if (!kernelHttp) throw Object.assign(new Error('ENOSYS: tracekernel HTTP is not available'), { code: 'ENOSYS' });
+        const port = typeof args[0] === 'number' || typeof args[0] === 'string' ? Number(args[0]) : 80;
+        const host = typeof args[1] === 'string' ? args[1] : undefined;
+        const callback = args.find((arg): arg is () => void => typeof arg === 'function');
+        handle = kernelHttp.listen({ port, ...(host ? { host } : {}) }, async (request) => {
+          const incoming = createIncomingMessage(request);
+          const responsePromise = new Promise<RuntimeKernelHttpResponse>((resolve) => {
+            const response = createServerResponse(resolve);
+            let handled = false;
+            try {
+              handled = events.emit('request', incoming, response);
+            } catch (error) {
+              if (!response.writableEnded) {
+                response.statusCode = 500;
+                response.end(error instanceof Error ? error.message : String(error));
+              }
+              return;
+            }
+            if (!handled && !response.writableEnded) {
+              response.statusCode = 404;
+              response.end('');
+            }
+          });
+          return responsePromise;
+        });
+        activeHandles.add(handle);
+        server.listening = true;
+        events.emit('listening');
+        callback?.();
+        return server;
+      },
+      close: (callback?: (error?: Error) => void) => {
+        if (handle) closeHandle(handle);
+        handle = null;
+        server.listening = false;
+        events.emit('close');
+        callback?.();
+        return server;
+      },
+      address: () => handle ? { address: handle.info.host, port: handle.info.port, family: 'IPv4' } : null,
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit,
+    };
+    if (requestListener) server.on('request', requestListener as (...args: unknown[]) => void);
+    return server;
+  };
+
+  return {
+    module: {
+      createServer,
+      Server: function Server(this: unknown, requestListener?: (request: unknown, response: unknown) => unknown) {
+        return createServer(requestListener);
+      },
+      STATUS_CODES: { 200: 'OK', 201: 'Created', 204: 'No Content', 400: 'Bad Request', 404: 'Not Found', 500: 'Internal Server Error' },
+    },
+    hasActiveServers: () => activeHandles.size > 0,
+    waitForClose: () => activeHandles.size === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => closeWaiters.push(resolve)),
+    closeAll,
+  };
+}
+
 function dirname(path: string): string {
   const index = path.lastIndexOf('/');
   return index === -1 ? '' : path.slice(0, index);
@@ -1728,6 +1969,9 @@ interface BrowserJavaScriptProjectPendingMessage {
   resolve: (value: RuntimeCommandResult) => void;
   reject: (error: Error) => void;
   onEvent?: (event: RuntimeCommandEvent) => void;
+  kernelHttp?: RuntimeKernelHttpBridge;
+  httpListeners: Map<string, RuntimeKernelHttpListenerHandle>;
+  httpRequests: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
 }
 
 function createBrowserJavaScriptProjectAbortError(): Error {
@@ -1737,6 +1981,7 @@ function createBrowserJavaScriptProjectAbortError(): Error {
 class BrowserJavaScriptProjectWorkerClient {
   private worker: Worker | null = null;
   private messageId = 0;
+  private httpRequestId = 0;
   private readonly pendingMessages = new Map<string, BrowserJavaScriptProjectPendingMessage>();
 
   constructor(private readonly workerUrl: string) {}
@@ -1752,9 +1997,9 @@ class BrowserJavaScriptProjectWorkerClient {
       this.terminateAndReset(abortError);
       return Promise.reject(abortError);
     }
-    const { signal: _signal, onEvent: _requestOnEvent, ...workerRequest } = request;
+    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
     return this.executeWithTimeout(
-      () => this.sendMessage('execute-project-javascript', workerRequest, onEvent),
+      () => this.sendMessage('execute-project-javascript', workerRequest, onEvent, kernelHttp),
       timeoutMs,
       signal
     );
@@ -1776,7 +2021,12 @@ class BrowserJavaScriptProjectWorkerClient {
         pending.onEvent?.(payload as RuntimeCommandEvent);
         return;
       }
+      if (type === 'kernel-http-listen' || type === 'kernel-http-close' || type === 'kernel-http-response' || type === 'kernel-http-error') {
+        this.handleKernelHttpProtocolMessage(id, type, payload);
+        return;
+      }
       this.pendingMessages.delete(id);
+      this.cleanupPendingKernelHttp(pending);
       if (type === 'error') {
         const errorMessage = payload && typeof payload === 'object' && 'error' in payload
           ? String((payload as { error?: unknown }).error ?? 'JavaScript project worker failed')
@@ -1795,14 +2045,115 @@ class BrowserJavaScriptProjectWorkerClient {
   private sendMessage(
     type: string,
     payload: unknown,
-    onEvent?: (event: RuntimeCommandEvent) => void
+    onEvent?: (event: RuntimeCommandEvent) => void,
+    kernelHttp?: RuntimeKernelHttpBridge
   ): Promise<RuntimeCommandResult> {
     const worker = this.getWorker();
     const id = String(++this.messageId);
     return new Promise<RuntimeCommandResult>((resolve, reject) => {
-      this.pendingMessages.set(id, { resolve, reject, ...(onEvent ? { onEvent } : {}) });
+      this.pendingMessages.set(id, {
+        resolve,
+        reject,
+        ...(onEvent ? { onEvent } : {}),
+        ...(kernelHttp ? { kernelHttp } : {}),
+        httpListeners: new Map(),
+        httpRequests: new Map(),
+      });
       worker.postMessage({ id, type, payload });
     });
+  }
+
+  private handleKernelHttpProtocolMessage(commandId: string, type: string, payload: unknown): void {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending) return;
+    const message = payload as RuntimeKernelHttpProtocolMessage;
+    if (type === 'kernel-http-listen' && message.type === 'kernel-http-listen') {
+      if (!pending.kernelHttp) {
+        this.postKernelHttpError(commandId, { listenerId: message.listenerId, error: 'TraceKernel HTTP is not available.' });
+        return;
+      }
+      try {
+        const handle = pending.kernelHttp.listen(message.options, (request) => this.dispatchWorkerKernelHttpRequest(commandId, message.listenerId, request));
+        pending.httpListeners.set(message.listenerId, handle);
+        this.worker?.postMessage({
+          id: commandId,
+          type: 'kernel-http-listen-result',
+          payload: {
+            type: 'kernel-http-listen-result',
+            listenerId: message.listenerId,
+            info: handle.info,
+          } satisfies RuntimeKernelHttpProtocolMessage,
+        });
+      } catch (error) {
+        this.postKernelHttpError(commandId, {
+          listenerId: message.listenerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (type === 'kernel-http-close' && message.type === 'kernel-http-close') {
+      pending.httpListeners.get(message.listenerId)?.close();
+      pending.httpListeners.delete(message.listenerId);
+      return;
+    }
+    if (type === 'kernel-http-response' && message.type === 'kernel-http-response') {
+      const request = pending.httpRequests.get(message.requestId);
+      pending.httpRequests.delete(message.requestId);
+      request?.resolve(message.response);
+      return;
+    }
+    if (type === 'kernel-http-error' && message.type === 'kernel-http-error') {
+      if (message.requestId) {
+        const request = pending.httpRequests.get(message.requestId);
+        pending.httpRequests.delete(message.requestId);
+        request?.reject(new Error(message.error));
+      }
+    }
+  }
+
+  private dispatchWorkerKernelHttpRequest(
+    commandId: string,
+    listenerId: string,
+    request: RuntimeKernelHttpRequest
+  ): Promise<RuntimeKernelHttpResponse> {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending || !this.worker) return Promise.reject(new Error('JavaScript project worker is not running.'));
+    const requestId = `${commandId}:http:${++this.httpRequestId}`;
+    return new Promise<RuntimeKernelHttpResponse>((resolve, reject) => {
+      pending.httpRequests.set(requestId, { resolve, reject });
+      this.worker?.postMessage({
+        id: commandId,
+        type: 'kernel-http-request',
+        payload: {
+          type: 'kernel-http-request',
+          listenerId,
+          requestId,
+          request,
+        } satisfies RuntimeKernelHttpProtocolMessage,
+      });
+    });
+  }
+
+  private postKernelHttpError(
+    commandId: string,
+    error: Omit<Extract<RuntimeKernelHttpProtocolMessage, { type: 'kernel-http-error' }>, 'type'>
+  ): void {
+    this.worker?.postMessage({
+      id: commandId,
+      type: 'kernel-http-error',
+      payload: {
+        type: 'kernel-http-error',
+        ...error,
+      } satisfies RuntimeKernelHttpProtocolMessage,
+    });
+  }
+
+  private cleanupPendingKernelHttp(pending: BrowserJavaScriptProjectPendingMessage): void {
+    for (const listener of pending.httpListeners.values()) listener.close();
+    pending.httpListeners.clear();
+    for (const request of pending.httpRequests.values()) request.reject(new Error('JavaScript project worker finished before HTTP response.'));
+    pending.httpRequests.clear();
   }
 
   private executeWithTimeout(
@@ -1849,6 +2200,7 @@ class BrowserJavaScriptProjectWorkerClient {
     this.worker?.terminate();
     this.worker = null;
     for (const [, pending] of this.pendingMessages) {
+      this.cleanupPendingKernelHttp(pending);
       pending.reject(reason);
     }
     this.pendingMessages.clear();
@@ -5100,6 +5452,7 @@ export async function runBrowserJavaScriptProjectRequest(
     (fsApi.realpathSync as unknown as { native: typeof fsApi.realpathSync }).native = fsApi.realpathSync;
     Object.assign(fsApi, { promises: fsPromisesApi });
     const zlibApi = createZlibApi();
+    const httpApi = createHttpApi(request.kernelHttp, request.signal);
     const builtins = new Map<string, unknown>([
       ['fs', fsApi],
       ['node:fs', fsApi],
@@ -5113,6 +5466,8 @@ export async function runBrowserJavaScriptProjectRequest(
       ['node:url', createUrlApi()],
       ['buffer', { Buffer: BrowserBuffer }],
       ['node:buffer', { Buffer: BrowserBuffer }],
+      ['http', httpApi.module],
+      ['node:http', httpApi.module],
       ['zlib', zlibApi],
       ['node:zlib', zlibApi],
     ]);
@@ -5403,6 +5758,9 @@ export async function runBrowserJavaScriptProjectRequest(
         await Promise.resolve();
       }
 
+      if (httpApi.hasActiveServers()) {
+        await httpApi.waitForClose();
+      }
       await eventLoopApi.drain();
       await liveIo.flush();
       const resultFiles = [
@@ -5422,6 +5780,7 @@ export async function runBrowserJavaScriptProjectRequest(
         exitCode: 0,
         files: resultFiles,
       }).files ?? [];
+      httpApi.closeAll();
       eventLoopApi.clearAll();
       io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 0 });
       return {
@@ -5431,6 +5790,7 @@ export async function runBrowserJavaScriptProjectRequest(
         ...(files.length > 0 ? { files } : {}),
       };
     } catch (error) {
+      httpApi.closeAll();
       eventLoopApi.clearAll();
       const exitCode = typeof (error as { exitCode?: unknown }).exitCode === 'number'
         ? (error as { exitCode: number }).exitCode

@@ -1,6 +1,13 @@
 import type {
   RuntimeCommandEvent,
   RuntimeCommandResult,
+  RuntimeKernelHttpBridge,
+  RuntimeKernelHttpHandler,
+  RuntimeKernelHttpListenOptions,
+  RuntimeKernelHttpListenerHandle,
+  RuntimeKernelHttpListenerInfo,
+  RuntimeKernelHttpProtocolMessage,
+  RuntimeKernelHttpRequest,
 } from '../../harness-core/src/runtime-project';
 import {
   runBrowserJavaScriptProjectRequest,
@@ -23,9 +30,116 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
+  private nextListenerId = 1;
+  private readonly listeners = new Map<string, RuntimeKernelHttpHandler>();
+  private readonly listenerInfo = new Map<string, RuntimeKernelHttpListenerInfo>();
+
+  constructor(
+    private readonly postProtocolMessage: (message: RuntimeKernelHttpProtocolMessage) => void
+  ) {}
+
+  listen(options: RuntimeKernelHttpListenOptions, handler: RuntimeKernelHttpHandler): RuntimeKernelHttpListenerHandle {
+    const listenerId = `worker-http-${this.nextListenerId++}`;
+    const optimisticInfo: RuntimeKernelHttpListenerInfo = {
+      id: listenerId,
+      pid: 0,
+      host: options.host ?? '127.0.0.1',
+      port: options.port,
+      protocol: options.protocol ?? 'http',
+      startedAt: new Date().toISOString(),
+    };
+    this.listeners.set(listenerId, handler);
+    this.listenerInfo.set(listenerId, optimisticInfo);
+    this.postProtocolMessage({
+      type: 'kernel-http-listen',
+      listenerId,
+      options,
+    });
+    let closed = false;
+    const listenerInfo = this.listenerInfo;
+    return {
+      id: listenerId,
+      get info() {
+        return listenerInfo.get(listenerId) ?? optimisticInfo;
+      },
+      close: () => {
+        if (closed) return;
+        closed = true;
+        this.listeners.delete(listenerId);
+        this.listenerInfo.delete(listenerId);
+        this.postProtocolMessage({ type: 'kernel-http-close', listenerId });
+      },
+    } as RuntimeKernelHttpListenerHandle;
+  }
+
+  updateListenerInfo(listenerId: string, info: RuntimeKernelHttpListenerInfo): void {
+    this.listenerInfo.set(listenerId, info);
+  }
+
+  failListener(listenerId: string): void {
+    this.listeners.delete(listenerId);
+    this.listenerInfo.delete(listenerId);
+  }
+
+  async handleRequest(listenerId: string, requestId: string, request: RuntimeKernelHttpRequest): Promise<void> {
+    const handler = this.listeners.get(listenerId);
+    if (!handler) {
+      this.postProtocolMessage({
+        type: 'kernel-http-error',
+        requestId,
+        listenerId,
+        error: `TraceKernel HTTP listener not found: ${listenerId}`,
+      });
+      return;
+    }
+    try {
+      const response = await handler(request);
+      this.postProtocolMessage({
+        type: 'kernel-http-response',
+        requestId,
+        response,
+      });
+    } catch (error) {
+      this.postProtocolMessage({
+        type: 'kernel-http-error',
+        requestId,
+        listenerId,
+        error: errorMessage(error),
+      });
+    }
+  }
+}
+
+const activeHttpBridges = new Map<string, WorkerKernelHttpBridge>();
+
 workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   const { id, type, payload } = event.data;
   if (!id) return;
+
+  if (type === 'kernel-http-request') {
+    const message = payload as RuntimeKernelHttpProtocolMessage;
+    if (message.type === 'kernel-http-request') {
+      void activeHttpBridges.get(id)?.handleRequest(message.listenerId, message.requestId, message.request);
+    }
+    return;
+  }
+
+  if (type === 'kernel-http-listen-result') {
+    const message = payload as RuntimeKernelHttpProtocolMessage;
+    if (message.type === 'kernel-http-listen-result') {
+      activeHttpBridges.get(id)?.updateListenerInfo(message.listenerId, message.info);
+    }
+    return;
+  }
+
+  if (type === 'kernel-http-error') {
+    const message = payload as RuntimeKernelHttpProtocolMessage;
+    if (message.type === 'kernel-http-error' && message.listenerId) {
+      activeHttpBridges.get(id)?.failListener(message.listenerId);
+    }
+    return;
+  }
 
   if (type !== 'execute-project-javascript') {
     workerScope.postMessage({ id, type: 'error', payload: { error: `Unsupported JavaScript project worker message: ${type}` } });
@@ -35,10 +149,15 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   const request = payload as JavaScriptProjectCommandRequest;
   const options: BrowserJavaScriptProjectRunnerOptions = {};
   const executionState = { cancelled: false };
+  const kernelHttp = new WorkerKernelHttpBridge((message) => {
+    workerScope.postMessage({ id, type: message.type, payload: message });
+  });
+  activeHttpBridges.set(id, kernelHttp);
 
   runBrowserJavaScriptProjectRequest(
     {
       ...request,
+      kernelHttp,
       onEvent: (runtimeEvent: RuntimeCommandEvent) => {
         if (
           runtimeEvent.type === 'status' &&
@@ -53,9 +172,11 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     executionState
   ).then(
     (result: RuntimeCommandResult) => {
+      activeHttpBridges.delete(id);
       workerScope.postMessage({ id, type: 'execute-result', payload: result });
     },
     (error) => {
+      activeHttpBridges.delete(id);
       workerScope.postMessage({ id, type: 'error', payload: { error: errorMessage(error) } });
     }
   );

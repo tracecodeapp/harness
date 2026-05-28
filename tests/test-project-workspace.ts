@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import {
   type JavaScriptProjectCommandRequest,
@@ -45,6 +46,8 @@ import { createNativeProjectWorkspace } from '../src/project-node';
 
 const execFileAsync = promisify(execFile);
 const testTextDecoder = new TextDecoder();
+const testFilePath = fileURLToPath(import.meta.url);
+const testDirectory = dirname(testFilePath);
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -54,6 +57,57 @@ function assertCondition(condition: boolean, message: string): void {
 
 function stdinPipe(text: string) {
   return createRuntimeCommandStdinPipeFromText(text);
+}
+
+class FakeModuleWorker {
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  private workerOnMessage: ((event: MessageEvent) => void) | null = null;
+  private readonly queuedMessages: unknown[] = [];
+  private terminated = false;
+
+  constructor(private readonly url: string) {
+    void this.load();
+  }
+
+  postMessage(message: unknown): void {
+    if (this.terminated) return;
+    if (!this.workerOnMessage) {
+      this.queuedMessages.push(message);
+      return;
+    }
+    this.workerOnMessage({ data: message } as MessageEvent);
+  }
+
+  terminate(): void {
+    this.terminated = true;
+    this.workerOnMessage = null;
+    this.queuedMessages.length = 0;
+  }
+
+  private async load(): Promise<void> {
+    const previousSelf = (globalThis as typeof globalThis & { self?: unknown }).self;
+    const scope = {
+      onmessage: null as ((event: MessageEvent) => void) | null,
+      postMessage: (message: unknown) => {
+        if (this.terminated) return;
+        queueMicrotask(() => this.onmessage?.({ data: message } as MessageEvent));
+      },
+    };
+    try {
+      (globalThis as typeof globalThis & { self?: unknown }).self = scope;
+      await import(this.url);
+      this.workerOnMessage = scope.onmessage;
+      for (const message of this.queuedMessages.splice(0)) {
+        this.workerOnMessage?.({ data: message } as MessageEvent);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.onerror?.({ message } as ErrorEvent);
+    } finally {
+      (globalThis as typeof globalThis & { self?: unknown }).self = previousSelf;
+    }
+  }
 }
 
 async function runCommandWithLiveInput(
@@ -5642,6 +5696,182 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
 }
 
+async function testTraceKernelHttpNodeServer(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      {
+        path: 'server.js',
+        contents: [
+          'const http = require("node:http");',
+          'const queue = [];',
+          'http.createServer((req, res) => {',
+          '  let body = "";',
+          '  req.setEncoding("utf8");',
+          '  req.on("data", (chunk) => { body += chunk; });',
+          '  req.on("end", () => {',
+          '    if (req.method === "POST" && req.url === "/enqueue") {',
+          '      queue.push(JSON.parse(body));',
+          '      res.writeHead(201, { "content-type": "application/json" });',
+          '      res.end(JSON.stringify({ size: queue.length }) + "\\n");',
+          '      return;',
+          '    }',
+          '    if (req.method === "GET" && req.url === "/dequeue") {',
+          '      res.writeHead(200, { "content-type": "application/json" });',
+          '      res.end(JSON.stringify(queue.shift() ?? null) + "\\n");',
+          '      return;',
+          '    }',
+          '    res.writeHead(404, { "content-type": "text/plain" });',
+          '    res.end("missing\\n");',
+          '  });',
+          '}).listen(3000, "127.0.0.1");',
+          '',
+        ].join('\n'),
+      },
+    ],
+    kernel: { scheduler: { maxConcurrentCommands: 4 } },
+    nodeRunner: createBrowserJavaScriptProjectRunner(),
+  });
+
+  const terminal = workspace.createTerminalSession();
+  const start = await terminal.run('node server.js &');
+  assertCondition(start.exitCode === 0, `background server should start: ${JSON.stringify(start)}`);
+
+  let listeners = '';
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
+    if (listeners.includes('\thttp\t127.0.0.1\t3000\t')) break;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assertCondition(listeners.includes('\thttp\t127.0.0.1\t3000\t'), `tracekernel should expose HTTP listener: ${listeners}`);
+
+  const enqueue = await workspace.runCommand('curl -s -X POST -H "content-type: application/json" -d \'{"id":1}\' http://localhost:3000/enqueue');
+  assertCondition(enqueue.exitCode === 0, `curl enqueue should succeed: ${JSON.stringify(enqueue)}`);
+  assertCondition(enqueue.stdout === '{"size":1}\n', `curl enqueue should return JSON: ${enqueue.stdout}`);
+
+  const dequeue = await workspace.runCommand('curl -s http://localhost:3000/dequeue');
+  assertCondition(dequeue.exitCode === 0, `curl dequeue should succeed: ${JSON.stringify(dequeue)}`);
+  assertCondition(dequeue.stdout === '{"id":1}\n', `curl dequeue should return queued item: ${dequeue.stdout}`);
+
+  const requests = await workspace.readFile('/proc/tracekernel/net/requests');
+  assertCondition(
+    requests.includes('POST\thttp://localhost:3000/enqueue\t201') &&
+      requests.includes('GET\thttp://localhost:3000/dequeue\t200'),
+    `tracekernel should expose HTTP request log: ${requests}`
+  );
+
+  const listenerRow = listeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3000\t'));
+  const serverPid = listenerRow?.split('\t')[1];
+  assertCondition(serverPid !== undefined, `listener row should include owning pid: ${listeners}`);
+  const killed = await workspace.runCommand(`kill ${serverPid}`);
+  assertCondition(killed.exitCode === 0, `kill should stop server process: ${JSON.stringify(killed)}`);
+  await workspace.runCommand(`wait ${serverPid}`);
+
+  const afterKillListeners = await workspace.readFile('/proc/tracekernel/net/listeners');
+  assertCondition(!afterKillListeners.includes('\thttp\t127.0.0.1\t3000\t'), `listener should close on process exit: ${afterKillListeners}`);
+  const refused = await workspace.runCommand('curl -s http://localhost:3000/dequeue');
+  assertCondition(refused.exitCode === 7, `curl should fail after listener closes: ${JSON.stringify(refused)}`);
+}
+
+async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
+  const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = FakeModuleWorker;
+  try {
+    const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/src/project-browser-worker.ts')).href}?tracekernel-http=${Date.now()}`;
+    const workspace = await createRuntimeWorkspace({
+      files: [
+        {
+          path: 'server.js',
+          contents: [
+            'const http = require("node:http");',
+            'http.createServer((req, res) => {',
+            '  res.writeHead(200, { "content-type": "text/plain" });',
+            '  res.end(req.method + " " + req.url + "\\n");',
+            '}).listen(3100, "127.0.0.1");',
+            '',
+          ].join('\n'),
+        },
+      ],
+      kernel: { scheduler: { maxConcurrentCommands: 4 } },
+      nodeRunner: createBrowserJavaScriptProjectRunner({ workerUrl }),
+    });
+
+    const terminal = workspace.createTerminalSession();
+    const start = await terminal.run('node server.js &');
+    assertCondition(start.exitCode === 0, `worker-backed background server should start: ${JSON.stringify(start)}`);
+
+    let listeners = '';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
+      if (listeners.includes('\thttp\t127.0.0.1\t3100\t')) break;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assertCondition(listeners.includes('\thttp\t127.0.0.1\t3100\t'), `worker-backed HTTP listener should register with TraceKernel: ${listeners}`);
+
+    const response = await workspace.runCommand('curl -s http://localhost:3100/worker');
+    assertCondition(response.exitCode === 0, `worker-backed curl should succeed: ${JSON.stringify(response)}`);
+    assertCondition(response.stdout === 'GET /worker\n', `worker-backed Node HTTP server should answer through protocol bridge: ${response.stdout}`);
+
+    const listenerRow = listeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3100\t'));
+    const serverPid = listenerRow?.split('\t')[1];
+    assertCondition(serverPid !== undefined, `worker-backed listener row should include pid: ${listeners}`);
+    const killed = await workspace.runCommand(`kill ${serverPid}`);
+    assertCondition(killed.exitCode === 0, `worker-backed server should be killable: ${JSON.stringify(killed)}`);
+    await workspace.runCommand(`wait ${serverPid}`);
+  } finally {
+    (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
+  }
+}
+
+async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'server.py', contents: 'import uvicorn\n' }],
+    kernel: { scheduler: { maxConcurrentCommands: 4 } },
+    pythonRunner: async (request) => {
+      const handle = request.kernelHttp?.listen({ host: '127.0.0.1', port: 3200 }, async (httpRequest) => ({
+        status: httpRequest.method === 'POST' ? 201 : 200,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method: httpRequest.method, path: httpRequest.path, body: httpRequest.body ?? '' }) + '\n',
+      }));
+      assertCondition(handle !== undefined, 'Python runner should receive TraceKernel HTTP bridge');
+      await new Promise<void>((resolve) => {
+        if (request.signal?.aborted) {
+          resolve();
+          return;
+        }
+        request.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      handle.close();
+      return { stdout: '', stderr: '', exitCode: 143 };
+    },
+  });
+
+  const terminal = workspace.createTerminalSession();
+  const start = await terminal.run('python server.py &');
+  assertCondition(start.exitCode === 0, `Python background server should start: ${JSON.stringify(start)}`);
+
+  let listeners = '';
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
+    if (listeners.includes('\thttp\t127.0.0.1\t3200\t')) break;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assertCondition(listeners.includes('\thttp\t127.0.0.1\t3200\t'), `Python runner bridge should register HTTP listener: ${listeners}`);
+
+  const response = await workspace.runCommand('curl -s -X POST -d payload http://localhost:3200/asgi');
+  assertCondition(response.exitCode === 0, `Python runner bridge curl should succeed: ${JSON.stringify(response)}`);
+  assertCondition(
+    response.stdout === '{"method":"POST","path":"/asgi","body":"payload"}\n',
+    `Python runner bridge should dispatch requests through TraceKernel: ${response.stdout}`
+  );
+
+  const listenerRow = listeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3200\t'));
+  const serverPid = listenerRow?.split('\t')[1];
+  assertCondition(serverPid !== undefined, `Python listener row should include owning pid: ${listeners}`);
+  const killed = await workspace.runCommand(`kill ${serverPid}`);
+  assertCondition(killed.exitCode === 0, `Python bridge process should be killable: ${JSON.stringify(killed)}`);
+  await workspace.runCommand(`wait ${serverPid}`);
+}
+
 async function testBrowserJavaScriptProjectRunnerAbortSignal(): Promise<void> {
   let commandStarted!: () => void;
   const commandStartedPromise = new Promise<void>((resolve) => {
@@ -8825,7 +9055,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self,tracekernel', 'browser workspace /proc should list virtual namespaces');
     assertCondition((await workspace.readDir('/proc/kernel')).join(',') === 'info,version', 'browser workspace /proc/kernel should list info and version');
     assertCondition(
-      (await workspace.readDir('/proc/tracekernel')).join(',') === 'events,inodes,locks,processes,sched',
+      (await workspace.readDir('/proc/tracekernel')).join(',') === 'events,inodes,locks,net,processes,sched',
       'browser workspace /proc/tracekernel should expose dynamic kernel diagnostics'
     );
     const browserPs = await workspace.runCommand('ps -ef');
@@ -8883,7 +9113,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         'tracekernel 0.7.0-beta6',
         'true:true:true',
         'info:true,version:true',
-        'events,inodes,locks,processes,sched',
+        'events,inodes,locks,net,processes,sched',
         'true',
         'true:true',
         'true:false',
@@ -11655,6 +11885,9 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptProjectRunnerKernelDeviceInventory();
   await testProjectJavaScriptRunnersPreserveEmptyDirectories();
   await testBrowserJavaScriptProjectRunner();
+  await testTraceKernelHttpNodeServer();
+  await testTraceKernelHttpNodeServerWorkerBridge();
+  await testTraceKernelHttpPythonRunnerBridge();
   await testBrowserJavaScriptProjectRunnerAbortSignal();
   await testBrowserJavaScriptProjectRunnerCwd();
   await testBrowserJavaScriptProjectRunnerStdin();

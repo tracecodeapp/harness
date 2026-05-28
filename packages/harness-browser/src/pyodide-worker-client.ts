@@ -12,6 +12,11 @@ import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeFile,
+  RuntimeKernelHttpBridge,
+  RuntimeKernelHttpListenerHandle,
+  RuntimeKernelHttpProtocolMessage,
+  RuntimeKernelHttpRequest,
+  RuntimeKernelHttpResponse,
   RuntimeProjectCommandRequest,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
@@ -29,6 +34,9 @@ interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
+  kernelHttp?: RuntimeKernelHttpBridge;
+  httpListeners?: Map<string, RuntimeKernelHttpListenerHandle>;
+  httpRequests?: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
   timeoutId?: ReturnType<typeof globalThis.setTimeout>;
 }
 
@@ -87,6 +95,7 @@ export class PythonWorkerClient {
   private worker: Worker | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
+  private httpRequestId = 0;
   private isInitializing = false;
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromise: Promise<WarmupResult> | null = null;
@@ -163,7 +172,12 @@ export class PythonWorkerClient {
             pending.onEvent?.(payload as RuntimeCommandEvent);
             return;
           }
+          if (type === 'kernel-http-listen' || type === 'kernel-http-close' || type === 'kernel-http-response' || type === 'kernel-http-error') {
+            this.handleKernelHttpProtocolMessage(id, type, payload);
+            return;
+          }
           this.pendingMessages.delete(id);
+          this.cleanupPendingKernelHttp(pending);
           if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
           
           if (type === 'error') {
@@ -204,6 +218,7 @@ export class PythonWorkerClient {
         if (pending.timeoutId) {
           globalThis.clearTimeout(pending.timeoutId);
         }
+        this.cleanupPendingKernelHttp(pending);
         pending.reject(workerError);
         this.pendingMessages.delete(id);
       }
@@ -263,7 +278,8 @@ export class PythonWorkerClient {
     type: string,
     payload?: unknown,
     timeoutMs: number = MESSAGE_TIMEOUT_MS,
-    onEvent?: RuntimeCommandEventHandler
+    onEvent?: RuntimeCommandEventHandler,
+    kernelHttp?: RuntimeKernelHttpBridge
   ): Promise<T> {
     const worker = this.getWorker();
     
@@ -277,6 +293,9 @@ export class PythonWorkerClient {
         resolve: resolve as (value: unknown) => void,
         reject,
         ...(onEvent ? { onEvent } : {}),
+        ...(kernelHttp ? { kernelHttp } : {}),
+        httpListeners: new Map(),
+        httpRequests: new Map(),
       });
 
       logRuntimeDiagnostic('debug', {
@@ -306,6 +325,97 @@ export class PythonWorkerClient {
 
       worker.postMessage({ id, type, payload });
     });
+  }
+
+  private handleKernelHttpProtocolMessage(commandId: string, type: string, payload: unknown): void {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending) return;
+    const message = payload as RuntimeKernelHttpProtocolMessage;
+    if (type === 'kernel-http-listen' && message.type === 'kernel-http-listen') {
+      if (!pending.kernelHttp) {
+        this.postKernelHttpError(commandId, { listenerId: message.listenerId, error: 'TraceKernel HTTP is not available.' });
+        return;
+      }
+      try {
+        const handle = pending.kernelHttp.listen(message.options, (request) => this.dispatchWorkerKernelHttpRequest(commandId, message.listenerId, request));
+        pending.httpListeners?.set(message.listenerId, handle);
+        this.worker?.postMessage({
+          id: commandId,
+          type: 'kernel-http-listen-result',
+          payload: {
+            type: 'kernel-http-listen-result',
+            listenerId: message.listenerId,
+            info: handle.info,
+          } satisfies RuntimeKernelHttpProtocolMessage,
+        });
+      } catch (error) {
+        this.postKernelHttpError(commandId, {
+          listenerId: message.listenerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (type === 'kernel-http-close' && message.type === 'kernel-http-close') {
+      pending.httpListeners?.get(message.listenerId)?.close();
+      pending.httpListeners?.delete(message.listenerId);
+      return;
+    }
+    if (type === 'kernel-http-response' && message.type === 'kernel-http-response') {
+      const request = pending.httpRequests?.get(message.requestId);
+      pending.httpRequests?.delete(message.requestId);
+      request?.resolve(message.response);
+      return;
+    }
+    if (type === 'kernel-http-error' && message.type === 'kernel-http-error' && message.requestId) {
+      const request = pending.httpRequests?.get(message.requestId);
+      pending.httpRequests?.delete(message.requestId);
+      request?.reject(new Error(message.error));
+    }
+  }
+
+  private dispatchWorkerKernelHttpRequest(
+    commandId: string,
+    listenerId: string,
+    request: RuntimeKernelHttpRequest
+  ): Promise<RuntimeKernelHttpResponse> {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending || !this.worker) return Promise.reject(new Error('Python worker is not running.'));
+    const requestId = `${commandId}:http:${++this.httpRequestId}`;
+    return new Promise<RuntimeKernelHttpResponse>((resolve, reject) => {
+      pending.httpRequests?.set(requestId, { resolve, reject });
+      this.worker?.postMessage({
+        id: commandId,
+        type: 'kernel-http-request',
+        payload: {
+          type: 'kernel-http-request',
+          listenerId,
+          requestId,
+          request,
+        } satisfies RuntimeKernelHttpProtocolMessage,
+      });
+    });
+  }
+
+  private postKernelHttpError(
+    commandId: string,
+    error: Omit<Extract<RuntimeKernelHttpProtocolMessage, { type: 'kernel-http-error' }>, 'type'>
+  ): void {
+    this.worker?.postMessage({
+      id: commandId,
+      type: 'kernel-http-error',
+      payload: {
+        type: 'kernel-http-error',
+        ...error,
+      } satisfies RuntimeKernelHttpProtocolMessage,
+    });
+  }
+
+  private cleanupPendingKernelHttp(pending: PendingMessage): void {
+    for (const listener of pending.httpListeners?.values() ?? []) listener.close();
+    pending.httpListeners?.clear();
+    for (const request of pending.httpRequests?.values() ?? []) request.reject(new Error('Python worker finished before HTTP response.'));
+    pending.httpRequests?.clear();
   }
 
   /**
@@ -391,6 +501,7 @@ export class PythonWorkerClient {
     // Reject all pending messages
     for (const [, pending] of this.pendingMessages) {
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
+      this.cleanupPendingKernelHttp(pending);
       pending.reject(reason);
     }
     this.pendingMessages.clear();
@@ -654,13 +765,14 @@ export class PythonWorkerClient {
     } finally {
       signal?.removeEventListener('abort', abortInit);
     }
-    const { signal: _signal, onEvent: _requestOnEvent, ...workerRequest } = request;
+    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
     return this.executeWithTimeout(
       () => this.sendMessage<PythonProjectCommandResult>(
         'execute-project-python',
         workerRequest,
         timeoutMs + 5000,
-        onEvent
+        onEvent,
+        kernelHttp
       ),
       timeoutMs,
       signal

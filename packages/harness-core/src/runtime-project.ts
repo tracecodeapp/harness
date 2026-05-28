@@ -123,6 +123,80 @@ export interface RuntimeProjectSnapshot {
   kernel?: RuntimeKernelInfo;
 }
 
+export interface RuntimeKernelHttpListenOptions {
+  host?: string;
+  port: number;
+  protocol?: 'http';
+}
+
+export interface RuntimeKernelHttpListenerInfo {
+  id: string;
+  pid: number;
+  host: string;
+  port: number;
+  protocol: 'http';
+  startedAt: string;
+}
+
+export interface RuntimeKernelHttpRequest {
+  method: string;
+  url: string;
+  path: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+export interface RuntimeKernelHttpResponse {
+  status: number;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+export interface RuntimeKernelHttpListenerHandle {
+  readonly id: string;
+  readonly info: RuntimeKernelHttpListenerInfo;
+  close(): void;
+}
+
+export type RuntimeKernelHttpHandler = (request: RuntimeKernelHttpRequest) => Promise<RuntimeKernelHttpResponse> | RuntimeKernelHttpResponse;
+
+export interface RuntimeKernelHttpBridge {
+  listen(options: RuntimeKernelHttpListenOptions, handler: RuntimeKernelHttpHandler): RuntimeKernelHttpListenerHandle;
+}
+
+export type RuntimeKernelHttpProtocolMessage =
+  | {
+      type: 'kernel-http-listen';
+      listenerId: string;
+      options: RuntimeKernelHttpListenOptions;
+    }
+  | {
+      type: 'kernel-http-listen-result';
+      listenerId: string;
+      info: RuntimeKernelHttpListenerInfo;
+    }
+  | {
+      type: 'kernel-http-close';
+      listenerId: string;
+    }
+  | {
+      type: 'kernel-http-request';
+      listenerId: string;
+      requestId: string;
+      request: RuntimeKernelHttpRequest;
+    }
+  | {
+      type: 'kernel-http-response';
+      requestId: string;
+      response: RuntimeKernelHttpResponse;
+    }
+  | {
+      type: 'kernel-http-error';
+      requestId?: string;
+      listenerId?: string;
+      error: string;
+    };
+
 export interface RuntimeProjectSessionFile extends RuntimeFile {
   readonly?: boolean;
   hidden?: boolean;
@@ -839,6 +913,7 @@ export interface RuntimeProjectCommandRequest<
   env: Record<string, string>;
   stdinPipe?: RuntimeCommandStdinSharedBuffer;
   project: RuntimeProjectSnapshot;
+  kernelHttp?: RuntimeKernelHttpBridge;
   options?: Record<string, unknown>;
   signal?: AbortSignal;
   onEvent?: RuntimeCommandEventHandler;
