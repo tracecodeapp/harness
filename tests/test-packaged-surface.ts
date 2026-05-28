@@ -145,8 +145,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof browserProject.createBrowserProjectWorkspace !== 'function') {
         throw new Error('Missing browser project workspace export');
       }
+      if (typeof browserProject.runtimeHttpResponseText !== 'function') {
+        throw new Error('Missing browser project HTTP body helper export');
+      }
       if (typeof project.createRuntimeWorkspace !== 'function') {
         throw new Error('Missing root project workspace subpath export');
+      }
+      if (typeof project.runtimeHttpBodyFromBytes !== 'function' || typeof project.runtimeHttpResponseText !== 'function') {
+        throw new Error('Missing project HTTP body helper exports');
       }
       if (typeof project.RuntimeProjectLiveIoController !== 'function') {
         throw new Error('Missing project live I/O controller subpath export');

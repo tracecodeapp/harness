@@ -11,6 +11,14 @@ import {
   createRuntimeCommandStdinPipeFromText,
   createRuntimeProjectIoBridge,
   readRuntimeCommandStdinPipeBytes,
+  runtimeHttpBodyBytes,
+  runtimeHttpBodyFromBytes,
+  runtimeHttpBodyFromText,
+  runtimeHttpBodyText,
+  runtimeHttpRequestBytes,
+  runtimeHttpRequestText,
+  runtimeHttpResponseBytes,
+  runtimeHttpResponseText,
   runtimeCommandStdinPipeClosed,
   RuntimeProjectLiveIoController,
   runtimeFileChangePath,
@@ -84,6 +92,8 @@ import type {
   RuntimeKernelHostInfo,
   RuntimeKernelInfo,
   RuntimeKernelHttpBridge,
+  RuntimeKernelHttpBodyInit,
+  RuntimeKernelHttpBodyPayload,
   RuntimeKernelHttpHandler,
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpListenerHandle,
@@ -2141,18 +2151,6 @@ function decodeUtf8(bytes: Uint8Array): string | null {
   } catch {
     return null;
   }
-}
-
-function runtimeHttpBodyBytes(message: { body?: string; bodyEncoding?: RuntimeFileEncoding }): Uint8Array {
-  if (message.body === undefined) return new Uint8Array();
-  return message.bodyEncoding === 'base64'
-    ? bytesFromBase64(message.body)
-    : new TextEncoder().encode(message.body);
-}
-
-function runtimeHttpBodyText(message: { body?: string; bodyEncoding?: RuntimeFileEncoding }): string {
-  const bytes = runtimeHttpBodyBytes(message);
-  return decodeUtf8(bytes) ?? new TextDecoder().decode(bytes);
 }
 
 function contentToText(content: FileContent): string {
@@ -8858,6 +8856,8 @@ export type {
   RuntimeKernelHostInfo,
   RuntimeKernelInfo,
   RuntimeKernelHttpBridge,
+  RuntimeKernelHttpBodyInit,
+  RuntimeKernelHttpBodyPayload,
   RuntimeKernelHttpHandler,
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpListenerHandle,
@@ -8906,4 +8906,16 @@ export type {
   RuntimeWorkspaceUnsubscribe,
 };
 
-export { RuntimeProjectLiveIoController, createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge };
+export {
+  RuntimeProjectLiveIoController,
+  createRuntimeProjectIoBridge,
+  runRuntimeProjectWorkerBridge,
+  runtimeHttpBodyBytes,
+  runtimeHttpBodyFromBytes,
+  runtimeHttpBodyFromText,
+  runtimeHttpBodyText,
+  runtimeHttpRequestBytes,
+  runtimeHttpRequestText,
+  runtimeHttpResponseBytes,
+  runtimeHttpResponseText,
+};

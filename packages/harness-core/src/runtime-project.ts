@@ -156,6 +156,16 @@ export interface RuntimeKernelHttpResponse {
   bodyEncoding?: RuntimeFileEncoding;
 }
 
+export interface RuntimeKernelHttpBodyPayload {
+  body?: string;
+  bodyEncoding?: RuntimeFileEncoding;
+}
+
+export interface RuntimeKernelHttpBodyInit {
+  body: string;
+  bodyEncoding?: RuntimeFileEncoding;
+}
+
 export interface RuntimeWorkspaceHttpRequestOptions {
   method?: string;
   url: string;
@@ -192,6 +202,84 @@ export type RuntimeKernelHttpHandler = (request: RuntimeKernelHttpRequest) => Pr
 export interface RuntimeKernelHttpBridge {
   listen(options: RuntimeKernelHttpListenOptions, handler: RuntimeKernelHttpHandler): RuntimeKernelHttpListenerHandle;
   dispatch(request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse>;
+}
+
+type RuntimeHttpBufferConstructor = {
+  from(value: string, encoding: 'base64'): Uint8Array;
+  from(value: Uint8Array): { toString(encoding: 'base64'): string };
+};
+
+function runtimeHttpGlobalBuffer(): RuntimeHttpBufferConstructor | undefined {
+  return (globalThis as typeof globalThis & { Buffer?: RuntimeHttpBufferConstructor }).Buffer;
+}
+
+function runtimeHttpBytesFromBase64(value: string): Uint8Array {
+  const buffer = runtimeHttpGlobalBuffer();
+  if (buffer) return buffer.from(value, 'base64');
+
+  const decoded = globalThis.atob(value);
+  const bytes = new Uint8Array(decoded.length);
+  for (let index = 0; index < decoded.length; index += 1) {
+    bytes[index] = decoded.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function runtimeHttpBase64FromBytes(bytes: Uint8Array): string {
+  const buffer = runtimeHttpGlobalBuffer();
+  if (buffer) return buffer.from(bytes).toString('base64');
+
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return globalThis.btoa(binary);
+}
+
+function runtimeHttpDecodeUtf8(bytes: Uint8Array): string | null {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+export function runtimeHttpBodyBytes(message: RuntimeKernelHttpBodyPayload): Uint8Array {
+  if (message.body === undefined) return new Uint8Array();
+  return message.bodyEncoding === 'base64'
+    ? runtimeHttpBytesFromBase64(message.body)
+    : new TextEncoder().encode(message.body);
+}
+
+export function runtimeHttpBodyText(message: RuntimeKernelHttpBodyPayload): string {
+  const bytes = runtimeHttpBodyBytes(message);
+  return runtimeHttpDecodeUtf8(bytes) ?? new TextDecoder().decode(bytes);
+}
+
+export function runtimeHttpBodyFromBytes(bytes: Uint8Array): RuntimeKernelHttpBodyInit {
+  const text = runtimeHttpDecodeUtf8(bytes);
+  if (text !== null) return { body: text };
+  return { body: runtimeHttpBase64FromBytes(bytes), bodyEncoding: 'base64' };
+}
+
+export function runtimeHttpBodyFromText(text: string): RuntimeKernelHttpBodyInit {
+  return { body: text };
+}
+
+export function runtimeHttpRequestBytes(request: RuntimeKernelHttpRequest): Uint8Array {
+  return runtimeHttpBodyBytes(request);
+}
+
+export function runtimeHttpRequestText(request: RuntimeKernelHttpRequest): string {
+  return runtimeHttpBodyText(request);
+}
+
+export function runtimeHttpResponseBytes(response: RuntimeKernelHttpResponse): Uint8Array {
+  return runtimeHttpBodyBytes(response);
+}
+
+export function runtimeHttpResponseText(response: RuntimeKernelHttpResponse): string {
+  return runtimeHttpBodyText(response);
 }
 
 export type RuntimeKernelHttpProtocolMessage =

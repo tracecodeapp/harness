@@ -41,6 +41,16 @@ export {
   type BrowserKernelStorageSnapshot,
   type IndexedDbKernelStorageOptions,
 } from './kernel-storage';
+export {
+  runtimeHttpBodyBytes,
+  runtimeHttpBodyFromBytes,
+  runtimeHttpBodyFromText,
+  runtimeHttpBodyText,
+  runtimeHttpRequestBytes,
+  runtimeHttpRequestText,
+  runtimeHttpResponseBytes,
+  runtimeHttpResponseText,
+} from '../../harness-project/src/index';
 
 export type BrowserProjectWorkspace = RuntimeWorkspace;
 export type BrowserProjectNodeOptions = Omit<BrowserJavaScriptProjectRunnerOptions, 'applyFileChange'>;

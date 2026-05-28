@@ -1,14 +1,15 @@
 #!/usr/bin/env npx tsx
 
-import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
+import {
+  createRuntimeWorkspace,
+  runtimeHttpBodyFromBytes,
+  runtimeHttpResponseBytes,
+  runtimeHttpResponseText,
+} from '../packages/harness-project/src/index';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
-}
-
-function bytesFromBase64(value: string): Uint8Array {
-  return new Uint8Array(Buffer.from(value, 'base64'));
 }
 
 async function waitForListener(workspace: Awaited<ReturnType<typeof createRuntimeWorkspace>>, port: number): Promise<string> {
@@ -193,14 +194,13 @@ async function main(): Promise<void> {
     const requestBinary = await workspace.http.request({
       method: 'POST',
       url: 'http://localhost:3300/binary',
-      body: 'AP8B',
-      bodyEncoding: 'base64',
+      ...runtimeHttpBodyFromBytes(new Uint8Array([0, 255, 1])),
     });
     assertCondition(requestBinary.status === 201, `workspace HTTP binary request should return 201: ${JSON.stringify(requestBinary)}`);
     assertCondition(requestBinary.headers?.['x-body-hex'] === '00ff01', `workspace HTTP request should preserve binary request bytes: ${JSON.stringify(requestBinary)}`);
     assertCondition(requestBinary.bodyEncoding === 'base64', `workspace HTTP response should use base64 for non-UTF8 bytes: ${JSON.stringify(requestBinary)}`);
     assertCondition(
-      Array.from(bytesFromBase64(requestBinary.body ?? '')).join(',') === '0,255,1,2',
+      Array.from(runtimeHttpResponseBytes(requestBinary)).join(',') === '0,255,1,2',
       `workspace HTTP response should preserve binary response bytes: ${JSON.stringify(requestBinary)}`
     );
     assertCondition(
@@ -217,6 +217,10 @@ async function main(): Promise<void> {
     assertCondition(requestJson.json.ok === true, `workspace HTTP JSON helper should parse JSON: ${JSON.stringify(requestJson)}`);
     assertCondition(requestJson.json.method === 'POST', `workspace HTTP JSON helper should preserve method: ${JSON.stringify(requestJson)}`);
     assertCondition(requestJson.json.body === '{"id":7}', `workspace HTTP JSON helper should stringify request body: ${JSON.stringify(requestJson)}`);
+    assertCondition(
+      runtimeHttpResponseText(requestJson) === '{"ok":true,"method":"POST","body":"{\\"id\\":7}"}\n',
+      `workspace HTTP response text helper should decode UTF-8 response bodies: ${JSON.stringify(requestJson)}`
+    );
 
     const lifecycle = await workspace.runCommand('node fetch-lifecycle.js');
     assertCondition(lifecycle.exitCode === 0, `fetch response lifecycle should succeed: ${JSON.stringify(lifecycle)}`);

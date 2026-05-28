@@ -929,6 +929,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         'createCppProjectCommands',
         'createCSharpProjectCommands',
         'normalizeRuntimeProjectPath',
+        'runtimeHttpBodyBytes',
+        'runtimeHttpBodyFromBytes',
+        'runtimeHttpResponseText',
       ]) {
         if (typeof projectMod[exportName] !== 'function') {
           throw new Error('@tracecode/harness-project missing ' + exportName);
@@ -989,6 +992,16 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       });
       if (httpRequest.status !== 209 || httpRequest.body !== '{"method":"POST","path":"/surface","body":"payload"}\\n') {
         throw new Error('@tracecode/harness-project workspace HTTP request/listen smoke failed: ' + JSON.stringify(httpRequest));
+      }
+      if (projectMod.runtimeHttpResponseText(httpRequest) !== '{"method":"POST","path":"/surface","body":"payload"}\\n') {
+        throw new Error('@tracecode/harness-project HTTP response text helper smoke failed: ' + JSON.stringify(httpRequest));
+      }
+      const binaryPayload = projectMod.runtimeHttpBodyFromBytes(new Uint8Array([0, 255, 1]));
+      if (
+        binaryPayload.bodyEncoding !== 'base64' ||
+        Array.from(projectMod.runtimeHttpBodyBytes(binaryPayload)).join(',') !== '0,255,1'
+      ) {
+        throw new Error('@tracecode/harness-project HTTP body byte helper smoke failed: ' + JSON.stringify(binaryPayload));
       }
       const httpJson = await projectWorkspace.http.json({
         method: 'POST',
@@ -1136,6 +1149,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const browserProject = await import('@tracecode/harness-browser/project');
       if (typeof browserProject.createBrowserProjectWorkspace !== 'function') {
         throw new Error('@tracecode/harness-browser/project missing createBrowserProjectWorkspace');
+      }
+      if (typeof browserProject.runtimeHttpResponseText !== 'function') {
+        throw new Error('@tracecode/harness-browser/project missing HTTP body helpers');
       }
       const browserWorkspace = await browserProject.createBrowserProjectWorkspace({
         kernel: {

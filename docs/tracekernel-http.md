@@ -18,7 +18,10 @@ while separate `workspace.runCommand(...)` calls can run through the scheduler
 and interact with the same files and HTTP listeners.
 
 ```ts
-import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/project';
+import {
+  createBrowserProjectWorkspace,
+  runtimeHttpResponseText,
+} from '@tracecode/harness/browser/project';
 
 const workspace = await createBrowserProjectWorkspace({
   assetBaseUrl: '/workers',
@@ -72,6 +75,7 @@ const apiResult = await workspace.http.request({
   url: 'http://localhost:3000/dequeue',
   headers: { accept: 'application/json' },
 });
+const apiText = runtimeHttpResponseText(apiResult);
 
 const jsonResult = await workspace.http.json<{ id: number } | null>({
   method: 'GET',
@@ -92,6 +96,25 @@ HTTP bodies are transported as UTF-8 text when possible. If a request or
 response contains non-UTF-8 bytes, the bridge uses `bodyEncoding: 'base64'` and
 stores the bytes in `body`. Responses also include `rawHeaders` when available,
 so consumers can inspect repeated headers without parsing display output.
+Use the exported helpers when callers should not care whether a response was
+transported as UTF-8 or base64:
+
+```ts
+import {
+  runtimeHttpBodyFromBytes,
+  runtimeHttpResponseBytes,
+  runtimeHttpResponseText,
+} from '@tracecode/harness-project';
+
+const binaryResponse = await workspace.http.request({
+  method: 'POST',
+  url: 'http://localhost:3000/blob',
+  ...runtimeHttpBodyFromBytes(new Uint8Array([0, 255, 1])),
+});
+
+console.log(runtimeHttpResponseText(binaryResponse));
+console.log(Array.from(runtimeHttpResponseBytes(binaryResponse)));
+```
 
 `workspace.http.json(...)` is a convenience wrapper for endpoint tests. It sets
 JSON `accept` and `content-type` defaults, stringifies the request body, and
@@ -115,6 +138,28 @@ const mockApi = workspace.http.listen({
 
 await workspace.runCommand('node client.js');
 mockApi.close();
+```
+
+For API-style exercises, this gives consumers both directions without exposing
+the host network. A test can create a mock upstream and let user code call it,
+or user code can start an HTTP server and the test can call the submitted API:
+
+```ts
+const upstream = workspace.http.listen({ host: '127.0.0.1', port: 9000 }, (request) => ({
+  status: 200,
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ path: request.path }) + '\n',
+}));
+
+await workspace.runCommand('node sync-from-upstream.js');
+upstream.close();
+
+await terminal.run('node server.js &');
+const result = await workspace.http.json<{ size: number }>({
+  method: 'POST',
+  url: 'http://localhost:3000/enqueue',
+  body: { id: 1 },
+});
 ```
 
 Node project code can also act as an in-workspace client through `node:http`:
@@ -207,6 +252,44 @@ print(response.json())
 
 These shims are scoped to project execution and dispatch through TraceKernel.
 They are intended for endpoint tests, not general internet access.
+
+## Language Expansion
+
+The browser project harness should add HTTP support by routing each language
+through the same `RuntimeKernelHttpProtocolMessage` bridge used by JavaScript
+and Python. That keeps request logging, listener ownership, cancellation,
+binary body encoding, and port binding in one TraceKernel implementation.
+
+Recommended order:
+
+1. Java: medium difficulty. The browser Java runner already has a project
+   event bridge through `tracecode.browser.ProjectEvents`, source rewrites for
+   project filesystem APIs, and worker-to-main `project-event` forwarding. Add
+   `ProjectEvents` HTTP helpers plus source-level shims for the common APIs:
+   `com.sun.net.httpserver.HttpServer` for in-workspace servers,
+   `java.net.http.HttpClient`, `java.net.URL`, and `URLConnection` for clients.
+   This is the best next target for endpoint-style problems.
+2. TypeScript: low difficulty. TypeScript compiles into the JavaScript project
+   runner, so it should inherit the existing `fetch`, `node:http`, and listener
+   behavior once project execution routes through the JS runner.
+3. Python expansion: low to medium difficulty. Basic outbound HTTP and small
+   FastAPI/uvicorn-style servers already work. The main work is widening API
+   compatibility, for example more FastAPI response classes, request objects,
+   streaming edge cases, and more `requests` options.
+4. C#: high difficulty. Browser C# has JS interop hooks, but common endpoint
+   code uses `System.Net.Http.HttpClient`, `HttpListener`, or ASP.NET/Kestrel.
+   Client-only `HttpClient` support is plausible with a focused shim; server
+   support probably needs a deliberate mini-framework or substantial runtime
+   interception.
+5. C++: highest difficulty. Typical C++ networking goes through POSIX sockets,
+   libcurl, or platform libraries. In browser WASM, matching that means either
+   linking a socket/syscall layer into the generated program or providing a
+   harness-specific HTTP helper library. A small helper library is feasible; a
+   general socket-compatible stack is much larger.
+
+Native project runners are a separate problem. They can reach the host network
+unless explicitly confined, so TraceKernel HTTP parity there would require
+launch-time network confinement or language-specific preload/shim strategies.
 
 ## Bind Semantics
 
