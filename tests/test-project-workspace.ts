@@ -5767,6 +5767,30 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
         ].join('\n'),
       },
       {
+        path: 'fetch-client.js',
+        contents: [
+          '(async () => {',
+          '  const enqueue = await fetch(new Request("http://localhost:3000/enqueue", {',
+          '    method: "POST",',
+          '    headers: new Headers({ "content-type": "application/json" }),',
+          '    body: JSON.stringify({ id: 3 }),',
+          '  }));',
+          '  console.log(`${enqueue.status}:${enqueue.ok}:${enqueue.headers.get("content-type")}`);',
+          '  const enqueueBody = await enqueue.json();',
+          '  console.log(`${JSON.stringify(enqueueBody)}:${enqueue.bodyUsed}`);',
+          '  const dequeue = await fetch("http://localhost:3000/dequeue");',
+          '  console.log(`${dequeue.status}:${await dequeue.text()}`.trim());',
+          '  const echo = await fetch("http://localhost:3000/echo?fetch=1", { headers: [["x-client", "fetch"]] });',
+          '  console.log((await echo.text()).trim());',
+          '  const controller = new AbortController();',
+          '  const aborted = fetch("http://localhost:3000/slow", { signal: controller.signal }).catch((error) => error.name);',
+          '  controller.abort();',
+          '  console.log(await aborted);',
+          '})().catch((error) => { console.error(error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
+      {
         path: 'client.js',
         contents: [
           'const http = require("node:http");',
@@ -5825,6 +5849,20 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
   assertCondition(
     apiResponse.body === '{"method":"GET","url":"/echo?api=1","body":"","hasTrace":true,"trace":"yes"}\n',
     `workspace.http.request should dispatch through TraceKernel: ${apiResponse.body}`
+  );
+
+  const fetchClient = await workspace.runCommand('node fetch-client.js');
+  assertCondition(fetchClient.exitCode === 0, `fetch client should call TraceKernel listener: ${JSON.stringify(fetchClient)}`);
+  assertCondition(
+    fetchClient.stdout === [
+      '201:true:application/json',
+      '{"size":1}:true',
+      '200:{"id":3}',
+      '{"method":"GET","url":"/echo?fetch=1","body":"","hasTrace":true,"trace":"yes"}',
+      'AbortError',
+      '',
+    ].join('\n'),
+    `fetch should expose browser-shaped response helpers and aborts: ${fetchClient.stdout}`
   );
 
   const nodeClient = await workspace.runCommand('node client.js');
@@ -6027,8 +6065,25 @@ async function testTraceKernelHttpBindSemantics(): Promise<void> {
 
 async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    files: [{ path: 'server.py', contents: 'import uvicorn\n' }],
+    files: [
+      { path: 'server.py', contents: 'import uvicorn\n' },
+      {
+        path: 'fetch-python.js',
+        contents: [
+          '(async () => {',
+          '  const response = await fetch("http://localhost:3200/from-fetch", {',
+          '    method: "POST",',
+          '    headers: { "content-type": "text/plain" },',
+          '    body: "payload",',
+          '  });',
+          '  console.log(`${response.status}:${response.ok}:${JSON.stringify(await response.json())}`);',
+          '})().catch((error) => { console.error(error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
+    ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
+    nodeRunner: createBrowserJavaScriptProjectRunner(),
     pythonRunner: async (request) => {
       const handle = request.kernelHttp?.listen({ host: '127.0.0.1', port: 3200 }, async (httpRequest) => ({
         status: httpRequest.method === 'POST' ? 201 : 200,
@@ -6065,6 +6120,13 @@ async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
   assertCondition(
     response.stdout === '{"method":"POST","path":"/asgi","body":"payload"}\n',
     `Python runner bridge should dispatch requests through TraceKernel: ${response.stdout}`
+  );
+
+  const fetchResponse = await workspace.runCommand('node fetch-python.js');
+  assertCondition(fetchResponse.exitCode === 0, `fetch should call Python runner bridge: ${JSON.stringify(fetchResponse)}`);
+  assertCondition(
+    fetchResponse.stdout === '201:true:{"method":"POST","path":"/from-fetch","body":"payload"}\n',
+    `fetch should dispatch to Python HTTP listeners through TraceKernel: ${fetchResponse.stdout}`
   );
 
   const listenerRow = listeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3200\t'));

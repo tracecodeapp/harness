@@ -111,6 +111,24 @@ not reach the browser or host network. Request `timeout` and `AbortSignal`
 options are honored by the shim so a hung endpoint cannot keep the command alive
 forever.
 
+JS project code can also use `fetch`:
+
+```js
+const response = await fetch("http://localhost:3000/enqueue", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ id: 1 }),
+});
+
+console.log(response.status, response.ok);
+console.log(await response.json());
+```
+
+The TraceKernel fetch shim provides `Headers`, `Request`, and `Response` plus
+the common response helpers: `text()`, `json()`, `arrayBuffer()`, `clone()`,
+`status`, `ok`, `headers`, `bodyUsed`, and `url`. `AbortSignal` is supported for
+request cancellation.
+
 ## Python ASGI
 
 The Python browser runner installs lightweight `fastapi` and `uvicorn` shims

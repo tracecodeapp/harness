@@ -1499,6 +1499,12 @@ function createClientIncomingMessage(response: RuntimeKernelHttpResponse) {
 function headersFromHttpOptions(headers: unknown): Record<string, string> {
   const result: Record<string, string> = {};
   if (!headers || typeof headers !== 'object') return result;
+  if (typeof (headers as { forEach?: unknown }).forEach === 'function') {
+    (headers as { forEach: (callback: (value: unknown, name: unknown) => void) => void }).forEach((value, name) => {
+      result[String(name).toLowerCase()] = String(value);
+    });
+    return result;
+  }
   if (Array.isArray(headers)) {
     for (const entry of headers) {
       if (!Array.isArray(entry) || entry.length < 2) continue;
@@ -1511,6 +1517,15 @@ function headersFromHttpOptions(headers: unknown): Record<string, string> {
     else if (value !== undefined) result[name.toLowerCase()] = String(value);
   }
   return result;
+}
+
+function bodyToHttpText(body: unknown): string | undefined {
+  if (body === undefined || body === null) return undefined;
+  if (typeof body === 'string') return body;
+  if (body instanceof URLSearchParams) return body.toString();
+  if (body instanceof ArrayBuffer) return textFromBytes(new Uint8Array(body));
+  if (ArrayBuffer.isView(body)) return textFromBytes(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+  return String(body);
 }
 
 function normalizeHttpClientRequest(args: unknown[]): {
@@ -1783,6 +1798,216 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
     return clientRequest;
   };
 
+  class TraceKernelHeaders {
+    private readonly headerValues = new Map<string, string>();
+
+    constructor(init?: unknown) {
+      const record = headersFromHttpOptions(init);
+      for (const [name, value] of Object.entries(record)) this.set(name, value);
+    }
+
+    append(name: string, value: unknown): void {
+      const key = String(name).toLowerCase();
+      const current = this.headerValues.get(key);
+      this.headerValues.set(key, current === undefined ? String(value) : `${current}, ${String(value)}`);
+    }
+
+    delete(name: string): void {
+      this.headerValues.delete(String(name).toLowerCase());
+    }
+
+    entries(): IterableIterator<[string, string]> {
+      return this.headerValues.entries();
+    }
+
+    forEach(callback: (value: string, name: string, parent: TraceKernelHeaders) => void): void {
+      for (const [name, value] of this.headerValues) callback(value, name, this);
+    }
+
+    get(name: string): string | null {
+      return this.headerValues.get(String(name).toLowerCase()) ?? null;
+    }
+
+    has(name: string): boolean {
+      return this.headerValues.has(String(name).toLowerCase());
+    }
+
+    keys(): IterableIterator<string> {
+      return this.headerValues.keys();
+    }
+
+    set(name: string, value: unknown): void {
+      this.headerValues.set(String(name).toLowerCase(), String(value));
+    }
+
+    values(): IterableIterator<string> {
+      return this.headerValues.values();
+    }
+
+    toRecord(): Record<string, string> {
+      return Object.fromEntries(this.headerValues);
+    }
+
+    [Symbol.iterator](): IterableIterator<[string, string]> {
+      return this.entries();
+    }
+  }
+
+  class TraceKernelRequest {
+    readonly headers: TraceKernelHeaders;
+    readonly method: string;
+    readonly signal?: AbortSignal;
+    readonly url: string;
+    private readonly bodyText?: string;
+
+    constructor(input: unknown, init?: Record<string, unknown>) {
+      const sourceRequest = input instanceof TraceKernelRequest ? input : null;
+      const source = input as { url?: unknown; method?: unknown; headers?: unknown; body?: unknown; signal?: AbortSignal };
+      const inputUrl = typeof input === 'string' || input instanceof URL
+        ? String(input)
+        : String(sourceRequest?.url ?? source.url ?? '');
+      this.url = inputUrl;
+      this.method = String(init?.method ?? sourceRequest?.method ?? source.method ?? 'GET').toUpperCase();
+      this.headers = new TraceKernelHeaders(sourceRequest?.headers ?? source.headers);
+      const initHeaders = new TraceKernelHeaders(init?.headers);
+      initHeaders.forEach((value, name) => this.headers.set(name, value));
+      this.bodyText = bodyToHttpText(init && Object.prototype.hasOwnProperty.call(init, 'body')
+        ? init.body
+        : sourceRequest?.bodyForDispatch() ?? source.body);
+      const initSignal = init?.signal;
+      this.signal = initSignal && typeof initSignal === 'object' ? initSignal as AbortSignal : sourceRequest?.signal ?? source.signal;
+    }
+
+    async text(): Promise<string> {
+      return this.bodyText ?? '';
+    }
+
+    bodyForDispatch(): string | undefined {
+      return this.bodyText;
+    }
+  }
+
+  class TraceKernelResponse {
+    readonly headers: TraceKernelHeaders;
+    readonly ok: boolean;
+    readonly redirected = false;
+    readonly status: number;
+    readonly statusText: string;
+    readonly type = 'basic';
+    readonly url: string;
+    private readonly bodyText: string;
+    private used = false;
+
+    constructor(bodyOrResponse: unknown = '', initOrUrl?: Record<string, unknown> | string) {
+      const kernelResponse = typeof initOrUrl === 'string' &&
+        bodyOrResponse !== null &&
+        typeof bodyOrResponse === 'object' &&
+        'status' in bodyOrResponse
+        ? bodyOrResponse as RuntimeKernelHttpResponse
+        : null;
+      const init = !kernelResponse && initOrUrl && typeof initOrUrl === 'object' ? initOrUrl : {};
+      const status = kernelResponse ? kernelResponse.status : Math.trunc(Number(init.status ?? 200)) || 200;
+      this.status = status;
+      this.statusText = HTTP_STATUS_CODES[status] ?? '';
+      this.ok = status >= 200 && status < 300;
+      this.headers = new TraceKernelHeaders(kernelResponse ? kernelResponse.headers : init.headers);
+      this.bodyText = kernelResponse ? kernelResponse.body ?? '' : bodyToHttpText(bodyOrResponse) ?? '';
+      this.url = typeof initOrUrl === 'string' ? initOrUrl : '';
+    }
+
+    get bodyUsed(): boolean {
+      return this.used;
+    }
+
+    private consume(): string {
+      if (this.used) throw new TypeError('Body has already been consumed.');
+      this.used = true;
+      return this.bodyText;
+    }
+
+    async arrayBuffer(): Promise<ArrayBuffer> {
+      const bytes = new TextEncoder().encode(this.consume());
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    }
+
+    clone(): TraceKernelResponse {
+      return new TraceKernelResponse({
+        status: this.status,
+        headers: this.headers.toRecord(),
+        body: this.bodyText,
+      }, this.url);
+    }
+
+    async json(): Promise<unknown> {
+      return JSON.parse(this.consume());
+    }
+
+    async text(): Promise<string> {
+      return this.consume();
+    }
+  }
+
+  const fetch = async (input: unknown, init?: Record<string, unknown>): Promise<TraceKernelResponse> => {
+    if (!kernelHttp) throw Object.assign(new Error('ENOSYS: tracekernel HTTP is not available'), { code: 'ENOSYS' });
+    const request = new TraceKernelRequest(input, init);
+    const url = new URL(request.url);
+    const body = request.bodyForDispatch();
+    const headers = request.headers.toRecord();
+    const rawHeaders = Object.entries(headers);
+    activeClientRequests += 1;
+    let active = true;
+    let abortListener: (() => void) | undefined;
+    let rejectFetch: ((error: unknown) => void) | undefined;
+    const finishFetch = (): void => {
+      if (!active) return;
+      active = false;
+      if (abortListener) request.signal?.removeEventListener?.('abort', abortListener);
+      activeClientAborters.delete(abortFetch);
+      globalThis.setTimeout(() => {
+        activeClientRequests -= 1;
+        notifyCloseWaiters();
+      }, 0);
+    };
+    const abortFetch = (): void => {
+      rejectFetch?.(Object.assign(new Error('The operation was aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
+      finishFetch();
+    };
+    activeClientAborters.add(abortFetch);
+    return new Promise<TraceKernelResponse>((resolve, reject) => {
+      rejectFetch = reject;
+      if (request.signal) {
+        abortListener = abortFetch;
+        request.signal.addEventListener?.('abort', abortListener, { once: true });
+        if (request.signal.aborted) {
+          abortFetch();
+          return;
+        }
+      }
+      if (!active) return;
+      void kernelHttp.dispatch({
+        method: request.method,
+        url: url.toString(),
+        path: `${url.pathname}${url.search}`,
+        headers,
+        ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
+        ...(body !== undefined ? { body } : {}),
+      }).then((response) => {
+        if (!active) return;
+        if (response.status === 0) {
+          reject(Object.assign(new TypeError(response.body ?? 'fetch failed'), { code: 'ECONNREFUSED' }));
+          finishFetch();
+          return;
+        }
+        resolve(new TraceKernelResponse(response, url.toString()));
+        finishFetch();
+      }, (error) => {
+        if (!active) return;
+        reject(error);
+        finishFetch();
+      });
+    });
+  };
+
   return {
     module: {
       createServer,
@@ -1793,6 +2018,10 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
       },
       STATUS_CODES: HTTP_STATUS_CODES,
     },
+    fetch,
+    Headers: TraceKernelHeaders,
+    Request: TraceKernelRequest,
+    Response: TraceKernelResponse,
     hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0,
     waitForClose: () => activeHandles.size === 0 && activeClientRequests === 0
       ? Promise.resolve()
@@ -5922,6 +6151,10 @@ export async function runBrowserJavaScriptProjectRequest(
         'setImmediate',
         'clearImmediate',
         'queueMicrotask',
+        'fetch',
+        'Headers',
+        'Request',
+        'Response',
         executableCode
       );
       try {
@@ -5941,7 +6174,11 @@ export async function runBrowserJavaScriptProjectRequest(
           eventLoopApi.clearInterval,
           eventLoopApi.setImmediate,
           eventLoopApi.clearImmediate,
-          eventLoopApi.queueMicrotask
+          eventLoopApi.queueMicrotask,
+          httpApi.fetch,
+          httpApi.Headers,
+          httpApi.Request,
+          httpApi.Response
         );
       } catch (error) {
         throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
@@ -5996,6 +6233,10 @@ export async function runBrowserJavaScriptProjectRequest(
         'setImmediate',
         'clearImmediate',
         'queueMicrotask',
+        'fetch',
+        'Headers',
+        'Request',
+        'Response',
         executableCode
       );
       try {
@@ -6015,7 +6256,11 @@ export async function runBrowserJavaScriptProjectRequest(
           eventLoopApi.clearInterval,
           eventLoopApi.setImmediate,
           eventLoopApi.clearImmediate,
-          eventLoopApi.queueMicrotask
+          eventLoopApi.queueMicrotask,
+          httpApi.fetch,
+          httpApi.Headers,
+          httpApi.Request,
+          httpApi.Response
         );
       } catch (error) {
         throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
@@ -6065,6 +6310,10 @@ export async function runBrowserJavaScriptProjectRequest(
           'setImmediate',
           'clearImmediate',
           'queueMicrotask',
+          'fetch',
+          'Headers',
+          'Request',
+          'Response',
           transformDynamicImports(evalCode)
         );
         try {
@@ -6084,7 +6333,11 @@ export async function runBrowserJavaScriptProjectRequest(
             eventLoopApi.clearInterval,
             eventLoopApi.setImmediate,
             eventLoopApi.clearImmediate,
-            eventLoopApi.queueMicrotask
+            eventLoopApi.queueMicrotask,
+            httpApi.fetch,
+            httpApi.Headers,
+            httpApi.Request,
+            httpApi.Response
           );
         } catch (error) {
           throw sanitizeBrowserJavaScriptStack(error, `${workspaceRoot}/[eval]`);
