@@ -7,7 +7,9 @@ import {
   emitRuntimeCommandFileChanges,
   emitRuntimeCommandOutput,
   readRuntimeCommandStdinPipeBytes,
+  runtimeAbortSignalName,
   runtimeCommandStdinPipeClosed,
+  runtimeSignalExitCode,
 } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
@@ -37,6 +39,7 @@ export interface NativeJavaProjectRunnerOptions {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const VIRTUAL_WORKSPACE_ROOT = '/workspace';
+const ABORT_FORCE_KILL_MS = 500;
 
 function emitCommandStatus(onEvent: RuntimeCommandEventHandler | undefined, phase: string, message: string, detail?: Record<string, unknown>): void {
   onEvent?.({ type: 'status', phase, message, ...(detail ? { detail } : {}) });
@@ -511,6 +514,7 @@ function runProcess(
     cwd: string;
     env: Record<string, string>;
     stdinPipe?: RuntimeCommandStdinSharedBuffer;
+    signal?: AbortSignal;
     timeoutMs: number;
     timeoutLabel: string;
     onEvent?: RuntimeCommandEventHandler;
@@ -530,6 +534,28 @@ function runProcess(
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let abortedSignal: string | null = null;
+    let abortForceKill: ReturnType<typeof setTimeout> | undefined;
+
+    const settle = (result: JavaProjectCommandResult, phase: string, message: string, detail: Record<string, unknown>): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (abortForceKill) clearTimeout(abortForceKill);
+      options.signal?.removeEventListener('abort', abort);
+      emitCommandStatus(options.onEvent, phase, message, detail);
+      resolve(result);
+    };
+
+    const abort = (): void => {
+      if (settled) return;
+      abortedSignal = runtimeAbortSignalName(options.signal);
+      child.kill(abortedSignal as NodeJS.Signals);
+      abortForceKill = setTimeout(() => {
+        if (!settled) child.kill('SIGKILL');
+      }, ABORT_FORCE_KILL_MS);
+      abortForceKill.unref?.();
+    };
 
     const timeout = setTimeout(() => {
       if (settled) return;
@@ -544,6 +570,8 @@ function runProcess(
         exitCode: 124,
       });
     }, options.timeoutMs);
+    options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
 
     child.stdout.on('data', (chunk) => {
       const data = String(chunk);
@@ -557,26 +585,23 @@ function runProcess(
     });
     child.on('error', (error) => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
       emitRuntimeCommandOutput(options.onEvent, 'stderr', `${error.message}\n`);
-      emitCommandStatus(options.onEvent, 'process-error', `${command} failed to start`, { command, error: error.message });
-      resolve({
-        stdout,
-        stderr: `${stderr}${error.message}\n`,
-        exitCode: 1,
-      });
+      settle(
+        { stdout, stderr: `${stderr}${error.message}\n`, exitCode: 1 },
+        'process-error',
+        `${command} failed to start`,
+        { command, error: error.message }
+      );
     });
     child.on('close', (code) => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      emitCommandStatus(options.onEvent, 'process-exit', `${command} exited`, { command, exitCode: code ?? 1 });
-      resolve({
-        stdout,
-        stderr,
-        exitCode: code ?? 1,
-      });
+      const exitCode = abortedSignal ? runtimeSignalExitCode(abortedSignal) : code ?? 1;
+      settle(
+        { stdout, stderr, exitCode },
+        'process-exit',
+        abortedSignal ? `${command} interrupted` : `${command} exited`,
+        { command, exitCode, ...(abortedSignal ? { signal: abortedSignal } : {}) }
+      );
     });
 
     if (options.stdinPipe) {
@@ -629,6 +654,7 @@ export function createNativeJavaProjectRunner(
           cwd,
           env: mapJavaEnv(root, cwd, request.env, request.project),
           stdinPipe: request.stdinPipe,
+          signal: request.signal,
           timeoutMs,
           timeoutLabel: 'java',
           onEvent: request.onEvent,
@@ -646,6 +672,7 @@ export function createNativeJavaProjectRunner(
           cwd,
           env: mapJavaEnv(root, cwd, request.env, request.project),
           stdinPipe: request.stdinPipe,
+          signal: request.signal,
           timeoutMs,
           timeoutLabel: 'java',
           onEvent: request.onEvent,
@@ -659,11 +686,12 @@ export function createNativeJavaProjectRunner(
       const compileBaselineDirectories = request.source === 'compile' ? await snapshotDirectories(root) : null;
       const compile = await runProcess(javacCommand, javacArgsForRequest(request, root, cwd), {
         cwd,
-        env: mapJavaEnv(root, cwd, request.env, request.project),
-        timeoutMs,
-        timeoutLabel: 'javac',
-        onEvent: request.onEvent,
-      });
+          env: mapJavaEnv(root, cwd, request.env, request.project),
+          signal: request.signal,
+          timeoutMs,
+          timeoutLabel: 'javac',
+          onEvent: request.onEvent,
+        });
       if (request.source === 'compile') {
         if (compile.exitCode !== 0) return compile;
         const files = await changedProjectFiles(root, compileBaseline ?? new Map(), compileBaselineDirectories ?? new Set());
@@ -680,6 +708,7 @@ export function createNativeJavaProjectRunner(
         cwd,
         env: mapJavaEnv(root, cwd, request.env, request.project),
         stdinPipe: request.stdinPipe,
+        signal: request.signal,
         timeoutMs,
         timeoutLabel: 'java',
         onEvent: request.onEvent,

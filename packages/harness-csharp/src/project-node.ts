@@ -7,7 +7,9 @@ import {
   emitRuntimeCommandFileChanges,
   emitRuntimeCommandOutput,
   readRuntimeCommandStdinPipeBytes,
+  runtimeAbortSignalName,
   runtimeCommandStdinPipeClosed,
+  runtimeSignalExitCode,
 } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
@@ -36,6 +38,7 @@ export interface NativeCSharpProjectRunnerOptions {
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const VIRTUAL_WORKSPACE_ROOT = '/workspace';
+const ABORT_FORCE_KILL_MS = 500;
 const GENERATED_PROJECT_PATH = '.tracecode-build/TraceCodeProject.csproj';
 
 function emitCommandStatus(onEvent: RuntimeCommandEventHandler | undefined, phase: string, message: string, detail?: Record<string, unknown>): void {
@@ -436,6 +439,7 @@ function runProcess(
     cwd: string;
     env: Record<string, string>;
     stdinPipe?: RuntimeCommandStdinSharedBuffer;
+    signal?: AbortSignal;
     timeoutMs: number;
     timeoutLabel: string;
     onEvent?: RuntimeCommandEventHandler;
@@ -459,6 +463,28 @@ function runProcess(
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let abortedSignal: string | null = null;
+    let abortForceKill: ReturnType<typeof setTimeout> | undefined;
+
+    const settle = (result: CSharpProjectCommandResult, phase: string, message: string, detail: Record<string, unknown>): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (abortForceKill) clearTimeout(abortForceKill);
+      options.signal?.removeEventListener('abort', abort);
+      emitCommandStatus(options.onEvent, phase, message, detail);
+      resolveResult(result);
+    };
+
+    const abort = (): void => {
+      if (settled) return;
+      abortedSignal = runtimeAbortSignalName(options.signal);
+      child.kill(abortedSignal as NodeJS.Signals);
+      abortForceKill = setTimeout(() => {
+        if (!settled) child.kill('SIGKILL');
+      }, ABORT_FORCE_KILL_MS);
+      abortForceKill.unref?.();
+    };
 
     const timeout = setTimeout(() => {
       if (settled) return;
@@ -473,6 +499,8 @@ function runProcess(
         exitCode: 124,
       });
     }, options.timeoutMs);
+    options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
 
     child.stdout.on('data', (chunk) => {
       const data = String(chunk);
@@ -486,26 +514,23 @@ function runProcess(
     });
     child.on('error', (error) => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
       emitRuntimeCommandOutput(options.onEvent, 'stderr', `${error.message}\n`);
-      emitCommandStatus(options.onEvent, 'process-error', `${command} failed to start`, { command, error: error.message });
-      resolveResult({
-        stdout,
-        stderr: `${stderr}${error.message}\n`,
-        exitCode: 1,
-      });
+      settle(
+        { stdout, stderr: `${stderr}${error.message}\n`, exitCode: 1 },
+        'process-error',
+        `${command} failed to start`,
+        { command, error: error.message }
+      );
     });
     child.on('close', (code) => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      emitCommandStatus(options.onEvent, 'process-exit', `${command} exited`, { command, exitCode: code ?? 1 });
-      resolveResult({
-        stdout,
-        stderr,
-        exitCode: code ?? 1,
-      });
+      const exitCode = abortedSignal ? runtimeSignalExitCode(abortedSignal) : code ?? 1;
+      settle(
+        { stdout, stderr, exitCode },
+        'process-exit',
+        abortedSignal ? `${command} interrupted` : `${command} exited`,
+        { command, exitCode, ...(abortedSignal ? { signal: abortedSignal } : {}) }
+      );
     });
 
     if (options.stdinPipe) {
@@ -583,6 +608,7 @@ export function createNativeCSharpProjectRunner(
           cwd,
           env: request.env,
           stdinPipe: request.stdinPipe,
+          signal: request.signal,
           timeoutMs,
           timeoutLabel: 'dotnet build',
           onEvent: request.onEvent,
@@ -597,6 +623,7 @@ export function createNativeCSharpProjectRunner(
         const build = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, buildArgsForRequest(request), request.project)], {
           cwd,
           env: request.env,
+          signal: request.signal,
           timeoutMs,
           timeoutLabel: 'dotnet build',
           onEvent: request.onEvent,
@@ -610,6 +637,7 @@ export function createNativeCSharpProjectRunner(
         cwd,
         env: request.env,
         stdinPipe: request.stdinPipe,
+        signal: request.signal,
         timeoutMs,
         timeoutLabel: 'dotnet run',
         onEvent: request.onEvent,

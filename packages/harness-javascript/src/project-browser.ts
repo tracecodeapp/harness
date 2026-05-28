@@ -16,9 +16,11 @@ import {
   RuntimeProjectLiveIoController,
   createRuntimeProjectIoBridge,
   readRuntimeCommandStdinPipeBytes,
+  runtimeAbortSignalName,
   runRuntimeProjectWorkerBridge,
   runtimeCommandStdinPipeClosed,
   runtimeCommandStdinPipeRemainingBytes,
+  runtimeSignalExitCode,
 } from '../../harness-core/src/runtime-project';
 import {
   createTypeScriptProjectRunner,
@@ -81,6 +83,7 @@ import {
   runtimeKernelWriteTarget,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
+  type RuntimeKernelDirectoryEntry,
   type RuntimeKernelVirtualStat,
 } from '../../harness-core/src/runtime-kernel';
 import * as fflateModule from 'fflate/browser';
@@ -168,6 +171,11 @@ type ModuleRecord = {
     resolve: (specifier: string) => string;
   };
 };
+
+interface BrowserProcSnapshot {
+  readonly files: ReadonlyMap<string, string>;
+  readonly directories: ReadonlyMap<string, readonly RuntimeKernelDirectoryEntry[]>;
+}
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const AsyncFunction = Object.getPrototypeOf(async function noop() {
@@ -257,9 +265,17 @@ function runtimeMetadataTarget(
 function runtimeAccessTarget(
   path: unknown,
   mode: number,
-  devices?: readonly RuntimeKernelDeviceInfo[]
+  devices?: readonly RuntimeKernelDeviceInfo[],
+  procSnapshot?: BrowserProcSnapshot
 ): ReturnType<typeof runtimeKernelAccessTarget> | null {
   if (typeof path === 'number') return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? '/proc';
+    return (mode & 2) !== 0
+      ? { kind: 'denied', reason: 'permission-denied', path: procPath }
+      : { kind: 'allowed', path: procPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelAccessTarget(raw, {
     read: (mode & 4) !== 0,
@@ -271,27 +287,53 @@ function runtimeAccessTarget(
 function runtimeOpenTarget(
   path: unknown,
   request: Parameters<typeof runtimeKernelOpenTarget>[1],
-  devices?: readonly RuntimeKernelDeviceInfo[]
+  devices?: readonly RuntimeKernelDeviceInfo[],
+  procSnapshot?: BrowserProcSnapshot
 ): ReturnType<typeof runtimeKernelOpenTarget> | null {
   if (typeof path === 'number') return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? '/proc';
+    if (procKind === 'directory') return { kind: 'error', reason: 'is-directory', path: procPath };
+    if (request?.writable || request?.create || request?.truncate || request?.exclusive) {
+      return { kind: 'error', reason: 'read-only', path: procPath };
+    }
+    return { kind: 'proc-file', path: procPath, readable: true, writable: false };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelOpenTarget(raw, request, devices);
 }
 
 function runtimeReadTarget(
   path: unknown,
-  devices?: readonly RuntimeKernelDeviceInfo[]
+  devices?: readonly RuntimeKernelDeviceInfo[],
+  procSnapshot?: BrowserProcSnapshot
 ): ReturnType<typeof runtimeKernelReadTarget> | null {
   if (typeof path === 'number') return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? '/proc';
+    return procKind === 'file'
+      ? { kind: 'proc-file', path: procPath }
+      : { kind: 'proc-directory', path: procPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelReadTarget(raw, devices);
 }
 
 function runtimeFileReadTarget(
   path: unknown,
-  devices?: readonly RuntimeKernelDeviceInfo[]
+  devices?: readonly RuntimeKernelDeviceInfo[],
+  procSnapshot?: BrowserProcSnapshot
 ): ReturnType<typeof runtimeKernelFileReadTarget> | null {
   if (typeof path === 'number') return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? '/proc';
+    return procKind === 'file'
+      ? { kind: 'proc-file', path: procPath }
+      : { kind: 'error', reason: 'is-directory', path: procPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelFileReadTarget(raw, devices);
 }
@@ -378,9 +420,17 @@ function runtimeTruncateTarget(
 
 function runtimeDirectoryTarget(
   path: unknown,
-  devices?: readonly RuntimeKernelDeviceInfo[]
+  devices?: readonly RuntimeKernelDeviceInfo[],
+  procSnapshot?: BrowserProcSnapshot
 ): ReturnType<typeof runtimeKernelDirectoryTarget> | null {
   if (typeof path === 'number') return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? '/proc';
+    return procKind === 'directory'
+      ? { kind: 'directory', path: procPath, entries: [...(procSnapshot?.directories.get(procPath) ?? [])] }
+      : { kind: 'error', reason: 'not-directory', path: procPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelDirectoryTarget(raw, devices);
 }
@@ -388,9 +438,26 @@ function runtimeDirectoryTarget(
 function runtimeStatTarget(
   path: unknown,
   info: RuntimeKernelInfo,
-  devices?: readonly RuntimeKernelDeviceInfo[]
+  devices?: readonly RuntimeKernelDeviceInfo[],
+  procSnapshot?: BrowserProcSnapshot
 ): ReturnType<typeof runtimeKernelStatTarget> | null {
   if (typeof path === 'number') return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? '/proc';
+    const contents = procKind === 'file' ? browserProcFileContents(procSnapshot, procPath, info) : '';
+    return {
+      kind: 'stat',
+      path: procPath,
+      stat: {
+        isFile: procKind === 'file',
+        isDirectory: procKind === 'directory',
+        isCharacterDevice: false,
+        mode: procKind === 'directory' ? 0o555 : 0o444,
+        size: textEncoder.encode(contents).byteLength,
+      },
+    };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelStatTarget(raw, info, devices);
 }
@@ -514,6 +581,55 @@ function fallbackKernelInfo(project: RuntimeProjectSnapshot, workspace: Workspac
     workspaceRoot: root,
     ...(workspace.alias ? { workspaceAlias: workspace.alias } : {}),
   };
+}
+
+function normalizeBrowserProcPath(path: unknown): string | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return raw === '/proc' || raw.startsWith('/proc/') ? raw : null;
+}
+
+function createBrowserProcSnapshot(kernelFiles?: readonly RuntimeFile[]): BrowserProcSnapshot {
+  const files = new Map<string, string>();
+  const directoryEntries = new Map<string, Map<string, RuntimeKernelDirectoryEntry>>();
+  const ensureDirectory = (path: string): void => {
+    if (!directoryEntries.has(path)) directoryEntries.set(path, new Map());
+    if (path === '/') return;
+    const parent = dirname(path);
+    if (parent && parent !== path) {
+      ensureDirectory(parent);
+      const name = path.slice(parent === '/' ? 1 : parent.length + 1);
+      directoryEntries.get(parent)?.set(name, { name, kind: 'directory' });
+    }
+  };
+  const addFile = (path: string, contents: string): void => {
+    const normalized = normalizeBrowserProcPath(path);
+    if (!normalized) return;
+    files.set(normalized, contents);
+    const parent = dirname(normalized);
+    ensureDirectory(parent);
+    const name = normalized.slice(parent === '/' ? 1 : parent.length + 1);
+    directoryEntries.get(parent)?.set(name, { name, kind: 'file' });
+  };
+  for (const file of kernelFiles ?? []) addFile(file.path, file.contents);
+  const directories = new Map<string, readonly RuntimeKernelDirectoryEntry[]>();
+  for (const [path, entries] of directoryEntries) {
+    if (path === '/' || !(path === '/proc' || path.startsWith('/proc/'))) continue;
+    directories.set(path, [...entries.values()].sort((left, right) => left.name.localeCompare(right.name)));
+  }
+  return { files, directories };
+}
+
+function browserProcEntryKind(snapshot: BrowserProcSnapshot | undefined, path: unknown): 'file' | 'directory' | null {
+  const normalized = normalizeBrowserProcPath(path);
+  if (!normalized || !snapshot) return null;
+  if (snapshot.files.has(normalized)) return 'file';
+  if (snapshot.directories.has(normalized)) return 'directory';
+  return null;
+}
+
+function browserProcFileContents(snapshot: BrowserProcSnapshot | undefined, path: string, info: RuntimeKernelInfo): string {
+  return snapshot?.files.get(path) ?? readProcFile(path, info);
 }
 
 function workspaceRelativeFromAbsolutePath(rawPath: string, workspace: WorkspacePathContext): string | null {
@@ -1773,9 +1889,11 @@ export function createBrowserJavaScriptProjectRunner(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
     const executionState: BrowserJavaScriptProjectExecutionState = { cancelled: false };
     const execution = runBrowserJavaScriptProjectRequest(request, options, executionState).finally(() => {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (abortListener) request.signal?.removeEventListener('abort', abortListener);
     });
     const timeout = new Promise<RuntimeCommandResult>((resolve) => {
       timeoutId = setTimeout(() => {
@@ -1791,7 +1909,24 @@ export function createBrowserJavaScriptProjectRunner(
         });
       }, timeoutMs);
     });
-    return Promise.race([execution, timeout]);
+    const abort = new Promise<RuntimeCommandResult>((resolve) => {
+      if (!request.signal) return;
+      abortListener = () => {
+        executionState.cancelled = true;
+        const signal = runtimeAbortSignalName(request.signal);
+        const exitCode = runtimeSignalExitCode(signal);
+        const io = createRuntimeProjectIoBridge(request.onEvent);
+        io.status('process-exit', 'Browser Node interrupted', { command: 'node', exitCode, signal });
+        resolve({
+          stdout: '',
+          stderr: 'Execution aborted\n',
+          exitCode,
+        });
+      };
+      request.signal.addEventListener('abort', abortListener, { once: true });
+      if (request.signal.aborted) abortListener();
+    });
+    return Promise.race([execution, timeout, abort]);
   };
 }
 
@@ -1831,6 +1966,7 @@ export async function runBrowserJavaScriptProjectRequest(
     const workspaceRoot = workspacePathContext.root;
     const kernelInfo = request.project.kernel ?? fallbackKernelInfo(request.project, workspacePathContext);
     const kernelDevices = request.project.kernelDevices;
+    const procSnapshot = createBrowserProcSnapshot(request.project.kernelFiles);
     const cwdPath = workspaceCwdPath(request);
     const readonlyFiles = new Set(request.project.readonlyFiles ?? []);
     io.status('process-start', 'Starting browser Node', {
@@ -1908,6 +2044,39 @@ export async function runBrowserJavaScriptProjectRequest(
     const deleteEntryMetadata = (path: string): void => {
       fsTimestampMs += 1;
       entryMetadata.delete(path);
+    };
+    const hardLinkGroups = new Map<string, Set<string>>();
+    const hardLinkGroupForPath = (path: string): Set<string> => hardLinkGroups.get(path) ?? new Set([path]);
+    const setHardLinkGroup = (paths: Iterable<string>): Set<string> => {
+      const group = new Set(paths);
+      for (const path of group) hardLinkGroups.set(path, group);
+      return group;
+    };
+    const linkPaths = (source: string, destination: string): void => {
+      setHardLinkGroup([...hardLinkGroupForPath(source), destination]);
+    };
+    const unlinkPathFromHardLinks = (path: string): void => {
+      const group = hardLinkGroups.get(path);
+      if (!group) return;
+      group.delete(path);
+      hardLinkGroups.delete(path);
+      if (group.size <= 1) {
+        for (const remaining of group) hardLinkGroups.delete(remaining);
+        return;
+      }
+      for (const remaining of group) hardLinkGroups.set(remaining, group);
+    };
+    const moveHardLinkPath = (oldPath: string, newPath: string): void => {
+      const group = hardLinkGroups.get(oldPath);
+      if (!group) return;
+      group.delete(oldPath);
+      group.add(newPath);
+      hardLinkGroups.delete(oldPath);
+      for (const path of group) hardLinkGroups.set(path, group);
+    };
+    const linkedInodeForPath = (path: string): number => {
+      const group = hardLinkGroups.get(path);
+      return inodeForPath(group ? [...group].sort((left, right) => left.localeCompare(right))[0] ?? path : path);
     };
     const originalFiles = new Map(fileStore);
     const modules = new Map(
@@ -2210,10 +2379,10 @@ export async function runBrowserJavaScriptProjectRequest(
         ctimeMs: metadata.ctimeMs,
         dev: 1,
         gid: metadata.gid,
-        ino: inodeForPath(normalized),
+        ino: isFile ? linkedInodeForPath(normalized) : inodeForPath(normalized),
         mode,
         mtimeMs: metadata.mtimeMs,
-        nlink: isDirectory ? 2 : 1,
+        nlink: isDirectory ? 2 : hardLinkGroupForPath(normalized).size,
         rdev: 0,
         size,
         uid: metadata.uid,
@@ -2262,7 +2431,7 @@ export async function runBrowserJavaScriptProjectRequest(
       };
     };
     const statForKernelTarget = (path: unknown, options?: BrowserStatOptions): BrowserFileStat | null | undefined => {
-      const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices);
+      const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices, procSnapshot);
       if (!statTarget || statTarget.kind === 'workspace') return null;
       if (statTarget.kind === 'error') {
         if (options?.throwIfNoEntry === false) return undefined;
@@ -2385,13 +2554,16 @@ export async function runBrowserJavaScriptProjectRequest(
         if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
         if (!existed) emitDirectoryCreate(directoryPath);
       }
-      fileStore.set(path, bytes);
-      touchEntryMetadata(path);
-      syncTextModule(path, bytes);
-      cache.delete(path);
-      io.fileChange(bytesToRuntimeFile(path, bytes), 'live');
-      notifyFsWatchers('change', path);
-      notifyWatchFileWatchers(path);
+      for (const linkedPath of hardLinkGroupForPath(path)) {
+        if (!fileStore.has(linkedPath) && linkedPath !== path) continue;
+        fileStore.set(linkedPath, bytes);
+        touchEntryMetadata(linkedPath);
+        syncTextModule(linkedPath, bytes);
+        cache.delete(linkedPath);
+        io.fileChange(bytesToRuntimeFile(linkedPath, bytes), 'live');
+        notifyFsWatchers('change', linkedPath);
+        notifyWatchFileWatchers(linkedPath);
+      }
     };
     const createEventTarget = () => {
       type EventListener = (...args: unknown[]) => void;
@@ -2648,12 +2820,12 @@ export async function runBrowserJavaScriptProjectRequest(
       const flags = typeof options === 'object' && typeof options?.flags === 'string' ? options.flags : 'w';
       const parsed = parseOpenFlags(flags);
       const openTarget = optionFd === null
-        ? runtimeOpenTarget(path, {
-            ...parsed,
-            writable: parsed.writable,
-            create: parsed.create,
-            truncate: parsed.truncate,
-          }, kernelDevices)
+          ? runtimeOpenTarget(path, {
+              ...parsed,
+              writable: parsed.writable,
+              create: parsed.create,
+              truncate: parsed.truncate,
+          }, kernelDevices, procSnapshot)
         : null;
       if (openTarget?.kind === 'error') {
         throw Object.assign(new Error(runtimeKernelOpenErrorMessage(String(path), openTarget)), {
@@ -2873,6 +3045,8 @@ export async function runBrowserJavaScriptProjectRequest(
       if (!fileStore.delete(normalized)) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, unlink '${path}'`), { code: 'ENOENT' });
       }
+      detachOpenFileDescriptorsForPath(normalized);
+      unlinkPathFromHardLinks(normalized);
       modules.delete(normalized);
       cache.delete(normalized);
       deleteEntryMetadata(normalized);
@@ -2902,10 +3076,10 @@ export async function runBrowserJavaScriptProjectRequest(
     } as const;
     let mkdtempCounter = 0;
     const fileSystemEntryExists = (path: unknown): boolean => {
-      const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices);
+      const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices, procSnapshot);
       if (accessTarget?.kind === 'allowed') return true;
       if (accessTarget?.kind === 'denied') return false;
-      const readTarget = runtimeReadTarget(path, kernelDevices);
+      const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
       if (
         readTarget?.kind === 'device-file' ||
         readTarget?.kind === 'device-directory' ||
@@ -2955,7 +3129,7 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const assertFileSystemAccess = (path: unknown, mode: number = fsConstants.F_OK): void => {
       const requested = Number(mode) || fsConstants.F_OK;
-      const accessTarget = runtimeAccessTarget(path, requested, kernelDevices);
+      const accessTarget = runtimeAccessTarget(path, requested, kernelDevices, procSnapshot);
       if (accessTarget?.kind === 'allowed') return;
       if (accessTarget?.kind === 'denied') {
         const code = accessTarget.reason === 'not-found' ? 'ENOENT' : 'EACCES';
@@ -3013,6 +3187,7 @@ export async function runBrowserJavaScriptProjectRequest(
     type BrowserFileDescriptor = {
       kind: 'file' | 'directory' | 'device' | 'proc';
       path?: string;
+      bytes?: Uint8Array;
       device?: RuntimeKernelDevicePath;
       offset: number;
       readable: boolean;
@@ -3033,6 +3208,21 @@ export async function runBrowserJavaScriptProjectRequest(
       [2, stdioDescriptor('/dev/stderr', true)],
     ]);
     let nextFd = 3;
+    const workspaceFileDescriptorRecords = (): BrowserFileDescriptor[] =>
+      [...fileDescriptors.values()].filter((entry) => entry.kind === 'file');
+    const detachOpenFileDescriptorsForPath = (path: string): void => {
+      const bytes = fileStore.get(path);
+      for (const entry of workspaceFileDescriptorRecords()) {
+        if (entry.path !== path) continue;
+        entry.bytes = new Uint8Array(bytes ?? entry.bytes ?? new Uint8Array());
+        entry.path = undefined;
+      }
+    };
+    const moveOpenFileDescriptorPath = (oldPath: string, newPath: string): void => {
+      for (const entry of workspaceFileDescriptorRecords()) {
+        if (entry.path === oldPath) entry.path = newPath;
+      }
+    };
     const parseOpenFlags = (flags: unknown = 'r') => {
       if (typeof flags === 'number') {
         const access = flags & 3;
@@ -3062,6 +3252,7 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const descriptorMetadataPath = (fd: number, operation: string): string | null => {
       const entry = fileDescriptor(fd);
+      if (entry.kind === 'file' && !entry.path) return null;
       const path = entry.kind === 'device' ? entry.device ?? '/dev/stdin' : entry.path ?? '';
       const metadataTarget = runtimeKernelMetadataTarget(path, kernelDevices);
       if (metadataTarget.kind === 'ignored-device') return null;
@@ -3075,11 +3266,12 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const descriptorBytes = (entry: BrowserFileDescriptor): Uint8Array => {
       if (entry.kind === 'device') return utf8Bytes(readDevice(entry.device ?? '/dev/stdin'));
-      if (entry.kind === 'proc') return utf8Bytes(readProcFile(entry.path ?? '', kernelInfo));
+      if (entry.kind === 'proc') return utf8Bytes(browserProcFileContents(procSnapshot, entry.path ?? '', kernelInfo));
       if (entry.kind === 'directory') {
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${entry.path ?? ''}'`), { code: 'EISDIR' });
       }
-      return fileStore.get(entry.path ?? '') ?? new Uint8Array();
+      if (entry.path && fileStore.has(entry.path)) return fileStore.get(entry.path) ?? new Uint8Array();
+      return entry.bytes ?? new Uint8Array();
     };
     const readDescriptorFileBytes = (fd: number): Uint8Array => {
       const entry = fileDescriptor(fd);
@@ -3100,12 +3292,13 @@ export async function runBrowserJavaScriptProjectRequest(
       if (entry.kind === 'proc') {
         throw Object.assign(new Error(`EROFS: read-only file system, write '${entry.path ?? '/proc'}'`), { code: 'EROFS' });
       }
-      const previous = fileStore.get(entry.path ?? '') ?? new Uint8Array();
+      const previous = descriptorBytes(entry);
       const start = entry.append ? previous.byteLength : typeof position === 'number' ? Math.max(0, position) : entry.offset;
       const next = new Uint8Array(Math.max(previous.byteLength, start + bytes.byteLength));
       next.set(previous, 0);
       next.set(bytes, start);
-      setFileBytes(entry.path ?? '', next);
+      entry.bytes = next;
+      if (entry.path && fileStore.has(entry.path)) setFileBytes(entry.path, next);
       if (position === undefined || position === null) entry.offset = start + bytes.byteLength;
     };
     const writeDescriptorFileBytes = (fd: number, bytes: Uint8Array, append = false): void => {
@@ -3124,13 +3317,26 @@ export async function runBrowserJavaScriptProjectRequest(
       next.set(previous.slice(0, Math.min(previous.byteLength, size)));
       setFileBytes(path, next);
     };
+    const truncateDescriptorBytes = (entry: BrowserFileDescriptor, length = 0): void => {
+      if (entry.kind !== 'file') {
+        if (entry.kind === 'device') throw Object.assign(new Error('EINVAL: invalid argument, ftruncate'), { code: 'EINVAL' });
+        throw Object.assign(new Error(`EROFS: read-only file system, ftruncate '${entry.path ?? ''}'`), { code: 'EROFS' });
+      }
+      const previous = descriptorBytes(entry);
+      const size = Math.max(0, Number(length) || 0);
+      const next = new Uint8Array(size);
+      next.set(previous.slice(0, Math.min(previous.byteLength, size)));
+      entry.bytes = next;
+      if (entry.path && fileStore.has(entry.path)) setFileBytes(entry.path, next);
+      if (entry.offset > size) entry.offset = size;
+    };
     const realpathForEntry = (path: unknown): string => {
-      const accessTarget = runtimeAccessTarget(path, 0, kernelDevices);
+      const accessTarget = runtimeAccessTarget(path, 0, kernelDevices, procSnapshot);
       if (accessTarget?.kind === 'allowed') return accessTarget.path;
       if (accessTarget?.kind === 'denied') {
         throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
       }
-      const readTarget = runtimeReadTarget(path, kernelDevices);
+      const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
       if (readTarget?.kind === 'device-file' || readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
         return readTarget.path;
       }
@@ -3405,7 +3611,7 @@ export async function runBrowserJavaScriptProjectRequest(
       },
       openSync: (path: unknown, flags: unknown = 'r') => {
         const parsed = parseOpenFlags(flags);
-        const openTarget = runtimeOpenTarget(path, parsed, kernelDevices);
+        const openTarget = runtimeOpenTarget(path, parsed, kernelDevices, procSnapshot);
         const fd = nextFd++;
         if (openTarget?.kind === 'error') {
           throw Object.assign(new Error(runtimeKernelOpenErrorMessage(String(path), openTarget)), {
@@ -3466,6 +3672,7 @@ export async function runBrowserJavaScriptProjectRequest(
         fileDescriptors.set(fd, {
           kind: 'file',
           path: normalized,
+          bytes: new Uint8Array(fileStore.get(normalized) ?? new Uint8Array()),
           offset: parsed.append ? fileStore.get(normalized)?.byteLength ?? 0 : 0,
           readable: parsed.readable,
           writable: parsed.writable,
@@ -3664,7 +3871,14 @@ export async function runBrowserJavaScriptProjectRequest(
         } else if (entry.kind === 'directory') {
           stats = statForNormalizedPath(entry.path ?? '') ?? missingFileStat();
         } else {
-          stats = statForNormalizedPath(entry.path ?? '') ?? missingFileStat();
+          stats = entry.path && fileStore.has(entry.path)
+            ? statForNormalizedPath(entry.path) ?? missingFileStat()
+            : {
+                ...missingFileStat(),
+                size: descriptorBytes(entry).byteLength,
+                isFile: () => true,
+                isDirectory: () => false,
+              };
         }
         return browserStatsResult(stats, options);
       },
@@ -3735,9 +3949,7 @@ export async function runBrowserJavaScriptProjectRequest(
       ftruncateSync: (fd: number, length = 0) => {
         const entry = fileDescriptor(fd);
         if (!entry.writable) throw Object.assign(new Error('EBADF: bad file descriptor, ftruncate'), { code: 'EBADF' });
-        if (entry.kind === 'device') throw Object.assign(new Error('EINVAL: invalid argument, ftruncate'), { code: 'EINVAL' });
-        truncateFileBytes(entry.path ?? '', length);
-        if (entry.offset > length) entry.offset = length;
+        truncateDescriptorBytes(entry, length);
         return undefined;
       },
       ftruncate: (fd: number, lengthOrCallback?: number | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
@@ -3775,11 +3987,11 @@ export async function runBrowserJavaScriptProjectRequest(
       },
       createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; start?: number } | null) => {
         const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
-        const readTarget = optionFd === null ? runtimeFileReadTarget(path, kernelDevices) : null;
+        const readTarget = optionFd === null ? runtimeFileReadTarget(path, kernelDevices, procSnapshot) : null;
         const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
         let sourceBytes: Uint8Array | undefined;
         if (readTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(readTarget.path));
-        else if (readTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(readTarget.path, kernelInfo));
+        else if (readTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(browserProcFileContents(procSnapshot, readTarget.path, kernelInfo));
         else if (readTarget?.kind === 'error') {
           throwRuntimeReadTargetError(readTarget, runtimeKernelFileReadFsErrorMessage(String(path), readTarget));
         } else if (optionFd !== null) {
@@ -3824,14 +4036,14 @@ export async function runBrowserJavaScriptProjectRequest(
           const bytes = BrowserBuffer.from(readDescriptorFileBytes(path));
           return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
         }
-        const readTarget = runtimeFileReadTarget(path, kernelDevices);
+        const readTarget = runtimeFileReadTarget(path, kernelDevices, procSnapshot);
         if (readTarget?.kind === 'device-file') {
           const contents = readDevice(readTarget.path);
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
           return BrowserBuffer.from(contents);
         }
         if (readTarget?.kind === 'proc-file') {
-          const contents = readProcFile(readTarget.path, kernelInfo);
+          const contents = browserProcFileContents(procSnapshot, readTarget.path, kernelInfo);
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
           return BrowserBuffer.from(contents);
         }
@@ -3930,9 +4142,9 @@ export async function runBrowserJavaScriptProjectRequest(
         let sourceBytes: Uint8Array | undefined;
         const sourceTarget = copyTarget?.kind === 'virtual-source' || copyTarget?.kind === 'device-destination'
           ? copyTarget.source
-          : runtimeFileReadTarget(source, kernelDevices);
+          : runtimeFileReadTarget(source, kernelDevices, procSnapshot);
         if (sourceTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(sourceTarget.path));
-        else if (sourceTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(sourceTarget.path, kernelInfo));
+        else if (sourceTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(browserProcFileContents(procSnapshot, sourceTarget.path, kernelInfo));
         else if (copyTarget?.kind === 'error' && copyTarget.side === 'source') {
           throw Object.assign(new Error(runtimeKernelFileCopyErrorMessage(String(source), String(destination), copyTarget)), {
             code: runtimeKernelFileCopyErrorCode(copyTarget),
@@ -3990,7 +4202,14 @@ export async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`EEXIST: file already exists, link '${existingPath}' -> '${newPath}'`), { code: 'EEXIST' });
         }
         assertWorkspaceFileWritePath(normalizedDestination, newPath, 'link');
-        setFileBytes(normalizedDestination, new Uint8Array(bytes));
+        fileStore.set(normalizedDestination, bytes);
+        touchEntryMetadata(normalizedDestination);
+        linkPaths(normalizedSource, normalizedDestination);
+        syncTextModule(normalizedDestination, bytes);
+        cache.delete(normalizedDestination);
+        io.fileChange(bytesToRuntimeFile(normalizedDestination, bytes), 'live');
+        notifyFsWatchers('change', normalizedDestination);
+        notifyWatchFileWatchers(normalizedDestination);
       },
       link: (existingPath: unknown, newPath: unknown, callback?: (error?: Error | null) => void) => {
         try {
@@ -4017,7 +4236,7 @@ export async function runBrowserJavaScriptProjectRequest(
         }
       },
       readlinkSync: (path: unknown, _options?: string | { encoding?: string | null } | null) => {
-        const readTarget = runtimeReadTarget(path, kernelDevices);
+        const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
         if (readTarget?.kind && readTarget.kind !== 'workspace') {
           throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: 'EINVAL' });
         }
@@ -4073,6 +4292,8 @@ export async function runBrowserJavaScriptProjectRequest(
           assertReadonlyFilePath(normalizedOldPath, 'move');
           assertWorkspaceFileWritePath(normalizedNewPath, newPath, 'move', 'rename');
           fileStore.delete(normalizedOldPath);
+          moveOpenFileDescriptorPath(normalizedOldPath, normalizedNewPath);
+          moveHardLinkPath(normalizedOldPath, normalizedNewPath);
           modules.delete(normalizedOldPath);
           cache.delete(normalizedOldPath);
           deleteEntryMetadata(normalizedOldPath);
@@ -4112,6 +4333,10 @@ export async function runBrowserJavaScriptProjectRequest(
 
         for (const [filePath] of sourceFiles) {
           fileStore.delete(filePath);
+          const relative = filePath.slice(oldPrefix.length);
+          const nextPath = normalizedNewPath ? `${normalizedNewPath}/${relative}` : relative;
+          moveOpenFileDescriptorPath(filePath, nextPath);
+          moveHardLinkPath(filePath, nextPath);
           modules.delete(filePath);
           cache.delete(filePath);
           deleteEntryMetadata(filePath);
@@ -4220,7 +4445,7 @@ export async function runBrowserJavaScriptProjectRequest(
       },
       existsSync: (path: unknown) => {
         try {
-          const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices);
+          const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices, procSnapshot);
           if (accessTarget?.kind === 'allowed') return true;
           if (accessTarget?.kind === 'denied') return false;
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
@@ -4236,7 +4461,7 @@ export async function runBrowserJavaScriptProjectRequest(
         queueMicrotask(() => callback?.(fsApi.existsSync(path)));
       },
       readdirSync: (path: unknown, options?: { withFileTypes?: boolean; recursive?: boolean } | string | null) => {
-        const directoryTarget = runtimeDirectoryTarget(path, kernelDevices);
+        const directoryTarget = runtimeDirectoryTarget(path, kernelDevices, procSnapshot);
         const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
         const makeDirent = (
           name: string,

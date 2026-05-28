@@ -7,7 +7,9 @@ import {
   emitRuntimeCommandFileChanges,
   emitRuntimeCommandOutput,
   readRuntimeCommandStdinPipeBytes,
+  runtimeAbortSignalName,
   runtimeCommandStdinPipeClosed,
+  runtimeSignalExitCode,
 } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
@@ -48,6 +50,7 @@ export interface NativeJavaScriptProjectRunnerOptions {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const VIRTUAL_WORKSPACE_ROOT = '/workspace';
+const ABORT_FORCE_KILL_MS = 500;
 
 function emitCommandStatus(onEvent: RuntimeCommandEventHandler | undefined, phase: string, message: string, detail?: Record<string, unknown>): void {
   onEvent?.({ type: 'status', phase, message, ...(detail ? { detail } : {}) });
@@ -470,6 +473,28 @@ export function createNativeJavaScriptProjectRunner(
         let stdout = '';
         let stderr = '';
         let settled = false;
+        let abortedSignal: string | null = null;
+        let abortForceKill: ReturnType<typeof setTimeout> | undefined;
+
+        const settle = (result: JavaScriptProjectCommandResult, phase: string, message: string, detail: Record<string, unknown>): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (abortForceKill) clearTimeout(abortForceKill);
+          request.signal?.removeEventListener('abort', abort);
+          emitCommandStatus(request.onEvent, phase, message, detail);
+          resolve(result);
+        };
+
+        const abort = (): void => {
+          if (settled) return;
+          abortedSignal = runtimeAbortSignalName(request.signal);
+          child.kill(abortedSignal as NodeJS.Signals);
+          abortForceKill = setTimeout(() => {
+            if (!settled) child.kill('SIGKILL');
+          }, ABORT_FORCE_KILL_MS);
+          abortForceKill.unref?.();
+        };
 
         const timeout = setTimeout(() => {
           if (settled) return;
@@ -484,6 +509,8 @@ export function createNativeJavaScriptProjectRunner(
             exitCode: 124,
           });
         }, timeoutMs);
+        request.signal?.addEventListener('abort', abort, { once: true });
+        if (request.signal?.aborted) abort();
 
         child.stdout.on('data', (chunk) => {
           const data = String(chunk);
@@ -497,26 +524,23 @@ export function createNativeJavaScriptProjectRunner(
         });
         child.on('error', (error) => {
           if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
           emitRuntimeCommandOutput(request.onEvent, 'stderr', `${error.message}\n`);
-          emitCommandStatus(request.onEvent, 'process-error', `${nodeCommand} failed to start`, { command: nodeCommand, error: error.message });
-          resolve({
-            stdout,
-            stderr: `${stderr}${error.message}\n`,
-            exitCode: 1,
-          });
+          settle(
+            { stdout, stderr: `${stderr}${error.message}\n`, exitCode: 1 },
+            'process-error',
+            `${nodeCommand} failed to start`,
+            { command: nodeCommand, error: error.message }
+          );
         });
         child.on('close', (code) => {
           if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          emitCommandStatus(request.onEvent, 'process-exit', `${nodeCommand} exited`, { command: nodeCommand, exitCode: code ?? 1 });
-          resolve({
-            stdout,
-            stderr,
-            exitCode: code ?? 1,
-          });
+          const exitCode = abortedSignal ? runtimeSignalExitCode(abortedSignal) : code ?? 1;
+          settle(
+            { stdout, stderr, exitCode },
+            'process-exit',
+            abortedSignal ? `${nodeCommand} interrupted` : `${nodeCommand} exited`,
+            { command: nodeCommand, exitCode, ...(abortedSignal ? { signal: abortedSignal } : {}) }
+          );
         });
 
         if (request.stdinPipe && request.source !== 'stdin') {
