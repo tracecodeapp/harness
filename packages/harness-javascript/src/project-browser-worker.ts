@@ -8,6 +8,7 @@ import type {
   RuntimeKernelHttpListenerInfo,
   RuntimeKernelHttpProtocolMessage,
   RuntimeKernelHttpRequest,
+  RuntimeKernelHttpResponse,
 } from '../../harness-core/src/runtime-project';
 import {
   runBrowserJavaScriptProjectRequest,
@@ -32,8 +33,10 @@ function errorMessage(error: unknown): string {
 
 class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
   private nextListenerId = 1;
+  private nextRequestId = 1;
   private readonly listeners = new Map<string, RuntimeKernelHttpHandler>();
   private readonly listenerInfo = new Map<string, RuntimeKernelHttpListenerInfo>();
+  private readonly dispatchRequests = new Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>();
 
   constructor(
     private readonly postProtocolMessage: (message: RuntimeKernelHttpProtocolMessage) => void
@@ -71,6 +74,30 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
         this.postProtocolMessage({ type: 'kernel-http-close', listenerId });
       },
     } as RuntimeKernelHttpListenerHandle;
+  }
+
+  dispatch(request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse> {
+    const requestId = `worker-dispatch-${this.nextRequestId++}`;
+    return new Promise<RuntimeKernelHttpResponse>((resolve, reject) => {
+      this.dispatchRequests.set(requestId, { resolve, reject });
+      this.postProtocolMessage({
+        type: 'kernel-http-dispatch',
+        requestId,
+        request,
+      });
+    });
+  }
+
+  resolveDispatch(requestId: string, response: RuntimeKernelHttpResponse): void {
+    const request = this.dispatchRequests.get(requestId);
+    this.dispatchRequests.delete(requestId);
+    request?.resolve(response);
+  }
+
+  rejectDispatch(requestId: string, error: string): void {
+    const request = this.dispatchRequests.get(requestId);
+    this.dispatchRequests.delete(requestId);
+    request?.reject(new Error(error));
   }
 
   updateListenerInfo(listenerId: string, info: RuntimeKernelHttpListenerInfo): void {
@@ -133,9 +160,19 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     return;
   }
 
+  if (type === 'kernel-http-dispatch-result') {
+    const message = payload as RuntimeKernelHttpProtocolMessage;
+    if (message.type === 'kernel-http-dispatch-result') {
+      activeHttpBridges.get(id)?.resolveDispatch(message.requestId, message.response);
+    }
+    return;
+  }
+
   if (type === 'kernel-http-error') {
     const message = payload as RuntimeKernelHttpProtocolMessage;
-    if (message.type === 'kernel-http-error' && message.listenerId) {
+    if (message.type === 'kernel-http-error' && message.requestId) {
+      activeHttpBridges.get(id)?.rejectDispatch(message.requestId, message.error);
+    } else if (message.type === 'kernel-http-error' && message.listenerId) {
       activeHttpBridges.get(id)?.failListener(message.listenerId);
     }
     return;

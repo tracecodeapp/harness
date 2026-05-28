@@ -172,7 +172,13 @@ export class PythonWorkerClient {
             pending.onEvent?.(payload as RuntimeCommandEvent);
             return;
           }
-          if (type === 'kernel-http-listen' || type === 'kernel-http-close' || type === 'kernel-http-response' || type === 'kernel-http-error') {
+          if (
+            type === 'kernel-http-listen' ||
+            type === 'kernel-http-close' ||
+            type === 'kernel-http-response' ||
+            type === 'kernel-http-dispatch' ||
+            type === 'kernel-http-error'
+          ) {
             this.handleKernelHttpProtocolMessage(id, type, payload);
             return;
           }
@@ -365,6 +371,29 @@ export class PythonWorkerClient {
       const request = pending.httpRequests?.get(message.requestId);
       pending.httpRequests?.delete(message.requestId);
       request?.resolve(message.response);
+      return;
+    }
+    if (type === 'kernel-http-dispatch' && message.type === 'kernel-http-dispatch') {
+      if (!pending.kernelHttp) {
+        this.postKernelHttpError(commandId, { requestId: message.requestId, error: 'TraceKernel HTTP is not available.' });
+        return;
+      }
+      pending.kernelHttp.dispatch(message.request).then((response) => {
+        this.worker?.postMessage({
+          id: commandId,
+          type: 'kernel-http-dispatch-result',
+          payload: {
+            type: 'kernel-http-dispatch-result',
+            requestId: message.requestId,
+            response,
+          } satisfies RuntimeKernelHttpProtocolMessage,
+        });
+      }, (error) => {
+        this.postKernelHttpError(commandId, {
+          requestId: message.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       return;
     }
     if (type === 'kernel-http-error' && message.type === 'kernel-http-error' && message.requestId) {

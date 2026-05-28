@@ -5740,6 +5740,40 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
           '',
         ].join('\n'),
       },
+      {
+        path: 'client.js',
+        contents: [
+          'const http = require("node:http");',
+          'function call(options, body) {',
+          '  return new Promise((resolve, reject) => {',
+          '    const req = http.request(options, (res) => {',
+          '      let responseBody = "";',
+          '      res.setEncoding("utf8");',
+          '      res.on("data", (chunk) => { responseBody += chunk; });',
+          '      res.on("end", () => resolve({ statusCode: res.statusCode, body: responseBody }));',
+          '    });',
+          '    req.on("error", reject);',
+          '    if (body) req.write(body);',
+          '    req.end();',
+          '  });',
+          '}',
+          '(async () => {',
+          '  const enqueue = await call({ hostname: "localhost", port: 3000, path: "/enqueue", method: "POST", headers: { "content-type": "application/json" } }, JSON.stringify({ id: 2 }));',
+          '  const dequeue = await new Promise((resolve, reject) => {',
+          '    const req = http.get("http://localhost:3000/dequeue", (res) => {',
+          '      let body = "";',
+          '      res.setEncoding("utf8");',
+          '      res.on("data", (chunk) => { body += chunk; });',
+          '      res.on("end", () => resolve({ statusCode: res.statusCode, body }));',
+          '    });',
+          '    req.on("error", reject);',
+          '  });',
+          '  console.log(`${enqueue.statusCode}:${enqueue.body.trim()}`);',
+          '  console.log(`${dequeue.statusCode}:${dequeue.body.trim()}`);',
+          '})().catch((error) => { console.error(error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
     nodeRunner: createBrowserJavaScriptProjectRunner(),
@@ -5756,6 +5790,13 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   assertCondition(listeners.includes('\thttp\t127.0.0.1\t3000\t'), `tracekernel should expose HTTP listener: ${listeners}`);
+
+  const nodeClient = await workspace.runCommand('node client.js');
+  assertCondition(nodeClient.exitCode === 0, `Node http client should call TraceKernel listener: ${JSON.stringify(nodeClient)}`);
+  assertCondition(
+    nodeClient.stdout === '201:{"size":1}\n200:{"id":2}\n',
+    `Node http.request/http.get should dispatch through TraceKernel: ${nodeClient.stdout}`
+  );
 
   const enqueue = await workspace.runCommand('curl -s --json \'{"id":1}\' http://localhost:3000/enqueue');
   assertCondition(enqueue.exitCode === 0, `curl enqueue should succeed: ${JSON.stringify(enqueue)}`);
@@ -5824,6 +5865,19 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
             '',
           ].join('\n'),
         },
+        {
+          path: 'client.js',
+          contents: [
+            'const http = require("node:http");',
+            'http.get("http://localhost:3100/worker-client", (res) => {',
+            '  let body = "";',
+            '  res.setEncoding("utf8");',
+            '  res.on("data", (chunk) => { body += chunk; });',
+            '  res.on("end", () => { console.log(`${res.statusCode}:${body.trim()}`); });',
+            '}).on("error", (error) => { console.error(error.message); process.exitCode = 1; });',
+            '',
+          ].join('\n'),
+        },
       ],
       kernel: { scheduler: { maxConcurrentCommands: 4 } },
       nodeRunner: createBrowserJavaScriptProjectRunner({ workerUrl }),
@@ -5844,6 +5898,13 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
     const response = await workspace.runCommand('curl -s http://localhost:3100/worker');
     assertCondition(response.exitCode === 0, `worker-backed curl should succeed: ${JSON.stringify(response)}`);
     assertCondition(response.stdout === 'GET /worker\n', `worker-backed Node HTTP server should answer through protocol bridge: ${response.stdout}`);
+
+    const client = await workspace.runCommand('node client.js');
+    assertCondition(client.exitCode === 0, `worker-backed Node http client should succeed: ${JSON.stringify(client)}`);
+    assertCondition(
+      client.stdout === '200:GET /worker-client\n',
+      `worker-backed Node http.get should dispatch through TraceKernel: ${client.stdout}`
+    );
 
     const listenerRow = listeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3100\t'));
     const serverPid = listenerRow?.split('\t')[1];

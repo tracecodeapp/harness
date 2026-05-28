@@ -6054,6 +6054,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private createKernelHttpBridge(): RuntimeKernelHttpBridge {
     return {
       listen: (options, handler) => this.registerHttpListener(options, handler),
+      dispatch: (request) => this.dispatchHttpRequest(request),
     };
   }
 

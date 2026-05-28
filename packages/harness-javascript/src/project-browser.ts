@@ -1423,11 +1423,133 @@ function createServerResponse(resolve: (response: RuntimeKernelHttpResponse) => 
   return response;
 }
 
+const HTTP_STATUS_CODES: Record<number, string> = {
+  200: 'OK',
+  201: 'Created',
+  204: 'No Content',
+  400: 'Bad Request',
+  404: 'Not Found',
+  500: 'Internal Server Error',
+};
+
+function createClientIncomingMessage(response: RuntimeKernelHttpResponse) {
+  const events = createListenerMap();
+  let encoding: string | undefined;
+  let bodyRead = false;
+  let bodyScheduled = false;
+  let readableEnded = false;
+  const body = response.body ?? '';
+  const formatBody = () => encoding ? body : BrowserBuffer.from(body);
+  const scheduleBody = (): void => {
+    if (bodyScheduled) return;
+    bodyScheduled = true;
+    queueMicrotask(() => {
+      if (body && !bodyRead) {
+        bodyRead = true;
+        events.emit('data', formatBody());
+      }
+      readableEnded = true;
+      events.emit('end');
+    });
+  };
+  const message = {
+    statusCode: response.status,
+    statusMessage: HTTP_STATUS_CODES[response.status] ?? '',
+    headers: response.headers ?? {},
+    rawHeaders: Object.entries(response.headers ?? {}).flatMap(([name, value]) => [name, value]),
+    httpVersion: '1.1',
+    complete: true,
+    get readableEnded() {
+      return readableEnded;
+    },
+    setEncoding: (nextEncoding: string) => {
+      encoding = nextEncoding;
+      return message;
+    },
+    read: () => {
+      if (bodyRead) return null;
+      bodyRead = true;
+      readableEnded = true;
+      return formatBody();
+    },
+    on: (event: string, listener: (...args: unknown[]) => void) => {
+      events.on(event, listener);
+      if (event === 'data' || event === 'end') scheduleBody();
+      return message;
+    },
+    addListener: (event: string, listener: (...args: unknown[]) => void) => message.on(event, listener),
+    once: (event: string, listener: (...args: unknown[]) => void) => {
+      events.once(event, listener);
+      if (event === 'data' || event === 'end') scheduleBody();
+      return message;
+    },
+    removeListener: events.removeListener,
+    off: events.removeListener,
+    [Symbol.asyncIterator]: async function* () {
+      if (body && !bodyRead) {
+        bodyRead = true;
+        readableEnded = true;
+        yield formatBody();
+      }
+    },
+  };
+  return message;
+}
+
+function headersFromHttpOptions(headers: unknown): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!headers || typeof headers !== 'object') return result;
+  if (Array.isArray(headers)) {
+    for (const entry of headers) {
+      if (!Array.isArray(entry) || entry.length < 2) continue;
+      result[String(entry[0]).toLowerCase()] = String(entry[1]);
+    }
+    return result;
+  }
+  for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {
+    if (Array.isArray(value)) result[name.toLowerCase()] = value.map(String).join(', ');
+    else if (value !== undefined) result[name.toLowerCase()] = String(value);
+  }
+  return result;
+}
+
+function normalizeHttpClientRequest(args: unknown[]): {
+  callback?: (response: unknown) => void;
+  headers: Record<string, string>;
+  method: string;
+  url: URL;
+} {
+  const callback = args.find((arg): arg is (response: unknown) => void => typeof arg === 'function');
+  const parts = args.filter((arg) => typeof arg !== 'function');
+  const first = parts[0];
+  const second = parts[1];
+  const urlInput = typeof first === 'string' || first instanceof URL ? first : undefined;
+  const options = (urlInput !== undefined ? second : first) as Record<string, unknown> | undefined;
+  const baseUrl = urlInput !== undefined ? new URL(urlInput) : undefined;
+  const optionHost = typeof options?.hostname === 'string'
+    ? options.hostname
+    : typeof options?.host === 'string'
+      ? options.host
+      : undefined;
+  const protocol = String(options?.protocol ?? baseUrl?.protocol ?? 'http:');
+  const hostname = optionHost ?? baseUrl?.hostname ?? 'localhost';
+  const port = options?.port !== undefined ? String(options.port) : baseUrl?.port;
+  const path = String(options?.path ?? `${baseUrl?.pathname ?? '/'}${baseUrl?.search ?? ''}`);
+  const url = new URL(`${protocol}//${hostname}${port ? `:${port}` : ''}${path.startsWith('/') ? path : `/${path}`}`);
+  return {
+    ...(callback ? { callback } : {}),
+    headers: headersFromHttpOptions(options?.headers),
+    method: String(options?.method ?? 'GET').toUpperCase(),
+    url,
+  };
+}
+
 function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: AbortSignal | undefined) {
   const activeHandles = new Set<RuntimeKernelHttpListenerHandle>();
+  let activeClientRequests = 0;
   const closeWaiters: Array<() => void> = [];
   const notifyCloseWaiters = (): void => {
-    if (activeHandles.size > 0) return;
+    if (activeHandles.size > 0 || activeClientRequests > 0) return;
     while (closeWaiters.length > 0) closeWaiters.shift()?.();
   };
   const closeHandle = (handle: RuntimeKernelHttpListenerHandle): void => {
@@ -1497,16 +1619,136 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
     return server;
   };
 
+  const request = (...args: unknown[]) => {
+    const events = createListenerMap();
+    const chunks: string[] = [];
+    const headers: Record<string, string> = {};
+    let ended = false;
+    let destroyed = false;
+    let requestOptions: ReturnType<typeof normalizeHttpClientRequest>;
+    try {
+      requestOptions = normalizeHttpClientRequest(args);
+      Object.assign(headers, requestOptions.headers);
+    } catch (error) {
+      requestOptions = {
+        headers,
+        method: 'GET',
+        url: new URL('http://localhost/'),
+      };
+      queueMicrotask(() => events.emit('error', error));
+    }
+    const clientRequest = {
+      destroyed: false,
+      writableEnded: false,
+      setHeader: (name: string, value: unknown) => {
+        headers[String(name).toLowerCase()] = String(value);
+        return clientRequest;
+      },
+      getHeader: (name: string) => headers[String(name).toLowerCase()],
+      getHeaders: () => ({ ...headers }),
+      hasHeader: (name: string) => Object.prototype.hasOwnProperty.call(headers, String(name).toLowerCase()),
+      removeHeader: (name: string) => {
+        delete headers[String(name).toLowerCase()];
+      },
+      write: (chunk: unknown, encoding?: string | (() => void), callback?: () => void) => {
+        if (destroyed) return false;
+        chunks.push(textFromBytes(bytesFromFsWriteValue(chunk, typeof encoding === 'string' ? encoding : undefined)));
+        const done = typeof encoding === 'function' ? encoding : callback;
+        done?.();
+        return true;
+      },
+      end: (chunk?: unknown, encoding?: string | (() => void), callback?: () => void) => {
+        if (ended || destroyed) return clientRequest;
+        if (chunk !== undefined && chunk !== null) clientRequest.write(chunk, typeof encoding === 'string' ? encoding : undefined);
+        ended = true;
+        clientRequest.writableEnded = true;
+        const done = typeof encoding === 'function' ? encoding : callback;
+        done?.();
+        if (!kernelHttp) {
+          activeClientRequests += 1;
+          queueMicrotask(() => {
+            events.emit('error', Object.assign(new Error('ENOSYS: tracekernel HTTP is not available'), { code: 'ENOSYS' }));
+            activeClientRequests -= 1;
+            notifyCloseWaiters();
+          });
+          return clientRequest;
+        }
+        const body = chunks.join('');
+        const rawHeaders = Object.entries(headers);
+        activeClientRequests += 1;
+        const finishClientRequest = (): void => {
+          queueMicrotask(() => {
+            queueMicrotask(() => {
+              activeClientRequests -= 1;
+              notifyCloseWaiters();
+            });
+          });
+        };
+        void kernelHttp.dispatch({
+          method: requestOptions.method,
+          url: requestOptions.url.toString(),
+          path: `${requestOptions.url.pathname}${requestOptions.url.search}`,
+          headers,
+          ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
+          ...(body ? { body } : {}),
+        }).then((response) => {
+          if (destroyed) return;
+          if (response.status === 0) {
+            events.emit('error', Object.assign(new Error(response.body ?? 'connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
+            finishClientRequest();
+            return;
+          }
+          const incoming = createClientIncomingMessage(response);
+          requestOptions.callback?.(incoming);
+          events.emit('response', incoming);
+          finishClientRequest();
+        }, (error) => {
+          if (!destroyed) events.emit('error', error);
+          finishClientRequest();
+        });
+        return clientRequest;
+      },
+      abort: () => {
+        destroyed = true;
+        clientRequest.destroyed = true;
+        events.emit('abort');
+        events.emit('close');
+      },
+      destroy: (error?: Error) => {
+        destroyed = true;
+        clientRequest.destroyed = true;
+        if (error) events.emit('error', error);
+        events.emit('close');
+        return clientRequest;
+      },
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit,
+    };
+    return clientRequest;
+  };
+
+  const get = (...args: unknown[]) => {
+    const clientRequest = request(...args);
+    clientRequest.end();
+    return clientRequest;
+  };
+
   return {
     module: {
       createServer,
+      request,
+      get,
       Server: function Server(this: unknown, requestListener?: (request: unknown, response: unknown) => unknown) {
         return createServer(requestListener);
       },
-      STATUS_CODES: { 200: 'OK', 201: 'Created', 204: 'No Content', 400: 'Bad Request', 404: 'Not Found', 500: 'Internal Server Error' },
+      STATUS_CODES: HTTP_STATUS_CODES,
     },
-    hasActiveServers: () => activeHandles.size > 0,
-    waitForClose: () => activeHandles.size === 0
+    hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0,
+    waitForClose: () => activeHandles.size === 0 && activeClientRequests === 0
       ? Promise.resolve()
       : new Promise<void>((resolve) => closeWaiters.push(resolve)),
     closeAll,
@@ -2038,7 +2280,13 @@ class BrowserJavaScriptProjectWorkerClient {
         pending.onEvent?.(payload as RuntimeCommandEvent);
         return;
       }
-      if (type === 'kernel-http-listen' || type === 'kernel-http-close' || type === 'kernel-http-response' || type === 'kernel-http-error') {
+      if (
+        type === 'kernel-http-listen' ||
+        type === 'kernel-http-close' ||
+        type === 'kernel-http-response' ||
+        type === 'kernel-http-dispatch' ||
+        type === 'kernel-http-error'
+      ) {
         this.handleKernelHttpProtocolMessage(id, type, payload);
         return;
       }
@@ -2118,6 +2366,29 @@ class BrowserJavaScriptProjectWorkerClient {
       const request = pending.httpRequests.get(message.requestId);
       pending.httpRequests.delete(message.requestId);
       request?.resolve(message.response);
+      return;
+    }
+    if (type === 'kernel-http-dispatch' && message.type === 'kernel-http-dispatch') {
+      if (!pending.kernelHttp) {
+        this.postKernelHttpError(commandId, { requestId: message.requestId, error: 'TraceKernel HTTP is not available.' });
+        return;
+      }
+      pending.kernelHttp.dispatch(message.request).then((response) => {
+        this.worker?.postMessage({
+          id: commandId,
+          type: 'kernel-http-dispatch-result',
+          payload: {
+            type: 'kernel-http-dispatch-result',
+            requestId: message.requestId,
+            response,
+          } satisfies RuntimeKernelHttpProtocolMessage,
+        });
+      }, (error) => {
+        this.postKernelHttpError(commandId, {
+          requestId: message.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       return;
     }
     if (type === 'kernel-http-error' && message.type === 'kernel-http-error') {
@@ -5775,7 +6046,7 @@ export async function runBrowserJavaScriptProjectRequest(
         await Promise.resolve();
       }
 
-      if (httpApi.hasActiveServers()) {
+      if (httpApi.hasActiveWork()) {
         await httpApi.waitForClose();
       }
       await eventLoopApi.drain();

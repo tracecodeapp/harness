@@ -72,6 +72,32 @@ The background server is owned by a kernel process. Killing that process closes
 its listener, and `/proc/tracekernel/net/listeners` exposes the active simulated
 listeners for diagnostics.
 
+Node project code can also act as an in-workspace client through `node:http`:
+
+```js
+const http = require("node:http");
+
+const req = http.request({
+  hostname: "localhost",
+  port: 3000,
+  path: "/enqueue",
+  method: "POST",
+  headers: { "content-type": "application/json" },
+}, (res) => {
+  let body = "";
+  res.setEncoding("utf8");
+  res.on("data", chunk => { body += chunk; });
+  res.on("end", () => console.log(res.statusCode, body));
+});
+
+req.write(JSON.stringify({ id: 1 }));
+req.end();
+```
+
+`http.request(...)` and `http.get(...)` dispatch through TraceKernel, so they can
+call listeners owned by other running processes in the same workspace. They do
+not reach the browser or host network.
+
 ## Python ASGI
 
 The Python browser runner installs lightweight `fastapi` and `uvicorn` shims

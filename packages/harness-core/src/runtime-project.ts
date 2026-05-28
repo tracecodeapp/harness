@@ -163,6 +163,7 @@ export type RuntimeKernelHttpHandler = (request: RuntimeKernelHttpRequest) => Pr
 
 export interface RuntimeKernelHttpBridge {
   listen(options: RuntimeKernelHttpListenOptions, handler: RuntimeKernelHttpHandler): RuntimeKernelHttpListenerHandle;
+  dispatch(request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse>;
 }
 
 export type RuntimeKernelHttpProtocolMessage =
@@ -188,6 +189,16 @@ export type RuntimeKernelHttpProtocolMessage =
     }
   | {
       type: 'kernel-http-response';
+      requestId: string;
+      response: RuntimeKernelHttpResponse;
+    }
+  | {
+      type: 'kernel-http-dispatch';
+      requestId: string;
+      request: RuntimeKernelHttpRequest;
+    }
+  | {
+      type: 'kernel-http-dispatch-result';
       requestId: string;
       response: RuntimeKernelHttpResponse;
     }
