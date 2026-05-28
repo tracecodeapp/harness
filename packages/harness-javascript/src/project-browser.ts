@@ -779,6 +779,29 @@ function textFromBytes(bytes: Uint8Array): string {
   return textDecoder.decode(bytes);
 }
 
+function bytesToRuntimeHttpBody(bytes: Uint8Array): { body: string; bodyEncoding?: RuntimeFileEncoding } {
+  const text = textDecoder.decode(bytes);
+  return byteEqual(utf8Bytes(text), bytes)
+    ? { body: text }
+    : { body: bytesToBase64(bytes), bodyEncoding: 'base64' };
+}
+
+function bytesFromRuntimeHttpBody(message: { body?: string; bodyEncoding?: RuntimeFileEncoding }): Uint8Array {
+  if (message.body === undefined) return new Uint8Array();
+  return message.bodyEncoding === 'base64' ? base64ToBytes(message.body) : utf8Bytes(message.body);
+}
+
+function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
+  const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 function bytesToHex(value: Uint8Array): string {
   return Array.from(value)
     .map((byte) => byte.toString(16).padStart(2, '0'))
@@ -1303,16 +1326,16 @@ function createIncomingMessage(request: RuntimeKernelHttpRequest) {
   let bodyRead = false;
   let bodyScheduled = false;
   let readableEnded = false;
-  const body = request.body ?? '';
+  const bodyBytes = bytesFromRuntimeHttpBody(request);
   const rawHeaders = request.rawHeaders
     ? request.rawHeaders.flatMap(([name, value]) => [name, value])
     : Object.entries(request.headers ?? {}).flatMap(([name, value]) => [name, value]);
-  const formatBody = () => encoding ? body : BrowserBuffer.from(body);
+  const formatBody = () => encoding ? BrowserBuffer.from(bodyBytes).toString(encoding as BufferEncoding) : BrowserBuffer.from(bodyBytes);
   const scheduleBody = (): void => {
     if (bodyScheduled) return;
     bodyScheduled = true;
     queueMicrotask(() => {
-      if (body && !bodyRead) {
+      if (bodyBytes.byteLength > 0 && !bodyRead) {
         bodyRead = true;
         events.emit('data', formatBody());
       }
@@ -1355,7 +1378,7 @@ function createIncomingMessage(request: RuntimeKernelHttpRequest) {
     removeListener: events.removeListener,
     off: events.removeListener,
     [Symbol.asyncIterator]: async function* () {
-      if (body && !bodyRead) {
+      if (bodyBytes.byteLength > 0 && !bodyRead) {
         bodyRead = true;
         readableEnded = true;
         yield formatBody();
@@ -1368,22 +1391,39 @@ function createIncomingMessage(request: RuntimeKernelHttpRequest) {
 function createServerResponse(resolve: (response: RuntimeKernelHttpResponse) => void) {
   const events = createListenerMap();
   const headers: Record<string, string> = {};
-  const chunks: string[] = [];
+  const headerEntries = new Map<string, { name: string; values: string[] }>();
+  const chunks: Uint8Array[] = [];
   let ended = false;
+  const setHeaderValue = (name: string, value: unknown): void => {
+    const key = String(name).toLowerCase();
+    const values = Array.isArray(value) ? value.map(String) : [String(value)];
+    const text = values.join(', ');
+    headers[key] = text;
+    headerEntries.set(key, { name: String(name), values });
+  };
+  const responseRawHeaders = (): Array<[string, string]> => {
+    const result: Array<[string, string]> = [];
+    for (const entry of headerEntries.values()) {
+      for (const value of entry.values) result.push([entry.name, value]);
+    }
+    return result;
+  };
   const response = {
     statusCode: 200,
     statusMessage: 'OK',
     headersSent: false,
     writableEnded: false,
     setHeader: (name: string, value: unknown) => {
-      headers[String(name).toLowerCase()] = String(value);
+      setHeaderValue(name, value);
       return response;
     },
     getHeader: (name: string) => headers[String(name).toLowerCase()],
     getHeaders: () => ({ ...headers }),
     hasHeader: (name: string) => Object.prototype.hasOwnProperty.call(headers, String(name).toLowerCase()),
     removeHeader: (name: string) => {
-      delete headers[String(name).toLowerCase()];
+      const key = String(name).toLowerCase();
+      delete headers[key];
+      headerEntries.delete(key);
     },
     flushHeaders: () => {
       response.headersSent = true;
@@ -1392,11 +1432,11 @@ function createServerResponse(resolve: (response: RuntimeKernelHttpResponse) => 
       response.statusCode = Number(statusCode) || 200;
       response.headersSent = true;
       const nextHeaders = typeof reasonOrHeaders === 'object' && reasonOrHeaders !== null ? reasonOrHeaders : maybeHeaders;
-      for (const [name, value] of Object.entries(nextHeaders ?? {})) headers[name.toLowerCase()] = String(value);
+      for (const [name, value] of Object.entries(nextHeaders ?? {})) setHeaderValue(name, value);
       return response;
     },
     write: (chunk: unknown, encoding?: string | (() => void), callback?: () => void) => {
-      chunks.push(textFromBytes(bytesFromFsWriteValue(chunk, typeof encoding === 'string' ? encoding : undefined)));
+      chunks.push(bytesFromFsWriteValue(chunk, typeof encoding === 'string' ? encoding : undefined));
       const done = typeof encoding === 'function' ? encoding : callback;
       done?.();
       return true;
@@ -1410,7 +1450,14 @@ function createServerResponse(resolve: (response: RuntimeKernelHttpResponse) => 
       done?.();
       events.emit('finish');
       events.emit('close');
-      resolve({ status: response.statusCode, headers, body: chunks.join('') });
+      const bodyBytes = concatBytes(chunks);
+      const rawHeaders = responseRawHeaders();
+      resolve({
+        status: response.statusCode,
+        headers,
+        ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
+        ...bytesToRuntimeHttpBody(bodyBytes),
+      });
       return response;
     },
     on: events.on,
@@ -1438,13 +1485,13 @@ function createClientIncomingMessage(response: RuntimeKernelHttpResponse) {
   let bodyRead = false;
   let bodyScheduled = false;
   let readableEnded = false;
-  const body = response.body ?? '';
-  const formatBody = () => encoding ? body : BrowserBuffer.from(body);
+  const bodyBytes = bytesFromRuntimeHttpBody(response);
+  const formatBody = () => encoding ? BrowserBuffer.from(bodyBytes).toString(encoding as BufferEncoding) : BrowserBuffer.from(bodyBytes);
   const scheduleBody = (): void => {
     if (bodyScheduled) return;
     bodyScheduled = true;
     queueMicrotask(() => {
-      if (body && !bodyRead) {
+      if (bodyBytes.byteLength > 0 && !bodyRead) {
         bodyRead = true;
         events.emit('data', formatBody());
       }
@@ -1456,7 +1503,9 @@ function createClientIncomingMessage(response: RuntimeKernelHttpResponse) {
     statusCode: response.status,
     statusMessage: HTTP_STATUS_CODES[response.status] ?? '',
     headers: response.headers ?? {},
-    rawHeaders: Object.entries(response.headers ?? {}).flatMap(([name, value]) => [name, value]),
+    rawHeaders: response.rawHeaders
+      ? response.rawHeaders.flatMap(([name, value]) => [name, value])
+      : Object.entries(response.headers ?? {}).flatMap(([name, value]) => [name, value]),
     httpVersion: '1.1',
     complete: true,
     get readableEnded() {
@@ -1486,7 +1535,7 @@ function createClientIncomingMessage(response: RuntimeKernelHttpResponse) {
     removeListener: events.removeListener,
     off: events.removeListener,
     [Symbol.asyncIterator]: async function* () {
-      if (body && !bodyRead) {
+      if (bodyBytes.byteLength > 0 && !bodyRead) {
         bodyRead = true;
         readableEnded = true;
         yield formatBody();
@@ -1519,13 +1568,13 @@ function headersFromHttpOptions(headers: unknown): Record<string, string> {
   return result;
 }
 
-function bodyToHttpText(body: unknown): string | undefined {
+function bodyToHttpBody(body: unknown): { body: string; bodyEncoding?: RuntimeFileEncoding } | undefined {
   if (body === undefined || body === null) return undefined;
-  if (typeof body === 'string') return body;
-  if (body instanceof URLSearchParams) return body.toString();
-  if (body instanceof ArrayBuffer) return textFromBytes(new Uint8Array(body));
-  if (ArrayBuffer.isView(body)) return textFromBytes(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
-  return String(body);
+  if (typeof body === 'string') return { body };
+  if (body instanceof URLSearchParams) return { body: body.toString() };
+  if (body instanceof ArrayBuffer) return bytesToRuntimeHttpBody(new Uint8Array(body));
+  if (ArrayBuffer.isView(body)) return bytesToRuntimeHttpBody(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+  return { body: String(body) };
 }
 
 function normalizeHttpClientRequest(args: unknown[]): {
@@ -1646,7 +1695,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
 
   const request = (...args: unknown[]) => {
     const events = createListenerMap();
-    const chunks: string[] = [];
+    const chunks: Uint8Array[] = [];
     const headers: Record<string, string> = {};
     let ended = false;
     let destroyed = false;
@@ -1686,7 +1735,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
       },
       write: (chunk: unknown, encoding?: string | (() => void), callback?: () => void) => {
         if (destroyed) return false;
-        chunks.push(textFromBytes(bytesFromFsWriteValue(chunk, typeof encoding === 'string' ? encoding : undefined)));
+        chunks.push(bytesFromFsWriteValue(chunk, typeof encoding === 'string' ? encoding : undefined));
         const done = typeof encoding === 'function' ? encoding : callback;
         done?.();
         return true;
@@ -1707,7 +1756,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
           });
           return clientRequest;
         }
-        const body = chunks.join('');
+        const body = bytesToRuntimeHttpBody(concatBytes(chunks));
         const rawHeaders = Object.entries(headers);
         activeClientRequests += 1;
         let active = true;
@@ -1752,7 +1801,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
           path: `${requestOptions.url.pathname}${requestOptions.url.search}`,
           headers,
           ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
-          ...(body ? { body } : {}),
+          ...(chunks.length > 0 ? body : {}),
         }).then((response) => {
           if (destroyed) return;
           if (response.status === 0) {
@@ -1858,11 +1907,18 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
     readonly method: string;
     readonly signal?: AbortSignal;
     readonly url: string;
-    private readonly bodyText?: string;
+    private readonly bodyPayload?: { body: string; bodyEncoding?: RuntimeFileEncoding };
 
     constructor(input: unknown, init?: Record<string, unknown>) {
       const sourceRequest = input instanceof TraceKernelRequest ? input : null;
-      const source = input as { url?: unknown; method?: unknown; headers?: unknown; body?: unknown; signal?: AbortSignal };
+      const source = input as {
+        url?: unknown;
+        method?: unknown;
+        headers?: unknown;
+        body?: unknown;
+        bodyEncoding?: RuntimeFileEncoding;
+        signal?: AbortSignal;
+      };
       const inputUrl = typeof input === 'string' || input instanceof URL
         ? String(input)
         : String(sourceRequest?.url ?? source.url ?? '');
@@ -1871,19 +1927,23 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
       this.headers = new TraceKernelHeaders(sourceRequest?.headers ?? source.headers);
       const initHeaders = new TraceKernelHeaders(init?.headers);
       initHeaders.forEach((value, name) => this.headers.set(name, value));
-      this.bodyText = bodyToHttpText(init && Object.prototype.hasOwnProperty.call(init, 'body')
-        ? init.body
-        : sourceRequest?.bodyForDispatch() ?? source.body);
+      this.bodyPayload = init && Object.prototype.hasOwnProperty.call(init, 'body')
+        ? bodyToHttpBody(init.body)
+        : sourceRequest?.bodyForDispatch() ?? (
+            source.bodyEncoding === 'base64'
+              ? { body: String(source.body ?? ''), bodyEncoding: 'base64' }
+              : bodyToHttpBody(source.body)
+          );
       const initSignal = init?.signal;
       this.signal = initSignal && typeof initSignal === 'object' ? initSignal as AbortSignal : sourceRequest?.signal ?? source.signal;
     }
 
     async text(): Promise<string> {
-      return this.bodyText ?? '';
+      return textFromBytes(bytesFromRuntimeHttpBody(this.bodyPayload ?? {}));
     }
 
-    bodyForDispatch(): string | undefined {
-      return this.bodyText;
+    bodyForDispatch(): { body: string; bodyEncoding?: RuntimeFileEncoding } | undefined {
+      return this.bodyPayload;
     }
   }
 
@@ -1895,7 +1955,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
     readonly statusText: string;
     readonly type = 'basic';
     readonly url: string;
-    private readonly bodyText: string;
+    private readonly bodyBytes: Uint8Array;
     private used = false;
 
     constructor(bodyOrResponse: unknown = '', initOrUrl?: Record<string, unknown> | string) {
@@ -1911,7 +1971,9 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
       this.statusText = HTTP_STATUS_CODES[status] ?? '';
       this.ok = status >= 200 && status < 300;
       this.headers = new TraceKernelHeaders(kernelResponse ? kernelResponse.headers : init.headers);
-      this.bodyText = kernelResponse ? kernelResponse.body ?? '' : bodyToHttpText(bodyOrResponse) ?? '';
+      this.bodyBytes = kernelResponse
+        ? bytesFromRuntimeHttpBody(kernelResponse)
+        : bytesFromRuntimeHttpBody(bodyToHttpBody(bodyOrResponse) ?? {});
       this.url = typeof initOrUrl === 'string' ? initOrUrl : '';
     }
 
@@ -1919,31 +1981,34 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
       return this.used;
     }
 
-    private consume(): string {
+    private consume(): Uint8Array {
       if (this.used) throw new TypeError('Body has already been consumed.');
       this.used = true;
-      return this.bodyText;
+      return new Uint8Array(this.bodyBytes);
     }
 
     async arrayBuffer(): Promise<ArrayBuffer> {
-      const bytes = new TextEncoder().encode(this.consume());
-      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const bytes = this.consume();
+      const buffer = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(buffer).set(bytes);
+      return buffer;
     }
 
     clone(): TraceKernelResponse {
+      if (this.used) throw new TypeError('Body has already been consumed.');
       return new TraceKernelResponse({
         status: this.status,
         headers: this.headers.toRecord(),
-        body: this.bodyText,
+        ...bytesToRuntimeHttpBody(this.bodyBytes),
       }, this.url);
     }
 
     async json(): Promise<unknown> {
-      return JSON.parse(this.consume());
+      return JSON.parse(textFromBytes(this.consume()));
     }
 
     async text(): Promise<string> {
-      return this.consume();
+      return textFromBytes(this.consume());
     }
   }
 
@@ -1990,7 +2055,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
         path: `${url.pathname}${url.search}`,
         headers,
         ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
-        ...(body !== undefined ? { body } : {}),
+        ...(body !== undefined ? body : {}),
       }).then((response) => {
         if (!active) return;
         if (response.status === 0) {

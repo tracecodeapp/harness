@@ -72,6 +72,11 @@ const apiResult = await workspace.http.request({
   url: 'http://localhost:3000/dequeue',
   headers: { accept: 'application/json' },
 });
+
+const jsonResult = await workspace.http.json<{ id: number } | null>({
+  method: 'GET',
+  url: 'http://localhost:3000/dequeue',
+});
 ```
 
 The background server is owned by a kernel process. Killing that process closes
@@ -82,6 +87,15 @@ listeners for diagnostics.
 the same kernel dispatch path as `curl`, Node `http`, and Python outbound HTTP,
 and records requests in `/proc/tracekernel/net/requests`. Use it when app code
 wants to grade or probe endpoints without constructing shell command strings.
+
+HTTP bodies are transported as UTF-8 text when possible. If a request or
+response contains non-UTF-8 bytes, the bridge uses `bodyEncoding: 'base64'` and
+stores the bytes in `body`. Responses also include `rawHeaders` when available,
+so consumers can inspect repeated headers without parsing display output.
+
+`workspace.http.json(...)` is a convenience wrapper for endpoint tests. It sets
+JSON `accept` and `content-type` defaults, stringifies the request body, and
+returns the original response plus `text` and parsed `json` fields.
 
 Node project code can also act as an in-workspace client through `node:http`:
 

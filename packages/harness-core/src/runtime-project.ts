@@ -145,12 +145,15 @@ export interface RuntimeKernelHttpRequest {
   headers?: Record<string, string>;
   rawHeaders?: readonly [string, string][];
   body?: string;
+  bodyEncoding?: RuntimeFileEncoding;
 }
 
 export interface RuntimeKernelHttpResponse {
   status: number;
   headers?: Record<string, string>;
+  rawHeaders?: readonly [string, string][];
   body?: string;
+  bodyEncoding?: RuntimeFileEncoding;
 }
 
 export interface RuntimeWorkspaceHttpRequestOptions {
@@ -160,10 +163,21 @@ export interface RuntimeWorkspaceHttpRequestOptions {
   headers?: Record<string, string>;
   rawHeaders?: readonly [string, string][];
   body?: string;
+  bodyEncoding?: RuntimeFileEncoding;
+}
+
+export interface RuntimeWorkspaceHttpJsonRequestOptions extends Omit<RuntimeWorkspaceHttpRequestOptions, 'body' | 'bodyEncoding'> {
+  body?: unknown;
+}
+
+export interface RuntimeWorkspaceHttpJsonResponse<T = unknown> extends RuntimeKernelHttpResponse {
+  json: T;
+  text: string;
 }
 
 export interface RuntimeWorkspaceHttpClient {
   request(options: RuntimeWorkspaceHttpRequestOptions): Promise<RuntimeKernelHttpResponse>;
+  json<T = unknown>(options: RuntimeWorkspaceHttpJsonRequestOptions): Promise<RuntimeWorkspaceHttpJsonResponse<T>>;
 }
 
 export interface RuntimeKernelHttpListenerHandle {

@@ -1596,8 +1596,26 @@ def _install_tracekernel_asgi_modules():
         return {
             "status": int(_status),
             "headers": {"content-type": "application/json"},
+            "rawHeaders": [["content-type", "application/json"]],
             "body": json.dumps(_value, separators=(",", ":")) + "\\n",
         }
+
+    def _http_bytes_from_message(_message):
+        _body = str((_message or {}).get("body") or "")
+        if (_message or {}).get("bodyEncoding") == "base64":
+            return base64.b64decode(_body.encode("ascii"))
+        return _body.encode("utf-8")
+
+    def _http_body_payload(_value):
+        if _value is None:
+            return {}
+        if isinstance(_value, str):
+            return {"body": _value}
+        _bytes = bytes(_value) if isinstance(_value, (bytes, bytearray, memoryview)) else str(_value).encode("utf-8")
+        try:
+            return {"body": _bytes.decode("utf-8")}
+        except UnicodeDecodeError:
+            return {"body": base64.b64encode(_bytes).decode("ascii"), "bodyEncoding": "base64"}
 
     async def _tracekernel_http_dispatch_async(_request):
         _response_json = await _js_self.__tracecodeKernelHttpDispatch(json.dumps(_request))
@@ -1612,7 +1630,7 @@ def _install_tracekernel_asgi_modules():
             self.code = self.status
             self.reason = ""
             self.headers = dict(_response.get("headers") or {})
-            self._body = str(_response.get("body") or "").encode("utf-8")
+            self._body = _http_bytes_from_message(_response)
             self._stream = io.BytesIO(self._body)
 
         def read(self, _size=-1):
@@ -1656,16 +1674,14 @@ def _install_tracekernel_asgi_modules():
             _target_url = str(_url)
         if _method is None:
             _method = "POST" if data is not None else "GET"
-        _body = None
-        if data is not None:
-            _body = bytes(data).decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
+        _body_payload = _http_body_payload(data)
         _parsed = urllib.parse.urlsplit(_target_url)
         _response = _tracekernel_http_dispatch_sync({
             "method": str(_method).upper(),
             "url": _target_url,
             "path": (_parsed.path or "/") + (("?" + _parsed.query) if _parsed.query else ""),
             "headers": _headers,
-            **({"body": _body} if _body is not None else {}),
+            **_body_payload,
         })
         return _TraceKernelHTTPResponse(_response)
 
@@ -1680,15 +1696,13 @@ def _install_tracekernel_asgi_modules():
             _target = str(url)
             if not _target.startswith("/"):
                 _target = "/" + _target
-            _body = None
-            if body is not None:
-                _body = bytes(body).decode("utf-8") if isinstance(body, (bytes, bytearray)) else str(body)
+            _body_payload = _http_body_payload(body)
             self._response = _tracekernel_http_dispatch_sync({
                 "method": str(method).upper(),
                 "url": f"http://{self.host}:{self.port}{_target}",
                 "path": _target,
                 "headers": {str(_name).lower(): str(_value) for _name, _value in (headers or {}).items()},
-                **({"body": _body} if _body is not None else {}),
+                **_body_payload,
             })
 
         def getresponse(self):
@@ -1701,8 +1715,8 @@ def _install_tracekernel_asgi_modules():
         def __init__(self, _response):
             self.status_code = int(_response.get("status") or 0)
             self.headers = dict(_response.get("headers") or {})
-            self.text = str(_response.get("body") or "")
-            self.content = self.text.encode("utf-8")
+            self.content = _http_bytes_from_message(_response)
+            self.text = self.content.decode("utf-8", "replace")
             self.ok = 200 <= self.status_code < 400
 
         def json(self):
@@ -1718,15 +1732,14 @@ def _install_tracekernel_asgi_modules():
         if "json" in _kwargs:
             _body = json.dumps(_kwargs.get("json"), separators=(",", ":"))
             _headers.setdefault("content-type", "application/json")
-        if _body is not None and not isinstance(_body, str):
-            _body = bytes(_body).decode("utf-8") if isinstance(_body, (bytes, bytearray)) else str(_body)
+        _body_payload = _http_body_payload(_body)
         _parsed = urllib.parse.urlsplit(str(url))
         return _TraceKernelRequestsResponse(_tracekernel_http_dispatch_sync({
             "method": str(method).upper(),
             "url": str(url),
             "path": (_parsed.path or "/") + (("?" + _parsed.query) if _parsed.query else ""),
             "headers": _headers,
-            **({"body": _body} if _body is not None else {}),
+            **_body_payload,
         }))
 
     def _install_tracekernel_http_client_modules():
@@ -1862,11 +1875,18 @@ def _install_tracekernel_asgi_modules():
             _path, _query = _path.split("?", 1)
         elif _parsed.query:
             _query = _parsed.query
-        _headers = [
-            (str(_name).lower().encode("latin1"), str(_value).encode("latin1"))
-            for _name, _value in (_request.get("headers") or {}).items()
-        ]
-        _body = str(_request.get("body") or "").encode("utf-8")
+        if isinstance(_request.get("rawHeaders"), list):
+            _headers = [
+                (str(_entry[0]).lower().encode("latin1"), str(_entry[1]).encode("latin1"))
+                for _entry in _request.get("rawHeaders")
+                if isinstance(_entry, list) and len(_entry) >= 2
+            ]
+        else:
+            _headers = [
+                (str(_name).lower().encode("latin1"), str(_value).encode("latin1"))
+                for _name, _value in (_request.get("headers") or {}).items()
+            ]
+        _body = _http_bytes_from_message(_request)
         _sent = []
         _received = False
         async def _receive():
@@ -1891,18 +1911,24 @@ def _install_tracekernel_asgi_modules():
         await _maybe_await(_app(_scope, _receive, _send))
         _status = 200
         _response_headers = {}
+        _response_raw_headers = []
         _chunks = []
         for _message in _sent:
             if _message.get("type") == "http.response.start":
                 _status = int(_message.get("status") or 200)
                 for _name, _value in _message.get("headers") or []:
-                    _response_headers[_name.decode("latin1").lower()] = _value.decode("latin1")
+                    _header_name = _name.decode("latin1")
+                    _header_value = _value.decode("latin1")
+                    _response_headers[_header_name.lower()] = _header_value
+                    _response_raw_headers.append([_header_name, _header_value])
             elif _message.get("type") == "http.response.body":
                 _chunks.append(bytes(_message.get("body") or b""))
+        _body_payload = _http_body_payload(b"".join(_chunks))
         return json.dumps({
             "status": _status,
             "headers": _response_headers,
-            "body": b"".join(_chunks).decode("utf-8", "replace"),
+            "rawHeaders": _response_raw_headers,
+            **_body_payload,
         })
 
     async def _tracekernel_serve_asgi(_app, host="127.0.0.1", port=8000):

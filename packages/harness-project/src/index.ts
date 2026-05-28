@@ -91,6 +91,8 @@ import type {
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
   RuntimeWorkspaceHttpClient,
+  RuntimeWorkspaceHttpJsonRequestOptions,
+  RuntimeWorkspaceHttpJsonResponse,
   RuntimeWorkspaceHttpRequestOptions,
   RuntimeKernelUserConfig,
   RuntimeKernelUserInfo,
@@ -2134,6 +2136,18 @@ function decodeUtf8(bytes: Uint8Array): string | null {
   } catch {
     return null;
   }
+}
+
+function runtimeHttpBodyBytes(message: { body?: string; bodyEncoding?: RuntimeFileEncoding }): Uint8Array {
+  if (message.body === undefined) return new Uint8Array();
+  return message.bodyEncoding === 'base64'
+    ? bytesFromBase64(message.body)
+    : new TextEncoder().encode(message.body);
+}
+
+function runtimeHttpBodyText(message: { body?: string; bodyEncoding?: RuntimeFileEncoding }): string {
+  const bytes = runtimeHttpBodyBytes(message);
+  return decodeUtf8(bytes) ?? new TextDecoder().decode(bytes);
 }
 
 function contentToText(content: FileContent): string {
@@ -5876,6 +5890,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
     this.http = {
       request: (requestOptions) => this.requestHttp(requestOptions),
+      json: (requestOptions) => this.requestHttpJson(requestOptions),
     };
     this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler));
     this.cwd = this.kernelInfo.workspaceRoot;
@@ -6080,7 +6095,30 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       headers: options.headers ?? {},
       ...(options.rawHeaders ? { rawHeaders: options.rawHeaders } : {}),
       ...(options.body !== undefined ? { body: options.body } : {}),
+      ...(options.bodyEncoding ? { bodyEncoding: options.bodyEncoding } : {}),
     });
+  }
+
+  private async requestHttpJson<T = unknown>(
+    options: RuntimeWorkspaceHttpJsonRequestOptions
+  ): Promise<RuntimeWorkspaceHttpJsonResponse<T>> {
+    const { body, ...requestOptions } = options;
+    const headers = { ...(options.headers ?? {}) };
+    const hasContentType = Object.keys(headers).some((name) => name.toLowerCase() === 'content-type');
+    const hasAccept = Object.keys(headers).some((name) => name.toLowerCase() === 'accept');
+    if (!hasContentType && body !== undefined) headers['content-type'] = 'application/json';
+    if (!hasAccept) headers.accept = 'application/json';
+    const response = await this.requestHttp({
+      ...requestOptions,
+      headers,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = runtimeHttpBodyText(response);
+    return {
+      ...response,
+      text,
+      json: text ? JSON.parse(text) as T : null as T,
+    };
   }
 
   private normalizeHttpConnectHost(host: string | undefined): string {
@@ -6257,7 +6295,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       return {
         status,
         ...(response.headers ? { headers: response.headers } : {}),
+        ...(response.rawHeaders ? { rawHeaders: response.rawHeaders } : {}),
         ...(response.body !== undefined ? { body: response.body } : {}),
+        ...(response.bodyEncoding ? { bodyEncoding: response.bodyEncoding } : {}),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -6957,13 +6997,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           '',
         ].join('\n')
       : '';
-    const responseBody = headOnly ? '' : response.body ?? '';
+    const responseBodyBytes = headOnly ? new Uint8Array() : runtimeHttpBodyBytes(response);
+    const responseBody = decodeUtf8(responseBodyBytes) ?? new TextDecoder().decode(responseBodyBytes);
     const outputBody = `${responseHeaders}${responseBody}`;
     if (outputPath !== undefined) {
       try {
         const absoluteOutputPath = resolveWorkspaceContextPath(ctx, this.cwd, outputPath, 'curl output path');
         await ctx.fs.mkdir(dirname(absoluteOutputPath), { recursive: true });
-        await ctx.fs.writeFile(absoluteOutputPath, outputBody);
+        if (responseHeaders) {
+          await ctx.fs.writeFile(absoluteOutputPath, outputBody);
+        } else {
+          await ctx.fs.writeFile(absoluteOutputPath, responseBodyBytes);
+        }
       } catch (error) {
         return { stdout: '', stderr: `curl: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 23 };
       }
