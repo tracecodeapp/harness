@@ -90,6 +90,8 @@ import type {
   RuntimeKernelHttpListenerInfo,
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
+  RuntimeWorkspaceHttpClient,
+  RuntimeWorkspaceHttpRequestOptions,
   RuntimeKernelUserConfig,
   RuntimeKernelUserInfo,
   RuntimeKernelWorkspaceConfig,
@@ -5839,6 +5841,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
   readonly projectSession?: RuntimeProjectSessionInfo;
   readonly cwd: string;
+  readonly http: RuntimeWorkspaceHttpClient;
   readonly kernelInfo: RuntimeKernelInfo;
   private readonly bash: Bash;
   private readonly bashOptions: BashOptions;
@@ -5865,11 +5868,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private nextKernelEventSeq = 1;
   private nextHttpListenerSeq = 1;
   private nextHttpRequestSeq = 1;
+  private nextEphemeralHttpPort = 49152;
   private destroyed = false;
   private terminalVerbose = false;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
+    this.http = {
+      request: (requestOptions) => this.requestHttp(requestOptions),
+    };
     this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler));
     this.cwd = this.kernelInfo.workspaceRoot;
     this.projectSession = options.projectSession ? createProjectSessionInfo(options.projectSession, this.kernelInfo) : undefined;
@@ -6058,14 +6065,43 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private normalizeHttpHost(host: string | undefined): string {
+  private async requestHttp(options: RuntimeWorkspaceHttpRequestOptions): Promise<RuntimeKernelHttpResponse> {
+    this.assertNotDestroyed();
+    let url: URL;
+    try {
+      url = new URL(options.url);
+    } catch {
+      return { status: 400, body: `TraceKernel HTTP URL rejected: ${options.url}\n` };
+    }
+    return this.dispatchHttpRequest({
+      method: String(options.method ?? 'GET').toUpperCase(),
+      url: url.toString(),
+      path: options.path ?? `${url.pathname}${url.search}`,
+      headers: options.headers ?? {},
+      ...(options.rawHeaders ? { rawHeaders: options.rawHeaders } : {}),
+      ...(options.body !== undefined ? { body: options.body } : {}),
+    });
+  }
+
+  private normalizeHttpConnectHost(host: string | undefined): string {
     const normalized = (host ?? '127.0.0.1').trim().toLowerCase();
     if (!normalized || normalized === '0.0.0.0' || normalized === '::' || normalized === '*') return '127.0.0.1';
     if (normalized === 'localhost') return '127.0.0.1';
     return normalized;
   }
 
-  private normalizeHttpPort(port: number): number {
+  private normalizeHttpListenHost(host: string | undefined): string {
+    const normalized = (host ?? '0.0.0.0').trim().toLowerCase();
+    if (!normalized || normalized === '::' || normalized === '*') return '0.0.0.0';
+    if (normalized === 'localhost') return '127.0.0.1';
+    return normalized;
+  }
+
+  private isHttpWildcardHost(host: string): boolean {
+    return host === '0.0.0.0';
+  }
+
+  private normalizeHttpConnectPort(port: number): number {
     const normalized = Math.trunc(Number(port));
     if (!Number.isFinite(normalized) || normalized < 1 || normalized > 65535) {
       throw Object.assign(new Error(`EADDRNOTAVAIL: invalid port '${port}'`), { code: 'EADDRNOTAVAIL' });
@@ -6073,8 +6109,44 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return normalized;
   }
 
+  private normalizeHttpListenPort(port: number): number {
+    const normalized = Math.trunc(Number(port));
+    if (!Number.isFinite(normalized) || normalized < 0 || normalized > 65535) {
+      throw Object.assign(new Error(`EADDRNOTAVAIL: invalid port '${port}'`), { code: 'EADDRNOTAVAIL' });
+    }
+    if (normalized !== 0) return normalized;
+    for (let attempt = 0; attempt < 16384; attempt += 1) {
+      const candidate = this.nextEphemeralHttpPort;
+      this.nextEphemeralHttpPort += 1;
+      if (this.nextEphemeralHttpPort > 65535) this.nextEphemeralHttpPort = 49152;
+      if (!this.hasHttpListenerOnPort(candidate, 'http')) return candidate;
+    }
+    throw Object.assign(new Error('EADDRNOTAVAIL: no ephemeral TraceKernel HTTP ports available'), { code: 'EADDRNOTAVAIL' });
+  }
+
   private httpListenerKey(host: string, port: number, protocol: 'http'): string {
     return `${protocol}:${host}:${port}`;
+  }
+
+  private hasHttpListenerOnPort(port: number, protocol: 'http'): boolean {
+    for (const listener of this.httpListeners.values()) {
+      if (listener.info.protocol === protocol && listener.info.port === port) return true;
+    }
+    return false;
+  }
+
+  private findHttpBindConflict(host: string, port: number, protocol: 'http'): RuntimeKernelHttpListenerRecord | undefined {
+    for (const listener of this.httpListeners.values()) {
+      if (listener.info.protocol !== protocol || listener.info.port !== port) continue;
+      if (
+        listener.info.host === host ||
+        this.isHttpWildcardHost(listener.info.host) ||
+        this.isHttpWildcardHost(host)
+      ) {
+        return listener;
+      }
+    }
+    return undefined;
   }
 
   private registerHttpListener(
@@ -6086,10 +6158,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       throw Object.assign(new Error('EINVAL: listen requires an active tracekernel process'), { code: 'EINVAL' });
     }
     const protocol = options.protocol ?? 'http';
-    const host = this.normalizeHttpHost(options.host);
-    const port = this.normalizeHttpPort(options.port);
+    const host = this.normalizeHttpListenHost(options.host);
+    const port = this.normalizeHttpListenPort(options.port);
     const key = this.httpListenerKey(host, port, protocol);
-    if (this.httpListeners.has(key)) {
+    if (this.findHttpBindConflict(host, port, protocol)) {
       throw Object.assign(new Error(`EADDRINUSE: address already in use ${host}:${port}`), { code: 'EADDRINUSE' });
     }
     const info: RuntimeKernelHttpListenerInfo = {
@@ -6133,9 +6205,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private findHttpListener(url: URL): RuntimeKernelHttpListenerRecord | undefined {
     if (url.protocol !== 'http:') return undefined;
-    const host = this.normalizeHttpHost(url.hostname);
-    const port = this.normalizeHttpPort(url.port ? Number(url.port) : 80);
-    return this.httpListeners.get(this.httpListenerKey(host, port, 'http'));
+    const host = this.normalizeHttpConnectHost(url.hostname);
+    const port = this.normalizeHttpConnectPort(url.port ? Number(url.port) : 80);
+    return this.httpListeners.get(this.httpListenerKey(host, port, 'http')) ??
+      this.httpListeners.get(this.httpListenerKey('0.0.0.0', port, 'http'));
   }
 
   private recordHttpRequest(entry: Omit<RuntimeKernelHttpRequestRecord, 'seq' | 'time'>): void {

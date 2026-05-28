@@ -1286,8 +1286,10 @@ class TraceKernelHttpBridge {
   constructor(messageId) {
     this.messageId = messageId;
     this.nextListenerId = 1;
+    this.nextRequestId = 1;
     this.listeners = new Map();
     this.listenerInfo = new Map();
+    this.dispatchRequests = new Map();
   }
 
   listen(optionsJson, handler) {
@@ -1323,6 +1325,35 @@ class TraceKernelHttpBridge {
         });
       },
     };
+  }
+
+  dispatch(requestJson) {
+    const request = typeof requestJson === 'string' ? JSON.parse(requestJson) : requestJson || {};
+    const requestId = `python-dispatch-${this.nextRequestId++}`;
+    return new Promise((resolve, reject) => {
+      this.dispatchRequests.set(requestId, { resolve, reject });
+      self.postMessage({
+        id: this.messageId,
+        type: 'kernel-http-dispatch',
+        payload: {
+          type: 'kernel-http-dispatch',
+          requestId,
+          request,
+        },
+      });
+    });
+  }
+
+  resolveDispatch(requestId, response) {
+    const request = this.dispatchRequests.get(requestId);
+    this.dispatchRequests.delete(requestId);
+    request?.resolve(JSON.stringify(response));
+  }
+
+  rejectDispatch(requestId, error) {
+    const request = this.dispatchRequests.get(requestId);
+    this.dispatchRequests.delete(requestId);
+    request?.reject(new Error(error));
   }
 
   updateListenerInfo(listenerId, info) {
@@ -1419,6 +1450,7 @@ async function executeProjectPython(request, messageId) {
   };
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
   self.__tracecodeKernelHttpListen = (optionsJson, handler) => httpBridge.listen(optionsJson, handler);
+  self.__tracecodeKernelHttpDispatch = (requestJson) => httpBridge.dispatch(requestJson);
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
     request?.stdinPipe
@@ -1549,9 +1581,11 @@ class _TraceKernelHttpHandle:
 
 def _install_tracekernel_asgi_modules():
     import asyncio
+    import io
     import inspect
     import types
     import urllib.parse
+    import urllib.request
 
     async def _maybe_await(_value):
         if inspect.isawaitable(_value):
@@ -1564,6 +1598,149 @@ def _install_tracekernel_asgi_modules():
             "headers": {"content-type": "application/json"},
             "body": json.dumps(_value, separators=(",", ":")) + "\\n",
         }
+
+    async def _tracekernel_http_dispatch_async(_request):
+        _response_json = await _js_self.__tracecodeKernelHttpDispatch(json.dumps(_request))
+        return json.loads(str(_response_json))
+
+    def _tracekernel_http_dispatch_sync(_request):
+        return asyncio.get_event_loop().run_until_complete(_tracekernel_http_dispatch_async(_request))
+
+    class _TraceKernelHTTPResponse:
+        def __init__(self, _response):
+            self.status = int(_response.get("status") or 0)
+            self.code = self.status
+            self.reason = ""
+            self.headers = dict(_response.get("headers") or {})
+            self._body = str(_response.get("body") or "").encode("utf-8")
+            self._stream = io.BytesIO(self._body)
+
+        def read(self, _size=-1):
+            return self._stream.read(_size)
+
+        def getcode(self):
+            return self.status
+
+        def getheaders(self):
+            return list(self.headers.items())
+
+        def getheader(self, _name, _default=None):
+            return self.headers.get(str(_name).lower(), _default)
+
+        def close(self):
+            self._stream.close()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            self.close()
+            return False
+
+    def _tracekernel_http_urlopen(_url, data=None, timeout=None, **_kwargs):
+        _headers = {}
+        _method = None
+        if hasattr(_url, "full_url"):
+            _target_url = str(_url.full_url)
+            try:
+                _method = _url.get_method()
+            except Exception:
+                _method = None
+            try:
+                _headers = {str(_name).lower(): str(_value) for _name, _value in _url.header_items()}
+            except Exception:
+                _headers = {}
+            if data is None:
+                data = getattr(_url, "data", None)
+        else:
+            _target_url = str(_url)
+        if _method is None:
+            _method = "POST" if data is not None else "GET"
+        _body = None
+        if data is not None:
+            _body = bytes(data).decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
+        _parsed = urllib.parse.urlsplit(_target_url)
+        _response = _tracekernel_http_dispatch_sync({
+            "method": str(_method).upper(),
+            "url": _target_url,
+            "path": (_parsed.path or "/") + (("?" + _parsed.query) if _parsed.query else ""),
+            "headers": _headers,
+            **({"body": _body} if _body is not None else {}),
+        })
+        return _TraceKernelHTTPResponse(_response)
+
+    class _TraceKernelHTTPConnection:
+        def __init__(self, host, port=None, timeout=None, **_kwargs):
+            self.host = str(host)
+            self.port = int(port or 80)
+            self.timeout = timeout
+            self._response = None
+
+        def request(self, method, url, body=None, headers=None, **_kwargs):
+            _target = str(url)
+            if not _target.startswith("/"):
+                _target = "/" + _target
+            _body = None
+            if body is not None:
+                _body = bytes(body).decode("utf-8") if isinstance(body, (bytes, bytearray)) else str(body)
+            self._response = _tracekernel_http_dispatch_sync({
+                "method": str(method).upper(),
+                "url": f"http://{self.host}:{self.port}{_target}",
+                "path": _target,
+                "headers": {str(_name).lower(): str(_value) for _name, _value in (headers or {}).items()},
+                **({"body": _body} if _body is not None else {}),
+            })
+
+        def getresponse(self):
+            return _TraceKernelHTTPResponse(self._response or {"status": 0, "body": ""})
+
+        def close(self):
+            self._response = None
+
+    class _TraceKernelRequestsResponse:
+        def __init__(self, _response):
+            self.status_code = int(_response.get("status") or 0)
+            self.headers = dict(_response.get("headers") or {})
+            self.text = str(_response.get("body") or "")
+            self.content = self.text.encode("utf-8")
+            self.ok = 200 <= self.status_code < 400
+
+        def json(self):
+            return json.loads(self.text)
+
+        def raise_for_status(self):
+            if not self.ok:
+                raise Exception(f"HTTP {self.status_code}")
+
+    def _tracekernel_requests_request(method, url, **_kwargs):
+        _headers = {str(_name).lower(): str(_value) for _name, _value in (_kwargs.get("headers") or {}).items()}
+        _body = _kwargs.get("data")
+        if "json" in _kwargs:
+            _body = json.dumps(_kwargs.get("json"), separators=(",", ":"))
+            _headers.setdefault("content-type", "application/json")
+        if _body is not None and not isinstance(_body, str):
+            _body = bytes(_body).decode("utf-8") if isinstance(_body, (bytes, bytearray)) else str(_body)
+        _parsed = urllib.parse.urlsplit(str(url))
+        return _TraceKernelRequestsResponse(_tracekernel_http_dispatch_sync({
+            "method": str(method).upper(),
+            "url": str(url),
+            "path": (_parsed.path or "/") + (("?" + _parsed.query) if _parsed.query else ""),
+            "headers": _headers,
+            **({"body": _body} if _body is not None else {}),
+        }))
+
+    def _install_tracekernel_http_client_modules():
+        import http.client as _http_client
+        urllib.request.urlopen = _tracekernel_http_urlopen
+        _http_client.HTTPConnection = _TraceKernelHTTPConnection
+        _requests_module = types.ModuleType("requests")
+        _requests_module.request = _tracekernel_requests_request
+        _requests_module.get = lambda url, **kwargs: _tracekernel_requests_request("GET", url, **kwargs)
+        _requests_module.post = lambda url, **kwargs: _tracekernel_requests_request("POST", url, **kwargs)
+        _requests_module.put = lambda url, **kwargs: _tracekernel_requests_request("PUT", url, **kwargs)
+        _requests_module.patch = lambda url, **kwargs: _tracekernel_requests_request("PATCH", url, **kwargs)
+        _requests_module.delete = lambda url, **kwargs: _tracekernel_requests_request("DELETE", url, **kwargs)
+        sys.modules.setdefault("requests", _requests_module)
 
     def _match_route(_template, _path):
         _template_parts = [part for part in str(_template).strip("/").split("/") if part]
@@ -1754,6 +1931,7 @@ def _install_tracekernel_asgi_modules():
     _uvicorn_module = types.ModuleType("uvicorn")
     _uvicorn_module.run = _uvicorn_run
     sys.modules["uvicorn"] = _uvicorn_module
+    _install_tracekernel_http_client_modules()
 
 def _project_relative_path_from_absolute(_absolute_path):
     try:
@@ -3339,6 +3517,7 @@ json.dumps({
     delete self.__tracecodeRuntimeKernelMutationTarget;
     delete self.__tracecodeInstallProjectFsMutationEvents;
     delete self.__tracecodeKernelHttpListen;
+    delete self.__tracecodeKernelHttpDispatch;
     activeProjectHttpBridges.delete(messageId);
   }
 }
@@ -3483,8 +3662,16 @@ self.onmessage = function(event) {
     }
     return;
   }
+  if (type === 'kernel-http-dispatch-result') {
+    if (payload?.type === 'kernel-http-dispatch-result') {
+      activeProjectHttpBridges.get(id)?.resolveDispatch(payload.requestId, payload.response);
+    }
+    return;
+  }
   if (type === 'kernel-http-error') {
-    if (payload?.type === 'kernel-http-error' && payload.listenerId) {
+    if (payload?.type === 'kernel-http-error' && payload.requestId) {
+      activeProjectHttpBridges.get(id)?.rejectDispatch(payload.requestId, payload.error);
+    } else if (payload?.type === 'kernel-http-error' && payload.listenerId) {
       activeProjectHttpBridges.get(id)?.failListener(payload.listenerId);
     }
     return;

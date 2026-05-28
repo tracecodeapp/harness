@@ -80,6 +80,7 @@ async function main(): Promise<void> {
       let nextHttpRequestId = 0;
       const pending = new Map();
       const listeners = new Map();
+      const externalHttpListeners = new Map();
       const requestWaiters = new Map();
       const createRuntimeCommandStdinPipeFromText = (text) => {
         const encoded = new TextEncoder().encode(text);
@@ -129,6 +130,47 @@ async function main(): Promise<void> {
           const waiter = requestWaiters.get(payload.requestId);
           requestWaiters.delete(payload.requestId);
           if (waiter) waiter.resolve(payload.response);
+          return;
+        }
+        if (type === 'kernel-http-dispatch') {
+          const parsed = new URL(payload.request.url);
+          const handler = externalHttpListeners.get(Number(parsed.port || 80));
+          if (!handler) {
+            worker.postMessage({
+              id,
+              type: 'kernel-http-dispatch-result',
+              payload: {
+                type: 'kernel-http-dispatch-result',
+                requestId: payload.requestId,
+                response: {
+                  status: 0,
+                  body: 'connection refused\\n',
+                },
+              },
+            });
+            return;
+          }
+          Promise.resolve(handler(payload.request)).then((response) => {
+            worker.postMessage({
+              id,
+              type: 'kernel-http-dispatch-result',
+              payload: {
+                type: 'kernel-http-dispatch-result',
+                requestId: payload.requestId,
+                response,
+              },
+            });
+          }, (error) => {
+            worker.postMessage({
+              id,
+              type: 'kernel-http-error',
+              payload: {
+                type: 'kernel-http-error',
+                requestId: payload.requestId,
+                error: String(error && error.message || error || 'kernel-http-dispatch-error'),
+              },
+            });
+          });
           return;
         }
         if (type === 'kernel-http-error') {
@@ -923,6 +965,51 @@ async function main(): Promise<void> {
         },
       });
 
+      externalHttpListeners.set(8770, (request) => ({
+        status: request.method === 'POST' ? 201 : 200,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          method: request.method,
+          path: request.path,
+          body: request.body || '',
+        }) + '\\n',
+      }));
+      const outboundHttpRun = await send('execute-project-python', {
+        source: 'file',
+        scriptPath: '/workspace/outbound.py',
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        project: {
+          cwd: '/workspace',
+          files: [
+            {
+              path: 'outbound.py',
+              contents: [
+                'import http.client',
+                'import json',
+                'import requests',
+                'import urllib.request',
+                '',
+                'with urllib.request.urlopen("http://localhost:8770/urllib?x=1") as response:',
+                '    print("urllib:" + str(response.getcode()) + ":" + response.read().decode("utf-8").strip())',
+                '',
+                'conn = http.client.HTTPConnection("localhost", 8770)',
+                'conn.request("POST", "/client", body="payload", headers={"x-test": "yes"})',
+                'response = conn.getresponse()',
+                'print("http.client:" + str(response.status) + ":" + response.read().decode("utf-8").strip())',
+                'conn.close()',
+                '',
+                'response = requests.post("http://localhost:8770/requests", json={"ok": True})',
+                'print("requests:" + str(response.status_code) + ":" + json.dumps(response.json(), separators=(",", ":")))',
+                '',
+              ].join('\\n'),
+            },
+          ],
+        },
+      });
+      externalHttpListeners.delete(8770);
+
       let outsideCwdError = '';
       try {
         await send('execute-project-python', {
@@ -1006,7 +1093,7 @@ async function main(): Promise<void> {
         // Terminating the worker is how this smoke test stops the long-lived server.
       }
 
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -1025,6 +1112,7 @@ async function main(): Promise<void> {
       statvfsRun: PythonProjectWorkerResponse;
       providerKernelVirtualMutationRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
+      outboundHttpRun: PythonProjectWorkerResponse;
       outsideCwdError: string;
       asgiEnqueue: { status: number; headers?: Record<string, string>; body?: string };
       asgiDequeue: { status: number; headers?: Record<string, string>; body?: string };
@@ -1722,6 +1810,16 @@ async function main(): Promise<void> {
         event.change.contents === 'canonical\n'
       )) === true,
       `Python project canonical root run should stream live canonical writes: ${JSON.stringify(results.canonicalRootRun.events)}`
+    );
+    assertCondition(results.outboundHttpRun.exitCode === 0, `Python outbound HTTP shims should succeed: ${results.outboundHttpRun.stderr}`);
+    assertCondition(
+      results.outboundHttpRun.stdout === [
+        'urllib:200:{"method":"GET","path":"/urllib?x=1","body":""}',
+        'http.client:201:{"method":"POST","path":"/client","body":"payload"}',
+        'requests:201:{"method":"POST","path":"/requests","body":"{\\"ok\\":true}"}',
+        '',
+      ].join('\n'),
+      `Python outbound HTTP shims should dispatch through TraceKernel: ${JSON.stringify(results.outboundHttpRun.stdout)}`
     );
     assertCondition(
       results.outsideCwdError.includes('Project cwd must stay inside the workspace'),

@@ -153,6 +153,19 @@ export interface RuntimeKernelHttpResponse {
   body?: string;
 }
 
+export interface RuntimeWorkspaceHttpRequestOptions {
+  method?: string;
+  url: string;
+  path?: string;
+  headers?: Record<string, string>;
+  rawHeaders?: readonly [string, string][];
+  body?: string;
+}
+
+export interface RuntimeWorkspaceHttpClient {
+  request(options: RuntimeWorkspaceHttpRequestOptions): Promise<RuntimeKernelHttpResponse>;
+}
+
 export interface RuntimeKernelHttpListenerHandle {
   readonly id: string;
   readonly info: RuntimeKernelHttpListenerInfo;
@@ -938,6 +951,7 @@ export type RuntimeProjectCommandRunner<
 export interface RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
   readonly cwd: string;
+  readonly http: RuntimeWorkspaceHttpClient;
   readonly projectSession?: RuntimeProjectSessionInfo;
   writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void>;
   writeFiles(files: readonly RuntimeFile[]): Promise<void>;

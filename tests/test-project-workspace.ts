@@ -5709,6 +5709,13 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
           '  req.setEncoding("utf8");',
           '  req.on("data", (chunk) => { body += chunk; });',
           '  req.on("end", () => {',
+          '    if (req.method === "GET" && req.url === "/slow") {',
+          '      setTimeout(() => {',
+          '        res.writeHead(200, { "content-type": "text/plain" });',
+          '        res.end("slow\\n");',
+          '      }, 50);',
+          '      return;',
+          '    }',
           '    if (req.method === "GET" && req.url.startsWith("/echo")) {',
           '      res.setHeader("x-trace", req.complete && req.rawHeaders.length > 0 ? "yes" : "no");',
           '      const headerSnapshot = res.getHeaders();',
@@ -5737,6 +5744,25 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
           '    res.end("missing\\n");',
           '  });',
           '}).listen(3000, "127.0.0.1");',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'timeout-client.js',
+        contents: [
+          'const http = require("node:http");',
+          '(async () => {',
+          'await new Promise((resolve) => {',
+          '  const req = http.get({ hostname: "localhost", port: 3000, path: "/slow", timeout: 1 }, () => {',
+          '    console.log("unexpected-response");',
+          '    resolve();',
+          '  });',
+          '  req.on("error", (error) => {',
+          '    console.log(error.code);',
+          '    resolve();',
+          '  });',
+          '});',
+          '})().catch((error) => { console.error(error.message); process.exitCode = 1; });',
           '',
         ].join('\n'),
       },
@@ -5791,12 +5817,26 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
   }
   assertCondition(listeners.includes('\thttp\t127.0.0.1\t3000\t'), `tracekernel should expose HTTP listener: ${listeners}`);
 
+  const apiResponse = await workspace.http.request({
+    url: 'http://localhost:3000/echo?api=1',
+    headers: { 'x-client': 'workspace-api' },
+  });
+  assertCondition(apiResponse.status === 200, `workspace.http.request should succeed: ${JSON.stringify(apiResponse)}`);
+  assertCondition(
+    apiResponse.body === '{"method":"GET","url":"/echo?api=1","body":"","hasTrace":true,"trace":"yes"}\n',
+    `workspace.http.request should dispatch through TraceKernel: ${apiResponse.body}`
+  );
+
   const nodeClient = await workspace.runCommand('node client.js');
   assertCondition(nodeClient.exitCode === 0, `Node http client should call TraceKernel listener: ${JSON.stringify(nodeClient)}`);
   assertCondition(
     nodeClient.stdout === '201:{"size":1}\n200:{"id":2}\n',
     `Node http.request/http.get should dispatch through TraceKernel: ${nodeClient.stdout}`
   );
+
+  const timeoutClient = await workspace.runCommand('node timeout-client.js');
+  assertCondition(timeoutClient.exitCode === 0, `Node timeout client should finish: ${JSON.stringify(timeoutClient)}`);
+  assertCondition(timeoutClient.stdout === 'ETIMEDOUT\n', `Node timeout should abort the client request: ${timeoutClient.stdout}`);
 
   const enqueue = await workspace.runCommand('curl -s --json \'{"id":1}\' http://localhost:3000/enqueue');
   assertCondition(enqueue.exitCode === 0, `curl enqueue should succeed: ${JSON.stringify(enqueue)}`);
@@ -5915,6 +5955,74 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
   } finally {
     (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
   }
+}
+
+async function testTraceKernelHttpBindSemantics(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      {
+        path: 'ephemeral.js',
+        contents: [
+          'const fs = require("node:fs");',
+          'const http = require("node:http");',
+          'const server = http.createServer((req, res) => {',
+          '  res.writeHead(200, { "content-type": "text/plain" });',
+          '  res.end(server.address().address + ":" + server.address().port + "\\n");',
+          '});',
+          'server.listen(0, () => {',
+          '  fs.writeFileSync("port.txt", String(server.address().port));',
+          '});',
+          '',
+        ].join('\n'),
+      },
+    ],
+    kernel: { scheduler: { maxConcurrentCommands: 4 } },
+    nodeRunner: createBrowserJavaScriptProjectRunner(),
+  });
+
+  const terminal = workspace.createTerminalSession();
+  const start = await terminal.run('node ephemeral.js &');
+  assertCondition(start.exitCode === 0, `ephemeral HTTP server should start: ${JSON.stringify(start)}`);
+
+  let port = '';
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await workspace.exists('port.txt')) {
+      port = (await workspace.readFile('port.txt')).trim();
+      if (port) break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assertCondition(Number(port) >= 49152, `listen(0) should allocate an ephemeral port: ${port}`);
+  const listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
+  assertCondition(
+    listeners.includes(`\thttp\t0.0.0.0\t${port}\t`),
+    `default listen host should bind wildcard and expose allocated port: ${listeners}`
+  );
+
+  const response = await workspace.runCommand(`curl -s http://localhost:${port}/`);
+  assertCondition(response.exitCode === 0, `wildcard listener should accept localhost requests: ${JSON.stringify(response)}`);
+  assertCondition(response.stdout === `0.0.0.0:${port}\n`, `wildcard listener should report bound address: ${response.stdout}`);
+
+  await workspace.writeFile('duplicate.js', [
+    'const http = require("node:http");',
+    'try {',
+    `  http.createServer((req, res) => res.end("duplicate")).listen(${port}, "127.0.0.1");`,
+    '  console.log("unexpected");',
+    '} catch (error) {',
+    '  console.log(error.code);',
+    '}',
+    '',
+  ].join('\n'));
+  const duplicate = await workspace.runCommand('node duplicate.js');
+  assertCondition(duplicate.exitCode === 0, `duplicate bind check should finish: ${JSON.stringify(duplicate)}`);
+  assertCondition(duplicate.stdout === 'EADDRINUSE\n', `wildcard listener should conflict with exact bind: ${duplicate.stdout}`);
+
+  const listenerRow = listeners.split('\n').find((line) => line.includes(`\thttp\t0.0.0.0\t${port}\t`));
+  const serverPid = listenerRow?.split('\t')[1];
+  assertCondition(serverPid !== undefined, `ephemeral listener row should include pid: ${listeners}`);
+  const killed = await workspace.runCommand(`kill ${serverPid}`);
+  assertCondition(killed.exitCode === 0, `ephemeral server should be killable: ${JSON.stringify(killed)}`);
+  await workspace.runCommand(`wait ${serverPid}`);
 }
 
 async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
@@ -11982,6 +12090,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptProjectRunner();
   await testTraceKernelHttpNodeServer();
   await testTraceKernelHttpNodeServerWorkerBridge();
+  await testTraceKernelHttpBindSemantics();
   await testTraceKernelHttpPythonRunnerBridge();
   await testBrowserJavaScriptProjectRunnerAbortSignal();
   await testBrowserJavaScriptProjectRunnerCwd();

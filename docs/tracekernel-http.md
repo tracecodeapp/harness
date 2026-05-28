@@ -66,11 +66,22 @@ await terminal.run('node server.js &');
 const agentResult = await workspace.runCommand(
   'curl -s --json \'{"id":1}\' http://localhost:3000/enqueue'
 );
+
+const apiResult = await workspace.http.request({
+  method: 'GET',
+  url: 'http://localhost:3000/dequeue',
+  headers: { accept: 'application/json' },
+});
 ```
 
 The background server is owned by a kernel process. Killing that process closes
 its listener, and `/proc/tracekernel/net/listeners` exposes the active simulated
 listeners for diagnostics.
+
+`workspace.http.request(...)` is the consumer-facing endpoint test API. It uses
+the same kernel dispatch path as `curl`, Node `http`, and Python outbound HTTP,
+and records requests in `/proc/tracekernel/net/requests`. Use it when app code
+wants to grade or probe endpoints without constructing shell command strings.
 
 Node project code can also act as an in-workspace client through `node:http`:
 
@@ -96,7 +107,9 @@ req.end();
 
 `http.request(...)` and `http.get(...)` dispatch through TraceKernel, so they can
 call listeners owned by other running processes in the same workspace. They do
-not reach the browser or host network.
+not reach the browser or host network. Request `timeout` and `AbortSignal`
+options are honored by the shim so a hung endpoint cannot keep the command alive
+forever.
 
 ## Python ASGI
 
@@ -125,6 +138,33 @@ From the same workspace, a user terminal or agent command can call:
 ```bash
 curl -s --json '{"count":2}' 'http://localhost:8765/items/abc?verbose=true'
 ```
+
+Python project code can also make outbound in-workspace requests through small
+`urllib.request`, `http.client`, and `requests` shims:
+
+```py
+import requests
+
+response = requests.post(
+    "http://localhost:8765/items/abc",
+    json={"count": 2},
+)
+print(response.status_code)
+print(response.json())
+```
+
+These shims are scoped to project execution and dispatch through TraceKernel.
+They are intended for endpoint tests, not general internet access.
+
+## Bind Semantics
+
+TraceKernel tracks listener ownership and port binding in the kernel:
+
+- `listen(0)` allocates an ephemeral in-workspace port.
+- `listen(port)` without a host binds `0.0.0.0`.
+- Requests to `localhost` resolve to `127.0.0.1` and also match wildcard binds.
+- A wildcard listener conflicts with exact-host listeners on the same port.
+- Duplicate binds return `EADDRINUSE`.
 
 ## Built-In Curl
 
