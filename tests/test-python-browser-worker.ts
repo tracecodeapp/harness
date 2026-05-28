@@ -964,6 +964,10 @@ async function main(): Promise<void> {
                 'def dequeue():',
                 '    return items.pop(0) if items else None',
                 '',
+                '@app.post("/items/{item_id}", status_code=201)',
+                'def set_item(item_id, payload, verbose):',
+                '    return {"item_id": item_id, "payload": payload, "verbose": verbose}',
+                '',
                 'uvicorn.run(app, host="127.0.0.1", port=8765)',
                 '',
               ].join('\\n'),
@@ -988,6 +992,13 @@ async function main(): Promise<void> {
         headers: {},
         body: '',
       });
+      const asgiRouteParams = await dispatchHttp(8765, {
+        method: 'POST',
+        url: 'http://localhost:8765/items/abc?verbose=true',
+        path: '/items/abc?verbose=true',
+        headers: { 'content-type': 'application/json' },
+        body: '{"count":2}',
+      });
       terminateWorker();
       try {
         await asgiRunPromise;
@@ -995,7 +1006,7 @@ async function main(): Promise<void> {
         // Terminating the worker is how this smoke test stops the long-lived server.
       }
 
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError, asgiEnqueue, asgiDequeue };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -1017,6 +1028,7 @@ async function main(): Promise<void> {
       outsideCwdError: string;
       asgiEnqueue: { status: number; headers?: Record<string, string>; body?: string };
       asgiDequeue: { status: number; headers?: Record<string, string>; body?: string };
+      asgiRouteParams: { status: number; headers?: Record<string, string>; body?: string };
     };
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
@@ -1722,6 +1734,11 @@ async function main(): Promise<void> {
     assertCondition(
       results.asgiDequeue.status === 200 && results.asgiDequeue.body === '{"id":1}\n',
       `Python project ASGI shim should dequeue through TraceKernel HTTP: ${JSON.stringify(results.asgiDequeue)}`
+    );
+    assertCondition(
+      results.asgiRouteParams.status === 201 &&
+        results.asgiRouteParams.body === '{"item_id":"abc","payload":{"count":2},"verbose":"true"}\n',
+      `Python project ASGI shim should support route params, query params, and decorator status codes: ${JSON.stringify(results.asgiRouteParams)}`
     );
   } finally {
     await browser.close();

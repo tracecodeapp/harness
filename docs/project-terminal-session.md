@@ -136,6 +136,12 @@ Use `terminal.prompt.text` when echoing submitted commands. Use
 `terminal.inputState.label` when echoing stdin responses, because stdin prompts
 belong to the running process rather than the shell.
 
+For apps that need a visible user shell and background agent commands in the
+same project, keep both on one workspace. The user-facing terminal session owns
+one foreground process at a time, while agent calls can use
+`workspace.runCommand(...)` and the kernel scheduler. Simulated HTTP servers and
+clients share that same workspace; see [TraceKernel HTTP Simulation](./tracekernel-http.md).
+
 ## Output Events
 
 Terminal sessions preserve the normal command event stream, with one addition:

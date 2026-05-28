@@ -1302,7 +1302,11 @@ function createIncomingMessage(request: RuntimeKernelHttpRequest) {
   let encoding: string | undefined;
   let bodyRead = false;
   let bodyScheduled = false;
+  let readableEnded = false;
   const body = request.body ?? '';
+  const rawHeaders = request.rawHeaders
+    ? request.rawHeaders.flatMap(([name, value]) => [name, value])
+    : Object.entries(request.headers ?? {}).flatMap(([name, value]) => [name, value]);
   const formatBody = () => encoding ? body : BrowserBuffer.from(body);
   const scheduleBody = (): void => {
     if (bodyScheduled) return;
@@ -1312,6 +1316,7 @@ function createIncomingMessage(request: RuntimeKernelHttpRequest) {
         bodyRead = true;
         events.emit('data', formatBody());
       }
+      readableEnded = true;
       events.emit('end');
     });
   };
@@ -1319,7 +1324,12 @@ function createIncomingMessage(request: RuntimeKernelHttpRequest) {
     method: request.method,
     url: request.path,
     headers: request.headers ?? {},
+    rawHeaders,
     httpVersion: '1.1',
+    complete: true,
+    get readableEnded() {
+      return readableEnded;
+    },
     socket: { remoteAddress: '127.0.0.1' },
     setEncoding: (nextEncoding: string) => {
       encoding = nextEncoding;
@@ -1328,6 +1338,7 @@ function createIncomingMessage(request: RuntimeKernelHttpRequest) {
     read: () => {
       if (bodyRead) return null;
       bodyRead = true;
+      readableEnded = true;
       return formatBody();
     },
     on: (event: string, listener: (...args: unknown[]) => void) => {
@@ -1346,6 +1357,7 @@ function createIncomingMessage(request: RuntimeKernelHttpRequest) {
     [Symbol.asyncIterator]: async function* () {
       if (body && !bodyRead) {
         bodyRead = true;
+        readableEnded = true;
         yield formatBody();
       }
     },
@@ -1368,8 +1380,13 @@ function createServerResponse(resolve: (response: RuntimeKernelHttpResponse) => 
       return response;
     },
     getHeader: (name: string) => headers[String(name).toLowerCase()],
+    getHeaders: () => ({ ...headers }),
+    hasHeader: (name: string) => Object.prototype.hasOwnProperty.call(headers, String(name).toLowerCase()),
     removeHeader: (name: string) => {
       delete headers[String(name).toLowerCase()];
+    },
+    flushHeaders: () => {
+      response.headersSent = true;
     },
     writeHead: (statusCode: number, reasonOrHeaders?: string | Record<string, unknown>, maybeHeaders?: Record<string, unknown>) => {
       response.statusCode = Number(statusCode) || 200;

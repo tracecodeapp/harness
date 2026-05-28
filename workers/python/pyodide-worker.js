@@ -1565,33 +1565,58 @@ def _install_tracekernel_asgi_modules():
             "body": json.dumps(_value, separators=(",", ":")) + "\\n",
         }
 
+    def _match_route(_template, _path):
+        _template_parts = [part for part in str(_template).strip("/").split("/") if part]
+        _path_parts = [part for part in str(_path).strip("/").split("/") if part]
+        if str(_template) == "/" and str(_path) == "/":
+            return {}
+        if len(_template_parts) != len(_path_parts):
+            return None
+        _params = {}
+        for _template_part, _path_part in zip(_template_parts, _path_parts):
+            if _template_part.startswith("{") and _template_part.endswith("}"):
+                _params[_template_part[1:-1]] = urllib.parse.unquote(_path_part)
+            elif _template_part != _path_part:
+                return None
+        return _params
+
     class FastAPI:
         def __init__(self):
             self.routes = []
 
-        def route(self, path, methods=None):
+        def route(self, path, methods=None, status_code=200):
             _methods = [str(_method).upper() for _method in (methods or ["GET"])]
             def _decorator(_func):
                 for _method in _methods:
-                    self.routes.append((_method, str(path), _func))
+                    self.routes.append({
+                        "method": _method,
+                        "path": str(path),
+                        "func": _func,
+                        "status_code": int(status_code),
+                    })
                 return _func
             return _decorator
 
-        def get(self, path):
-            return self.route(path, ["GET"])
+        def get(self, path, **kwargs):
+            return self.route(path, ["GET"], **kwargs)
 
-        def post(self, path):
-            return self.route(path, ["POST"])
+        def post(self, path, **kwargs):
+            return self.route(path, ["POST"], **kwargs)
 
         async def __call__(self, scope, receive, send):
             _method = str(scope.get("method", "GET")).upper()
             _path = str(scope.get("path", "/"))
-            _target = None
-            for _route_method, _route_path, _func in self.routes:
-                if _route_method == _method and _route_path == _path:
-                    _target = _func
+            _route = None
+            _path_params = {}
+            for _candidate in self.routes:
+                if _candidate["method"] != _method:
+                    continue
+                _matched_params = _match_route(_candidate["path"], _path)
+                if _matched_params is not None:
+                    _route = _candidate
+                    _path_params = _matched_params
                     break
-            if _target is None:
+            if _route is None:
                 await send({"type": "http.response.start", "status": 404, "headers": [(b"content-type", b"text/plain")]})
                 await send({"type": "http.response.body", "body": b"Not Found\\n"})
                 return
@@ -1604,15 +1629,46 @@ def _install_tracekernel_asgi_modules():
                 if not _message.get("more_body"):
                     break
             _headers = {name.decode("latin1").lower(): value.decode("latin1") for name, value in scope.get("headers", [])}
-            _kwargs = {}
+            _query_params = urllib.parse.parse_qs((scope.get("query_string") or b"").decode("utf-8"), keep_blank_values=True)
+            _kwargs = dict(_path_params)
+            for _name, _values in _query_params.items():
+                if _values:
+                    _kwargs.setdefault(_name, _values[-1])
+            _signature = inspect.signature(_route["func"])
+            _body_value = None
+            _has_body_value = False
             if _method in ("POST", "PUT", "PATCH"):
                 _content_type = _headers.get("content-type", "")
                 if "application/json" in _content_type and _body:
-                    _kwargs["item"] = json.loads(_body.decode("utf-8"))
+                    _body_value = json.loads(_body.decode("utf-8"))
+                    _has_body_value = True
                 elif _body:
-                    _kwargs["body"] = _body.decode("utf-8")
-            _result = await _maybe_await(_target(**_kwargs))
-            _response = _json_response(_result)
+                    _body_value = _body.decode("utf-8")
+                    _has_body_value = True
+            if _has_body_value:
+                _missing_params = [
+                    _name for _name, _param in _signature.parameters.items()
+                    if _name not in _kwargs and
+                    _param.kind in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    )
+                ]
+                if len(_missing_params) == 1:
+                    _kwargs[_missing_params[0]] = _body_value
+                elif "body" in _signature.parameters and "body" not in _kwargs:
+                    _kwargs["body"] = _body_value
+                elif "item" in _signature.parameters and "item" not in _kwargs:
+                    _kwargs["item"] = _body_value
+            _accepted_kwargs = {
+                _name: _value for _name, _value in _kwargs.items()
+                if _name in _signature.parameters or any(
+                    _param.kind == inspect.Parameter.VAR_KEYWORD
+                    for _param in _signature.parameters.values()
+                )
+            }
+            _result = await _maybe_await(_route["func"](**_accepted_kwargs))
+            _response = _json_response(_result, _route["status_code"])
             await send({
                 "type": "http.response.start",
                 "status": _response["status"],

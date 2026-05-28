@@ -5967,7 +5967,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles) : []),
       defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
       defineCommand('bg', async (args) => this.runKernelJobPlacement(args, 'bg')),
-      defineCommand('curl', async (args) => this.runKernelCurl(args)),
+      defineCommand('curl', async (args, ctx) => this.runKernelCurl(args, ctx)),
       defineCommand('fg', async (args) => this.runKernelJobPlacement(args, 'fg')),
       defineCommand('kill', async (args) => this.runKernelKill(args, 'kill')),
       defineCommand('jobs', async (args) => this.runKernelJobs(args)),
@@ -6687,12 +6687,30 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return result ?? { stdout: '', stderr: `bash: ${expandedInvocation.scriptFile}: Exec format error\n`, exitCode: 126 };
   }
 
-  private async runKernelCurl(args: string[]): Promise<RuntimeCommandResult> {
+  private async runKernelCurl(args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
     let method: string | undefined;
     let body: string | undefined;
     let includeHeaders = false;
+    let headOnly = false;
+    let failOnHttpError = false;
+    let appendDataToQuery = false;
+    let outputPath: string | undefined;
+    let timeoutMs: number | undefined;
     const headers: Record<string, string> = {};
+    const rawHeaders: Array<[string, string]> = [];
     const urls: string[] = [];
+    const addHeader = (header: string): void => {
+      const separator = header.indexOf(':');
+      if (separator === -1) return;
+      const name = header.slice(0, separator).trim();
+      if (!name) return;
+      const value = header.slice(separator + 1).trim();
+      headers[name.toLowerCase()] = value;
+      rawHeaders.push([name, value]);
+    };
+    const appendBody = (data: string): void => {
+      body = body === undefined ? data : `${body}&${data}`;
+    };
     for (let index = 0; index < args.length; index += 1) {
       const arg = args[index] ?? '';
       if (arg === '-s' || arg === '--silent' || arg === '-L' || arg === '--location') continue;
@@ -6700,36 +6718,106 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         includeHeaders = true;
         continue;
       }
+      if (arg === '-I' || arg === '--head') {
+        method ??= 'HEAD';
+        includeHeaders = true;
+        headOnly = true;
+        continue;
+      }
+      if (arg === '-f' || arg === '--fail') {
+        failOnHttpError = true;
+        continue;
+      }
+      if (arg === '-G' || arg === '--get') {
+        appendDataToQuery = true;
+        continue;
+      }
+      if (arg === '-o' || arg === '--output') {
+        const next = args[++index];
+        if (!next) return { stdout: '', stderr: 'curl: option requires an argument -- o\n', exitCode: 2 };
+        outputPath = next;
+        continue;
+      }
+      if (arg.startsWith('--output=')) {
+        outputPath = arg.slice('--output='.length);
+        if (!outputPath) return { stdout: '', stderr: 'curl: option requires an argument -- output\n', exitCode: 2 };
+        continue;
+      }
+      if (arg === '--max-time') {
+        const next = args[++index];
+        if (!next) return { stdout: '', stderr: 'curl: option requires an argument -- max-time\n', exitCode: 2 };
+        const seconds = Number(next);
+        if (!Number.isFinite(seconds) || seconds < 0) return { stdout: '', stderr: `curl: invalid --max-time value: ${next}\n`, exitCode: 2 };
+        timeoutMs = Math.max(1, Math.ceil(seconds * 1000));
+        continue;
+      }
+      if (arg.startsWith('--max-time=')) {
+        const value = arg.slice('--max-time='.length);
+        const seconds = Number(value);
+        if (!Number.isFinite(seconds) || seconds < 0) return { stdout: '', stderr: `curl: invalid --max-time value: ${value}\n`, exitCode: 2 };
+        timeoutMs = Math.max(1, Math.ceil(seconds * 1000));
+        continue;
+      }
       if (arg === '-X' || arg === '--request') {
         const next = args[++index];
         if (!next) return { stdout: '', stderr: 'curl: option requires an argument -- X\n', exitCode: 2 };
         method = next.toUpperCase();
+        headOnly = method === 'HEAD';
         continue;
       }
       if (arg.startsWith('-X') && arg.length > 2) {
         method = arg.slice(2).toUpperCase();
+        headOnly = method === 'HEAD';
         continue;
       }
       if (arg === '-H' || arg === '--header') {
         const next = args[++index];
         if (!next) return { stdout: '', stderr: 'curl: option requires an argument -- H\n', exitCode: 2 };
-        const separator = next.indexOf(':');
-        if (separator !== -1) {
-          headers[next.slice(0, separator).trim().toLowerCase()] = next.slice(separator + 1).trim();
-        }
+        addHeader(next);
+        continue;
+      }
+      if (arg.startsWith('--header=')) {
+        addHeader(arg.slice('--header='.length));
+        continue;
+      }
+      if (arg === '--json') {
+        const next = args[++index];
+        if (next === undefined) return { stdout: '', stderr: 'curl: option requires an argument -- json\n', exitCode: 2 };
+        appendBody(next);
+        method ??= 'POST';
+        headers['content-type'] ??= 'application/json';
+        headers.accept ??= 'application/json';
+        continue;
+      }
+      if (arg.startsWith('--json=')) {
+        appendBody(arg.slice('--json='.length));
+        method ??= 'POST';
+        headers['content-type'] ??= 'application/json';
+        headers.accept ??= 'application/json';
         continue;
       }
       if (arg === '-d' || arg === '--data' || arg === '--data-raw' || arg === '--data-binary') {
         const next = args[++index];
         if (next === undefined) return { stdout: '', stderr: 'curl: option requires an argument -- d\n', exitCode: 2 };
-        body = body === undefined ? next : `${body}&${next}`;
+        appendBody(next);
+        method ??= 'POST';
+        headers['content-type'] ??= 'application/x-www-form-urlencoded';
+        continue;
+      }
+      if (arg.startsWith('-d') && arg.length > 2) {
+        appendBody(arg.slice(2));
         method ??= 'POST';
         headers['content-type'] ??= 'application/x-www-form-urlencoded';
         continue;
       }
       if (arg.startsWith('--data=')) {
-        const next = arg.slice('--data='.length);
-        body = body === undefined ? next : `${body}&${next}`;
+        appendBody(arg.slice('--data='.length));
+        method ??= 'POST';
+        headers['content-type'] ??= 'application/x-www-form-urlencoded';
+        continue;
+      }
+      if (arg.startsWith('--data-raw=')) {
+        appendBody(arg.slice('--data-raw='.length));
         method ??= 'POST';
         headers['content-type'] ??= 'application/x-www-form-urlencoded';
         continue;
@@ -6752,15 +6840,40 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     } catch {
       return { stdout: '', stderr: `curl: (3) URL rejected: ${urls[0]}\n`, exitCode: 3 };
     }
-    const response = await this.dispatchHttpRequest({
+    if (appendDataToQuery && body !== undefined) {
+      const params = new URLSearchParams(body);
+      for (const [name, value] of params) url.searchParams.append(name, value);
+      body = undefined;
+      if (method === undefined || method === 'POST') method = 'GET';
+    }
+    const request: RuntimeKernelHttpRequest = {
       method: method ?? 'GET',
       url: url.toString(),
       path: `${url.pathname}${url.search}`,
       headers,
+      ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
       ...(body !== undefined ? { body } : {}),
-    });
+    };
+    let timedOut = false;
+    const response = await (timeoutMs === undefined
+      ? this.dispatchHttpRequest(request)
+      : Promise.race([
+          this.dispatchHttpRequest(request),
+          new Promise<RuntimeKernelHttpResponse>((resolve) => {
+            setTimeout(() => {
+              timedOut = true;
+              resolve({ status: 0, body: `curl: (28) Operation timed out after ${timeoutMs} milliseconds\n` });
+            }, timeoutMs);
+          }),
+        ]));
+    if (timedOut) {
+      return { stdout: '', stderr: response.body ?? 'curl: (28) Operation timed out\n', exitCode: 28 };
+    }
     if (response.status === 0) {
       return { stdout: '', stderr: response.body ?? 'curl: connection failed\n', exitCode: 7 };
+    }
+    if (failOnHttpError && response.status >= 400) {
+      return { stdout: '', stderr: `curl: (22) The requested URL returned error: ${response.status}\n`, exitCode: 22 };
     }
     const responseHeaders = includeHeaders
       ? [
@@ -6770,8 +6883,20 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           '',
         ].join('\n')
       : '';
+    const responseBody = headOnly ? '' : response.body ?? '';
+    const outputBody = `${responseHeaders}${responseBody}`;
+    if (outputPath !== undefined) {
+      try {
+        const absoluteOutputPath = resolveWorkspaceContextPath(ctx, this.cwd, outputPath, 'curl output path');
+        await ctx.fs.mkdir(dirname(absoluteOutputPath), { recursive: true });
+        await ctx.fs.writeFile(absoluteOutputPath, outputBody);
+      } catch (error) {
+        return { stdout: '', stderr: `curl: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 23 };
+      }
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
     return {
-      stdout: `${responseHeaders}${response.body ?? ''}`,
+      stdout: outputBody,
       stderr: '',
       exitCode: 0,
     };

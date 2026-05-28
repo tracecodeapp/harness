@@ -5709,6 +5709,19 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
           '  req.setEncoding("utf8");',
           '  req.on("data", (chunk) => { body += chunk; });',
           '  req.on("end", () => {',
+          '    if (req.method === "GET" && req.url.startsWith("/echo")) {',
+          '      res.setHeader("x-trace", req.complete && req.rawHeaders.length > 0 ? "yes" : "no");',
+          '      const headerSnapshot = res.getHeaders();',
+          '      const hasTrace = res.hasHeader("x-trace");',
+          '      res.writeHead(200, { "content-type": "application/json" });',
+          '      res.end(JSON.stringify({ method: req.method, url: req.url, body, hasTrace, trace: headerSnapshot["x-trace"] }) + "\\n");',
+          '      return;',
+          '    }',
+          '    if (req.method === "HEAD" && req.url === "/dequeue") {',
+          '      res.writeHead(200, { "content-type": "application/json", "x-queue-size": String(queue.length) });',
+          '      res.end("ignored\\n");',
+          '      return;',
+          '    }',
           '    if (req.method === "POST" && req.url === "/enqueue") {',
           '      queue.push(JSON.parse(body));',
           '      res.writeHead(201, { "content-type": "application/json" });',
@@ -5744,13 +5757,34 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
   }
   assertCondition(listeners.includes('\thttp\t127.0.0.1\t3000\t'), `tracekernel should expose HTTP listener: ${listeners}`);
 
-  const enqueue = await workspace.runCommand('curl -s -X POST -H "content-type: application/json" -d \'{"id":1}\' http://localhost:3000/enqueue');
+  const enqueue = await workspace.runCommand('curl -s --json \'{"id":1}\' http://localhost:3000/enqueue');
   assertCondition(enqueue.exitCode === 0, `curl enqueue should succeed: ${JSON.stringify(enqueue)}`);
   assertCondition(enqueue.stdout === '{"size":1}\n', `curl enqueue should return JSON: ${enqueue.stdout}`);
 
-  const dequeue = await workspace.runCommand('curl -s http://localhost:3000/dequeue');
-  assertCondition(dequeue.exitCode === 0, `curl dequeue should succeed: ${JSON.stringify(dequeue)}`);
-  assertCondition(dequeue.stdout === '{"id":1}\n', `curl dequeue should return queued item: ${dequeue.stdout}`);
+  const echo = await workspace.runCommand('curl -s -H "x-client: trace" -G -d "q=hello world" http://localhost:3000/echo');
+  assertCondition(echo.exitCode === 0, `curl -G echo should succeed: ${JSON.stringify(echo)}`);
+  assertCondition(
+    echo.stdout === '{"method":"GET","url":"/echo?q=hello+world","body":"","hasTrace":true,"trace":"yes"}\n',
+    `curl -G should append data to query and preserve Node request metadata: ${echo.stdout}`
+  );
+
+  const head = await workspace.runCommand('curl -s -I http://localhost:3000/dequeue');
+  assertCondition(head.exitCode === 0, `curl HEAD should succeed: ${JSON.stringify(head)}`);
+  assertCondition(
+    head.stdout.includes('HTTP/1.1 200\n') &&
+      head.stdout.includes('x-queue-size: 1\n') &&
+      !head.stdout.includes('ignored'),
+    `curl HEAD should include headers without a response body: ${head.stdout}`
+  );
+
+  const fail = await workspace.runCommand('curl -s --fail http://localhost:3000/missing');
+  assertCondition(fail.exitCode === 22, `curl --fail should map HTTP errors to exit 22: ${JSON.stringify(fail)}`);
+
+  const dequeue = await workspace.runCommand('curl -s -o out.json http://localhost:3000/dequeue');
+  assertCondition(dequeue.exitCode === 0, `curl -o dequeue should succeed: ${JSON.stringify(dequeue)}`);
+  assertCondition(dequeue.stdout === '', `curl -o should not write body to stdout: ${dequeue.stdout}`);
+  const writtenDequeue = await workspace.readFile('out.json');
+  assertCondition(writtenDequeue === '{"id":1}\n', `curl -o should write through the workspace filesystem: ${writtenDequeue}`);
 
   const requests = await workspace.readFile('/proc/tracekernel/net/requests');
   assertCondition(
