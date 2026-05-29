@@ -6111,6 +6111,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(options.rawHeaders ? { rawHeaders: options.rawHeaders } : {}),
       ...(options.body !== undefined ? { body: options.body } : {}),
       ...(options.bodyEncoding ? { bodyEncoding: options.bodyEncoding } : {}),
+    }, {
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
   }
 
@@ -6279,7 +6282,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private async dispatchHttpRequest(request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse> {
+  private async dispatchHttpRequest(
+    request: RuntimeKernelHttpRequest,
+    options: {
+      timeoutMs?: number;
+      timeoutBody?: string;
+      signal?: AbortSignal;
+    } = {}
+  ): Promise<RuntimeKernelHttpResponse> {
     let url: URL;
     try {
       url = new URL(request.url);
@@ -6295,39 +6305,106 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       });
       return { status: 0, body: `curl: (7) Failed to connect to ${url.hostname} port ${url.port || '80'}: Connection refused\n` };
     }
+    const timeoutMs = options.timeoutMs === undefined ? undefined : Math.max(1, Math.ceil(Number(options.timeoutMs)));
+    if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) {
+      return { status: 400, body: `TraceKernel HTTP timeout rejected: ${options.timeoutMs}\n` };
+    }
+    const signal = options.signal;
+    if (signal?.aborted) {
+      this.recordHttpRequest({
+        listenerId: listener.info.id,
+        pid: listener.info.pid,
+        method: request.method,
+        url: request.url,
+        error: 'EINTR',
+      });
+      return { status: 0, body: 'TraceKernel HTTP request aborted\n' };
+    }
+
+    let settled = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
+    const settleFailure = (error: string, body: string): RuntimeKernelHttpResponse => {
+      if (!settled) {
+        settled = true;
+        this.recordHttpRequest({
+          listenerId: listener.info.id,
+          pid: listener.info.pid,
+          method: request.method,
+          url: request.url,
+          error,
+        });
+      }
+      return { status: 0, body };
+    };
+    const handlerResponse = (async (): Promise<RuntimeKernelHttpResponse> => {
+      try {
+        const response = await listener.handler(request);
+        const status = Math.trunc(Number(response.status)) || 200;
+        if (!settled) {
+          this.recordHttpRequest({
+            listenerId: listener.info.id,
+            pid: listener.info.pid,
+            method: request.method,
+            url: request.url,
+            status,
+          });
+          this.recordKernelEvent('net-request', listener.info.pid, {
+            id: listener.info.id,
+            method: request.method,
+            url: request.url,
+            status,
+          });
+        }
+        return {
+          status,
+          ...(response.headers ? { headers: response.headers } : {}),
+          ...(response.rawHeaders ? { rawHeaders: response.rawHeaders } : {}),
+          ...(response.body !== undefined ? { body: response.body } : {}),
+          ...(response.bodyEncoding ? { bodyEncoding: response.bodyEncoding } : {}),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!settled) {
+          this.recordHttpRequest({
+            listenerId: listener.info.id,
+            pid: listener.info.pid,
+            method: request.method,
+            url: request.url,
+            error: message,
+          });
+        }
+        return { status: 500, body: `${message}\n` };
+      }
+    })();
+
+    const races: Array<Promise<RuntimeKernelHttpResponse>> = [handlerResponse];
+    if (timeoutMs !== undefined) {
+      races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          resolve(settleFailure(
+            'ETIMEDOUT',
+            options.timeoutBody ?? `TraceKernel HTTP request timed out after ${timeoutMs} milliseconds\n`
+          ));
+        }, timeoutMs);
+      }));
+    }
+    if (signal) {
+      races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
+        abortListener = () => {
+          resolve(settleFailure('EINTR', 'TraceKernel HTTP request aborted\n'));
+        };
+        signal.addEventListener('abort', abortListener, { once: true });
+      }));
+    }
+
     try {
-      const response = await listener.handler(request);
-      const status = Math.trunc(Number(response.status)) || 200;
-      this.recordHttpRequest({
-        listenerId: listener.info.id,
-        pid: listener.info.pid,
-        method: request.method,
-        url: request.url,
-        status,
-      });
-      this.recordKernelEvent('net-request', listener.info.pid, {
-        id: listener.info.id,
-        method: request.method,
-        url: request.url,
-        status,
-      });
-      return {
-        status,
-        ...(response.headers ? { headers: response.headers } : {}),
-        ...(response.rawHeaders ? { rawHeaders: response.rawHeaders } : {}),
-        ...(response.body !== undefined ? { body: response.body } : {}),
-        ...(response.bodyEncoding ? { bodyEncoding: response.bodyEncoding } : {}),
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.recordHttpRequest({
-        listenerId: listener.info.id,
-        pid: listener.info.pid,
-        method: request.method,
-        url: request.url,
-        error: message,
-      });
-      return { status: 500, body: `${message}\n` };
+      const response = await Promise.race(races);
+      settled = true;
+      return response;
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+      if (abortListener) signal?.removeEventListener('abort', abortListener);
     }
   }
 
@@ -6987,19 +7064,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
       ...(body !== undefined ? { body } : {}),
     };
-    let timedOut = false;
-    const response = await (timeoutMs === undefined
-      ? this.dispatchHttpRequest(request)
-      : Promise.race([
-          this.dispatchHttpRequest(request),
-          new Promise<RuntimeKernelHttpResponse>((resolve) => {
-            setTimeout(() => {
-              timedOut = true;
-              resolve({ status: 0, body: `curl: (28) Operation timed out after ${timeoutMs} milliseconds\n` });
-            }, timeoutMs);
-          }),
-        ]));
-    if (timedOut) {
+    const response = await this.dispatchHttpRequest(request, {
+      ...(timeoutMs !== undefined ? {
+        timeoutMs,
+        timeoutBody: `curl: (28) Operation timed out after ${timeoutMs} milliseconds\n`,
+      } : {}),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+    });
+    if (response.status === 0 && response.body?.startsWith('curl: (28)')) {
       return { stdout: '', stderr: response.body ?? 'curl: (28) Operation timed out\n', exitCode: 28 };
     }
     if (response.status === 0) {

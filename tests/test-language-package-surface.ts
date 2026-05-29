@@ -338,8 +338,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         projectDeclarations.includes('RuntimeWorkspaceHttpClient') &&
-          projectDeclarations.includes('listen(options: RuntimeKernelHttpListenOptions'),
-        '@tracecode/harness-project declarations should expose the workspace HTTP listener API'
+          projectDeclarations.includes('listen(options: RuntimeKernelHttpListenOptions') &&
+          projectDeclarations.includes('timeoutMs?: number') &&
+          projectDeclarations.includes('signal?: AbortSignal'),
+        '@tracecode/harness-project declarations should expose the abortable workspace HTTP API'
       );
       assertCondition(
         projectDist.includes('function isRuntimeDirectoryChange(') &&
@@ -1012,6 +1014,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         throw new Error('@tracecode/harness-project workspace HTTP json smoke failed: ' + JSON.stringify(httpJson));
       }
       mockHttp.close();
+      const stalledHttp = projectWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, () => new Promise(() => {}));
+      const timedOutHttp = await projectWorkspace.http.request({
+        url: 'http://localhost:' + stalledHttp.info.port + '/stall',
+        timeoutMs: 1,
+      });
+      if (timedOutHttp.status !== 0 || timedOutHttp.body !== 'TraceKernel HTTP request timed out after 1 milliseconds\\n') {
+        throw new Error('@tracecode/harness-project workspace HTTP timeout smoke failed: ' + JSON.stringify(timedOutHttp));
+      }
+      stalledHttp.close();
       const pythonMain = await import('@tracecode/harness-python');
       if (
         typeof pythonMain.createNativePythonProjectRunner !== 'function' ||

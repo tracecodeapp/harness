@@ -210,6 +210,26 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (nativeCSharp.exitCode !== 0 || !nativeCSharp.stdout.endsWith('packed-native-csharp\\n')) {
         throw new Error('Packed native project workspace C# smoke failed: ' + JSON.stringify(nativeCSharp));
       }
+      const packedMock = nativeWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, (request) => ({
+        status: 208,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method: request.method, path: request.path, body: request.body || '' }) + '\\n',
+      }));
+      const packedHttp = await nativeWorkspace.http.request({
+        method: 'POST',
+        url: 'http://localhost:' + packedMock.info.port + '/packed',
+        body: 'from-package',
+      });
+      if (packedHttp.status !== 208 || project.runtimeHttpResponseText(packedHttp) !== '{"method":"POST","path":"/packed","body":"from-package"}\\n') {
+        throw new Error('Packed native project workspace HTTP smoke failed: ' + JSON.stringify(packedHttp));
+      }
+      packedMock.close();
+      const packedStall = nativeWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, () => new Promise(() => {}));
+      const packedTimeout = await nativeWorkspace.http.request({ url: 'http://localhost:' + packedStall.info.port + '/stall', timeoutMs: 1 });
+      if (packedTimeout.status !== 0 || packedTimeout.body !== 'TraceKernel HTTP request timed out after 1 milliseconds\\n') {
+        throw new Error('Packed native project workspace HTTP timeout smoke failed: ' + JSON.stringify(packedTimeout));
+      }
+      packedStall.close();
       const browserWorkspace = await browserProject.createBrowserProjectWorkspace({
         files: [
           { path: 'main.py', contents: 'print("browser-python")\\n' },

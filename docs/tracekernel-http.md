@@ -109,12 +109,19 @@ import {
 const binaryResponse = await workspace.http.request({
   method: 'POST',
   url: 'http://localhost:3000/blob',
+  timeoutMs: 1000,
   ...runtimeHttpBodyFromBytes(new Uint8Array([0, 255, 1])),
 });
 
 console.log(runtimeHttpResponseText(binaryResponse));
 console.log(Array.from(runtimeHttpResponseBytes(binaryResponse)));
 ```
+
+`workspace.http.request(...)` also accepts `timeoutMs` and `signal`. A timeout
+or abort returns a transport-style response with `status: 0` instead of leaving
+the caller parked on a stalled endpoint. This is the programmatic equivalent of
+using `curl --max-time` from inside the workspace, and it keeps scheduler slots
+available for later commands.
 
 `workspace.http.json(...)` is a convenience wrapper for endpoint tests. It sets
 JSON `accept` and `content-type` defaults, stringifies the request body, and

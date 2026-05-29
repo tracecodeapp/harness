@@ -390,6 +390,43 @@ async function main(): Promise<void> {
     assertCondition(failingResponse.body === 'mock exploded\n', `consumer listener exception body should include message: ${JSON.stringify(failingResponse)}`);
     failingMock.close();
 
+    const stalledMock = workspace.http.listen({ host: '127.0.0.1', port: 3504 }, () => new Promise(() => {}));
+    const stalledResponse = await workspace.http.request({ url: 'http://localhost:3504/stall', timeoutMs: 5 });
+    assertCondition(stalledResponse.status === 0, `workspace HTTP request timeout should return a transport failure: ${JSON.stringify(stalledResponse)}`);
+    assertCondition(
+      stalledResponse.body === 'TraceKernel HTTP request timed out after 5 milliseconds\n',
+      `workspace HTTP request timeout should explain the timeout: ${JSON.stringify(stalledResponse)}`
+    );
+    const abortController = new AbortController();
+    const abortedPromise = workspace.http.request({ url: 'http://localhost:3504/abort', signal: abortController.signal });
+    abortController.abort();
+    const abortedResponse = await abortedPromise;
+    assertCondition(abortedResponse.status === 0, `workspace HTTP request abort should return a transport failure: ${JSON.stringify(abortedResponse)}`);
+    assertCondition(
+      abortedResponse.body === 'TraceKernel HTTP request aborted\n',
+      `workspace HTTP request abort should explain the abort: ${JSON.stringify(abortedResponse)}`
+    );
+    stalledMock.close();
+
+    const queuedWorkspace = await createRuntimeWorkspace({
+      kernel: { scheduler: { maxConcurrentCommands: 1 } },
+    });
+    const queuedStall = queuedWorkspace.http.listen({ host: '127.0.0.1', port: 3505 }, () => new Promise(() => {}));
+    try {
+      const timedOutCurl = queuedWorkspace.runCommand('curl -s --max-time 0.01 http://localhost:3505/hang');
+      const queuedEcho = queuedWorkspace.runCommand('printf "after\\n"');
+      const [curlResult, echoResult] = await Promise.all([timedOutCurl, queuedEcho]);
+      assertCondition(curlResult.exitCode === 28, `curl timeout should exit 28: ${JSON.stringify(curlResult)}`);
+      assertCondition(
+        curlResult.stderr === 'curl: (28) Operation timed out after 10 milliseconds\n',
+        `curl timeout should preserve curl-shaped stderr: ${JSON.stringify(curlResult)}`
+      );
+      assertCondition(echoResult.exitCode === 0 && echoResult.stdout === 'after\n', `timed-out HTTP command should release scheduler slot: ${JSON.stringify(echoResult)}`);
+    } finally {
+      queuedStall.close();
+      await queuedWorkspace.destroy();
+    }
+
     const disposableMock = workspace.http.listen({ host: '127.0.0.1', port: 3503 }, () => ({
       status: 200,
       body: 'disposed?\n',

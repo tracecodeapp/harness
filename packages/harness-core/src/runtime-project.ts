@@ -174,6 +174,8 @@ export interface RuntimeWorkspaceHttpRequestOptions {
   rawHeaders?: readonly [string, string][];
   body?: string;
   bodyEncoding?: RuntimeFileEncoding;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface RuntimeWorkspaceHttpJsonRequestOptions extends Omit<RuntimeWorkspaceHttpRequestOptions, 'body' | 'bodyEncoding'> {

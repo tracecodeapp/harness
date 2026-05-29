@@ -473,6 +473,7 @@ async function main(): Promise<void> {
     let javaListenClosed = false;
     let javaListenPort = 0;
     let javaServerExternalResponse: { status?: number; body?: string; bodyEncoding?: string; headers?: Record<string, string> } | undefined;
+    let javaServerBusyResponse: { status?: number; body?: string } | undefined;
     const javaServerClient = new JavaWorkerClient({ workerUrl: '/instance-a/java-worker.js' });
     const javaServerResult = await javaServerClient.executeProjectJava({
       code: '',
@@ -495,6 +496,13 @@ async function main(): Promise<void> {
             body: 'work',
           }).then((response) => {
             javaServerExternalResponse = response;
+          });
+          void handler({
+            method: 'GET',
+            url: 'http://127.0.0.1:3210/busy',
+            path: '/busy',
+          }).then((response) => {
+            javaServerBusyResponse = response;
           });
           return {
             id: 'java-http-test',
@@ -523,6 +531,11 @@ async function main(): Promise<void> {
         javaServerExternalResponse.body === testBase64('server-body') &&
         javaServerExternalResponse.headers?.['x-java-server'] === 'ok',
       'Java worker client should read Java server responses from the shared buffer'
+    );
+    assertCondition(
+      javaServerBusyResponse?.status === 503 &&
+        javaServerBusyResponse.body === 'Java TraceKernel HTTP server is busy\n',
+      'Java worker client should apply bounded one-request-at-a-time backpressure'
     );
     assertCondition(javaListenClosed, 'Java worker client should close Java HttpServer listeners when the worker closes them');
     console.log('PASS: Java worker client bridges TraceKernel HTTP server listeners');
