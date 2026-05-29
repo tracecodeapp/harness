@@ -137,6 +137,26 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const csharp = await import('@tracecode/harness/csharp');
       const cpp = await import('@tracecode/harness/cpp');
 
+      async function waitForPackedHttpListener(workspace, port) {
+        let listeners = '';
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
+          if (listeners.includes('\\thttp\\t127.0.0.1\\t' + port + '\\t')) return listeners;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        throw new Error('Packed consumer HTTP listener did not start on ' + port + ':\\n' + listeners);
+      }
+
+      async function killPackedHttpListener(workspace, port) {
+        const listeners = await waitForPackedHttpListener(workspace, port);
+        const row = listeners.split('\\n').find((line) => line.includes('\\thttp\\t127.0.0.1\\t' + port + '\\t'));
+        const pid = row && row.split('\\t')[1];
+        if (!pid) throw new Error('Packed consumer HTTP listener row should include pid: ' + listeners);
+        const killed = await workspace.runCommand('kill ' + pid);
+        if (killed.exitCode !== 0) throw new Error('Packed consumer HTTP listener should be killable: ' + JSON.stringify(killed));
+        await workspace.runCommand('wait ' + pid);
+      }
+
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
       if (typeof browser.getLanguageRuntimeInfo !== 'function') throw new Error('Missing browser runtime info export');
       if (typeof browser.getRuntimeProjectIoSupport !== 'function') {
@@ -230,6 +250,213 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         throw new Error('Packed native project workspace HTTP timeout smoke failed: ' + JSON.stringify(packedTimeout));
       }
       packedStall.close();
+      const consumerHttpRequests = [];
+      const consumerWorkspace = await browserProject.createBrowserProjectWorkspace({
+        kernel: { scheduler: { maxConcurrentCommands: 4 } },
+        files: [
+          {
+            path: 'server.js',
+            contents: [
+              'const http = require("node:http");',
+              'const queue = [];',
+              'http.createServer((req, res) => {',
+              '  const chunks = [];',
+              '  req.on("data", (chunk) => chunks.push(chunk));',
+              '  req.on("end", () => {',
+              '    const body = Buffer.concat(chunks).toString();',
+              '    if (req.method === "POST" && req.url === "/enqueue") {',
+              '      queue.push(JSON.parse(body));',
+              '      res.writeHead(201, { "content-type": "application/json" });',
+              '      res.end(JSON.stringify({ size: queue.length }) + "\\\\n");',
+              '      return;',
+              '    }',
+              '    if (req.method === "GET" && req.url === "/dequeue") {',
+              '      res.writeHead(200, { "content-type": "application/json" });',
+              '      res.end(JSON.stringify(queue.shift() || null) + "\\\\n");',
+              '      return;',
+              '    }',
+              '    res.writeHead(404, { "content-type": "text/plain" });',
+              '    res.end("missing\\\\n");',
+              '  });',
+              '}).listen(9101, "127.0.0.1");',
+              '',
+            ].join('\\n'),
+          },
+          {
+            path: 'node-client.js',
+            contents: [
+              '(async () => {',
+              '  const response = await fetch("http://localhost:9100/from-node", {',
+              '    method: "POST",',
+              '    headers: { "content-type": "text/plain", "x-client": "node" },',
+              '    body: "node-body",',
+              '  });',
+              '  console.log(response.status + ":" + JSON.stringify(await response.json()));',
+              '})().catch((error) => { console.error(error.message); process.exitCode = 1; });',
+              '',
+            ].join('\\n'),
+          },
+          { path: 'python-client.py', contents: 'print("python client")\\n' },
+          { path: 'python-server.py', contents: 'print("python server")\\n' },
+          { path: 'JavaClient.java', contents: 'class JavaClient { public static void main(String[] args) {} }\\n' },
+          { path: 'JavaServer.java', contents: 'class JavaServer { public static void main(String[] args) {} }\\n' },
+        ],
+        nodeProjectTimeoutMs: 20000,
+        nodeProject: { allowDynamicEval: true },
+        pythonWorkerClient: {
+          async executeProjectPython(request, _timeoutMs, _onEvent, signal) {
+            if (request.scriptPath === 'python-client.py') {
+              const response = await request.kernelHttp.dispatch({
+                method: 'POST',
+                url: 'http://localhost:9100/from-python',
+                path: '/from-python',
+                headers: { 'content-type': 'text/plain', 'x-client': 'python' },
+                body: 'python-body',
+              });
+              return { stdout: response.status + ':' + response.body, stderr: '', exitCode: response.status === 207 ? 0 : 1 };
+            }
+            if (request.scriptPath === 'python-server.py') {
+              const handle = request.kernelHttp.listen({ host: '127.0.0.1', port: 9102 }, (httpRequest) => ({
+                status: 203,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ language: 'python', method: httpRequest.method, path: httpRequest.path, body: httpRequest.body || '' }) + '\\n',
+              }));
+              await new Promise((resolve) => {
+                if (signal?.aborted) {
+                  resolve();
+                  return;
+                }
+                signal?.addEventListener('abort', resolve, { once: true });
+              });
+              handle.close();
+              return { stdout: '', stderr: '', exitCode: 143 };
+            }
+            return { stdout: request.scriptPath + ':unused-python\\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+        javaWorkerClient: {
+          async executeProjectJava(request, _timeoutMs, _onEvent, signal) {
+            if (request.scriptPath === 'JavaClient') {
+              const response = await request.kernelHttp.dispatch({
+                method: 'POST',
+                url: 'http://localhost:9100/from-java',
+                path: '/from-java',
+                headers: { 'content-type': 'text/plain', 'x-client': 'java' },
+                body: 'java-body',
+              });
+              return { stdout: response.status + ':' + response.body, stderr: '', exitCode: response.status === 207 ? 0 : 1 };
+            }
+            if (request.scriptPath === 'JavaServer') {
+              const handle = request.kernelHttp.listen({ host: '127.0.0.1', port: 9103 }, (httpRequest) => ({
+                status: 206,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ language: 'java', method: httpRequest.method, path: httpRequest.path, body: httpRequest.body || '' }) + '\\n',
+              }));
+              await new Promise((resolve) => {
+                if (signal?.aborted) {
+                  resolve();
+                  return;
+                }
+                signal?.addEventListener('abort', resolve, { once: true });
+              });
+              handle.close();
+              return { stdout: '', stderr: '', exitCode: 143 };
+            }
+            return { stdout: request.source + ':' + request.scriptPath + ':unused-java\\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+        csharpWorkerClient: {
+          async executeProjectCSharp(request) {
+            return { stdout: request.source + ':' + request.args.join(',') + ':unused-csharp\\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+        cppWorkerClient: {
+          async executeProjectCpp(request) {
+            return { stdout: request.source + ':' + request.args.join(',') + ':unused-cpp\\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+      });
+      const upstream = consumerWorkspace.http.listen({ host: '127.0.0.1', port: 9100 }, (request) => {
+        consumerHttpRequests.push({ method: request.method, path: request.path, body: request.body || '', client: request.headers?.['x-client'] || '' });
+        return {
+          status: 207,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ method: request.method, path: request.path, body: request.body || '', client: request.headers?.['x-client'] || '' }) + '\\n',
+        };
+      });
+      try {
+        const terminal = consumerWorkspace.createTerminalSession();
+        const startNodeServer = await terminal.run('node server.js &');
+        if (startNodeServer.exitCode !== 0) {
+          throw new Error('Packed consumer terminal server should start: ' + JSON.stringify(startNodeServer));
+        }
+        await waitForPackedHttpListener(consumerWorkspace, 9101);
+        const agentEnqueue = await consumerWorkspace.runCommand('curl -s --json \\'{"id":1}\\' http://localhost:9101/enqueue');
+        if (agentEnqueue.exitCode !== 0 || agentEnqueue.stdout !== '{"size":1}\\n') {
+          throw new Error('Packed consumer agent command should call terminal-owned server: ' + JSON.stringify(agentEnqueue));
+        }
+        const apiDequeue = await consumerWorkspace.http.json({
+          method: 'GET',
+          url: 'http://localhost:9101/dequeue',
+          timeoutMs: 1000,
+        });
+        if (apiDequeue.status !== 200 || apiDequeue.json?.id !== 1) {
+          throw new Error('Packed consumer workspace HTTP API should call terminal-owned server: ' + JSON.stringify(apiDequeue));
+        }
+        const nodeClient = await consumerWorkspace.runCommand('node node-client.js');
+        if (nodeClient.exitCode !== 0 || nodeClient.stdout !== '207:{"method":"POST","path":"/from-node","body":"node-body","client":"node"}\\n') {
+          throw new Error('Packed consumer Node project should call mock upstream: ' + JSON.stringify(nodeClient));
+        }
+        const pythonClient = await consumerWorkspace.runCommand('python3 python-client.py');
+        if (pythonClient.exitCode !== 0 || pythonClient.stdout !== '207:{"method":"POST","path":"/from-python","body":"python-body","client":"python"}\\n') {
+          throw new Error('Packed consumer Python project should call mock upstream: ' + JSON.stringify(pythonClient));
+        }
+        const javaClient = await consumerWorkspace.runCommand('java JavaClient');
+        if (javaClient.exitCode !== 0 || javaClient.stdout !== '207:{"method":"POST","path":"/from-java","body":"java-body","client":"java"}\\n') {
+          throw new Error('Packed consumer Java project should call mock upstream: ' + JSON.stringify(javaClient));
+        }
+        const startPythonServer = await terminal.run('python3 python-server.py &');
+        if (startPythonServer.exitCode !== 0) {
+          throw new Error('Packed consumer Python server should start: ' + JSON.stringify(startPythonServer));
+        }
+        await waitForPackedHttpListener(consumerWorkspace, 9102);
+        const pythonServerResponse = await consumerWorkspace.http.request({
+          method: 'POST',
+          url: 'http://localhost:9102/from-test',
+          body: 'test-body',
+          timeoutMs: 1000,
+        });
+        if (pythonServerResponse.status !== 203 || project.runtimeHttpResponseText(pythonServerResponse) !== '{"language":"python","method":"POST","path":"/from-test","body":"test-body"}\\n') {
+          throw new Error('Packed consumer API should call Python project server: ' + JSON.stringify(pythonServerResponse));
+        }
+        const startJavaServer = await terminal.run('java JavaServer &');
+        if (startJavaServer.exitCode !== 0) {
+          throw new Error('Packed consumer Java server should start: ' + JSON.stringify(startJavaServer));
+        }
+        await waitForPackedHttpListener(consumerWorkspace, 9103);
+        const javaServerResponse = await consumerWorkspace.http.request({
+          method: 'POST',
+          url: 'http://localhost:9103/from-test',
+          body: 'test-body',
+          timeoutMs: 1000,
+        });
+        if (javaServerResponse.status !== 206 || project.runtimeHttpResponseText(javaServerResponse) !== '{"language":"java","method":"POST","path":"/from-test","body":"test-body"}\\n') {
+          throw new Error('Packed consumer API should call Java project server: ' + JSON.stringify(javaServerResponse));
+        }
+        if (consumerHttpRequests.map((request) => request.path + ':' + request.client).join(',') !== '/from-node:node,/from-python:python,/from-java:java') {
+          throw new Error('Packed consumer mock upstream should receive Node/Python/Java project requests: ' + JSON.stringify(consumerHttpRequests));
+        }
+        await killPackedHttpListener(consumerWorkspace, 9103);
+        await killPackedHttpListener(consumerWorkspace, 9102);
+        await killPackedHttpListener(consumerWorkspace, 9101);
+      } finally {
+        upstream.close();
+        consumerWorkspace.dispose();
+      }
       const browserWorkspace = await browserProject.createBrowserProjectWorkspace({
         files: [
           { path: 'main.py', contents: 'print("browser-python")\\n' },

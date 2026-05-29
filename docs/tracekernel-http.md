@@ -87,6 +87,42 @@ The background server is owned by a kernel process. Killing that process closes
 its listener, and `/proc/tracekernel/net/listeners` exposes the active simulated
 listeners for diagnostics.
 
+In a consumer app, keep the visible shell, agent commands, endpoint probes, and
+mock services on the same workspace instance. That makes the harness behave like
+one small machine: a user terminal can start the server, an agent can mutate
+files or call `curl`, and the grader can use `workspace.http.request(...)`
+without bypassing the simulated filesystem, process table, or network table.
+
+```ts
+const workspace = await createBrowserProjectWorkspace({
+  assetBaseUrl: '/workers',
+  kernel: { scheduler: { maxConcurrentCommands: 4 } },
+  files: [{ path: 'server.js', contents: submittedServerSource }],
+});
+
+const terminal = workspace.createTerminalSession();
+await terminal.run('node server.js &');
+
+const upstream = workspace.http.listen({ host: '127.0.0.1', port: 9000 }, (request) => ({
+  status: 200,
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ path: request.path }) + '\n',
+}));
+
+try {
+  await workspace.runCommand('curl -s http://localhost:3000/health');
+  const response = await workspace.http.json<{ ok: boolean }>({
+    url: 'http://localhost:3000/health',
+    timeoutMs: 1000,
+  });
+  if (response.status !== 200 || response.json.ok !== true) {
+    throw new Error('health endpoint failed');
+  }
+} finally {
+  upstream.close();
+}
+```
+
 `workspace.http.request(...)` is the consumer-facing endpoint test API. It uses
 the same kernel dispatch path as `curl`, Node `http`, and Python outbound HTTP,
 and records requests in `/proc/tracekernel/net/requests`. Use it when app code
@@ -122,6 +158,12 @@ or abort returns a transport-style response with `status: 0` instead of leaving
 the caller parked on a stalled endpoint. This is the programmatic equivalent of
 using `curl --max-time` from inside the workspace, and it keeps scheduler slots
 available for later commands.
+
+Endpoint graders should set `timeoutMs` on every direct `workspace.http` probe
+and should close mock listeners in `finally` blocks. Long-lived servers started
+from terminal sessions or agent commands should be killed through the workspace
+process API before the workspace is disposed; once killed, TraceKernel closes
+their HTTP listeners and unblocks queued requests with transport-style failures.
 
 `workspace.http.json(...)` is a convenience wrapper for endpoint tests. It sets
 JSON `accept` and `content-type` defaults, stringifies the request body, and
