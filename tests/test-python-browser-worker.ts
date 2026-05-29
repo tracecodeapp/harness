@@ -1037,7 +1037,8 @@ async function main(): Promise<void> {
             {
               path: 'app.py',
               contents: [
-                'from fastapi import FastAPI',
+                'from fastapi import FastAPI, Header, HTTPException, Request',
+                'from fastapi.responses import JSONResponse, Response',
                 'import uvicorn',
                 '',
                 'app = FastAPI()',
@@ -1056,6 +1057,21 @@ async function main(): Promise<void> {
                 'def set_item(item_id, payload, verbose):',
                 '    return {"item_id": item_id, "payload": payload, "verbose": verbose}',
                 '',
+                '@app.get("/inspect")',
+                'async def inspect(request: Request, x_client: str = Header("missing")):',
+                '    return JSONResponse({',
+                '        "method": request.method,',
+                '        "client": x_client,',
+                '        "mode": request.query_params.get("mode"),',
+                '        "body_size": len(await request.body()),',
+                '    })',
+                '',
+                '@app.delete("/items/{item_id}")',
+                'def delete_item(item_id, x_fail: str = Header("no")):',
+                '    if x_fail == "yes":',
+                '        raise HTTPException(status_code=409, detail={"item_id": item_id})',
+                '    return Response("deleted:" + item_id + "\\\\n", status_code=202, media_type="text/plain")',
+                '',
                 'uvicorn.run(app, host="127.0.0.1", port=8765)',
                 '',
               ].join('\\n'),
@@ -1065,6 +1081,13 @@ async function main(): Promise<void> {
       }, 120000);
       for (let attempt = 0; attempt < 100 && ![...listeners.values()].some((listener) => listener.info.port === 8765); attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      if (![...listeners.values()].some((listener) => listener.info.port === 8765)) {
+        const failedRun = await Promise.race([
+          asgiRunPromise,
+          new Promise((resolve) => setTimeout(() => resolve(null), 0)),
+        ]);
+        throw new Error('Python ASGI listener did not start: ' + JSON.stringify(failedRun));
       }
       const asgiEnqueue = await dispatchHttp(8765, {
         method: 'POST',
@@ -1087,6 +1110,27 @@ async function main(): Promise<void> {
         headers: { 'content-type': 'application/json' },
         body: '{"count":2}',
       });
+      const asgiInspect = await dispatchHttp(8765, {
+        method: 'GET',
+        url: 'http://localhost:8765/inspect?mode=full',
+        path: '/inspect?mode=full',
+        headers: { 'x-client': 'python-test' },
+        body: '',
+      });
+      const asgiDelete = await dispatchHttp(8765, {
+        method: 'DELETE',
+        url: 'http://localhost:8765/items/abc',
+        path: '/items/abc',
+        headers: {},
+        body: '',
+      });
+      const asgiConflict = await dispatchHttp(8765, {
+        method: 'DELETE',
+        url: 'http://localhost:8765/items/abc',
+        path: '/items/abc',
+        headers: { 'x-fail': 'yes' },
+        body: '',
+      });
       terminateWorker();
       try {
         await asgiRunPromise;
@@ -1094,7 +1138,7 @@ async function main(): Promise<void> {
         // Terminating the worker is how this smoke test stops the long-lived server.
       }
 
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams, asgiInspect, asgiDelete, asgiConflict };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -1118,6 +1162,9 @@ async function main(): Promise<void> {
       asgiEnqueue: { status: number; headers?: Record<string, string>; body?: string };
       asgiDequeue: { status: number; headers?: Record<string, string>; body?: string };
       asgiRouteParams: { status: number; headers?: Record<string, string>; body?: string };
+      asgiInspect: { status: number; headers?: Record<string, string>; body?: string };
+      asgiDelete: { status: number; headers?: Record<string, string>; body?: string };
+      asgiConflict: { status: number; headers?: Record<string, string>; body?: string };
     };
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
@@ -1838,6 +1885,22 @@ async function main(): Promise<void> {
       results.asgiRouteParams.status === 201 &&
         results.asgiRouteParams.body === '{"item_id":"abc","payload":{"count":2},"verbose":"true"}\n',
       `Python project ASGI shim should support route params, query params, and decorator status codes: ${JSON.stringify(results.asgiRouteParams)}`
+    );
+    assertCondition(
+      results.asgiInspect.status === 200 &&
+        results.asgiInspect.body === '{"method":"GET","client":"python-test","mode":"full","body_size":0}\n',
+      `Python project ASGI shim should expose Request, Header, and JSONResponse: ${JSON.stringify(results.asgiInspect)}`
+    );
+    assertCondition(
+      results.asgiDelete.status === 202 &&
+        results.asgiDelete.headers?.['content-type'] === 'text/plain' &&
+        results.asgiDelete.body === 'deleted:abc\n',
+      `Python project ASGI shim should expose DELETE routes and Response objects: ${JSON.stringify(results.asgiDelete)}`
+    );
+    assertCondition(
+      results.asgiConflict.status === 409 &&
+        results.asgiConflict.body === '{"detail":{"item_id":"abc"}}\n',
+      `Python project ASGI shim should translate HTTPException responses: ${JSON.stringify(results.asgiConflict)}`
     );
   } finally {
     await browser.close();

@@ -1617,6 +1617,83 @@ def _install_tracekernel_asgi_modules():
         except UnicodeDecodeError:
             return {"body": base64.b64encode(_bytes).decode("ascii"), "bodyEncoding": "base64"}
 
+    class HTTPException(Exception):
+        def __init__(self, status_code, detail=None, headers=None):
+            super().__init__(detail if detail is not None else f"HTTP {status_code}")
+            self.status_code = int(status_code)
+            self.detail = detail if detail is not None else f"HTTP {status_code}"
+            self.headers = dict(headers or {})
+
+    class _TraceKernelParam:
+        def __init__(self, kind, default=None, alias=None):
+            self.kind = kind
+            self.default = default
+            self.alias = alias
+
+    def Query(default=None, alias=None, **_kwargs):
+        return _TraceKernelParam("query", default, alias)
+
+    def Path(default=None, alias=None, **_kwargs):
+        return _TraceKernelParam("path", default, alias)
+
+    def Header(default=None, alias=None, **_kwargs):
+        return _TraceKernelParam("header", default, alias)
+
+    class Request:
+        def __init__(self, scope, body):
+            self.scope = scope
+            self.method = str(scope.get("method", "GET")).upper()
+            self.url = scope.get("tracekernel.url", "")
+            self.path_params = dict(scope.get("path_params") or {})
+            self.query_params = dict(scope.get("query_params") or {})
+            self.headers = {
+                name.decode("latin1").lower(): value.decode("latin1")
+                for name, value in scope.get("headers", [])
+            }
+            self._body = bytes(body or b"")
+
+        async def body(self):
+            return self._body
+
+        async def json(self):
+            if not self._body:
+                return None
+            return json.loads(self._body.decode("utf-8"))
+
+    class Response:
+        media_type = None
+
+        def __init__(self, content="", status_code=200, headers=None, media_type=None):
+            self.content = content
+            self.status_code = int(status_code)
+            self.headers = dict(headers or {})
+            self.media_type = media_type if media_type is not None else self.media_type
+
+        def render(self):
+            if isinstance(self.content, (bytes, bytearray, memoryview)):
+                return bytes(self.content)
+            return str(self.content).encode("utf-8")
+
+    class JSONResponse(Response):
+        media_type = "application/json"
+
+        def render(self):
+            return (json.dumps(self.content, separators=(",", ":")) + "\\n").encode("utf-8")
+
+    def _asgi_response(_value, _status=200):
+        if isinstance(_value, Response):
+            _body = _value.render()
+            _headers = {str(name).lower(): str(value) for name, value in _value.headers.items()}
+            if _value.media_type:
+                _headers.setdefault("content-type", _value.media_type)
+            return {
+                "status": int(_value.status_code),
+                "headers": _headers,
+                "rawHeaders": [[name, value] for name, value in _headers.items()],
+                **_http_body_payload(_body),
+            }
+        return _json_response(_value, _status)
+
     async def _tracekernel_http_dispatch_async(_request):
         _response_json = await _js_self.__tracecodeKernelHttpDispatch(json.dumps(_request))
         return json.loads(str(_response_json))
@@ -1793,6 +1870,15 @@ def _install_tracekernel_asgi_modules():
         def post(self, path, **kwargs):
             return self.route(path, ["POST"], **kwargs)
 
+        def put(self, path, **kwargs):
+            return self.route(path, ["PUT"], **kwargs)
+
+        def patch(self, path, **kwargs):
+            return self.route(path, ["PATCH"], **kwargs)
+
+        def delete(self, path, **kwargs):
+            return self.route(path, ["DELETE"], **kwargs)
+
         async def __call__(self, scope, receive, send):
             _method = str(scope.get("method", "GET")).upper()
             _path = str(scope.get("path", "/"))
@@ -1825,6 +1911,29 @@ def _install_tracekernel_asgi_modules():
                 if _values:
                     _kwargs.setdefault(_name, _values[-1])
             _signature = inspect.signature(_route["func"])
+            _request_obj = Request({
+                **scope,
+                "path_params": _path_params,
+                "query_params": {name: values[-1] for name, values in _query_params.items() if values},
+            }, _body)
+            for _name, _param in _signature.parameters.items():
+                _default = _param.default
+                if isinstance(_default, _TraceKernelParam):
+                    _source_name = str(_default.alias or _name)
+                    if _default.kind == "header":
+                        _header_name = _source_name.lower().replace("_", "-")
+                        if _header_name in _headers:
+                            _kwargs[_name] = _headers[_header_name]
+                        elif _default.default is not inspect.Parameter.empty:
+                            _kwargs[_name] = _default.default
+                    elif _default.kind == "query" and _source_name in _query_params and _query_params[_source_name]:
+                        _kwargs[_name] = _query_params[_source_name][-1]
+                    elif _default.kind == "path" and _source_name in _path_params:
+                        _kwargs[_name] = _path_params[_source_name]
+                    elif _default.default is not inspect.Parameter.empty:
+                        _kwargs.setdefault(_name, _default.default)
+                elif _name == "request" or _param.annotation is Request:
+                    _kwargs.setdefault(_name, _request_obj)
             _body_value = None
             _has_body_value = False
             if _method in ("POST", "PUT", "PATCH"):
@@ -1857,14 +1966,19 @@ def _install_tracekernel_asgi_modules():
                     for _param in _signature.parameters.values()
                 )
             }
-            _result = await _maybe_await(_route["func"](**_accepted_kwargs))
-            _response = _json_response(_result, _route["status_code"])
+            try:
+                _result = await _maybe_await(_route["func"](**_accepted_kwargs))
+                _response = _asgi_response(_result, _route["status_code"])
+            except HTTPException as _error:
+                _response = _asgi_response(
+                    JSONResponse({"detail": _error.detail}, status_code=_error.status_code, headers=_error.headers)
+                )
             await send({
                 "type": "http.response.start",
                 "status": _response["status"],
                 "headers": [(key.encode("latin1"), value.encode("latin1")) for key, value in _response["headers"].items()],
             })
-            await send({"type": "http.response.body", "body": _response["body"].encode("utf-8")})
+            await send({"type": "http.response.body", "body": _http_bytes_from_message(_response)})
 
     async def _tracekernel_asgi_dispatch(_app, _request_json):
         _request = json.loads(str(_request_json))
@@ -1907,6 +2021,7 @@ def _install_tracekernel_asgi_modules():
             "raw_path": (_path or "/").encode("utf-8"),
             "query_string": _query.encode("utf-8"),
             "headers": _headers,
+            "tracekernel.url": str(_request.get("url") or ""),
         }
         await _maybe_await(_app(_scope, _receive, _send))
         _status = 200
@@ -1952,8 +2067,20 @@ def _install_tracekernel_asgi_modules():
         return asyncio.get_event_loop().run_until_complete(_tracekernel_serve_asgi(_app, host=host, port=port))
 
     _fastapi_module = types.ModuleType("fastapi")
+    _fastapi_module.__path__ = []
     _fastapi_module.FastAPI = FastAPI
+    _fastapi_module.Header = Header
+    _fastapi_module.HTTPException = HTTPException
+    _fastapi_module.Path = Path
+    _fastapi_module.Query = Query
+    _fastapi_module.Request = Request
+    _fastapi_module.Response = Response
     sys.modules.setdefault("fastapi", _fastapi_module)
+    _fastapi_responses_module = types.ModuleType("fastapi.responses")
+    _fastapi_responses_module.JSONResponse = JSONResponse
+    _fastapi_responses_module.Response = Response
+    _fastapi_module.responses = _fastapi_responses_module
+    sys.modules.setdefault("fastapi.responses", _fastapi_responses_module)
     _uvicorn_module = types.ModuleType("uvicorn")
     _uvicorn_module.run = _uvicorn_run
     sys.modules["uvicorn"] = _uvicorn_module
