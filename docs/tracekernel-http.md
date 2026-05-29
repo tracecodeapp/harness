@@ -260,6 +260,34 @@ print(response.json())
 These shims are scoped to project execution and dispatch through TraceKernel.
 They are intended for endpoint tests, not general internet access.
 
+Python browser project runs also patch the stdlib server path enough for small
+endpoint projects built with `http.server`:
+
+```py
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+
+items = []
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("content-length", "0") or "0")
+        items.append(json.loads(self.rfile.read(length).decode("utf-8")))
+        body = json.dumps({"size": len(items)}) + "\n"
+        self.send_response(201)
+        self.send_header("content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
+
+HTTPServer(("127.0.0.1", 8765), Handler).serve_forever()
+```
+
+`HTTPServer`, `ThreadingHTTPServer`, and the `socketserver.TCPServer` base path
+register TraceKernel HTTP listeners instead of opening browser sockets. Requests
+arrive through `BaseHTTPRequestHandler` with `self.command`, `self.path`,
+`self.headers`, `self.rfile`, and `self.wfile` populated from the simulated
+kernel request.
+
 ## Java HTTP
 
 Browser Java project runs install TraceKernel HTTP shims before invoking user

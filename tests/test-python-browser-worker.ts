@@ -1025,6 +1025,95 @@ async function main(): Promise<void> {
         outsideCwdError = error instanceof Error ? error.message : String(error);
       }
 
+      const stdlibRunPromise = send('execute-project-python', {
+        source: 'file',
+        scriptPath: '/workspace/stdlib_server.py',
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        project: {
+          cwd: '/workspace',
+          files: [
+            {
+              path: 'stdlib_server.py',
+              contents: [
+                'from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer',
+                'import json',
+                '',
+                'queue = []',
+                '',
+                'class Handler(BaseHTTPRequestHandler):',
+                '    protocol_version = "HTTP/1.1"',
+                '',
+                '    def log_message(self, format, *args):',
+                '        pass',
+                '',
+                '    def _body(self):',
+                '        length = int(self.headers.get("content-length", "0") or "0")',
+                '        return self.rfile.read(length) if length else b""',
+                '',
+                '    def _json(self, status, payload):',
+                '        body = (json.dumps(payload, separators=(",", ":")) + "\\\\n").encode("utf-8")',
+                '        self.send_response(status)',
+                '        self.send_header("content-type", "application/json")',
+                '        self.send_header("content-length", str(len(body)))',
+                '        self.end_headers()',
+                '        self.wfile.write(body)',
+                '',
+                '    def do_POST(self):',
+                '        payload = json.loads(self._body().decode("utf-8") or "null")',
+                '        queue.append(payload)',
+                '        self._json(201, {"size": len(queue), "path": self.path, "client": self.headers.get("x-client", "")})',
+                '',
+                '    def do_GET(self):',
+                '        if self.path.startswith("/dequeue"):',
+                '            self._json(200, queue.pop(0) if queue else None)',
+                '            self.server.shutdown()',
+                '        else:',
+                '            self._json(200, {"method": self.command, "path": self.path})',
+                '',
+                'server = HTTPServer(("127.0.0.1", 8766), Handler)',
+                'print(type(server).__name__ + ":" + str(issubclass(ThreadingHTTPServer, HTTPServer)))',
+                'server.serve_forever()',
+                '',
+              ].join('\\n'),
+            },
+          ],
+        },
+      }, 120000);
+      for (let attempt = 0; attempt < 100 && ![...listeners.values()].some((listener) => listener.info.port === 8766); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      if (![...listeners.values()].some((listener) => listener.info.port === 8766)) {
+        const failedRun = await Promise.race([
+          stdlibRunPromise,
+          new Promise((resolve) => setTimeout(() => resolve(null), 0)),
+        ]);
+        throw new Error('Python stdlib HTTP listener did not start: ' + JSON.stringify(failedRun));
+      }
+      const stdlibEnqueue = await dispatchHttp(8766, {
+        method: 'POST',
+        url: 'http://localhost:8766/enqueue',
+        path: '/enqueue',
+        headers: { 'content-type': 'application/json', 'x-client': 'stdlib-test' },
+        body: '{"id":2}',
+      });
+      const stdlibInspect = await dispatchHttp(8766, {
+        method: 'GET',
+        url: 'http://localhost:8766/inspect?mode=full',
+        path: '/inspect?mode=full',
+        headers: {},
+        body: '',
+      });
+      const stdlibDequeue = await dispatchHttp(8766, {
+        method: 'GET',
+        url: 'http://localhost:8766/dequeue',
+        path: '/dequeue',
+        headers: {},
+        body: '',
+      });
+      await stdlibRunPromise;
+
       const asgiRunPromise = send('execute-project-python', {
         source: 'file',
         scriptPath: '/workspace/app.py',
@@ -1131,6 +1220,7 @@ async function main(): Promise<void> {
         headers: { 'x-fail': 'yes' },
         body: '',
       });
+
       terminateWorker();
       try {
         await asgiRunPromise;
@@ -1138,7 +1228,7 @@ async function main(): Promise<void> {
         // Terminating the worker is how this smoke test stops the long-lived server.
       }
 
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams, asgiInspect, asgiDelete, asgiConflict };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams, asgiInspect, asgiDelete, asgiConflict, stdlibEnqueue, stdlibInspect, stdlibDequeue };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -1165,6 +1255,9 @@ async function main(): Promise<void> {
       asgiInspect: { status: number; headers?: Record<string, string>; body?: string };
       asgiDelete: { status: number; headers?: Record<string, string>; body?: string };
       asgiConflict: { status: number; headers?: Record<string, string>; body?: string };
+      stdlibEnqueue: { status: number; headers?: Record<string, string>; body?: string };
+      stdlibInspect: { status: number; headers?: Record<string, string>; body?: string };
+      stdlibDequeue: { status: number; headers?: Record<string, string>; body?: string };
     };
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
@@ -1901,6 +1994,22 @@ async function main(): Promise<void> {
       results.asgiConflict.status === 409 &&
         results.asgiConflict.body === '{"detail":{"item_id":"abc"}}\n',
       `Python project ASGI shim should translate HTTPException responses: ${JSON.stringify(results.asgiConflict)}`
+    );
+    assertCondition(
+      results.stdlibEnqueue.status === 201 &&
+        results.stdlibEnqueue.headers?.['content-type'] === 'application/json' &&
+        results.stdlibEnqueue.body === '{"size":1,"path":"/enqueue","client":"stdlib-test"}\n',
+      `Python stdlib HTTPServer shim should handle POST requests: ${JSON.stringify(results.stdlibEnqueue)}`
+    );
+    assertCondition(
+      results.stdlibInspect.status === 200 &&
+        results.stdlibInspect.body === '{"method":"GET","path":"/inspect?mode=full"}\n',
+      `Python stdlib HTTPServer shim should expose method and path metadata: ${JSON.stringify(results.stdlibInspect)}`
+    );
+    assertCondition(
+      results.stdlibDequeue.status === 200 &&
+        results.stdlibDequeue.body === '{"id":2}\n',
+      `Python stdlib HTTPServer shim should preserve handler state between requests: ${JSON.stringify(results.stdlibDequeue)}`
     );
   } finally {
     await browser.close();

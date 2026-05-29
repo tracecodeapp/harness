@@ -1832,6 +1832,192 @@ def _install_tracekernel_asgi_modules():
         _requests_module.delete = lambda url, **kwargs: _tracekernel_requests_request("DELETE", url, **kwargs)
         sys.modules.setdefault("requests", _requests_module)
 
+    class _TraceKernelHttpSocket:
+        def __init__(self, _request_bytes):
+            self._request = io.BytesIO(_request_bytes)
+            self._response = io.BytesIO()
+            self.closed = False
+
+        def makefile(self, _mode="r", _buffering=None):
+            if "r" in str(_mode):
+                return self._request
+            return self._response
+
+        def sendall(self, _data):
+            self._response.write(bytes(_data or b""))
+
+        def getsockname(self):
+            return ("127.0.0.1", 0)
+
+        def getpeername(self):
+            return ("127.0.0.1", 0)
+
+        def settimeout(self, _timeout):
+            return None
+
+        def shutdown(self, _how=None):
+            return None
+
+        def close(self):
+            self.closed = True
+
+        def response_bytes(self):
+            return self._response.getvalue()
+
+    def _tracekernel_http_server_request_bytes(_request):
+        _method = str((_request or {}).get("method") or "GET").upper()
+        _parsed = urllib.parse.urlsplit(str((_request or {}).get("url") or "http://localhost/"))
+        _path = str((_request or {}).get("path") or ((_parsed.path or "/") + (("?" + _parsed.query) if _parsed.query else "")))
+        _headers = {str(_name).lower(): str(_value) for _name, _value in ((_request or {}).get("headers") or {}).items()}
+        _body = _http_bytes_from_message(_request)
+        _host = _parsed.netloc or "localhost"
+        _lines = [f"{_method} {_path or '/'} HTTP/1.1", f"Host: {_host}"]
+        for _name, _value in _headers.items():
+            if _name.lower() in ("host", "content-length"):
+                continue
+            _lines.append(f"{_name}: {_value}")
+        _lines.append(f"Content-Length: {len(_body)}")
+        _lines.append("Connection: close")
+        return ("\\r\\n".join(_lines) + "\\r\\n\\r\\n").encode("latin1") + _body
+
+    def _tracekernel_http_server_response(_raw_response):
+        _header_bytes, _separator, _body = bytes(_raw_response or b"").partition(b"\\r\\n\\r\\n")
+        if not _separator:
+            _header_bytes, _separator, _body = bytes(_raw_response or b"").partition(b"\\n\\n")
+        _header_lines = _header_bytes.replace(b"\\r\\n", b"\\n").split(b"\\n") if _header_bytes else []
+        _status = 200
+        if _header_lines:
+            _status_parts = _header_lines[0].decode("latin1", "replace").split()
+            if len(_status_parts) >= 2:
+                try:
+                    _status = int(_status_parts[1])
+                except Exception:
+                    _status = 200
+        _headers = {}
+        _raw_headers = []
+        for _line in _header_lines[1:]:
+            if b":" not in _line:
+                continue
+            _name, _value = _line.split(b":", 1)
+            _header_name = _name.decode("latin1", "replace").strip()
+            _header_value = _value.decode("latin1", "replace").strip()
+            if not _header_name:
+                continue
+            _headers[_header_name.lower()] = _header_value
+            _raw_headers.append([_header_name, _header_value])
+        return {
+            "status": _status,
+            "headers": _headers,
+            "rawHeaders": _raw_headers,
+            **_http_body_payload(_body),
+        }
+
+    class _TraceKernelTCPServer:
+        allow_reuse_address = False
+        request_queue_size = 5
+        address_family = 2
+        socket_type = 1
+        timeout = None
+
+        def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+            self.server_address = tuple(server_address or ("127.0.0.1", 8000))
+            self.RequestHandlerClass = RequestHandlerClass
+            self._tracekernel_handle = None
+            self._tracekernel_handler_proxy = None
+            self.__shutdown_request = False
+            self.__is_shut_down = True
+            self.server_name = str(self.server_address[0] or "127.0.0.1")
+            self.server_port = int(self.server_address[1] or 0)
+            if bind_and_activate:
+                try:
+                    self.server_bind()
+                    self.server_activate()
+                except Exception:
+                    self.server_close()
+                    raise
+
+        def server_bind(self):
+            self.server_address = (str(self.server_address[0] or "127.0.0.1"), int(self.server_address[1] or 0))
+            self.server_name = self.server_address[0]
+            self.server_port = self.server_address[1]
+
+        def server_activate(self):
+            from pyodide.ffi import create_proxy
+            if self._tracekernel_handle is not None:
+                return
+            async def _handler(_request_json):
+                return self._tracekernel_dispatch(_request_json)
+            self._tracekernel_handler_proxy = create_proxy(_handler)
+            self._tracekernel_handle = _TraceKernelHttpHandle(getattr(_js_self, "__tracecodeKernelHttpListen")(json.dumps({
+                "host": self.server_name,
+                "port": self.server_port,
+                "protocol": "http",
+            }), self._tracekernel_handler_proxy))
+
+        def _tracekernel_dispatch(self, _request_json):
+            _request = json.loads(str(_request_json))
+            _socket = _TraceKernelHttpSocket(_tracekernel_http_server_request_bytes(_request))
+            _client_address = ("127.0.0.1", 0)
+            self.RequestHandlerClass(_socket, _client_address, self)
+            return json.dumps(_tracekernel_http_server_response(_socket.response_bytes()))
+
+        def serve_forever(self, poll_interval=0.05):
+            self.__shutdown_request = False
+            self.__is_shut_down = False
+            try:
+                _loop = asyncio.get_event_loop()
+                async def _wait_until_closed():
+                    while not self.__shutdown_request:
+                        await asyncio.sleep(float(poll_interval or 0.05))
+                return _loop.run_until_complete(_wait_until_closed())
+            finally:
+                self.__is_shut_down = True
+                self.server_close()
+
+        def shutdown(self):
+            self.__shutdown_request = True
+
+        def server_close(self):
+            self.__shutdown_request = True
+            if self._tracekernel_handle is not None:
+                self._tracekernel_handle.close()
+                self._tracekernel_handle = None
+            if self._tracekernel_handler_proxy is not None:
+                try:
+                    self._tracekernel_handler_proxy.destroy()
+                except Exception:
+                    pass
+                self._tracekernel_handler_proxy = None
+
+        def close_request(self, _request):
+            try:
+                _request.close()
+            except Exception:
+                pass
+
+        def fileno(self):
+            return -1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            self.server_close()
+            return False
+
+    class _TraceKernelHTTPServer(_TraceKernelTCPServer):
+        pass
+
+    class _TraceKernelThreadingHTTPServer(_TraceKernelHTTPServer):
+        daemon_threads = True
+
+    def _install_tracekernel_http_server_modules():
+        import http.server as _http_server
+        import socketserver as _socketserver
+        _socketserver.TCPServer = _TraceKernelTCPServer
+        _http_server.HTTPServer = _TraceKernelHTTPServer
+        _http_server.ThreadingHTTPServer = _TraceKernelThreadingHTTPServer
+
     def _match_route(_template, _path):
         _template_parts = [part for part in str(_template).strip("/").split("/") if part]
         _path_parts = [part for part in str(_path).strip("/").split("/") if part]
@@ -2085,6 +2271,7 @@ def _install_tracekernel_asgi_modules():
     _uvicorn_module.run = _uvicorn_run
     sys.modules["uvicorn"] = _uvicorn_module
     _install_tracekernel_http_client_modules()
+    _install_tracekernel_http_server_modules()
 
 def _project_relative_path_from_absolute(_absolute_path):
     try:
