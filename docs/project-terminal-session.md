@@ -188,6 +188,11 @@ Cross-Origin-Embedder-Policy: require-corp
 The `examples/project-terminal` Vite config includes these headers for `dev`
 and `preview`.
 
+Cross-origin isolation enables the browser primitives this harness needs; it is
+not the full security model for hostile code. See
+[Isolation Boundaries](./isolation-boundaries.md) for the TraceKernel sandbox
+contract and native-runner caveats.
+
 ## Choosing The Right API
 
 Use `workspace.runCommand(...)` for background jobs, analysis, grading, and

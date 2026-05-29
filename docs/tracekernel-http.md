@@ -429,3 +429,7 @@ access. A request succeeds only when a process in the same workspace has
 registered a matching `http://host:port` listener. That keeps browser execution
 deterministic and lets consumers build agent workflows where server code,
 tests, shell commands, and file changes all stay under TraceKernel control.
+
+TraceKernel HTTP is part of the simulated workspace contract, not a standalone
+security boundary. See [Isolation Boundaries](./isolation-boundaries.md) for
+the broader sandbox model, browser-mode requirements, and native-runner caveats.

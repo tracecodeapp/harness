@@ -39,6 +39,11 @@ Specifically, this package does not ship:
 
 Consuming apps are expected to own their own UI, persistence, product logic, and any higher-order visualization behavior built on top of neutral runtime trace facts.
 
+For the security model and sandbox limits, see
+[Isolation Boundaries](docs/isolation-boundaries.md). TraceKernel provides a
+kernel-like simulated workspace contract, but native execution still requires an
+OS or infrastructure sandbox for hostile code.
+
 ## What You Get
 
 - shared runtime contract types and trace adapters
