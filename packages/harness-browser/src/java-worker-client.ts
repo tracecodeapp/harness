@@ -28,8 +28,21 @@ interface PendingMessage {
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
   kernelHttp?: RuntimeKernelHttpBridge;
-  httpListeners?: Map<string, RuntimeKernelHttpListenerHandle>;
+  httpServers?: Map<string, JavaHttpServerBridge>;
   timeoutId?: ReturnType<typeof setTimeout>;
+}
+
+interface JavaHttpServerQueueEntry {
+  request: RuntimeKernelHttpRequest;
+  resolve: (response: RuntimeKernelHttpResponse) => void;
+}
+
+interface JavaHttpServerBridge {
+  handle: RuntimeKernelHttpListenerHandle;
+  requestBuffer: SharedArrayBuffer;
+  active: boolean;
+  closed: boolean;
+  queue: JavaHttpServerQueueEntry[];
 }
 
 function createExecutionAbortError(): Error {
@@ -108,6 +121,7 @@ const JAVA_HTTP_SYNC_IDLE = 0;
 const JAVA_HTTP_SYNC_REQUEST = 1;
 const JAVA_HTTP_SYNC_RESPONSE = 2;
 const JAVA_HTTP_SYNC_CLOSED = 3;
+const JAVA_HTTP_SERVER_MAX_QUEUED_REQUESTS = 16;
 
 function javaHttpBase64FromBytes(bytes: Uint8Array): string {
   let binary = '';
@@ -405,7 +419,7 @@ export class JavaWorkerClient {
         reject,
         ...(onEvent ? { onEvent } : {}),
         ...(kernelHttp ? { kernelHttp } : {}),
-        httpListeners: new Map(),
+        httpServers: new Map(),
       });
 
       const timeoutId = globalThis.setTimeout(() => {
@@ -431,10 +445,10 @@ export class JavaWorkerClient {
   }
 
   private closePendingHttpListeners(pending: PendingMessage): void {
-    for (const [, handle] of pending.httpListeners ?? []) {
-      handle.close();
+    for (const [, bridge] of pending.httpServers ?? []) {
+      this.closeJavaHttpServerBridge(bridge);
     }
-    pending.httpListeners?.clear();
+    pending.httpServers?.clear();
   }
 
   private handleKernelHttpDispatchSync(commandId: MessageId, payload: unknown): void {
@@ -483,8 +497,16 @@ export class JavaWorkerClient {
       return;
     }
     try {
-      const handle = pending.kernelHttp.listen(options, (request) => this.dispatchJavaHttpServerRequest(requestBuffer, request));
-      pending.httpListeners?.set(serverId, handle);
+      const bridge: JavaHttpServerBridge = {
+        handle: undefined as unknown as RuntimeKernelHttpListenerHandle,
+        requestBuffer,
+        active: false,
+        closed: false,
+        queue: [],
+      };
+      const handle = pending.kernelHttp.listen(options, (request) => this.enqueueJavaHttpServerRequest(bridge, request));
+      bridge.handle = handle;
+      pending.httpServers?.set(serverId, bridge);
       writeJavaHttpSyncManifest(controlBuffer, ['OK', javaHttpBase64FromString(JSON.stringify(handle.info))].join('\n'));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -500,14 +522,77 @@ export class JavaWorkerClient {
       requestBuffer?: SharedArrayBuffer;
     };
     if (serverId) {
-      pending.httpListeners?.get(serverId)?.close();
-      pending.httpListeners?.delete(serverId);
+      const bridge = pending.httpServers?.get(serverId);
+      if (bridge) this.closeJavaHttpServerBridge(bridge);
+      pending.httpServers?.delete(serverId);
     }
     if (typeof SharedArrayBuffer !== 'undefined' && requestBuffer instanceof SharedArrayBuffer) {
       const header = new Int32Array(requestBuffer, 0, 2);
       Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_CLOSED);
       Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
     }
+  }
+
+  private closeJavaHttpServerBridge(bridge: JavaHttpServerBridge): void {
+    if (bridge.closed) return;
+    bridge.closed = true;
+    bridge.handle.close();
+    const header = new Int32Array(bridge.requestBuffer, 0, 2);
+    Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_CLOSED);
+    Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
+    const queued = bridge.queue.splice(0);
+    for (const entry of queued) {
+      entry.resolve({
+        status: 503,
+        headers: { 'content-type': 'text/plain' },
+        body: 'Java TraceKernel HTTP server closed\n',
+      });
+    }
+  }
+
+  private enqueueJavaHttpServerRequest(
+    bridge: JavaHttpServerBridge,
+    request: RuntimeKernelHttpRequest
+  ): Promise<RuntimeKernelHttpResponse> {
+    if (bridge.closed) {
+      return Promise.resolve({
+        status: 503,
+        headers: { 'content-type': 'text/plain' },
+        body: 'Java TraceKernel HTTP server closed\n',
+      });
+    }
+    if (bridge.queue.length >= JAVA_HTTP_SERVER_MAX_QUEUED_REQUESTS) {
+      return Promise.resolve({
+        status: 503,
+        headers: { 'content-type': 'text/plain' },
+        body: 'Java TraceKernel HTTP server queue is full\n',
+      });
+    }
+    return new Promise<RuntimeKernelHttpResponse>((resolve) => {
+      bridge.queue.push({ request, resolve });
+      this.drainJavaHttpServerQueue(bridge);
+    });
+  }
+
+  private drainJavaHttpServerQueue(bridge: JavaHttpServerBridge): void {
+    if (bridge.active || bridge.closed) return;
+    const entry = bridge.queue.shift();
+    if (!entry) return;
+    bridge.active = true;
+    this.dispatchJavaHttpServerRequest(bridge.requestBuffer, entry.request)
+      .then(entry.resolve)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        entry.resolve({
+          status: 500,
+          headers: { 'content-type': 'text/plain' },
+          body: `${message || 'Java TraceKernel HTTP server request failed'}\n`,
+        });
+      })
+      .finally(() => {
+        bridge.active = false;
+        this.drainJavaHttpServerQueue(bridge);
+      });
   }
 
   private dispatchJavaHttpServerRequest(buffer: SharedArrayBuffer, request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse> {
@@ -517,7 +602,7 @@ export class JavaWorkerClient {
       return Promise.resolve({
         status: 503,
         headers: { 'content-type': 'text/plain' },
-        body: 'Java TraceKernel HTTP server is busy\n',
+        body: 'Java TraceKernel HTTP server buffer is not idle\n',
       });
     }
     const encoded = new TextEncoder().encode(javaHttpRequestManifest(request));

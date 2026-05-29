@@ -146,7 +146,7 @@ class MockWorker {
           const controlBuffer = new SharedArrayBuffer(4096);
           const requestHeader = new Int32Array(requestBuffer, 0, 2);
           const requestBytes = new Uint8Array(requestBuffer, JAVA_HTTP_SYNC_HEADER_BYTES);
-          let requestManifest = '';
+          const requestManifests: string[] = [];
           this.onmessage?.({
             data: {
               id,
@@ -176,35 +176,50 @@ class MockWorker {
                 id,
                 type,
                 payload: {
-                  stdout: `server-listened\n${requestManifest}\n`,
+                  stdout: `server-listened\n${requestManifests.join('\n---\n')}\n`,
                   stderr: '',
                   exitCode: 0,
                 },
               },
             } as MessageEvent<WorkerMessage>);
           };
-          const waitForIdle = () => {
-            if (Atomics.load(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX) === 0) {
-              finish();
-              return;
-            }
-            setTimeout(waitForIdle, 0);
-          };
-          const waitForRequest = () => {
-            if (Atomics.load(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX) === JAVA_HTTP_SYNC_REQUEST) {
+          const waitForState = (state: number) => new Promise<void>((resolve) => {
+            const poll = () => {
+              if (Atomics.load(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX) === state) {
+                resolve();
+                return;
+              }
+              setTimeout(poll, 0);
+            };
+            poll();
+          });
+          const waitForStateChange = (state: number) => new Promise<void>((resolve) => {
+            const poll = () => {
+              if (Atomics.load(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX) !== state) {
+                resolve();
+                return;
+              }
+              setTimeout(poll, 0);
+            };
+            poll();
+          });
+          const serveRequests = async () => {
+            for (let requestIndex = 0; requestIndex < 2; requestIndex += 1) {
+              await waitForState(JAVA_HTTP_SYNC_REQUEST);
               const length = Atomics.load(requestHeader, JAVA_HTTP_SYNC_LENGTH_INDEX);
-              requestManifest = new TextDecoder().decode(requestBytes.subarray(0, length));
-              const response = new TextEncoder().encode(testJavaHttpResponseManifest(208, { 'content-type': 'text/plain', 'x-java-server': 'ok' }, 'server-body'));
+              const requestManifest = new TextDecoder().decode(requestBytes.subarray(0, length));
+              requestManifests.push(requestManifest);
+              const responseBody = requestManifests.length === 1 ? 'server-body' : 'queued-body';
+              const response = new TextEncoder().encode(testJavaHttpResponseManifest(208, { 'content-type': 'text/plain', 'x-java-server': 'ok' }, responseBody));
               requestBytes.set(response);
               Atomics.store(requestHeader, JAVA_HTTP_SYNC_LENGTH_INDEX, response.byteLength);
               Atomics.store(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_RESPONSE);
               Atomics.notify(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX);
-              setTimeout(waitForIdle, 0);
-              return;
+              await waitForStateChange(JAVA_HTTP_SYNC_RESPONSE);
             }
-            setTimeout(waitForRequest, 0);
+            finish();
           };
-          setTimeout(waitForRequest, 0);
+          void serveRequests();
           return;
         }
         this.onmessage?.({
@@ -473,7 +488,7 @@ async function main(): Promise<void> {
     let javaListenClosed = false;
     let javaListenPort = 0;
     let javaServerExternalResponse: { status?: number; body?: string; bodyEncoding?: string; headers?: Record<string, string> } | undefined;
-    let javaServerBusyResponse: { status?: number; body?: string } | undefined;
+    let javaServerQueuedResponse: { status?: number; body?: string; bodyEncoding?: string; headers?: Record<string, string> } | undefined;
     const javaServerClient = new JavaWorkerClient({ workerUrl: '/instance-a/java-worker.js' });
     const javaServerResult = await javaServerClient.executeProjectJava({
       code: '',
@@ -502,7 +517,7 @@ async function main(): Promise<void> {
             url: 'http://127.0.0.1:3210/busy',
             path: '/busy',
           }).then((response) => {
-            javaServerBusyResponse = response;
+            javaServerQueuedResponse = response;
           });
           return {
             id: 'java-http-test',
@@ -522,8 +537,11 @@ async function main(): Promise<void> {
     assertCondition(javaServerResult.stdout.startsWith('server-listened\nREQUEST\n'), 'Java worker client should complete after Java HTTP server request lifecycle');
     assertCondition(javaListenPort === 3210, 'Java worker client should register Java HttpServer listeners with TraceKernel HTTP');
     assertCondition(
-      javaServerResult.stdout.includes(testBase64('POST')) && javaServerResult.stdout.includes(testBase64('/queue?id=7')),
-      'Java worker client should write external TraceKernel HTTP requests into the Java server buffer'
+      javaServerResult.stdout.includes(testBase64('POST')) &&
+        javaServerResult.stdout.includes(testBase64('/queue?id=7')) &&
+        javaServerResult.stdout.includes(testBase64('GET')) &&
+        javaServerResult.stdout.includes(testBase64('/busy')),
+      `Java worker client should write queued external TraceKernel HTTP requests into the Java server buffer: ${javaServerResult.stdout}`
     );
     assertCondition(
       javaServerExternalResponse?.status === 208 &&
@@ -533,9 +551,11 @@ async function main(): Promise<void> {
       'Java worker client should read Java server responses from the shared buffer'
     );
     assertCondition(
-      javaServerBusyResponse?.status === 503 &&
-        javaServerBusyResponse.body === 'Java TraceKernel HTTP server is busy\n',
-      'Java worker client should apply bounded one-request-at-a-time backpressure'
+      javaServerQueuedResponse?.status === 208 &&
+        javaServerQueuedResponse.bodyEncoding === 'base64' &&
+        javaServerQueuedResponse.body === testBase64('queued-body') &&
+        javaServerQueuedResponse.headers?.['x-java-server'] === 'ok',
+      'Java worker client should queue concurrent Java HTTP server requests behind the shared bridge buffer'
     );
     assertCondition(javaListenClosed, 'Java worker client should close Java HttpServer listeners when the worker closes them');
     console.log('PASS: Java worker client bridges TraceKernel HTTP server listeners');

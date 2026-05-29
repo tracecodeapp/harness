@@ -346,8 +346,9 @@ HttpResponse<String> response = HttpClient.newHttpClient().send(
 `HttpServer.start()` registers a TraceKernel listener for browser Java project
 commands. Java clients can call the server in-process, and external workspace
 tests can call the same listener through `workspace.http.request(...)` or
-`curl`. The Java bridge handles one in-flight server request at a time; use this
-for endpoint tests and small teaching workloads, not load testing.
+`curl`. The Java bridge delivers one request at a time through the shared
+browser-worker buffer and queues a small bounded backlog for concurrent callers;
+use this for endpoint tests and small teaching workloads, not load testing.
 
 ## Bind Semantics
 
