@@ -6,7 +6,10 @@ import {
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
 } from '../packages/harness-project/src/index';
-import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
+import {
+  createBrowserJavaScriptProjectRunner,
+  createBrowserTypeScriptProjectRunner,
+} from '../packages/harness-javascript/src/project-browser';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -176,9 +179,39 @@ async function main(): Promise<void> {
           '',
         ].join('\n'),
       },
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify({
+          compilerOptions: {
+            outDir: 'dist',
+            rootDir: '.',
+            module: 'commonjs',
+            target: 'es2020',
+            strict: true,
+          },
+          files: ['ts-http-client.ts'],
+        }, null, 2),
+      },
+      {
+        path: 'ts-http-client.ts',
+        contents: [
+          'async function main(): Promise<void> {',
+          '  const response = await fetch("http://localhost:3300/json", {',
+          '    method: "POST",',
+          '    headers: { "content-type": "application/json" },',
+          '    body: JSON.stringify({ ts: true }),',
+          '  });',
+          '  const payload = await response.json() as { ok: boolean; method: string; body: string };',
+          '  console.log(response.status + ":" + response.ok + ":" + payload.method + ":" + payload.body);',
+          '}',
+          'main().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
     nodeRunner: createBrowserJavaScriptProjectRunner(),
+    typescriptRunner: createBrowserTypeScriptProjectRunner(),
   });
 
   try {
@@ -220,6 +253,15 @@ async function main(): Promise<void> {
     assertCondition(
       runtimeHttpResponseText(requestJson) === '{"ok":true,"method":"POST","body":"{\\"id\\":7}"}\n',
       `workspace HTTP response text helper should decode UTF-8 response bodies: ${JSON.stringify(requestJson)}`
+    );
+
+    const typeScriptCompile = await workspace.runCommand('tsc --project tsconfig.json');
+    assertCondition(typeScriptCompile.exitCode === 0, `TypeScript HTTP client should typecheck and compile: ${JSON.stringify(typeScriptCompile)}`);
+    const typeScriptClient = await workspace.runCommand('node dist/ts-http-client.js');
+    assertCondition(typeScriptClient.exitCode === 0, `compiled TypeScript HTTP client should run: ${JSON.stringify(typeScriptClient)}`);
+    assertCondition(
+      typeScriptClient.stdout === '200:true:POST:{"ts":true}\n',
+      `compiled TypeScript should use TraceKernel fetch after tsc emit: ${typeScriptClient.stdout}`
     );
 
     const lifecycle = await workspace.runCommand('node fetch-lifecycle.js');
