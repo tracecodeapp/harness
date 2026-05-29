@@ -435,9 +435,32 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('os.writev = _patched_os_writev'),
         '@tracecode/harness-python worker should ship vectored fd I/O bridge hooks'
       );
+      assertCondition(
+        worker.includes('def _tracekernel_http_dispatch_async(_request):') &&
+          worker.includes('urllib.request.urlopen = _tracekernel_http_urlopen') &&
+          worker.includes('_http_client.HTTPConnection = _TraceKernelHTTPConnection') &&
+          worker.includes('_requests_module.request = _tracekernel_requests_request') &&
+          worker.includes('_requests_module.post = lambda url, **kwargs: _tracekernel_requests_request("POST", url, **kwargs)'),
+        '@tracecode/harness-python worker should ship outbound TraceKernel HTTP client shims'
+      );
+      assertCondition(
+        worker.includes('class _TraceKernelHTTPServer(_TraceKernelTCPServer):') &&
+          worker.includes('_http_server.HTTPServer = _TraceKernelHTTPServer') &&
+          worker.includes('_http_server.ThreadingHTTPServer = _TraceKernelThreadingHTTPServer') &&
+          worker.includes('_socketserver.TCPServer = _TraceKernelTCPServer'),
+        '@tracecode/harness-python worker should ship stdlib HTTPServer/TCPServer TraceKernel listener shims'
+      );
+      assertCondition(
+        worker.includes('class FastAPI:') &&
+          worker.includes('_uvicorn_module.run = _uvicorn_run') &&
+          worker.includes('sys.modules.setdefault("fastapi", _fastapi_module)') &&
+          worker.includes('sys.modules["uvicorn"] = _uvicorn_module'),
+        '@tracecode/harness-python worker should ship FastAPI/uvicorn endpoint shims'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-javascript') {
       const projectBrowser = await readFile(join(packageDir, 'dist/project-browser.js'), 'utf8');
+      const projectWorker = await readFile(join(packageDir, 'workers/javascript-project-worker.js'), 'utf8');
       assertCondition(
         projectBrowser.includes('sourceDevice') &&
           projectBrowser.includes('io.output(stream, data, device, sourceDevice)') &&
@@ -475,6 +498,30 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectBrowser.includes('statForKernelTarget'),
         '@tracecode/harness-javascript browser project runner should use shared tracekernel stat targets'
       );
+      assertCondition(
+        projectBrowser.includes('function createHttpApi(kernelHttp, signal)') &&
+          projectBrowser.includes('class TraceKernelRequest') &&
+          projectBrowser.includes('class TraceKernelResponse') &&
+          projectBrowser.includes('["node:http", httpApi.module]') &&
+          projectBrowser.includes('void kernelHttp.dispatch({'),
+        '@tracecode/harness-javascript browser project runner should ship TraceKernel fetch/node:http client and server shims'
+      );
+      assertCondition(
+        projectBrowser.includes('dispatchWorkerKernelHttpRequest') &&
+          projectBrowser.includes('handleKernelHttpProtocolMessage') &&
+          projectBrowser.includes('kernel-http-dispatch-result') &&
+          projectBrowser.includes('kernel-http-request'),
+        '@tracecode/harness-javascript browser project runner should ship the worker-safe HTTP message bridge'
+      );
+      assertCondition(
+        projectWorker.includes('function createHttpApi(kernelHttp, signal)') &&
+          projectWorker.includes('class TraceKernelHeaders') &&
+          projectWorker.includes('class TraceKernelRequest') &&
+          projectWorker.includes('class TraceKernelResponse') &&
+          projectWorker.includes('activeHttpBridges.set(id, kernelHttp)') &&
+          projectWorker.includes('["node:http", httpApi.module]'),
+        '@tracecode/harness-javascript packaged project worker should include TraceKernel HTTP globals and node:http bridge'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-java') {
       const worker = await readFile(join(packageDir, 'workers/java-worker.js'), 'utf8');
@@ -508,6 +555,23 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-java worker should ship manifest kernel file bridge setup'
       );
       assertCondition(
+        worker.includes('Java_tracecode_browser_ProjectEvents_registerHttpServerNative') &&
+          worker.includes('Java_tracecode_browser_ProjectEvents_pollHttpServerRequestNative') &&
+          worker.includes('Java_tracecode_browser_ProjectEvents_completeHttpServerRequestNative') &&
+          worker.includes('closeAllJavaProjectHttpServers()') &&
+          worker.includes('registerJavaProjectHttpServerSync'),
+        '@tracecode/harness-java worker should ship Java HttpServer TraceKernel listener bridge hooks'
+      );
+      assertCondition(
+        worker.includes('HttpClient\\.newHttpClient') &&
+          worker.includes('tracecode.browser.ProjectEvents.httpClient(') &&
+          worker.includes('HttpClient\\.newBuilder') &&
+          worker.includes('tracecode.browser.ProjectEvents.httpClientBuilder(') &&
+          worker.includes('HttpServer\\.create') &&
+          worker.includes('tracecode.browser.ProjectEvents.httpServer('),
+        '@tracecode/harness-java worker should rewrite Java HTTP clients and HttpServer creation into TraceKernel shims'
+      );
+      assertCondition(
         worker.includes('newInputStream|newBufferedReader') &&
           worker.includes('readAllLines|lines|list') &&
           worker.includes('isReadable|isWritable|size'),
@@ -522,6 +586,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectFile.class'),
         '@tracecode/harness-java helper jar should include ProjectEvents.ProjectFile'
+      );
+      assertCondition(
+        helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectHttpClient.class') &&
+          helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectHttpURLConnection.class') &&
+          helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectHttpServer.class') &&
+          helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectHttpExchange.class') &&
+          helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$TraceKernelHttpResponse.class'),
+        '@tracecode/harness-java helper jar should include TraceKernel HTTP client and server bridge classes'
       );
       const helperApi = spawnSync(
         'javap',
@@ -547,6 +619,17 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         helperApi.stdout.includes('inputStream()'),
         '@tracecode/harness-java helper jar should expose shared stdin input stream'
+      );
+      assertCondition(
+        helperApi.stdout.includes('httpClient()') &&
+          helperApi.stdout.includes('httpClientBuilder()') &&
+          helperApi.stdout.includes('httpServer()') &&
+          helperApi.stdout.includes('httpServer(java.net.InetSocketAddress, int)') &&
+          helperApi.stdout.includes('registerHttpServerNative(java.lang.String, int)') &&
+          helperApi.stdout.includes('pollHttpServerRequestNative(java.lang.String)') &&
+          helperApi.stdout.includes('completeHttpServerRequestNative(java.lang.String, java.lang.String)') &&
+          helperApi.stdout.includes('closeHttpServerNative(java.lang.String)'),
+        '@tracecode/harness-java helper jar should expose TraceKernel HTTP client/server bridge methods'
       );
       assertCondition(
         helperApi.stdout.includes('newInputStream(java.nio.file.Path, java.nio.file.OpenOption...)') &&
@@ -709,6 +792,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         browserDeclarations.includes('getRuntimeProjectIoSupport') &&
           browserDeclarations.includes('RuntimeProjectIoSupport'),
         '@tracecode/harness-browser declarations should export the derived project I/O support helper'
+      );
+      const browserProjectDist = await readFile(join(packageDir, 'dist/project.js'), 'utf8');
+      assertCondition(
+        browserProjectDist.includes('enqueueJavaHttpServerRequest(bridge, request)') &&
+          browserProjectDist.includes('drainJavaHttpServerQueue(bridge)') &&
+          browserProjectDist.includes('dispatchJavaHttpServerRequest(buffer, request)') &&
+          browserProjectDist.includes('Java TraceKernel HTTP server queue is full') &&
+          browserProjectDist.includes('pending.kernelHttp.listen(options, (request) => this.enqueueJavaHttpServerRequest(bridge, request))'),
+        '@tracecode/harness-browser project bundle should ship queued Java HttpServer request bridge support'
       );
       const browserOnlyAppDir = join(tempRoot, 'browser-only-app');
       const browserOnlyPackageDir = packageNodeModulesDir(browserOnlyAppDir, packageCheck.name);
