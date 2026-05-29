@@ -253,44 +253,6 @@ print(response.json())
 These shims are scoped to project execution and dispatch through TraceKernel.
 They are intended for endpoint tests, not general internet access.
 
-## Language Expansion
-
-The browser project harness should add HTTP support by routing each language
-through the same `RuntimeKernelHttpProtocolMessage` bridge used by JavaScript
-and Python. That keeps request logging, listener ownership, cancellation,
-binary body encoding, and port binding in one TraceKernel implementation.
-
-Recommended order:
-
-1. Java: medium difficulty. The browser Java runner already has a project
-   event bridge through `tracecode.browser.ProjectEvents`, source rewrites for
-   project filesystem APIs, and worker-to-main `project-event` forwarding. Add
-   `ProjectEvents` HTTP helpers plus source-level shims for the common APIs:
-   `com.sun.net.httpserver.HttpServer` for in-workspace servers,
-   `java.net.http.HttpClient`, `java.net.URL`, and `URLConnection` for clients.
-   This is the best next target for endpoint-style problems.
-2. TypeScript: low difficulty. TypeScript compiles into the JavaScript project
-   runner, so it should inherit the existing `fetch`, `node:http`, and listener
-   behavior once project execution routes through the JS runner.
-3. Python expansion: low to medium difficulty. Basic outbound HTTP and small
-   FastAPI/uvicorn-style servers already work. The main work is widening API
-   compatibility, for example more FastAPI response classes, request objects,
-   streaming edge cases, and more `requests` options.
-4. C#: high difficulty. Browser C# has JS interop hooks, but common endpoint
-   code uses `System.Net.Http.HttpClient`, `HttpListener`, or ASP.NET/Kestrel.
-   Client-only `HttpClient` support is plausible with a focused shim; server
-   support probably needs a deliberate mini-framework or substantial runtime
-   interception.
-5. C++: highest difficulty. Typical C++ networking goes through POSIX sockets,
-   libcurl, or platform libraries. In browser WASM, matching that means either
-   linking a socket/syscall layer into the generated program or providing a
-   harness-specific HTTP helper library. A small helper library is feasible; a
-   general socket-compatible stack is much larger.
-
-Native project runners are a separate problem. They can reach the host network
-unless explicitly confined, so TraceKernel HTTP parity there would require
-launch-time network confinement or language-specific preload/shim strategies.
-
 ## Bind Semantics
 
 TraceKernel tracks listener ownership and port binding in the kernel:
