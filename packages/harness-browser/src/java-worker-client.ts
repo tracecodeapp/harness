@@ -3,6 +3,11 @@ import type {
   RuntimeCommandEvent,
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
+  RuntimeKernelHttpBridge,
+  RuntimeKernelHttpListenerHandle,
+  RuntimeKernelHttpListenOptions,
+  RuntimeKernelHttpRequest,
+  RuntimeKernelHttpResponse,
   RuntimeProjectCommandRequest,
 } from '../../harness-core/src/runtime-project';
 import { javaTraceHooksEventsToRuntimeTrace } from '../../harness-core/src/trace-adapters/java';
@@ -22,6 +27,8 @@ interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
+  kernelHttp?: RuntimeKernelHttpBridge;
+  httpListeners?: Map<string, RuntimeKernelHttpListenerHandle>;
   timeoutId?: ReturnType<typeof setTimeout>;
 }
 
@@ -94,6 +101,128 @@ const INIT_TIMEOUT_MS = 120_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const JAVA_DEFAULT_FILE = 'solution.java';
+const JAVA_HTTP_SYNC_HEADER_BYTES = 8;
+const JAVA_HTTP_SYNC_STATE_INDEX = 0;
+const JAVA_HTTP_SYNC_LENGTH_INDEX = 1;
+const JAVA_HTTP_SYNC_IDLE = 0;
+const JAVA_HTTP_SYNC_REQUEST = 1;
+const JAVA_HTTP_SYNC_RESPONSE = 2;
+const JAVA_HTTP_SYNC_CLOSED = 3;
+
+function javaHttpBase64FromBytes(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function javaHttpBase64FromString(value: string): string {
+  return javaHttpBase64FromBytes(new TextEncoder().encode(value));
+}
+
+function javaHttpStringFromBase64(value: string): string {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new TextDecoder().decode(bytes);
+}
+
+function javaHttpResponseManifest(response: RuntimeKernelHttpResponse): string {
+  const status = Number.isFinite(response.status) ? Math.trunc(response.status) : 500;
+  const rawHeaders =
+    response.rawHeaders && response.rawHeaders.length > 0
+      ? response.rawHeaders
+      : Object.entries(response.headers ?? {});
+  const headerLines = rawHeaders.map(([name, value]) => (
+    `${javaHttpBase64FromString(String(name))}\t${javaHttpBase64FromString(String(value))}`
+  ));
+  const body = response.body ?? '';
+  const bodyBase64 = response.bodyEncoding === 'base64'
+    ? body
+    : javaHttpBase64FromString(body);
+  return ['OK', String(status), String(headerLines.length), ...headerLines, bodyBase64].join('\n');
+}
+
+function javaHttpErrorManifest(message: string): string {
+  return ['ERROR', javaHttpBase64FromString(message)].join('\n');
+}
+
+function javaHttpRequestManifest(request: RuntimeKernelHttpRequest): string {
+  const rawHeaders =
+    request.rawHeaders && request.rawHeaders.length > 0
+      ? request.rawHeaders
+      : Object.entries(request.headers ?? {});
+  const headerLines = rawHeaders.map(([name, value]) => (
+    `${javaHttpBase64FromString(String(name))}\t${javaHttpBase64FromString(String(value))}`
+  ));
+  const body = request.body ?? '';
+  const bodyBase64 = request.bodyEncoding === 'base64'
+    ? body
+    : javaHttpBase64FromString(body);
+  return [
+    'REQUEST',
+    javaHttpBase64FromString(request.method),
+    javaHttpBase64FromString(request.url),
+    javaHttpBase64FromString(request.path),
+    String(headerLines.length),
+    ...headerLines,
+    bodyBase64,
+  ].join('\n');
+}
+
+function javaHttpResponseFromManifest(manifest: string): RuntimeKernelHttpResponse {
+  const lines = manifest.split('\n');
+  if (lines[0] === 'ERROR') {
+    return {
+      status: 500,
+      headers: { 'content-type': 'text/plain' },
+      body: `${lines[1] ? javaHttpStringFromBase64(lines[1]) : 'Java HTTP server request failed'}\n`,
+    };
+  }
+  if (lines[0] !== 'OK' || lines.length < 4) {
+    return { status: 500, headers: { 'content-type': 'text/plain' }, body: 'Invalid Java HTTP server response\n' };
+  }
+  const status = Number.parseInt(lines[1] ?? '', 10);
+  const headerCount = Number.parseInt(lines[2] ?? '', 10);
+  if (!Number.isFinite(status) || !Number.isFinite(headerCount) || headerCount < 0 || lines.length < 4 + headerCount) {
+    return { status: 500, headers: { 'content-type': 'text/plain' }, body: 'Invalid Java HTTP server response\n' };
+  }
+  const rawHeaders: [string, string][] = [];
+  const headers: Record<string, string> = {};
+  for (let index = 0; index < headerCount; index += 1) {
+    const [encodedName, encodedValue] = (lines[3 + index] ?? '').split('\t');
+    if (!encodedName || encodedValue === undefined) continue;
+    const name = javaHttpStringFromBase64(encodedName);
+    const value = javaHttpStringFromBase64(encodedValue);
+    rawHeaders.push([name, value]);
+    headers[name] = value;
+  }
+  return {
+    status,
+    headers,
+    rawHeaders,
+    body: lines[3 + headerCount] ?? '',
+    bodyEncoding: 'base64',
+  };
+}
+
+function writeJavaHttpSyncManifest(buffer: SharedArrayBuffer, manifest: string): void {
+  const header = new Int32Array(buffer, 0, 2);
+  const bytes = new Uint8Array(buffer, JAVA_HTTP_SYNC_HEADER_BYTES);
+  const encoded = new TextEncoder().encode(manifest);
+  if (encoded.byteLength > bytes.byteLength) {
+    const overflow = new TextEncoder().encode(javaHttpErrorManifest('TraceKernel HTTP response exceeded Java bridge buffer capacity'));
+    bytes.set(overflow.subarray(0, bytes.byteLength));
+    Atomics.store(header, JAVA_HTTP_SYNC_LENGTH_INDEX, Math.min(overflow.byteLength, bytes.byteLength));
+  } else {
+    bytes.set(encoded);
+    Atomics.store(header, JAVA_HTTP_SYNC_LENGTH_INDEX, encoded.byteLength);
+  }
+  Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, 1);
+  Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
+}
 
 export class JavaWorkerClient {
   private worker: Worker | null = null;
@@ -167,8 +296,21 @@ export class JavaWorkerClient {
         pending.onEvent?.(payload as RuntimeCommandEvent);
         return;
       }
+      if (type === 'kernel-http-dispatch-sync') {
+        this.handleKernelHttpDispatchSync(id, payload);
+        return;
+      }
+      if (type === 'kernel-http-listen-sync') {
+        this.handleKernelHttpListenSync(id, payload);
+        return;
+      }
+      if (type === 'kernel-http-close') {
+        this.handleKernelHttpClose(id, payload);
+        return;
+      }
       this.pendingMessages.delete(id);
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
+      this.closePendingHttpListeners(pending);
 
       if (type === 'error') {
         pending.reject(new Error((payload as { error: string }).error));
@@ -197,6 +339,7 @@ export class JavaWorkerClient {
       this.workerReadyReject = null;
       for (const [, pending] of this.pendingMessages) {
         if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
+        this.closePendingHttpListeners(pending);
         pending.reject(workerError);
       }
       this.pendingMessages.clear();
@@ -249,7 +392,8 @@ export class JavaWorkerClient {
     type: string,
     payload?: unknown,
     timeoutMs = MESSAGE_TIMEOUT_MS,
-    onEvent?: RuntimeCommandEventHandler
+    onEvent?: RuntimeCommandEventHandler,
+    kernelHttp?: RuntimeKernelHttpBridge
   ): Promise<T> {
     const worker = this.getWorker();
     await this.waitForWorkerReady();
@@ -260,12 +404,15 @@ export class JavaWorkerClient {
         resolve: resolve as (value: unknown) => void,
         reject,
         ...(onEvent ? { onEvent } : {}),
+        ...(kernelHttp ? { kernelHttp } : {}),
+        httpListeners: new Map(),
       });
 
       const timeoutId = globalThis.setTimeout(() => {
         const pending = this.pendingMessages.get(id);
         if (!pending) return;
         this.pendingMessages.delete(id);
+        this.closePendingHttpListeners(pending);
         logRuntimeDiagnostic('warn', {
           component: 'JavaWorkerClient',
           runtime: 'java',
@@ -280,6 +427,135 @@ export class JavaWorkerClient {
       if (pending) pending.timeoutId = timeoutId;
 
       worker.postMessage({ id, type, payload });
+    });
+  }
+
+  private closePendingHttpListeners(pending: PendingMessage): void {
+    for (const [, handle] of pending.httpListeners ?? []) {
+      handle.close();
+    }
+    pending.httpListeners?.clear();
+  }
+
+  private handleKernelHttpDispatchSync(commandId: MessageId, payload: unknown): void {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending) return;
+    const { request, buffer } = (payload ?? {}) as {
+      request?: RuntimeKernelHttpRequest;
+      buffer?: SharedArrayBuffer;
+    };
+    if (typeof SharedArrayBuffer === 'undefined' || !(buffer instanceof SharedArrayBuffer)) return;
+    if (!pending.kernelHttp) {
+      writeJavaHttpSyncManifest(buffer, javaHttpErrorManifest('TraceKernel HTTP is not available for this Java command'));
+      return;
+    }
+    if (!request || typeof request !== 'object') {
+      writeJavaHttpSyncManifest(buffer, javaHttpErrorManifest('Invalid Java TraceKernel HTTP request'));
+      return;
+    }
+    pending.kernelHttp.dispatch(request)
+      .then((response) => {
+        writeJavaHttpSyncManifest(buffer, javaHttpResponseManifest(response));
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        writeJavaHttpSyncManifest(buffer, javaHttpErrorManifest(message || 'TraceKernel HTTP request failed'));
+      });
+  }
+
+  private handleKernelHttpListenSync(commandId: MessageId, payload: unknown): void {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending) return;
+    const { serverId, options, requestBuffer, controlBuffer } = (payload ?? {}) as {
+      serverId?: string;
+      options?: RuntimeKernelHttpListenOptions;
+      requestBuffer?: SharedArrayBuffer;
+      controlBuffer?: SharedArrayBuffer;
+    };
+    if (!serverId || !options || typeof SharedArrayBuffer === 'undefined' || !(requestBuffer instanceof SharedArrayBuffer) || !(controlBuffer instanceof SharedArrayBuffer)) {
+      if (controlBuffer instanceof SharedArrayBuffer) {
+        writeJavaHttpSyncManifest(controlBuffer, javaHttpErrorManifest('Invalid Java TraceKernel HTTP listener registration'));
+      }
+      return;
+    }
+    if (!pending.kernelHttp) {
+      writeJavaHttpSyncManifest(controlBuffer, javaHttpErrorManifest('TraceKernel HTTP is not available for this Java command'));
+      return;
+    }
+    try {
+      const handle = pending.kernelHttp.listen(options, (request) => this.dispatchJavaHttpServerRequest(requestBuffer, request));
+      pending.httpListeners?.set(serverId, handle);
+      writeJavaHttpSyncManifest(controlBuffer, ['OK', javaHttpBase64FromString(JSON.stringify(handle.info))].join('\n'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      writeJavaHttpSyncManifest(controlBuffer, javaHttpErrorManifest(message || 'Unable to register Java TraceKernel HTTP listener'));
+    }
+  }
+
+  private handleKernelHttpClose(commandId: MessageId, payload: unknown): void {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending) return;
+    const { serverId, requestBuffer } = (payload ?? {}) as {
+      serverId?: string;
+      requestBuffer?: SharedArrayBuffer;
+    };
+    if (serverId) {
+      pending.httpListeners?.get(serverId)?.close();
+      pending.httpListeners?.delete(serverId);
+    }
+    if (typeof SharedArrayBuffer !== 'undefined' && requestBuffer instanceof SharedArrayBuffer) {
+      const header = new Int32Array(requestBuffer, 0, 2);
+      Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_CLOSED);
+      Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
+    }
+  }
+
+  private dispatchJavaHttpServerRequest(buffer: SharedArrayBuffer, request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse> {
+    const header = new Int32Array(buffer, 0, 2);
+    const bytes = new Uint8Array(buffer, JAVA_HTTP_SYNC_HEADER_BYTES);
+    if (Atomics.load(header, JAVA_HTTP_SYNC_STATE_INDEX) !== JAVA_HTTP_SYNC_IDLE) {
+      return Promise.resolve({
+        status: 503,
+        headers: { 'content-type': 'text/plain' },
+        body: 'Java TraceKernel HTTP server is busy\n',
+      });
+    }
+    const encoded = new TextEncoder().encode(javaHttpRequestManifest(request));
+    if (encoded.byteLength > bytes.byteLength) {
+      return Promise.resolve({
+        status: 413,
+        headers: { 'content-type': 'text/plain' },
+        body: 'TraceKernel HTTP request exceeded Java bridge buffer capacity\n',
+      });
+    }
+    bytes.set(encoded);
+    Atomics.store(header, JAVA_HTTP_SYNC_LENGTH_INDEX, encoded.byteLength);
+    Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_REQUEST);
+    Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
+
+    return new Promise((resolve) => {
+      const poll = () => {
+        const state = Atomics.load(header, JAVA_HTTP_SYNC_STATE_INDEX);
+        if (state === JAVA_HTTP_SYNC_RESPONSE) {
+          const length = Atomics.load(header, JAVA_HTTP_SYNC_LENGTH_INDEX);
+          const manifest = new TextDecoder().decode(bytes.subarray(0, Math.max(0, Math.min(length, bytes.byteLength))));
+          Atomics.store(header, JAVA_HTTP_SYNC_LENGTH_INDEX, 0);
+          Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_IDLE);
+          Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
+          resolve(javaHttpResponseFromManifest(manifest));
+          return;
+        }
+        if (state === JAVA_HTTP_SYNC_CLOSED) {
+          resolve({
+            status: 503,
+            headers: { 'content-type': 'text/plain' },
+            body: 'Java TraceKernel HTTP server closed\n',
+          });
+          return;
+        }
+        globalThis.setTimeout(poll, 1);
+      };
+      poll();
     });
   }
 
@@ -551,14 +827,15 @@ export class JavaWorkerClient {
     } finally {
       signal?.removeEventListener('abort', abortInit);
     }
-    const { signal: _signal, onEvent: _requestOnEvent, ...workerRequest } = request;
+    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
     return this.executeWithTimeout(
       () =>
         this.sendMessage<JavaWorkerProjectResult>(
           'execute-project-java',
           workerRequest,
           timeoutMs + 5_000,
-          onEvent
+          onEvent,
+          kernelHttp
         ),
       timeoutMs,
       signal

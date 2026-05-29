@@ -706,6 +706,34 @@
     return `${indent}TraceHooks.sortArrayAtLine(${lineNumber}, "${arrayName}", ${arrayName}${suffix});`;
   }
 
+  function rewriteJavaArraysSortRewriterBlock(line, lineNumber, currentMethod) {
+    const text = String(line);
+    const comparatorBlock = text.match(
+      /^(\s*)\{\s*var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]+?);\s*(?:java\.util\.)?Arrays\.sort\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\2\s*\);\s*TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"Arrays",\s*"sort",[\s\S]*?\);\s*TraceHooks\.emitRuntimeSnapshotAtLine\(\d+,\s*"Arrays",\s*Arrays\);\s*\}\s*$/
+    );
+    if (comparatorBlock) {
+      const indent = comparatorBlock[1] ?? '';
+      const comparatorSource = comparatorBlock[3] ?? '';
+      const arrayName = comparatorBlock[4] ?? '';
+      if (currentMethod.arrays.has(arrayName)) {
+        return `${indent}TraceHooks.sortArrayAtLine(${lineNumber}, "${arrayName}", ${arrayName}, ${comparatorSource});`;
+      }
+    }
+
+    const simpleBlock = text.match(
+      /^(\s*)\{\s*(?:java\.util\.)?Arrays\.sort\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\);\s*TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"Arrays",\s*"sort",[\s\S]*?\);\s*TraceHooks\.emitRuntimeSnapshotAtLine\(\d+,\s*"Arrays",\s*Arrays\);\s*\}\s*$/
+    );
+    if (simpleBlock) {
+      const indent = simpleBlock[1] ?? '';
+      const arrayName = simpleBlock[2] ?? '';
+      if (currentMethod.arrays.has(arrayName)) {
+        return `${indent}TraceHooks.sortArrayAtLine(${lineNumber}, "${arrayName}", ${arrayName});`;
+      }
+    }
+
+    return line;
+  }
+
   function rewriteJavaCollectionsSortStatement(line, lineNumber, currentMethod) {
     const match = String(line).match(/^(\s*)(?:java\.util\.)?Collections\.sort\(([\s\S]*)\);\s*$/);
     if (!match) return line;
@@ -829,6 +857,7 @@
       if (lineNumber !== null) {
         nextLine = rewriteEnhancedForIterationBind(nextLine, lineNumber, currentMethod);
         nextLine = rewriteJavaArraysFillStatement(nextLine, lineNumber, currentMethod);
+        nextLine = rewriteJavaArraysSortRewriterBlock(nextLine, lineNumber, currentMethod);
         nextLine = rewriteJavaArraysSortStatement(nextLine, lineNumber, currentMethod);
         nextLine = rewriteJavaCollectionsSortStatement(nextLine, lineNumber, currentMethod);
         nextLine = rewriteJavaArrayLengthReads(nextLine, lineNumber, currentMethod);
@@ -957,6 +986,13 @@
           if (currentMethod.adjacencyLists.has(name) && (method === 'add' )) {
             return '';
           }
+          if (currentMethod.lists.has(name) && (method === 'add' || method === 'offer' || method === 'remove')) {
+            return '';
+          }
+          return match;
+        });
+        const staleInlineMutationPattern = /TraceHooks\.emit\("trace:\{\\"kind\\":\\"mutate\\",\\"line\\":\d+,\\"target\\":\{\\"variable\\":\\"([A-Za-z_][A-Za-z0-9_]*)\\"\},\\"method\\":\\"(add|offer|remove)\\"[^;]*?\);\s*/g;
+        nextLine = nextLine.replace(staleInlineMutationPattern, (match, name, method) => {
           if (currentMethod.lists.has(name) && (method === 'add' || method === 'offer' || method === 'remove')) {
             return '';
           }

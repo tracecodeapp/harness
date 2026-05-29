@@ -81,6 +81,32 @@ const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_EL
 const STDIN_PIPE_READ_INDEX = 0;
 const STDIN_PIPE_WRITE_INDEX = 1;
 const STDIN_PIPE_CLOSED_INDEX = 2;
+const JAVA_HTTP_SYNC_HEADER_BYTES = 8;
+const JAVA_HTTP_SYNC_BUFFER_BYTES = 4 * 1024 * 1024;
+const JAVA_HTTP_SYNC_TIMEOUT_MS = 30_000;
+const JAVA_HTTP_SYNC_STATE_INDEX = 0;
+const JAVA_HTTP_SYNC_LENGTH_INDEX = 1;
+const JAVA_HTTP_SYNC_IDLE = 0;
+const JAVA_HTTP_SYNC_REQUEST = 1;
+const JAVA_HTTP_SYNC_RESPONSE = 2;
+const JAVA_HTTP_SYNC_CLOSED = 3;
+const javaHttpServers = new Map();
+let nextJavaHttpServerId = 1;
+
+function javaHttpEncodeUtf8(value) {
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(String(value ?? ''));
+  const text = unescape(encodeURIComponent(String(value ?? '')));
+  const bytes = new Uint8Array(text.length);
+  for (let index = 0; index < text.length; index += 1) bytes[index] = text.charCodeAt(index);
+  return bytes;
+}
+
+function javaHttpDecodeUtf8(bytes) {
+  if (typeof TextDecoder !== 'undefined') return new TextDecoder().decode(bytes);
+  let text = '';
+  for (let index = 0; index < bytes.length; index += 1) text += String.fromCharCode(bytes[index]);
+  return decodeURIComponent(escape(text));
+}
 
 function stdinPipeState(pipe) {
   const buffer = pipe?.buffer;
@@ -138,6 +164,156 @@ function javaProjectInputAvailable(device) {
 
 function postMessageResponse(message) {
   self.postMessage(message);
+}
+
+function javaHttpBase64FromString(value) {
+  const bytes = javaHttpEncodeUtf8(String(value ?? ''));
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function javaHttpErrorManifest(message) {
+  return `ERROR\n${javaHttpBase64FromString(message || 'TraceKernel HTTP request failed')}`;
+}
+
+function dispatchJavaProjectHttpSync(requestJson) {
+  const context = activeJavaProjectIo;
+  if (!context?.messageId) {
+    return javaHttpErrorManifest('TraceKernel HTTP is only available during project execution');
+  }
+  if (typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined' || typeof Atomics.wait !== 'function') {
+    return javaHttpErrorManifest('SharedArrayBuffer support is required for Java TraceKernel HTTP');
+  }
+  let request;
+  try {
+    request = JSON.parse(String(requestJson ?? ''));
+  } catch (error) {
+    return javaHttpErrorManifest('Invalid Java TraceKernel HTTP request');
+  }
+  const buffer = new SharedArrayBuffer(JAVA_HTTP_SYNC_HEADER_BYTES + JAVA_HTTP_SYNC_BUFFER_BYTES);
+  const header = new Int32Array(buffer, 0, 2);
+  try {
+    postMessageResponse({
+      id: context.messageId,
+      type: 'kernel-http-dispatch-sync',
+      payload: { request, buffer },
+    });
+    const waitResult = Atomics.wait(header, 0, 0, JAVA_HTTP_SYNC_TIMEOUT_MS);
+    if (waitResult === 'timed-out') {
+      return javaHttpErrorManifest('TraceKernel HTTP request timed out');
+    }
+    const length = Atomics.load(header, 1);
+    if (!Number.isFinite(length) || length < 0 || length > JAVA_HTTP_SYNC_BUFFER_BYTES) {
+      return javaHttpErrorManifest('TraceKernel HTTP returned an invalid response');
+    }
+    return javaHttpDecodeUtf8(new Uint8Array(buffer, JAVA_HTTP_SYNC_HEADER_BYTES, length));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return javaHttpErrorManifest(message || 'TraceKernel HTTP request failed');
+  }
+}
+
+function registerJavaProjectHttpServerSync(host, port) {
+  const context = activeJavaProjectIo;
+  if (!context?.messageId) {
+    return javaHttpErrorManifest('TraceKernel HTTP listeners are only available during project execution');
+  }
+  if (typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined' || typeof Atomics.wait !== 'function') {
+    return javaHttpErrorManifest('SharedArrayBuffer support is required for Java TraceKernel HTTP listeners');
+  }
+  const serverId = `java-http-${nextJavaHttpServerId++}`;
+  const requestBuffer = new SharedArrayBuffer(JAVA_HTTP_SYNC_HEADER_BYTES + JAVA_HTTP_SYNC_BUFFER_BYTES);
+  const controlBuffer = new SharedArrayBuffer(JAVA_HTTP_SYNC_HEADER_BYTES + 16 * 1024);
+  const controlHeader = new Int32Array(controlBuffer, 0, 2);
+  javaHttpServers.set(serverId, { requestBuffer, controlBuffer });
+  try {
+    postMessageResponse({
+      id: context.messageId,
+      type: 'kernel-http-listen-sync',
+      payload: {
+        serverId,
+        options: {
+          host: String(host || '127.0.0.1'),
+          port: Number.isFinite(Number(port)) ? Number(port) : 0,
+        },
+        requestBuffer,
+        controlBuffer,
+      },
+    });
+    const waitResult = Atomics.wait(controlHeader, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_IDLE, JAVA_HTTP_SYNC_TIMEOUT_MS);
+    if (waitResult === 'timed-out') {
+      javaHttpServers.delete(serverId);
+      return javaHttpErrorManifest('TraceKernel HTTP listener registration timed out');
+    }
+    const length = Atomics.load(controlHeader, JAVA_HTTP_SYNC_LENGTH_INDEX);
+    const manifest = javaHttpDecodeUtf8(new Uint8Array(controlBuffer, JAVA_HTTP_SYNC_HEADER_BYTES, Math.max(0, Math.min(length, 16 * 1024))));
+    if (!manifest.startsWith('OK\n')) {
+      javaHttpServers.delete(serverId);
+      return manifest || javaHttpErrorManifest('TraceKernel HTTP listener registration failed');
+    }
+    return `OK\n${serverId}`;
+  } catch (error) {
+    javaHttpServers.delete(serverId);
+    const message = error instanceof Error ? error.message : String(error);
+    return javaHttpErrorManifest(message || 'TraceKernel HTTP listener registration failed');
+  }
+}
+
+function pollJavaProjectHttpServerRequest(serverId) {
+  const server = javaHttpServers.get(String(serverId || ''));
+  if (!server) return javaHttpErrorManifest('TraceKernel HTTP listener is closed');
+  const header = new Int32Array(server.requestBuffer, 0, 2);
+  while (true) {
+    const state = Atomics.load(header, JAVA_HTTP_SYNC_STATE_INDEX);
+    if (state === JAVA_HTTP_SYNC_REQUEST) {
+      const length = Atomics.load(header, JAVA_HTTP_SYNC_LENGTH_INDEX);
+      return javaHttpDecodeUtf8(new Uint8Array(server.requestBuffer, JAVA_HTTP_SYNC_HEADER_BYTES, Math.max(0, Math.min(length, JAVA_HTTP_SYNC_BUFFER_BYTES))));
+    }
+    if (state === JAVA_HTTP_SYNC_CLOSED) {
+      return javaHttpErrorManifest('TraceKernel HTTP listener is closed');
+    }
+    Atomics.wait(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_IDLE, JAVA_HTTP_SYNC_TIMEOUT_MS);
+  }
+}
+
+function completeJavaProjectHttpServerRequest(serverId, responseManifest) {
+  const server = javaHttpServers.get(String(serverId || ''));
+  if (!server) return;
+  const header = new Int32Array(server.requestBuffer, 0, 2);
+  const bytes = new Uint8Array(server.requestBuffer, JAVA_HTTP_SYNC_HEADER_BYTES);
+  const encoded = javaHttpEncodeUtf8(String(responseManifest ?? javaHttpErrorManifest('TraceKernel HTTP server returned an empty response')));
+  bytes.set(encoded.subarray(0, bytes.byteLength));
+  Atomics.store(header, JAVA_HTTP_SYNC_LENGTH_INDEX, Math.min(encoded.byteLength, bytes.byteLength));
+  Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_RESPONSE);
+  Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
+}
+
+function closeJavaProjectHttpServer(serverId) {
+  const server = javaHttpServers.get(String(serverId || ''));
+  if (!server) return;
+  javaHttpServers.delete(String(serverId || ''));
+  const header = new Int32Array(server.requestBuffer, 0, 2);
+  Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_CLOSED);
+  Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
+  postMessageResponse({
+    id: activeJavaProjectIo?.messageId,
+    type: 'kernel-http-close',
+    payload: {
+      type: 'kernel-http-close',
+      serverId: String(serverId || ''),
+      requestBuffer: server.requestBuffer,
+    },
+  });
+}
+
+function closeAllJavaProjectHttpServers() {
+  for (const serverId of Array.from(javaHttpServers.keys())) {
+    closeJavaProjectHttpServer(serverId);
+  }
 }
 
 function isJavaHarnessStackFrame(line) {
@@ -261,6 +437,21 @@ function javaProjectNativeBridge() {
     Java_tracecode_browser_ProjectEvents_inputAvailableNative: (_library, device) => (
       javaProjectInputAvailable(String(device ?? '/dev/stdin'))
     ),
+    Java_tracecode_browser_ProjectEvents_dispatchHttpNative: (_library, requestJson) => (
+      dispatchJavaProjectHttpSync(String(requestJson ?? ''))
+    ),
+    Java_tracecode_browser_ProjectEvents_registerHttpServerNative: (_library, host, port) => (
+      registerJavaProjectHttpServerSync(String(host ?? '127.0.0.1'), Number(port ?? 0))
+    ),
+    Java_tracecode_browser_ProjectEvents_pollHttpServerRequestNative: (_library, serverId) => (
+      pollJavaProjectHttpServerRequest(String(serverId ?? ''))
+    ),
+    Java_tracecode_browser_ProjectEvents_completeHttpServerRequestNative: (_library, serverId, responseManifest) => {
+      completeJavaProjectHttpServerRequest(String(serverId ?? ''), String(responseManifest ?? ''));
+    },
+    Java_tracecode_browser_ProjectEvents_closeHttpServerNative: (_library, serverId) => {
+      closeJavaProjectHttpServer(String(serverId ?? ''));
+    },
   };
 }
 
@@ -3949,6 +4140,12 @@ function augmentJavaProjectFileMutations(source) {
     .replace(/\bSystem\.getenv\s*\(/g, 'tracecode.browser.ProjectEvents.getenv(')
     .replace(/\bjava\.lang\.System\.in\b/g, 'tracecode.browser.ProjectEvents.inputStream()')
     .replace(/\bSystem\.in\b/g, 'tracecode.browser.ProjectEvents.inputStream()')
+    .replace(/\bjava\.net\.http\.HttpClient\.newHttpClient\s*\(/g, 'tracecode.browser.ProjectEvents.httpClient(')
+    .replace(/(?<![\w.])HttpClient\.newHttpClient\s*\(/g, 'tracecode.browser.ProjectEvents.httpClient(')
+    .replace(/\bjava\.net\.http\.HttpClient\.newBuilder\s*\(/g, 'tracecode.browser.ProjectEvents.httpClientBuilder(')
+    .replace(/(?<![\w.])HttpClient\.newBuilder\s*\(/g, 'tracecode.browser.ProjectEvents.httpClientBuilder(')
+    .replace(/\bcom\.sun\.net\.httpserver\.HttpServer\.create\s*\(/g, 'tracecode.browser.ProjectEvents.httpServer(')
+    .replace(/(?<![\w.])HttpServer\.create\s*\(/g, 'tracecode.browser.ProjectEvents.httpServer(')
     .replace(/\bnew\s+java\.io\.FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/(?<![\w.])new\s+FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/\bnew\s+java\.io\.FileInputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileInputStream(')
@@ -4140,6 +4337,7 @@ public class ${exportsClassName} {
       ProjectEvents.setKernelDevices(${kernelDeviceManifestSource});
       ProjectEvents.setKernelFiles(${kernelFileManifestSource});
       ProjectEvents.setEnvironment(${envManifestSource});
+      ProjectEvents.installHttpUrlHandler();
       System.setOut(new java.io.PrintStream(ProjectEvents.streamingOutput(stdoutBytes, "stdout"), true, "UTF-8"));
       System.setErr(new java.io.PrintStream(ProjectEvents.streamingOutput(stderrBytes, "stderr"), true, "UTF-8"));
       System.setIn(ProjectEvents.inputStream());
@@ -5159,6 +5357,7 @@ async function runJavaProjectRequest(payload, requestId) {
   } catch (error) {
     throw makeWorkerStageError('project compile and run', error);
   } finally {
+    closeAllJavaProjectHttpServers();
     activeJavaProjectIo = null;
   }
   const libraryCallEnd = performance.now();

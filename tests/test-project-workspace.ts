@@ -6194,6 +6194,166 @@ async function testTraceKernelHttpPythonRunnerClientBridge(): Promise<void> {
   workspace.dispose();
 }
 
+async function testTraceKernelHttpJavaRunnerBridge(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'Server.java', contents: 'class Server { public static void main(String[] args) {} }\n' },
+      {
+        path: 'fetch-java.js',
+        contents: [
+          '(async () => {',
+          '  const response = await fetch("http://localhost:3220/from-fetch", {',
+          '    method: "POST",',
+          '    headers: { "content-type": "text/plain" },',
+          '    body: "payload",',
+          '  });',
+          '  console.log(`${response.status}:${response.ok}:${JSON.stringify(await response.json())}`);',
+          '})().catch((error) => { console.error(error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
+    ],
+    kernel: { scheduler: { maxConcurrentCommands: 4 } },
+    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    javaRunner: createBrowserJavaProjectRunner({
+      async executeProjectJava(request, _timeoutMs, _onEvent, signal) {
+        const handle = request.kernelHttp?.listen({ host: '127.0.0.1', port: 3220 }, async (httpRequest) => ({
+          status: httpRequest.method === 'POST' ? 202 : 200,
+          headers: { 'content-type': 'application/json', 'x-java-runner': 'browser' },
+          body: JSON.stringify({ method: httpRequest.method, path: httpRequest.path, body: httpRequest.body ?? '' }) + '\n',
+        }));
+        assertCondition(handle !== undefined, 'Java runner should receive TraceKernel HTTP bridge');
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        handle.close();
+        return { stdout: '', stderr: '', exitCode: 143 };
+      },
+    }),
+  });
+
+  const terminal = workspace.createTerminalSession();
+  const start = await terminal.run('java Server &');
+  assertCondition(start.exitCode === 0, `Java background server should start: ${JSON.stringify(start)}`);
+
+  let listeners = '';
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
+    if (listeners.includes('\thttp\t127.0.0.1\t3220\t')) break;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assertCondition(listeners.includes('\thttp\t127.0.0.1\t3220\t'), `Java runner bridge should register HTTP listener: ${listeners}`);
+
+  const response = await workspace.runCommand('curl -s -X POST -d payload http://localhost:3220/java');
+  assertCondition(response.exitCode === 0, `Java runner bridge curl should succeed: ${JSON.stringify(response)}`);
+  assertCondition(
+    response.stdout === '{"method":"POST","path":"/java","body":"payload"}\n',
+    `Java runner bridge should dispatch curl requests through TraceKernel: ${response.stdout}`
+  );
+
+  const fetchResponse = await workspace.runCommand('node fetch-java.js');
+  assertCondition(fetchResponse.exitCode === 0, `fetch should call Java runner bridge: ${JSON.stringify(fetchResponse)}`);
+  assertCondition(
+    fetchResponse.stdout === '202:true:{"method":"POST","path":"/from-fetch","body":"payload"}\n',
+    `fetch should dispatch to Java HTTP listeners through TraceKernel: ${fetchResponse.stdout}`
+  );
+
+  const listenerRow = listeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3220\t'));
+  const serverPid = listenerRow?.split('\t')[1];
+  assertCondition(serverPid !== undefined, `Java listener row should include owning pid: ${listeners}`);
+  const killed = await workspace.runCommand(`kill ${serverPid}`);
+  assertCondition(killed.exitCode === 0, `Java bridge process should be killable: ${JSON.stringify(killed)}`);
+  await workspace.runCommand(`wait ${serverPid}`);
+  workspace.dispose();
+}
+
+async function testTraceKernelHttpLanguageBridgeConformance(): Promise<void> {
+  const receivedClients: string[] = [];
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      {
+        path: 'client.js',
+        contents: [
+          '(async () => {',
+          '  const response = await fetch("http://localhost:3230/conformance", {',
+          '    method: "POST",',
+          '    headers: { "content-type": "text/plain", "x-client": "javascript" },',
+          '    body: "js-body",',
+          '  });',
+          '  console.log(`${response.status}:${await response.text()}`);',
+          '})().catch((error) => { console.error(error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
+      { path: 'client.py', contents: 'print("python")\n' },
+      { path: 'Client.java', contents: 'class Client { public static void main(String[] args) {} }\n' },
+    ],
+    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    pythonRunner: async (request) => {
+      const response = await request.kernelHttp?.dispatch({
+        method: 'POST',
+        url: 'http://localhost:3230/conformance',
+        path: '/conformance',
+        headers: { 'content-type': 'text/plain', 'x-client': 'python' },
+        body: 'py-body',
+      });
+      return {
+        stdout: `${response?.status}:${response?.body ?? ''}`,
+        stderr: '',
+        exitCode: response?.status === 209 ? 0 : 1,
+      };
+    },
+    javaRunner: createBrowserJavaProjectRunner({
+      async executeProjectJava(request) {
+        const response = await request.kernelHttp?.dispatch({
+          method: 'POST',
+          url: 'http://localhost:3230/conformance',
+          path: '/conformance',
+          headers: { 'content-type': 'text/plain', 'x-client': 'java' },
+          body: 'java-body',
+        });
+        return {
+          stdout: `${response?.status}:${response?.body ?? ''}`,
+          stderr: '',
+          exitCode: response?.status === 209 ? 0 : 1,
+        };
+      },
+    }),
+  });
+  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3230 }, (request) => {
+    const client = request.headers?.['x-client'] ?? '';
+    receivedClients.push(`${client}:${request.body ?? ''}`);
+    return {
+      status: 209,
+      headers: { 'content-type': 'text/plain' },
+      body: `${client}:ok\n`,
+    };
+  });
+
+  const javascript = await workspace.runCommand('node client.js');
+  assertCondition(javascript.exitCode === 0, `JavaScript HTTP conformance client should succeed: ${JSON.stringify(javascript)}`);
+  assertCondition(javascript.stdout === '209:javascript:ok\n\n', `JavaScript HTTP conformance response should round-trip: ${javascript.stdout}`);
+
+  const python = await workspace.runCommand('python3 client.py');
+  assertCondition(python.exitCode === 0, `Python HTTP conformance client should succeed: ${JSON.stringify(python)}`);
+  assertCondition(python.stdout === '209:python:ok\n', `Python HTTP conformance response should round-trip: ${python.stdout}`);
+
+  const java = await workspace.runCommand('java Client');
+  assertCondition(java.exitCode === 0, `Java HTTP conformance client should succeed: ${JSON.stringify(java)}`);
+  assertCondition(java.stdout === '209:java:ok\n', `Java HTTP conformance response should round-trip: ${java.stdout}`);
+
+  assertCondition(
+    receivedClients.join(',') === 'javascript:js-body,python:py-body,java:java-body',
+    `TraceKernel HTTP should preserve shared client request shape across languages: ${JSON.stringify(receivedClients)}`
+  );
+  listener.close();
+  workspace.dispose();
+}
+
 async function testBrowserJavaScriptProjectRunnerAbortSignal(): Promise<void> {
   let commandStarted!: () => void;
   const commandStartedPromise = new Promise<void>((resolve) => {
@@ -12212,6 +12372,8 @@ async function main(): Promise<void> {
   await testTraceKernelHttpBindSemantics();
   await testTraceKernelHttpPythonRunnerBridge();
   await testTraceKernelHttpPythonRunnerClientBridge();
+  await testTraceKernelHttpJavaRunnerBridge();
+  await testTraceKernelHttpLanguageBridgeConformance();
   await testBrowserJavaScriptProjectRunnerAbortSignal();
   await testBrowserJavaScriptProjectRunnerCwd();
   await testBrowserJavaScriptProjectRunnerStdin();

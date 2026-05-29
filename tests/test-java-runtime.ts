@@ -689,6 +689,125 @@ public class ProjectEventsRandomAccessSmoke {
   }
 }
 
+function testJavaProjectEventsHttpClientShims(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-http-smoke-'));
+  try {
+    const sourcePath = join(tmpRoot, 'ProjectEventsHttpSmoke.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(
+      sourcePath,
+      `import tracecode.browser.ProjectEvents;
+import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import com.sun.net.httpserver.HttpServer;
+
+public class ProjectEventsHttpSmoke {
+  static String b64(String value) {
+    return Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
+  }
+
+  static String response(int status, String mode, String body) {
+    return String.join("\\n",
+      "OK",
+      Integer.toString(status),
+      "2",
+      b64("content-type") + "\\t" + b64("text/plain"),
+      b64("x-mode") + "\\t" + b64(mode),
+      b64(body)
+    );
+  }
+
+  public static void main(String[] args) throws Exception {
+    List<String> requests = new ArrayList<>();
+    ProjectEvents.setHttpDispatcherForTesting((requestJson) -> {
+      requests.add(requestJson);
+      if (requestJson.contains("/async")) return response(203, "async-mode", "async-body");
+      if (requestJson.contains("/post")) return response(202, "client-mode", "client-body");
+      return response(201, "url-mode", "url-body");
+    });
+
+    ProjectEvents.installHttpUrlHandler();
+    HttpURLConnection connection = (HttpURLConnection) new URL("http://tracekernel.test/items?limit=1").openConnection();
+    connection.setRequestProperty("accept", "text/plain");
+    String urlBody = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    System.out.println("url=" + connection.getResponseCode() + ":" + urlBody + ":" + connection.getHeaderField("x-mode"));
+
+    HttpClient client = ProjectEvents.httpClientBuilder().version(HttpClient.Version.HTTP_1_1).build();
+    HttpRequest post = HttpRequest.newBuilder(URI.create("http://tracekernel.test/post"))
+      .header("content-type", "text/plain")
+      .POST(HttpRequest.BodyPublishers.ofString("job"))
+      .build();
+    HttpResponse<String> postResponse = client.send(post, HttpResponse.BodyHandlers.ofString());
+    System.out.println("client=" + postResponse.statusCode() + ":" + postResponse.body() + ":" + postResponse.headers().firstValue("x-mode").orElse(""));
+
+    HttpRequest asyncRequest = HttpRequest.newBuilder(URI.create("http://tracekernel.test/async")).GET().build();
+    HttpResponse<String> asyncResponse = ProjectEvents.httpClient().sendAsync(asyncRequest, HttpResponse.BodyHandlers.ofString()).join();
+    System.out.println("async=" + asyncResponse.statusCode() + ":" + asyncResponse.body());
+
+    HttpServer server = ProjectEvents.httpServer(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/queue", (exchange) -> {
+      String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+      byte[] response = ("handled:" + exchange.getRequestMethod() + ":" + exchange.getRequestURI().getRawQuery() + ":" + body).getBytes(StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().set("x-server", "project");
+      exchange.sendResponseHeaders(207, response.length);
+      exchange.getResponseBody().write(response);
+      exchange.close();
+    });
+    server.start();
+    HttpRequest serverRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/queue?id=7"))
+      .POST(HttpRequest.BodyPublishers.ofString("work"))
+      .build();
+    HttpResponse<String> serverResponse = ProjectEvents.httpClient().send(serverRequest, HttpResponse.BodyHandlers.ofString());
+    System.out.println("server=" + serverResponse.statusCode() + ":" + serverResponse.body() + ":" + serverResponse.headers().firstValue("x-server").orElse(""));
+    server.stop(0);
+
+    System.out.println("requests=" + requests.size());
+    for (String request : requests) {
+      System.out.println("request=" + request);
+    }
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'ProjectEventsHttpSmoke'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    assertCondition(output.includes('url=201:url-body:url-mode'), `Java URLConnection shim should dispatch TraceKernel HTTP: ${output}`);
+    assertCondition(output.includes('client=202:client-body:client-mode'), `Java HttpClient.send shim should dispatch TraceKernel HTTP: ${output}`);
+    assertCondition(output.includes('async=203:async-body'), `Java HttpClient.sendAsync shim should dispatch TraceKernel HTTP: ${output}`);
+    assertCondition(output.includes('server=207:handled:POST:id=7:work:project'), `Java HttpServer shim should handle local TraceKernel HTTP clients: ${output}`);
+    assertCondition(output.includes('requests=3'), `Java HTTP shims should dispatch three requests: ${output}`);
+    assertCondition(
+      output.includes('"path":"/items?limit=1"') &&
+        output.includes('"method":"POST"') &&
+        output.includes('"body":"am9i"') &&
+        output.includes('"path":"/async"'),
+      `Java HTTP shims should preserve paths, methods, and request bodies: ${output}`
+    );
+    console.log('PASS: Java ProjectEvents HTTP client shims dispatch through TraceKernel bridge');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testJavaRuntimeMultiSnapshotFragments(): void {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-multi-snapshot-'));
   try {
@@ -3073,6 +3192,7 @@ async function main(): Promise<void> {
   testJavaRuntimeUserObjectSerializationIds();
   testJavaBrowserHelperWorkspaceDirectories();
   testJavaProjectEventsRandomAccessKernelReads();
+  testJavaProjectEventsHttpClientShims();
   testJavaRuntimeMultiSnapshotFragments();
   testJavaEnhancedForHeaderExpansionDropsStaleBindingSnapshots();
   testJavaRuntimeRecursiveCallStacks();

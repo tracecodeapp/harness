@@ -3,6 +3,7 @@
 import { createBrowserHarness, resolveBrowserHarnessAssets } from '../packages/harness-browser/src';
 import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
 import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
+import { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
 import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): void {
@@ -15,6 +16,21 @@ interface WorkerMessage {
   id?: string;
   type: string;
   payload?: unknown;
+}
+
+const JAVA_HTTP_SYNC_STATE_INDEX = 0;
+const JAVA_HTTP_SYNC_LENGTH_INDEX = 1;
+const JAVA_HTTP_SYNC_REQUEST = 1;
+const JAVA_HTTP_SYNC_RESPONSE = 2;
+const JAVA_HTTP_SYNC_HEADER_BYTES = 8;
+
+function testBase64(value: string): string {
+  return btoa(String.fromCharCode(...new TextEncoder().encode(value)));
+}
+
+function testJavaHttpResponseManifest(status: number, headers: Record<string, string>, body: string): string {
+  const headerLines = Object.entries(headers).map(([name, value]) => `${testBase64(name)}\t${testBase64(value)}`);
+  return ['OK', String(status), String(headerLines.length), ...headerLines, testBase64(body)].join('\n');
 }
 
 const workerInstances: MockWorker[] = [];
@@ -90,6 +106,107 @@ class MockWorker {
       }
 
       if (type.startsWith('execute-project-')) {
+        if (type === 'execute-project-java' && (payload as { scriptPath?: string } | undefined)?.scriptPath === 'HttpClient.java') {
+          const buffer = new SharedArrayBuffer(4096);
+          this.onmessage?.({
+            data: {
+              id,
+              type: 'kernel-http-dispatch-sync',
+              payload: {
+                request: {
+                  method: 'GET',
+                  url: 'http://tracekernel.test/queue?limit=1',
+                  path: '/queue?limit=1',
+                  headers: { accept: 'text/plain' },
+                },
+                buffer,
+              },
+            },
+          } as MessageEvent<WorkerMessage>);
+          queueMicrotask(() => {
+            const header = new Int32Array(buffer, 0, 2);
+            const length = Atomics.load(header, 1);
+            const manifest = new TextDecoder().decode(new Uint8Array(buffer, 8, length));
+            this.onmessage?.({
+              data: {
+                id,
+                type,
+                payload: {
+                  stdout: manifest,
+                  stderr: '',
+                  exitCode: 0,
+                },
+              },
+            } as MessageEvent<WorkerMessage>);
+          });
+          return;
+        }
+        if (type === 'execute-project-java' && (payload as { scriptPath?: string } | undefined)?.scriptPath === 'HttpServer.java') {
+          const requestBuffer = new SharedArrayBuffer(4096);
+          const controlBuffer = new SharedArrayBuffer(4096);
+          const requestHeader = new Int32Array(requestBuffer, 0, 2);
+          const requestBytes = new Uint8Array(requestBuffer, JAVA_HTTP_SYNC_HEADER_BYTES);
+          let requestManifest = '';
+          this.onmessage?.({
+            data: {
+              id,
+              type: 'kernel-http-listen-sync',
+              payload: {
+                serverId: 'java-http-test',
+                options: { host: '127.0.0.1', port: 3210 },
+                requestBuffer,
+                controlBuffer,
+              },
+            },
+          } as MessageEvent<WorkerMessage>);
+          const finish = () => {
+            this.onmessage?.({
+              data: {
+                id,
+                type: 'kernel-http-close',
+                payload: {
+                  type: 'kernel-http-close',
+                  serverId: 'java-http-test',
+                  requestBuffer,
+                },
+              },
+            } as MessageEvent<WorkerMessage>);
+            this.onmessage?.({
+              data: {
+                id,
+                type,
+                payload: {
+                  stdout: `server-listened\n${requestManifest}\n`,
+                  stderr: '',
+                  exitCode: 0,
+                },
+              },
+            } as MessageEvent<WorkerMessage>);
+          };
+          const waitForIdle = () => {
+            if (Atomics.load(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX) === 0) {
+              finish();
+              return;
+            }
+            setTimeout(waitForIdle, 0);
+          };
+          const waitForRequest = () => {
+            if (Atomics.load(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX) === JAVA_HTTP_SYNC_REQUEST) {
+              const length = Atomics.load(requestHeader, JAVA_HTTP_SYNC_LENGTH_INDEX);
+              requestManifest = new TextDecoder().decode(requestBytes.subarray(0, length));
+              const response = new TextEncoder().encode(testJavaHttpResponseManifest(208, { 'content-type': 'text/plain', 'x-java-server': 'ok' }, 'server-body'));
+              requestBytes.set(response);
+              Atomics.store(requestHeader, JAVA_HTTP_SYNC_LENGTH_INDEX, response.byteLength);
+              Atomics.store(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_RESPONSE);
+              Atomics.notify(requestHeader, JAVA_HTTP_SYNC_STATE_INDEX);
+              setTimeout(waitForIdle, 0);
+              return;
+            }
+            setTimeout(waitForRequest, 0);
+          };
+          setTimeout(waitForRequest, 0);
+          return;
+        }
         this.onmessage?.({
           data: {
             id,
@@ -313,6 +430,102 @@ async function main(): Promise<void> {
       'Java warmLanguage should send the Java warmup worker request'
     );
     console.log('PASS: browser harness warms Java runtime on demand');
+
+    let javaHttpDispatchPath = '';
+    const javaHttpClient = new JavaWorkerClient({ workerUrl: '/instance-a/java-worker.js' });
+    const javaHttpResult = await javaHttpClient.executeProjectJava({
+      code: '',
+      source: 'run',
+      scriptPath: 'HttpClient.java',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        files: [{ path: 'HttpClient.java', contents: 'class HttpClient {}\n' }],
+      },
+      kernelHttp: {
+        listen() {
+          throw new Error('Java client-side HTTP test should not open listeners');
+        },
+        async dispatch(request) {
+          javaHttpDispatchPath = request.path;
+          return {
+            status: 201,
+            headers: { 'content-type': 'text/plain' },
+            body: 'queued',
+          };
+        },
+      },
+    });
+    javaHttpClient.terminate();
+    assertCondition(javaHttpDispatchPath === '/queue?limit=1', 'Java worker client should dispatch TraceKernel HTTP requests');
+    assertCondition(
+      javaHttpResult.stdout.startsWith('OK\n201\n') && javaHttpResult.stdout.endsWith('\ncXVldWVk'),
+      'Java worker client should write TraceKernel HTTP responses into the sync bridge buffer'
+    );
+    const javaHttpWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
+    assertCondition(
+      !('kernelHttp' in ((javaHttpWorker?.messages.at(-1)?.payload ?? {}) as Record<string, unknown>)),
+      'Java worker payload should omit the non-cloneable kernel HTTP bridge'
+    );
+    console.log('PASS: Java worker client bridges synchronous TraceKernel HTTP dispatch');
+
+    let javaListenClosed = false;
+    let javaListenPort = 0;
+    let javaServerExternalResponse: { status?: number; body?: string; bodyEncoding?: string; headers?: Record<string, string> } | undefined;
+    const javaServerClient = new JavaWorkerClient({ workerUrl: '/instance-a/java-worker.js' });
+    const javaServerResult = await javaServerClient.executeProjectJava({
+      code: '',
+      source: 'run',
+      scriptPath: 'HttpServer.java',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        files: [{ path: 'HttpServer.java', contents: 'class HttpServer {}\n' }],
+      },
+      kernelHttp: {
+        listen(options, handler) {
+          javaListenPort = options.port ?? 0;
+          void handler({
+            method: 'POST',
+            url: 'http://127.0.0.1:3210/queue?id=7',
+            path: '/queue?id=7',
+            headers: { 'content-type': 'text/plain' },
+            body: 'work',
+          }).then((response) => {
+            javaServerExternalResponse = response;
+          });
+          return {
+            id: 'java-http-test',
+            info: { id: 'java-http-test', host: options.host ?? '127.0.0.1', port: javaListenPort, url: `http://127.0.0.1:${javaListenPort}` },
+            close() {
+              javaListenClosed = true;
+            },
+          };
+        },
+        async dispatch() {
+          throw new Error('Java server listener registration test should not dispatch outbound requests');
+        },
+      },
+    });
+    await Promise.resolve();
+    javaServerClient.terminate();
+    assertCondition(javaServerResult.stdout.startsWith('server-listened\nREQUEST\n'), 'Java worker client should complete after Java HTTP server request lifecycle');
+    assertCondition(javaListenPort === 3210, 'Java worker client should register Java HttpServer listeners with TraceKernel HTTP');
+    assertCondition(
+      javaServerResult.stdout.includes(testBase64('POST')) && javaServerResult.stdout.includes(testBase64('/queue?id=7')),
+      'Java worker client should write external TraceKernel HTTP requests into the Java server buffer'
+    );
+    assertCondition(
+      javaServerExternalResponse?.status === 208 &&
+        javaServerExternalResponse.bodyEncoding === 'base64' &&
+        javaServerExternalResponse.body === testBase64('server-body') &&
+        javaServerExternalResponse.headers?.['x-java-server'] === 'ok',
+      'Java worker client should read Java server responses from the shared buffer'
+    );
+    assertCondition(javaListenClosed, 'Java worker client should close Java HttpServer listeners when the worker closes them');
+    console.log('PASS: Java worker client bridges TraceKernel HTTP server listeners');
 
     const cppWarmupResult = await harnessA.warmLanguage('cpp');
     const cppWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/cpp-worker.js'));

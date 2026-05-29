@@ -253,6 +253,67 @@ print(response.json())
 These shims are scoped to project execution and dispatch through TraceKernel.
 They are intended for endpoint tests, not general internet access.
 
+## Java HTTP
+
+Browser Java project runs install TraceKernel HTTP shims before invoking user
+code. Common client APIs are supported:
+
+```java
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+HttpClient client = HttpClient.newHttpClient();
+HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:8765/items"))
+  .header("content-type", "application/json")
+  .POST(HttpRequest.BodyPublishers.ofString("{\"id\":1}"))
+  .build();
+
+HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+System.out.println(response.statusCode());
+System.out.println(response.body());
+```
+
+`HttpClient.newHttpClient()`, `HttpClient.newBuilder()`, `URL.openConnection()`,
+and `HttpURLConnection` are routed through TraceKernel for browser Java project
+commands. They can call listeners started by JavaScript, Python, `curl`, or
+consumer-owned `workspace.http.listen(...)` handlers in the same workspace.
+
+Java also includes a `com.sun.net.httpserver.HttpServer` shim for project code
+that creates endpoints:
+
+```java
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+
+HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+server.createContext("/queue", exchange -> {
+  byte[] body = "ok\n".getBytes(StandardCharsets.UTF_8);
+  exchange.sendResponseHeaders(200, body.length);
+  exchange.getResponseBody().write(body);
+  exchange.close();
+});
+server.start();
+
+int port = server.getAddress().getPort();
+HttpResponse<String> response = HttpClient.newHttpClient().send(
+  HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/queue")).GET().build(),
+  HttpResponse.BodyHandlers.ofString()
+);
+```
+
+`HttpServer.start()` registers a TraceKernel listener for browser Java project
+commands. Java clients can call the server in-process, and external workspace
+tests can call the same listener through `workspace.http.request(...)` or
+`curl`. The Java bridge handles one in-flight server request at a time; use this
+for endpoint tests and small teaching workloads, not load testing.
+
 ## Bind Semantics
 
 TraceKernel tracks listener ownership and port binding in the kernel:

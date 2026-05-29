@@ -22,7 +22,20 @@ import java.io.PrintWriter;
 import java.io.RandomAccessFile;
 import java.io.Reader;
 import java.io.Writer;
+import java.net.Authenticator;
+import java.net.CookieHandler;
+import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 import java.net.URI;
+import java.net.URL;
+import java.net.URLConnection;
+import java.net.URLStreamHandler;
+import java.net.URLStreamHandlerFactory;
+import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.Charset;
 import java.nio.ByteBuffer;
@@ -39,6 +52,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileTime;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
@@ -46,7 +60,23 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Flow;
+import com.sun.net.httpserver.Filter;
+import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpContext;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpPrincipal;
+import com.sun.net.httpserver.HttpServer;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSession;
 import java.util.stream.Stream;
 
 public final class ProjectEvents {
@@ -64,8 +94,51 @@ public final class ProjectEvents {
   private static final ThreadLocal<ByteArrayOutputStream> STDOUT_CAPTURE = new ThreadLocal<>();
   private static final ThreadLocal<ByteArrayOutputStream> STDERR_CAPTURE = new ThreadLocal<>();
   private static final ThreadLocal<OutputFileTargetInfo> LAST_OUTPUT_FILE_TARGET = new ThreadLocal<>();
+  private static volatile boolean HTTP_URL_HANDLER_INSTALLED = false;
+  private static volatile ProjectHttpDispatcher HTTP_DISPATCHER_FOR_TESTING = null;
+  private static final Map<Integer, ProjectHttpServer> PROJECT_HTTP_SERVERS = new HashMap<>();
+  private static int NEXT_PROJECT_HTTP_PORT = 32000;
 
   private ProjectEvents() {}
+
+  public interface ProjectHttpDispatcher {
+    String dispatch(String requestJson) throws IOException;
+  }
+
+  public static void setHttpDispatcherForTesting(ProjectHttpDispatcher dispatcher) {
+    HTTP_DISPATCHER_FOR_TESTING = dispatcher;
+  }
+
+  public static void installHttpUrlHandler() {
+    if (HTTP_URL_HANDLER_INSTALLED) return;
+    synchronized (ProjectEvents.class) {
+      if (HTTP_URL_HANDLER_INSTALLED) return;
+      try {
+        URL.setURLStreamHandlerFactory(new ProjectHttpUrlStreamHandlerFactory());
+        HTTP_URL_HANDLER_INSTALLED = true;
+      } catch (Error error) {
+        HTTP_URL_HANDLER_INSTALLED = true;
+      }
+    }
+  }
+
+  public static HttpClient httpClient() {
+    return new ProjectHttpClientBuilder().build();
+  }
+
+  public static HttpClient.Builder httpClientBuilder() {
+    return new ProjectHttpClientBuilder();
+  }
+
+  public static HttpServer httpServer() throws IOException {
+    return httpServer(new InetSocketAddress(0), 0);
+  }
+
+  public static HttpServer httpServer(InetSocketAddress address, int backlog) throws IOException {
+    ProjectHttpServer server = new ProjectHttpServer();
+    if (address != null) server.bind(address, backlog);
+    return server;
+  }
 
   public static void setProjectEventBridgeEnabled(boolean enabled) {
     PROJECT_EVENT_BRIDGE_ENABLED.set(enabled);
@@ -1690,6 +1763,1184 @@ public final class ProjectEvents {
     }
   }
 
+  private static final class ProjectHttpUrlStreamHandlerFactory implements URLStreamHandlerFactory {
+    @Override
+    public URLStreamHandler createURLStreamHandler(String protocol) {
+      if ("http".equalsIgnoreCase(protocol)) {
+        return new ProjectHttpUrlStreamHandler();
+      }
+      return null;
+    }
+  }
+
+  private static final class ProjectHttpUrlStreamHandler extends URLStreamHandler {
+    @Override
+    protected URLConnection openConnection(URL url) throws IOException {
+      return new ProjectHttpURLConnection(url);
+    }
+  }
+
+  public static final class ProjectHttpServer extends HttpServer {
+    private final Map<String, ProjectHttpContext> contexts = new HashMap<>();
+    private Executor executor;
+    private InetSocketAddress address;
+    private boolean bound = false;
+    private boolean started = false;
+    private volatile boolean externalRunning = false;
+    private String externalServerId = "";
+    private Thread externalThread;
+
+    @Override
+    public synchronized void bind(InetSocketAddress address, int backlog) throws IOException {
+      if (bound) throw new IOException("HttpServer is already bound");
+      InetSocketAddress requested = address == null ? new InetSocketAddress(0) : address;
+      int port = requested.getPort();
+      if (port <= 0) {
+        synchronized (PROJECT_HTTP_SERVERS) {
+          port = NEXT_PROJECT_HTTP_PORT++;
+        }
+      }
+      String host = requested.getHostString();
+      if (host == null || host.isEmpty() || "0.0.0.0".equals(host)) host = "127.0.0.1";
+      this.address = new InetSocketAddress(host, port);
+      this.bound = true;
+    }
+
+    @Override
+    public synchronized void start() {
+      if (!bound) {
+        try {
+          bind(new InetSocketAddress(0), 0);
+        } catch (IOException error) {
+          throw new IllegalStateException(error);
+        }
+      }
+      synchronized (PROJECT_HTTP_SERVERS) {
+        PROJECT_HTTP_SERVERS.put(address.getPort(), this);
+      }
+      started = true;
+      startExternalBridge();
+    }
+
+    @Override
+    public void setExecutor(Executor executor) {
+      this.executor = executor;
+    }
+
+    @Override
+    public Executor getExecutor() {
+      return executor;
+    }
+
+    @Override
+    public synchronized void stop(int delay) {
+      if (address != null) {
+        synchronized (PROJECT_HTTP_SERVERS) {
+          if (PROJECT_HTTP_SERVERS.get(address.getPort()) == this) {
+            PROJECT_HTTP_SERVERS.remove(address.getPort());
+          }
+        }
+      }
+      started = false;
+      externalRunning = false;
+      if (externalServerId != null && !externalServerId.isEmpty()) {
+        try {
+          closeHttpServerNative(externalServerId);
+        } catch (UnsatisfiedLinkError | SecurityException ignored) {
+        }
+      }
+      externalServerId = "";
+    }
+
+    @Override
+    public synchronized HttpContext createContext(String path, HttpHandler handler) {
+      if (handler == null) throw new NullPointerException("handler");
+      ProjectHttpContext context = (ProjectHttpContext) createContext(path);
+      context.setHandler(handler);
+      return context;
+    }
+
+    @Override
+    public synchronized HttpContext createContext(String path) {
+      String normalized = normalizeHttpContextPath(path);
+      ProjectHttpContext context = new ProjectHttpContext(this, normalized);
+      contexts.put(normalized, context);
+      return context;
+    }
+
+    @Override
+    public synchronized void removeContext(String path) throws IllegalArgumentException {
+      String normalized = normalizeHttpContextPath(path);
+      if (contexts.remove(normalized) == null) {
+        throw new IllegalArgumentException("No such context: " + path);
+      }
+    }
+
+    @Override
+    public synchronized void removeContext(HttpContext context) {
+      if (!(context instanceof ProjectHttpContext)) throw new IllegalArgumentException("Unknown context");
+      contexts.values().remove(context);
+    }
+
+    @Override
+    public synchronized InetSocketAddress getAddress() {
+      return address == null ? new InetSocketAddress(0) : address;
+    }
+
+    private synchronized ProjectHttpContext contextForPath(String path) {
+      ProjectHttpContext best = null;
+      for (ProjectHttpContext context : contexts.values()) {
+        String contextPath = context.getPath();
+        if (path.equals(contextPath) || path.startsWith(contextPath.endsWith("/") ? contextPath : contextPath + "/")) {
+          if (best == null || contextPath.length() > best.getPath().length()) best = context;
+        }
+      }
+      return best;
+    }
+
+    private TraceKernelHttpResponse dispatch(String method, URI uri, Map<String, List<String>> headers, byte[] body)
+        throws IOException {
+      if (!started) return new TraceKernelHttpResponse(503, rawHeaders(Map.of("content-type", List.of("text/plain"))), "server stopped".getBytes(StandardCharsets.UTF_8));
+      ProjectHttpContext context = contextForPath(uri.getPath() == null || uri.getPath().isEmpty() ? "/" : uri.getPath());
+      if (context == null || context.getHandler() == null) {
+        return new TraceKernelHttpResponse(404, rawHeaders(Map.of("content-type", List.of("text/plain"))), "not found".getBytes(StandardCharsets.UTF_8));
+      }
+      ProjectHttpExchange exchange = new ProjectHttpExchange(this, context, method, uri, headers, body);
+      context.getHandler().handle(exchange);
+      return exchange.toResponse();
+    }
+
+    private void startExternalBridge() {
+      String registered;
+      try {
+        registered = registerHttpServerNative(address.getHostString(), address.getPort());
+      } catch (UnsatisfiedLinkError | SecurityException ignored) {
+        return;
+      }
+      if (registered == null || !registered.startsWith("OK\n")) return;
+      externalServerId = registered.substring(3).trim();
+      if (externalServerId.isEmpty()) return;
+      externalRunning = true;
+      externalThread = new Thread(() -> {
+        while (externalRunning) {
+          String requestManifest;
+          try {
+            requestManifest = pollHttpServerRequestNative(externalServerId);
+          } catch (UnsatisfiedLinkError | SecurityException error) {
+            return;
+          }
+          if (requestManifest == null || requestManifest.startsWith("ERROR\n")) {
+            return;
+          }
+          String responseManifest;
+          try {
+            ProjectHttpServerRequest request = httpRequestFromManifest(requestManifest);
+            responseManifest = httpResponseManifest(dispatch(request.method, request.uri, request.headers, request.body));
+          } catch (Exception error) {
+            responseManifest = httpErrorResponseManifest(error instanceof IOException ? error.getMessage() : String.valueOf(error));
+          }
+          try {
+            completeHttpServerRequestNative(externalServerId, responseManifest);
+          } catch (UnsatisfiedLinkError | SecurityException error) {
+            return;
+          }
+        }
+      }, "TraceKernel-Java-HttpServer");
+      externalThread.setDaemon(false);
+      externalThread.start();
+    }
+  }
+
+  public static final class ProjectHttpContext extends HttpContext {
+    private final ProjectHttpServer server;
+    private final String path;
+    private final Map<String, Object> attributes = new HashMap<>();
+    private final List<Filter> filters = new ArrayList<>();
+    private HttpHandler handler;
+    private com.sun.net.httpserver.Authenticator authenticator;
+
+    ProjectHttpContext(ProjectHttpServer server, String path) {
+      this.server = server;
+      this.path = path;
+    }
+
+    @Override
+    public HttpHandler getHandler() {
+      return handler;
+    }
+
+    @Override
+    public void setHandler(HttpHandler handler) {
+      this.handler = handler;
+    }
+
+    @Override
+    public String getPath() {
+      return path;
+    }
+
+    @Override
+    public HttpServer getServer() {
+      return server;
+    }
+
+    @Override
+    public Map<String, Object> getAttributes() {
+      return attributes;
+    }
+
+    @Override
+    public List<Filter> getFilters() {
+      return filters;
+    }
+
+    @Override
+    public com.sun.net.httpserver.Authenticator setAuthenticator(com.sun.net.httpserver.Authenticator authenticator) {
+      com.sun.net.httpserver.Authenticator previous = this.authenticator;
+      this.authenticator = authenticator;
+      return previous;
+    }
+
+    @Override
+    public com.sun.net.httpserver.Authenticator getAuthenticator() {
+      return authenticator;
+    }
+  }
+
+  private static final class ProjectHttpExchange extends HttpExchange {
+    private final ProjectHttpServer server;
+    private final ProjectHttpContext context;
+    private final Headers requestHeaders = new Headers();
+    private final Headers responseHeaders = new Headers();
+    private final URI uri;
+    private final String method;
+    private final ByteArrayInputStream requestBody;
+    private final ByteArrayOutputStream responseBody = new ByteArrayOutputStream();
+    private final Map<String, Object> attributes = new HashMap<>();
+    private int responseCode = -1;
+
+    ProjectHttpExchange(ProjectHttpServer server, ProjectHttpContext context, String method, URI uri, Map<String, List<String>> headers, byte[] body) {
+      this.server = server;
+      this.context = context;
+      this.method = method == null ? "GET" : method;
+      this.uri = uri;
+      for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+        requestHeaders.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+      }
+      requestBody = new ByteArrayInputStream(body == null ? new byte[0] : body);
+    }
+
+    @Override
+    public Headers getRequestHeaders() {
+      return requestHeaders;
+    }
+
+    @Override
+    public Headers getResponseHeaders() {
+      return responseHeaders;
+    }
+
+    @Override
+    public URI getRequestURI() {
+      return uri;
+    }
+
+    @Override
+    public String getRequestMethod() {
+      return method;
+    }
+
+    @Override
+    public HttpContext getHttpContext() {
+      return context;
+    }
+
+    @Override
+    public void close() {}
+
+    @Override
+    public InputStream getRequestBody() {
+      return requestBody;
+    }
+
+    @Override
+    public OutputStream getResponseBody() {
+      return responseBody;
+    }
+
+    @Override
+    public void sendResponseHeaders(int responseCode, long responseLength) {
+      this.responseCode = responseCode;
+      if (responseLength >= 0) responseHeaders.set("content-length", Long.toString(responseLength));
+    }
+
+    @Override
+    public InetSocketAddress getRemoteAddress() {
+      return new InetSocketAddress("127.0.0.1", 0);
+    }
+
+    @Override
+    public int getResponseCode() {
+      return responseCode;
+    }
+
+    @Override
+    public InetSocketAddress getLocalAddress() {
+      return server.getAddress();
+    }
+
+    @Override
+    public String getProtocol() {
+      return "HTTP/1.1";
+    }
+
+    @Override
+    public Object getAttribute(String name) {
+      return attributes.get(name);
+    }
+
+    @Override
+    public void setAttribute(String name, Object value) {
+      attributes.put(name, value);
+    }
+
+    @Override
+    public void setStreams(InputStream input, OutputStream output) {}
+
+    @Override
+    public HttpPrincipal getPrincipal() {
+      return null;
+    }
+
+    TraceKernelHttpResponse toResponse() {
+      int status = responseCode <= 0 ? 200 : responseCode;
+      return new TraceKernelHttpResponse(status, rawHeaders(responseHeaders), responseBody.toByteArray());
+    }
+  }
+
+  public static final class ProjectHttpClientBuilder implements HttpClient.Builder {
+    private CookieHandler cookieHandler;
+    private Duration connectTimeout;
+    private SSLContext sslContext;
+    private SSLParameters sslParameters;
+    private Executor executor;
+    private HttpClient.Redirect followRedirects = HttpClient.Redirect.NEVER;
+    private HttpClient.Version version = HttpClient.Version.HTTP_1_1;
+    private ProxySelector proxy;
+    private Authenticator authenticator;
+
+    @Override
+    public HttpClient.Builder cookieHandler(CookieHandler cookieHandler) {
+      this.cookieHandler = cookieHandler;
+      return this;
+    }
+
+    @Override
+    public HttpClient.Builder connectTimeout(Duration duration) {
+      this.connectTimeout = duration;
+      return this;
+    }
+
+    @Override
+    public HttpClient.Builder sslContext(SSLContext sslContext) {
+      this.sslContext = sslContext;
+      return this;
+    }
+
+    @Override
+    public HttpClient.Builder sslParameters(SSLParameters sslParameters) {
+      this.sslParameters = sslParameters;
+      return this;
+    }
+
+    @Override
+    public HttpClient.Builder executor(Executor executor) {
+      this.executor = executor;
+      return this;
+    }
+
+    @Override
+    public HttpClient.Builder followRedirects(HttpClient.Redirect policy) {
+      this.followRedirects = policy == null ? HttpClient.Redirect.NEVER : policy;
+      return this;
+    }
+
+    @Override
+    public HttpClient.Builder version(HttpClient.Version version) {
+      this.version = version == null ? HttpClient.Version.HTTP_1_1 : version;
+      return this;
+    }
+
+    @Override
+    public HttpClient.Builder priority(int priority) {
+      return this;
+    }
+
+    @Override
+    public HttpClient.Builder proxy(ProxySelector proxySelector) {
+      this.proxy = proxySelector;
+      return this;
+    }
+
+    @Override
+    public HttpClient.Builder authenticator(Authenticator authenticator) {
+      this.authenticator = authenticator;
+      return this;
+    }
+
+    @Override
+    public HttpClient build() {
+      return new ProjectHttpClient(this);
+    }
+  }
+
+  public static final class ProjectHttpClient extends HttpClient {
+    private final Optional<CookieHandler> cookieHandler;
+    private final Optional<Duration> connectTimeout;
+    private final SSLContext sslContext;
+    private final SSLParameters sslParameters;
+    private final Optional<Executor> executor;
+    private final HttpClient.Redirect followRedirects;
+    private final HttpClient.Version version;
+    private final Optional<ProxySelector> proxy;
+    private final Optional<Authenticator> authenticator;
+
+    private ProjectHttpClient(ProjectHttpClientBuilder builder) {
+      this.cookieHandler = Optional.ofNullable(builder.cookieHandler);
+      this.connectTimeout = Optional.ofNullable(builder.connectTimeout);
+      this.sslContext = builder.sslContext == null ? defaultSslContext() : builder.sslContext;
+      this.sslParameters = builder.sslParameters == null ? this.sslContext.getDefaultSSLParameters() : builder.sslParameters;
+      this.executor = Optional.ofNullable(builder.executor);
+      this.followRedirects = builder.followRedirects;
+      this.version = builder.version;
+      this.proxy = Optional.ofNullable(builder.proxy);
+      this.authenticator = Optional.ofNullable(builder.authenticator);
+    }
+
+    @Override
+    public Optional<CookieHandler> cookieHandler() {
+      return cookieHandler;
+    }
+
+    @Override
+    public Optional<Duration> connectTimeout() {
+      return connectTimeout;
+    }
+
+    @Override
+    public HttpClient.Redirect followRedirects() {
+      return followRedirects;
+    }
+
+    @Override
+    public Optional<ProxySelector> proxy() {
+      return proxy;
+    }
+
+    @Override
+    public SSLContext sslContext() {
+      return sslContext;
+    }
+
+    @Override
+    public SSLParameters sslParameters() {
+      return sslParameters;
+    }
+
+    @Override
+    public Optional<Authenticator> authenticator() {
+      return authenticator;
+    }
+
+    @Override
+    public HttpClient.Version version() {
+      return version;
+    }
+
+    @Override
+    public Optional<Executor> executor() {
+      return executor;
+    }
+
+    @Override
+    public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler)
+        throws IOException, InterruptedException {
+      if (request == null) throw new NullPointerException("request");
+      if (responseBodyHandler == null) throw new NullPointerException("responseBodyHandler");
+      byte[] requestBody = httpRequestBodyBytes(request);
+      TraceKernelHttpResponse response = dispatchHttpRequest(
+          request.method(),
+          request.uri().toString(),
+          httpRequestPath(request.uri()),
+          request.headers().map(),
+          requestBody);
+      HttpHeaders headers = httpHeaders(response.rawHeaders);
+      ProjectHttpResponseInfo info = new ProjectHttpResponseInfo(response.status, headers, version);
+      HttpResponse.BodySubscriber<T> subscriber = responseBodyHandler.apply(info);
+      T body = httpBodyFromSubscriber(subscriber, response.body);
+      return new ProjectHttpResponse<>(request, response.status, headers, body, request.uri(), version);
+    }
+
+    @Override
+    public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+        HttpRequest request,
+        HttpResponse.BodyHandler<T> responseBodyHandler) {
+      return sendAsync(request, responseBodyHandler, null);
+    }
+
+    @Override
+    public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+        HttpRequest request,
+        HttpResponse.BodyHandler<T> responseBodyHandler,
+        HttpResponse.PushPromiseHandler<T> pushPromiseHandler) {
+      java.util.function.Supplier<HttpResponse<T>> supplier = () -> {
+        try {
+          return send(request, responseBodyHandler);
+        } catch (IOException | InterruptedException error) {
+          if (error instanceof InterruptedException) Thread.currentThread().interrupt();
+          throw new CompletionException(error);
+        }
+      };
+      return executor.map((value) -> CompletableFuture.supplyAsync(supplier, value))
+          .orElseGet(() -> CompletableFuture.supplyAsync(supplier));
+    }
+  }
+
+  public static final class ProjectHttpURLConnection extends HttpURLConnection {
+    private final Map<String, List<String>> requestProperties = new HashMap<>();
+    private final ByteArrayOutputStream requestBody = new ByteArrayOutputStream();
+    private TraceKernelHttpResponse traceKernelResponse;
+
+    public ProjectHttpURLConnection(URL url) {
+      super(url);
+    }
+
+    @Override
+    public void connect() throws IOException {
+      ensureResponse();
+    }
+
+    @Override
+    public void disconnect() {
+      connected = false;
+    }
+
+    @Override
+    public boolean usingProxy() {
+      return false;
+    }
+
+    @Override
+    public OutputStream getOutputStream() throws IOException {
+      if (connected) throw new IOException("Already connected");
+      doOutput = true;
+      return requestBody;
+    }
+
+    @Override
+    public InputStream getInputStream() throws IOException {
+      ensureResponse();
+      if (responseCode >= HTTP_BAD_REQUEST) {
+        throw new IOException("HTTP request failed with status " + responseCode);
+      }
+      return new ByteArrayInputStream(traceKernelResponse.body);
+    }
+
+    @Override
+    public InputStream getErrorStream() {
+      try {
+        ensureResponse();
+      } catch (IOException ignored) {
+        return null;
+      }
+      if (responseCode < HTTP_BAD_REQUEST) return null;
+      return new ByteArrayInputStream(traceKernelResponse.body);
+    }
+
+    @Override
+    public int getResponseCode() throws IOException {
+      ensureResponse();
+      return responseCode;
+    }
+
+    @Override
+    public String getResponseMessage() throws IOException {
+      ensureResponse();
+      return responseMessage;
+    }
+
+    @Override
+    public String getHeaderField(String name) {
+      try {
+        ensureResponse();
+      } catch (IOException ignored) {
+        return null;
+      }
+      if (name == null) return null;
+      for (Map.Entry<String, List<String>> entry : traceKernelResponse.headers.entrySet()) {
+        if (entry.getKey().equalsIgnoreCase(name) && !entry.getValue().isEmpty()) {
+          return entry.getValue().get(entry.getValue().size() - 1);
+        }
+      }
+      return null;
+    }
+
+    @Override
+    public String getHeaderField(int index) {
+      try {
+        ensureResponse();
+      } catch (IOException ignored) {
+        return null;
+      }
+      if (index == 0) return "HTTP/1.1 " + responseCode;
+      int headerIndex = index - 1;
+      if (headerIndex < 0 || headerIndex >= traceKernelResponse.rawHeaders.size()) return null;
+      return traceKernelResponse.rawHeaders.get(headerIndex)[1];
+    }
+
+    @Override
+    public String getHeaderFieldKey(int index) {
+      try {
+        ensureResponse();
+      } catch (IOException ignored) {
+        return null;
+      }
+      if (index == 0) return null;
+      int headerIndex = index - 1;
+      if (headerIndex < 0 || headerIndex >= traceKernelResponse.rawHeaders.size()) return null;
+      return traceKernelResponse.rawHeaders.get(headerIndex)[0];
+    }
+
+    @Override
+    public Map<String, List<String>> getHeaderFields() {
+      try {
+        ensureResponse();
+      } catch (IOException ignored) {
+        return Collections.emptyMap();
+      }
+      return traceKernelResponse.headers;
+    }
+
+    @Override
+    public String getContentType() {
+      return getHeaderField("content-type");
+    }
+
+    @Override
+    public int getContentLength() {
+      long length = getContentLengthLong();
+      return length > Integer.MAX_VALUE ? -1 : (int) length;
+    }
+
+    @Override
+    public long getContentLengthLong() {
+      String value = getHeaderField("content-length");
+      if (value == null) return -1;
+      try {
+        return Long.parseLong(value.trim());
+      } catch (NumberFormatException ignored) {
+        return -1;
+      }
+    }
+
+    @Override
+    public void setRequestProperty(String key, String value) {
+      if (connected) throw new IllegalStateException("Already connected");
+      if (key == null) throw new NullPointerException("key");
+      List<String> values = new ArrayList<>();
+      values.add(value == null ? "" : value);
+      requestProperties.put(key, values);
+    }
+
+    @Override
+    public void addRequestProperty(String key, String value) {
+      if (connected) throw new IllegalStateException("Already connected");
+      if (key == null) throw new NullPointerException("key");
+      requestProperties.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value == null ? "" : value);
+    }
+
+    @Override
+    public String getRequestProperty(String key) {
+      List<String> values = requestProperties.get(key);
+      if (values == null || values.isEmpty()) return null;
+      return values.get(values.size() - 1);
+    }
+
+    @Override
+    public Map<String, List<String>> getRequestProperties() {
+      if (connected) throw new IllegalStateException("Already connected");
+      Map<String, List<String>> copy = new HashMap<>();
+      for (Map.Entry<String, List<String>> entry : requestProperties.entrySet()) {
+        copy.put(entry.getKey(), Collections.unmodifiableList(new ArrayList<>(entry.getValue())));
+      }
+      return Collections.unmodifiableMap(copy);
+    }
+
+    private void ensureResponse() throws IOException {
+      if (traceKernelResponse != null) return;
+      traceKernelResponse = dispatchHttpRequest(this);
+      responseCode = traceKernelResponse.status;
+      responseMessage = "";
+      connected = true;
+    }
+  }
+
+  private static final class TraceKernelHttpResponse {
+    final int status;
+    final List<String[]> rawHeaders;
+    final Map<String, List<String>> headers;
+    final byte[] body;
+
+    TraceKernelHttpResponse(int status, List<String[]> rawHeaders, byte[] body) {
+      this.status = status;
+      this.rawHeaders = Collections.unmodifiableList(rawHeaders);
+      Map<String, List<String>> grouped = new HashMap<>();
+      for (String[] header : rawHeaders) {
+        grouped.computeIfAbsent(header[0], ignored -> new ArrayList<>()).add(header[1]);
+      }
+      Map<String, List<String>> immutable = new HashMap<>();
+      for (Map.Entry<String, List<String>> entry : grouped.entrySet()) {
+        immutable.put(entry.getKey(), Collections.unmodifiableList(entry.getValue()));
+      }
+      this.headers = Collections.unmodifiableMap(immutable);
+      this.body = body == null ? new byte[0] : body;
+    }
+  }
+
+  private static final class ProjectHttpServerRequest {
+    final String method;
+    final URI uri;
+    final Map<String, List<String>> headers;
+    final byte[] body;
+
+    ProjectHttpServerRequest(String method, URI uri, Map<String, List<String>> headers, byte[] body) {
+      this.method = method;
+      this.uri = uri;
+      this.headers = headers;
+      this.body = body;
+    }
+  }
+
+  private static TraceKernelHttpResponse dispatchHttpRequest(ProjectHttpURLConnection connection)
+      throws IOException {
+    return dispatchHttpRequest(
+        connection.getRequestMethod(),
+        connection.getURL().toString(),
+        httpRequestPath(connection.getURL()),
+        connection.requestProperties,
+        connection.requestBody.toByteArray());
+  }
+
+  private static TraceKernelHttpResponse dispatchHttpRequest(
+      String method,
+      String url,
+      String path,
+      Map<String, List<String>> headers,
+      byte[] body)
+      throws IOException {
+    TraceKernelHttpResponse localResponse = dispatchLocalHttpServer(method, url, headers, body);
+    if (localResponse != null) return localResponse;
+    String manifest;
+    try {
+      manifest = dispatchHttp(httpRequestJson(method, url, path, headers, body));
+    } catch (UnsatisfiedLinkError | SecurityException error) {
+      throw new IOException("TraceKernel HTTP bridge is not available", error);
+    }
+    return httpResponseFromManifest(manifest);
+  }
+
+  private static TraceKernelHttpResponse dispatchLocalHttpServer(
+      String method,
+      String url,
+      Map<String, List<String>> headers,
+      byte[] body)
+      throws IOException {
+    URI uri;
+    try {
+      uri = URI.create(url);
+    } catch (IllegalArgumentException error) {
+      return null;
+    }
+    int port = uri.getPort();
+    if (port < 0) return null;
+    ProjectHttpServer server;
+    synchronized (PROJECT_HTTP_SERVERS) {
+      server = PROJECT_HTTP_SERVERS.get(port);
+    }
+    return server == null ? null : server.dispatch(method, uri, headers, body);
+  }
+
+  private static String dispatchHttp(String requestJson) throws IOException {
+    ProjectHttpDispatcher dispatcher = HTTP_DISPATCHER_FOR_TESTING;
+    return dispatcher == null ? dispatchHttpNative(requestJson) : dispatcher.dispatch(requestJson);
+  }
+
+  private static String httpRequestJson(
+      String method,
+      String url,
+      String path,
+      Map<String, List<String>> headers,
+      byte[] body) {
+    StringBuilder builder = new StringBuilder();
+    builder.append('{');
+    appendJsonField(builder, "method", method, false);
+    appendJsonField(builder, "url", url, true);
+    appendJsonField(builder, "path", path, true);
+    builder.append(",\"headers\":{");
+    boolean firstHeader = true;
+    for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+      if (!firstHeader) builder.append(',');
+      firstHeader = false;
+      builder.append(jsonString(entry.getKey())).append(':').append(jsonString(String.join(",", entry.getValue())));
+    }
+    builder.append('}');
+    if (body != null && body.length > 0) {
+      appendJsonField(builder, "body", Base64.getEncoder().encodeToString(body), true);
+      appendJsonField(builder, "bodyEncoding", "base64", true);
+    }
+    builder.append('}');
+    return builder.toString();
+  }
+
+  private static String httpRequestPath(URL url) {
+    String file = url.getFile();
+    if (file == null || file.isEmpty()) return "/";
+    return file.startsWith("/") ? file : "/" + file;
+  }
+
+  private static String httpRequestPath(URI uri) {
+    String rawPath = uri.getRawPath();
+    String path = rawPath == null || rawPath.isEmpty() ? "/" : rawPath;
+    String rawQuery = uri.getRawQuery();
+    return rawQuery == null || rawQuery.isEmpty() ? path : path + "?" + rawQuery;
+  }
+
+  private static SSLContext defaultSslContext() {
+    try {
+      return SSLContext.getDefault();
+    } catch (Exception error) {
+      throw new IllegalStateException("Unable to initialize TraceKernel HTTP SSL context", error);
+    }
+  }
+
+  private static HttpHeaders httpHeaders(List<String[]> rawHeaders) {
+    Map<String, List<String>> map = new HashMap<>();
+    for (String[] header : rawHeaders) {
+      map.computeIfAbsent(header[0], ignored -> new ArrayList<>()).add(header[1]);
+    }
+    return HttpHeaders.of(map, (name, value) -> true);
+  }
+
+  private static List<String[]> rawHeaders(Map<String, List<String>> headers) {
+    List<String[]> raw = new ArrayList<>();
+    for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+      for (String value : entry.getValue()) {
+        raw.add(new String[] {entry.getKey(), value});
+      }
+    }
+    return raw;
+  }
+
+  private static String normalizeHttpContextPath(String path) {
+    if (path == null || path.isEmpty() || !path.startsWith("/")) {
+      throw new IllegalArgumentException("HttpServer context path must start with /");
+    }
+    return path;
+  }
+
+  private static byte[] httpRequestBodyBytes(HttpRequest request) throws IOException, InterruptedException {
+    Optional<HttpRequest.BodyPublisher> bodyPublisher = request.bodyPublisher();
+    if (bodyPublisher.isEmpty()) return new byte[0];
+    CompletableFuture<byte[]> body = new CompletableFuture<>();
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    bodyPublisher.get().subscribe(new Flow.Subscriber<ByteBuffer>() {
+      @Override
+      public void onSubscribe(Flow.Subscription subscription) {
+        subscription.request(Long.MAX_VALUE);
+      }
+
+      @Override
+      public void onNext(ByteBuffer item) {
+        byte[] bytes = new byte[item.remaining()];
+        item.get(bytes);
+        try {
+          output.write(bytes);
+        } catch (IOException error) {
+          body.completeExceptionally(error);
+        }
+      }
+
+      @Override
+      public void onError(Throwable throwable) {
+        body.completeExceptionally(throwable);
+      }
+
+      @Override
+      public void onComplete() {
+        body.complete(output.toByteArray());
+      }
+    });
+    try {
+      return body.get();
+    } catch (InterruptedException error) {
+      Thread.currentThread().interrupt();
+      throw error;
+    } catch (ExecutionException error) {
+      Throwable cause = error.getCause();
+      if (cause instanceof IOException) throw (IOException) cause;
+      throw new IOException("Unable to read Java HTTP request body", cause);
+    }
+  }
+
+  private static <T> T httpBodyFromSubscriber(HttpResponse.BodySubscriber<T> subscriber, byte[] body)
+      throws IOException {
+    subscriber.onSubscribe(new Flow.Subscription() {
+      @Override
+      public void request(long count) {}
+
+      @Override
+      public void cancel() {}
+    });
+    if (body != null && body.length > 0) {
+      subscriber.onNext(Collections.singletonList(ByteBuffer.wrap(body)));
+    }
+    subscriber.onComplete();
+    try {
+      return subscriber.getBody().toCompletableFuture().get();
+    } catch (InterruptedException error) {
+      Thread.currentThread().interrupt();
+      throw new IOException("Interrupted while reading Java HTTP response body", error);
+    } catch (ExecutionException error) {
+      Throwable cause = error.getCause();
+      if (cause instanceof IOException) throw (IOException) cause;
+      throw new IOException("Unable to read Java HTTP response body", cause);
+    }
+  }
+
+  private static final class ProjectHttpResponseInfo implements HttpResponse.ResponseInfo {
+    private final int status;
+    private final HttpHeaders headers;
+    private final HttpClient.Version version;
+
+    ProjectHttpResponseInfo(int status, HttpHeaders headers, HttpClient.Version version) {
+      this.status = status;
+      this.headers = headers;
+      this.version = version;
+    }
+
+    @Override
+    public int statusCode() {
+      return status;
+    }
+
+    @Override
+    public HttpHeaders headers() {
+      return headers;
+    }
+
+    @Override
+    public HttpClient.Version version() {
+      return version;
+    }
+  }
+
+  private static final class ProjectHttpResponse<T> implements HttpResponse<T> {
+    private final HttpRequest request;
+    private final int status;
+    private final HttpHeaders headers;
+    private final T body;
+    private final URI uri;
+    private final HttpClient.Version version;
+
+    ProjectHttpResponse(HttpRequest request, int status, HttpHeaders headers, T body, URI uri, HttpClient.Version version) {
+      this.request = request;
+      this.status = status;
+      this.headers = headers;
+      this.body = body;
+      this.uri = uri;
+      this.version = version;
+    }
+
+    @Override
+    public int statusCode() {
+      return status;
+    }
+
+    @Override
+    public HttpRequest request() {
+      return request;
+    }
+
+    @Override
+    public Optional<HttpResponse<T>> previousResponse() {
+      return Optional.empty();
+    }
+
+    @Override
+    public HttpHeaders headers() {
+      return headers;
+    }
+
+    @Override
+    public T body() {
+      return body;
+    }
+
+    @Override
+    public Optional<SSLSession> sslSession() {
+      return Optional.empty();
+    }
+
+    @Override
+    public URI uri() {
+      return uri;
+    }
+
+    @Override
+    public HttpClient.Version version() {
+      return version;
+    }
+  }
+
+  private static void appendJsonField(StringBuilder builder, String name, String value, boolean prependComma) {
+    if (prependComma) builder.append(',');
+    builder.append(jsonString(name)).append(':').append(jsonString(value == null ? "" : value));
+  }
+
+  private static String jsonString(String value) {
+    StringBuilder builder = new StringBuilder();
+    builder.append('"');
+    for (int index = 0; index < value.length(); index += 1) {
+      char ch = value.charAt(index);
+      switch (ch) {
+        case '"':
+          builder.append("\\\"");
+          break;
+        case '\\':
+          builder.append("\\\\");
+          break;
+        case '\b':
+          builder.append("\\b");
+          break;
+        case '\f':
+          builder.append("\\f");
+          break;
+        case '\n':
+          builder.append("\\n");
+          break;
+        case '\r':
+          builder.append("\\r");
+          break;
+        case '\t':
+          builder.append("\\t");
+          break;
+        default:
+          if (ch < 0x20) {
+            builder.append(String.format("\\u%04x", (int) ch));
+          } else {
+            builder.append(ch);
+          }
+      }
+    }
+    builder.append('"');
+    return builder.toString();
+  }
+
+  private static TraceKernelHttpResponse httpResponseFromManifest(String manifest) throws IOException {
+    if (manifest == null || manifest.isEmpty()) {
+      throw new IOException("TraceKernel HTTP returned an empty response");
+    }
+    String[] lines = manifest.split("\\n", -1);
+    if ("ERROR".equals(lines[0])) {
+      String message = lines.length > 1 ? decodeBase64Text(lines[1]) : "TraceKernel HTTP request failed";
+      throw new IOException(message);
+    }
+    if (!"OK".equals(lines[0]) || lines.length < 4) {
+      throw new IOException("TraceKernel HTTP returned an invalid response");
+    }
+    int status;
+    int headerCount;
+    try {
+      status = Integer.parseInt(lines[1]);
+      headerCount = Integer.parseInt(lines[2]);
+    } catch (NumberFormatException error) {
+      throw new IOException("TraceKernel HTTP returned an invalid status", error);
+    }
+    if (status < 100 || status > 999 || headerCount < 0 || lines.length < 4 + headerCount) {
+      throw new IOException("TraceKernel HTTP returned an invalid response");
+    }
+    List<String[]> headers = new ArrayList<>();
+    for (int index = 0; index < headerCount; index += 1) {
+      String[] pair = lines[3 + index].split("\\t", -1);
+      if (pair.length != 2) throw new IOException("TraceKernel HTTP returned an invalid header");
+      headers.add(new String[] {decodeBase64Text(pair[0]), decodeBase64Text(pair[1])});
+    }
+    byte[] body;
+    try {
+      body = Base64.getDecoder().decode(lines[3 + headerCount]);
+    } catch (IllegalArgumentException error) {
+      throw new IOException("TraceKernel HTTP returned an invalid body", error);
+    }
+    return new TraceKernelHttpResponse(status, headers, body);
+  }
+
+  private static ProjectHttpServerRequest httpRequestFromManifest(String manifest) throws IOException {
+    if (manifest == null || manifest.isEmpty()) throw new IOException("TraceKernel HTTP returned an empty request");
+    String[] lines = manifest.split("\\n", -1);
+    if (!"REQUEST".equals(lines[0]) || lines.length < 6) throw new IOException("TraceKernel HTTP returned an invalid request");
+    String method = decodeBase64Text(lines[1]);
+    URI uri = URI.create(decodeBase64Text(lines[2]));
+    int headerCount;
+    try {
+      headerCount = Integer.parseInt(lines[4]);
+    } catch (NumberFormatException error) {
+      throw new IOException("TraceKernel HTTP returned invalid request headers", error);
+    }
+    if (headerCount < 0 || lines.length < 6 + headerCount) throw new IOException("TraceKernel HTTP returned an invalid request");
+    Map<String, List<String>> headers = new HashMap<>();
+    for (int index = 0; index < headerCount; index += 1) {
+      String[] pair = lines[5 + index].split("\\t", -1);
+      if (pair.length != 2) throw new IOException("TraceKernel HTTP returned an invalid request header");
+      headers.computeIfAbsent(decodeBase64Text(pair[0]), ignored -> new ArrayList<>()).add(decodeBase64Text(pair[1]));
+    }
+    byte[] body;
+    try {
+      body = Base64.getDecoder().decode(lines[5 + headerCount]);
+    } catch (IllegalArgumentException error) {
+      throw new IOException("TraceKernel HTTP returned an invalid request body", error);
+    }
+    return new ProjectHttpServerRequest(method, uri, headers, body);
+  }
+
+  private static String httpResponseManifest(TraceKernelHttpResponse response) {
+    List<String> lines = new ArrayList<>();
+    lines.add("OK");
+    lines.add(Integer.toString(response.status));
+    lines.add(Integer.toString(response.rawHeaders.size()));
+    for (String[] header : response.rawHeaders) {
+      lines.add(Base64.getEncoder().encodeToString(header[0].getBytes(StandardCharsets.UTF_8))
+          + "\t"
+          + Base64.getEncoder().encodeToString(header[1].getBytes(StandardCharsets.UTF_8)));
+    }
+    lines.add(Base64.getEncoder().encodeToString(response.body));
+    return String.join("\n", lines);
+  }
+
+  private static String httpErrorResponseManifest(String message) {
+    return httpResponseManifest(new TraceKernelHttpResponse(
+        500,
+        rawHeaders(Map.of("content-type", List.of("text/plain"))),
+        ((message == null || message.isEmpty() ? "Java HTTP server request failed" : message) + "\n").getBytes(StandardCharsets.UTF_8)));
+  }
+
+  private static String decodeBase64Text(String encoded) throws IOException {
+    try {
+      return new String(Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8);
+    } catch (IllegalArgumentException error) {
+      throw new IOException("TraceKernel HTTP returned invalid text", error);
+    }
+  }
+
   private static void emitOutput(String stream, String data) {
     emitOutput(stream, data, "", "");
   }
@@ -1719,6 +2970,11 @@ public final class ProjectEvents {
   private static native int readInputNative(String device);
   private static native int readInputAvailableNative(String device);
   private static native int inputAvailableNative(String device);
+  private static native String dispatchHttpNative(String requestJson);
+  private static native String registerHttpServerNative(String host, int port);
+  private static native String pollHttpServerRequestNative(String serverId);
+  private static native void completeHttpServerRequestNative(String serverId, String responseManifest);
+  private static native void closeHttpServerNative(String serverId);
 
   private static Map<String, KernelDevice> parseKernelDevices(String manifest) {
     Map<String, KernelDevice> devices = new HashMap<>();
