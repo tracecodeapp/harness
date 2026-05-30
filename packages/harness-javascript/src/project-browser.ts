@@ -246,6 +246,8 @@ function runtimeWriteTarget(
   devices?: readonly RuntimeKernelDeviceInfo[]
 ): ReturnType<typeof runtimeKernelWriteTarget> | null {
   if (typeof path === 'number') return null;
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: 'error', reason: 'proc-read-only', path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelWriteTarget(raw, devices);
 }
@@ -255,6 +257,8 @@ function runtimeMutationTarget(
   devices?: readonly RuntimeKernelDeviceInfo[]
 ): ReturnType<typeof runtimeKernelMutationTarget> | null {
   if (typeof path === 'number') return null;
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: 'error', reason: 'proc-read-only', path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelMutationTarget(raw, devices);
 }
@@ -264,6 +268,8 @@ function runtimeMetadataTarget(
   devices?: readonly RuntimeKernelDeviceInfo[]
 ): ReturnType<typeof runtimeKernelMetadataTarget> | null {
   if (typeof path === 'number') return null;
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: 'error', reason: 'proc-read-only', path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelMetadataTarget(raw, devices);
 }
@@ -281,6 +287,12 @@ function runtimeAccessTarget(
     return (mode & 2) !== 0
       ? { kind: 'denied', reason: 'permission-denied', path: procPath }
       : { kind: 'allowed', path: procPath };
+  }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) {
+    return (mode & 2) !== 0
+      ? { kind: 'denied', reason: 'permission-denied', path: readonlyPath }
+      : { kind: 'denied', reason: 'not-found', path: readonlyPath };
   }
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelAccessTarget(raw, {
@@ -306,6 +318,12 @@ function runtimeOpenTarget(
     }
     return { kind: 'proc-file', path: procPath, readable: true, writable: false };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) {
+    return request?.writable || request?.create || request?.truncate || request?.exclusive
+      ? { kind: 'error', reason: 'read-only', path: readonlyPath }
+      : { kind: 'error', reason: 'not-found', path: readonlyPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelOpenTarget(raw, request, devices);
 }
@@ -323,6 +341,8 @@ function runtimeReadTarget(
       ? { kind: 'proc-file', path: procPath }
       : { kind: 'proc-directory', path: procPath };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: 'error', reason: 'not-found', path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelReadTarget(raw, devices);
 }
@@ -340,6 +360,8 @@ function runtimeFileReadTarget(
       ? { kind: 'proc-file', path: procPath }
       : { kind: 'error', reason: 'is-directory', path: procPath };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: 'error', reason: 'not-found', path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelFileReadTarget(raw, devices);
 }
@@ -347,9 +369,14 @@ function runtimeFileReadTarget(
 function runtimeCopyTarget(
   source: unknown,
   destination: unknown,
-  devices?: readonly RuntimeKernelDeviceInfo[]
+  devices?: readonly RuntimeKernelDeviceInfo[],
+  procSnapshot?: BrowserProcSnapshot
 ): ReturnType<typeof runtimeKernelCopyTarget> | null {
   if (typeof source === 'number' || typeof destination === 'number') return null;
+  const sourceKind = browserProcEntryKind(procSnapshot, source);
+  const destinationReadonlyPath = browserReadonlyKernelNamespacePath(destination);
+  if (sourceKind === 'file' || destinationReadonlyPath) return { kind: 'file-copy' };
+  if (sourceKind === 'directory') return { kind: 'error', reason: 'source-directory', path: normalizeBrowserProcPath(source) ?? String(source) };
   const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelCopyTarget(sourceRaw, destinationRaw, devices);
@@ -358,9 +385,38 @@ function runtimeCopyTarget(
 function runtimeFileCopyTarget(
   source: unknown,
   destination: unknown,
-  devices?: readonly RuntimeKernelDeviceInfo[]
+  devices?: readonly RuntimeKernelDeviceInfo[],
+  procSnapshot?: BrowserProcSnapshot
 ): ReturnType<typeof runtimeKernelFileCopyTarget> | null {
   if (typeof source === 'number' || typeof destination === 'number') return null;
+  const destinationReadonlyPath = browserReadonlyKernelNamespacePath(destination);
+  if (destinationReadonlyPath) {
+    return { kind: 'error', side: 'destination', reason: 'proc-read-only', path: destinationReadonlyPath };
+  }
+  const sourceKind = browserProcEntryKind(procSnapshot, source);
+  if (sourceKind) {
+    const sourcePath = normalizeBrowserProcPath(source) ?? String(source);
+    if (sourceKind === 'directory') {
+      return { kind: 'error', side: 'source', reason: 'is-directory', path: sourcePath };
+    }
+    const writeTarget = runtimeWriteTarget(destination, devices);
+    if (writeTarget?.kind === 'error') {
+      return { kind: 'error', side: 'destination', reason: writeTarget.reason, path: writeTarget.path };
+    }
+    if (writeTarget?.kind === 'device') {
+      return {
+        kind: 'device-destination',
+        device: writeTarget.device,
+        outputDevice: writeTarget.outputDevice,
+        source: { kind: 'proc-file', path: sourcePath },
+      };
+    }
+    return { kind: 'virtual-source', source: { kind: 'proc-file', path: sourcePath } };
+  }
+  const sourceReadonlyPath = browserReadonlyKernelNamespacePath(source);
+  if (sourceReadonlyPath) {
+    return { kind: 'error', side: 'source', reason: 'not-found', path: sourceReadonlyPath };
+  }
   const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelFileCopyTarget(sourceRaw, destinationRaw, devices);
@@ -437,6 +493,8 @@ function runtimeDirectoryTarget(
       ? { kind: 'directory', path: procPath, entries: [...(procSnapshot?.directories.get(procPath) ?? [])] }
       : { kind: 'error', reason: 'not-directory', path: procPath };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: 'error', reason: 'not-found', path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelDirectoryTarget(raw, devices);
 }
@@ -464,6 +522,8 @@ function runtimeStatTarget(
       },
     };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: 'error', reason: 'not-found', path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelStatTarget(raw, info, devices);
 }
@@ -592,7 +652,15 @@ function fallbackKernelInfo(project: RuntimeProjectSnapshot, workspace: Workspac
 function normalizeBrowserProcPath(path: unknown): string | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return raw === '/proc' || raw.startsWith('/proc/') ? raw : null;
+  return raw === '/proc' || raw.startsWith('/proc/') || raw === '/skills' || raw.startsWith('/skills/')
+    ? raw
+    : null;
+}
+
+function browserReadonlyKernelNamespacePath(path: unknown): string | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return raw === '/skills' || raw.startsWith('/skills/') ? raw : null;
 }
 
 function createBrowserProcSnapshot(kernelFiles?: readonly RuntimeFile[]): BrowserProcSnapshot {
@@ -617,10 +685,16 @@ function createBrowserProcSnapshot(kernelFiles?: readonly RuntimeFile[]): Browse
     const name = normalized.slice(parent === '/' ? 1 : parent.length + 1);
     directoryEntries.get(parent)?.set(name, { name, kind: 'file' });
   };
+  ensureDirectory('/skills');
   for (const file of kernelFiles ?? []) addFile(file.path, file.contents);
   const directories = new Map<string, readonly RuntimeKernelDirectoryEntry[]>();
   for (const [path, entries] of directoryEntries) {
-    if (path === '/' || !(path === '/proc' || path.startsWith('/proc/'))) continue;
+    if (path === '/' || !(
+      path === '/proc' ||
+      path.startsWith('/proc/') ||
+      path === '/skills' ||
+      path.startsWith('/skills/')
+    )) continue;
     directories.set(path, [...entries.values()].sort((left, right) => left.name.localeCompare(right.name)));
   }
   return { files, directories };
@@ -635,7 +709,8 @@ function browserProcEntryKind(snapshot: BrowserProcSnapshot | undefined, path: u
 }
 
 function browserProcFileContents(snapshot: BrowserProcSnapshot | undefined, path: string, info: RuntimeKernelInfo): string {
-  return snapshot?.files.get(path) ?? readProcFile(path, info);
+  const contents = snapshot?.files.get(path);
+  return contents !== undefined ? contents : readProcFile(path, info);
 }
 
 function workspaceRelativeFromAbsolutePath(rawPath: string, workspace: WorkspacePathContext): string | null {
@@ -4432,7 +4507,7 @@ export async function runBrowserJavaScriptProjectRequest(
       destination: unknown,
       options: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean } = {}
     ): void => {
-      const copyTarget = runtimeCopyTarget(source, destination, kernelDevices);
+      const copyTarget = runtimeCopyTarget(source, destination, kernelDevices, procSnapshot);
       if (copyTarget?.kind === 'file-copy') {
         fsApi.copyFileSync(source, destination);
         return;
@@ -5207,7 +5282,7 @@ export async function runBrowserJavaScriptProjectRequest(
         }
       },
       copyFileSync: (source: unknown, destination: unknown, mode = 0) => {
-        const copyTarget = runtimeFileCopyTarget(source, destination, kernelDevices);
+        const copyTarget = runtimeFileCopyTarget(source, destination, kernelDevices, procSnapshot);
         if (copyTarget?.kind === 'error' && copyTarget.side === 'destination') {
           throw Object.assign(new Error(runtimeKernelFileCopyErrorMessage(String(source), String(destination), copyTarget)), {
             code: runtimeKernelFileCopyErrorCode(copyTarget),

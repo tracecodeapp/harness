@@ -1153,6 +1153,79 @@ async function testTraceKernelRuntimeDiscovery(): Promise<void> {
   }
 }
 
+async function testTraceKernelSkillsRoot(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    skills: [
+      { path: 'sorting/README.md', contents: 'sort skill\n' },
+      { path: '/skills/provider/search.md', contents: 'search skill\n' },
+    ],
+  });
+
+  try {
+    assertCondition(
+      (await workspace.readDir('/skills')).join(',') === 'provider,sorting',
+      'skills root should list provider-inserted skill namespaces'
+    );
+    assertCondition(
+      (await workspace.readDir('/skills/sorting')).join(',') === 'README.md',
+      'skills directories should be readable through the kernel namespace'
+    );
+    assertCondition(
+      await workspace.readFile('/skills/sorting/README.md') === 'sort skill\n',
+      'skills files should be readable by user code'
+    );
+    const cat = await workspace.runCommand('cat /skills/provider/search.md');
+    assertCondition(cat.exitCode === 0 && cat.stdout === 'search skill\n', `skills files should be visible to shell commands: ${JSON.stringify(cat)}`);
+    const copy = await workspace.runCommand('cp /skills/provider/search.md copied-skill.md');
+    assertCondition(copy.exitCode === 0, `skills files should be copyable into the workspace: ${JSON.stringify(copy)}`);
+    assertCondition(await workspace.readFile('copied-skill.md') === 'search skill\n', 'copied skill files should preserve contents');
+
+    await assertRejectsAsync(
+      () => workspace.runCommand('printf "mutate\\n" > /skills/provider/search.md'),
+      'skills files should reject shell writes'
+    );
+    await assertRejectsAsync(
+      () => workspace.writeFile('/skills/new.md', 'no\n'),
+      'workspace writes should not create skills'
+    );
+    await assertRejectsAsync(
+      () => workspace.mkdir('/skills/new'),
+      'workspace mkdir should not mutate the skills root'
+    );
+
+    await workspace.writeSkillFiles([{ path: 'late/tool.md', contents: 'late\n' }]);
+    assertCondition(await workspace.readFile('/skills/late/tool.md') === 'late\n', 'kernel skill insertion should work after workspace creation');
+    await workspace.kernel.writeSkillFiles([{ path: 'provider/search.md', contents: 'updated search skill\n' }]);
+    assertCondition(await workspace.readFile('/skills/provider/search.md') === 'updated search skill\n', 'kernel skill insertion should update existing skill files');
+    const snapshot = await workspace.snapshot({ includeHidden: true });
+    assertCondition(
+      snapshot.kernelFiles?.some((file) => file.path === '/skills/late/tool.md' && file.contents === 'late\n') === true,
+      `workspace snapshots should include skill files for browser and worker runners: ${JSON.stringify(snapshot.kernelFiles)}`
+    );
+    await assertRejectsAsync(
+      () => workspace.writeSkillFiles([{ path: 'late', contents: 'conflict\n' }]),
+      'skills should reject file/directory path conflicts'
+    );
+  } finally {
+    workspace.dispose();
+  }
+
+  const sessionWorkspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'skills-session',
+      skills: [{ path: 'session/guide.md', contents: 'session skill\n' }],
+    },
+  });
+  try {
+    assertCondition(
+      await sessionWorkspace.readFile('/skills/session/guide.md') === 'session skill\n',
+      'project sessions should be able to seed protected skills'
+    );
+  } finally {
+    sessionWorkspace.dispose();
+  }
+}
+
 async function testWorkspaceTraceKernelKillProcess(): Promise<void> {
   let commandStarted!: () => void;
   const commandStartedPromise = new Promise<void>((resolve) => {
@@ -9517,6 +9590,11 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'const procInfo = JSON.parse(fs.readFileSync("/proc/kernel/info", "utf8"));',
           'console.log(`${procInfo.user.username}:${procInfo.host.hostname}:${procInfo.workspace.root}`);',
           'console.log(fs.readFileSync("/proc/kernel/version", "utf8").trim());',
+          'console.log(fs.readFileSync("/skills/browser/guide.md", "utf8").trim());',
+          'console.log(fs.readdirSync("/skills").join(","));',
+          'try { fs.writeFileSync("/skills/browser/guide.md", "mutate\\n"); } catch (error) { console.log(error.code); }',
+          'fs.copyFileSync("/skills/browser/guide.md", "copied-browser-skill.md");',
+          'console.log(fs.readFileSync("copied-browser-skill.md", "utf8").trim());',
           'const procEntries = fs.readdirSync("/proc");',
           'console.log(`${procEntries.includes("kernel")}:${procEntries.includes("self")}:${procEntries.includes("tracekernel")}`);',
           'console.log(fs.readdirSync("/proc/kernel", { withFileTypes: true }).map((entry) => `${entry.name}:${entry.isFile()}`).join(","));',
@@ -9554,6 +9632,9 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       { path: 'Main.java', contents: 'class Main {}\n' },
       { path: 'Program.cs', contents: 'Console.WriteLine("csharp");\n' },
       { path: 'main.cpp', contents: 'int main() { return 0; }\n' },
+    ],
+    skills: [
+      { path: 'browser/guide.md', contents: 'browser skill\n' },
     ],
     pythonWorkerClient: {
       async executeProjectPython(request) {
@@ -9670,6 +9751,10 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         '42',
         'ada:tracevm-browser:/home/ada/weather-api',
         'tracekernel 0.7.0-beta6',
+        'browser skill',
+        'browser',
+        'EROFS',
+        'browser skill',
         'true:true:true',
         'info:true,version:true',
         'commands,events,inodes,locks,net,processes,runtimes,sched',
@@ -9698,6 +9783,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     assertCondition(await workspace.readFile('node-cwd.txt') === '/home/ada/weather-api\nbrowser-node\n', 'browser Node should write cwd-relative files with runtime env');
     assertCondition(await workspace.readFile('node-canonical.txt') === 'node-canonical\n', 'browser Node should write canonical absolute paths');
     assertCondition(await workspace.readFile('node-alias.txt') === 'node-alias\n', 'browser Node should still map /workspace alias paths');
+    assertCondition(await workspace.readFile('copied-browser-skill.md') === 'browser skill\n', 'browser Node should copy protected skill files into the workspace');
     assertCondition(nodeEvents.some((event) => event.type === 'output' && event.device === '/dev/stdout'), 'browser Node should stream stdout events');
     assertCondition(
       nodeEvents.some((event) => event.type === 'file-change' && event.phase === 'live' && event.change.path === 'node-canonical.txt'),
@@ -12396,6 +12482,7 @@ async function main(): Promise<void> {
   await testWorkspaceSchedulerQueueSlotReleasedAfterCancellation();
   await testWorkspaceProcProcessState();
   await testTraceKernelRuntimeDiscovery();
+  await testTraceKernelSkillsRoot();
   await testWorkspaceTraceKernelKillProcess();
   await testWorkspaceTraceKernelKillPropagatesToNativeNodeRunner();
   await testWorkspaceTraceKernelKillProcessGroup();

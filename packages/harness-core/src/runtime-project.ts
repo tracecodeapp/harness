@@ -375,6 +375,7 @@ export interface RuntimeProjectSession {
   commands?: Record<string, RuntimeProjectSessionCommandDefinition>;
   files?: readonly RuntimeProjectSessionFile[];
   directories?: readonly string[];
+  skills?: readonly RuntimeFile[];
   createdAt?: string;
   lastOpenedAt?: string;
   expiresAt?: string;
@@ -956,6 +957,7 @@ export interface RuntimeWorkspaceKernel {
   readonly info: RuntimeKernelInfo;
   readFile(path: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<string>;
   writeFile(path: string, contents: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<void>;
+  writeSkillFiles(files: readonly RuntimeFile[], actor?: RuntimeWorkspaceActor): Promise<void>;
   deleteFile(path: string, actor?: RuntimeWorkspaceActor): Promise<void>;
   applyFileChange(change: RuntimeFileChange, actor?: RuntimeWorkspaceActor, phase?: RuntimeFileMutationPhase): Promise<void>;
   snapshot(options?: { entrypoint?: string; includeHidden?: boolean }): Promise<RuntimeProjectSnapshot>;
@@ -1065,6 +1067,7 @@ export interface RuntimeWorkspace {
   readonly projectSession?: RuntimeProjectSessionInfo;
   writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void>;
   writeFiles(files: readonly RuntimeFile[]): Promise<void>;
+  writeSkillFiles(files: readonly RuntimeFile[]): Promise<void>;
   appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void>;
   readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string>;
   exists(path: string): Promise<boolean>;

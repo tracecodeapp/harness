@@ -3227,11 +3227,15 @@ function workspacePathInputToString(path) {
 }
 function runtimeWriteTarget(path, devices) {
   if (typeof path === "number") return null;
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: "error", reason: "proc-read-only", path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelWriteTarget(raw, devices);
 }
 function runtimeMetadataTarget(path, devices) {
   if (typeof path === "number") return null;
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: "error", reason: "proc-read-only", path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelMetadataTarget(raw, devices);
 }
@@ -3241,6 +3245,10 @@ function runtimeAccessTarget(path, mode, devices, procSnapshot) {
   if (procKind) {
     const procPath = normalizeBrowserProcPath(path) ?? "/proc";
     return (mode & 2) !== 0 ? { kind: "denied", reason: "permission-denied", path: procPath } : { kind: "allowed", path: procPath };
+  }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) {
+    return (mode & 2) !== 0 ? { kind: "denied", reason: "permission-denied", path: readonlyPath } : { kind: "denied", reason: "not-found", path: readonlyPath };
   }
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelAccessTarget(raw, {
@@ -3260,6 +3268,10 @@ function runtimeOpenTarget(path, request, devices, procSnapshot) {
     }
     return { kind: "proc-file", path: procPath, readable: true, writable: false };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) {
+    return request?.writable || request?.create || request?.truncate || request?.exclusive ? { kind: "error", reason: "read-only", path: readonlyPath } : { kind: "error", reason: "not-found", path: readonlyPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelOpenTarget(raw, request, devices);
 }
@@ -3270,6 +3282,8 @@ function runtimeReadTarget(path, devices, procSnapshot) {
     const procPath = normalizeBrowserProcPath(path) ?? "/proc";
     return procKind === "file" ? { kind: "proc-file", path: procPath } : { kind: "proc-directory", path: procPath };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: "error", reason: "not-found", path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelReadTarget(raw, devices);
 }
@@ -3280,17 +3294,51 @@ function runtimeFileReadTarget(path, devices, procSnapshot) {
     const procPath = normalizeBrowserProcPath(path) ?? "/proc";
     return procKind === "file" ? { kind: "proc-file", path: procPath } : { kind: "error", reason: "is-directory", path: procPath };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: "error", reason: "not-found", path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelFileReadTarget(raw, devices);
 }
-function runtimeCopyTarget(source, destination, devices) {
+function runtimeCopyTarget(source, destination, devices, procSnapshot) {
   if (typeof source === "number" || typeof destination === "number") return null;
+  const sourceKind = browserProcEntryKind(procSnapshot, source);
+  const destinationReadonlyPath = browserReadonlyKernelNamespacePath(destination);
+  if (sourceKind === "file" || destinationReadonlyPath) return { kind: "file-copy" };
+  if (sourceKind === "directory") return { kind: "error", reason: "source-directory", path: normalizeBrowserProcPath(source) ?? String(source) };
   const sourceRaw = workspacePathInputToString(source).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelCopyTarget(sourceRaw, destinationRaw, devices);
 }
-function runtimeFileCopyTarget(source, destination, devices) {
+function runtimeFileCopyTarget(source, destination, devices, procSnapshot) {
   if (typeof source === "number" || typeof destination === "number") return null;
+  const destinationReadonlyPath = browserReadonlyKernelNamespacePath(destination);
+  if (destinationReadonlyPath) {
+    return { kind: "error", side: "destination", reason: "proc-read-only", path: destinationReadonlyPath };
+  }
+  const sourceKind = browserProcEntryKind(procSnapshot, source);
+  if (sourceKind) {
+    const sourcePath = normalizeBrowserProcPath(source) ?? String(source);
+    if (sourceKind === "directory") {
+      return { kind: "error", side: "source", reason: "is-directory", path: sourcePath };
+    }
+    const writeTarget = runtimeWriteTarget(destination, devices);
+    if (writeTarget?.kind === "error") {
+      return { kind: "error", side: "destination", reason: writeTarget.reason, path: writeTarget.path };
+    }
+    if (writeTarget?.kind === "device") {
+      return {
+        kind: "device-destination",
+        device: writeTarget.device,
+        outputDevice: writeTarget.outputDevice,
+        source: { kind: "proc-file", path: sourcePath }
+      };
+    }
+    return { kind: "virtual-source", source: { kind: "proc-file", path: sourcePath } };
+  }
+  const sourceReadonlyPath = browserReadonlyKernelNamespacePath(source);
+  if (sourceReadonlyPath) {
+    return { kind: "error", side: "source", reason: "not-found", path: sourceReadonlyPath };
+  }
   const sourceRaw = workspacePathInputToString(source).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelFileCopyTarget(sourceRaw, destinationRaw, devices);
@@ -3334,6 +3382,8 @@ function runtimeDirectoryTarget(path, devices, procSnapshot) {
     const procPath = normalizeBrowserProcPath(path) ?? "/proc";
     return procKind === "directory" ? { kind: "directory", path: procPath, entries: [...procSnapshot?.directories.get(procPath) ?? []] } : { kind: "error", reason: "not-directory", path: procPath };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: "error", reason: "not-found", path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelDirectoryTarget(raw, devices);
 }
@@ -3355,6 +3405,8 @@ function runtimeStatTarget(path, info, devices, procSnapshot) {
       }
     };
   }
+  const readonlyPath = browserReadonlyKernelNamespacePath(path);
+  if (readonlyPath) return { kind: "error", reason: "not-found", path: readonlyPath };
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelStatTarget(raw, info, devices);
 }
@@ -3432,7 +3484,12 @@ function fallbackKernelInfo(project, workspace) {
 function normalizeBrowserProcPath(path) {
   if (typeof path === "number") return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
-  return raw === "/proc" || raw.startsWith("/proc/") ? raw : null;
+  return raw === "/proc" || raw.startsWith("/proc/") || raw === "/skills" || raw.startsWith("/skills/") ? raw : null;
+}
+function browserReadonlyKernelNamespacePath(path) {
+  if (typeof path === "number") return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  return raw === "/skills" || raw.startsWith("/skills/") ? raw : null;
 }
 function createBrowserProcSnapshot(kernelFiles) {
   const files = /* @__PURE__ */ new Map();
@@ -3456,10 +3513,11 @@ function createBrowserProcSnapshot(kernelFiles) {
     const name = normalized.slice(parent === "/" ? 1 : parent.length + 1);
     directoryEntries.get(parent)?.set(name, { name, kind: "file" });
   };
+  ensureDirectory("/skills");
   for (const file of kernelFiles ?? []) addFile(file.path, file.contents);
   const directories = /* @__PURE__ */ new Map();
   for (const [path, entries] of directoryEntries) {
-    if (path === "/" || !(path === "/proc" || path.startsWith("/proc/"))) continue;
+    if (path === "/" || !(path === "/proc" || path.startsWith("/proc/") || path === "/skills" || path.startsWith("/skills/"))) continue;
     directories.set(path, [...entries.values()].sort((left, right) => left.name.localeCompare(right.name)));
   }
   return { files, directories };
@@ -3472,7 +3530,8 @@ function browserProcEntryKind(snapshot, path) {
   return null;
 }
 function browserProcFileContents(snapshot, path, info) {
-  return snapshot?.files.get(path) ?? readRuntimeProcFile(path, info);
+  const contents = snapshot?.files.get(path);
+  return contents !== void 0 ? contents : readRuntimeProcFile(path, info);
 }
 function workspaceRelativeFromAbsolutePath(rawPath, workspace) {
   const raw = normalizeAbsoluteWorkspaceRoot(rawPath);
@@ -6396,7 +6455,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     return workspaceFilename(normalized, workspaceRoot);
   };
   const copyEntrySync = (source, destination, options2 = {}) => {
-    const copyTarget = runtimeCopyTarget(source, destination, kernelDevices);
+    const copyTarget = runtimeCopyTarget(source, destination, kernelDevices, procSnapshot);
     if (copyTarget?.kind === "file-copy") {
       fsApi.copyFileSync(source, destination);
       return;
@@ -7109,7 +7168,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
     },
     copyFileSync: (source, destination, mode = 0) => {
-      const copyTarget = runtimeFileCopyTarget(source, destination, kernelDevices);
+      const copyTarget = runtimeFileCopyTarget(source, destination, kernelDevices, procSnapshot);
       if (copyTarget?.kind === "error" && copyTarget.side === "destination") {
         throw Object.assign(new Error(runtimeKernelFileCopyErrorMessage(String(source), String(destination), copyTarget)), {
           code: runtimeKernelFileCopyErrorCode(copyTarget)

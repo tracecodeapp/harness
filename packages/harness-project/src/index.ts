@@ -226,6 +226,7 @@ export interface CreateRuntimeWorkspaceOptions {
   projectSession?: RuntimeProjectSession;
   files?: readonly RuntimeFile[];
   directories?: readonly string[];
+  skills?: readonly RuntimeFile[];
   entrypoint?: string;
   cwd?: string;
   env?: Record<string, string>;
@@ -549,6 +550,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
 const DEFAULT_CWD = '/workspace';
 const TRACE_KERNEL_NAME = 'tracekernel';
 const TRACEKERNEL_BIN_PATH = '/tracekernel/bin';
+const TRACEKERNEL_SKILLS_ROOT = '/skills';
 const CPP_COMPILER_COMMANDS = new Set(['clang++', 'clang', 'gcc', 'cc', 'g++', 'c++']);
 const TRACEKERNEL_EXEC_COMMAND = 'tracekernel-exec';
 const TRACEKERNEL_SHELL_COMMAND_PREFIX = 'tracekernel-shell-';
@@ -640,6 +642,37 @@ function traceKernelBinCommandName(path: string): string | null {
   if (!normalized?.startsWith(`${TRACEKERNEL_BIN_PATH}/`)) return null;
   const name = normalized.slice(TRACEKERNEL_BIN_PATH.length + 1);
   return name && !name.includes('/') ? name : null;
+}
+
+function normalizeRuntimeSkillPath(path: string): string {
+  assertNoNul(path, 'Skill path');
+  const raw = path.replace(/\\/g, '/');
+  if (raw === TRACEKERNEL_SKILLS_ROOT || raw === `${TRACEKERNEL_SKILLS_ROOT}/`) {
+    throw new Error('Skill path must point to a file.');
+  }
+  if (raw.startsWith(`${TRACEKERNEL_SKILLS_ROOT}/`)) {
+    return normalizeRuntimeProjectPath(raw.slice(TRACEKERNEL_SKILLS_ROOT.length + 1));
+  }
+  if (raw.startsWith('/')) {
+    throw new Error(`Skill path must stay inside ${TRACEKERNEL_SKILLS_ROOT}: ${path}`);
+  }
+  return normalizeRuntimeProjectPath(raw);
+}
+
+function runtimeSkillAbsolutePath(path: string): string {
+  return `${TRACEKERNEL_SKILLS_ROOT}/${normalizeRuntimeSkillPath(path)}`;
+}
+
+function normalizeRuntimeSkillsVirtualPath(path: string): string | null {
+  if (!path.startsWith('/')) return null;
+  const normalized = normalizeTerminalAbsolutePath(path);
+  return normalized === TRACEKERNEL_SKILLS_ROOT || normalized.startsWith(`${TRACEKERNEL_SKILLS_ROOT}/`)
+    ? normalized
+    : null;
+}
+
+function isRuntimeSkillsNamespacePath(path: string): boolean {
+  return normalizeRuntimeSkillsVirtualPath(path) !== null;
 }
 
 type VirtualExecutableKind = 'cpp';
@@ -1023,6 +1056,10 @@ function normalizeRuntimeWorkspaceOptions(
     files: [
       ...(session.files ?? []),
       ...(options.files ?? []),
+    ],
+    skills: [
+      ...(session.skills ?? []),
+      ...(options.skills ?? []),
     ],
   };
 }
@@ -1921,6 +1958,7 @@ async function snapshotRuntimeKernelVirtualFiles(
 ): Promise<RuntimeFile[]> {
   const files: RuntimeFile[] = [];
   await collectKernelProcSnapshotFiles(fs, '/proc', files);
+  await collectKernelProcSnapshotFiles(fs, TRACEKERNEL_SKILLS_ROOT, files);
   if (files.length === 0) return runtimeKernelVirtualFiles(info);
   const byPath = new Map(runtimeKernelVirtualFiles(info).map((file) => [file.path, file]));
   for (const file of files) byPath.set(file.path, file);
@@ -3124,12 +3162,17 @@ class KernelObservedFileSystem implements IFileSystem {
         });
     const traceKernelBinPaths = (this.dynamicProc.readDir(TRACEKERNEL_BIN_PATH) ?? [])
       .map((entry) => `${TRACEKERNEL_BIN_PATH}/${entry.name}`);
+    const skillPaths = this.dynamicProc.readDir(TRACEKERNEL_SKILLS_ROOT) === null
+      ? []
+      : this.dynamicVirtualPaths(TRACEKERNEL_SKILLS_ROOT);
     return Array.from(new Set([
       ...aliasPaths,
       ...runtimeKernelVirtualPaths(),
       '/tracekernel',
       TRACEKERNEL_BIN_PATH,
       ...traceKernelBinPaths,
+      TRACEKERNEL_SKILLS_ROOT,
+      ...skillPaths,
     ])).sort((left, right) => left.localeCompare(right));
   }
 
@@ -3197,6 +3240,19 @@ class KernelObservedFileSystem implements IFileSystem {
     if (this.dynamicProc.entryKind(this.mapPath(path)) !== null) return Promise.resolve(this.mapPath(path));
     if (isRuntimeKernelVirtualNamespacePath(path)) return Promise.resolve(path);
     return this.base.realpath(this.mapPath(path));
+  }
+
+  private dynamicVirtualPaths(path: string, seen = new Set<string>()): string[] {
+    if (seen.has(path)) return [];
+    seen.add(path);
+    const kind = this.dynamicProc.entryKind(path);
+    if (!kind) return [];
+    if (kind === 'file') return [path];
+    const entries = this.dynamicProc.readDir(path) ?? [];
+    return [
+      path,
+      ...entries.flatMap((entry) => this.dynamicVirtualPaths(`${path}/${entry.name}`, seen)),
+    ];
   }
 
   utimes(path: string, atime: Date, mtime: Date): Promise<void> {
@@ -4498,7 +4554,9 @@ function runtimeLsIdentity(path: string, stat: RuntimeLsStat, info: RuntimeKerne
     normalized === '/proc' ||
     normalized.startsWith('/proc/') ||
     normalized === '/tracekernel' ||
-    normalized.startsWith('/tracekernel/')
+    normalized.startsWith('/tracekernel/') ||
+    normalized === TRACEKERNEL_SKILLS_ROOT ||
+    normalized.startsWith(`${TRACEKERNEL_SKILLS_ROOT}/`)
   ) {
     return { owner: 'root', group: 'root', uid: 0, gid: 0 };
   }
@@ -6206,6 +6264,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly cppRunner?: CppProjectCommandRunner;
   private readonly traceKernelCommandRegistry: TraceKernelCommandInfo[];
   private readonly traceKernelCommandNames: ReadonlySet<string>;
+  private readonly skillFiles = new Map<string, RuntimeFile>();
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly commandExecutionContexts = new AsyncLocalStorage<RuntimeCommandExecutionContext>();
   private readonly processTable = new Map<number, RuntimeKernelProcessRecord>();
@@ -6777,7 +6836,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       readDir: (path) => this.readDynamicVirtualDir(path),
       entryKind: (path) => this.dynamicVirtualEntryKind(path),
       stat: (path) => this.dynamicVirtualStat(path),
-      readonlyNamespace: (path) => Boolean(normalizeRuntimeProcPath(path)) || isTraceKernelVirtualNamespacePath(path),
+      readonlyNamespace: (path) =>
+        Boolean(normalizeRuntimeProcPath(path)) ||
+        isTraceKernelVirtualNamespacePath(path) ||
+        isRuntimeSkillsNamespacePath(path),
     };
   }
 
@@ -7031,22 +7093,99 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
+  private normalizeSkillFile(file: RuntimeFile): RuntimeFile {
+    const normalizedEncoding = assertSupportedEncoding(file.encoding);
+    return {
+      path: normalizeRuntimeSkillPath(file.path),
+      contents: file.contents,
+      ...(normalizedEncoding === 'base64' ? { encoding: normalizedEncoding } : {}),
+    };
+  }
+
+  private skillFileContent(file: RuntimeFile): string {
+    return (file.encoding ?? 'utf8') === 'base64'
+      ? contentToText(bytesFromBase64(file.contents))
+      : file.contents;
+  }
+
+  private skillRelativePathFromVirtualPath(path: string): string | null {
+    const normalized = normalizeRuntimeSkillsVirtualPath(path);
+    if (!normalized || normalized === TRACEKERNEL_SKILLS_ROOT) return null;
+    return normalizeRuntimeSkillPath(normalized.slice(TRACEKERNEL_SKILLS_ROOT.length + 1));
+  }
+
+  private readDynamicSkillsFile(path: string): string | null {
+    const relativePath = this.skillRelativePathFromVirtualPath(path);
+    if (!relativePath) return null;
+    const file = this.skillFiles.get(relativePath);
+    return file ? this.skillFileContent(file) : null;
+  }
+
+  private readDynamicSkillsDir(path: string): RuntimeDynamicProcEntry[] | null {
+    const normalized = normalizeRuntimeSkillsVirtualPath(path);
+    if (!normalized) return null;
+    const directoryPath = normalized === TRACEKERNEL_SKILLS_ROOT
+      ? ''
+      : normalizeRuntimeSkillPath(normalized.slice(TRACEKERNEL_SKILLS_ROOT.length + 1));
+    const prefix = directoryPath ? `${directoryPath}/` : '';
+    const entries = new Map<string, RuntimeDynamicProcEntry>();
+    for (const skillPath of this.skillFiles.keys()) {
+      if (directoryPath && skillPath === directoryPath) continue;
+      if (!skillPath.startsWith(prefix)) continue;
+      const remainder = skillPath.slice(prefix.length);
+      if (!remainder) continue;
+      const [name, ...rest] = remainder.split('/');
+      if (!name) continue;
+      entries.set(name, { name, kind: rest.length > 0 ? 'directory' : 'file' });
+    }
+    if (normalized === TRACEKERNEL_SKILLS_ROOT) {
+      return [...entries.values()].sort((left, right) => left.name.localeCompare(right.name));
+    }
+    return entries.size > 0
+      ? [...entries.values()].sort((left, right) => left.name.localeCompare(right.name))
+      : null;
+  }
+
+  private dynamicSkillsEntryKind(path: string): 'file' | 'directory' | null {
+    if (this.readDynamicSkillsDir(path)) return 'directory';
+    return this.readDynamicSkillsFile(path) !== null ? 'file' : null;
+  }
+
+  private dynamicSkillsStat(path: string): RuntimeKernelVirtualStat | null {
+    const kind = this.dynamicSkillsEntryKind(path);
+    if (!kind) return null;
+    const content = kind === 'file' ? this.readDynamicSkillsFile(path) ?? '' : '';
+    return {
+      isFile: kind === 'file',
+      isDirectory: kind === 'directory',
+      isCharacterDevice: false,
+      mode: kind === 'directory' ? 0o555 : 0o444,
+      size: new TextEncoder().encode(content).byteLength,
+      uid: 0,
+      gid: 0,
+      owner: 'root',
+      group: 'root',
+    };
+  }
+
   private readDynamicVirtualFile(path: string): string | null {
+    const skillFile = this.readDynamicSkillsFile(path);
+    if (skillFile !== null) return skillFile;
     const traceKernelFile = this.readDynamicTraceKernelFile(path);
     if (traceKernelFile !== null) return traceKernelFile;
     return this.readDynamicProcFile(path);
   }
 
   private readDynamicVirtualDir(path: string): RuntimeDynamicProcEntry[] | null {
-    return this.readDynamicTraceKernelDir(path) ?? this.readDynamicProcDir(path);
+    return this.readDynamicSkillsDir(path) ?? this.readDynamicTraceKernelDir(path) ?? this.readDynamicProcDir(path);
   }
 
   private dynamicVirtualEntryKind(path: string): 'file' | 'directory' | null {
-    return this.dynamicTraceKernelEntryKind(path) ?? this.dynamicProcEntryKind(path);
+    return this.dynamicSkillsEntryKind(path) ?? this.dynamicTraceKernelEntryKind(path) ?? this.dynamicProcEntryKind(path);
   }
 
   private dynamicVirtualStat(path: string): RuntimeKernelVirtualStat | null {
-    return this.dynamicTraceKernelStat(path) ?? this.dynamicProcStat(path);
+    return this.dynamicSkillsStat(path) ?? this.dynamicTraceKernelStat(path) ?? this.dynamicProcStat(path);
   }
 
   private readDynamicProcFile(path: string): string | null {
@@ -7978,7 +8117,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private assertDynamicVirtualWritable(path: string, operation: string): void {
-    if (!isTraceKernelVirtualNamespacePath(path)) return;
+    if (!isTraceKernelVirtualNamespacePath(path) && !isRuntimeSkillsNamespacePath(path)) return;
     throw Object.assign(
       new Error(`EROFS: kernel virtual path is read-only, ${operation} '${path}'`),
       { code: 'EROFS' }
@@ -8338,6 +8477,30 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     for (const file of files) {
       await this.writeFile(file.path, file.contents, file.encoding);
     }
+  }
+
+  async writeSkillFiles(files: readonly RuntimeFile[]): Promise<void> {
+    await this.writeSkillFilesAs(files, SYSTEM_ACTOR);
+  }
+
+  private async writeSkillFilesAs(
+    files: readonly RuntimeFile[],
+    _actor: RuntimeWorkspaceActor = SYSTEM_ACTOR
+  ): Promise<void> {
+    this.assertNotDestroyed();
+    const nextFiles = new Map(this.skillFiles);
+    for (const file of files) {
+      const normalized = this.normalizeSkillFile(file);
+      for (const existingPath of nextFiles.keys()) {
+        if (existingPath === normalized.path) continue;
+        if (existingPath.startsWith(`${normalized.path}/`) || normalized.path.startsWith(`${existingPath}/`)) {
+          throw new Error(`Skill path conflicts with an existing skill path: ${runtimeSkillAbsolutePath(normalized.path)}`);
+        }
+      }
+      nextFiles.set(normalized.path, normalized);
+    }
+    this.skillFiles.clear();
+    for (const [path, file] of nextFiles) this.skillFiles.set(path, file);
   }
 
   async appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
@@ -9135,6 +9298,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       info: this.kernelInfo,
       readFile: (path, _actor, encoding) => this.readFile(path, encoding),
       writeFile: (path, contents, actor = PRINCIPAL_ACTOR, encoding) => this.writeFileAs(path, contents, actor, encoding, 'live'),
+      writeSkillFiles: (files, actor = SYSTEM_ACTOR) => this.writeSkillFilesAs(files, actor),
       deleteFile: (path, actor = PRINCIPAL_ACTOR) => this.deleteFileAs(path, actor, 'live'),
       applyFileChange: async (change, actor = this.currentCommandActor() ?? SYSTEM_ACTOR, phase = 'final-diff') => {
         await withSuspendedFsNotifications(this.bash.fs, async () => {
@@ -9434,6 +9598,9 @@ export async function createRuntimeWorkspace(
   options = normalizeRuntimeWorkspaceOptions(options);
   const workspace = new JustBashRuntimeWorkspace(options);
   await workspace.ensureReady();
+  if (options.skills) {
+    await workspace.writeSkillFiles(options.skills);
+  }
   if (options.directories) {
     for (const directory of options.directories) {
       await workspace.mkdir(directory);

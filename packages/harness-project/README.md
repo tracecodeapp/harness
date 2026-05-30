@@ -28,6 +28,9 @@ const workspace = await createRuntimeWorkspace({
   files: [
     { path: 'src/solution.py', contents: 'print("hello")\n' },
   ],
+  skills: [
+    { path: 'algorithms/sorting.md', contents: '# Sorting notes\n' },
+  ],
   entrypoint: 'src/solution.py',
 });
 
@@ -46,6 +49,7 @@ console.log(workspace.cwd); // /home/ada/weather-api
 console.log(workspace.kernel.info.name); // tracekernel
 console.log(await workspace.readFile('/proc/kernel/info'));
 console.log(await workspace.readFile('/proc/self/mountinfo'));
+console.log(await workspace.readFile('/skills/algorithms/sorting.md'));
 ```
 
 When `kernel` identity is provided, the canonical workspace root is
@@ -59,6 +63,13 @@ All language runners use the same project request shape: source, script path,
 argv, cwd, environment, stdin, and a `RuntimeProjectSnapshot` containing the
 current files, empty directories, optional entrypoint, `workspaceRoot`, and
 optional `workspaceAlias`.
+
+Providers can seed kernel-protected skill files with `skills` during workspace
+creation, or later through `workspace.writeSkillFiles(...)` /
+`workspace.kernel.writeSkillFiles(...)`. Skills are exposed under `/skills` as a
+read-only virtual root: user code can read or copy them into the workspace, but
+normal workspace and shell mutations cannot create, replace, rename, or delete
+files under `/skills`.
 
 ## Terminal Sessions
 
