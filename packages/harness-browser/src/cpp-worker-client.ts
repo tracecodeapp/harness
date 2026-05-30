@@ -13,6 +13,7 @@ import type {
 import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 import type { TraceExecutionOptions } from '../../harness-core/src/runtime-types';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import { createWorkerProtocolToken } from './worker-protocol';
 
 type MessageId = string;
 
@@ -44,6 +45,7 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
 }
 
 interface PendingMessage {
+  protocolToken: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
@@ -56,6 +58,7 @@ function createExecutionAbortError(): Error {
 }
 
 interface PendingCompilerFrameRequest {
+  protocolToken: string;
   resolve: (value: Record<string, unknown>) => void;
   timeoutId: ReturnType<typeof setTimeout>;
 }
@@ -85,6 +88,7 @@ interface WorkerMessage {
   type: string;
   requestId?: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 interface InitResult {
@@ -172,7 +176,7 @@ export class CppWorkerClient {
 
     this.worker = new Worker(workerUrl, { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-      const { id, type, payload } = event.data;
+      const { id, type, payload, protocolToken } = event.data;
 
       if (type === 'worker-ready') {
         this.workerReadyResolve?.();
@@ -199,11 +203,13 @@ export class CppWorkerClient {
       }
 
       if (type === 'compile-request') {
+        if (!this.hasPendingProtocolToken(protocolToken)) return;
         this.handleCompileRequest(event.data).catch((error) => {
           if (!event.data.requestId) return;
           this.worker?.postMessage({
             type: 'compile-response',
             requestId: event.data.requestId,
+            protocolToken: event.data.protocolToken,
             payload: { success: false, error: error instanceof Error ? error.message : String(error) },
           });
         });
@@ -213,6 +219,7 @@ export class CppWorkerClient {
       if (!id) return;
       const pending = this.pendingMessages.get(id);
       if (!pending) return;
+      if (protocolToken !== pending.protocolToken) return;
       if (type === 'project-event') {
         pending.onEvent?.(payload as RuntimeCommandEvent);
         return;
@@ -305,9 +312,11 @@ export class CppWorkerClient {
     const worker = this.getWorker();
     await this.waitForWorkerReady();
     const id = String(++this.messageId);
+    const protocolToken = createWorkerProtocolToken();
 
     return new Promise<T>((resolve, reject) => {
       this.pendingMessages.set(id, {
+        protocolToken,
         resolve: resolve as (value: unknown) => void,
         reject,
         ...(onEvent ? { onEvent } : {}),
@@ -330,8 +339,13 @@ export class CppWorkerClient {
       const pending = this.pendingMessages.get(id);
       if (pending) pending.timeoutId = timeoutId;
 
-      worker.postMessage({ id, type, payload });
+      worker.postMessage({ id, type, payload, protocolToken });
     });
+  }
+
+  private hasPendingProtocolToken(protocolToken: unknown): protocolToken is string {
+    return typeof protocolToken === 'string' &&
+      Array.from(this.pendingMessages.values()).some((pending) => pending.protocolToken === protocolToken);
   }
 
   private async executeWithTimeout<T>(
@@ -632,6 +646,7 @@ export class CppWorkerClient {
       {
         type: 'compile-response',
         requestId: message.requestId,
+        protocolToken: message.protocolToken,
         payload: result,
       },
       transfer
@@ -762,6 +777,7 @@ export class CppWorkerClient {
         if (!requestId) return;
         const pending = this.pendingCompilerFrameRequests.get(requestId);
         if (!pending) return;
+        if ((event.data as { protocolToken?: unknown })?.protocolToken !== pending.protocolToken) return;
         this.pendingCompilerFrameRequests.delete(requestId);
         globalThis.clearTimeout(pending.timeoutId);
         const response = event.data as { payload?: Record<string, unknown> };
@@ -802,15 +818,17 @@ export class CppWorkerClient {
 
     return new Promise((resolve) => {
       const requestId = `compile-${++this.compilerFrameRequestId}`;
+      const protocolToken = createWorkerProtocolToken();
       const timeoutId = globalThis.setTimeout(() => {
         this.pendingCompilerFrameRequests.delete(requestId);
         resolve({ success: false, error: 'C++ compiler frame request timed out.' });
       }, this.initTimeoutMs);
-      this.pendingCompilerFrameRequests.set(requestId, { resolve, timeoutId });
+      this.pendingCompilerFrameRequests.set(requestId, { protocolToken, resolve, timeoutId });
       frameWindow.postMessage(
         {
           id: requestId,
           type: 'compile',
+          protocolToken,
           payload,
         },
         this.compilerFrameTargetOrigin

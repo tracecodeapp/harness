@@ -18,6 +18,7 @@ import type {
   RuntimeProjectCommandRequest,
 } from '../../harness-core/src/runtime-project';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import { createWorkerProtocolToken } from './worker-protocol';
 
 type MessageId = string;
 export type CSharpExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -34,6 +35,7 @@ export interface CSharpWorkerClientOptions {
 }
 
 interface PendingMessage {
+  protocolToken: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
@@ -48,6 +50,7 @@ interface WorkerMessage {
   id?: MessageId;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 interface InitResult {
@@ -157,7 +160,7 @@ export class CSharpWorkerClient {
 
     this.worker = new Worker(workerUrl, { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-      const { id, type, payload } = event.data;
+      const { id, type, payload, protocolToken } = event.data;
 
       if (type === 'worker-ready') {
         this.workerReadyResolve?.();
@@ -186,6 +189,7 @@ export class CSharpWorkerClient {
       if (!id) return;
       const pending = this.pendingMessages.get(id);
       if (!pending) return;
+      if (protocolToken !== pending.protocolToken) return;
       if (type === 'project-event') {
         pending.onEvent?.(payload as RuntimeCommandEvent);
         return;
@@ -277,9 +281,11 @@ export class CSharpWorkerClient {
     const worker = this.getWorker();
     await this.waitForWorkerReady();
     const id = String(++this.messageId);
+    const protocolToken = createWorkerProtocolToken();
 
     return new Promise<T>((resolve, reject) => {
       this.pendingMessages.set(id, {
+        protocolToken,
         resolve: resolve as (value: unknown) => void,
         reject,
         ...(onEvent ? { onEvent } : {}),
@@ -302,7 +308,7 @@ export class CSharpWorkerClient {
       const pending = this.pendingMessages.get(id);
       if (pending) pending.timeoutId = timeoutId;
 
-      worker.postMessage({ id, type, payload });
+      worker.postMessage({ id, type, payload, protocolToken });
     });
   }
 

@@ -311,7 +311,11 @@ function runtimeDeviceStat(path, devices) {
     isDirectory,
     isCharacterDevice: !isDirectory,
     mode: isDirectory ? 493 : 438,
-    size: 0
+    size: 0,
+    uid: 0,
+    gid: 0,
+    owner: "root",
+    group: "root"
   };
 }
 function runtimeKernelWriteTarget(path, devices) {
@@ -776,7 +780,11 @@ function runtimeProcStat(path, info) {
     isDirectory,
     isCharacterDevice: false,
     mode: isDirectory ? 365 : 292,
-    size: isDirectory ? 0 : new TextEncoder().encode(readRuntimeProcFile(path, info)).byteLength
+    size: isDirectory ? 0 : new TextEncoder().encode(readRuntimeProcFile(path, info)).byteLength,
+    uid: 0,
+    gid: 0,
+    owner: "root",
+    group: "root"
   };
 }
 
@@ -3227,8 +3235,13 @@ function runtimeMetadataTarget(path, devices) {
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelMetadataTarget(raw, devices);
 }
-function runtimeAccessTarget(path, mode, devices) {
+function runtimeAccessTarget(path, mode, devices, procSnapshot) {
   if (typeof path === "number") return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? "/proc";
+    return (mode & 2) !== 0 ? { kind: "denied", reason: "permission-denied", path: procPath } : { kind: "allowed", path: procPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelAccessTarget(raw, {
     read: (mode & 4) !== 0,
@@ -3236,18 +3249,37 @@ function runtimeAccessTarget(path, mode, devices) {
     execute: (mode & 1) !== 0
   }, devices);
 }
-function runtimeOpenTarget(path, request, devices) {
+function runtimeOpenTarget(path, request, devices, procSnapshot) {
   if (typeof path === "number") return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? "/proc";
+    if (procKind === "directory") return { kind: "error", reason: "is-directory", path: procPath };
+    if (request?.writable || request?.create || request?.truncate || request?.exclusive) {
+      return { kind: "error", reason: "read-only", path: procPath };
+    }
+    return { kind: "proc-file", path: procPath, readable: true, writable: false };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelOpenTarget(raw, request, devices);
 }
-function runtimeReadTarget(path, devices) {
+function runtimeReadTarget(path, devices, procSnapshot) {
   if (typeof path === "number") return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? "/proc";
+    return procKind === "file" ? { kind: "proc-file", path: procPath } : { kind: "proc-directory", path: procPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelReadTarget(raw, devices);
 }
-function runtimeFileReadTarget(path, devices) {
+function runtimeFileReadTarget(path, devices, procSnapshot) {
   if (typeof path === "number") return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? "/proc";
+    return procKind === "file" ? { kind: "proc-file", path: procPath } : { kind: "error", reason: "is-directory", path: procPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelFileReadTarget(raw, devices);
 }
@@ -3295,13 +3327,34 @@ function runtimeTruncateTarget(path, devices) {
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelTruncateTarget(raw, devices);
 }
-function runtimeDirectoryTarget(path, devices) {
+function runtimeDirectoryTarget(path, devices, procSnapshot) {
   if (typeof path === "number") return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? "/proc";
+    return procKind === "directory" ? { kind: "directory", path: procPath, entries: [...procSnapshot?.directories.get(procPath) ?? []] } : { kind: "error", reason: "not-directory", path: procPath };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelDirectoryTarget(raw, devices);
 }
-function runtimeStatTarget(path, info, devices) {
+function runtimeStatTarget(path, info, devices, procSnapshot) {
   if (typeof path === "number") return null;
+  const procKind = browserProcEntryKind(procSnapshot, path);
+  if (procKind) {
+    const procPath = normalizeBrowserProcPath(path) ?? "/proc";
+    const contents = procKind === "file" ? browserProcFileContents(procSnapshot, procPath, info) : "";
+    return {
+      kind: "stat",
+      path: procPath,
+      stat: {
+        isFile: procKind === "file",
+        isDirectory: procKind === "directory",
+        isCharacterDevice: false,
+        mode: procKind === "directory" ? 365 : 292,
+        size: textEncoder.encode(contents).byteLength
+      }
+    };
+  }
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return runtimeKernelStatTarget(raw, info, devices);
 }
@@ -3375,6 +3428,51 @@ function fallbackKernelInfo(project, workspace) {
     workspaceRoot: root,
     ...workspace.alias ? { workspaceAlias: workspace.alias } : {}
   };
+}
+function normalizeBrowserProcPath(path) {
+  if (typeof path === "number") return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  return raw === "/proc" || raw.startsWith("/proc/") ? raw : null;
+}
+function createBrowserProcSnapshot(kernelFiles) {
+  const files = /* @__PURE__ */ new Map();
+  const directoryEntries = /* @__PURE__ */ new Map();
+  const ensureDirectory = (path) => {
+    if (!directoryEntries.has(path)) directoryEntries.set(path, /* @__PURE__ */ new Map());
+    if (path === "/") return;
+    const parent = dirname(path);
+    if (parent && parent !== path) {
+      ensureDirectory(parent);
+      const name = path.slice(parent === "/" ? 1 : parent.length + 1);
+      directoryEntries.get(parent)?.set(name, { name, kind: "directory" });
+    }
+  };
+  const addFile = (path, contents) => {
+    const normalized = normalizeBrowserProcPath(path);
+    if (!normalized) return;
+    files.set(normalized, contents);
+    const parent = dirname(normalized);
+    ensureDirectory(parent);
+    const name = normalized.slice(parent === "/" ? 1 : parent.length + 1);
+    directoryEntries.get(parent)?.set(name, { name, kind: "file" });
+  };
+  for (const file of kernelFiles ?? []) addFile(file.path, file.contents);
+  const directories = /* @__PURE__ */ new Map();
+  for (const [path, entries] of directoryEntries) {
+    if (path === "/" || !(path === "/proc" || path.startsWith("/proc/"))) continue;
+    directories.set(path, [...entries.values()].sort((left, right) => left.name.localeCompare(right.name)));
+  }
+  return { files, directories };
+}
+function browserProcEntryKind(snapshot, path) {
+  const normalized = normalizeBrowserProcPath(path);
+  if (!normalized || !snapshot) return null;
+  if (snapshot.files.has(normalized)) return "file";
+  if (snapshot.directories.has(normalized)) return "directory";
+  return null;
+}
+function browserProcFileContents(snapshot, path, info) {
+  return snapshot?.files.get(path) ?? readRuntimeProcFile(path, info);
 }
 function workspaceRelativeFromAbsolutePath(rawPath, workspace) {
   const raw = normalizeAbsoluteWorkspaceRoot(rawPath);
@@ -3481,6 +3579,24 @@ function browserBufferFromBytes(value) {
 }
 function textFromBytes(bytes) {
   return textDecoder.decode(bytes);
+}
+function bytesToRuntimeHttpBody(bytes) {
+  const text = textDecoder.decode(bytes);
+  return byteEqual(utf8Bytes(text), bytes) ? { body: text } : { body: bytesToBase64(bytes), bodyEncoding: "base64" };
+}
+function bytesFromRuntimeHttpBody(message) {
+  if (message.body === void 0) return new Uint8Array();
+  return message.bodyEncoding === "base64" ? base64ToBytes(message.body) : utf8Bytes(message.body);
+}
+function concatBytes(chunks) {
+  const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 function bytesToHex(value) {
   return Array.from(value).map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -3922,6 +4038,736 @@ function createUrlApi() {
     pathToFileURL: (path) => new URL(`file://${path.startsWith("/") ? path : `/${path}`}`)
   };
 }
+function createListenerMap() {
+  const listeners = /* @__PURE__ */ new Map();
+  const on = (event, listener) => {
+    const next = listeners.get(event) ?? [];
+    next.push(listener);
+    listeners.set(event, next);
+    return api;
+  };
+  const removeListener = (event, listener) => {
+    const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== listener);
+    if (next.length === 0) listeners.delete(event);
+    else listeners.set(event, next);
+    return api;
+  };
+  const emit = (event, ...args) => {
+    const current = listeners.get(event) ?? [];
+    for (const listener of current) listener(...args);
+    return current.length > 0;
+  };
+  const api = {
+    on,
+    addListener: on,
+    removeListener,
+    off: removeListener,
+    once: (event, listener) => {
+      const wrapped = (...args) => {
+        removeListener(event, wrapped);
+        listener(...args);
+      };
+      return on(event, wrapped);
+    },
+    emit
+  };
+  return api;
+}
+function createIncomingMessage(request) {
+  const events = createListenerMap();
+  let encoding;
+  let bodyRead = false;
+  let bodyScheduled = false;
+  let readableEnded = false;
+  const bodyBytes = bytesFromRuntimeHttpBody(request);
+  const rawHeaders = request.rawHeaders ? request.rawHeaders.flatMap(([name, value]) => [name, value]) : Object.entries(request.headers ?? {}).flatMap(([name, value]) => [name, value]);
+  const formatBody = () => encoding ? BrowserBuffer.from(bodyBytes).toString(encoding) : BrowserBuffer.from(bodyBytes);
+  const scheduleBody = () => {
+    if (bodyScheduled) return;
+    bodyScheduled = true;
+    queueMicrotask(() => {
+      if (bodyBytes.byteLength > 0 && !bodyRead) {
+        bodyRead = true;
+        events.emit("data", formatBody());
+      }
+      readableEnded = true;
+      events.emit("end");
+    });
+  };
+  const message = {
+    method: request.method,
+    url: request.path,
+    headers: request.headers ?? {},
+    rawHeaders,
+    signal: request.signal,
+    httpVersion: "1.1",
+    complete: true,
+    get readableEnded() {
+      return readableEnded;
+    },
+    socket: { remoteAddress: "127.0.0.1" },
+    setEncoding: (nextEncoding) => {
+      encoding = nextEncoding;
+      return message;
+    },
+    read: () => {
+      if (bodyRead) return null;
+      bodyRead = true;
+      readableEnded = true;
+      return formatBody();
+    },
+    on: (event, listener) => {
+      events.on(event, listener);
+      if (event === "data" || event === "end") scheduleBody();
+      return message;
+    },
+    addListener: (event, listener) => message.on(event, listener),
+    once: (event, listener) => {
+      events.once(event, listener);
+      if (event === "data" || event === "end") scheduleBody();
+      return message;
+    },
+    removeListener: events.removeListener,
+    off: events.removeListener,
+    [Symbol.asyncIterator]: async function* () {
+      if (bodyBytes.byteLength > 0 && !bodyRead) {
+        bodyRead = true;
+        readableEnded = true;
+        yield formatBody();
+      }
+    }
+  };
+  return message;
+}
+function createServerResponse(resolve) {
+  const events = createListenerMap();
+  const headers = {};
+  const headerEntries = /* @__PURE__ */ new Map();
+  const chunks = [];
+  let ended = false;
+  const setHeaderValue = (name, value) => {
+    const key = String(name).toLowerCase();
+    const values = Array.isArray(value) ? value.map(String) : [String(value)];
+    const text = values.join(", ");
+    headers[key] = text;
+    headerEntries.set(key, { name: String(name), values });
+  };
+  const responseRawHeaders = () => {
+    const result = [];
+    for (const entry of headerEntries.values()) {
+      for (const value of entry.values) result.push([entry.name, value]);
+    }
+    return result;
+  };
+  const response = {
+    statusCode: 200,
+    statusMessage: "OK",
+    headersSent: false,
+    writableEnded: false,
+    setHeader: (name, value) => {
+      setHeaderValue(name, value);
+      return response;
+    },
+    getHeader: (name) => headers[String(name).toLowerCase()],
+    getHeaders: () => ({ ...headers }),
+    hasHeader: (name) => Object.prototype.hasOwnProperty.call(headers, String(name).toLowerCase()),
+    removeHeader: (name) => {
+      const key = String(name).toLowerCase();
+      delete headers[key];
+      headerEntries.delete(key);
+    },
+    flushHeaders: () => {
+      response.headersSent = true;
+    },
+    writeHead: (statusCode, reasonOrHeaders, maybeHeaders) => {
+      response.statusCode = Number(statusCode) || 200;
+      response.headersSent = true;
+      const nextHeaders = typeof reasonOrHeaders === "object" && reasonOrHeaders !== null ? reasonOrHeaders : maybeHeaders;
+      for (const [name, value] of Object.entries(nextHeaders ?? {})) setHeaderValue(name, value);
+      return response;
+    },
+    write: (chunk, encoding, callback) => {
+      chunks.push(bytesFromFsWriteValue(chunk, typeof encoding === "string" ? encoding : void 0));
+      const done = typeof encoding === "function" ? encoding : callback;
+      done?.();
+      return true;
+    },
+    end: (chunk, encoding, callback) => {
+      if (ended) return response;
+      if (chunk !== void 0 && chunk !== null) response.write(chunk, typeof encoding === "string" ? encoding : void 0);
+      ended = true;
+      response.writableEnded = true;
+      const done = typeof encoding === "function" ? encoding : callback;
+      done?.();
+      events.emit("finish");
+      events.emit("close");
+      const bodyBytes = concatBytes(chunks);
+      const rawHeaders = responseRawHeaders();
+      resolve({
+        status: response.statusCode,
+        headers,
+        ...rawHeaders.length > 0 ? { rawHeaders } : {},
+        ...bytesToRuntimeHttpBody(bodyBytes)
+      });
+      return response;
+    },
+    on: events.on,
+    addListener: events.addListener,
+    once: events.once,
+    removeListener: events.removeListener,
+    off: events.off,
+    emit: events.emit
+  };
+  return response;
+}
+var HTTP_STATUS_CODES = {
+  200: "OK",
+  201: "Created",
+  204: "No Content",
+  400: "Bad Request",
+  404: "Not Found",
+  500: "Internal Server Error"
+};
+function createClientIncomingMessage(response) {
+  const events = createListenerMap();
+  let encoding;
+  let bodyRead = false;
+  let bodyScheduled = false;
+  let readableEnded = false;
+  const bodyBytes = bytesFromRuntimeHttpBody(response);
+  const formatBody = () => encoding ? BrowserBuffer.from(bodyBytes).toString(encoding) : BrowserBuffer.from(bodyBytes);
+  const scheduleBody = () => {
+    if (bodyScheduled) return;
+    bodyScheduled = true;
+    queueMicrotask(() => {
+      if (bodyBytes.byteLength > 0 && !bodyRead) {
+        bodyRead = true;
+        events.emit("data", formatBody());
+      }
+      readableEnded = true;
+      events.emit("end");
+    });
+  };
+  const message = {
+    statusCode: response.status,
+    statusMessage: HTTP_STATUS_CODES[response.status] ?? "",
+    headers: response.headers ?? {},
+    rawHeaders: response.rawHeaders ? response.rawHeaders.flatMap(([name, value]) => [name, value]) : Object.entries(response.headers ?? {}).flatMap(([name, value]) => [name, value]),
+    httpVersion: "1.1",
+    complete: true,
+    get readableEnded() {
+      return readableEnded;
+    },
+    setEncoding: (nextEncoding) => {
+      encoding = nextEncoding;
+      return message;
+    },
+    read: () => {
+      if (bodyRead) return null;
+      bodyRead = true;
+      readableEnded = true;
+      return formatBody();
+    },
+    on: (event, listener) => {
+      events.on(event, listener);
+      if (event === "data" || event === "end") scheduleBody();
+      return message;
+    },
+    addListener: (event, listener) => message.on(event, listener),
+    once: (event, listener) => {
+      events.once(event, listener);
+      if (event === "data" || event === "end") scheduleBody();
+      return message;
+    },
+    removeListener: events.removeListener,
+    off: events.removeListener,
+    [Symbol.asyncIterator]: async function* () {
+      if (bodyBytes.byteLength > 0 && !bodyRead) {
+        bodyRead = true;
+        readableEnded = true;
+        yield formatBody();
+      }
+    }
+  };
+  return message;
+}
+function headersFromHttpOptions(headers) {
+  const result = {};
+  if (!headers || typeof headers !== "object") return result;
+  if (typeof headers.forEach === "function") {
+    headers.forEach((value, name) => {
+      result[String(name).toLowerCase()] = String(value);
+    });
+    return result;
+  }
+  if (Array.isArray(headers)) {
+    for (const entry of headers) {
+      if (!Array.isArray(entry) || entry.length < 2) continue;
+      result[String(entry[0]).toLowerCase()] = String(entry[1]);
+    }
+    return result;
+  }
+  for (const [name, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) result[name.toLowerCase()] = value.map(String).join(", ");
+    else if (value !== void 0) result[name.toLowerCase()] = String(value);
+  }
+  return result;
+}
+function bodyToHttpBody(body) {
+  if (body === void 0 || body === null) return void 0;
+  if (typeof body === "string") return { body };
+  if (body instanceof URLSearchParams) return { body: body.toString() };
+  if (body instanceof ArrayBuffer) return bytesToRuntimeHttpBody(new Uint8Array(body));
+  if (ArrayBuffer.isView(body)) return bytesToRuntimeHttpBody(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+  return { body: String(body) };
+}
+function normalizeHttpClientRequest(args) {
+  const callback = args.find((arg) => typeof arg === "function");
+  const parts = args.filter((arg) => typeof arg !== "function");
+  const first = parts[0];
+  const second = parts[1];
+  const urlInput = typeof first === "string" || first instanceof URL ? first : void 0;
+  const options = urlInput !== void 0 ? second : first;
+  const baseUrl = urlInput !== void 0 ? new URL(urlInput) : void 0;
+  const optionHost = typeof options?.hostname === "string" ? options.hostname : typeof options?.host === "string" ? options.host : void 0;
+  const protocol = String(options?.protocol ?? baseUrl?.protocol ?? "http:");
+  const hostname = optionHost ?? baseUrl?.hostname ?? "localhost";
+  const port = options?.port !== void 0 ? String(options.port) : baseUrl?.port;
+  const path = String(options?.path ?? `${baseUrl?.pathname ?? "/"}${baseUrl?.search ?? ""}`);
+  const url = new URL(`${protocol}//${hostname}${port ? `:${port}` : ""}${path.startsWith("/") ? path : `/${path}`}`);
+  return {
+    ...callback ? { callback } : {},
+    headers: headersFromHttpOptions(options?.headers),
+    method: String(options?.method ?? "GET").toUpperCase(),
+    ...typeof options?.signal === "object" && options?.signal !== null ? { signal: options.signal } : {},
+    ...options?.timeout !== void 0 && Number.isFinite(Number(options.timeout)) ? { timeoutMs: Math.max(0, Number(options.timeout)) } : {},
+    url
+  };
+}
+function createHttpApi(kernelHttp, signal) {
+  const activeHandles = /* @__PURE__ */ new Set();
+  const activeClientAborters = /* @__PURE__ */ new Set();
+  let activeClientRequests = 0;
+  const closeWaiters = [];
+  const notifyCloseWaiters = () => {
+    if (activeHandles.size > 0 || activeClientRequests > 0) return;
+    while (closeWaiters.length > 0) closeWaiters.shift()?.();
+  };
+  const closeHandle = (handle) => {
+    if (!activeHandles.delete(handle)) return;
+    handle.close();
+    notifyCloseWaiters();
+  };
+  const closeAll = () => {
+    for (const handle of [...activeHandles]) closeHandle(handle);
+    for (const abortClient of [...activeClientAborters]) abortClient();
+  };
+  signal?.addEventListener("abort", closeAll, { once: true });
+  const createServer = (requestListener) => {
+    const events = createListenerMap();
+    let handle = null;
+    const server = {
+      listening: false,
+      listen: (...args) => {
+        if (!kernelHttp) throw Object.assign(new Error("ENOSYS: tracekernel HTTP is not available"), { code: "ENOSYS" });
+        const port = typeof args[0] === "number" || typeof args[0] === "string" ? Number(args[0]) : 80;
+        const host = typeof args[1] === "string" ? args[1] : void 0;
+        const callback = args.find((arg) => typeof arg === "function");
+        handle = kernelHttp.listen({ port, ...host ? { host } : {} }, async (request2) => {
+          const incoming = createIncomingMessage(request2);
+          const responsePromise = new Promise((resolve) => {
+            const response = createServerResponse(resolve);
+            let handled = false;
+            try {
+              handled = events.emit("request", incoming, response);
+            } catch (error) {
+              if (!response.writableEnded) {
+                response.statusCode = 500;
+                response.end(error instanceof Error ? error.message : String(error));
+              }
+              return;
+            }
+            if (!handled && !response.writableEnded) {
+              response.statusCode = 404;
+              response.end("");
+            }
+          });
+          return responsePromise;
+        });
+        activeHandles.add(handle);
+        server.listening = true;
+        events.emit("listening");
+        callback?.();
+        return server;
+      },
+      close: (callback) => {
+        if (handle) closeHandle(handle);
+        handle = null;
+        server.listening = false;
+        events.emit("close");
+        callback?.();
+        return server;
+      },
+      address: () => handle ? { address: handle.info.host, port: handle.info.port, family: "IPv4" } : null,
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit
+    };
+    if (requestListener) server.on("request", requestListener);
+    return server;
+  };
+  const request = (...args) => {
+    const events = createListenerMap();
+    const chunks = [];
+    const headers = {};
+    let ended = false;
+    let destroyed = false;
+    let timeoutMs;
+    let timeoutCallback;
+    let requestOptions;
+    try {
+      requestOptions = normalizeHttpClientRequest(args);
+      Object.assign(headers, requestOptions.headers);
+      timeoutMs = requestOptions.timeoutMs;
+    } catch (error) {
+      requestOptions = {
+        headers,
+        method: "GET",
+        url: new URL("http://localhost/")
+      };
+      queueMicrotask(() => events.emit("error", error));
+    }
+    const clientRequest = {
+      destroyed: false,
+      writableEnded: false,
+      setTimeout: (milliseconds, callback) => {
+        timeoutMs = Math.max(0, Number(milliseconds) || 0);
+        timeoutCallback = callback;
+        if (callback) events.once("timeout", callback);
+        return clientRequest;
+      },
+      setHeader: (name, value) => {
+        headers[String(name).toLowerCase()] = String(value);
+        return clientRequest;
+      },
+      getHeader: (name) => headers[String(name).toLowerCase()],
+      getHeaders: () => ({ ...headers }),
+      hasHeader: (name) => Object.prototype.hasOwnProperty.call(headers, String(name).toLowerCase()),
+      removeHeader: (name) => {
+        delete headers[String(name).toLowerCase()];
+      },
+      write: (chunk, encoding, callback) => {
+        if (destroyed) return false;
+        chunks.push(bytesFromFsWriteValue(chunk, typeof encoding === "string" ? encoding : void 0));
+        const done = typeof encoding === "function" ? encoding : callback;
+        done?.();
+        return true;
+      },
+      end: (chunk, encoding, callback) => {
+        if (ended || destroyed) return clientRequest;
+        if (chunk !== void 0 && chunk !== null) clientRequest.write(chunk, typeof encoding === "string" ? encoding : void 0);
+        ended = true;
+        clientRequest.writableEnded = true;
+        const done = typeof encoding === "function" ? encoding : callback;
+        done?.();
+        if (!kernelHttp) {
+          activeClientRequests += 1;
+          queueMicrotask(() => {
+            events.emit("error", Object.assign(new Error("ENOSYS: tracekernel HTTP is not available"), { code: "ENOSYS" }));
+            activeClientRequests -= 1;
+            notifyCloseWaiters();
+          });
+          return clientRequest;
+        }
+        const body = bytesToRuntimeHttpBody(concatBytes(chunks));
+        const rawHeaders = Object.entries(headers);
+        activeClientRequests += 1;
+        let active = true;
+        let timeoutHandle;
+        let requestAbortListener;
+        const finishClientRequest = () => {
+          if (!active) return;
+          active = false;
+          if (timeoutHandle !== void 0) globalThis.clearTimeout(timeoutHandle);
+          if (requestAbortListener) requestOptions.signal?.removeEventListener?.("abort", requestAbortListener);
+          activeClientAborters.delete(abortClientRequest);
+          queueMicrotask(() => {
+            queueMicrotask(() => {
+              activeClientRequests -= 1;
+              notifyCloseWaiters();
+            });
+          });
+        };
+        const abortClientRequest = (error) => {
+          if (destroyed) return;
+          destroyed = true;
+          clientRequest.destroyed = true;
+          if (error) events.emit("error", error);
+          events.emit("close");
+          finishClientRequest();
+        };
+        activeClientAborters.add(abortClientRequest);
+        if (requestOptions.signal) {
+          requestAbortListener = () => abortClientRequest(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
+          requestOptions.signal.addEventListener?.("abort", requestAbortListener, { once: true });
+          if (requestOptions.signal.aborted) requestAbortListener();
+        }
+        if (!destroyed && timeoutMs !== void 0) {
+          timeoutHandle = globalThis.setTimeout(() => {
+            events.emit("timeout");
+            abortClientRequest(Object.assign(new Error(`ETIMEDOUT: request timed out after ${timeoutMs}ms`), { code: "ETIMEDOUT" }));
+          }, timeoutMs);
+        }
+        void kernelHttp.dispatch({
+          method: requestOptions.method,
+          url: requestOptions.url.toString(),
+          path: `${requestOptions.url.pathname}${requestOptions.url.search}`,
+          headers,
+          ...rawHeaders.length > 0 ? { rawHeaders } : {},
+          ...chunks.length > 0 ? body : {}
+        }).then((response) => {
+          if (destroyed) return;
+          if (response.status === 0) {
+            events.emit("error", Object.assign(new Error(response.body ?? "connect ECONNREFUSED"), { code: "ECONNREFUSED" }));
+            finishClientRequest();
+            return;
+          }
+          const incoming = createClientIncomingMessage(response);
+          requestOptions.callback?.(incoming);
+          events.emit("response", incoming);
+          finishClientRequest();
+        }, (error) => {
+          if (!destroyed) events.emit("error", error);
+          finishClientRequest();
+        });
+        return clientRequest;
+      },
+      abort: () => {
+        clientRequest.destroy();
+        events.emit("abort");
+      },
+      destroy: (error) => {
+        if (destroyed) return clientRequest;
+        destroyed = true;
+        clientRequest.destroyed = true;
+        if (error) events.emit("error", error);
+        events.emit("close");
+        return clientRequest;
+      },
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit
+    };
+    return clientRequest;
+  };
+  const get = (...args) => {
+    const clientRequest = request(...args);
+    clientRequest.end();
+    return clientRequest;
+  };
+  class TraceKernelHeaders {
+    headerValues = /* @__PURE__ */ new Map();
+    constructor(init) {
+      const record = headersFromHttpOptions(init);
+      for (const [name, value] of Object.entries(record)) this.set(name, value);
+    }
+    append(name, value) {
+      const key = String(name).toLowerCase();
+      const current = this.headerValues.get(key);
+      this.headerValues.set(key, current === void 0 ? String(value) : `${current}, ${String(value)}`);
+    }
+    delete(name) {
+      this.headerValues.delete(String(name).toLowerCase());
+    }
+    entries() {
+      return this.headerValues.entries();
+    }
+    forEach(callback) {
+      for (const [name, value] of this.headerValues) callback(value, name, this);
+    }
+    get(name) {
+      return this.headerValues.get(String(name).toLowerCase()) ?? null;
+    }
+    has(name) {
+      return this.headerValues.has(String(name).toLowerCase());
+    }
+    keys() {
+      return this.headerValues.keys();
+    }
+    set(name, value) {
+      this.headerValues.set(String(name).toLowerCase(), String(value));
+    }
+    values() {
+      return this.headerValues.values();
+    }
+    toRecord() {
+      return Object.fromEntries(this.headerValues);
+    }
+    [Symbol.iterator]() {
+      return this.entries();
+    }
+  }
+  class TraceKernelRequest {
+    headers;
+    method;
+    signal;
+    url;
+    bodyPayload;
+    constructor(input, init) {
+      const sourceRequest = input instanceof TraceKernelRequest ? input : null;
+      const source = input;
+      const inputUrl = typeof input === "string" || input instanceof URL ? String(input) : String(sourceRequest?.url ?? source.url ?? "");
+      this.url = inputUrl;
+      this.method = String(init?.method ?? sourceRequest?.method ?? source.method ?? "GET").toUpperCase();
+      this.headers = new TraceKernelHeaders(sourceRequest?.headers ?? source.headers);
+      const initHeaders = new TraceKernelHeaders(init?.headers);
+      initHeaders.forEach((value, name) => this.headers.set(name, value));
+      this.bodyPayload = init && Object.prototype.hasOwnProperty.call(init, "body") ? bodyToHttpBody(init.body) : sourceRequest?.bodyForDispatch() ?? (source.bodyEncoding === "base64" ? { body: String(source.body ?? ""), bodyEncoding: "base64" } : bodyToHttpBody(source.body));
+      const initSignal = init?.signal;
+      this.signal = initSignal && typeof initSignal === "object" ? initSignal : sourceRequest?.signal ?? source.signal;
+    }
+    async text() {
+      return textFromBytes(bytesFromRuntimeHttpBody(this.bodyPayload ?? {}));
+    }
+    bodyForDispatch() {
+      return this.bodyPayload;
+    }
+  }
+  class TraceKernelResponse {
+    headers;
+    ok;
+    redirected = false;
+    status;
+    statusText;
+    type = "basic";
+    url;
+    bodyBytes;
+    used = false;
+    constructor(bodyOrResponse = "", initOrUrl) {
+      const kernelResponse = typeof initOrUrl === "string" && bodyOrResponse !== null && typeof bodyOrResponse === "object" && "status" in bodyOrResponse ? bodyOrResponse : null;
+      const init = !kernelResponse && initOrUrl && typeof initOrUrl === "object" ? initOrUrl : {};
+      const status = kernelResponse ? kernelResponse.status : Math.trunc(Number(init.status ?? 200)) || 200;
+      this.status = status;
+      this.statusText = HTTP_STATUS_CODES[status] ?? "";
+      this.ok = status >= 200 && status < 300;
+      this.headers = new TraceKernelHeaders(kernelResponse ? kernelResponse.headers : init.headers);
+      this.bodyBytes = kernelResponse ? bytesFromRuntimeHttpBody(kernelResponse) : bytesFromRuntimeHttpBody(bodyToHttpBody(bodyOrResponse) ?? {});
+      this.url = typeof initOrUrl === "string" ? initOrUrl : "";
+    }
+    get bodyUsed() {
+      return this.used;
+    }
+    consume() {
+      if (this.used) throw new TypeError("Body has already been consumed.");
+      this.used = true;
+      return new Uint8Array(this.bodyBytes);
+    }
+    async arrayBuffer() {
+      const bytes = this.consume();
+      const buffer = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(buffer).set(bytes);
+      return buffer;
+    }
+    clone() {
+      if (this.used) throw new TypeError("Body has already been consumed.");
+      return new TraceKernelResponse({
+        status: this.status,
+        headers: this.headers.toRecord(),
+        ...bytesToRuntimeHttpBody(this.bodyBytes)
+      }, this.url);
+    }
+    async json() {
+      return JSON.parse(textFromBytes(this.consume()));
+    }
+    async text() {
+      return textFromBytes(this.consume());
+    }
+  }
+  const fetch = async (input, init) => {
+    if (!kernelHttp) throw Object.assign(new Error("ENOSYS: tracekernel HTTP is not available"), { code: "ENOSYS" });
+    const request2 = new TraceKernelRequest(input, init);
+    const url = new URL(request2.url);
+    const body = request2.bodyForDispatch();
+    const headers = request2.headers.toRecord();
+    const rawHeaders = Object.entries(headers);
+    activeClientRequests += 1;
+    let active = true;
+    let abortListener;
+    let rejectFetch;
+    const finishFetch = () => {
+      if (!active) return;
+      active = false;
+      if (abortListener) request2.signal?.removeEventListener?.("abort", abortListener);
+      activeClientAborters.delete(abortFetch);
+      globalThis.setTimeout(() => {
+        activeClientRequests -= 1;
+        notifyCloseWaiters();
+      }, 0);
+    };
+    const abortFetch = () => {
+      rejectFetch?.(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
+      finishFetch();
+    };
+    activeClientAborters.add(abortFetch);
+    return new Promise((resolve, reject) => {
+      rejectFetch = reject;
+      if (request2.signal) {
+        abortListener = abortFetch;
+        request2.signal.addEventListener?.("abort", abortListener, { once: true });
+        if (request2.signal.aborted) {
+          abortFetch();
+          return;
+        }
+      }
+      if (!active) return;
+      void kernelHttp.dispatch({
+        method: request2.method,
+        url: url.toString(),
+        path: `${url.pathname}${url.search}`,
+        headers,
+        ...rawHeaders.length > 0 ? { rawHeaders } : {},
+        ...body !== void 0 ? body : {}
+      }).then((response) => {
+        if (!active) return;
+        if (response.status === 0) {
+          reject(Object.assign(new TypeError(response.body ?? "fetch failed"), { code: "ECONNREFUSED" }));
+          finishFetch();
+          return;
+        }
+        resolve(new TraceKernelResponse(response, url.toString()));
+        finishFetch();
+      }, (error) => {
+        if (!active) return;
+        reject(error);
+        finishFetch();
+      });
+    });
+  };
+  return {
+    module: {
+      createServer,
+      request,
+      get,
+      Server: function Server(requestListener) {
+        return createServer(requestListener);
+      },
+      STATUS_CODES: HTTP_STATUS_CODES
+    },
+    fetch,
+    Headers: TraceKernelHeaders,
+    Request: TraceKernelRequest,
+    Response: TraceKernelResponse,
+    hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0,
+    waitForClose: () => activeHandles.size === 0 && activeClientRequests === 0 ? Promise.resolve() : new Promise((resolve) => closeWaiters.push(resolve)),
+    closeAll
+  };
+}
 function dirname(path) {
   const index = path.lastIndexOf("/");
   return index === -1 ? "" : path.slice(0, index);
@@ -4294,15 +5140,32 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const workspaceRoot = workspacePathContext.root;
   const kernelInfo = request.project.kernel ?? fallbackKernelInfo(request.project, workspacePathContext);
   const kernelDevices = request.project.kernelDevices;
+  const procSnapshot = createBrowserProcSnapshot(request.project.kernelFiles);
   const cwdPath = workspaceCwdPath(request);
-  const readonlyFiles = new Set(request.project.readonlyFiles ?? []);
+  const hiddenFiles = Array.from(new Set(
+    (request.project.hiddenFiles ?? []).map((path) => normalizeWorkspaceEntryPath(path, "", false, workspacePathContext))
+  ));
+  const hiddenNamespaces = /* @__PURE__ */ new Set();
+  for (const hiddenPath of hiddenFiles) {
+    if (!hiddenPath) continue;
+    hiddenNamespaces.add(hiddenPath);
+    const parts = hiddenPath.split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      hiddenNamespaces.add(parts.slice(0, index).join("/"));
+    }
+  }
+  const isHiddenNamespacePath = (path) => Boolean(path) && Array.from(hiddenNamespaces).some((hiddenPath) => path === hiddenPath || path.startsWith(`${hiddenPath}/`));
+  const isHiddenProjectPath = (path) => isHiddenNamespacePath(path) || hiddenFiles.some((hiddenPath) => hiddenPath.startsWith(`${path}/`));
+  const readonlyFiles = new Set(
+    (request.project.readonlyFiles ?? []).map((path) => normalizeWorkspaceEntryPath(path, "", false, workspacePathContext))
+  );
   io.status("process-start", "Starting browser Node", {
     command: "node",
     args: processArgvForRequest(request).slice(2),
     cwd: request.cwd
   });
   const fileStore = new Map(
-    request.project.files.map((file) => [assertSafeWorkspaceFilePath(file.path, "", workspacePathContext), fileBytes(file)])
+    request.project.files.map((file) => [assertSafeWorkspaceFilePath(file.path, "", workspacePathContext), fileBytes(file)]).filter(([path]) => !isHiddenProjectPath(path))
   );
   const directoryStore = /* @__PURE__ */ new Set([""]);
   for (const filePath of fileStore.keys()) {
@@ -4314,6 +5177,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   for (const directory of request.project.directories ?? []) {
     const directoryPath = normalizeWorkspaceEntryPath(directory, "", true, workspacePathContext);
     if (!directoryPath) continue;
+    if (isHiddenProjectPath(directoryPath)) continue;
     const parts = directoryPath.split("/");
     for (let index = 1; index <= parts.length; index += 1) {
       directoryStore.add(parts.slice(0, index).join("/"));
@@ -4362,6 +5226,39 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const deleteEntryMetadata = (path) => {
     fsTimestampMs += 1;
     entryMetadata.delete(path);
+  };
+  const hardLinkGroups = /* @__PURE__ */ new Map();
+  const hardLinkGroupForPath = (path) => hardLinkGroups.get(path) ?? /* @__PURE__ */ new Set([path]);
+  const setHardLinkGroup = (paths) => {
+    const group = new Set(paths);
+    for (const path of group) hardLinkGroups.set(path, group);
+    return group;
+  };
+  const linkPaths = (source, destination) => {
+    setHardLinkGroup([...hardLinkGroupForPath(source), destination]);
+  };
+  const unlinkPathFromHardLinks = (path) => {
+    const group = hardLinkGroups.get(path);
+    if (!group) return;
+    group.delete(path);
+    hardLinkGroups.delete(path);
+    if (group.size <= 1) {
+      for (const remaining of group) hardLinkGroups.delete(remaining);
+      return;
+    }
+    for (const remaining of group) hardLinkGroups.set(remaining, group);
+  };
+  const moveHardLinkPath = (oldPath, newPath) => {
+    const group = hardLinkGroups.get(oldPath);
+    if (!group) return;
+    group.delete(oldPath);
+    group.add(newPath);
+    hardLinkGroups.delete(oldPath);
+    for (const path of group) hardLinkGroups.set(path, group);
+  };
+  const linkedInodeForPath = (path) => {
+    const group = hardLinkGroups.get(path);
+    return inodeForPath(group ? [...group].sort((left, right) => left.localeCompare(right))[0] ?? path : path);
   };
   const originalFiles = new Map(fileStore);
   const modules = new Map(
@@ -4570,10 +5467,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       ctimeMs: metadata.ctimeMs,
       dev: 1,
       gid: metadata.gid,
-      ino: inodeForPath(normalized),
+      ino: isFile ? linkedInodeForPath(normalized) : inodeForPath(normalized),
       mode,
       mtimeMs: metadata.mtimeMs,
-      nlink: isDirectory ? 2 : 1,
+      nlink: isDirectory ? 2 : hardLinkGroupForPath(normalized).size,
       rdev: 0,
       size,
       uid: metadata.uid,
@@ -4622,7 +5519,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     };
   };
   const statForKernelTarget = (path, options2) => {
-    const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices);
+    const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices, procSnapshot);
     if (!statTarget || statTarget.kind === "workspace") return null;
     if (statTarget.kind === "error") {
       if (options2?.throwIfNoEntry === false) return void 0;
@@ -4732,11 +5629,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     io.fileChange({ path, directory: true, deleted: true }, "live");
   };
   const assertReadonlyFilePath = (normalized, operation) => {
-    if (readonlyFiles.has(normalized)) {
+    if (readonlyFiles.has(normalized) || isHiddenNamespacePath(normalized)) {
       throw createRuntimeKernelReadonlyFileError(normalized, operation);
     }
   };
   const setFileBytes = (path, bytes) => {
+    const linkedPaths = Array.from(hardLinkGroupForPath(path)).filter((linkedPath) => fileStore.has(linkedPath) || linkedPath === path);
+    for (const linkedPath of linkedPaths) {
+      assertReadonlyFilePath(linkedPath, "write");
+    }
     const parts = path.split("/");
     for (let index = 1; index < parts.length; index += 1) {
       const directoryPath = parts.slice(0, index).join("/");
@@ -4745,13 +5646,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
       if (!existed) emitDirectoryCreate(directoryPath);
     }
-    fileStore.set(path, bytes);
-    touchEntryMetadata(path);
-    syncTextModule(path, bytes);
-    cache.delete(path);
-    io.fileChange(bytesToRuntimeFile(path, bytes), "live");
-    notifyFsWatchers("change", path);
-    notifyWatchFileWatchers(path);
+    for (const linkedPath of linkedPaths) {
+      fileStore.set(linkedPath, bytes);
+      touchEntryMetadata(linkedPath);
+      syncTextModule(linkedPath, bytes);
+      cache.delete(linkedPath);
+      io.fileChange(bytesToRuntimeFile(linkedPath, bytes), "live");
+      notifyFsWatchers("change", linkedPath);
+      notifyWatchFileWatchers(linkedPath);
+    }
   };
   const createEventTarget = () => {
     const listeners = /* @__PURE__ */ new Map();
@@ -4995,7 +5898,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       writable: parsed.writable,
       create: parsed.create,
       truncate: parsed.truncate
-    }, kernelDevices) : null;
+    }, kernelDevices, procSnapshot) : null;
     if (openTarget?.kind === "error") {
       throw Object.assign(new Error(runtimeKernelOpenErrorMessage(String(path), openTarget)), {
         code: runtimeKernelOpenErrorCode(openTarget.reason)
@@ -5210,6 +6113,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     if (!fileStore.delete(normalized)) {
       throw Object.assign(new Error(`ENOENT: no such file or directory, unlink '${path}'`), { code: "ENOENT" });
     }
+    detachOpenFileDescriptorsForPath(normalized);
+    unlinkPathFromHardLinks(normalized);
     modules.delete(normalized);
     cache.delete(normalized);
     deleteEntryMetadata(normalized);
@@ -5239,10 +6144,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   };
   let mkdtempCounter = 0;
   const fileSystemEntryExists = (path) => {
-    const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices);
+    const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices, procSnapshot);
     if (accessTarget?.kind === "allowed") return true;
     if (accessTarget?.kind === "denied") return false;
-    const readTarget = runtimeReadTarget(path, kernelDevices);
+    const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
     if (readTarget?.kind === "device-file" || readTarget?.kind === "device-directory" || readTarget?.kind === "proc-file" || readTarget?.kind === "proc-directory") {
       return true;
     }
@@ -5277,15 +6182,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     if (!normalized) {
       throw Object.assign(new Error(`EISDIR: illegal operation on a directory, ${syscall} '${path}'`), { code: "EISDIR" });
     }
+    assertReadonlyFilePath(normalized, operation);
     assertWorkspaceParentDirectoryPath(normalized, path, syscall);
     if (isWorkspaceDirectoryPath(normalized)) {
       throw Object.assign(new Error(`EISDIR: illegal operation on a directory, ${syscall} '${path}'`), { code: "EISDIR" });
     }
-    assertReadonlyFilePath(normalized, operation);
   };
   const assertFileSystemAccess = (path, mode = fsConstants.F_OK) => {
     const requested = Number(mode) || fsConstants.F_OK;
-    const accessTarget = runtimeAccessTarget(path, requested, kernelDevices);
+    const accessTarget = runtimeAccessTarget(path, requested, kernelDevices, procSnapshot);
     if (accessTarget?.kind === "allowed") return;
     if (accessTarget?.kind === "denied") {
       const code = accessTarget.reason === "not-found" ? "ENOENT" : "EACCES";
@@ -5348,6 +6253,20 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     [2, stdioDescriptor("/dev/stderr", true)]
   ]);
   let nextFd = 3;
+  const workspaceFileDescriptorRecords = () => [...fileDescriptors.values()].filter((entry) => entry.kind === "file");
+  const detachOpenFileDescriptorsForPath = (path) => {
+    const bytes = fileStore.get(path);
+    for (const entry of workspaceFileDescriptorRecords()) {
+      if (entry.path !== path) continue;
+      entry.bytes = new Uint8Array(bytes ?? entry.bytes ?? new Uint8Array());
+      entry.path = void 0;
+    }
+  };
+  const moveOpenFileDescriptorPath = (oldPath, newPath) => {
+    for (const entry of workspaceFileDescriptorRecords()) {
+      if (entry.path === oldPath) entry.path = newPath;
+    }
+  };
   const parseOpenFlags = (flags = "r") => {
     if (typeof flags === "number") {
       const access = flags & 3;
@@ -5377,6 +6296,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   };
   const descriptorMetadataPath = (fd2, operation) => {
     const entry = fileDescriptor(fd2);
+    if (entry.kind === "file" && !entry.path) return null;
     const path = entry.kind === "device" ? entry.device ?? "/dev/stdin" : entry.path ?? "";
     const metadataTarget = runtimeKernelMetadataTarget(path, kernelDevices);
     if (metadataTarget.kind === "ignored-device") return null;
@@ -5388,11 +6308,12 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   };
   const descriptorBytes = (entry) => {
     if (entry.kind === "device") return utf8Bytes(readDevice(entry.device ?? "/dev/stdin"));
-    if (entry.kind === "proc") return utf8Bytes(readRuntimeProcFile(entry.path ?? "", kernelInfo));
+    if (entry.kind === "proc") return utf8Bytes(browserProcFileContents(procSnapshot, entry.path ?? "", kernelInfo));
     if (entry.kind === "directory") {
       throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${entry.path ?? ""}'`), { code: "EISDIR" });
     }
-    return fileStore.get(entry.path ?? "") ?? new Uint8Array();
+    if (entry.path && fileStore.has(entry.path)) return fileStore.get(entry.path) ?? new Uint8Array();
+    return entry.bytes ?? new Uint8Array();
   };
   const readDescriptorFileBytes = (fd2) => {
     const entry = fileDescriptor(fd2);
@@ -5413,12 +6334,13 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     if (entry.kind === "proc") {
       throw Object.assign(new Error(`EROFS: read-only file system, write '${entry.path ?? "/proc"}'`), { code: "EROFS" });
     }
-    const previous = fileStore.get(entry.path ?? "") ?? new Uint8Array();
+    const previous = descriptorBytes(entry);
     const start = entry.append ? previous.byteLength : typeof position === "number" ? Math.max(0, position) : entry.offset;
     const next = new Uint8Array(Math.max(previous.byteLength, start + bytes.byteLength));
     next.set(previous, 0);
     next.set(bytes, start);
-    setFileBytes(entry.path ?? "", next);
+    entry.bytes = next;
+    if (entry.path && fileStore.has(entry.path)) setFileBytes(entry.path, next);
     if (position === void 0 || position === null) entry.offset = start + bytes.byteLength;
   };
   const writeDescriptorFileBytes = (fd2, bytes, append = false) => {
@@ -5437,13 +6359,26 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     next.set(previous.slice(0, Math.min(previous.byteLength, size)));
     setFileBytes(path, next);
   };
+  const truncateDescriptorBytes = (entry, length = 0) => {
+    if (entry.kind !== "file") {
+      if (entry.kind === "device") throw Object.assign(new Error("EINVAL: invalid argument, ftruncate"), { code: "EINVAL" });
+      throw Object.assign(new Error(`EROFS: read-only file system, ftruncate '${entry.path ?? ""}'`), { code: "EROFS" });
+    }
+    const previous = descriptorBytes(entry);
+    const size = Math.max(0, Number(length) || 0);
+    const next = new Uint8Array(size);
+    next.set(previous.slice(0, Math.min(previous.byteLength, size)));
+    entry.bytes = next;
+    if (entry.path && fileStore.has(entry.path)) setFileBytes(entry.path, next);
+    if (entry.offset > size) entry.offset = size;
+  };
   const realpathForEntry = (path) => {
-    const accessTarget = runtimeAccessTarget(path, 0, kernelDevices);
+    const accessTarget = runtimeAccessTarget(path, 0, kernelDevices, procSnapshot);
     if (accessTarget?.kind === "allowed") return accessTarget.path;
     if (accessTarget?.kind === "denied") {
       throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: "ENOENT" });
     }
-    const readTarget = runtimeReadTarget(path, kernelDevices);
+    const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
     if (readTarget?.kind === "device-file" || readTarget?.kind === "proc-file" || readTarget?.kind === "proc-directory") {
       return readTarget.path;
     }
@@ -5698,7 +6633,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     },
     openSync: (path, flags = "r") => {
       const parsed = parseOpenFlags(flags);
-      const openTarget = runtimeOpenTarget(path, parsed, kernelDevices);
+      const openTarget = runtimeOpenTarget(path, parsed, kernelDevices, procSnapshot);
       const fd2 = nextFd++;
       if (openTarget?.kind === "error") {
         throw Object.assign(new Error(runtimeKernelOpenErrorMessage(String(path), openTarget)), {
@@ -5759,6 +6694,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       fileDescriptors.set(fd2, {
         kind: "file",
         path: normalized,
+        bytes: new Uint8Array(fileStore.get(normalized) ?? new Uint8Array()),
         offset: parsed.append ? fileStore.get(normalized)?.byteLength ?? 0 : 0,
         readable: parsed.readable,
         writable: parsed.writable,
@@ -5917,7 +6853,12 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       } else if (entry.kind === "directory") {
         stats = statForNormalizedPath(entry.path ?? "") ?? missingFileStat();
       } else {
-        stats = statForNormalizedPath(entry.path ?? "") ?? missingFileStat();
+        stats = entry.path && fileStore.has(entry.path) ? statForNormalizedPath(entry.path) ?? missingFileStat() : {
+          ...missingFileStat(),
+          size: descriptorBytes(entry).byteLength,
+          isFile: () => true,
+          isDirectory: () => false
+        };
       }
       return browserStatsResult(stats, options2);
     },
@@ -5984,9 +6925,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ftruncateSync: (fd2, length = 0) => {
       const entry = fileDescriptor(fd2);
       if (!entry.writable) throw Object.assign(new Error("EBADF: bad file descriptor, ftruncate"), { code: "EBADF" });
-      if (entry.kind === "device") throw Object.assign(new Error("EINVAL: invalid argument, ftruncate"), { code: "EINVAL" });
-      truncateFileBytes(entry.path ?? "", length);
-      if (entry.offset > length) entry.offset = length;
+      truncateDescriptorBytes(entry, length);
       return void 0;
     },
     ftruncate: (fd2, lengthOrCallback, callback) => {
@@ -6024,11 +6963,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     },
     createReadStream: (path, options2) => {
       const optionFd = typeof options2 === "object" && typeof options2?.fd === "number" ? options2.fd : null;
-      const readTarget = optionFd === null ? runtimeFileReadTarget(path, kernelDevices) : null;
+      const readTarget = optionFd === null ? runtimeFileReadTarget(path, kernelDevices, procSnapshot) : null;
       const requestedEncoding = typeof options2 === "string" ? options2 : options2?.encoding;
       let sourceBytes;
       if (readTarget?.kind === "device-file") sourceBytes = utf8Bytes(readDevice(readTarget.path));
-      else if (readTarget?.kind === "proc-file") sourceBytes = utf8Bytes(readRuntimeProcFile(readTarget.path, kernelInfo));
+      else if (readTarget?.kind === "proc-file") sourceBytes = utf8Bytes(browserProcFileContents(procSnapshot, readTarget.path, kernelInfo));
       else if (readTarget?.kind === "error") {
         throwRuntimeReadTargetError(readTarget, runtimeKernelFileReadFsErrorMessage(String(path), readTarget));
       } else if (optionFd !== null) {
@@ -6073,14 +7012,14 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         const bytes2 = BrowserBuffer.from(readDescriptorFileBytes(path));
         return typeof requestedEncoding === "string" ? bytes2.toString(requestedEncoding) : bytes2;
       }
-      const readTarget = runtimeFileReadTarget(path, kernelDevices);
+      const readTarget = runtimeFileReadTarget(path, kernelDevices, procSnapshot);
       if (readTarget?.kind === "device-file") {
         const contents = readDevice(readTarget.path);
         if (typeof requestedEncoding === "string") return BrowserBuffer.from(contents).toString(requestedEncoding);
         return BrowserBuffer.from(contents);
       }
       if (readTarget?.kind === "proc-file") {
-        const contents = readRuntimeProcFile(readTarget.path, kernelInfo);
+        const contents = browserProcFileContents(procSnapshot, readTarget.path, kernelInfo);
         if (typeof requestedEncoding === "string") return BrowserBuffer.from(contents).toString(requestedEncoding);
         return BrowserBuffer.from(contents);
       }
@@ -6177,9 +7116,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         });
       }
       let sourceBytes;
-      const sourceTarget = copyTarget?.kind === "virtual-source" || copyTarget?.kind === "device-destination" ? copyTarget.source : runtimeFileReadTarget(source, kernelDevices);
+      const sourceTarget = copyTarget?.kind === "virtual-source" || copyTarget?.kind === "device-destination" ? copyTarget.source : runtimeFileReadTarget(source, kernelDevices, procSnapshot);
       if (sourceTarget?.kind === "device-file") sourceBytes = utf8Bytes(readDevice(sourceTarget.path));
-      else if (sourceTarget?.kind === "proc-file") sourceBytes = utf8Bytes(readRuntimeProcFile(sourceTarget.path, kernelInfo));
+      else if (sourceTarget?.kind === "proc-file") sourceBytes = utf8Bytes(browserProcFileContents(procSnapshot, sourceTarget.path, kernelInfo));
       else if (copyTarget?.kind === "error" && copyTarget.side === "source") {
         throw Object.assign(new Error(runtimeKernelFileCopyErrorMessage(String(source), String(destination), copyTarget)), {
           code: runtimeKernelFileCopyErrorCode(copyTarget)
@@ -6228,11 +7167,19 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         }
         throw Object.assign(new Error(`ENOENT: no such file or directory, link '${existingPath}' -> '${newPath}'`), { code: "ENOENT" });
       }
+      assertReadonlyFilePath(normalizedSource, "link");
       if (fileStore.has(normalizedDestination) || directoryStore.has(normalizedDestination)) {
         throw Object.assign(new Error(`EEXIST: file already exists, link '${existingPath}' -> '${newPath}'`), { code: "EEXIST" });
       }
       assertWorkspaceFileWritePath(normalizedDestination, newPath, "link");
-      setFileBytes(normalizedDestination, new Uint8Array(bytes));
+      fileStore.set(normalizedDestination, bytes);
+      touchEntryMetadata(normalizedDestination);
+      linkPaths(normalizedSource, normalizedDestination);
+      syncTextModule(normalizedDestination, bytes);
+      cache.delete(normalizedDestination);
+      io.fileChange(bytesToRuntimeFile(normalizedDestination, bytes), "live");
+      notifyFsWatchers("change", normalizedDestination);
+      notifyWatchFileWatchers(normalizedDestination);
     },
     link: (existingPath, newPath, callback) => {
       try {
@@ -6259,7 +7206,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
     },
     readlinkSync: (path, _options) => {
-      const readTarget = runtimeReadTarget(path, kernelDevices);
+      const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
       if (readTarget?.kind && readTarget.kind !== "workspace") {
         throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: "EINVAL" });
       }
@@ -6310,6 +7257,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         assertReadonlyFilePath(normalizedOldPath, "move");
         assertWorkspaceFileWritePath(normalizedNewPath, newPath, "move", "rename");
         fileStore.delete(normalizedOldPath);
+        moveOpenFileDescriptorPath(normalizedOldPath, normalizedNewPath);
+        moveHardLinkPath(normalizedOldPath, normalizedNewPath);
         modules.delete(normalizedOldPath);
         cache.delete(normalizedOldPath);
         deleteEntryMetadata(normalizedOldPath);
@@ -6329,6 +7278,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       for (const [filePath] of sourceFiles) {
         assertReadonlyFilePath(filePath, "move");
       }
+      assertReadonlyFilePath(normalizedNewPath, "move");
       assertWorkspaceParentDirectoryPath(normalizedNewPath, newPath, "rename");
       if (fileStore.has(normalizedNewPath)) {
         throw Object.assign(new Error(`ENOTDIR: not a directory, rename '${oldPath}' -> '${newPath}'`), { code: "ENOTDIR" });
@@ -6340,6 +7290,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
       for (const [filePath] of sourceFiles) {
         fileStore.delete(filePath);
+        const relative = filePath.slice(oldPrefix.length);
+        const nextPath = normalizedNewPath ? `${normalizedNewPath}/${relative}` : relative;
+        moveOpenFileDescriptorPath(filePath, nextPath);
+        moveHardLinkPath(filePath, nextPath);
         modules.delete(filePath);
         cache.delete(filePath);
         deleteEntryMetadata(filePath);
@@ -6448,7 +7402,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     },
     existsSync: (path) => {
       try {
-        const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices);
+        const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices, procSnapshot);
         if (accessTarget?.kind === "allowed") return true;
         if (accessTarget?.kind === "denied") return false;
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
@@ -6462,7 +7416,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       queueMicrotask(() => callback?.(fsApi.existsSync(path)));
     },
     readdirSync: (path, options2) => {
-      const directoryTarget = runtimeDirectoryTarget(path, kernelDevices);
+      const directoryTarget = runtimeDirectoryTarget(path, kernelDevices, procSnapshot);
       const withFileTypes = typeof options2 === "object" && options2?.withFileTypes === true;
       const makeDirent = (name, type, parentPath, characterDevice = false) => ({
         name,
@@ -6696,6 +7650,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       const rawPath = workspacePathInputToString(path).replace(/\\/g, "/");
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       if (!normalized) return void 0;
+      assertReadonlyFilePath(normalized, "mkdir");
       const parent = dirname(normalized);
       const parentPath = parent === "" ? "" : parent;
       const parts = normalized.split("/");
@@ -7043,6 +7998,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   fsApi.realpathSync.native = fsApi.realpathSync;
   Object.assign(fsApi, { promises: fsPromisesApi });
   const zlibApi = createZlibApi();
+  const httpApi = createHttpApi(request.kernelHttp, request.signal);
   const builtins = /* @__PURE__ */ new Map([
     ["fs", fsApi],
     ["node:fs", fsApi],
@@ -7056,6 +8012,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ["node:url", createUrlApi()],
     ["buffer", { Buffer: BrowserBuffer }],
     ["node:buffer", { Buffer: BrowserBuffer }],
+    ["http", httpApi.module],
+    ["node:http", httpApi.module],
     ["zlib", zlibApi],
     ["node:zlib", zlibApi]
   ]);
@@ -7149,10 +8107,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       "setImmediate",
       "clearImmediate",
       "queueMicrotask",
+      "fetch",
+      "Headers",
+      "Request",
+      "Response",
       executableCode
     );
     try {
-      fn(
+      fn.call(
+        isEsmModule(modules, normalizedPath) ? void 0 : module.exports,
         localRequire,
         localImport,
         module,
@@ -7168,7 +8131,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         eventLoopApi.clearInterval,
         eventLoopApi.setImmediate,
         eventLoopApi.clearImmediate,
-        eventLoopApi.queueMicrotask
+        eventLoopApi.queueMicrotask,
+        httpApi.fetch,
+        httpApi.Headers,
+        httpApi.Request,
+        httpApi.Response
       );
     } catch (error) {
       throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
@@ -7218,10 +8185,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       "setImmediate",
       "clearImmediate",
       "queueMicrotask",
+      "fetch",
+      "Headers",
+      "Request",
+      "Response",
       executableCode
     );
     try {
-      await fn(
+      await fn.call(
+        void 0,
         localRequire,
         localImport,
         module,
@@ -7237,7 +8209,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         eventLoopApi.clearInterval,
         eventLoopApi.setImmediate,
         eventLoopApi.clearImmediate,
-        eventLoopApi.queueMicrotask
+        eventLoopApi.queueMicrotask,
+        httpApi.fetch,
+        httpApi.Headers,
+        httpApi.Request,
+        httpApi.Response
       );
     } catch (error) {
       throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
@@ -7282,10 +8258,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         "setImmediate",
         "clearImmediate",
         "queueMicrotask",
+        "fetch",
+        "Headers",
+        "Request",
+        "Response",
         transformDynamicImports(evalCode)
       );
       try {
-        await fn(
+        await fn.call(
+          module.exports,
           requireFromRoot,
           importFromRoot,
           module,
@@ -7301,12 +8282,19 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           eventLoopApi.clearInterval,
           eventLoopApi.setImmediate,
           eventLoopApi.clearImmediate,
-          eventLoopApi.queueMicrotask
+          eventLoopApi.queueMicrotask,
+          httpApi.fetch,
+          httpApi.Headers,
+          httpApi.Request,
+          httpApi.Response
         );
       } catch (error) {
         throw sanitizeBrowserJavaScriptStack(error, `${workspaceRoot}/[eval]`);
       }
       await Promise.resolve();
+    }
+    if (httpApi.hasActiveWork()) {
+      await httpApi.waitForClose();
     }
     await eventLoopApi.drain();
     await liveIo.flush();
@@ -7320,6 +8308,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       exitCode: 0,
       files: resultFiles
     }).files ?? [];
+    httpApi.closeAll();
     eventLoopApi.clearAll();
     io.status("process-exit", "Browser Node exited", { command: "node", exitCode: 0 });
     return {
@@ -7329,6 +8318,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       ...files.length > 0 ? { files } : {}
     };
   } catch (error) {
+    httpApi.closeAll();
     eventLoopApi.clearAll();
     const exitCode = typeof error.exitCode === "number" ? error.exitCode : 1;
     const stderrSuffix = error.suppressStderr ? "" : formatBrowserJavaScriptErrorForStderr(error);
@@ -7358,38 +8348,219 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
 
 // packages/harness-javascript/src/project-browser-worker.ts
 var workerScope = self;
+var postWorkerMessage = workerScope.postMessage.bind(workerScope);
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
+var WorkerKernelHttpBridge = class {
+  constructor(postProtocolMessage) {
+    this.postProtocolMessage = postProtocolMessage;
+  }
+  nextListenerId = 1;
+  nextRequestId = 1;
+  listeners = /* @__PURE__ */ new Map();
+  listenerInfo = /* @__PURE__ */ new Map();
+  dispatchRequests = /* @__PURE__ */ new Map();
+  serverRequestAbortControllers = /* @__PURE__ */ new Map();
+  listen(options, handler) {
+    const listenerId = `worker-http-${this.nextListenerId++}`;
+    const optimisticInfo = {
+      id: listenerId,
+      pid: 0,
+      host: options.host ?? "127.0.0.1",
+      port: options.port,
+      protocol: options.protocol ?? "http",
+      startedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    this.listeners.set(listenerId, handler);
+    this.listenerInfo.set(listenerId, optimisticInfo);
+    this.postProtocolMessage({
+      type: "kernel-http-listen",
+      listenerId,
+      options
+    });
+    let closed = false;
+    const listenerInfo = this.listenerInfo;
+    return {
+      id: listenerId,
+      get info() {
+        return listenerInfo.get(listenerId) ?? optimisticInfo;
+      },
+      close: () => {
+        if (closed) return;
+        closed = true;
+        this.listeners.delete(listenerId);
+        this.listenerInfo.delete(listenerId);
+        this.postProtocolMessage({ type: "kernel-http-close", listenerId });
+      }
+    };
+  }
+  dispatch(request) {
+    const requestId = `worker-dispatch-${this.nextRequestId++}`;
+    return new Promise((resolve, reject) => {
+      this.dispatchRequests.set(requestId, { resolve, reject });
+      this.postProtocolMessage({
+        type: "kernel-http-dispatch",
+        requestId,
+        request
+      });
+    });
+  }
+  resolveDispatch(requestId, response) {
+    const request = this.dispatchRequests.get(requestId);
+    this.dispatchRequests.delete(requestId);
+    request?.resolve(response);
+  }
+  rejectDispatch(requestId, error) {
+    const request = this.dispatchRequests.get(requestId);
+    this.dispatchRequests.delete(requestId);
+    request?.reject(new Error(error));
+  }
+  updateListenerInfo(listenerId, info) {
+    this.listenerInfo.set(listenerId, info);
+  }
+  failListener(listenerId) {
+    this.listeners.delete(listenerId);
+    this.listenerInfo.delete(listenerId);
+  }
+  abortRequest(requestId) {
+    this.serverRequestAbortControllers.get(requestId)?.abort();
+  }
+  async handleRequest(listenerId, requestId, request) {
+    const handler = this.listeners.get(listenerId);
+    if (!handler) {
+      this.postProtocolMessage({
+        type: "kernel-http-error",
+        requestId,
+        listenerId,
+        error: `TraceKernel HTTP listener not found: ${listenerId}`
+      });
+      return;
+    }
+    const abortController = new AbortController();
+    this.serverRequestAbortControllers.set(requestId, abortController);
+    try {
+      const response = await handler({
+        ...request,
+        signal: abortController.signal
+      });
+      this.postProtocolMessage({
+        type: "kernel-http-response",
+        requestId,
+        response
+      });
+    } catch (error) {
+      this.postProtocolMessage({
+        type: "kernel-http-error",
+        requestId,
+        listenerId,
+        error: errorMessage(error)
+      });
+    } finally {
+      this.serverRequestAbortControllers.delete(requestId);
+    }
+  }
+};
+var activeHttpBridges = /* @__PURE__ */ new Map();
+function postCommandMessage(postMessage2, id, protocolToken, type, payload) {
+  postMessage2({ id, type, payload, protocolToken });
+}
+function handleKernelHttpHostMessage(message) {
+  const { id, type, payload, protocolToken } = message;
+  if (!id) return false;
+  const command = activeHttpBridges.get(id);
+  if (!command) return false;
+  if (protocolToken !== command.protocolToken) return true;
+  if (type === "kernel-http-request") {
+    const message2 = payload;
+    if (message2.type === "kernel-http-request") {
+      void command.bridge.handleRequest(message2.listenerId, message2.requestId, message2.request);
+    }
+    return true;
+  }
+  if (type === "kernel-http-abort-request") {
+    const message2 = payload;
+    if (message2.type === "kernel-http-abort-request") {
+      command.bridge.abortRequest(message2.requestId);
+    }
+    return true;
+  }
+  if (type === "kernel-http-listen-result") {
+    const message2 = payload;
+    if (message2.type === "kernel-http-listen-result") {
+      command.bridge.updateListenerInfo(message2.listenerId, message2.info);
+    }
+    return true;
+  }
+  if (type === "kernel-http-dispatch-result") {
+    const message2 = payload;
+    if (message2.type === "kernel-http-dispatch-result") {
+      command.bridge.resolveDispatch(message2.requestId, message2.response);
+    }
+    return true;
+  }
+  if (type === "kernel-http-error") {
+    const message2 = payload;
+    if (message2.type === "kernel-http-error" && message2.requestId) {
+      command.bridge.rejectDispatch(message2.requestId, message2.error);
+    } else if (message2.type === "kernel-http-error" && message2.listenerId) {
+      command.bridge.failListener(message2.listenerId);
+    }
+    return true;
+  }
+  return false;
+}
 workerScope.onmessage = (event) => {
-  const { id, type, payload } = event.data;
+  const { id, type, payload, protocolToken, port } = event.data;
   if (!id) return;
+  if (handleKernelHttpHostMessage(event.data)) return;
   if (type !== "execute-project-javascript") {
-    workerScope.postMessage({ id, type: "error", payload: { error: `Unsupported JavaScript project worker message: ${type}` } });
+    postWorkerMessage({ id, type: "error", payload: { error: `Unsupported JavaScript project worker message: ${type}` } });
     return;
+  }
+  if (typeof protocolToken !== "string" || protocolToken.length === 0) {
+    postWorkerMessage({ id, type: "error", payload: { error: "Missing JavaScript project worker protocol token." } });
+    return;
+  }
+  const commandPort = port ?? null;
+  const postToHost = commandPort ? commandPort.postMessage.bind(commandPort) : postWorkerMessage;
+  commandPort?.start?.();
+  if (commandPort) {
+    commandPort.onmessage = (messageEvent) => {
+      handleKernelHttpHostMessage(messageEvent.data);
+    };
   }
   const request = payload;
   const options = {};
   const executionState = { cancelled: false };
+  const kernelHttp = new WorkerKernelHttpBridge((message) => {
+    postCommandMessage(postToHost, id, protocolToken, message.type, message);
+  });
+  activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken });
   runBrowserJavaScriptProjectRequest(
     {
       ...request,
+      kernelHttp,
       onEvent: (runtimeEvent) => {
         if (runtimeEvent.type === "status" && (runtimeEvent.phase === "process-start" || runtimeEvent.phase === "process-exit")) {
           return;
         }
-        workerScope.postMessage({ id, type: "project-event", payload: runtimeEvent });
+        postCommandMessage(postToHost, id, protocolToken, "project-event", runtimeEvent);
       }
     },
     options,
     executionState
   ).then(
     (result) => {
-      workerScope.postMessage({ id, type: "execute-result", payload: result });
+      activeHttpBridges.delete(id);
+      postCommandMessage(postToHost, id, protocolToken, "execute-result", result);
+      commandPort?.close();
     },
     (error) => {
-      workerScope.postMessage({ id, type: "error", payload: { error: errorMessage(error) } });
+      activeHttpBridges.delete(id);
+      postCommandMessage(postToHost, id, protocolToken, "error", { error: errorMessage(error) });
+      commandPort?.close();
     }
   );
 };
-workerScope.postMessage({ type: "worker-ready" });
+postWorkerMessage({ type: "worker-ready" });

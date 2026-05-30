@@ -560,6 +560,7 @@ const TRACEKERNEL_SHELL_COMMAND_REWRITES = new Map([
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = { id: 'principal', kind: 'principal' };
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = { id: 'system', kind: 'system' };
 const TRACEKERNEL_EVENT_LOG_LIMIT = 256;
+const TRACEKERNEL_HTTP_LISTENER_LIMIT = 128;
 const TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT = 256;
 const TRACEKERNEL_ZOMBIE_RETENTION_MS = 30_000;
 const TRACEKERNEL_SIGNAL_NUMBERS = new Map<string, number>([
@@ -570,6 +571,21 @@ const TRACEKERNEL_SIGNAL_NUMBERS = new Map<string, number>([
   ['SIGTERM', 15],
 ]);
 const TRACEKERNEL_SIGNAL_NAMES_BY_NUMBER = new Map([...TRACEKERNEL_SIGNAL_NUMBERS.entries()].map(([name, number]) => [number, name]));
+const TRACEKERNEL_SENSITIVE_URL_PARAM_NAMES = new Set([
+  'access_token',
+  'api_key',
+  'apikey',
+  'auth',
+  'authorization',
+  'code',
+  'key',
+  'password',
+  'secret',
+  'session',
+  'sig',
+  'signature',
+  'token',
+]);
 
 type VirtualExecutableKind = 'cpp';
 
@@ -681,6 +697,22 @@ interface RuntimeKernelHttpRequestRecord {
   url: string;
   status?: number;
   error?: string;
+}
+
+function redactRuntimeDiagnosticUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.username) url.username = 'redacted';
+    if (url.password) url.password = 'redacted';
+    for (const [name] of url.searchParams) {
+      if (TRACEKERNEL_SENSITIVE_URL_PARAM_NAMES.has(name.toLowerCase())) {
+        url.searchParams.set(name, 'redacted');
+      }
+    }
+    return url.toString();
+  } catch {
+    return value.replace(/([?&](?:access_token|api_key|apikey|auth|authorization|code|key|password|secret|session|sig|signature|token)=)[^&#\s]*/gi, '$1redacted');
+  }
 }
 
 interface RuntimeLazyCommand {
@@ -6221,6 +6253,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const host = this.normalizeHttpListenHost(options.host);
     const port = this.normalizeHttpListenPort(options.port);
     const key = this.httpListenerKey(host, port, protocol);
+    if (!this.httpListeners.has(key) && this.httpListeners.size >= TRACEKERNEL_HTTP_LISTENER_LIMIT) {
+      throw Object.assign(new Error('EAGAIN: TraceKernel HTTP listener limit reached'), { code: 'EAGAIN' });
+    }
     if (this.findHttpBindConflict(host, port, protocol)) {
       throw Object.assign(new Error(`EADDRINUSE: address already in use ${host}:${port}`), { code: 'EADDRINUSE' });
     }
@@ -6276,6 +6311,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       seq: this.nextHttpRequestSeq++,
       time: new Date().toISOString(),
       ...entry,
+      url: redactRuntimeDiagnosticUrl(entry.url),
     });
     if (this.httpRequestLog.length > TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT) {
       this.httpRequestLog.splice(0, this.httpRequestLog.length - TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT);
@@ -6324,6 +6360,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     let settled = false;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
+    const requestAbortController = new AbortController();
+    const abortHandlerRequest = (): void => {
+      if (!requestAbortController.signal.aborted) requestAbortController.abort();
+    };
     const settleFailure = (error: string, body: string): RuntimeKernelHttpResponse => {
       if (!settled) {
         settled = true;
@@ -6339,7 +6379,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
     const handlerResponse = (async (): Promise<RuntimeKernelHttpResponse> => {
       try {
-        const response = await listener.handler(request);
+        const response = await listener.handler({
+          ...request,
+          signal: requestAbortController.signal,
+        });
         const status = Math.trunc(Number(response.status)) || 200;
         if (!settled) {
           this.recordHttpRequest({
@@ -6352,7 +6395,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           this.recordKernelEvent('net-request', listener.info.pid, {
             id: listener.info.id,
             method: request.method,
-            url: request.url,
+            url: redactRuntimeDiagnosticUrl(request.url),
             status,
           });
         }
@@ -6382,6 +6425,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (timeoutMs !== undefined) {
       races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
         timeoutHandle = setTimeout(() => {
+          abortHandlerRequest();
           resolve(settleFailure(
             'ETIMEDOUT',
             options.timeoutBody ?? `TraceKernel HTTP request timed out after ${timeoutMs} milliseconds\n`
@@ -6392,6 +6436,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (signal) {
       races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
         abortListener = () => {
+          abortHandlerRequest();
           resolve(settleFailure('EINTR', 'TraceKernel HTTP request aborted\n'));
         };
         signal.addEventListener('abort', abortListener, { once: true });

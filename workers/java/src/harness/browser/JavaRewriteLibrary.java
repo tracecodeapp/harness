@@ -5,8 +5,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -15,8 +17,13 @@ public final class JavaRewriteLibrary {
   private static final Pattern METHOD_START = Pattern.compile(
       "^(\\s*)(?:(?:public|private|protected|static|final|synchronized)\\s+)*(?:[A-Za-z_][A-Za-z0-9_<>, ?]*(?:\\s*\\[\\])*\\s+)+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^)]*)\\)\\s*(?:throws\\s+[^\\{]+)?\\{\\s*$",
       Pattern.DOTALL);
+  private static final Pattern CONSTRUCTOR_START = Pattern.compile(
+      "^(\\s*)(?:(?:public|private|protected)\\s+)*([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^)]*)\\)\\s*(?:throws\\s+[^\\{]+)?\\{\\s*$",
+      Pattern.DOTALL);
   private static final Pattern METHOD_HEADER_START = Pattern.compile(
       "^\\s*(?:(?:public|private|protected|static|final|synchronized)\\s+)*(?:[A-Za-z_][A-Za-z0-9_<>, ?]*(?:\\s*\\[\\])*\\s+)+[A-Za-z_][A-Za-z0-9_]*\\s*\\(");
+  private static final Pattern CONSTRUCTOR_HEADER_START = Pattern.compile(
+      "^\\s*(?:(?:public|private|protected)\\s+)*([A-Za-z_][A-Za-z0-9_]*)\\s*\\(");
   private static final Pattern RETURN_STMT = Pattern.compile("^(\\s*)return(?:\\s+(.+?))?;\\s*$");
   private static final Pattern ARRAY_WRITE_2D = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*\\[([^;\\]]+)\\]\\s*=(?!=)\\s*(.+);\\s*$");
@@ -34,6 +41,7 @@ public final class JavaRewriteLibrary {
   private static final Pattern STRING_ARRAY_CHAR_AT = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.charAt\\(([^()]+)\\)");
   private static final Pattern STRING_ARRAY_LENGTH_CALL = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.length\\(\\)");
   private static final Pattern LIST_ARRAY_READ = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\s*\\[([^;\\]\\[]+)\\]");
+  private static final Pattern LIST_OBJECT_FIELD_READ = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\()");
   private static final Pattern FIELD_WRITE = Pattern.compile("^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
   private static final Pattern FIELD_PATH_WRITE = Pattern.compile(
       "^(\\s*)((?:this\\s*\\.\\s*)?[A-Za-z_][A-Za-z0-9_]*(?:\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*){2,})\\s*=\\s*(.+);\\s*$");
@@ -70,6 +78,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\s*\\[([^;\\]\\[]+)\\]\\s*=(?!=)\\s*(.+);\\s*$");
   private static final Pattern ARRAYS_FILL_STATEMENT = Pattern.compile(
       "^(\\s*)(?:java\\.util\\.)?Arrays\\.fill\\((.*)\\);\\s*$");
+  private static final Pattern COLLECTIONS_SORT_STATEMENT = Pattern.compile(
+      "^(\\s*)(?:java\\.util\\.)?Collections\\.sort\\((.*)\\);\\s*$");
   private static final Pattern INDEXED_ARRAY_TARGET = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
@@ -81,6 +91,7 @@ public final class JavaRewriteLibrary {
   private static final Pattern QUEUE_REMOVE_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.(remove|poll)\\(\\)");
   private static final Pattern STACK_DEQUE_POP_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.pop\\(\\)");
   private static final Pattern COLLECTION_CONTAINS_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.contains\\(([^()\\n;]+)\\)");
+  private static final Pattern USER_OBJECT_METHOD_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\(((?:[^()\\n;]|\\([^()]*\\))*)\\)");
   private static final Pattern THIS_FIELD_MAP_GET_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
   private static final Pattern THIS_FIELD_MAP_GET_OR_DEFAULT_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
   private static final Pattern THIS_FIELD_MAP_CONTAINS_KEY_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
@@ -136,6 +147,7 @@ public final class JavaRewriteLibrary {
     String[] lines = source.split("\\r?\\n", -1);
     Deque<MethodFrame> methods = new ArrayDeque<>();
     Map<String, String> fields = new HashMap<>();
+    Set<String> declaredClassNames = collectDeclaredClassNames(source);
     PendingMethodHeader pendingMethodHeader = null;
 
     for (int index = 0; index < lines.length; index++) {
@@ -145,16 +157,18 @@ public final class JavaRewriteLibrary {
         out.append(line).append('\n');
         pendingMethodHeader.appendLine(line);
         if (line.contains("{")) {
-          MethodSignature signature = parseMethodSignature(pendingMethodHeader.source());
+          MethodSignature signature = parseMethodSignature(pendingMethodHeader.source(), declaredClassNames);
           if (signature != null) {
             methods.push(new MethodFrame(
                 signature.name,
                 signature.returnType,
                 braceDelta(line),
                 fields,
-                signature.parametersSource));
+                signature.parametersSource,
+                declaredClassNames));
             out.append(signature.indent).append("  TraceHooks.emitCallAtLine(")
                 .append(pendingMethodHeader.startLine).append(", ").append(quote(signature.name)).append(", \"\");\n");
+            out.append(signature.indent).append("  TraceHooks.emitLineAtLine(").append(pendingMethodHeader.startLine).append(");\n");
           }
           pendingMethodHeader = null;
         }
@@ -165,15 +179,26 @@ public final class JavaRewriteLibrary {
       if (method.matches()) {
         out.append(line).append('\n');
         String name = method.group(2);
-        methods.push(new MethodFrame(name, extractReturnType(line, name), braceDelta(line), fields, method.group(3)));
+        methods.push(new MethodFrame(name, extractReturnType(line, name), braceDelta(line), fields, method.group(3), declaredClassNames));
         out.append(method.group(1)).append("  TraceHooks.emitCallAtLine(")
             .append(sourceLine).append(", ").append(quote(name)).append(", \"\");\n");
+        out.append(method.group(1)).append("  TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
+        continue;
+      }
+      Matcher constructor = CONSTRUCTOR_START.matcher(line);
+      if (constructor.matches() && declaredClassNames.contains(constructor.group(2))) {
+        out.append(line).append('\n');
+        String name = constructor.group(2);
+        methods.push(new MethodFrame(name, "void", braceDelta(line), fields, constructor.group(3), declaredClassNames));
+        out.append(constructor.group(1)).append("  TraceHooks.emitCallAtLine(")
+            .append(sourceLine).append(", ").append(quote(name)).append(", \"\");\n");
+        out.append(constructor.group(1)).append("  TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
         continue;
       }
 
       MethodFrame current = methods.peek();
       if (current == null) {
-        if (startsMultilineMethodHeader(line)) {
+        if (startsMultilineMethodHeader(line, declaredClassNames)) {
           pendingMethodHeader = new PendingMethodHeader(line, sourceLine);
           out.append(line).append('\n');
           continue;
@@ -568,6 +593,11 @@ public final class JavaRewriteLibrary {
           return indent + "TraceHooks." + hook + "(" + sourceLine + ", " + quote(name) + ", " + quote(field) + ", " + target + ", " + key + ", " + value + ", " + indexSourceArgument(parts.get(0)) + ");";
         }
       }
+      if ("this".equals(name) && "sort".equals(method) && frame.isField(field) && isListType(frame.typeOf(field))) {
+        String comparator = rawArgs.isEmpty() ? "null" : rewriteReads(rawArgs, sourceLine, frame);
+        return indent + "TraceHooks.sortFieldListAtLine(" + sourceLine + ", \"this\", " + quote(field) + ", " +
+            target + ", " + comparator + ", " + quote(field) + ", " + field + ");";
+      }
       String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\\\"" + field + "\\\"]}";
       MutatingArgs rewrittenArgs = mutatingArgs(rawArgs, sourceLine, frame);
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
@@ -714,6 +744,27 @@ public final class JavaRewriteLibrary {
           String index = rewriteReads(rawIndex, sourceLine, frame);
           return indent + "TraceHooks.fillArrayAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " +
               index + ", " + indexSourceArgument(rawIndex) + ", " + value + ");";
+        }
+      }
+    }
+
+    Matcher collectionsSort = COLLECTIONS_SORT_STATEMENT.matcher(line);
+    if (collectionsSort.matches()) {
+      String indent = collectionsSort.group(1);
+      java.util.List<String> args = splitTopLevel(collectionsSort.group(2).trim());
+      if (!args.isEmpty()) {
+        String target = args.get(0).trim();
+        Matcher thisField = Pattern.compile("^this\\.([A-Za-z_][A-Za-z0-9_]*)$").matcher(target);
+        if (thisField.matches() && frame.isField(thisField.group(1))) {
+          String field = thisField.group(1);
+          String comparator = args.size() > 1 ? rewriteReads(args.get(1).trim(), sourceLine, frame) : "null";
+          return indent + "TraceHooks.sortFieldListAtLine(" + sourceLine + ", \"this\", " + quote(field) + ", " +
+              target + ", " + comparator + ", " + quote(field) + ", " + target + ");";
+        }
+        if (isSimpleIdentifierExpression(target) && isListType(frame.typeOf(target))) {
+          String comparator = args.size() > 1 ? rewriteReads(args.get(1).trim(), sourceLine, frame) : "null";
+          return indent + "TraceHooks.sortListAtLine(" + sourceLine + ", " + quote(target) + ", " + target + ", " +
+              comparator + ");";
         }
       }
     }
@@ -883,6 +934,10 @@ public final class JavaRewriteLibrary {
           String value = rewriteReads(parts.get(1), sourceLine, frame);
           return indent + "TraceHooks.writeListAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " + index + ", " + value + ", " + indexSourceArgument(parts.get(0)) + ");";
         }
+      }
+      if ("sort".equals(method) && isListType(frame.typeOf(name))) {
+        String comparator = rawArgs.isEmpty() ? "null" : rewriteReads(rawArgs, sourceLine, frame);
+        return indent + "TraceHooks.sortListAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " + comparator + ");";
       }
       if (frame.isField(name)) {
         String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\"}";
@@ -1083,6 +1138,19 @@ public final class JavaRewriteLibrary {
       String key = rewriteReads(rawKey, line, frame);
       return "TraceHooks.readSetAtLine(" + line + ", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
     });
+    String sourceBeforeUserCallWrapping = next;
+    next = replaceAll(USER_OBJECT_METHOD_CALL, next, match -> {
+      String name = match.group(1);
+      String method = match.group(2);
+      if (isInsideTraceHooksCall(sourceBeforeUserCallWrapping, match.start())) return match.group(0);
+      String rawArgs = match.group(3).trim();
+      String args = rewriteReads(rawArgs, line, frame);
+      if (!frame.isDeclaredObject(name)) {
+        if (args.equals(rawArgs)) return match.group(0);
+        return name + "." + method + "(" + args + ")";
+      }
+      return "TraceHooks.callSiteAtLine(" + line + ", () -> " + name + "." + method + "(" + args + "))";
+    });
     next = replaceAll(MAP_GET_OR_DEFAULT_CALL, next, match -> {
       String name = match.group(1);
       if (!isMapType(frame.typeOf(name))) return match.group(0);
@@ -1094,6 +1162,14 @@ public final class JavaRewriteLibrary {
         return "TraceHooks.readFieldMapOrDefaultAtLine(" + line + ", \"this\", " + quote(name) + ", " + name + ", " + rewriteReads(rawKey, line, frame) + ", " + rewriteReads(rawDefault, line, frame) + ", " + indexSourceArgument(rawKey) + ")";
       }
         return "TraceHooks.readMapOrDefaultAtLine(" + line + ", " + quote(name) + ", " + name + ", " + rewriteReads(rawKey, line, frame) + ", " + rewriteReads(rawDefault, line, frame) + ", " + indexSourceArgument(rawKey) + ")";
+    });
+    next = replaceAll(LIST_OBJECT_FIELD_READ, next, match -> {
+      String name = match.group(1);
+      if (!isListType(frame.typeOf(name))) return match.group(0);
+      String rawIndex = match.group(2).trim();
+      String index = rewriteReads(rawIndex, line, frame);
+      String field = match.group(3);
+      return "TraceHooks.readIndexedObjectFieldAtLine(" + line + ", " + quote(name) + ", " + index + ", " + quote(field) + ", " + name + ".get(" + index + ")." + field + ", " + indexSourceArgument(rawIndex) + ")";
     });
     next = replaceAll(MAP_GET_CALL, next, match -> {
       String name = match.group(1);
@@ -1741,6 +1817,7 @@ public final class JavaRewriteLibrary {
     return "add".equals(method) || "push".equals(method) || "offer".equals(method) ||
         "append".equals(method) ||
         "addAll".equals(method) ||
+        "sort".equals(method) ||
         "addLast".equals(method) || "offerLast".equals(method) || "put".equals(method) || "putIfAbsent".equals(method) ||
         "addFirst".equals(method) || "offerFirst".equals(method) ||
         "remove".equals(method) || "clear".equals(method) || "poll".equals(method) ||
@@ -1930,7 +2007,16 @@ public final class JavaRewriteLibrary {
         "finally".equals(value) || "do".equals(value) || "try".equals(value);
   }
 
-  private static boolean startsMultilineMethodHeader(String line) {
+  private static Set<String> collectDeclaredClassNames(String source) {
+    Set<String> names = new HashSet<>();
+    Matcher matcher = Pattern.compile("\\b(?:class|interface|enum|record)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b").matcher(source);
+    while (matcher.find()) {
+      names.add(matcher.group(1));
+    }
+    return names;
+  }
+
+  private static boolean startsMultilineMethodHeader(String line, Set<String> declaredClassNames) {
     String trimmed = stripTrailingLineComment(line).trim();
     if (trimmed.isEmpty() || trimmed.startsWith("@")) return false;
     if (trimmed.contains("{") || trimmed.endsWith(";")) return false;
@@ -1938,14 +2024,22 @@ public final class JavaRewriteLibrary {
       return false;
     }
     if (isControlKeyword(trimmed.split("\\s+", 2)[0])) return false;
-    return METHOD_HEADER_START.matcher(trimmed).find();
+    if (METHOD_HEADER_START.matcher(trimmed).find()) return true;
+    Matcher constructor = CONSTRUCTOR_HEADER_START.matcher(trimmed);
+    return constructor.find() && declaredClassNames.contains(constructor.group(1));
   }
 
-  private static MethodSignature parseMethodSignature(String source) {
+  private static MethodSignature parseMethodSignature(String source, Set<String> declaredClassNames) {
     Matcher method = METHOD_START.matcher(source);
-    if (!method.matches()) return null;
-    String name = method.group(2);
-    return new MethodSignature(method.group(1), name, extractReturnType(source, name), method.group(3));
+    if (method.matches()) {
+      String name = method.group(2);
+      return new MethodSignature(method.group(1), name, extractReturnType(source, name), method.group(3));
+    }
+    Matcher constructor = CONSTRUCTOR_START.matcher(source);
+    if (constructor.matches() && declaredClassNames.contains(constructor.group(2))) {
+      return new MethodSignature(constructor.group(1), constructor.group(2), "void", constructor.group(3));
+    }
+    return null;
   }
 
   private static boolean isEmptyForUpdateClause(String conditionAndUpdateClause) {
@@ -1971,6 +2065,17 @@ public final class JavaRewriteLibrary {
 
   private static boolean isSimpleIdentifierExpression(String value) {
     return value != null && value.matches("[A-Za-z_][A-Za-z0-9_]*");
+  }
+
+  private static boolean isStableMutatingArgExpression(String value) {
+    if (value == null) return false;
+    String normalized = value.trim();
+    if (normalized.isEmpty()) return false;
+    if (isSimpleIdentifierExpression(normalized)) return true;
+    if (normalized.matches("-?[0-9]+(?:\\.[0-9]+)?[fFdDlL]?")) return true;
+    if (normalized.matches("\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])'")) return true;
+    if (normalized.matches("new\\s+[A-Za-z_][A-Za-z0-9_$.]*(?:\\s*<[^;{}()]*>)?\\s*\\((?:[^;{}]|\\([^()]*\\))*\\)")) return true;
+    return "null".equals(normalized) || "true".equals(normalized) || "false".equals(normalized);
   }
 
   private static String singleIdentifierIndexSource(String value) {
@@ -2101,7 +2206,7 @@ public final class JavaRewriteLibrary {
     StringBuilder prefix = new StringBuilder();
     for (int index = 0; index < args.size(); index++) {
       String rewritten = rewriteReads(args.get(index), sourceLine, frame);
-      if (rewritten.contains("TraceHooks.")) {
+      if (rewritten.contains("TraceHooks.") || !isStableMutatingArgExpression(rewritten)) {
         String temp = "__tracecodeArg" + sourceLine + "_" + index;
         prefix.append("var ").append(temp).append(" = ").append(rewritten).append("; ");
         callArgs.add(temp);
@@ -2213,9 +2318,10 @@ public final class JavaRewriteLibrary {
     boolean statementContinuation;
     PendingMultilineMutation pendingMultilineMutation;
     final java.util.Set<String> fields;
+    final java.util.Set<String> declaredClassNames;
     final Map<String, String> variables;
 
-    MethodFrame(String name, String returnType, int depth, Map<String, String> fields, String parametersSource) {
+    MethodFrame(String name, String returnType, int depth, Map<String, String> fields, String parametersSource, Set<String> declaredClassNames) {
       this.name = name;
       this.returnType = returnType == null || returnType.isBlank() ? "var" : returnType;
       this.depth = depth;
@@ -2227,6 +2333,7 @@ public final class JavaRewriteLibrary {
       this.statementContinuation = false;
       this.pendingMultilineMutation = null;
       this.fields = new java.util.HashSet<>(fields.keySet());
+      this.declaredClassNames = new java.util.HashSet<>(declaredClassNames);
       this.variables = new HashMap<>(fields);
       registerParameters(this.variables, parametersSource);
     }
@@ -2237,6 +2344,17 @@ public final class JavaRewriteLibrary {
 
     boolean isField(String variable) {
       return fields.contains(variable);
+    }
+
+    boolean isDeclaredObject(String variable) {
+      String type = typeOf(variable);
+      if (type == null) return false;
+      String normalized = normalizeJavaType(type);
+      int genericStart = normalized.indexOf('<');
+      if (genericStart >= 0) normalized = normalized.substring(0, genericStart).trim();
+      int packageStart = normalized.lastIndexOf('.');
+      if (packageStart >= 0) normalized = normalized.substring(packageStart + 1);
+      return declaredClassNames.contains(normalized);
     }
 
     String returnTypeOrVar() {

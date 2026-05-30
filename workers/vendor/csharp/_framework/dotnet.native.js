@@ -4791,60 +4791,6 @@ function createWasm() {
   }
   }
 
-
-
-
-
-
-  /** @param {number=} addrlen */
-  var writeSockaddr = (sa, family, addr, port, addrlen) => {
-      switch (family) {
-        case 2:
-          addr = inetPton4(addr);
-          zeroMemory(sa, 16);
-          if (addrlen) {
-            HEAP32[((addrlen)>>2)] = 16;
-          }
-          HEAP16[((sa)>>1)] = family;
-          HEAP32[(((sa)+(4))>>2)] = addr;
-          HEAP16[(((sa)+(2))>>1)] = _htons(port);
-          break;
-        case 10:
-          addr = inetPton6(addr);
-          zeroMemory(sa, 28);
-          if (addrlen) {
-            HEAP32[((addrlen)>>2)] = 28;
-          }
-          HEAP32[((sa)>>2)] = family;
-          HEAP32[(((sa)+(8))>>2)] = addr[0];
-          HEAP32[(((sa)+(12))>>2)] = addr[1];
-          HEAP32[(((sa)+(16))>>2)] = addr[2];
-          HEAP32[(((sa)+(20))>>2)] = addr[3];
-          HEAP16[(((sa)+(2))>>1)] = _htons(port);
-          break;
-        default:
-          return 5;
-      }
-      return 0;
-    };
-
-  function ___syscall_recvfrom(fd, buf, len, flags, addr, addrlen) {
-  try {
-
-      var sock = getSocketFromFD(fd);
-      var msg = sock.sock_ops.recvmsg(sock, len);
-      if (!msg) return 0; // socket is closed
-      if (addr) {
-        var errno = writeSockaddr(addr, sock.family, DNS.lookup_name(msg.addr), msg.port, addrlen);
-      }
-      HEAPU8.set(msg.buffer, buf);
-      return msg.buffer.byteLength;
-    } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
-    return -e.errno;
-  }
-  }
-
   function ___syscall_renameat(olddirfd, oldpath, newdirfd, newpath) {
   try {
 
@@ -5563,16 +5509,6 @@ function createWasm() {
   return {runtime_idx:7};//mono_interp_tier_prepare_jiterpreter
   }
 
-  function _mono_wasm_add_dbg_command_received(
-  ) {
-  return {runtime_idx:3};//mono_wasm_add_dbg_command_received
-  }
-
-  function _mono_wasm_asm_loaded(
-  ) {
-  return {runtime_idx:1};//mono_wasm_asm_loaded
-  }
-
   function _mono_wasm_bind_js_import_ST(
   ) {
   return {runtime_idx:22};//mono_wasm_bind_js_import_ST
@@ -5591,16 +5527,6 @@ function createWasm() {
   function _mono_wasm_console_clear(
   ) {
   return {runtime_idx:20};//mono_wasm_console_clear
-  }
-
-  function _mono_wasm_debugger_log(
-  ) {
-  return {runtime_idx:2};//mono_wasm_debugger_log
-  }
-
-  function _mono_wasm_fire_debugger_agent_message_with_data(
-  ) {
-  return {runtime_idx:4};//mono_wasm_fire_debugger_agent_message_with_data
   }
 
   function _mono_wasm_free_method_data(
@@ -6356,8 +6282,6 @@ var wasmImports = {
   /** @export */
   __syscall_readlinkat: ___syscall_readlinkat,
   /** @export */
-  __syscall_recvfrom: ___syscall_recvfrom,
-  /** @export */
   __syscall_renameat: ___syscall_renameat,
   /** @export */
   __syscall_rmdir: ___syscall_rmdir,
@@ -6436,10 +6360,6 @@ var wasmImports = {
   /** @export */
   mono_interp_tier_prepare_jiterpreter: _mono_interp_tier_prepare_jiterpreter,
   /** @export */
-  mono_wasm_add_dbg_command_received: _mono_wasm_add_dbg_command_received,
-  /** @export */
-  mono_wasm_asm_loaded: _mono_wasm_asm_loaded,
-  /** @export */
   mono_wasm_bind_js_import_ST: _mono_wasm_bind_js_import_ST,
   /** @export */
   mono_wasm_browser_entropy: _mono_wasm_browser_entropy,
@@ -6447,10 +6367,6 @@ var wasmImports = {
   mono_wasm_cancel_promise: _mono_wasm_cancel_promise,
   /** @export */
   mono_wasm_console_clear: _mono_wasm_console_clear,
-  /** @export */
-  mono_wasm_debugger_log: _mono_wasm_debugger_log,
-  /** @export */
-  mono_wasm_fire_debugger_agent_message_with_data: _mono_wasm_fire_debugger_agent_message_with_data,
   /** @export */
   mono_wasm_free_method_data: _mono_wasm_free_method_data,
   /** @export */
@@ -6515,8 +6431,6 @@ var _mono_wasm_read_as_bool_or_null_unsafe = Module['_mono_wasm_read_as_bool_or_
 var _mono_wasm_assembly_load = Module['_mono_wasm_assembly_load'] = (a0) => (_mono_wasm_assembly_load = Module['_mono_wasm_assembly_load'] = wasmExports['mono_wasm_assembly_load'])(a0);
 var _mono_wasm_assembly_find_class = Module['_mono_wasm_assembly_find_class'] = (a0, a1, a2) => (_mono_wasm_assembly_find_class = Module['_mono_wasm_assembly_find_class'] = wasmExports['mono_wasm_assembly_find_class'])(a0, a1, a2);
 var _mono_wasm_assembly_find_method = Module['_mono_wasm_assembly_find_method'] = (a0, a1, a2) => (_mono_wasm_assembly_find_method = Module['_mono_wasm_assembly_find_method'] = wasmExports['mono_wasm_assembly_find_method'])(a0, a1, a2);
-var _mono_wasm_set_is_debugger_attached = Module['_mono_wasm_set_is_debugger_attached'] = (a0) => (_mono_wasm_set_is_debugger_attached = Module['_mono_wasm_set_is_debugger_attached'] = wasmExports['mono_wasm_set_is_debugger_attached'])(a0);
-var _mono_wasm_change_debugger_log_level = Module['_mono_wasm_change_debugger_log_level'] = (a0) => (_mono_wasm_change_debugger_log_level = Module['_mono_wasm_change_debugger_log_level'] = wasmExports['mono_wasm_change_debugger_log_level'])(a0);
 var _mono_wasm_send_dbg_command_with_parms = Module['_mono_wasm_send_dbg_command_with_parms'] = (a0, a1, a2, a3, a4, a5, a6) => (_mono_wasm_send_dbg_command_with_parms = Module['_mono_wasm_send_dbg_command_with_parms'] = wasmExports['mono_wasm_send_dbg_command_with_parms'])(a0, a1, a2, a3, a4, a5, a6);
 var _mono_wasm_send_dbg_command = Module['_mono_wasm_send_dbg_command'] = (a0, a1, a2, a3, a4) => (_mono_wasm_send_dbg_command = Module['_mono_wasm_send_dbg_command'] = wasmExports['mono_wasm_send_dbg_command'])(a0, a1, a2, a3, a4);
 var _mono_jiterp_register_jit_call_thunk = Module['_mono_jiterp_register_jit_call_thunk'] = (a0, a1) => (_mono_jiterp_register_jit_call_thunk = Module['_mono_jiterp_register_jit_call_thunk'] = wasmExports['mono_jiterp_register_jit_call_thunk'])(a0, a1);
@@ -6652,13 +6566,13 @@ var _sbrk = Module['_sbrk'] = (a0) => (_sbrk = Module['_sbrk'] = wasmExports['sb
 var _posix_memalign = Module['_posix_memalign'] = (a0, a1, a2) => (_posix_memalign = Module['_posix_memalign'] = wasmExports['posix_memalign'])(a0, a1, a2);
 var _mono_background_exec = Module['_mono_background_exec'] = () => (_mono_background_exec = Module['_mono_background_exec'] = wasmExports['mono_background_exec'])();
 var _mono_wasm_ds_exec = Module['_mono_wasm_ds_exec'] = () => (_mono_wasm_ds_exec = Module['_mono_wasm_ds_exec'] = wasmExports['mono_wasm_ds_exec'])();
-var _htons = Module['_htons'] = (a0) => (_htons = Module['_htons'] = wasmExports['htons'])(a0);
 var _mono_wasm_gc_lock = Module['_mono_wasm_gc_lock'] = () => (_mono_wasm_gc_lock = Module['_mono_wasm_gc_lock'] = wasmExports['mono_wasm_gc_lock'])();
 var _mono_wasm_gc_unlock = Module['_mono_wasm_gc_unlock'] = () => (_mono_wasm_gc_unlock = Module['_mono_wasm_gc_unlock'] = wasmExports['mono_wasm_gc_unlock'])();
 var _mono_print_method_from_ip = Module['_mono_print_method_from_ip'] = (a0) => (_mono_print_method_from_ip = Module['_mono_print_method_from_ip'] = wasmExports['mono_print_method_from_ip'])(a0);
 var _mono_wasm_execute_timer = Module['_mono_wasm_execute_timer'] = () => (_mono_wasm_execute_timer = Module['_mono_wasm_execute_timer'] = wasmExports['mono_wasm_execute_timer'])();
 var _mono_wasm_load_icu_data = Module['_mono_wasm_load_icu_data'] = (a0) => (_mono_wasm_load_icu_data = Module['_mono_wasm_load_icu_data'] = wasmExports['mono_wasm_load_icu_data'])(a0);
 var _ntohs = Module['_ntohs'] = (a0) => (_ntohs = Module['_ntohs'] = wasmExports['ntohs'])(a0);
+var _htons = Module['_htons'] = (a0) => (_htons = Module['_htons'] = wasmExports['htons'])(a0);
 var ___funcs_on_exit = () => (___funcs_on_exit = wasmExports['__funcs_on_exit'])();
 var _htonl = (a0) => (_htonl = wasmExports['htonl'])(a0);
 var _emscripten_builtin_memalign = (a0, a1) => (_emscripten_builtin_memalign = wasmExports['emscripten_builtin_memalign'])(a0, a1);

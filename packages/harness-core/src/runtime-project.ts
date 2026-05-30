@@ -146,6 +146,7 @@ export interface RuntimeKernelHttpRequest {
   rawHeaders?: readonly [string, string][];
   body?: string;
   bodyEncoding?: RuntimeFileEncoding;
+  signal?: AbortSignal;
 }
 
 export interface RuntimeKernelHttpResponse {
@@ -304,6 +305,10 @@ export type RuntimeKernelHttpProtocolMessage =
       listenerId: string;
       requestId: string;
       request: RuntimeKernelHttpRequest;
+    }
+  | {
+      type: 'kernel-http-abort-request';
+      requestId: string;
     }
   | {
       type: 'kernel-http-response';

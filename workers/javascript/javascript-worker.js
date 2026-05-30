@@ -13,6 +13,7 @@ const WORKER_DEBUG = (() => {
     return false;
   }
 })();
+const postWorkerMessage = self.postMessage.bind(self);
 
 function emitRuntimeDiagnostic(level, phase, message, detail) {
   if (!WORKER_DEBUG && level !== 'error') return;
@@ -1418,6 +1419,68 @@ function writeValueAtIndices(container, indices, value) {
   return value;
 }
 
+function traceLineParenDelta(line) {
+  let delta = 0;
+  let quote = null;
+  let escaped = false;
+  for (const char of String(line ?? '')) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') delta += 1;
+    else if (char === ')') delta -= 1;
+  }
+  return delta;
+}
+
+function buildRuntimeStatementSourceMap(code) {
+  const lines = String(code ?? '').split(/\r?\n/);
+  const spans = new Map();
+  let startLine = 0;
+  let startColumn = 0;
+  let balance = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineNumber = index + 1;
+    const line = lines[index] ?? '';
+    const delta = traceLineParenDelta(line);
+    if (startLine === 0) {
+      if (delta > 0) {
+        startLine = lineNumber;
+        startColumn = /\S/.exec(line)?.index ?? 0;
+        balance = delta;
+      }
+      continue;
+    }
+    balance += delta;
+    if (balance <= 0) {
+      const span = {
+        statementId: `stmt:${startLine}:${lineNumber}:${startColumn}`,
+        startLine,
+        startColumn,
+        endLine: lineNumber,
+        endColumn: line.length,
+      };
+      for (let mappedLine = startLine; mappedLine <= lineNumber; mappedLine += 1) {
+        spans.set(mappedLine, span);
+      }
+      startLine = 0;
+      startColumn = 0;
+      balance = 0;
+    }
+  }
+  return spans;
+}
+
 function createTraceRecorder(options = {}) {
   const trace = [];
   const runtimeTraceEvents = [];
@@ -1435,6 +1498,7 @@ function createTraceRecorder(options = {}) {
   const maxSingleLineHits = getNumericOption(options.maxSingleLineHits, 1000);
   const maxCallDepth = getNumericOption(options.maxCallDepth, 2000);
   const maxPathDepth = getMaxPathDepthOption(options.maxPathDepth);
+  const statementSourceMap = options.statementSourceMap instanceof Map ? options.statementSourceMap : new Map();
 
   let lineEventCount = 0;
   let traceLimitExceeded = false;
@@ -1671,6 +1735,22 @@ function createTraceRecorder(options = {}) {
     return `${step.function}:${step.line}:root`;
   }
 
+  function runtimeTraceSourceOwnership(lineNumber, functionName) {
+    const normalizedLine = normalizeLine(lineNumber, 0);
+    const span = statementSourceMap.get(normalizedLine);
+    if (!span) return {};
+    const normalizedFunction = typeof functionName === 'string' && functionName.length > 0 ? functionName : undefined;
+    return {
+      statementId: normalizedFunction ? `${normalizedFunction}:${span.statementId}` : span.statementId,
+      sourceSpan: {
+        startLine: span.startLine,
+        startColumn: span.startColumn,
+        endLine: span.endLine,
+        endColumn: span.endColumn,
+      },
+    };
+  }
+
   function runtimeTraceTargetForAccess(access) {
     const indices = Array.isArray(access?.indices) ? access.indices : [];
     const indexSources = Array.isArray(access?.indexSources) ? access.indexSources : [];
@@ -1734,6 +1814,7 @@ function createTraceRecorder(options = {}) {
       runId: 'javascript:run',
       line: step.line,
       frameId: runtimeTraceFrameIdForStep(step),
+      ...runtimeTraceSourceOwnership(step.line, step.function),
       ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
     };
     const pushRuntimeTraceEvent = (event) => {
@@ -1792,6 +1873,10 @@ function createTraceRecorder(options = {}) {
         ...base,
         ...(Number.isFinite(access.line) && access.line > 0 ? { line: access.line } : {}),
         ...(Number.isFinite(access.column) && access.column >= 0 ? { column: access.column } : {}),
+        ...runtimeTraceSourceOwnership(
+          Number.isFinite(access.line) && access.line > 0 ? access.line : step.line,
+          step.function
+        ),
       };
       if (kind === 'mutate') {
         const event = {
@@ -2690,6 +2775,41 @@ function collectTraceVariableNames(ts, sourceFile) {
   return [...names];
 }
 
+function collectUserCallsiteNames(ts, sourceFile) {
+  const classNames = new Set();
+  const functionNames = new Set();
+  const methodNames = new Set();
+
+  function addName(nameNode, names) {
+    const text = getPropertyNameText(ts, nameNode);
+    if (text && !text.startsWith('__trace')) names.add(text);
+  }
+
+  function visit(node) {
+    if (ts.isClassDeclaration(node)) {
+      addName(node.name, classNames);
+      for (const member of node.members ?? []) {
+        if (ts.isMethodDeclaration(member) || ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
+          addName(member.name, methodNames);
+        }
+      }
+    } else if (ts.isFunctionDeclaration(node)) {
+      addName(node.name, functionNames);
+    } else if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      (ts.isFunctionExpression(node.initializer) || ts.isArrowFunction(node.initializer))
+    ) {
+      functionNames.add(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return { classNames, functionNames, methodNames };
+}
+
 function shouldTraceStatement(ts, statement) {
   return !(
     ts.isFunctionDeclaration(statement) ||
@@ -2714,6 +2834,30 @@ function isSingleLineNode(sourceFile, node) {
   const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
   const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
   return start === end;
+}
+
+function nodeContainsRuntimeCall(ts, node) {
+  let found = false;
+  const visit = (current) => {
+    if (found) return;
+    if (current !== node && ts.isFunctionLike(current)) return;
+    if (ts.isCallExpression(current) || ts.isNewExpression(current)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function variableStatementHasRuntimeCall(ts, statement) {
+  for (const declaration of statement.declarationList.declarations ?? []) {
+    if (declaration.initializer && nodeContainsRuntimeCall(ts, declaration.initializer)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function statementBypassesFollowingTraceLine(ts, statement) {
@@ -2746,7 +2890,7 @@ function shouldTraceIfStatementPostLine(ts, sourceFile, statement) {
 
 function isPostLineStateStatement(ts, sourceFile, statement) {
   if (ts.isVariableStatement(statement)) {
-    return true;
+    return !variableStatementHasRuntimeCall(ts, statement);
   }
   if (ts.isIfStatement(statement) && shouldTraceIfStatementPostLine(ts, sourceFile, statement)) {
     return true;
@@ -3497,6 +3641,14 @@ function createTraceScalarWriteExpression(ts, sourceFile, node, variableName, va
   ]);
 }
 
+function createTraceScalarReadExpression(ts, sourceFile, node, variableName) {
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceScalarRead'), undefined, [
+    ts.factory.createStringLiteral(variableName),
+    ts.factory.createIdentifier(variableName),
+    createSourceLocationObject(ts, sourceFile, node),
+  ]);
+}
+
 function createTraceScalarUpdateExpression(ts, sourceFile, node, variableName, operatorName, isPrefix) {
   return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceUpdateScalar'), undefined, [
     ts.factory.createStringLiteral(variableName),
@@ -3944,6 +4096,34 @@ function createTraceLineStatement(ts, sourceFile, statement, variableNames, line
         ts.factory.createStringLiteral(traceFunctionName),
         ts.factory.createNumericLiteral(traceFunctionStartLine),
       ]
+    )
+  );
+}
+
+function createTraceCallsiteExpression(ts, sourceFile, expression, variableNames, lineFunctionMap, defaultFunctionName) {
+  const lineNumber = sourceFile.getLineAndCharacterOfPosition(expression.getStart(sourceFile)).line + 1;
+  const functionContext = lineFunctionMap.get(lineNumber);
+  const traceFunctionName = functionContext?.functionName ?? defaultFunctionName;
+  const traceFunctionStartLine = functionContext?.functionStartLine ?? lineNumber;
+  const includeThisSnapshot = Boolean(functionContext?.includeThisSnapshot);
+  const traceLineExpression = ts.factory.createCallExpression(
+    ts.factory.createPropertyAccessExpression(
+      ts.factory.createIdentifier('__traceRecorder'),
+      ts.factory.createIdentifier('line')
+    ),
+    undefined,
+    [
+      ts.factory.createNumericLiteral(lineNumber),
+      createSnapshotFactory(ts, variableNames, includeThisSnapshot),
+      ts.factory.createStringLiteral(traceFunctionName),
+      ts.factory.createNumericLiteral(traceFunctionStartLine),
+    ]
+  );
+  return ts.factory.createParenthesizedExpression(
+    ts.factory.createBinaryExpression(
+      traceLineExpression,
+      ts.factory.createToken(ts.SyntaxKind.CommaToken),
+      expression
     )
   );
 }
@@ -4460,6 +4640,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
   );
 
   const variableNames = collectTraceVariableNames(ts, sourceFile);
+  const userCallsiteNames = collectUserCallsiteNames(ts, sourceFile);
   const localVariableNames = new Set(variableNames);
   const effectiveFunctionName =
     typeof traceFunctionName === 'string' && traceFunctionName.length > 0
@@ -4504,6 +4685,17 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
 
       if (ts.isThrowStatement(node)) {
         return createTraceThrowExpression(ts, sourceFile, node);
+      }
+
+      if (
+        ts.isSpreadElement(node) &&
+        ts.isIdentifier(node.expression) &&
+        localVariableNames.has(node.expression.text)
+      ) {
+        return ts.factory.updateSpreadElement(
+          node,
+          createTraceScalarReadExpression(ts, sourceFile, node.expression, node.expression.text)
+        );
       }
 
       if (ts.isBinaryExpression(node)) {
@@ -4591,6 +4783,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
         if (isConsoleLogCall(ts, node)) {
           return createTraceStdoutExpression(ts, sourceFile, node);
         }
+        const isUserMethodCall = ts.isPropertyAccessExpression(node.expression) &&
+          userCallsiteNames.methodNames.has(node.expression.name.text);
         const tracedCall = extractTraceableMutatingCall(ts, node, maxPathDepth);
         if (tracedCall) {
           const visitedArgs = node.arguments.map((arg) => ts.visitNode(arg, visit));
@@ -4608,6 +4802,53 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
             tracedCall.indices ?? []
           );
         }
+        const visitedCall = ts.visitEachChild(node, visit, context);
+        if (
+          isUserMethodCall &&
+          ts.isPropertyAccessExpression(visitedCall.expression)
+        ) {
+          return createTraceCallsiteExpression(
+            ts,
+            sourceFile,
+            visitedCall,
+            variableNames,
+            lineFunctionMap,
+            effectiveFunctionName
+          );
+        }
+        if (
+          ts.isIdentifier(visitedCall.expression) &&
+          userCallsiteNames.functionNames.has(visitedCall.expression.text)
+        ) {
+          return createTraceCallsiteExpression(
+            ts,
+            sourceFile,
+            visitedCall,
+            variableNames,
+            lineFunctionMap,
+            effectiveFunctionName
+          );
+        }
+        return visitedCall;
+      }
+
+      if (ts.isNewExpression(node)) {
+        const visitedNew = ts.visitEachChild(node, visit, context);
+        if (
+          ts.isNewExpression(visitedNew) &&
+          ts.isIdentifier(visitedNew.expression) &&
+          userCallsiteNames.classNames.has(visitedNew.expression.text)
+        ) {
+          return createTraceCallsiteExpression(
+            ts,
+            sourceFile,
+            visitedNew,
+            variableNames,
+            lineFunctionMap,
+            effectiveFunctionName
+          );
+        }
+        return visitedNew;
       }
 
       if (ts.isIfStatement(node)) {
@@ -4833,11 +5074,15 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
   }
 }
 
-function buildScriptExecutionRunner(code) {
+function buildScriptExecutionRunner(code, sourceCode = code) {
   return new Function(
     'console',
     '__tracecodeStdin',
-    `${JAVASCRIPT_RUNTIME_PRELUDE}
+    '__tracecode_global',
+    '__tracecode_host_global',
+`${javascriptRuntimeSandboxPrelude()}
+${JAVASCRIPT_RUNTIME_PRELUDE}
+${javascriptRuntimePreludeBindings(sourceCode)}
 const require = (__moduleName) => {
   if (__moduleName === 'fs') {
     return {
@@ -4849,12 +5094,15 @@ const require = (__moduleName) => {
   }
   throw new Error('Module "' + __moduleName + '" is not available in this runtime');
 };
-try { delete globalThis.result; } catch (_err) {}
-${code}
-if (typeof result === 'undefined') {
-  return null;
+try { delete __tracecode_host_global.result; } catch (_err) {}
+${javascriptRuntimeCheckedCode(code, sourceCode)}
+if (typeof result !== 'undefined') {
+  return result;
 }
-return result;`
+if (typeof globalThis.result !== 'undefined') {
+  return globalThis.result;
+}
+return null;`
   );
 }
 
@@ -5189,6 +5437,16 @@ function __traceScalarWrite(__varName, __value, __location) {
   return __value;
 }
 
+function __traceScalarRead(__varName, __value, __location) {
+  __traceRecorder.recordAccess({
+    variable: __varName,
+    kind: 'indexed-read',
+    value: __value,
+    ...__traceNormalizeSourceLocation(__location),
+  });
+  return __value;
+}
+
 function __traceAssignScalar(__varName, __value, __location) {
   return __traceScalarWrite(__varName, __value, __location);
 }
@@ -5467,13 +5725,151 @@ function getTracingRuntimeHelpersSource(maxPathDepth = DEFAULT_TRACE_MAX_PATH_DE
 ${TRACING_RUNTIME_HELPERS_SOURCE}`;
 }
 
-function buildScriptTracingRunner(code, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
+function maskJavaScriptRuntimeStringsAndComments(code) {
+  let masked = '';
+  for (let index = 0; index < code.length; index += 1) {
+    const char = code[index];
+    const next = code[index + 1];
+    if (char === '"' || char === "'" || char === '`') {
+      const quote = char;
+      masked += quote;
+      index += 1;
+      for (; index < code.length; index += 1) {
+        const current = code[index];
+        masked += current === '\n' ? '\n' : ' ';
+        if (current === '\\') {
+          index += 1;
+          if (index < code.length) masked += code[index] === '\n' ? '\n' : ' ';
+          continue;
+        }
+        if (current === quote) break;
+      }
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      masked += '  ';
+      index += 2;
+      for (; index < code.length; index += 1) {
+        const current = code[index];
+        if (current === '\n') {
+          masked += '\n';
+          break;
+        }
+        masked += ' ';
+      }
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      masked += '  ';
+      index += 2;
+      for (; index < code.length; index += 1) {
+        const current = code[index];
+        const following = code[index + 1];
+        masked += current === '\n' ? '\n' : ' ';
+        if (current === '*' && following === '/') {
+          masked += ' ';
+          index += 1;
+          break;
+        }
+      }
+      continue;
+    }
+    masked += char;
+  }
+  return masked;
+}
+
+function assertJavaScriptRuntimeSourceAllowed(code) {
+  const searchableCode = maskJavaScriptRuntimeStringsAndComments(code);
+  const blockedPatterns = [
+    { pattern: /\bimport\s*\(/, reason: 'dynamic import expressions are not supported by the JavaScript runtime sandbox' },
+    { pattern: /\.\s*constructor\b/, reason: 'constructor property access is not supported by the JavaScript runtime sandbox' },
+    { pattern: /\b__proto__\b/, reason: '__proto__ access is not supported by the JavaScript runtime sandbox' },
+    { pattern: /\bObject\s*\.\s*(getPrototypeOf|getOwnPropertyDescriptor|getOwnPropertyDescriptors|setPrototypeOf|defineProperty|defineProperties)\b/, reason: 'prototype reflection is not supported by the JavaScript runtime sandbox' },
+    { pattern: /\bReflect\b/, reason: 'Reflect is not supported by the JavaScript runtime sandbox' },
+    { pattern: /\beval\b/, reason: 'eval is not supported by the JavaScript runtime sandbox' },
+  ];
+  const blocked = blockedPatterns.find(({ pattern }) => pattern.test(searchableCode));
+  const rawBlocked = /\[\s*(["'`])constructor\1\s*\]/.test(code)
+    ? { reason: 'constructor property access is not supported by the JavaScript runtime sandbox' }
+    : undefined;
+  const reason = blocked?.reason ?? rawBlocked?.reason;
+  if (reason) {
+    throw Object.assign(new Error(`Harness blocked unsupported JavaScript runtime code: ${reason}`), {
+      code: 'ERR_HARNESS_UNSAFE_JAVASCRIPT_RUNTIME',
+    });
+  }
+}
+
+function javascriptRuntimeSandboxPrelude() {
+  return [
+    'const __tracecode_blocked_dynamic_eval = () => { throw Object.assign(new Error("Harness blocked dynamic code evaluation"), { code: "ERR_HARNESS_DYNAMIC_EVAL" }); };',
+    'const globalThis = __tracecode_global;',
+    'const global = __tracecode_global;',
+    'const self = undefined;',
+    'const window = undefined;',
+    'const document = undefined;',
+    'const postMessage = undefined;',
+    'const importScripts = undefined;',
+    'const Worker = undefined;',
+    'const SharedWorker = undefined;',
+    'const WebAssembly = undefined;',
+    'const process = undefined;',
+    'const Function = __tracecode_blocked_dynamic_eval;',
+  ].join('\n');
+}
+
+function javascriptRuntimeDeclaresBinding(code, name) {
+  const searchableCode = maskJavaScriptRuntimeStringsAndComments(String(code ?? ''));
+  return new RegExp(`(^|[^\\w$])(?:class|function|const|let|var)\\s+${name}\\b`).test(searchableCode);
+}
+
+function javascriptRuntimePreludeBindings(code) {
+  const bindings = [];
+  if (!javascriptRuntimeDeclaresBinding(code, 'ListNode')) {
+    bindings.push('var ListNode = globalThis.ListNode;');
+  }
+  if (!javascriptRuntimeDeclaresBinding(code, 'TreeNode')) {
+    bindings.push('var TreeNode = globalThis.TreeNode;');
+  }
+  return bindings.join('\n');
+}
+
+function javascriptRuntimeCheckedCode(code, sourceCode = code) {
+  assertJavaScriptRuntimeSourceAllowed(sourceCode);
+  return code;
+}
+
+function javascriptRuntimeSandboxedCode(code, sourceCode = code) {
+  return `${javascriptRuntimeSandboxPrelude()}\n${javascriptRuntimeCheckedCode(code, sourceCode)}`;
+}
+
+function createJavaScriptRuntimeGlobal(consoleProxy) {
+  const moduleObject = { exports: {} };
+  const runtimeGlobal = Object.create(null);
+  Object.assign(runtimeGlobal, {
+    globalThis: runtimeGlobal,
+    global: runtimeGlobal,
+    console: consoleProxy,
+    __TRACECODE_JAVASCRIPT_LIBRARIES__: globalThis.__TRACECODE_JAVASCRIPT_LIBRARIES__ ?? {},
+    require: typeof globalThis.require === 'function' ? globalThis.require : undefined,
+    module: moduleObject,
+    exports: moduleObject.exports,
+  });
+  return runtimeGlobal;
+}
+
+function buildScriptTracingRunner(code, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH, sourceCode = code) {
   return new Function(
     'console',
     '__traceRecorder',
     '__traceCtx',
     '__tracecodeStdin',
-    `${JAVASCRIPT_RUNTIME_PRELUDE}
+    '__tracecode_global',
+    '__tracecode_host_global',
+`${javascriptRuntimeSandboxPrelude()}
+${JAVASCRIPT_RUNTIME_PRELUDE}
+${javascriptRuntimePreludeBindings(sourceCode)}
 ${getTracingRuntimeHelpersSource(maxPathDepth)}
 const require = (__moduleName) => {
   if (__moduleName === 'fs') {
@@ -5486,16 +5882,19 @@ const require = (__moduleName) => {
   }
   throw new Error('Module "' + __moduleName + '" is not available in this runtime');
 };
-try { delete globalThis.result; } catch (_err) {}
-${code}
-if (typeof result === 'undefined') {
-  return null;
+try { delete __tracecode_host_global.result; } catch (_err) {}
+${javascriptRuntimeCheckedCode(code, sourceCode)}
+if (typeof result !== 'undefined') {
+  return result;
 }
-return result;`
+if (typeof globalThis.result !== 'undefined') {
+  return globalThis.result;
+}
+return null;`
   );
 }
 
-function buildFunctionExecutionRunner(code, executionStyle, argNames, argumentMaterializers = []) {
+function buildFunctionExecutionRunner(code, executionStyle, argNames, argumentMaterializers = [], sourceCode = code) {
   const materializedArgExpressions = argNames.map((name, index) => {
     const materialized = `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`;
     return name.endsWith('__tracecodeRest') ? `...__tracecodeRestArgs(${materialized})` : materialized;
@@ -5505,9 +5904,12 @@ function buildFunctionExecutionRunner(code, executionStyle, argNames, argumentMa
       'console',
       '__functionName',
       ...argNames,
+      '__tracecode_global',
       `"use strict";
+${javascriptRuntimeSandboxPrelude()}
 ${JAVASCRIPT_RUNTIME_PRELUDE}
-${code}
+${javascriptRuntimePreludeBindings(sourceCode)}
+${javascriptRuntimeCheckedCode(code, sourceCode)}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
@@ -5527,9 +5929,12 @@ return __target(${materializedArgExpressions.join(', ')});`
       'console',
       '__functionName',
       ...argNames,
+      '__tracecode_global',
       `"use strict";
+${javascriptRuntimeSandboxPrelude()}
 ${JAVASCRIPT_RUNTIME_PRELUDE}
-${code}
+${javascriptRuntimePreludeBindings(sourceCode)}
+${javascriptRuntimeCheckedCode(code, sourceCode)}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
@@ -5558,9 +5963,12 @@ throw new Error('Method "Solution.' + __functionName + '" not found');`
       '__className',
       '__operations',
       '__arguments',
+      '__tracecode_global',
       `"use strict";
+${javascriptRuntimeSandboxPrelude()}
 ${JAVASCRIPT_RUNTIME_PRELUDE}
-${code}
+${javascriptRuntimePreludeBindings(sourceCode)}
+${javascriptRuntimeCheckedCode(code, sourceCode)}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
   throw new Error('ops-class execution requires inputs.operations and inputs.arguments (or ops/args)');
@@ -5607,7 +6015,7 @@ return __out;`
   throw new Error(`Execution style "${executionStyle}" is not supported for JavaScript runtime yet.`);
 }
 
-function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH, argumentMaterializers = []) {
+function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH, argumentMaterializers = [], sourceCode = code) {
   const materializedArgExpressions = argNames.map((name, index) => {
     const materialized = `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`;
     return name.endsWith('__tracecodeRest') ? `...__tracecodeRestArgs(${materialized})` : materialized;
@@ -5619,10 +6027,13 @@ function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth
       '__traceCtx',
       '__functionName',
       ...argNames,
+      '__tracecode_global',
       `"use strict";
+${javascriptRuntimeSandboxPrelude()}
 ${JAVASCRIPT_RUNTIME_PRELUDE}
+${javascriptRuntimePreludeBindings(sourceCode)}
 ${getTracingRuntimeHelpersSource(maxPathDepth)}
-${code}
+${javascriptRuntimeCheckedCode(code, sourceCode)}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
@@ -5644,10 +6055,13 @@ return __target(${materializedArgExpressions.join(', ')});`
       '__traceCtx',
       '__functionName',
       ...argNames,
+      '__tracecode_global',
       `"use strict";
+${javascriptRuntimeSandboxPrelude()}
 ${JAVASCRIPT_RUNTIME_PRELUDE}
+${javascriptRuntimePreludeBindings(sourceCode)}
 ${getTracingRuntimeHelpersSource(maxPathDepth)}
-${code}
+${javascriptRuntimeCheckedCode(code, sourceCode)}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
@@ -5678,10 +6092,13 @@ throw new Error('Method "Solution.' + __functionName + '" not found');`
       '__className',
       '__operations',
       '__arguments',
+      '__tracecode_global',
       `"use strict";
+${javascriptRuntimeSandboxPrelude()}
 ${JAVASCRIPT_RUNTIME_PRELUDE}
+${javascriptRuntimePreludeBindings(sourceCode)}
 ${getTracingRuntimeHelpersSource(maxPathDepth)}
-${code}
+${javascriptRuntimeCheckedCode(code, sourceCode)}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
   throw new Error('ops-class execution requires inputs.operations and inputs.arguments (or ops/args)');
@@ -5751,6 +6168,7 @@ async function executeCode(payload) {
   } = payload ?? {};
   const consoleOutput = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
+  const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
   const normalizedInputs = normalizeInputs(inputs);
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
@@ -5770,23 +6188,23 @@ async function executeCode(payload) {
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
         const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, []);
-        output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList));
+        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code);
+        output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList, runtimeGlobal));
       } else {
         const inputArguments = await resolveOrderedInputArguments(code, functionName, materializedInputs, executionStyle, language);
         const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
         const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
-        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers);
-        output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues));
+        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code);
+        output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues, runtimeGlobal));
       }
     } else {
       if (executionStyle !== 'function') {
         throw new Error('Script-mode execution only supports executionStyle="function".');
       }
       const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
-      const runner = buildScriptExecutionRunner(executableCode);
-      output = await Promise.resolve(runner(consoleProxy, scriptStdin));
+      const runner = buildScriptExecutionRunner(executableCode, code);
+      output = await Promise.resolve(runner(consoleProxy, scriptStdin, runtimeGlobal, globalThis));
       if (scriptStdin !== undefined && output === null) {
         output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
       }
@@ -5848,13 +6266,15 @@ async function executeWithTracing(payload) {
   } = payload ?? {};
   const consoleOutput = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
+  const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
   const normalizedInputs = normalizeInputs(inputs);
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
   const traceFunctionName = hasNamedFunction ? functionName : '<module>';
   const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
-  const traceRecorder = createTraceRecorder({ ...(options ?? {}), maxPathDepth });
+  const statementSourceMap = typeof code === 'string' ? buildRuntimeStatementSourceMap(code) : new Map();
+  const traceRecorder = createTraceRecorder({ ...(options ?? {}), maxPathDepth, statementSourceMap });
 
   let traceLineBounds = { startLine: 1, endLine: 1 };
 
@@ -5924,7 +6344,7 @@ async function executeWithTracing(payload) {
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
         const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth);
+        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth, [], code);
         output = await Promise.resolve(
           runner(
             consoleProxy,
@@ -5932,7 +6352,8 @@ async function executeWithTracing(payload) {
             { functionName: traceFunctionName },
             functionName,
             operations,
-            argumentsList
+            argumentsList,
+            runtimeGlobal
           )
         );
       } else {
@@ -5940,9 +6361,9 @@ async function executeWithTracing(payload) {
         const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
         const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers);
+        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers, code);
         output = await Promise.resolve(
-          runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, functionName, ...argValues)
+          runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, functionName, ...argValues, runtimeGlobal)
         );
       }
     } else {
@@ -5950,9 +6371,9 @@ async function executeWithTracing(payload) {
         throw new Error('Script-mode execution only supports executionStyle="function".');
       }
       const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
-      const runner = buildScriptTracingRunner(instrumentedCode, maxPathDepth);
+      const runner = buildScriptTracingRunner(instrumentedCode, maxPathDepth, code);
       output = await Promise.resolve(
-        runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, scriptStdin)
+        runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, scriptStdin, runtimeGlobal, globalThis)
       );
       if (scriptStdin !== undefined && output === null) {
         output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
@@ -6108,73 +6529,74 @@ async function warmRuntime(payload = {}) {
   };
 }
 
+function postProtocolMessage(id, protocolToken, type, payload) {
+  postWorkerMessage({ id, type, payload, protocolToken });
+}
+
 async function processMessage(data) {
-  const { id, type, payload } = data;
+  const { id, type, payload, protocolToken } = data;
 
   try {
+    if (id && typeof protocolToken !== 'string') {
+      postWorkerMessage({
+        id,
+        type: 'error',
+        payload: { error: 'Missing JavaScript worker protocol token.' },
+      });
+      return;
+    }
+
     switch (type) {
       case 'init': {
         const result = await initRuntime();
-        self.postMessage({ id, type: 'init-result', payload: result });
+        postProtocolMessage(id, protocolToken, 'init-result', result);
         break;
       }
 
       case 'warmup': {
         const result = await warmRuntime(payload);
-        self.postMessage({ id, type: 'warmup-result', payload: result });
+        postProtocolMessage(id, protocolToken, 'warmup-result', result);
         break;
       }
 
       case 'execute-with-tracing': {
         const result = await executeWithTracing(payload);
-        self.postMessage({ id, type: 'execute-result', payload: result });
+        postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;
       }
 
       case 'execute-code': {
         const result = await executeCode(payload);
-        self.postMessage({ id, type: 'execute-result', payload: result });
+        postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;
       }
 
       case 'execute-code-batch': {
         const result = await executeCodeBatch(payload);
-        self.postMessage({ id, type: 'execute-result', payload: result });
+        postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;
       }
 
       case 'execute-code-interview': {
         const result = await executeCodeInterview(payload);
-        self.postMessage({ id, type: 'execute-result', payload: result });
+        postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;
       }
 
       case 'status': {
-        self.postMessage({
-          id,
-          type: 'status-result',
-          payload: {
+        postProtocolMessage(id, protocolToken, 'status-result', {
             isReady: isInitialized,
             isLoading,
-          },
         });
         break;
       }
 
       default: {
-        self.postMessage({
-          id,
-          type: 'error',
-          payload: { error: `Unknown message type: ${type}` },
-        });
+        postProtocolMessage(id, protocolToken, 'error', { error: `Unknown message type: ${type}` });
       }
     }
   } catch (error) {
-    self.postMessage({
-      id,
-      type: 'error',
-      payload: { error: error instanceof Error ? error.message : String(error) },
-    });
+    postProtocolMessage(id, protocolToken, 'error', { error: error instanceof Error ? error.message : String(error) });
   }
 }
 
@@ -6186,13 +6608,14 @@ self.onmessage = function(event) {
     .then(() => processMessage(messageData))
     .catch((error) => {
       const { id } = messageData;
-      self.postMessage({
+      postProtocolMessage(
         id,
-        type: 'error',
-        payload: { error: error instanceof Error ? error.message : String(error) },
-      });
+        messageData.protocolToken,
+        'error',
+        { error: error instanceof Error ? error.message : String(error) }
+      );
     });
 };
 
 emitRuntimeDiagnostic('info', 'worker-ready', 'JavaScript worker is ready.');
-self.postMessage({ type: 'worker-ready' });
+postWorkerMessage({ type: 'worker-ready' });

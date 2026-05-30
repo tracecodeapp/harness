@@ -533,8 +533,9 @@ function normalizeCompilePathArg(arg, context) {
 }
 
 self.onmessage = async (event) => {
-  const { id, type, payload } = event.data || {};
+  const { id, type, payload, protocolToken } = event.data || {};
   if (!id) return;
+  if (typeof protocolToken !== 'string' || protocolToken.length === 0) return;
 
   try {
     if (type !== 'compile' && type !== 'compile-project') {
@@ -544,11 +545,12 @@ self.onmessage = async (event) => {
       ? await compileProjectWithYowasp(payload)
       : await compileWithYowasp(payload);
     const transfer = result.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
-    postMessage({ id, type: 'compile-result', payload: result }, transfer);
+    postMessage({ id, type: 'compile-result', protocolToken, payload: result }, transfer);
   } catch (error) {
     postMessage({
       id,
       type: 'compile-result',
+      protocolToken,
       payload: { success: false, error: encodeError(error) },
     });
   }

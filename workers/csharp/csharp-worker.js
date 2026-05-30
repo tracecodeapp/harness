@@ -6,6 +6,7 @@ let configuredAssetBaseUrl = null;
 let runtimeModule = null;
 let runtimeFsHooksInstalled = false;
 let activeProjectIo = null;
+const activeProtocolTokens = new Map();
 let materializedKernelVirtualFilePaths = new Set();
 let materializedKernelVirtualDirectoryPaths = new Set();
 let hiddenKernelVirtualFilePaths = new Set();
@@ -695,7 +696,12 @@ function emitProjectEvent(payload) {
     const outputBuffer = payload.stream === 'stderr' ? activeProjectIo.eventStderr : activeProjectIo.eventStdout;
     outputBuffer.push(payload.data);
   }
-  self.postMessage({ id: activeProjectIo.messageId, type: 'project-event', payload });
+  self.postMessage({
+    id: activeProjectIo.messageId,
+    type: 'project-event',
+    payload,
+    protocolToken: activeProjectIo.protocolToken,
+  });
 }
 
 function routeProjectOutputEvent(payload) {
@@ -1325,9 +1331,90 @@ function normalizeMaxPathDepth(value) {
   return Math.min(8, Math.max(1, Math.floor(value)));
 }
 
-function normalizeCSharpTraceEvent(event, maxPathDepth) {
+function traceLineParenDelta(line) {
+  let delta = 0;
+  let quote = null;
+  let escaped = false;
+  for (const char of String(line ?? '')) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') delta += 1;
+    else if (char === ')') delta -= 1;
+  }
+  return delta;
+}
+
+function buildRuntimeStatementSourceMap(code) {
+  const lines = String(code ?? '').split(/\r?\n/);
+  const spans = new Map();
+  let startLine = 0;
+  let startColumn = 0;
+  let balance = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineNumber = index + 1;
+    const line = lines[index] ?? '';
+    const delta = traceLineParenDelta(line);
+    if (startLine === 0) {
+      if (delta > 0) {
+        startLine = lineNumber;
+        startColumn = /\S/.exec(line)?.index ?? 0;
+        balance = delta;
+      }
+      continue;
+    }
+    balance += delta;
+    if (balance <= 0) {
+      const span = {
+        statementId: `stmt:${startLine}:${lineNumber}:${startColumn}`,
+        startLine,
+        startColumn,
+        endLine: lineNumber,
+        endColumn: line.length,
+      };
+      for (let mappedLine = startLine; mappedLine <= lineNumber; mappedLine += 1) {
+        spans.set(mappedLine, span);
+      }
+      startLine = 0;
+      startColumn = 0;
+      balance = 0;
+    }
+  }
+  return spans;
+}
+
+function csharpRuntimeTraceSourceOwnership(event, statementSourceMap) {
+  if (!(statementSourceMap instanceof Map) || typeof event?.line !== 'number') return {};
+  const span = statementSourceMap.get(Math.floor(event.line));
+  if (!span) return {};
+  const functionName = typeof event.function === 'string' && event.function.length > 0 ? event.function : undefined;
+  return {
+    statementId: functionName ? `${functionName}:${span.statementId}` : span.statementId,
+    sourceSpan: {
+      startLine: span.startLine,
+      startColumn: span.startColumn,
+      endLine: span.endLine,
+      endColumn: span.endColumn,
+    },
+  };
+}
+
+function normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap) {
   const normalizedFile = normalizeCSharpFile(event.file);
-  const next = normalizedFile === undefined ? { ...event } : { ...event, file: normalizedFile };
+  const next = {
+    ...(normalizedFile === undefined ? { ...event } : { ...event, file: normalizedFile }),
+    ...csharpRuntimeTraceSourceOwnership(event, statementSourceMap),
+  };
   const target = next.target;
   if (
     maxPathDepth !== undefined &&
@@ -1347,14 +1434,17 @@ function normalizeCSharpTraceEvent(event, maxPathDepth) {
 function normalizeCSharpResult(result, options = {}) {
   if (!result || typeof result !== 'object') return result;
   const maxPathDepth = normalizeMaxPathDepth(options.maxPathDepth);
+  const statementSourceMap = typeof options.source === 'string'
+    ? buildRuntimeStatementSourceMap(options.source)
+    : new Map();
   const normalizedEvents = Array.isArray(result.events)
-    ? result.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth))
+    ? result.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap))
     : null;
   const normalizedTrace =
     result.trace && typeof result.trace === 'object' && Array.isArray(result.trace.events)
       ? {
           ...result.trace,
-          events: result.trace.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth)),
+          events: result.trace.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap)),
         }
       : normalizedEvents
         ? {
@@ -1467,6 +1557,7 @@ async function handleMessage(message) {
     const projectIo = {
       messageId: message.id,
       request,
+      protocolToken: message.protocolToken,
       stdinPipe: stdinPipeState(request?.stdinPipe),
       stdoutBytes: [],
       stderrBytes: [],
@@ -1513,8 +1604,17 @@ async function handleMessage(message) {
 // Keep globalThis.onmessage unset before dotnet.js loads; newer .NET worker bootstraps
 // use that signal to enable sidecar mode.
 self.addEventListener('message', (event) => {
-  const { id, type, payload } = event.data || {};
+  const { id, type, payload, protocolToken } = event.data || {};
   if (!id) return;
+  if (typeof protocolToken !== 'string') {
+    self.postMessage({
+      id,
+      type: 'error',
+      payload: { error: 'Missing C# worker protocol token.' },
+    });
+    return;
+  }
+  activeProtocolTokens.set(id, protocolToken);
   clearIdleTimer();
   applyWorkerOptions(payload);
   queuedTasks += 1;
@@ -1523,7 +1623,7 @@ self.addEventListener('message', (event) => {
     .catch(() => {})
     .then(async () => {
       const result = await handleMessage({ id, type, payload });
-      self.postMessage({ id, type, payload: result });
+      self.postMessage({ id, type, payload: result, protocolToken });
     })
     .catch((error) => {
       emitRuntimeDiagnostic('error', 'worker-request-failed', 'C# worker request failed.', {
@@ -1533,10 +1633,12 @@ self.addEventListener('message', (event) => {
       self.postMessage({
         id,
         type: 'error',
+        protocolToken,
         payload: { error: error instanceof Error ? error.message : String(error) },
       });
     })
     .finally(() => {
+      activeProtocolTokens.delete(id);
       queuedTasks = Math.max(0, queuedTasks - 1);
       if (queuedTasks === 0) resetIdleTimer();
     });

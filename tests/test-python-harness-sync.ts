@@ -116,15 +116,19 @@ async function assertWorkerInitWarmupContract(workerSource: string): Promise<voi
 
   async function send(type: string): Promise<Record<string, unknown>> {
     const id = String(++nextId);
+    const protocolToken = `python-sync-token-${id}`;
     const response = new Promise<Record<string, unknown>>((resolve, reject) => {
-      pending.set(id, resolve);
+      pending.set(id, (message) => {
+        if (message.protocolToken !== protocolToken) return;
+        resolve(message);
+      });
       setTimeout(() => {
         if (!pending.has(id)) return;
         pending.delete(id);
         reject(new Error(`Timed out waiting for worker response: ${type}`));
       }, 1000);
     });
-    onmessage?.({ data: { id, type, payload: {} } });
+    onmessage?.({ data: { id, type, payload: {}, protocolToken } });
     return response;
   }
 

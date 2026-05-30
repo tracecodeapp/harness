@@ -1348,6 +1348,7 @@ function createIncomingMessage(request: RuntimeKernelHttpRequest) {
     url: request.path,
     headers: request.headers ?? {},
     rawHeaders,
+    signal: request.signal,
     httpVersion: '1.1',
     complete: true,
     get readableEnded() {
@@ -2333,6 +2334,11 @@ function transformDynamicImports(code: string): string {
   );
 }
 
+function serializableKernelHttpRequest(request: RuntimeKernelHttpRequest): RuntimeKernelHttpRequest {
+  const { signal: _signal, ...serializable } = request;
+  return serializable;
+}
+
 function defaultImportBinding(name: string, specifier: string, index: number): string {
   const moduleName = `__tracecode_esm_default_${index}`;
   return [
@@ -2562,19 +2568,33 @@ interface BrowserJavaScriptProjectWorkerMessage {
   id?: string;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
+  port?: MessagePort;
 }
 
 interface BrowserJavaScriptProjectPendingMessage {
+  protocolToken: string;
   resolve: (value: RuntimeCommandResult) => void;
   reject: (error: Error) => void;
   onEvent?: (event: RuntimeCommandEvent) => void;
   kernelHttp?: RuntimeKernelHttpBridge;
+  port?: MessagePort;
   httpListeners: Map<string, RuntimeKernelHttpListenerHandle>;
   httpRequests: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
 }
 
 function createBrowserJavaScriptProjectAbortError(): Error {
   return Object.assign(new Error('Execution aborted'), { name: 'AbortError' });
+}
+
+function createBrowserJavaScriptProjectProtocolToken(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
 class BrowserJavaScriptProjectWorkerClient {
@@ -2612,39 +2632,43 @@ class BrowserJavaScriptProjectWorkerClient {
     if (this.worker) return this.worker;
     this.worker = new Worker(this.workerUrl, { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<BrowserJavaScriptProjectWorkerMessage>) => {
-      const { id, type, payload } = event.data;
-      if (!id) return;
-      const pending = this.pendingMessages.get(id);
-      if (!pending) return;
-      if (type === 'project-event') {
-        pending.onEvent?.(payload as RuntimeCommandEvent);
-        return;
-      }
-      if (
-        type === 'kernel-http-listen' ||
-        type === 'kernel-http-close' ||
-        type === 'kernel-http-response' ||
-        type === 'kernel-http-dispatch' ||
-        type === 'kernel-http-error'
-      ) {
-        this.handleKernelHttpProtocolMessage(id, type, payload);
-        return;
-      }
-      this.pendingMessages.delete(id);
-      this.cleanupPendingKernelHttp(pending);
-      if (type === 'error') {
-        const errorMessage = payload && typeof payload === 'object' && 'error' in payload
-          ? String((payload as { error?: unknown }).error ?? 'JavaScript project worker failed')
-          : 'JavaScript project worker failed';
-        pending.reject(new Error(errorMessage));
-        return;
-      }
-      pending.resolve(payload as RuntimeCommandResult);
+      this.handleWorkerMessage(event.data);
     };
     this.worker.onerror = (event) => {
       this.terminateAndReset(new Error(event.message || 'JavaScript project worker error'));
     };
     return this.worker;
+  }
+
+  private handleWorkerMessage(message: BrowserJavaScriptProjectWorkerMessage): void {
+    const { id, type, payload, protocolToken } = message;
+    if (!id) return;
+    const pending = this.pendingMessages.get(id);
+    if (!pending || protocolToken !== pending.protocolToken) return;
+    if (type === 'project-event') {
+      pending.onEvent?.(payload as RuntimeCommandEvent);
+      return;
+    }
+    if (
+      type === 'kernel-http-listen' ||
+      type === 'kernel-http-close' ||
+      type === 'kernel-http-response' ||
+      type === 'kernel-http-dispatch' ||
+      type === 'kernel-http-error'
+    ) {
+      this.handleKernelHttpProtocolMessage(id, type, payload);
+      return;
+    }
+    this.pendingMessages.delete(id);
+    this.cleanupPendingKernelHttp(pending);
+    if (type === 'error') {
+      const errorMessage = payload && typeof payload === 'object' && 'error' in payload
+        ? String((payload as { error?: unknown }).error ?? 'JavaScript project worker failed')
+        : 'JavaScript project worker failed';
+      pending.reject(new Error(errorMessage));
+      return;
+    }
+    pending.resolve(payload as RuntimeCommandResult);
   }
 
   private sendMessage(
@@ -2655,16 +2679,37 @@ class BrowserJavaScriptProjectWorkerClient {
   ): Promise<RuntimeCommandResult> {
     const worker = this.getWorker();
     const id = String(++this.messageId);
+    const protocolToken = createBrowserJavaScriptProjectProtocolToken();
+    const channel = typeof MessageChannel === 'function' ? new MessageChannel() : null;
     return new Promise<RuntimeCommandResult>((resolve, reject) => {
+      if (channel) {
+        channel.port1.onmessage = (event: MessageEvent<BrowserJavaScriptProjectWorkerMessage>) => {
+          this.handleWorkerMessage(event.data);
+        };
+        channel.port1.start?.();
+      }
       this.pendingMessages.set(id, {
+        protocolToken,
         resolve,
         reject,
         ...(onEvent ? { onEvent } : {}),
         ...(kernelHttp ? { kernelHttp } : {}),
+        ...(channel ? { port: channel.port1 } : {}),
         httpListeners: new Map(),
         httpRequests: new Map(),
       });
-      worker.postMessage({ id, type, payload });
+      const message: BrowserJavaScriptProjectWorkerMessage = {
+        id,
+        type,
+        payload,
+        protocolToken,
+        ...(channel ? { port: channel.port2 } : {}),
+      };
+      if (channel) {
+        worker.postMessage(message, [channel.port2]);
+      } else {
+        worker.postMessage(message);
+      }
     });
   }
 
@@ -2680,15 +2725,11 @@ class BrowserJavaScriptProjectWorkerClient {
       try {
         const handle = pending.kernelHttp.listen(message.options, (request) => this.dispatchWorkerKernelHttpRequest(commandId, message.listenerId, request));
         pending.httpListeners.set(message.listenerId, handle);
-        this.worker?.postMessage({
-          id: commandId,
+        this.postWorkerMessage(commandId, 'kernel-http-listen-result', {
           type: 'kernel-http-listen-result',
-          payload: {
-            type: 'kernel-http-listen-result',
-            listenerId: message.listenerId,
-            info: handle.info,
-          } satisfies RuntimeKernelHttpProtocolMessage,
-        });
+          listenerId: message.listenerId,
+          info: handle.info,
+        } satisfies RuntimeKernelHttpProtocolMessage);
       } catch (error) {
         this.postKernelHttpError(commandId, {
           listenerId: message.listenerId,
@@ -2714,15 +2755,11 @@ class BrowserJavaScriptProjectWorkerClient {
         return;
       }
       pending.kernelHttp.dispatch(message.request).then((response) => {
-        this.worker?.postMessage({
-          id: commandId,
+        this.postWorkerMessage(commandId, 'kernel-http-dispatch-result', {
           type: 'kernel-http-dispatch-result',
-          payload: {
-            type: 'kernel-http-dispatch-result',
-            requestId: message.requestId,
-            response,
-          } satisfies RuntimeKernelHttpProtocolMessage,
-        });
+          requestId: message.requestId,
+          response,
+        } satisfies RuntimeKernelHttpProtocolMessage);
       }, (error) => {
         this.postKernelHttpError(commandId, {
           requestId: message.requestId,
@@ -2748,33 +2785,64 @@ class BrowserJavaScriptProjectWorkerClient {
     const pending = this.pendingMessages.get(commandId);
     if (!pending || !this.worker) return Promise.reject(new Error('JavaScript project worker is not running.'));
     const requestId = `${commandId}:http:${++this.httpRequestId}`;
+    let abortListener: (() => void) | undefined;
     return new Promise<RuntimeKernelHttpResponse>((resolve, reject) => {
-      pending.httpRequests.set(requestId, { resolve, reject });
-      this.worker?.postMessage({
-        id: commandId,
-        type: 'kernel-http-request',
-        payload: {
-          type: 'kernel-http-request',
-          listenerId,
-          requestId,
-          request,
-        } satisfies RuntimeKernelHttpProtocolMessage,
+      const cleanup = (): void => {
+        if (abortListener) request.signal?.removeEventListener?.('abort', abortListener);
+      };
+      pending.httpRequests.set(requestId, {
+        resolve: (response) => {
+          cleanup();
+          resolve(response);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
       });
+      if (request.signal) {
+        abortListener = () => {
+          this.postWorkerMessage(commandId, 'kernel-http-abort-request', {
+            type: 'kernel-http-abort-request',
+            requestId,
+          } satisfies RuntimeKernelHttpProtocolMessage);
+        };
+        request.signal.addEventListener?.('abort', abortListener, { once: true });
+        if (request.signal.aborted) abortListener();
+      }
+      this.postWorkerMessage(commandId, 'kernel-http-request', {
+        type: 'kernel-http-request',
+        listenerId,
+        requestId,
+        request: serializableKernelHttpRequest(request),
+      } satisfies RuntimeKernelHttpProtocolMessage);
     });
+  }
+
+  private postWorkerMessage(commandId: string, type: string, payload: RuntimeKernelHttpProtocolMessage): void {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending) return;
+    const message: BrowserJavaScriptProjectWorkerMessage = {
+      id: commandId,
+      type,
+      payload,
+      protocolToken: pending.protocolToken,
+    };
+    if (pending.port) {
+      pending.port.postMessage(message);
+      return;
+    }
+    this.worker?.postMessage(message);
   }
 
   private postKernelHttpError(
     commandId: string,
     error: Omit<Extract<RuntimeKernelHttpProtocolMessage, { type: 'kernel-http-error' }>, 'type'>
   ): void {
-    this.worker?.postMessage({
-      id: commandId,
+    this.postWorkerMessage(commandId, 'kernel-http-error', {
       type: 'kernel-http-error',
-      payload: {
-        type: 'kernel-http-error',
-        ...error,
-      } satisfies RuntimeKernelHttpProtocolMessage,
-    });
+      ...error,
+    } satisfies RuntimeKernelHttpProtocolMessage);
   }
 
   private cleanupPendingKernelHttp(pending: BrowserJavaScriptProjectPendingMessage): void {
@@ -2782,6 +2850,7 @@ class BrowserJavaScriptProjectWorkerClient {
     pending.httpListeners.clear();
     for (const request of pending.httpRequests.values()) request.reject(new Error('JavaScript project worker finished before HTTP response.'));
     pending.httpRequests.clear();
+    pending.port?.close();
   }
 
   private executeWithTimeout(
@@ -2948,14 +3017,34 @@ export async function runBrowserJavaScriptProjectRequest(
     const kernelDevices = request.project.kernelDevices;
     const procSnapshot = createBrowserProcSnapshot(request.project.kernelFiles);
     const cwdPath = workspaceCwdPath(request);
-    const readonlyFiles = new Set(request.project.readonlyFiles ?? []);
+    const hiddenFiles = Array.from(new Set(
+      (request.project.hiddenFiles ?? []).map((path) => normalizeWorkspaceEntryPath(path, '', false, workspacePathContext))
+    ));
+    const hiddenNamespaces = new Set<string>();
+    for (const hiddenPath of hiddenFiles) {
+      if (!hiddenPath) continue;
+      hiddenNamespaces.add(hiddenPath);
+      const parts = hiddenPath.split('/');
+      for (let index = 1; index < parts.length; index += 1) {
+        hiddenNamespaces.add(parts.slice(0, index).join('/'));
+      }
+    }
+    const isHiddenNamespacePath = (path: string): boolean =>
+      Boolean(path) && Array.from(hiddenNamespaces).some((hiddenPath) => path === hiddenPath || path.startsWith(`${hiddenPath}/`));
+    const isHiddenProjectPath = (path: string): boolean =>
+      isHiddenNamespacePath(path) || hiddenFiles.some((hiddenPath) => hiddenPath.startsWith(`${path}/`));
+    const readonlyFiles = new Set(
+      (request.project.readonlyFiles ?? []).map((path) => normalizeWorkspaceEntryPath(path, '', false, workspacePathContext))
+    );
     io.status('process-start', 'Starting browser Node', {
       command: 'node',
       args: processArgvForRequest(request).slice(2),
       cwd: request.cwd,
     });
     const fileStore = new Map(
-      request.project.files.map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), fileBytes(file)])
+      request.project.files
+        .map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), fileBytes(file)] as const)
+        .filter(([path]) => !isHiddenProjectPath(path))
     );
     const directoryStore = new Set<string>(['']);
     for (const filePath of fileStore.keys()) {
@@ -2967,6 +3056,7 @@ export async function runBrowserJavaScriptProjectRequest(
     for (const directory of request.project.directories ?? []) {
       const directoryPath = normalizeWorkspaceEntryPath(directory, '', true, workspacePathContext);
       if (!directoryPath) continue;
+      if (isHiddenProjectPath(directoryPath)) continue;
       const parts = directoryPath.split('/');
       for (let index = 1; index <= parts.length; index += 1) {
         directoryStore.add(parts.slice(0, index).join('/'));
@@ -3521,11 +3611,16 @@ export async function runBrowserJavaScriptProjectRequest(
       io.fileChange({ path, directory: true, deleted: true }, 'live');
     };
     const assertReadonlyFilePath = (normalized: string, operation: string): void => {
-      if (readonlyFiles.has(normalized)) {
+      if (readonlyFiles.has(normalized) || isHiddenNamespacePath(normalized)) {
         throw createRuntimeKernelReadonlyFileError(normalized, operation);
       }
     };
     const setFileBytes = (path: string, bytes: Uint8Array): void => {
+      const linkedPaths = Array.from(hardLinkGroupForPath(path))
+        .filter((linkedPath) => fileStore.has(linkedPath) || linkedPath === path);
+      for (const linkedPath of linkedPaths) {
+        assertReadonlyFilePath(linkedPath, 'write');
+      }
       const parts = path.split('/');
       for (let index = 1; index < parts.length; index += 1) {
         const directoryPath = parts.slice(0, index).join('/');
@@ -3534,8 +3629,7 @@ export async function runBrowserJavaScriptProjectRequest(
         if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
         if (!existed) emitDirectoryCreate(directoryPath);
       }
-      for (const linkedPath of hardLinkGroupForPath(path)) {
-        if (!fileStore.has(linkedPath) && linkedPath !== path) continue;
+      for (const linkedPath of linkedPaths) {
         fileStore.set(linkedPath, bytes);
         touchEntryMetadata(linkedPath);
         syncTextModule(linkedPath, bytes);
@@ -4101,11 +4195,11 @@ export async function runBrowserJavaScriptProjectRequest(
       if (!normalized) {
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, ${syscall} '${path}'`), { code: 'EISDIR' });
       }
+      assertReadonlyFilePath(normalized, operation);
       assertWorkspaceParentDirectoryPath(normalized, path, syscall);
       if (isWorkspaceDirectoryPath(normalized)) {
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, ${syscall} '${path}'`), { code: 'EISDIR' });
       }
-      assertReadonlyFilePath(normalized, operation);
     };
     const assertFileSystemAccess = (path: unknown, mode: number = fsConstants.F_OK): void => {
       const requested = Number(mode) || fsConstants.F_OK;
@@ -5178,6 +5272,7 @@ export async function runBrowserJavaScriptProjectRequest(
           }
           throw Object.assign(new Error(`ENOENT: no such file or directory, link '${existingPath}' -> '${newPath}'`), { code: 'ENOENT' });
         }
+        assertReadonlyFilePath(normalizedSource, 'link');
         if (fileStore.has(normalizedDestination) || directoryStore.has(normalizedDestination)) {
           throw Object.assign(new Error(`EEXIST: file already exists, link '${existingPath}' -> '${newPath}'`), { code: 'EEXIST' });
         }
@@ -5298,6 +5393,7 @@ export async function runBrowserJavaScriptProjectRequest(
         for (const [filePath] of sourceFiles) {
           assertReadonlyFilePath(filePath, 'move');
         }
+        assertReadonlyFilePath(normalizedNewPath, 'move');
         assertWorkspaceParentDirectoryPath(normalizedNewPath, newPath, 'rename');
         if (fileStore.has(normalizedNewPath)) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, rename '${oldPath}' -> '${newPath}'`), { code: 'ENOTDIR' });
@@ -5704,6 +5800,7 @@ export async function runBrowserJavaScriptProjectRequest(
         const rawPath = workspacePathInputToString(path).replace(/\\/g, '/');
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
+        assertReadonlyFilePath(normalized, 'mkdir');
         const parent = dirname(normalized);
         const parentPath = parent === '' ? '' : parent;
         const parts = normalized.split('/');
@@ -6223,7 +6320,8 @@ export async function runBrowserJavaScriptProjectRequest(
         executableCode
       );
       try {
-        fn(
+        fn.call(
+          isEsmModule(modules, normalizedPath) ? undefined : module.exports,
           localRequire,
           localImport,
           module,
@@ -6305,7 +6403,8 @@ export async function runBrowserJavaScriptProjectRequest(
         executableCode
       );
       try {
-        await fn(
+        await fn.call(
+          undefined,
           localRequire,
           localImport,
           module,
@@ -6382,7 +6481,8 @@ export async function runBrowserJavaScriptProjectRequest(
           transformDynamicImports(evalCode)
         );
         try {
-          await fn(
+          await fn.call(
+            module.exports,
             requireFromRoot,
             importFromRoot,
             module,

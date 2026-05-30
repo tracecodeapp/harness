@@ -1316,6 +1316,10 @@ inline std::string target_json(const std::string& name) {
   return std::string("{\"variable\":") + to_json(name) + "}";
 }
 
+inline std::string target_json_field(const std::string& name, const std::string& field) {
+  return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + to_json(field) + "]}";
+}
+
 template <typename T>
 inline void emit_snapshot_value(const std::string& name, const T& value, int line) {
   if (minimal_trace_enabled()) return;
@@ -1349,6 +1353,13 @@ inline std::string index_sources_json(const char* outer_source, const char* inne
 
 inline std::string target_json_with_index_source(const std::string& name, std::size_t index, const char* source) {
   return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + std::to_string(index) + "],\"indexSources\":" + index_sources_json(source) + "}";
+}
+
+inline std::string target_json_field_index(const std::string& name, const std::string& field, std::size_t index, const char* source = nullptr) {
+  return std::string("{\"variable\":") + to_json(name) +
+    ",\"path\":[" + to_json(field) + "," + std::to_string(index) + "]" +
+    (source ? std::string(",\"indexSources\":") + index_sources_json(nullptr, source) : std::string("")) +
+    "}";
 }
 
 inline std::string target_json(const std::string& name, std::size_t outer, std::size_t inner) {
@@ -1402,6 +1413,28 @@ inline auto trace_index_read(const Container& container, const std::string& name
     );
   }
   return value;
+}
+
+template <typename Container, typename Index, typename Value>
+inline auto trace_index_field_read_value(const Container&, Index, const Value& value) {
+  return value;
+}
+
+template <typename Container, typename Index, typename Value>
+inline auto trace_index_field_read(const Container& container, const std::string& name, Index index, const std::string& field, const Value& value, int line, const char* index_source = nullptr) {
+  auto concrete_index = materialize_trace_index(index);
+  auto field_value = trace_index_field_read_value(container, concrete_index, value);
+  if (!minimal_trace_enabled() && check_trace_budget(line)) {
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":{\"variable\":" + to_json(name) +
+      ",\"path\":[" + to_json(concrete_index) + "," + to_json(field) + "]" +
+      (index_source ? std::string(",\"indexSources\":") + index_sources_json(index_source, nullptr) : std::string("")) +
+      "},\"value\":" + to_json(field_value) + "}"
+    );
+  }
+  return field_value;
 }
 
 template <typename Container, typename Index>
@@ -1506,6 +1539,34 @@ inline void emit_container_mutate_value(const std::string& name, const Container
     );
   }
   emit_snapshot_value(name, container, line);
+}
+
+template <typename Container>
+inline void emit_field_container_mutate_value(const std::string& owner_name, const std::string& field, const Container& container, const char* method, int line, const std::string& args_json = "") {
+  if (!minimal_trace_enabled() && check_trace_budget(line)) {
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_field(owner_name, field) +
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? std::string(",\"args\":[]") : std::string(",\"args\":") + args_json) +
+      "}"
+    );
+  }
+  emit_snapshot_value(field, container, line);
+}
+
+template <typename Container, typename Index>
+inline void emit_field_index_write_value(const std::string& owner_name, const std::string& field, const Container& container, Index index, int line, const char* index_source = nullptr) {
+  if (minimal_trace_enabled() || !check_trace_budget(line)) return;
+  auto value = trace_index_read_value(container, index);
+  trace_event_count() += 1;
+  write_trace_event_json_raw(
+    std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
+    ",\"target\":" + target_json_field_index(owner_name, field, index, index_source) +
+    ",\"value\":" + to_json(value) + "}"
+  );
+  emit_snapshot_value(field, container, line);
 }
 
 template <typename Container>

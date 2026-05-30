@@ -208,7 +208,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return base.VisitConstructorDeclaration(node);
         }
 
-        if (IsTrivialDataConstructor(node))
+        if (IsStructuralNodeConstructor(node) && IsTrivialDataConstructor(node))
         {
             return node;
         }
@@ -246,9 +246,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         StatementSyntax callStatement = TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, {BuildNamedCallArgsExpression(node.ParameterList.Parameters)});"
         );
+        StatementSyntax lineStatement = TraceStatement(
+            $"TraceCode.Internal.TraceCodeTrace.Line({line}, {Literal(node.Identifier.ValueText)});"
+        );
 
         SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements
             .Insert(0, callStatement)
+            .Insert(1, lineStatement)
             .Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line))
             .Add(CreateLeaveStatement(node.Identifier.ValueText));
         return rewritten.WithBody(rewritten.Body.WithStatements(statements));
@@ -927,6 +931,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         );
     }
 
+    private static bool IsStructuralNodeConstructor(ConstructorDeclarationSyntax node)
+    {
+        string name = node.Identifier.ValueText;
+        return string.Equals(name, "ListNode", StringComparison.Ordinal)
+            || string.Equals(name, "TreeNode", StringComparison.Ordinal);
+    }
+
     private static bool IsInstanceFieldLikeAssignmentTarget(ExpressionSyntax expression)
     {
         return expression is IdentifierNameSyntax
@@ -1158,7 +1169,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             ),
             line
         );
-        executableStatement = CaptureCollectionParameterMutationArguments(executableStatement, line, out List<StatementSyntax> mutationArgumentCaptureStatements);
+        executableStatement = CaptureCollectionMutationArguments(executableStatement, line, out List<StatementSyntax> mutationArgumentCaptureStatements);
         foreach (StatementSyntax readStatement in CreateConstructorConsumptionReadStatements(executableStatement, line))
         {
             yield return readStatement;
@@ -1195,6 +1206,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             yield return mutationStatement;
         }
         foreach (StatementSyntax mutationStatement in CreateMemberReceiverMutationStatements(executableStatement, line))
+        {
+            yield return mutationStatement;
+        }
+        foreach (StatementSyntax mutationStatement in CreateSourceLineSortMutationStatements(line))
         {
             yield return mutationStatement;
         }
@@ -1488,6 +1503,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         int originalLine = GetLine(node);
+        if (TryRewriteMemberCollectionInvocationLine(node, originalLine, out ExpressionSyntax? originalMemberLineScopedReplacement))
+        {
+            return originalMemberLineScopedReplacement;
+        }
+
         if (TryRewriteIndexedReceiverRead(node, out ExpressionSyntax? originalIndexedReadReplacement))
         {
             return originalIndexedReadReplacement;
@@ -1502,6 +1522,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (TryRewriteTrackedCollectionInvocationLine(rewritten, originalLine, out ExpressionSyntax? lineScopedReplacement))
         {
             return lineScopedReplacement;
+        }
+
+        if (TryRewriteMemberCollectionInvocationLine(rewritten, originalLine, out ExpressionSyntax? memberLineScopedReplacement))
+        {
+            return memberLineScopedReplacement;
         }
 
         if (TryRewriteIdentifierReceiverRead(rewritten, out ExpressionSyntax? identifierReadReplacement))
@@ -1519,16 +1544,78 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return replacement;
         }
 
+        if (TryRewriteUserVariableInvocationLine(rewritten, originalLine, out ExpressionSyntax? userVariableLineScopedReplacement))
+        {
+            return userVariableLineScopedReplacement;
+        }
+
         return rewritten;
+    }
+
+    private bool TryRewriteUserVariableInvocationLine(InvocationExpressionSyntax invocation, int line, out ExpressionSyntax? replacement)
+    {
+        replacement = null;
+        if (line <= 0
+            || invocation.Expression is not MemberAccessExpressionSyntax
+            {
+                Expression: IdentifierNameSyntax receiver,
+            } memberAccess
+            || IsInsideTraceCodeSourceLineScope(invocation))
+        {
+            return false;
+        }
+
+        string receiverName = receiver.Identifier.ValueText;
+        if (collectionVariables.Contains(receiverName)
+            || collectionParameterVariables.Contains(receiverName)
+            || stringBuilderScopes.Any(scope => scope.Contains(receiverName)))
+        {
+            return false;
+        }
+
+        string method = memberAccess.Name.Identifier.ValueText;
+        if (IsIndexedReceiverMutationMethod(method))
+        {
+            return false;
+        }
+
+        if (method is "ToString" or "GetHashCode" or "Equals")
+        {
+            return false;
+        }
+
+        string lambdaExpression = invocation.Parent is ExpressionStatementSyntax
+            ? $"(System.Action)(() => {invocation})"
+            : $"() => {invocation}";
+        replacement = SyntaxFactory.ParseExpression($"TraceCode.Internal.TraceCodeTrace.WithSourceLine({line}, {lambdaExpression})");
+        return true;
     }
 
     private bool TryRewriteTrackedCollectionInvocationLine(InvocationExpressionSyntax invocation, int line, out ExpressionSyntax? replacement)
     {
         replacement = null;
+        bool isForIncrementorMutationContext = IsForIncrementorMutationContext(invocation);
+        bool isStatementMutationContext = invocation.Parent is ExpressionStatementSyntax || isForIncrementorMutationContext;
+        if (invocation.Expression is MemberAccessExpressionSyntax expressionStatementMemberAccess
+            && expressionStatementMemberAccess.Expression is IdentifierNameSyntax expressionStatementReceiver
+            && IsTrackedCollectionReceiver(expressionStatementReceiver.Identifier.ValueText)
+            && expressionStatementMemberAccess.Name.Identifier.ValueText is "Sort" or "RemoveAt"
+            && invocation.ArgumentList.Arguments.All(argument => argument.NameColon is null && argument.RefOrOutKeyword.RawKind == 0)
+            && isStatementMutationContext
+            && !IsInsideTraceCodeSourceLineScope(invocation))
+        {
+            string mutationMethod = expressionStatementMemberAccess.Name.Identifier.ValueText;
+            string args = MutationArgsExpression(invocation);
+            replacement = SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.CollectionMutationCall({line}, {Literal(expressionStatementReceiver.Identifier.ValueText)}, {Literal(mutationMethod)}, new object?[] {{ {args} }}, (System.Action)(() => {invocation}), {expressionStatementReceiver})"
+            );
+            return true;
+        }
         if (invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not IdentifierNameSyntax receiver
             || !IsTrackedCollectionReceiver(receiver.Identifier.ValueText)
             || !IsTrackedCollectionWrapperMethod(memberAccess.Name.Identifier.ValueText)
+            || invocation.Parent is ExpressionStatementSyntax
             || IsInsideTraceCodeSourceLineScope(invocation))
         {
             return false;
@@ -1566,13 +1653,18 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return false;
         }
 
-        if (method == "Enqueue" && invocation.Parent is ExpressionStatementSyntax)
+        if (method == "Enqueue" && isForIncrementorMutationContext)
         {
-            string args = string.Join(", ", invocation.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
+            string args = MutationArgsExpression(invocation);
             replacement = SyntaxFactory.ParseExpression(
                 $"TraceCode.Internal.TraceCodeTrace.CollectionMutationCall({line}, {Literal(receiver.Identifier.ValueText)}, {Literal(method)}, new object?[] {{ {args} }}, () => {invocation})"
             );
             return true;
+        }
+
+        if (IsIndexedReceiverMutationMethod(method))
+        {
+            return false;
         }
 
         string scopedInvocation = $"TraceCode.Internal.TraceCodeTrace.WithSourceLine({line}, () => {invocation})";
@@ -1590,6 +1682,45 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         replacement = SyntaxFactory.ParseExpression(scopedInvocation);
+        return true;
+    }
+
+    private static bool IsForIncrementorMutationContext(InvocationExpressionSyntax invocation)
+    {
+        return invocation.Parent is ForStatementSyntax forStatement
+            && forStatement.Incrementors.Any(incrementor => ReferenceEquals(incrementor, invocation));
+    }
+
+    private bool TryRewriteMemberCollectionInvocationLine(InvocationExpressionSyntax invocation, int line, out ExpressionSyntax? replacement)
+    {
+        replacement = null;
+        if (invocation.Expression is MemberAccessExpressionSyntax expressionStatementMemberAccess
+            && expressionStatementMemberAccess.Expression is MemberAccessExpressionSyntax expressionStatementReceiver
+            && TryGetMemberAccessPath(expressionStatementReceiver, out string expressionStatementVariable, out List<string>? expressionStatementPath)
+            && expressionStatementMemberAccess.Name.Identifier.ValueText is "Sort"
+            && invocation.ArgumentList.Arguments.All(argument => argument.NameColon is null && argument.RefOrOutKeyword.RawKind == 0)
+            && invocation.Parent is ExpressionStatementSyntax
+            && !IsInsideTraceCodeSourceLineScope(invocation))
+        {
+            string args = MutationArgsExpression(invocation);
+            replacement = SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.FieldCollectionMutationCall({line}, {Literal(expressionStatementVariable)}, {CreateStringArrayExpression(expressionStatementPath)}, {Literal("Sort")}, new object?[] {{ {args} }}, (System.Action)(() => {invocation}), {expressionStatementReceiver})"
+            );
+            return true;
+        }
+        if (invocation.Expression is not MemberAccessExpressionSyntax memberAccess
+            || memberAccess.Expression is not MemberAccessExpressionSyntax receiver
+            || !TryGetMemberAccessPath(receiver, out string variable, out List<string>? path)
+            || !IsDeclaredMemberCollectionPath(variable, path)
+            || !IsIndexedReceiverMutationMethod(memberAccess.Name.Identifier.ValueText)
+            || invocation.ArgumentList.Arguments.Any(argument => argument.NameColon is not null || argument.RefOrOutKeyword.RawKind != 0)
+            || invocation.Parent is ExpressionStatementSyntax
+            || IsInsideTraceCodeSourceLineScope(invocation))
+        {
+            return false;
+        }
+
+        replacement = SyntaxFactory.ParseExpression($"TraceCode.Internal.TraceCodeTrace.WithSourceLine({line}, () => {invocation})");
         return true;
     }
 
@@ -1659,6 +1790,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return indexedMetadataRead;
         }
 
+        if (TryRewriteIndexedFieldRead(node, out ExpressionSyntax? indexedFieldRead))
+        {
+            return indexedFieldRead;
+        }
+
         if (!TryGetMemberAccessPath(node, out string variable, out List<string>? path))
         {
             return base.VisitMemberAccessExpression(node);
@@ -1706,6 +1842,49 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
             string pathExpression = CreateObjectArrayExpression(fieldPath, fieldIndex, Literal(metadataName));
             string indexSourcesExpression = CreateFieldIndexedMetadataIndexSourcesExpression(fieldPath, fieldIndex);
+            replacement = SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.FieldRead({memberAccess}, {Literal(fieldVariable)}, {pathExpression}, {line}, {indexSourcesExpression})"
+            );
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryRewriteIndexedFieldRead(MemberAccessExpressionSyntax memberAccess, out ExpressionSyntax? replacement)
+    {
+        replacement = null;
+        if (memberAccess.Expression is not ElementAccessExpressionSyntax elementAccess)
+        {
+            return false;
+        }
+
+        string fieldName = memberAccess.Name.Identifier.ValueText;
+        int line = GetLine(memberAccess);
+        if (TryGetIdentifierElementAccessPath(elementAccess, out string variable, out string index))
+        {
+            if (IsRangeIndex(index))
+            {
+                return false;
+            }
+
+            string pathExpression = CreateObjectArrayExpression(Array.Empty<string>(), index, Literal(fieldName));
+            string indexSourcesExpression = CreateIndexSourcesExpression(index);
+            replacement = SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.FieldRead({memberAccess}, {Literal(variable)}, {pathExpression}, {line}, {indexSourcesExpression})"
+            );
+            return true;
+        }
+
+        if (TryGetFieldElementAccessPath(elementAccess, out string fieldVariable, out List<string>? fieldPath, out string fieldIndex))
+        {
+            if (IsRangeIndex(fieldIndex))
+            {
+                return false;
+            }
+
+            string pathExpression = CreateObjectArrayExpression(fieldPath, fieldIndex, Literal(fieldName));
+            string indexSourcesExpression = CreateFieldIndexSourcesExpression(fieldPath, fieldIndex);
             replacement = SyntaxFactory.ParseExpression(
                 $"TraceCode.Internal.TraceCodeTrace.FieldRead({memberAccess}, {Literal(fieldVariable)}, {pathExpression}, {line}, {indexSourcesExpression})"
             );
@@ -2349,7 +2528,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
     }
 
-    private StatementSyntax CaptureCollectionParameterMutationArguments(
+    private StatementSyntax CaptureCollectionMutationArguments(
         StatementSyntax statement,
         int line,
         out List<StatementSyntax> captureStatements)
@@ -2359,11 +2538,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || expressionStatement.Expression is not InvocationExpressionSyntax invocation
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not IdentifierNameSyntax receiver
-            || !collectionParameterVariables.Contains(receiver.Identifier.ValueText)
-            || collectionVariables.Contains(receiver.Identifier.ValueText)
             || !IsIndexedReceiverMutationMethod(memberAccess.Name.Identifier.ValueText)
             || invocation.ArgumentList.Arguments.Count == 0
-            || invocation.ArgumentList.Arguments.Any(argument => argument.NameColon is not null || argument.RefOrOutKeyword.RawKind != 0))
+            || invocation.ArgumentList.Arguments.Any(argument =>
+                argument.NameColon is not null
+                || argument.RefOrOutKeyword.RawKind != 0
+                || argument.Expression.DescendantNodesAndSelf().Any(node =>
+                    node is LambdaExpressionSyntax or AnonymousMethodExpressionSyntax)))
         {
             return statement;
         }
@@ -2408,8 +2589,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     private IEnumerable<StatementSyntax> CreateCollectionParameterMutationStatements(StatementSyntax statement, int line)
     {
-        if (statement is not ExpressionStatementSyntax expressionStatement
-            || expressionStatement.Expression is not InvocationExpressionSyntax invocation
+        if (!TryGetInvocationStatement(statement, out InvocationExpressionSyntax invocation)
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not IdentifierNameSyntax receiver
             || !collectionParameterVariables.Contains(receiver.Identifier.ValueText)
@@ -2422,7 +2602,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string variable = receiver.Identifier.ValueText;
         string method = memberAccess.Name.Identifier.ValueText;
-        string args = string.Join(", ", invocation.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
+        string args = MutationArgsExpression(invocation);
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal(method)}, new object?[] {{ {args} }}, {line});"
         );
@@ -2435,35 +2615,90 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
     }
 
+    private static bool TryGetInvocationStatement(StatementSyntax statement, out InvocationExpressionSyntax invocation)
+    {
+        invocation = null!;
+        if (statement is not ExpressionStatementSyntax expressionStatement
+            || expressionStatement.Expression is not InvocationExpressionSyntax expressionInvocation)
+        {
+            return false;
+        }
+
+        if (IsTraceCodeSourceLineInvocation(expressionInvocation)
+            && expressionInvocation.ArgumentList.Arguments.Count >= 2)
+        {
+            ExpressionSyntax scopedExpression = expressionInvocation.ArgumentList.Arguments[1].Expression;
+            if (scopedExpression is CastExpressionSyntax castExpression)
+            {
+                scopedExpression = castExpression.Expression;
+            }
+            if (scopedExpression is ParenthesizedLambdaExpressionSyntax { ExpressionBody: InvocationExpressionSyntax scopedInvocation })
+            {
+                invocation = scopedInvocation;
+                return true;
+            }
+
+            if (scopedExpression is SimpleLambdaExpressionSyntax { ExpressionBody: InvocationExpressionSyntax simpleScopedInvocation })
+            {
+                invocation = simpleScopedInvocation;
+                return true;
+            }
+        }
+
+        invocation = expressionInvocation;
+        return true;
+    }
+
+    private static bool IsTraceCodeSourceLineInvocation(InvocationExpressionSyntax invocation)
+    {
+        return invocation.Expression is MemberAccessExpressionSyntax memberAccess
+            && string.Equals(memberAccess.Name.Identifier.ValueText, "WithSourceLine", StringComparison.Ordinal);
+    }
+
+    private static string MutationArgsExpression(InvocationExpressionSyntax invocation)
+    {
+        return string.Join(", ", invocation.ArgumentList.Arguments.Select(argument =>
+            argument.Expression is LambdaExpressionSyntax or AnonymousMethodExpressionSyntax
+                ? Literal("<lambda>")
+                : argument.Expression.ToString()
+        ));
+    }
+
     private IEnumerable<StatementSyntax> CreateIdentifierReceiverMutationStatements(StatementSyntax statement, int line)
     {
-        if (statement is not ExpressionStatementSyntax expressionStatement
-            || expressionStatement.Expression is not InvocationExpressionSyntax invocation
+        if (!TryGetInvocationStatement(statement, out InvocationExpressionSyntax invocation)
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not IdentifierNameSyntax receiver
-            || IsTrackedCollectionReceiver(receiver.Identifier.ValueText)
-                && !interfaceDispatchedCollectionVariables.Contains(receiver.Identifier.ValueText)
             || collectionParameterVariables.Contains(receiver.Identifier.ValueText)
-            || !string.Equals(memberAccess.Name.Identifier.ValueText, "Add", StringComparison.Ordinal)
-            || invocation.ArgumentList.Arguments.Count != 1)
+            || !IsIndexedReceiverMutationMethod(memberAccess.Name.Identifier.ValueText))
         {
             yield break;
         }
 
         string variable = receiver.Identifier.ValueText;
-        string argument = invocation.ArgumentList.Arguments[0].Expression.ToString();
+        string method = memberAccess.Name.Identifier.ValueText;
+        if (IsTrackedCollectionReceiver(variable)
+            && !interfaceDispatchedCollectionVariables.Contains(variable)
+            && method is not "Sort" and not "RemoveAt")
+        {
+            yield break;
+        }
+        string args = MutationArgsExpression(invocation);
         yield return TraceStatement(
-            $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal("Add")}, new object?[] {{ {argument} }}, {line});"
+            $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal(method)}, new object?[] {{ {args} }}, {line});"
         );
-        yield return TraceStatement(
-            $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedInsertedWrite({Literal(variable)}, {variable}, {argument}, {line});"
-        );
+        if (string.Equals(method, "Add", StringComparison.Ordinal) && invocation.ArgumentList.Arguments.Count == 1)
+        {
+            string argument = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            yield return TraceStatement(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedInsertedWrite({Literal(variable)}, {variable}, {argument}, {line});"
+            );
+        }
     }
 
     private IEnumerable<StatementSyntax> CreateIndexedReceiverMutationStatements(StatementSyntax statement, int line)
     {
-        if (statement is not ExpressionStatementSyntax expressionStatement
-            || expressionStatement.Expression is not InvocationExpressionSyntax invocation
+        if (!TryGetInvocationStatement(statement, out InvocationExpressionSyntax invocation)
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not ElementAccessExpressionSyntax receiver
             || receiver.Expression is not IdentifierNameSyntax identifier
@@ -2475,7 +2710,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string variable = identifier.Identifier.ValueText;
         string index = receiver.ArgumentList.Arguments[0].Expression.ToString();
-        string args = string.Join(", ", invocation.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
+        string args = MutationArgsExpression(invocation);
         string method = memberAccess.Name.Identifier.ValueText;
         string indexSourcesExpression = CreateIndexSourcesExpression(index);
         yield return TraceStatement(
@@ -2495,8 +2730,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     private IEnumerable<StatementSyntax> CreateMemberReceiverMutationStatements(StatementSyntax statement, int line)
     {
-        if (statement is not ExpressionStatementSyntax expressionStatement
-            || expressionStatement.Expression is not InvocationExpressionSyntax invocation
+        if (!TryGetInvocationStatement(statement, out InvocationExpressionSyntax invocation)
             || invocation.Expression is not MemberAccessExpressionSyntax invocationMemberAccess
             || invocationMemberAccess.Expression is not MemberAccessExpressionSyntax receiver
             || !TryGetMemberAccessPath(receiver, out string variable, out List<string>? path))
@@ -2506,6 +2740,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string method = invocationMemberAccess.Name.Identifier.ValueText;
         bool isDeclaredMemberCollection = IsDeclaredMemberCollectionPath(variable, path);
+        if (isDeclaredMemberCollection && method is "Sort" or "RemoveAt")
+        {
+            yield break;
+        }
         if (method != "Add"
             && (!IsIndexedReceiverMutationMethod(method) || !isDeclaredMemberCollection))
         {
@@ -2513,10 +2751,18 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string pathExpression = CreateStringArrayExpression(path);
-        string args = string.Join(", ", invocation.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
+        string args = MutationArgsExpression(invocation);
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.FieldRead({receiver}, {Literal(variable)}, {pathExpression}, {line});"
         );
+        if (string.Equals(method, "Sort", StringComparison.Ordinal) && isDeclaredMemberCollection)
+        {
+            yield break;
+        }
+        if (string.Equals(method, "Add", StringComparison.Ordinal) && isDeclaredMemberCollection)
+        {
+            yield break;
+        }
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {pathExpression}, {Literal(method)}, new object?[] {{ {args} }}, {line});"
         );
@@ -2528,6 +2774,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, {writePathExpression}, {value}, {line});"
             );
         }
+    }
+
+    private IEnumerable<StatementSyntax> CreateSourceLineSortMutationStatements(int line)
+    {
+        yield break;
     }
 
     private IEnumerable<StatementSyntax> CreateFieldIndexedReceiverMutationStatements(StatementSyntax statement, int line)
@@ -2543,7 +2794,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string pathExpression = CreateObjectArrayExpression(path, index);
-        string args = string.Join(", ", invocation.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
+        string args = MutationArgsExpression(invocation);
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.FieldRead({receiver}, {Literal(variable)}, {pathExpression}, {line});"
         );
@@ -2578,7 +2829,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         string index = elementAccess.ArgumentList.Arguments[0].Expression.ToString();
         string field = receiverField.Name.Identifier.ValueText;
         string pathExpression = $"new object?[] {{ {index}, {Literal(field)} }}";
-        string args = string.Join(", ", invocation.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
+        string args = MutationArgsExpression(invocation);
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.FieldRead({receiverField}, {Literal(variable)}, {pathExpression}, {line});"
         );
@@ -3300,7 +3551,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     private static bool IsIndexedReceiverMutationMethod(string method)
     {
-        return method is "Add" or "AddLast" or "AddFirst" or "Append" or "AppendLine" or "Clear" or "Dequeue" or "Enqueue" or "Insert" or "Pop" or "Push" or "Remove" or "RemoveAt" or "RemoveFirst" or "RemoveLast" or "Replace";
+        return method is "Add" or "AddLast" or "AddFirst" or "Append" or "AppendLine" or "Clear" or "Dequeue" or "Enqueue" or "Insert" or "Pop" or "Push" or "Remove" or "RemoveAt" or "RemoveFirst" or "RemoveLast" or "Replace" or "Sort";
     }
 
     private static bool IsIndexedReceiverReadMethod(string method)

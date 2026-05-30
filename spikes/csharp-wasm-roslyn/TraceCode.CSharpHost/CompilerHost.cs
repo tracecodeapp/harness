@@ -111,12 +111,14 @@ public static partial class CompilerHost
             double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
             object? output = InvokeDriver(userAssembly);
             timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
+            List<RuntimeTraceEvent> events = RuntimeTraceSink.Snapshot();
+            BackfillSourceCollectionMutationEvents(request.Source, events);
             return Serialize(new CSharpExecuteResponse
             {
                 Success = true,
                 Output = NormalizeOutput(output),
                 ConsoleOutput = SplitConsoleOutput(capturedOut),
-                Events = RuntimeTraceSink.Snapshot(),
+                Events = events,
                 TraceLimitExceeded = RuntimeTraceSink.TraceLimitExceeded,
                 TimeoutReason = RuntimeTraceSink.TraceLimitExceeded ? RuntimeTraceSink.TimeoutReason : null,
                 ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
@@ -443,6 +445,483 @@ public static partial class CompilerHost
                 Environment.SetEnvironmentVariable(key, entry.Value?.ToString());
             }
         }
+    }
+
+    private static void RemoveRedundantSourceSortMutationEvents(List<RuntimeTraceEvent> events)
+    {
+        for (int index = events.Count - 1; index >= 0; index -= 1)
+        {
+            RuntimeTraceEvent traceEvent = events[index];
+            if (traceEvent.Kind != "mutate"
+                || !string.Equals(traceEvent.Method, "Sort", StringComparison.Ordinal)
+                || traceEvent.Target is null
+                || TraceArgsHaveItems(traceEvent.Args))
+            {
+                continue;
+            }
+
+            bool hasConcreteSortOnSameLine = false;
+            for (int nextIndex = index + 1; nextIndex < events.Count; nextIndex += 1)
+            {
+                RuntimeTraceEvent next = events[nextIndex];
+                if (next.Line != traceEvent.Line)
+                {
+                    break;
+                }
+                if (next.Kind == "mutate"
+                    && string.Equals(next.Method, "Sort", StringComparison.Ordinal)
+                    && next.Target is not null
+                    && TraceArgsHaveItems(next.Args))
+                {
+                    hasConcreteSortOnSameLine = true;
+                    break;
+                }
+            }
+
+            if (hasConcreteSortOnSameLine)
+            {
+                events.RemoveAt(index);
+            }
+        }
+    }
+
+    private static bool TraceArgsHaveItems(object? args)
+    {
+        return args switch
+        {
+            null => false,
+            string => true,
+            System.Collections.ICollection collection => collection.Count > 0,
+            System.Collections.IEnumerable enumerable => enumerable.Cast<object?>().Any(),
+            _ => true,
+        };
+    }
+
+    private static void BackfillSourceCollectionMutationEvents(string source, List<RuntimeTraceEvent> events)
+    {
+        string[] sourceLines = source.Split('\n');
+        Dictionary<string, object?> latestValues = new(StringComparer.Ordinal);
+        for (int index = 0; index < events.Count; index += 1)
+        {
+            RuntimeTraceEvent lineEvent = events[index];
+            if (lineEvent.Kind != "line" || lineEvent.Line is not int line || line <= 0 || line > sourceLines.Length)
+            {
+                TrackLatestTraceValue(latestValues, lineEvent);
+                continue;
+            }
+
+            int end = index + 1;
+            while (end < events.Count && events[end].Kind != "line")
+            {
+                end += 1;
+            }
+            if (end == index + 1
+                && end < events.Count
+                && events[end].Kind == "line"
+                && events[end].Line == line)
+            {
+                index = end - 1;
+                continue;
+            }
+
+            string sourceLine = sourceLines[line - 1];
+            Match sortMatch = Regex.Match(sourceLine, @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*Sort\s*\(");
+            Match removeAtMatch = Regex.Match(sourceLine, @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*RemoveAt\s*\(\s*([^)]*)\)");
+            if (!sortMatch.Success && !removeAtMatch.Success)
+            {
+                TrackLatestTraceValues(latestValues, events, index + 1, end);
+                index = end - 1;
+                continue;
+            }
+
+            Match match = sortMatch.Success ? sortMatch : removeAtMatch;
+            string method = sortMatch.Success ? "Sort" : "RemoveAt";
+            string receiver = match.Groups[2].Value;
+            RuntimeTraceTarget target = match.Groups[1].Success
+                ? new RuntimeTraceTarget { Variable = "this", Path = new List<object?> { receiver } }
+                : new RuntimeTraceTarget { Variable = receiver };
+            List<object?> args = method == "RemoveAt"
+                ? new List<object?> { ParseMutationArgument(match.Groups[3].Value.Trim()) }
+                : new List<object?>();
+
+            bool hasMutation = events
+                .Skip(index + 1)
+                .Take(end - index - 1)
+                .Any(traceEvent =>
+                    traceEvent.Kind == "mutate" &&
+                    string.Equals(traceEvent.Method, method, StringComparison.Ordinal) &&
+                    traceEvent.Target is not null &&
+                    TargetsEqual(traceEvent.Target, target));
+
+            string targetKey = TargetKey(target);
+            object? baseValue = latestValues.TryGetValue(targetKey, out object? knownValue)
+                ? knownValue
+                : FindLatestLineValue(events, index + 1, end, target);
+            TrackLatestTraceValues(latestValues, events, index + 1, end);
+
+            var inserts = new List<RuntimeTraceEvent>();
+            if (!hasMutation)
+            {
+                inserts.Add(new RuntimeTraceEvent
+                {
+                    Kind = "mutate",
+                    RunId = lineEvent.RunId,
+                    File = lineEvent.File,
+                    Line = line,
+                    Target = target,
+                    Method = method,
+                    Args = args,
+                    CallStack = lineEvent.CallStack,
+                });
+            }
+
+            if (TryDerivePostCollectionMutationValue(method, baseValue, args, out object? postValue))
+            {
+                if (!HasPostCollectionWrite(events, index + 1, end, target, postValue))
+                {
+                    inserts.Add(new RuntimeTraceEvent
+                    {
+                        Kind = "write",
+                        RunId = lineEvent.RunId,
+                        File = lineEvent.File,
+                        Line = line,
+                        Target = CloneTarget(target),
+                        Value = postValue,
+                        CallStack = lineEvent.CallStack,
+                    });
+                    inserts.AddRange(CreateIndexedWriteEvents(lineEvent, target, postValue));
+                }
+                latestValues[targetKey] = postValue;
+            }
+            else if (hasMutation
+                && TryFindLatestValueAfterMutation(events, index + 1, end, target, method, out object? observedPostValue)
+                && observedPostValue is not string
+                && observedPostValue is System.Collections.IEnumerable)
+            {
+                if (!HasPostCollectionWrite(events, index + 1, end, target, observedPostValue))
+                {
+                    inserts.Add(new RuntimeTraceEvent
+                    {
+                        Kind = "write",
+                        RunId = lineEvent.RunId,
+                        File = lineEvent.File,
+                        Line = line,
+                        Target = CloneTarget(target),
+                        Value = observedPostValue,
+                        CallStack = lineEvent.CallStack,
+                    });
+                    inserts.AddRange(CreateIndexedWriteEvents(lineEvent, target, observedPostValue));
+                }
+                latestValues[targetKey] = observedPostValue;
+            }
+
+            if (inserts.Count > 0)
+            {
+                events.InsertRange(end, inserts);
+                index = end + inserts.Count - 1;
+            }
+            else
+            {
+                index = end - 1;
+            }
+        }
+        RemoveRedundantSourceSortMutationEvents(events);
+    }
+
+    private static void TrackLatestTraceValues(Dictionary<string, object?> latestValues, List<RuntimeTraceEvent> events, int start, int end)
+    {
+        for (int index = start; index < end; index += 1)
+        {
+            TrackLatestTraceValue(latestValues, events[index]);
+        }
+    }
+
+    private static void TrackLatestTraceValue(Dictionary<string, object?> latestValues, RuntimeTraceEvent traceEvent)
+    {
+        if (traceEvent.Kind is not ("read" or "write" or "snapshot") || traceEvent.Target is null)
+        {
+            return;
+        }
+
+        latestValues[TargetKey(traceEvent.Target)] = traceEvent.Value;
+    }
+
+    private static object? FindLatestLineValue(List<RuntimeTraceEvent> events, int start, int end, RuntimeTraceTarget target)
+    {
+        for (int index = end - 1; index >= start; index -= 1)
+        {
+            RuntimeTraceEvent traceEvent = events[index];
+            if (traceEvent.Kind is ("read" or "write" or "snapshot")
+                && traceEvent.Target is not null
+                && TargetsEqual(traceEvent.Target, target))
+            {
+                return traceEvent.Value;
+            }
+        }
+        return null;
+    }
+
+    private static bool TryFindLatestValueAfterMutation(
+        List<RuntimeTraceEvent> events,
+        int start,
+        int end,
+        RuntimeTraceTarget target,
+        string method,
+        out object? value)
+    {
+        bool sawMutation = false;
+        bool sawValue = false;
+        value = null;
+        for (int index = start; index < end; index += 1)
+        {
+            RuntimeTraceEvent traceEvent = events[index];
+            if (traceEvent.Kind == "mutate"
+                && string.Equals(traceEvent.Method, method, StringComparison.Ordinal)
+                && traceEvent.Target is not null
+                && TargetsEqual(traceEvent.Target, target))
+            {
+                sawMutation = true;
+                sawValue = false;
+                value = null;
+                continue;
+            }
+
+            if (sawMutation
+                && traceEvent.Kind is ("read" or "write" or "snapshot")
+                && traceEvent.Target is not null
+                && TargetsEqual(traceEvent.Target, target))
+            {
+                sawValue = true;
+                value = traceEvent.Value;
+            }
+        }
+
+        return sawValue;
+    }
+
+    private static bool TryDerivePostCollectionMutationValue(string method, object? baseValue, IReadOnlyList<object?> args, out object? postValue)
+    {
+        postValue = null;
+        if (baseValue is string || baseValue is not System.Collections.IEnumerable enumerable)
+        {
+            return false;
+        }
+
+        List<object?> values = enumerable.Cast<object?>().ToList();
+        if (method == "Sort")
+        {
+            if (!values.All(IsDeterministicallySortableTraceValue))
+            {
+                return false;
+            }
+            values.Sort(CompareTraceValues);
+            postValue = values;
+            return true;
+        }
+
+        if (method == "RemoveAt"
+            && args.Count >= 1
+            && TryCoerceIndex(args[0], out int index)
+            && index >= 0
+            && index < values.Count)
+        {
+            values.RemoveAt(index);
+            postValue = values;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasPostCollectionWrite(List<RuntimeTraceEvent> events, int start, int end, RuntimeTraceTarget target, object? postValue)
+    {
+        for (int index = start; index < end; index += 1)
+        {
+            RuntimeTraceEvent traceEvent = events[index];
+            if (traceEvent.Kind == "write"
+                && traceEvent.Target is not null
+                && TargetsEqual(traceEvent.Target, target)
+                && TraceValuesEqual(traceEvent.Value, postValue))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool TraceValuesEqual(object? left, object? right)
+    {
+        if (ReferenceEquals(left, right)) return true;
+        if (left is null || right is null) return false;
+        if (left is string || right is string) return object.Equals(left, right);
+        if (left is System.Collections.IEnumerable leftItems && right is System.Collections.IEnumerable rightItems)
+        {
+            IEnumerator<object?> leftEnumerator = leftItems.Cast<object?>().GetEnumerator();
+            IEnumerator<object?> rightEnumerator = rightItems.Cast<object?>().GetEnumerator();
+            while (true)
+            {
+                bool leftHasValue = leftEnumerator.MoveNext();
+                bool rightHasValue = rightEnumerator.MoveNext();
+                if (leftHasValue != rightHasValue) return false;
+                if (!leftHasValue) return true;
+                if (!TraceValuesEqual(leftEnumerator.Current, rightEnumerator.Current)) return false;
+            }
+        }
+        return object.Equals(left, right);
+    }
+
+    private static int CompareTraceValues(object? left, object? right)
+    {
+        if (left is null && right is null) return 0;
+        if (left is null) return -1;
+        if (right is null) return 1;
+        if (IsNumericTraceValue(left) && IsNumericTraceValue(right))
+        {
+            return Convert.ToDecimal(left, CultureInfo.InvariantCulture)
+                .CompareTo(Convert.ToDecimal(right, CultureInfo.InvariantCulture));
+        }
+        return string.CompareOrdinal(Convert.ToString(left, CultureInfo.InvariantCulture), Convert.ToString(right, CultureInfo.InvariantCulture));
+    }
+
+    private static bool IsDeterministicallySortableTraceValue(object? value)
+    {
+        return value is null
+            || value is string
+            || value is char
+            || value is bool
+            || value is byte
+            || value is sbyte
+            || value is short
+            || value is ushort
+            || value is int
+            || value is uint
+            || value is long
+            || value is ulong
+            || value is float
+            || value is double
+            || value is decimal;
+    }
+
+    private static bool IsNumericTraceValue(object value)
+    {
+        return value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
+    }
+
+    private static bool TryCoerceIndex(object? value, out int index)
+    {
+        if (value is int intValue)
+        {
+            index = intValue;
+            return true;
+        }
+        if (value is long longValue && longValue >= int.MinValue && longValue <= int.MaxValue)
+        {
+            index = (int)longValue;
+            return true;
+        }
+        if (value is string text && int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+        {
+            index = parsed;
+            return true;
+        }
+        index = 0;
+        return false;
+    }
+
+    private static IEnumerable<RuntimeTraceEvent> CreateIndexedWriteEvents(RuntimeTraceEvent lineEvent, RuntimeTraceTarget target, object? postValue)
+    {
+        if (postValue is string || postValue is not System.Collections.IEnumerable enumerable)
+        {
+            yield break;
+        }
+
+        int index = 0;
+        foreach (object? item in enumerable)
+        {
+            yield return new RuntimeTraceEvent
+            {
+                Kind = "write",
+                RunId = lineEvent.RunId,
+                File = lineEvent.File,
+                Line = lineEvent.Line,
+                Target = new RuntimeTraceTarget
+                {
+                    Variable = target.Variable,
+                    Path = AppendPath(target.Path, index),
+                },
+                Value = item,
+                CallStack = lineEvent.CallStack,
+            };
+            index += 1;
+        }
+    }
+
+    private static RuntimeTraceTarget CloneTarget(RuntimeTraceTarget target)
+    {
+        return new RuntimeTraceTarget
+        {
+            Variable = target.Variable,
+            Path = target.Path?.ToList(),
+        };
+    }
+
+    private static List<object?> AppendPath(IReadOnlyList<object?>? path, object? value)
+    {
+        var next = path is null ? new List<object?>() : path.ToList();
+        next.Add(value);
+        return next;
+    }
+
+    private static string TargetKey(RuntimeTraceTarget target)
+    {
+        (string variable, List<object?>? pathParts) = CanonicalTargetParts(target);
+        string path = pathParts is null || pathParts.Count == 0
+            ? string.Empty
+            : string.Join("\u001f", pathParts.Select(part => Convert.ToString(part, CultureInfo.InvariantCulture)));
+        return $"{variable}\u001e{path}";
+    }
+
+    private static bool TargetsEqual(RuntimeTraceTarget left, RuntimeTraceTarget right)
+    {
+        (string leftVariable, List<object?>? leftPath) = CanonicalTargetParts(left);
+        (string rightVariable, List<object?>? rightPath) = CanonicalTargetParts(right);
+        return string.Equals(leftVariable, rightVariable, StringComparison.Ordinal)
+            && PathsEqual(leftPath, rightPath);
+    }
+
+    private static (string Variable, List<object?>? Path) CanonicalTargetParts(RuntimeTraceTarget target)
+    {
+        if (target.Path is not null && target.Path.Count > 0)
+        {
+            return (target.Variable, target.Path.ToList());
+        }
+
+        string[] parts = target.Variable.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length <= 1)
+        {
+            return (target.Variable, target.Path?.ToList());
+        }
+
+        return (parts[0], parts.Skip(1).Cast<object?>().ToList());
+    }
+
+    private static object? ParseMutationArgument(string raw)
+    {
+        return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int integer)
+            ? integer
+            : raw;
+    }
+
+    private static bool PathsEqual(IReadOnlyList<object?>? left, IReadOnlyList<object?>? right)
+    {
+        if (left is null || left.Count == 0) return right is null || right.Count == 0;
+        if (right is null || right.Count == 0) return false;
+        if (left.Count != right.Count) return false;
+        for (int index = 0; index < left.Count; index += 1)
+        {
+            if (!object.Equals(left[index], right[index])) return false;
+        }
+        return true;
     }
 
     private static CSharpCompilation CreateCompilation(CSharpExecuteRequest request)
@@ -3479,6 +3958,7 @@ public class TreeNode
         {
             int previousLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine;
             int previousScopedLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, TraceCode.CSharpHost.RuntimeTraceSink.CurrentFunction);
             TraceCode.CSharpHost.RuntimeTraceSink.SetCurrentLine(line);
             TraceCode.CSharpHost.RuntimeTraceSink.SetScopedSourceLine(line);
             try
@@ -3499,6 +3979,54 @@ public class TreeNode
             if (!TraceCode.CSharpHost.RuntimeTraceSink.HasMutationSince(startIndex, variable, method, line))
             {
                 TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, method, args, line);
+            }
+        }
+
+        public static void CollectionMutationCall(int line, string variable, string method, IReadOnlyList<object?> args, Action action, object? collection)
+        {
+            int startIndex = TraceCode.CSharpHost.RuntimeTraceSink.EventCount;
+            WithSourceLine(line, action);
+            if (TraceCode.CSharpHost.RuntimeTraceSink.HasMutationSince(startIndex, variable, method, line))
+            {
+                return;
+            }
+
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, method, args, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.Write(variable, collection, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedBulkWrite(variable, collection, line);
+        }
+
+        public static void FieldCollectionMutationCall(int line, string variable, string[] path, string method, IReadOnlyList<object?> args, Action action, object? collection)
+        {
+            int startIndex = TraceCode.CSharpHost.RuntimeTraceSink.EventCount;
+            WithSourceLine(line, action);
+            if (TraceCode.CSharpHost.RuntimeTraceSink.HasMutationSince(startIndex, variable, path, method, line))
+            {
+                return;
+            }
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, path, method, args, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite(variable, path, collection, line);
+            EmitFieldIndexedWrites(variable, path, collection, line);
+        }
+
+        private static void EmitFieldIndexedWrites(string variable, string[] path, object? collection, int line)
+        {
+            if (collection is string || collection is not System.Collections.IEnumerable enumerable)
+            {
+                return;
+            }
+
+            int index = 0;
+            foreach (object? item in enumerable)
+            {
+                object?[] indexedPath = new object?[path.Length + 1];
+                for (int pathIndex = 0; pathIndex < path.Length; pathIndex += 1)
+                {
+                    indexedPath[pathIndex] = path[pathIndex];
+                }
+                indexedPath[path.Length] = index;
+                TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, indexedPath, item, line);
+                index += 1;
             }
         }
 
@@ -3534,6 +4062,7 @@ public class TreeNode
         {
             int previousLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine;
             int previousScopedLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, TraceCode.CSharpHost.RuntimeTraceSink.CurrentFunction);
             TraceCode.CSharpHost.RuntimeTraceSink.SetCurrentLine(line);
             TraceCode.CSharpHost.RuntimeTraceSink.SetScopedSourceLine(line);
             try
@@ -4165,6 +4694,41 @@ public class TreeNode
         {
             base.Clear();
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Clear", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
+        public new void Sort()
+        {
+            base.Sort();
+            EmitSortMutation(Array.Empty<object?>());
+        }
+
+        public new void Sort(Comparison<T> comparison)
+        {
+            base.Sort(comparison);
+            EmitSortMutation(new object?[] { "<comparison>" });
+        }
+
+        public new void Sort(IComparer<T>? comparer)
+        {
+            base.Sort(comparer);
+            EmitSortMutation(new object?[] { "<comparer>" });
+        }
+
+        public new void Sort(int index, int count, IComparer<T>? comparer)
+        {
+            base.Sort(index, count, comparer);
+            EmitSortMutation(new object?[] { index, count, "<comparer>" });
+        }
+
+        private void EmitSortMutation(IReadOnlyList<object?> args)
+        {
+            int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Sort", args, line);
+            for (int index = 0; index < Count; index += 1)
+            {
+                TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, base[index], line);
+            }
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
     }

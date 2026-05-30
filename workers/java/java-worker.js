@@ -76,6 +76,7 @@ let initLoadTimeMs = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let runWarmupPromise = null;
 let activeJavaProjectIo = null;
+const activeProtocolTokens = new Map();
 const STDIN_PIPE_HEADER_INTS = 3;
 const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
 const STDIN_PIPE_READ_INDEX = 0;
@@ -163,7 +164,11 @@ function javaProjectInputAvailable(device) {
 }
 
 function postMessageResponse(message) {
-  self.postMessage(message);
+  const protocolToken = message?.protocolToken ?? (message?.id ? activeProtocolTokens.get(message.id) : undefined);
+  self.postMessage({
+    ...message,
+    ...(protocolToken ? { protocolToken } : {}),
+  });
 }
 
 function javaHttpBase64FromString(value) {
@@ -3731,6 +3736,117 @@ function expandLoopHeaderTraceEvents(events, sourceText) {
   return expanded;
 }
 
+function traceLineParenDelta(line) {
+  let delta = 0;
+  let quote = null;
+  let escaped = false;
+  for (const char of String(line ?? '')) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') delta += 1;
+    else if (char === ')') delta -= 1;
+  }
+  return delta;
+}
+
+function buildRuntimeStatementSourceMap(code) {
+  const lines = String(code ?? '').split(/\r?\n/);
+  const spans = new Map();
+  let startLine = 0;
+  let startColumn = 0;
+  let balance = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineNumber = index + 1;
+    const line = lines[index] ?? '';
+    const delta = traceLineParenDelta(line);
+    if (startLine === 0) {
+      if (delta > 0) {
+        startLine = lineNumber;
+        startColumn = /\S/.exec(line)?.index ?? 0;
+        balance = delta;
+      }
+      continue;
+    }
+    balance += delta;
+    if (balance <= 0) {
+      const span = {
+        statementId: `stmt:${startLine}:${lineNumber}:${startColumn}`,
+        startLine,
+        startColumn,
+        endLine: lineNumber,
+        endColumn: line.length,
+      };
+      for (let mappedLine = startLine; mappedLine <= lineNumber; mappedLine += 1) {
+        spans.set(mappedLine, span);
+      }
+      startLine = 0;
+      startColumn = 0;
+      balance = 0;
+    }
+  }
+  return spans;
+}
+
+function runtimeTraceSourceOwnership(lineNumber, functionName, statementSourceMap) {
+  if (!(statementSourceMap instanceof Map) || typeof lineNumber !== 'number') return {};
+  const span = statementSourceMap.get(Math.floor(lineNumber));
+  if (!span) return {};
+  const normalizedFunction = typeof functionName === 'string' && functionName.length > 0 ? functionName : undefined;
+  return {
+    statementId: normalizedFunction ? `${normalizedFunction}:${span.statementId}` : span.statementId,
+    sourceSpan: {
+      startLine: span.startLine,
+      startColumn: span.startColumn,
+      endLine: span.endLine,
+      endColumn: span.endColumn,
+    },
+  };
+}
+
+function annotateJavaNativeTraceEventsWithSourceSpans(events, sourceText) {
+  if (!Array.isArray(events) || events.length === 0) return events;
+  const statementSourceMap = buildRuntimeStatementSourceMap(sourceText);
+  if (statementSourceMap.size === 0) return events;
+  return events.map((event) => {
+    if (!String(event).startsWith('trace:')) return event;
+    try {
+      const parsed = JSON.parse(String(event).slice('trace:'.length));
+      return `trace:${JSON.stringify({
+        ...parsed,
+        ...runtimeTraceSourceOwnership(parsed.line, parsed.function, statementSourceMap),
+      })}`;
+    } catch {
+      return event;
+    }
+  });
+}
+
+function normalizeJavaTraceEvents(events, normalizedPayload) {
+  return annotateJavaNativeTraceEventsWithSourceSpans(
+    expandLoopHeaderTraceEvents(
+      normalizeScriptTraceEvents(
+        Array.isArray(events) ? events : [],
+        normalizedPayload.scriptMode,
+        normalizedPayload.userCodeLineCount,
+        normalizedPayload.sourceLineMap
+      ),
+      normalizedPayload.sourceText
+    ),
+    normalizedPayload.sourceText
+  );
+}
+
 function normalizeJavaExecutionPayload(payload) {
   assertSupportedExecutionStyle(payload.executionStyle);
   if (typeof payload.code !== 'string') {
@@ -5069,15 +5185,7 @@ async function runJavaTraceRequest(payload, requestId) {
   if (report.success !== true) {
     return {
       success: false,
-      events: expandLoopHeaderTraceEvents(
-        normalizeScriptTraceEvents(
-          Array.isArray(report.events) ? report.events : [],
-          normalizedPayload.scriptMode,
-          normalizedPayload.userCodeLineCount,
-          normalizedPayload.sourceLineMap
-        ),
-        normalizedPayload.sourceText
-      ),
+      events: normalizeJavaTraceEvents(report.events, normalizedPayload),
       ...(normalizedPayload.sourceText ? { sourceText: normalizedPayload.sourceText } : {}),
       executionTimeMs: totalEnd - totalStart,
       consoleOutput,
@@ -5100,15 +5208,7 @@ async function runJavaTraceRequest(payload, requestId) {
   return {
     success: true,
     output: parseJavaReportOutput(report.output),
-    events: expandLoopHeaderTraceEvents(
-      normalizeScriptTraceEvents(
-        Array.isArray(report.events) ? report.events : [],
-        normalizedPayload.scriptMode,
-        normalizedPayload.userCodeLineCount,
-        normalizedPayload.sourceLineMap
-      ),
-      normalizedPayload.sourceText
-    ),
+    events: normalizeJavaTraceEvents(report.events, normalizedPayload),
     ...(normalizedPayload.sourceText ? { sourceText: normalizedPayload.sourceText } : {}),
     executionTimeMs: totalEnd - totalStart,
     consoleOutput,
@@ -5538,6 +5638,16 @@ self.onmessage = (event) => {
     return;
   }
 
+  if (message.id && typeof message.protocolToken !== 'string') {
+    postMessageResponse({
+      id: message.id,
+      type: 'error',
+      payload: { error: 'Missing Java worker protocol token.' },
+    });
+    return;
+  }
+  if (message.id) activeProtocolTokens.set(message.id, message.protocolToken);
+
   if (message.type === 'init') {
     queue = queue.then(async () => {
       try {
@@ -5569,6 +5679,7 @@ self.onmessage = (event) => {
           payload: { error: formatWorkerErrorMessage(error) },
         });
       } finally {
+        activeProtocolTokens.delete(message.id);
         resetIdleTimer();
       }
     });
@@ -5597,6 +5708,7 @@ self.onmessage = (event) => {
           payload: { error: formatWorkerErrorMessage(error) },
         });
       } finally {
+        activeProtocolTokens.delete(message.id);
         resetIdleTimer();
       }
     });
@@ -5637,6 +5749,7 @@ self.onmessage = (event) => {
           payload: { error: formatWorkerErrorMessage(error) },
         });
       } finally {
+        activeProtocolTokens.delete(message.id);
         resetIdleTimer();
       }
     });

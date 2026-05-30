@@ -21,6 +21,7 @@ import type {
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import { createWorkerProtocolToken } from './worker-protocol';
 
 type MessageId = string;
 export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -31,6 +32,7 @@ export interface PythonWorkerClientOptions {
 }
 
 interface PendingMessage {
+  protocolToken: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
@@ -48,6 +50,7 @@ interface WorkerMessage {
   id?: MessageId;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 interface InitResult {
@@ -138,7 +141,7 @@ export class PythonWorkerClient {
     this.worker = new Worker(workerUrl);
     
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-      const { id, type, payload } = event.data;
+      const { id, type, payload, protocolToken } = event.data;
 
       // Handle worker-ready signal
       if (type === 'worker-ready') {
@@ -168,6 +171,7 @@ export class PythonWorkerClient {
       if (id) {
         const pending = this.pendingMessages.get(id);
         if (pending) {
+          if (protocolToken !== pending.protocolToken) return;
           if (type === 'project-event') {
             pending.onEvent?.(payload as RuntimeCommandEvent);
             return;
@@ -293,9 +297,11 @@ export class PythonWorkerClient {
     await this.waitForWorkerReady();
     
     const id = String(++this.messageId);
+    const protocolToken = createWorkerProtocolToken();
 
     return new Promise<T>((resolve, reject) => {
       this.pendingMessages.set(id, {
+        protocolToken,
         resolve: resolve as (value: unknown) => void,
         reject,
         ...(onEvent ? { onEvent } : {}),
@@ -329,7 +335,18 @@ export class PythonWorkerClient {
       const pending = this.pendingMessages.get(id);
       if (pending) pending.timeoutId = timeoutId;
 
-      worker.postMessage({ id, type, payload });
+      worker.postMessage({ id, type, payload, protocolToken });
+    });
+  }
+
+  private postWorkerMessage(commandId: string, type: string, payload: RuntimeKernelHttpProtocolMessage): void {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending) return;
+    this.worker?.postMessage({
+      id: commandId,
+      type,
+      payload,
+      protocolToken: pending.protocolToken,
     });
   }
 
@@ -345,15 +362,11 @@ export class PythonWorkerClient {
       try {
         const handle = pending.kernelHttp.listen(message.options, (request) => this.dispatchWorkerKernelHttpRequest(commandId, message.listenerId, request));
         pending.httpListeners?.set(message.listenerId, handle);
-        this.worker?.postMessage({
-          id: commandId,
+        this.postWorkerMessage(commandId, 'kernel-http-listen-result', {
           type: 'kernel-http-listen-result',
-          payload: {
-            type: 'kernel-http-listen-result',
-            listenerId: message.listenerId,
-            info: handle.info,
-          } satisfies RuntimeKernelHttpProtocolMessage,
-        });
+          listenerId: message.listenerId,
+          info: handle.info,
+        } satisfies RuntimeKernelHttpProtocolMessage);
       } catch (error) {
         this.postKernelHttpError(commandId, {
           listenerId: message.listenerId,
@@ -379,15 +392,11 @@ export class PythonWorkerClient {
         return;
       }
       pending.kernelHttp.dispatch(message.request).then((response) => {
-        this.worker?.postMessage({
-          id: commandId,
+        this.postWorkerMessage(commandId, 'kernel-http-dispatch-result', {
           type: 'kernel-http-dispatch-result',
-          payload: {
-            type: 'kernel-http-dispatch-result',
-            requestId: message.requestId,
-            response,
-          } satisfies RuntimeKernelHttpProtocolMessage,
-        });
+          requestId: message.requestId,
+          response,
+        } satisfies RuntimeKernelHttpProtocolMessage);
       }, (error) => {
         this.postKernelHttpError(commandId, {
           requestId: message.requestId,
@@ -413,16 +422,12 @@ export class PythonWorkerClient {
     const requestId = `${commandId}:http:${++this.httpRequestId}`;
     return new Promise<RuntimeKernelHttpResponse>((resolve, reject) => {
       pending.httpRequests?.set(requestId, { resolve, reject });
-      this.worker?.postMessage({
-        id: commandId,
+      this.postWorkerMessage(commandId, 'kernel-http-request', {
         type: 'kernel-http-request',
-        payload: {
-          type: 'kernel-http-request',
-          listenerId,
-          requestId,
-          request,
-        } satisfies RuntimeKernelHttpProtocolMessage,
-      });
+        listenerId,
+        requestId,
+        request,
+      } satisfies RuntimeKernelHttpProtocolMessage);
     });
   }
 
@@ -430,14 +435,10 @@ export class PythonWorkerClient {
     commandId: string,
     error: Omit<Extract<RuntimeKernelHttpProtocolMessage, { type: 'kernel-http-error' }>, 'type'>
   ): void {
-    this.worker?.postMessage({
-      id: commandId,
+    this.postWorkerMessage(commandId, 'kernel-http-error', {
       type: 'kernel-http-error',
-      payload: {
-        type: 'kernel-http-error',
-        ...error,
-      } satisfies RuntimeKernelHttpProtocolMessage,
-    });
+      ...error,
+    } satisfies RuntimeKernelHttpProtocolMessage);
   }
 
   private cleanupPendingKernelHttp(pending: PendingMessage): void {

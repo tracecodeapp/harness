@@ -55,10 +55,26 @@ Cross-Origin-Embedder-Policy: require-corp
   disabled unless a project genuinely needs dynamic eval semantics.
 - Do not expose low-level worker objects or host application secrets to code
   running inside the workspace.
+- Treat browser DevTools access as full control over the local client state. A
+  user who can run arbitrary code in the embedding page can inspect or mutate
+  the local workspace object model. Use a remote or OS-backed runner for
+  authoritative grading.
 
 Browser mode is much closer to an isolated harness than native mode, but it is
 still an application-level sandbox. It should not be documented or sold as a
 browser security boundary for malicious code.
+
+The JavaScript project runner should use its worker-backed path in browser
+project mode. The same-realm JavaScript fallback exists for constrained
+environments and compatibility tests; it rejects common dynamic-eval and
+constructor-chain escape patterns, but it is not equivalent to a worker,
+iframe-origin, process, container, or VM boundary.
+
+Hidden project-session files are a UI and file-tree affordance, not a client-side
+secret store. They are available to the runtime snapshot so tests and hidden
+commands can run locally. Keep real grading secrets and privileged tooling out
+of the browser workspace, or copy the submitted workspace into a remote runner
+that mounts only the server-side test harness.
 
 ## Native Mode
 

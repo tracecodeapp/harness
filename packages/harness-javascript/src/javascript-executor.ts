@@ -14,6 +14,127 @@ type JavaScriptLibraryEnvironment = {
   globals: Record<string, unknown>;
 };
 
+function maskJavaScriptRuntimeStringsAndComments(code: string): string {
+  let masked = '';
+  for (let index = 0; index < code.length; index += 1) {
+    const char = code[index];
+    const next = code[index + 1];
+    if (char === '"' || char === "'" || char === '`') {
+      const quote = char;
+      masked += quote;
+      index += 1;
+      for (; index < code.length; index += 1) {
+        const current = code[index];
+        masked += current === '\n' ? '\n' : ' ';
+        if (current === '\\') {
+          index += 1;
+          if (index < code.length) masked += code[index] === '\n' ? '\n' : ' ';
+          continue;
+        }
+        if (current === quote) break;
+      }
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      masked += '  ';
+      index += 2;
+      for (; index < code.length; index += 1) {
+        const current = code[index];
+        if (current === '\n') {
+          masked += '\n';
+          break;
+        }
+        masked += ' ';
+      }
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      masked += '  ';
+      index += 2;
+      for (; index < code.length; index += 1) {
+        const current = code[index];
+        const following = code[index + 1];
+        masked += current === '\n' ? '\n' : ' ';
+        if (current === '*' && following === '/') {
+          masked += ' ';
+          index += 1;
+          break;
+        }
+      }
+      continue;
+    }
+    masked += char;
+  }
+  return masked;
+}
+
+function assertJavaScriptRuntimeSourceAllowed(code: string): void {
+  const searchableCode = maskJavaScriptRuntimeStringsAndComments(code);
+  const blockedPatterns: Array<{ pattern: RegExp; reason: string }> = [
+    { pattern: /\bimport\s*\(/, reason: 'dynamic import expressions are not supported by the JavaScript runtime sandbox' },
+    { pattern: /\.\s*constructor\b/, reason: 'constructor property access is not supported by the JavaScript runtime sandbox' },
+    { pattern: /\b__proto__\b/, reason: '__proto__ access is not supported by the JavaScript runtime sandbox' },
+    { pattern: /\bObject\s*\.\s*(getPrototypeOf|getOwnPropertyDescriptor|getOwnPropertyDescriptors|setPrototypeOf|defineProperty|defineProperties)\b/, reason: 'prototype reflection is not supported by the JavaScript runtime sandbox' },
+    { pattern: /\bReflect\b/, reason: 'Reflect is not supported by the JavaScript runtime sandbox' },
+    { pattern: /\beval\b/, reason: 'eval is not supported by the JavaScript runtime sandbox' },
+  ];
+  const blocked = blockedPatterns.find(({ pattern }) => pattern.test(searchableCode));
+  const rawBlocked = /\[\s*(["'`])constructor\1\s*\]/.test(code)
+    ? { reason: 'constructor property access is not supported by the JavaScript runtime sandbox' }
+    : undefined;
+  const reason = blocked?.reason ?? rawBlocked?.reason;
+  if (reason) {
+    throw Object.assign(new Error(`Harness blocked unsupported JavaScript runtime code: ${reason}`), {
+      code: 'ERR_HARNESS_UNSAFE_JAVASCRIPT_RUNTIME',
+    });
+  }
+}
+
+function javascriptRuntimeSandboxedCode(code: string, sourceCode = code): string {
+  assertJavaScriptRuntimeSourceAllowed(sourceCode);
+  return [
+    'const __tracecode_blocked_dynamic_eval = () => { throw Object.assign(new Error("Harness blocked dynamic code evaluation"), { code: "ERR_HARNESS_DYNAMIC_EVAL" }); };',
+    'const globalThis = __tracecode_global;',
+    'const global = __tracecode_global;',
+    'const self = undefined;',
+    'const window = undefined;',
+    'const document = undefined;',
+    'const postMessage = undefined;',
+    'const importScripts = undefined;',
+    'const Worker = undefined;',
+    'const SharedWorker = undefined;',
+    'const WebAssembly = undefined;',
+    'const process = undefined;',
+    'const Function = __tracecode_blocked_dynamic_eval;',
+    code,
+  ].join('\n');
+}
+
+function createJavaScriptRuntimeGlobal(
+  environment: JavaScriptLibraryEnvironment,
+  consoleProxy: Console
+): Record<string, unknown> {
+  const moduleObject = { exports: {} as Record<string, unknown> };
+  const runtimeGlobal: Record<string, unknown> = Object.create(null);
+  const requireFunction = (specifier: string): unknown => {
+    if (Object.prototype.hasOwnProperty.call(environment.modules, specifier)) {
+      return environment.modules[specifier];
+    }
+    throw new Error(`Cannot find module '${specifier}'`);
+  };
+  Object.assign(runtimeGlobal, {
+    ...environment.globals,
+    globalThis: runtimeGlobal,
+    global: runtimeGlobal,
+    console: consoleProxy,
+    __TRACECODE_JAVASCRIPT_LIBRARIES__: environment.modules,
+    require: requireFunction,
+    module: moduleObject,
+    exports: moduleObject.exports,
+  });
+  return runtimeGlobal;
+}
+
 async function getTypeScriptModule(): Promise<TypeScriptModule> {
   if (!typeScriptModulePromise) {
     const specifier = 'typescript';
@@ -1182,7 +1303,8 @@ function buildRunner(
   code: string,
   executionStyle: RuntimeExecutionStyle,
   argNames: string[],
-  argumentMaterializers: Array<InputMaterializerKind | null> = []
+  argumentMaterializers: Array<InputMaterializerKind | null> = [],
+  sourceCode = code
 ): DynamicRunner {
   const materializedArgExpressions = argNames.map((name, index) => {
     const materialized = `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`;
@@ -1193,8 +1315,9 @@ function buildRunner(
       'console',
       '__functionName',
       ...argNames,
+      '__tracecode_global',
       `"use strict";
-${code}
+${javascriptRuntimeSandboxedCode(code, sourceCode)}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
@@ -1214,8 +1337,9 @@ return __target(${materializedArgExpressions.join(', ')});`
       'console',
       '__functionName',
       ...argNames,
+      '__tracecode_global',
       `"use strict";
-${code}
+${javascriptRuntimeSandboxedCode(code, sourceCode)}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
@@ -1244,8 +1368,9 @@ throw new Error('Method "Solution.' + __functionName + '" not found');`
       '__className',
       '__operations',
       '__arguments',
+      '__tracecode_global',
       `"use strict";
-${code}
+${javascriptRuntimeSandboxedCode(code, sourceCode)}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
   throw new Error('ops-class execution requires inputs.operations and inputs.arguments (or ops/args)');
@@ -1355,7 +1480,8 @@ export async function executeJavaScriptCode(
   inputs: Record<string, unknown>,
   executionStyle: RuntimeExecutionStyle = 'function',
   language: 'javascript' | 'typescript' = 'javascript',
-  resolvedMaterializers?: Record<string, InputMaterializerKind>
+  resolvedMaterializers?: Record<string, InputMaterializerKind>,
+  sandboxSourceCode = code
 ): Promise<CodeExecutionResult> {
   const consoleOutput: string[] = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
@@ -1364,6 +1490,7 @@ export async function executeJavaScriptCode(
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const executableCode = language === 'javascript' ? stripJavaScriptModuleExports(code) : code;
   const javascriptLibraryEnvironment = await getJavaScriptLibraryEnvironment();
+  const runtimeGlobal = createJavaScriptRuntimeGlobal(javascriptLibraryEnvironment, consoleProxy);
   const restoreJavaScriptLibraryGlobals = installJavaScriptLibraryGlobals(javascriptLibraryEnvironment);
 
   try {
@@ -1371,15 +1498,15 @@ export async function executeJavaScriptCode(
 
     if (executionStyle === 'ops-class') {
       const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-      const runner = buildRunner(executableCode, executionStyle, []);
-      output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList));
+      const runner = buildRunner(executableCode, executionStyle, [], [], sandboxSourceCode);
+      output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList, runtimeGlobal));
     } else {
       const inputArguments = await resolveOrderedInputArguments(executableCode, functionName, materializedInputs, executionStyle, language);
       const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
       const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
       const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
-      const runner = buildRunner(executableCode, executionStyle, argNames, argumentMaterializers);
-      output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues));
+      const runner = buildRunner(executableCode, executionStyle, argNames, argumentMaterializers, sandboxSourceCode);
+      output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues, runtimeGlobal));
     }
 
     return {
@@ -1444,5 +1571,5 @@ export async function executeTypeScriptCode(
   const normalizedInputs = normalizeInputs(inputs);
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, 'typescript');
   const transpiledCode = await transpileTypeScript(code);
-  return executeJavaScriptCode(transpiledCode, functionName, normalizedInputs, executionStyle, 'typescript', materializers);
+  return executeJavaScriptCode(transpiledCode, functionName, normalizedInputs, executionStyle, 'typescript', materializers, code);
 }

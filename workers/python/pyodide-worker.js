@@ -1283,8 +1283,9 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
 }
 
 class TraceKernelHttpBridge {
-  constructor(messageId) {
+  constructor(messageId, protocolToken) {
     this.messageId = messageId;
+    this.protocolToken = protocolToken;
     this.nextListenerId = 1;
     this.nextRequestId = 1;
     this.listeners = new Map();
@@ -1307,6 +1308,7 @@ class TraceKernelHttpBridge {
     self.postMessage({
       id: this.messageId,
       type: 'kernel-http-listen',
+      protocolToken: this.protocolToken,
       payload: {
         type: 'kernel-http-listen',
         listenerId,
@@ -1321,6 +1323,7 @@ class TraceKernelHttpBridge {
         self.postMessage({
           id: this.messageId,
           type: 'kernel-http-close',
+          protocolToken: this.protocolToken,
           payload: { type: 'kernel-http-close', listenerId },
         });
       },
@@ -1335,6 +1338,7 @@ class TraceKernelHttpBridge {
       self.postMessage({
         id: this.messageId,
         type: 'kernel-http-dispatch',
+        protocolToken: this.protocolToken,
         payload: {
           type: 'kernel-http-dispatch',
           requestId,
@@ -1371,6 +1375,7 @@ class TraceKernelHttpBridge {
       self.postMessage({
         id: this.messageId,
         type: 'kernel-http-error',
+        protocolToken: this.protocolToken,
         payload: {
           type: 'kernel-http-error',
           requestId,
@@ -1386,6 +1391,7 @@ class TraceKernelHttpBridge {
       self.postMessage({
         id: this.messageId,
         type: 'kernel-http-response',
+        protocolToken: this.protocolToken,
         payload: {
           type: 'kernel-http-response',
           requestId,
@@ -1396,6 +1402,7 @@ class TraceKernelHttpBridge {
       self.postMessage({
         id: this.messageId,
         type: 'kernel-http-error',
+        protocolToken: this.protocolToken,
         payload: {
           type: 'kernel-http-error',
           requestId,
@@ -1409,11 +1416,11 @@ class TraceKernelHttpBridge {
 
 const activeProjectHttpBridges = new Map();
 
-async function executeProjectPython(request, messageId) {
+async function executeProjectPython(request, messageId, protocolToken) {
   await loadPyodideInstance();
 
   const requestJson = JSON.stringify(request ?? {});
-  const httpBridge = new TraceKernelHttpBridge(messageId);
+  const httpBridge = new TraceKernelHttpBridge(messageId, protocolToken);
   activeProjectHttpBridges.set(messageId, httpBridge);
   const projectOutputEvents = [];
   self.__tracecodeProjectEvent = (event) => {
@@ -1421,7 +1428,7 @@ async function executeProjectPython(request, messageId) {
     if (payload?.type === 'output' && (payload.stream === 'stdout' || payload.stream === 'stderr')) {
       projectOutputEvents.push(payload);
     }
-    self.postMessage({ id: messageId, type: 'project-event', payload });
+    self.postMessage({ id: messageId, type: 'project-event', payload, protocolToken });
   };
   self.__tracecodeRuntimeKernelOpenTarget = (payload) => {
     const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
@@ -3890,13 +3897,17 @@ async function executeCodeBatch(code, functionName, inputBatch, executionStyle =
 }
 
 async function processMessage(data) {
-  const { id, type, payload } = data;
+  const { id, type, payload, protocolToken } = data;
   try {
+    if (id && typeof protocolToken !== 'string') {
+      self.postMessage({ id, type: 'error', payload: { error: 'Missing Python worker protocol token.' } });
+      return;
+    }
     switch (type) {
       case 'init': {
         const startTime = performance.now();
         const loadTimeMs = performance.now() - startTime;
-        self.postMessage({ id, type: 'init-result', payload: { success: true, loadTimeMs } });
+        self.postMessage({ id, type: 'init-result', payload: { success: true, loadTimeMs }, protocolToken });
         break;
       }
 
@@ -3904,7 +3915,7 @@ async function processMessage(data) {
         const startTime = performance.now();
         await loadPyodideInstance();
         const loadTimeMs = performance.now() - startTime;
-        self.postMessage({ id, type: 'warmup-result', payload: { success: true, loadTimeMs } });
+        self.postMessage({ id, type: 'warmup-result', payload: { success: true, loadTimeMs }, protocolToken });
         break;
       }
 
@@ -3912,7 +3923,7 @@ async function processMessage(data) {
         const { code, functionName, inputs, executionStyle, options } = payload;
         const result = await executeWithTracing(code, functionName, inputs, executionStyle ?? 'function', options);
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result });
+        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
       }
 
@@ -3920,7 +3931,7 @@ async function processMessage(data) {
         const { code, functionName, inputs, executionStyle } = payload;
         const result = await executeCode(code, functionName, inputs, executionStyle ?? 'function');
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result });
+        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
       }
 
@@ -3928,7 +3939,7 @@ async function processMessage(data) {
         const { code, functionName, inputBatch, executionStyle } = payload;
         const result = await executeCodeBatch(code, functionName, inputBatch, executionStyle ?? 'function');
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result });
+        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
       }
 
@@ -3938,14 +3949,14 @@ async function processMessage(data) {
           interviewGuard: true,
         });
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result });
+        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
       }
 
       case 'execute-project-python': {
-        const result = await executeProjectPython(payload, id);
+        const result = await executeProjectPython(payload, id, protocolToken);
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result });
+        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
       }
 
@@ -3953,6 +3964,7 @@ async function processMessage(data) {
         self.postMessage({
           id,
           type: 'status-result',
+          protocolToken,
           payload: {
             isReady: pyodide !== null,
             isLoading,
@@ -3964,7 +3976,7 @@ async function processMessage(data) {
       case 'analyze-code': {
         const { code } = payload;
         const result = await analyzeCodeAST(code);
-        self.postMessage({ id, type: 'analyze-result', payload: result });
+        self.postMessage({ id, type: 'analyze-result', payload: result, protocolToken });
         break;
       }
 
@@ -3972,6 +3984,7 @@ async function processMessage(data) {
         self.postMessage({
           id,
           type: 'error',
+          protocolToken,
           payload: { error: `Unknown message type: ${type}` },
         });
     }
@@ -3979,6 +3992,7 @@ async function processMessage(data) {
     self.postMessage({
       id,
       type: 'error',
+      protocolToken,
       payload: { error: error instanceof Error ? error.message : String(error) },
     });
   }
@@ -3989,40 +4003,49 @@ let messageQueue = Promise.resolve();
 // Message handler
 self.onmessage = function(event) {
   const messageData = event.data;
-  const { id, type, payload } = messageData || {};
+  const { id, type, payload, protocolToken } = messageData || {};
   if (type === 'kernel-http-request') {
+    const bridge = activeProjectHttpBridges.get(id);
+    if (!bridge || bridge.protocolToken !== protocolToken) return;
     if (payload?.type === 'kernel-http-request') {
-      void activeProjectHttpBridges.get(id)?.handleRequest(payload.listenerId, payload.requestId, payload.request);
+      void bridge.handleRequest(payload.listenerId, payload.requestId, payload.request);
     }
     return;
   }
   if (type === 'kernel-http-listen-result') {
+    const bridge = activeProjectHttpBridges.get(id);
+    if (!bridge || bridge.protocolToken !== protocolToken) return;
     if (payload?.type === 'kernel-http-listen-result') {
-      activeProjectHttpBridges.get(id)?.updateListenerInfo(payload.listenerId, payload.info);
+      bridge.updateListenerInfo(payload.listenerId, payload.info);
     }
     return;
   }
   if (type === 'kernel-http-dispatch-result') {
+    const bridge = activeProjectHttpBridges.get(id);
+    if (!bridge || bridge.protocolToken !== protocolToken) return;
     if (payload?.type === 'kernel-http-dispatch-result') {
-      activeProjectHttpBridges.get(id)?.resolveDispatch(payload.requestId, payload.response);
+      bridge.resolveDispatch(payload.requestId, payload.response);
     }
     return;
   }
   if (type === 'kernel-http-error') {
+    const bridge = activeProjectHttpBridges.get(id);
+    if (!bridge || bridge.protocolToken !== protocolToken) return;
     if (payload?.type === 'kernel-http-error' && payload.requestId) {
-      activeProjectHttpBridges.get(id)?.rejectDispatch(payload.requestId, payload.error);
+      bridge.rejectDispatch(payload.requestId, payload.error);
     } else if (payload?.type === 'kernel-http-error' && payload.listenerId) {
-      activeProjectHttpBridges.get(id)?.failListener(payload.listenerId);
+      bridge.failListener(payload.listenerId);
     }
     return;
   }
   messageQueue = messageQueue
     .then(() => processMessage(messageData))
     .catch((error) => {
-      const { id } = messageData;
+      const { id, protocolToken } = messageData;
       self.postMessage({
         id,
         type: 'error',
+        protocolToken,
         payload: { error: error instanceof Error ? error.message : String(error) },
       });
     });

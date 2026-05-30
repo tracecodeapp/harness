@@ -94,11 +94,12 @@ async function main(): Promise<void> {
       };
 
       worker.onmessage = (event) => {
-        const { id, type, payload } = event.data || {};
+        const { id, type, payload, protocolToken } = event.data || {};
         if (type === 'worker-ready') return;
         if (!id) return;
         const request = pending.get(id);
         if (!request) return;
+        if (protocolToken !== request.protocolToken) return;
         if (type === 'project-event') {
           request.events.push(payload);
           return;
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
           worker.postMessage({
             id,
             type: 'kernel-http-listen-result',
+            protocolToken: request.protocolToken,
             payload: { type: 'kernel-http-listen-result', listenerId: payload.listenerId, info },
           });
           return;
@@ -139,6 +141,7 @@ async function main(): Promise<void> {
             worker.postMessage({
               id,
               type: 'kernel-http-dispatch-result',
+              protocolToken: request.protocolToken,
               payload: {
                 type: 'kernel-http-dispatch-result',
                 requestId: payload.requestId,
@@ -154,6 +157,7 @@ async function main(): Promise<void> {
             worker.postMessage({
               id,
               type: 'kernel-http-dispatch-result',
+              protocolToken: request.protocolToken,
               payload: {
                 type: 'kernel-http-dispatch-result',
                 requestId: payload.requestId,
@@ -164,6 +168,7 @@ async function main(): Promise<void> {
             worker.postMessage({
               id,
               type: 'kernel-http-error',
+              protocolToken: request.protocolToken,
               payload: {
                 type: 'kernel-http-error',
                 requestId: payload.requestId,
@@ -207,11 +212,13 @@ async function main(): Promise<void> {
       const send = (type, payload, timeoutMs = 120000) =>
         new Promise((resolve, reject) => {
           const id = String(++nextId);
+          const protocolToken = 'python-test-token-' + id;
           const timeoutId = setTimeout(() => {
             pending.delete(id);
             reject(new Error(type + ' timed out'));
           }, timeoutMs);
           pending.set(id, {
+            protocolToken,
             events: [],
             timeoutId,
             resolve: (value) => {
@@ -223,7 +230,7 @@ async function main(): Promise<void> {
               reject(error);
             },
           });
-          worker.postMessage({ id, type, payload });
+          worker.postMessage({ id, type, payload, protocolToken });
         });
 
       const dispatchHttp = (port, request, timeoutMs = 30000) => {
@@ -249,6 +256,7 @@ async function main(): Promise<void> {
           worker.postMessage({
             id: value.commandId,
             type: 'kernel-http-request',
+            protocolToken: pending.get(value.commandId)?.protocolToken,
             payload: { type: 'kernel-http-request', listenerId, requestId, request },
           });
         });

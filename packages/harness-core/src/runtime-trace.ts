@@ -30,12 +30,22 @@ export interface RuntimeTraceCallFrame {
   args?: Record<string, unknown>;
 }
 
+export interface RuntimeTraceSourceSpan {
+  file?: string;
+  startLine: number;
+  startColumn?: number;
+  endLine?: number;
+  endColumn?: number;
+}
+
 interface RuntimeTraceBaseEvent {
   kind: RuntimeTraceEventKind;
   runId: string;
   file?: string;
   line?: number;
   column?: number;
+  statementId?: string;
+  sourceSpan?: RuntimeTraceSourceSpan;
   frameId?: string;
   callStack?: RuntimeTraceCallFrame[];
 }

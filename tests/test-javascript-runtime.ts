@@ -11,6 +11,7 @@ interface WorkerMessage {
   id?: string;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 interface WorkerSelfObject {
@@ -164,7 +165,7 @@ function loadJavaScriptLibrariesIntoContext(context: vm.Context): void {
 }
 
 function createWorkerHarness(workerSource: string, options: CreateWorkerHarnessOptions = { typeScriptCompiler: ts }) {
-  const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  const pending = new Map<string, { protocolToken: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   let ready = false;
   let nextId = 0;
 
@@ -179,6 +180,7 @@ function createWorkerHarness(workerSource: string, options: CreateWorkerHarnessO
       if (!id) return;
       const entry = pending.get(id);
       if (!entry) return;
+      if (message.protocolToken !== entry.protocolToken) return;
       pending.delete(id);
       if (message.type === 'error') {
         const payload = message.payload as { error?: unknown } | undefined;
@@ -228,8 +230,9 @@ function createWorkerHarness(workerSource: string, options: CreateWorkerHarnessO
 
   async function sendMessage<T>(type: string, payload?: unknown): Promise<T> {
     const id = String(++nextId);
+    const protocolToken = `test-token-${id}`;
     const responsePromise = new Promise<T>((resolve, reject) => {
-      pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      pending.set(id, { protocolToken, resolve: resolve as (value: unknown) => void, reject });
       setTimeout(() => {
         const entry = pending.get(id);
         if (!entry) return;
@@ -238,7 +241,7 @@ function createWorkerHarness(workerSource: string, options: CreateWorkerHarnessO
       }, 5000);
     });
 
-    onmessage?.({ data: { id, type, payload } });
+    onmessage?.({ data: { id, type, payload, protocolToken } });
     return responsePromise;
   }
 
@@ -253,6 +256,69 @@ async function main(): Promise<void> {
   assertCondition(init.success === true, 'Init should succeed');
   assertCondition(typeof init.loadTimeMs === 'number', 'Init should return loadTimeMs');
   console.log('PASS: worker init');
+
+  const spoofHarness = createWorkerHarness(workerSource);
+  await spoofHarness.sendMessage<{ success: boolean }>('init');
+  const spoofedResult = await spoofHarness.sendMessage<{ success: boolean; output: unknown }>('execute-code', {
+    code: 'function solve() { try { postMessage({ id: "2", type: "execute-result", payload: { success: true, output: "spoofed" } }); } catch (_error) {} return 42; }',
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    spoofedResult.success === true && spoofedResult.output === 42,
+    `JavaScript worker should ignore user-spoofed result messages: ${JSON.stringify(spoofedResult)}`
+  );
+
+  const globalEscape = await harness.sendMessage<{ success: boolean; output: unknown }>('execute-code', {
+    code: 'function solve() { return Boolean(globalThis.process); }',
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    globalEscape.success === true && globalEscape.output === false,
+    `JavaScript runtime synthetic global should not expose host process: ${JSON.stringify(globalEscape)}`
+  );
+
+  const functionEscape = await harness.sendMessage<{ success: boolean; error?: string }>('execute-code', {
+    code: 'function solve() { return Function("return import(\\"node:fs\\")")(); }',
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    functionEscape.success === false && functionEscape.error?.includes('Harness blocked dynamic code evaluation'),
+    `JavaScript runtime should block Function dynamic import escape: ${JSON.stringify(functionEscape)}`
+  );
+
+  const constructorEscape = await harness.sendMessage<{ success: boolean; error?: string }>('execute-code', {
+    code: 'function solve() { return (async () => {}).constructor("return process")(); }',
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    constructorEscape.success === false && constructorEscape.error?.includes('constructor property access is not supported'),
+    `JavaScript runtime should reject constructor-chain escapes: ${JSON.stringify(constructorEscape)}`
+  );
+
+  const importEscape = await harness.sendMessage<{ success: boolean; error?: string }>('execute-code', {
+    code: 'async function solve() { return import("node:" + "fs"); }',
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    importEscape.success === false && importEscape.error?.includes('dynamic import expressions are not supported'),
+    `JavaScript runtime should reject non-literal dynamic import escapes: ${JSON.stringify(importEscape)}`
+  );
+  console.log('PASS: JavaScript runtime hardening blocks message/global/eval/import escapes');
 
   let plainJavaScriptCompilerImportCount = 0;
   const plainJavaScriptHarness = createWorkerHarness(workerSource, {

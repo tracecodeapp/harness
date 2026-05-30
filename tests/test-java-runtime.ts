@@ -13,6 +13,7 @@ interface WorkerMessage {
   id?: string;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 interface RewriteCall {
@@ -1938,6 +1939,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
       resolve: (value: unknown) => void;
       reject: (error: Error) => void;
       timeoutId: ReturnType<typeof setTimeout>;
+      protocolToken: string;
       events: unknown[];
     }
   >();
@@ -1984,6 +1986,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
       if (!id) return;
       const entry = pending.get(id);
       if (!entry) return;
+      if (message.protocolToken !== entry.protocolToken) return;
       if (message.type === 'project-event') {
         entry.events.push(message.payload);
         return;
@@ -3164,6 +3167,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
 
   async function sendMessage<T>(type: string, payload?: unknown): Promise<T> {
     const id = String(++nextId);
+    const protocolToken = `java-test-token-${id}`;
     const responsePromise = new Promise<T>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         const entry = pending.get(id);
@@ -3171,10 +3175,10 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
         pending.delete(id);
         reject(new Error(`Timed out waiting for response: ${type}`));
       }, 5000);
-      pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timeoutId, events: [] });
+      pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timeoutId, protocolToken, events: [] });
     });
 
-    onmessage?.({ data: { id, type, payload } });
+    onmessage?.({ data: { id, type, payload, protocolToken } });
     return responsePromise;
   }
 

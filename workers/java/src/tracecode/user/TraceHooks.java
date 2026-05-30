@@ -73,12 +73,24 @@ public final class TraceHooks {
   }
 
   public static void emitLineAtLine(int line) {
-    emit("trace:{\"kind\":\"line\",\"line\":" + line + "}");
+    StringBuilder out = new StringBuilder("trace:{\"kind\":\"line\",\"line\":");
+    out.append(line);
+    java.util.List<TraceFrame> stack = CALL_STACK.get();
+    if (!stack.isEmpty()) {
+      out.append(",\"function\":").append(jsonString(stack.get(stack.size() - 1).functionName));
+    }
+    out.append("}");
+    emit(out.toString());
   }
 
   public static void emitLineAtLine(int line, String snapshotFragment) {
     emitLineAtLine(line);
     emitSnapshotsFromFragment(line, snapshotFragment);
+  }
+
+  public static <T> T callSiteAtLine(int line, java.util.function.Supplier<T> supplier) {
+    emitLineAtLine(line);
+    return supplier.get();
   }
 
   public static void emitCallAtLine(int line, String functionName, String argsJson) {
@@ -335,8 +347,34 @@ public final class TraceHooks {
     emitRuntimeSnapshotAtLine(line, name, values);
   }
 
+  public static <T> void sortFieldListAtLine(
+      int line,
+      String name,
+      String field,
+      java.util.List<T> values,
+      java.util.Comparator<? super T> comparator,
+      String snapshotName,
+      Object snapshotValue) {
+    String pathJson = "[" + jsonString(field) + "]";
+    emitTraceRead(line, name, pathJson, values);
+    values.sort(comparator);
+    emitTraceMutate(line, name, pathJson, "sort", null, "[]");
+    emitCollectionIndexedWritesAtLine(line, name, new Object[] { field }, values);
+    emitRuntimeSnapshotAtLine(line, snapshotName, snapshotValue);
+  }
+
   public static <T> T readObjectFieldAtLine(int line, String name, String field, T value) {
     emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
+    return value;
+  }
+
+  public static <T> T readIndexedObjectFieldAtLine(int line, String name, Object index, String field, T value) {
+    emitTraceRead(line, name, "[" + serializeResult(index) + "," + jsonString(field) + "]", value);
+    return value;
+  }
+
+  public static <T> T readIndexedObjectFieldAtLine(int line, String name, Object index, String field, T value, String indexSource) {
+    emitTraceRead(line, name, "[" + serializeResult(index) + "," + jsonString(field) + "]", value, indexSourcesJson(indexSource, null));
     return value;
   }
 
@@ -1584,6 +1622,19 @@ public final class TraceHooks {
         break;
       }
       emitTraceWrite(line, name, "[" + serializeResult(index) + "]", value, null);
+      index++;
+    }
+  }
+
+  public static void emitCollectionIndexedWritesAtLine(int line, String name, Object[] prefixPath, java.util.Collection<?> values) {
+    int index = 0;
+    for (Object value : values) {
+      if (index >= MAX_SERIALIZED_ITEMS) {
+        break;
+      }
+      Object[] path = java.util.Arrays.copyOf(prefixPath, prefixPath.length + 1);
+      path[prefixPath.length] = index;
+      emitIndexedWriteAtLine(line, name, path, value);
       index++;
     }
   }

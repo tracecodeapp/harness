@@ -113,14 +113,16 @@ _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
-_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_tracecode_user_class_names = set()
+_tracecode_explicit_return_function_names = set()
+_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
     '_tracecode_builtin_id', '_tracecode_operator',
     '_TRACECODE_TYPING_GLOBALS',
-    '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_TRACE_MUTATING_METHODS', '_internal_funcs', '_internal_locals', '_max_trace_steps',
+    '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events',
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
     '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
@@ -139,7 +141,7 @@ _internal_locals = {
     '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value',
     '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_write_scalar',
     '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_user_call', '_tracecode_sum', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_write_attr', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collapsed_literal_lines',
-    '_tracecode_collect_user_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents',
+    '_tracecode_collect_user_function_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents',
     '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code',
     '_InfiniteLoopDetected', '_tb', '_result', '_exc_type', '_exc_msg', '_exc_tb',
     '_error_line', '_solver', '_ops', '_args', '_cls', '_instance', '_out',
@@ -673,12 +675,24 @@ class TraceHooks:
             return
         if previous_step.get('event') != 'line':
             return
-        if previous_step.get('__runtime_flushed'):
-            return
         if previous_step.get('line') != line_number:
             return
         local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
         accesses = globals()['__tracecode_flush_accesses'](frame)
+        if previous_step.get('__runtime_flushed'):
+            callsite_step = {
+                'line': line_number,
+                'event': 'line',
+                'variables': local_vars,
+                'variableSources': local_sources,
+                'function': frame.f_code.co_name,
+                'callStack': _snapshot_call_stack(),
+                'stdoutLineCount': len(_console_output),
+                'accesses': accesses,
+            }
+            globals()['__tracecode_append_trace_step'](frame, callsite_step)
+            TraceHooks._append_step_runtime_events(callsite_step)
+            return
         previous_step['variables'] = local_vars
         previous_step['variableSources'] = local_sources
         previous_step['accesses'] = accesses
@@ -1576,12 +1590,16 @@ def __tracecode_attach_parents(node, parent=None):
 def _tracecode_extract_named_subscript(node):
     indices = []
     current = node
-    while isinstance(current, ast.Subscript) and len(indices) < _TRACE_MAX_PATH_DEPTH:
-        indices.insert(0, current.slice)
-        current = current.value
-    while isinstance(current, ast.Attribute) and len(indices) < _TRACE_MAX_PATH_DEPTH:
-        indices.insert(0, ast.Constant(value=current.attr))
-        current = current.value
+    while len(indices) < _TRACE_MAX_PATH_DEPTH:
+        if isinstance(current, ast.Subscript):
+            indices.insert(0, current.slice)
+            current = current.value
+            continue
+        if isinstance(current, ast.Attribute):
+            indices.insert(0, ast.Constant(value=current.attr))
+            current = current.value
+            continue
+        break
     if not isinstance(current, ast.Name) or len(indices) == 0 or len(indices) > _TRACE_MAX_PATH_DEPTH:
         return None
     return current.id, indices
@@ -1647,10 +1665,28 @@ def _tracecode_collect_user_function_names(tree):
             names.add(node.name)
     return names
 
+def _tracecode_collect_user_class_names(tree):
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            names.add(node.name)
+    return names
+
+def _tracecode_collect_explicit_return_function_names(tree):
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                if child is not node and isinstance(child, ast.Return):
+                    names.add(node.name)
+                    break
+    return names
+
 class __TracecodeAccessTransformer(ast.NodeTransformer):
-    def __init__(self, user_function_names=None):
+    def __init__(self, user_function_names=None, user_class_names=None):
         super().__init__()
         self._tracecode_user_function_names = set(user_function_names or [])
+        self._tracecode_user_class_names = set(user_class_names or [])
 
     def _tracecode_wrap_comprehension_generators(self, generators):
         for generator in generators:
@@ -2170,7 +2206,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
 
         if isinstance(node.func, ast.Attribute):
             method_name = node.func.attr
-            if method_name in _TRACE_MUTATING_METHODS:
+            if method_name in _TRACE_MUTATING_METHODS and method_name not in self._tracecode_user_function_names:
                 extracted = _tracecode_extract_named_subscript(node.func.value)
                 if extracted is not None:
                     var_name, indices = extracted
@@ -2229,8 +2265,23 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 )
                 return ast.copy_location(call, node)
         if (
+            isinstance(node.func, ast.Attribute) and
+            node.func.attr in self._tracecode_user_function_names
+        ):
+            call = ast.Call(
+                func=ast.Name(id='_tracecode_user_call', ctx=ast.Load()),
+                args=[
+                    ast.Constant(value=getattr(node, 'lineno', 1)),
+                    ast.Constant(value=node.func.attr),
+                    node.func,
+                    *node.args,
+                ],
+                keywords=node.keywords,
+            )
+            return ast.copy_location(call, node)
+        if (
             isinstance(node.func, ast.Name) and
-            node.func.id in self._tracecode_user_function_names
+            (node.func.id in self._tracecode_user_function_names or node.func.id in self._tracecode_user_class_names)
         ):
             call = ast.Call(
                 func=ast.Name(id='_tracecode_user_call', ctx=ast.Load()),
@@ -2325,7 +2376,10 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
 def __tracecode_compile_user_code(source):
     tree = ast.parse(source, filename='solution.py', mode='exec')
     __tracecode_attach_parents(tree)
-    tree = __TracecodeAccessTransformer(_tracecode_collect_user_function_names(tree)).visit(tree)
+    tree = __TracecodeAccessTransformer(
+        _tracecode_collect_user_function_names(tree),
+        _tracecode_collect_user_class_names(tree),
+    ).visit(tree)
     ast.fix_missing_locations(tree)
     return compile(tree, 'solution.py', 'exec')
 
@@ -2551,7 +2605,13 @@ def _tracer(frame, event, arg):
         })
     elif event == 'return':
         TraceHooks.flush_completed_line(frame)
-        if not _MINIMAL_TRACE:
+        is_class_body_return = func_name in _tracecode_user_class_names and frame.f_code.co_filename == 'solution.py'
+        is_implicit_none_return = (
+            arg is None
+            and frame.f_code.co_filename == 'solution.py'
+            and func_name not in _tracecode_explicit_return_function_names
+        )
+        if not _MINIMAL_TRACE and not is_class_body_return and not is_implicit_none_return:
             local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
             __tracecode_append_trace_step(frame, {
                 'line': frame.f_lineno,
@@ -2625,6 +2685,8 @@ pow = _builtins.pow
     .filter((key) => Object.prototype.hasOwnProperty.call(inputs, key));
   const inplaceCandidatesLiteral = JSON.stringify(inplaceCandidates);
   const traceInputNamesLiteral = JSON.stringify(Object.keys(inputs));
+  const functionNameLiteral = deps.toPythonLiteral(functionName);
+  const executionStyleLiteral = deps.toPythonLiteral(executionStyle);
   const executionCode = functionName
     ? executionStyle === 'solution-method'
       ? [
@@ -2670,6 +2732,8 @@ pow = _builtins.pow
     `\n_user_code_str = """${escapedCode}"""`,
     `import textwrap as _textwrap`,
     `_user_code_str = _textwrap.dedent(_user_code_str.lstrip("\\n"))`,
+    `_tracecode_user_class_names = _tracecode_collect_user_class_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
+    `_tracecode_explicit_return_function_names = _tracecode_collect_explicit_return_function_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
     `_tracecode_collapsed_literal_lines = _tracecode_collect_collapsed_literal_lines(_user_code_str)`,
     `__tracecode_compiled = __tracecode_compile_user_code(_user_code_str)`,
     ].join('\n');
@@ -2892,7 +2956,7 @@ ${listConversions}
 
 ${preloadUserDefinitions}
 _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
-_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)})
+_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 if _SCRIPT_MODE:
     _SCRIPT_PRE_USER_GLOBALS = set(globals().keys()) - _TRACE_INPUT_NAMES
@@ -3072,9 +3136,88 @@ function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
 
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 
-function remapPythonRuntimeTrace(runtimeTrace, userCodeStartLine, userCodeLineCount, runId = 'python:run', file) {
+function traceLineParenDelta(line) {
+  let delta = 0;
+  let quote = null;
+  let escaped = false;
+  for (const char of String(line ?? '')) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') delta += 1;
+    else if (char === ')') delta -= 1;
+  }
+  return delta;
+}
+
+function buildRuntimeStatementSourceMap(code) {
+  const lines = String(code ?? '').split(/\r?\n/);
+  const spans = new Map();
+  let startLine = 0;
+  let startColumn = 0;
+  let balance = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineNumber = index + 1;
+    const line = lines[index] ?? '';
+    const delta = traceLineParenDelta(line);
+    if (startLine === 0) {
+      if (delta > 0) {
+        startLine = lineNumber;
+        startColumn = /\S/.exec(line)?.index ?? 0;
+        balance = delta;
+      }
+      continue;
+    }
+    balance += delta;
+    if (balance <= 0) {
+      const span = {
+        statementId: `stmt:${startLine}:${lineNumber}:${startColumn}`,
+        startLine,
+        startColumn,
+        endLine: lineNumber,
+        endColumn: line.length,
+      };
+      for (let mappedLine = startLine; mappedLine <= lineNumber; mappedLine += 1) {
+        spans.set(mappedLine, span);
+      }
+      startLine = 0;
+      startColumn = 0;
+      balance = 0;
+    }
+  }
+  return spans;
+}
+
+function runtimeTraceSourceOwnership(lineNumber, functionName, statementSourceMap) {
+  if (!(statementSourceMap instanceof Map) || typeof lineNumber !== 'number') return {};
+  const span = statementSourceMap.get(Math.floor(lineNumber));
+  if (!span) return {};
+  const normalizedFunction = typeof functionName === 'string' && functionName.length > 0 ? functionName : undefined;
+  return {
+    statementId: normalizedFunction ? `${normalizedFunction}:${span.statementId}` : span.statementId,
+    sourceSpan: {
+      startLine: span.startLine,
+      startColumn: span.startColumn,
+      endLine: span.endLine,
+      endColumn: span.endColumn,
+    },
+  };
+}
+
+function remapPythonRuntimeTrace(runtimeTrace, userCodeStartLine, userCodeLineCount, runId = 'python:run', file, sourceCode = '') {
   const normalizedEvents = [];
   const events = runtimeTrace && Array.isArray(runtimeTrace.events) ? runtimeTrace.events : [];
+  const statementSourceMap = buildRuntimeStatementSourceMap(sourceCode);
   for (const event of events) {
     if (!event || typeof event !== 'object') continue;
     const normalized = {
@@ -3088,6 +3231,7 @@ function remapPythonRuntimeTrace(runtimeTrace, userCodeStartLine, userCodeLineCo
         continue;
       }
     }
+    Object.assign(normalized, runtimeTraceSourceOwnership(normalized.line, normalized.function, statementSourceMap));
     normalizedEvents.push(normalized);
   }
   return {
@@ -3206,7 +3350,8 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
         userCodeStartLine,
         userCodeLineCount,
         'python:run',
-        'solution.py'
+        'solution.py',
+        code
       ),
       executionTimeMs,
       consoleOutput: result.console,
@@ -3295,6 +3440,8 @@ async function executeCode(deps, code, functionName, inputs, executionStyle = 'f
       .filter((key) => Object.prototype.hasOwnProperty.call(inputs, key));
     const inplaceCandidatesLiteral = JSON.stringify(inplaceCandidates);
     const traceInputNamesLiteral = JSON.stringify(Object.keys(inputs));
+    const functionNameLiteral = deps.toPythonLiteral(functionName);
+    const executionStyleLiteral = deps.toPythonLiteral(executionStyle);
     const executionCall = executionStyle === 'solution-method'
       ? `_result = _tracecode_invoke_entry(${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)}, ${traceInputNamesLiteral})`
       : executionStyle === 'ops-class'
@@ -3665,7 +3812,7 @@ ${treeConversions}
 ${listConversions}
 
 _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
-_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)})
+_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 _result = None
 _interview_guard_triggered = False
@@ -3913,7 +4060,7 @@ ${treeConversions}
 ${listConversions}
 
 _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
-_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)})
+_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 try:
 ${executionCallInTry}

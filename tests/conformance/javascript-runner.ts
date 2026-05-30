@@ -50,6 +50,7 @@ interface WorkerMessage {
   id?: string;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 interface WorkerSelfObject {
@@ -90,7 +91,7 @@ export async function createInitializedJavaScriptConformanceBridge(language: 'ja
   const workerSource = await readFile(join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js'), 'utf8');
   const pending = new Map<
     string,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> }
+    { protocolToken: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> }
   >();
   let ready = false;
   let nextId = 0;
@@ -106,6 +107,7 @@ export async function createInitializedJavaScriptConformanceBridge(language: 'ja
       if (!id) return;
       const entry = pending.get(id);
       if (!entry) return;
+      if (message.protocolToken !== entry.protocolToken) return;
       pending.delete(id);
       clearTimeout(entry.timeout);
       if (message.type === 'error') {
@@ -146,6 +148,7 @@ export async function createInitializedJavaScriptConformanceBridge(language: 'ja
 
   async function sendMessage<T>(type: string, payload?: unknown): Promise<T> {
     const id = String(++nextId);
+    const protocolToken = `javascript-conformance-token-${id}`;
     const responsePromise = new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         const entry = pending.get(id);
@@ -153,10 +156,10 @@ export async function createInitializedJavaScriptConformanceBridge(language: 'ja
         pending.delete(id);
         entry.reject(new Error(`Timed out waiting for response: ${type}`));
       }, 10_000);
-      pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timeout });
+      pending.set(id, { protocolToken, resolve: resolve as (value: unknown) => void, reject, timeout });
     });
 
-    onmessage?.({ data: { id, type, payload } });
+    onmessage?.({ data: { id, type, payload, protocolToken } });
     return responsePromise;
   }
 

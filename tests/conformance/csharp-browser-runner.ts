@@ -167,6 +167,7 @@ export async function createCSharpConformanceBridge(): Promise<CSharpBridge> {
             const id = event.data?.id;
             if (!id || !pending.has(id)) return;
             const { resolve, reject, timeoutId } = pending.get(id);
+            if (event.data?.protocolToken !== pending.get(id)?.protocolToken) return;
             pending.delete(id);
             clearTimeout(timeoutId);
             if (event.data.type === 'error') {
@@ -182,12 +183,13 @@ export async function createCSharpConformanceBridge(): Promise<CSharpBridge> {
 
           function send(type, payload) {
             const id = String(++nextId);
+            const protocolToken = `csharp-conformance-token-${id}`;
             return new Promise((resolve, reject) => {
               const timeoutId = setTimeout(() => {
                 terminate(new Error(`C# worker request timed out: ${type}`));
               }, 180000);
-              pending.set(id, { resolve, reject, timeoutId });
-              worker.postMessage({ id, type, payload });
+              pending.set(id, { resolve, reject, timeoutId, protocolToken });
+              worker.postMessage({ id, type, payload, protocolToken });
             });
           }
 

@@ -13,6 +13,7 @@ import type {
 import { javaTraceHooksEventsToRuntimeTrace } from '../../harness-core/src/trace-adapters/java';
 import { createEmptyRuntimeTrace, type RuntimeTrace } from '../../harness-core/src/runtime-trace';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import { createWorkerProtocolToken } from './worker-protocol';
 
 type MessageId = string;
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -24,6 +25,7 @@ export interface JavaWorkerClientOptions {
 }
 
 interface PendingMessage {
+  protocolToken: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
@@ -53,6 +55,7 @@ interface WorkerMessage {
   id?: MessageId;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 interface InitResult {
@@ -277,7 +280,7 @@ export class JavaWorkerClient {
 
     this.worker = new Worker(workerUrl);
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-      const { id, type, payload } = event.data;
+      const { id, type, payload, protocolToken } = event.data;
 
       if (type === 'worker-ready') {
         this.workerReadyResolve?.();
@@ -306,6 +309,7 @@ export class JavaWorkerClient {
       if (!id) return;
       const pending = this.pendingMessages.get(id);
       if (!pending) return;
+      if (protocolToken !== pending.protocolToken) return;
       if (type === 'project-event') {
         pending.onEvent?.(payload as RuntimeCommandEvent);
         return;
@@ -412,9 +416,11 @@ export class JavaWorkerClient {
     const worker = this.getWorker();
     await this.waitForWorkerReady();
     const id = String(++this.messageId);
+    const protocolToken = createWorkerProtocolToken();
 
     return new Promise<T>((resolve, reject) => {
       this.pendingMessages.set(id, {
+        protocolToken,
         resolve: resolve as (value: unknown) => void,
         reject,
         ...(onEvent ? { onEvent } : {}),
@@ -440,7 +446,7 @@ export class JavaWorkerClient {
       const pending = this.pendingMessages.get(id);
       if (pending) pending.timeoutId = timeoutId;
 
-      worker.postMessage({ id, type, payload });
+      worker.postMessage({ id, type, payload, protocolToken });
     });
   }
 

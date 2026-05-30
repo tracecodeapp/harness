@@ -110,6 +110,7 @@ interface WorkerMessage {
   id?: string;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 interface TraceRun {
@@ -789,7 +790,10 @@ print(json.dumps({
 }
 
 function createJavaScriptWorkerHarness(workerSource: string) {
-  const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timeoutId: ReturnType<typeof setTimeout> }>();
+  const pending = new Map<
+    string,
+    { protocolToken: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
+  >();
   let ready = false;
   let nextId = 0;
   const selfObject: {
@@ -808,6 +812,7 @@ function createJavaScriptWorkerHarness(workerSource: string) {
       if (!id) return;
       const entry = pending.get(id);
       if (!entry) return;
+      if (message.protocolToken !== entry.protocolToken) return;
       pending.delete(id);
       clearTimeout(entry.timeoutId);
       if (message.type === 'error') {
@@ -828,14 +833,15 @@ function createJavaScriptWorkerHarness(workerSource: string) {
 
   async function sendMessage<T>(type: string, payload?: unknown): Promise<T> {
     const id = String(++nextId);
+    const protocolToken = `javascript-mine-token-${id}`;
     const responsePromise = new Promise<T>((resolvePromise, reject) => {
       const timeoutId = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`Timed out waiting for response: ${type}`));
       }, 60_000);
-      pending.set(id, { resolve: resolvePromise as (value: unknown) => void, reject, timeoutId });
+      pending.set(id, { protocolToken, resolve: resolvePromise as (value: unknown) => void, reject, timeoutId });
     });
-    onmessage({ data: { id, type, payload } });
+    onmessage({ data: { id, type, payload, protocolToken } });
     return responsePromise;
   }
 

@@ -80,6 +80,8 @@ public static class RuntimeTraceSink
 
     public static string? TimeoutReason => timeoutReason;
 
+    public static string? CurrentFunction => CallStack.Count == 0 ? null : CallStack[^1].Function;
+
     public static int EventCount => Events.Count;
 
     public static void Line(int line, string? function)
@@ -765,6 +767,43 @@ public static class RuntimeTraceSink
         }
 
         return false;
+    }
+
+    public static bool HasMutationSince(int startIndex, string variable, IReadOnlyList<object?> path, string method, int line)
+    {
+        string resolvedVariable = ResolveVariableAlias(variable);
+        string dottedVariable = path.Count == 0
+            ? resolvedVariable
+            : resolvedVariable + "." + string.Join(".", path.Select(part => Convert.ToString(part, System.Globalization.CultureInfo.InvariantCulture)));
+        int boundedStartIndex = Math.Clamp(startIndex, 0, Events.Count);
+        for (int index = boundedStartIndex; index < Events.Count; index++)
+        {
+            RuntimeTraceEvent traceEvent = Events[index];
+            if (traceEvent.Kind == "mutate"
+                && traceEvent.Line == line
+                && string.Equals(traceEvent.Method, method, StringComparison.Ordinal)
+                && (string.Equals(traceEvent.Target?.Variable, resolvedVariable, StringComparison.Ordinal)
+                    && TracePathsEqual(traceEvent.Target?.Path, path)
+                    || string.Equals(traceEvent.Target?.Variable, dottedVariable, StringComparison.Ordinal)
+                    && (traceEvent.Target?.Path is null || traceEvent.Target.Path.Count == 0)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TracePathsEqual(IReadOnlyList<object?>? left, IReadOnlyList<object?>? right)
+    {
+        if (left is null || left.Count == 0) return right is null || right.Count == 0;
+        if (right is null || right.Count == 0) return false;
+        if (left.Count != right.Count) return false;
+        for (int index = 0; index < left.Count; index += 1)
+        {
+            if (!object.Equals(left[index], right[index])) return false;
+        }
+        return true;
     }
 
     public static void Snapshot(string variable, object? value)

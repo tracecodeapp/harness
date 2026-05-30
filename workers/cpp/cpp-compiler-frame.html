@@ -10,6 +10,7 @@ function encodeError(error) {
 
 function rejectPendingCompiles(error) {
   for (const [, request] of pendingCompiles) {
+    clearTimeout(request.timeoutId);
     request.reject(error);
   }
   pendingCompiles.clear();
@@ -34,7 +35,9 @@ function getCompilerWorker() {
     if (data.type === 'worker-ready') return;
     const request = pendingCompiles.get(data.id);
     if (!request) return;
+    if (data.protocolToken !== request.protocolToken) return;
     pendingCompiles.delete(data.id);
+    clearTimeout(request.timeoutId);
     if (data.type !== 'compile-result') {
       request.reject(new Error(`Unexpected C++ compiler worker response: ${data.type}`));
       return;
@@ -54,23 +57,30 @@ function compile(payload) {
   return new Promise((resolve, reject) => {
     const worker = getCompilerWorker();
     const id = String(++nextId);
-    pendingCompiles.set(id, { resolve, reject });
-    worker.postMessage({ id, type: 'compile', payload });
+    const protocolToken = `frame-compiler-${id}-${Date.now()}-${Math.random()}`;
+    const timeoutId = setTimeout(() => {
+      pendingCompiles.delete(id);
+      reject(new Error('C++ compiler worker request timed out'));
+    }, 120000);
+    pendingCompiles.set(id, { protocolToken, resolve, reject, timeoutId });
+    worker.postMessage({ id, type: 'compile', payload, protocolToken });
   });
 }
 
 addEventListener('message', async (event) => {
   if (event.data?.type !== 'compile') return;
+  if (typeof event.data.protocolToken !== 'string' || event.data.protocolToken.length === 0) return;
 
   try {
     const payload = await compile(event.data.payload);
     const transfer = payload?.programBuffer instanceof ArrayBuffer ? [payload.programBuffer] : [];
-    event.source?.postMessage({ id: event.data.id, type: 'compile-result', payload }, event.origin, transfer);
+    event.source?.postMessage({ id: event.data.id, type: 'compile-result', protocolToken: event.data.protocolToken, payload }, event.origin, transfer);
   } catch (error) {
     event.source?.postMessage(
       {
         id: event.data.id,
         type: 'compile-result',
+        protocolToken: event.data.protocolToken,
         payload: { success: false, error: encodeError(error) },
       },
       event.origin

@@ -394,7 +394,8 @@ async function runWorkerCase(
         worker.addEventListener('message', (event) => {
           const id = event.data?.id;
           if (!id || !pending.has(id)) return;
-          const { resolve, reject, timeoutId } = pending.get(id);
+          const { resolve, reject, timeoutId, protocolToken } = pending.get(id);
+          if (event.data?.protocolToken !== protocolToken) return;
           pending.delete(id);
           clearTimeout(timeoutId);
           if (event.data.type === 'error') {
@@ -410,12 +411,13 @@ async function runWorkerCase(
 
         function send(type, payload) {
           const id = String(++nextId);
+          const protocolToken = 'csharp-test-token-' + id;
           return new Promise((resolve, reject) => {
             const timeoutId = setTimeout(() => {
               terminate(new Error(`C# worker request timed out: ${type}`));
             }, workerRequestTimeoutMs);
-            pending.set(id, { resolve, reject, timeoutId });
-            worker.postMessage({ id, type, payload });
+            pending.set(id, { resolve, reject, timeoutId, protocolToken });
+            worker.postMessage({ id, type, payload, protocolToken });
           });
         }
 
@@ -483,6 +485,7 @@ async function runProjectWorkerCase(
         const id = event.data?.id;
         if (!id || !pending.has(id)) return;
         const pendingMessage = pending.get(id);
+        if (event.data?.protocolToken !== pendingMessage.protocolToken) return;
         const { resolve, reject, timeoutId } = pendingMessage;
         if (event.data.type === 'project-event') {
           pendingMessage.events.push(event.data.payload);
@@ -503,12 +506,13 @@ async function runProjectWorkerCase(
 
       function send(type, payload) {
         const id = String(++nextId);
+        const protocolToken = 'csharp-test-token-' + id;
         return new Promise((resolve, reject) => {
           const timeoutId = setTimeout(() => {
             terminate(new Error(`C# worker request timed out: ${type}`));
           }, workerRequestTimeoutMs);
-          pending.set(id, { resolve, reject, timeoutId, events: [] });
-          worker.postMessage({ id, type, payload });
+          pending.set(id, { resolve, reject, timeoutId, protocolToken, events: [] });
+          worker.postMessage({ id, type, payload, protocolToken });
         });
       }
 
@@ -561,6 +565,7 @@ async function runProjectWorkerSequenceCase(
         const id = event.data?.id;
         if (!id || !pending.has(id)) return;
         const pendingMessage = pending.get(id);
+        if (event.data?.protocolToken !== pendingMessage.protocolToken) return;
         const { resolve, reject, timeoutId } = pendingMessage;
         if (event.data.type === 'project-event') {
           pendingMessage.events.push(event.data.payload);
@@ -581,12 +586,13 @@ async function runProjectWorkerSequenceCase(
 
       function send(type, payload) {
         const id = String(++nextId);
+        const protocolToken = 'csharp-test-token-' + id;
         return new Promise((resolve, reject) => {
           const timeoutId = setTimeout(() => {
             terminate(new Error(`C# worker request timed out: ${type}`));
           }, workerRequestTimeoutMs);
-          pending.set(id, { resolve, reject, timeoutId, events: [] });
-          worker.postMessage({ id, type, payload });
+          pending.set(id, { resolve, reject, timeoutId, protocolToken, events: [] });
+          worker.postMessage({ id, type, payload, protocolToken });
         });
       }
 

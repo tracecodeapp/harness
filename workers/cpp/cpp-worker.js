@@ -131,6 +131,7 @@ let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let queuedTasks = 0;
 let activeRequestId = null;
 let activeRequestStartedAt = 0;
+let activeRequestProtocolToken = null;
 let programCache = new Map();
 let programCacheLimit = DEFAULT_CPP_PROGRAM_CACHE_LIMIT;
 let usePrecompiledHeader = false;
@@ -174,6 +175,7 @@ function emitRequestProgress(stage, detail = undefined) {
   postMessage({
     id: activeRequestId,
     type: 'runtime-progress',
+    ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
     payload: {
       stage,
       elapsedMs: elapsedMs(activeRequestStartedAt || now()),
@@ -335,20 +337,21 @@ function cloneBytes(value) {
 }
 
 function postSuccess(id, type, payload) {
-  postMessage({ id, type, payload });
+  postMessage({ id, type, payload, ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}) });
 }
 
 function postFailure(id, error) {
   postMessage({
     id,
     type: 'error',
+    ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
     payload: { error: error instanceof Error ? error.message : String(error) },
   });
 }
 
 function postProjectEvent(id, payload) {
   if (!id) return;
-  postMessage({ id, type: 'project-event', payload });
+  postMessage({ id, type: 'project-event', payload, ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}) });
 }
 
 async function fetchAsset(name, url, responseType) {
@@ -2130,6 +2133,17 @@ function sourceDeclaresSolutionClass(source) {
   return /\b(?:class|struct)\s+Solution\b/.test(stripComments(source));
 }
 
+function collectCppDeclaredClassNames(source) {
+  const names = new Set();
+  const cleaned = stripComments(source);
+  const pattern = /\b(?:class|struct)\s+([A-Za-z_]\w*)\b/g;
+  let match;
+  while ((match = pattern.exec(cleaned))) {
+    names.add(match[1]);
+  }
+  return [...names];
+}
+
 function sourceDeclaresCustomToJson(source, type) {
   const normalized = normalizeCppType(type);
   if (!/^[A-Za-z_]\w*$/.test(normalized)) return false;
@@ -3472,6 +3486,11 @@ function shouldInstrumentCppLine(line) {
   );
 }
 
+function isCppControlHeaderLine(line) {
+  const trimmed = stripCppStringsAndComments(line).trim();
+  return /^(?:if|else\s+if|for|while|switch)\s*\(/.test(trimmed);
+}
+
 function isUnbracedControlHeader(line, nextLine = '') {
   const trimmed = stripCppStringsAndComments(line).trim();
   if (!/^(?:if|else\s+if|for|while)\s*\(.*\)\s*$/.test(trimmed)) return false;
@@ -3620,6 +3639,7 @@ function buildDeclarationWriteInstrumentation(lineNumber, variables, currentDept
 }
 
 function buildOpaqueObjectSnapshotInstrumentation(name, lineNumber, indent = '') {
+  if (name === 'this') return '';
   return `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"snapshot","line":${lineNumber},"target":{"variable":${jsonStringLiteral(name)}},"value":`)}) + tracecode::to_json(${name}) + "}", ${lineNumber});`;
 }
 
@@ -3938,7 +3958,7 @@ function buildCallInstrumentation(lineNumber, signature, aliases = new Map()) {
     `int ${callLineName} = ${callLineExpression};`,
     `std::string __tc_args_json_${lineNumber} = std::string("{") + ${argsExpression} + "}";`,
     `tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + tracecode::to_json(${callLineName}) + ${cppStringLiteral(callEventSuffix)} + __tc_args_json_${lineNumber} + "}", ${callLineName});`,
-    `tracecode::emit_line(${entryLine}, ${cppStringLiteral(signature.name)});`,
+    ...(signature.name === CPP_SCRIPT_FUNCTION_NAME ? [] : [`tracecode::emit_line(${entryLine}, ${cppStringLiteral(signature.name)});`]),
   ].join('\n');
 }
 
@@ -3991,10 +4011,10 @@ function splitTopLevelTernaryExpression(expression) {
   return null;
 }
 
-function buildPostLineInstrumentation(lineNumber, functionName, variables, currentDepth, indent = '', includeSnapshots = true) {
-  const pieces = [
-    `${indent}${buildLineInstrumentation(lineNumber, functionName)}`,
-  ];
+function buildPostLineInstrumentation(lineNumber, functionName, variables, currentDepth, indent = '', includeSnapshots = true, includeLine = true) {
+  const pieces = includeLine
+    ? [`${indent}${buildLineInstrumentation(lineNumber, functionName)}`]
+    : [];
   const declarationWrites = buildDeclarationWriteInstrumentation(lineNumber, variables, currentDepth, indent);
   if (declarationWrites) {
     pieces.push(declarationWrites);
@@ -4038,9 +4058,21 @@ function cppLineCallsName(line, name) {
   return false;
 }
 
+function cppLineConstructsCallSiteType(line, callSiteNames) {
+  const stripped = stripCppStringsAndComments(line).trim();
+  for (const name of callSiteNames) {
+    if (!name || name.startsWith('<')) continue;
+    const escaped = escapeRegExp(name);
+    if (new RegExp(`^(?:const\\s+)?${escaped}(?:\\s*[*&])*\\s+[A-Za-z_]\\w*\\s*\\(`).test(stripped)) return true;
+    if (new RegExp(`^(?:const\\s+)?${escaped}(?:\\s*[*&])*\\s+[A-Za-z_]\\w*\\s*=\\s*${escaped}\\s*\\(`).test(stripped)) return true;
+  }
+  return false;
+}
+
 function shouldEmitCppCallSiteLine(line, activeSignature, callSiteNames) {
   const stripped = stripCppStringsAndComments(line);
   if (!stripped.includes('(')) return false;
+  if (cppLineConstructsCallSiteType(stripped, callSiteNames)) return true;
   for (const name of callSiteNames) {
     if (cppLineCallsName(stripped, name)) return true;
   }
@@ -4053,6 +4085,57 @@ function shouldEmitCppCallSiteLine(line, activeSignature, callSiteNames) {
     return true;
   }
   return false;
+}
+
+function cppCallExpressionStart(line, nameStart) {
+  let cursor = nameStart;
+  let prefix = line.slice(0, cursor);
+  const memberMatch = prefix.match(/([A-Za-z_]\w*)\s*(?:\.|->)\s*$/);
+  if (memberMatch && typeof memberMatch.index === 'number') {
+    cursor = memberMatch.index;
+  }
+  return cursor;
+}
+
+function rewriteCppCallSiteExpressionLines(line, lineNumber, functionName, callSiteNames) {
+  if (!line.includes('(')) return line;
+  let output = line;
+  let cursor = 0;
+
+  while (cursor < output.length) {
+    let best = null;
+    for (const name of callSiteNames) {
+      if (!name || name.startsWith('<')) continue;
+      const pattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, 'g');
+      pattern.lastIndex = cursor;
+      const match = pattern.exec(output);
+      if (!match) continue;
+      if (output.slice(Math.max(0, match.index - 2), match.index).endsWith('::')) continue;
+      if (!best || match.index < best.index) {
+        best = { index: match.index, name, text: match[0] };
+      }
+    }
+    if (!best) break;
+
+    const openIndex = output.indexOf('(', best.index + best.name.length);
+    const closeIndex = findMatchingParen(output, openIndex);
+    if (openIndex < 0 || closeIndex < 0) {
+      cursor = best.index + best.name.length;
+      continue;
+    }
+
+    const expressionStart = cppCallExpressionStart(output, best.index);
+    const expression = output.slice(expressionStart, closeIndex + 1);
+    if (/^\s*(?:if|for|while|switch|return)\b/.test(expression)) {
+      cursor = closeIndex + 1;
+      continue;
+    }
+    const replacement = `([&]() { ${buildLineInstrumentation(lineNumber, functionName)} return ${expression}; })()`;
+    output = `${output.slice(0, expressionStart)}${replacement}${output.slice(closeIndex + 1)}`;
+    cursor = expressionStart + replacement.length;
+  }
+
+  return output;
 }
 
 function startsCppLocalLambdaDeclaration(line) {
@@ -4510,7 +4593,11 @@ function cppIndexSourceForExpression(expression) {
 }
 
 function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), lineNumber = 1) {
-  if (line.includes('tracecode::trace_index_read') || line.includes('tracecode::trace_nested_index_read')) {
+  if (
+    line.includes('tracecode::trace_index_read') ||
+    line.includes('tracecode::trace_index_field_read') ||
+    line.includes('tracecode::trace_nested_index_read')
+  ) {
     return line;
   }
   if (/\b(?:std::)?swap\s*\(/.test(stripCppStringsAndComments(line))) {
@@ -4589,6 +4676,15 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         if (sizeMatch && elementType?.replace(/^std::/, '').startsWith('vector<')) {
           const replacement = `tracecode::trace_nested_size_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
           rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(next.index + sizeMatch[0].length)}`;
+          cursor = nameIndex + replacement.length;
+          continue;
+        }
+        const fieldMatch = memberSource.match(/^\.\s*([A-Za-z_]\w*)\b(?!\s*\()/);
+        if (fieldMatch && !elementType?.replace(/^std::/, '').startsWith('vector<')) {
+          const fieldName = fieldMatch[1];
+          const fieldEnd = next.index + fieldMatch[0].length;
+          const replacement = `tracecode::trace_index_field_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${cppStringLiteral(fieldName)}, ${name}[${indexExpression}].${fieldName}, ${lineNumber}, ${indexSource})`;
+          rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(fieldEnd)}`;
           cursor = nameIndex + replacement.length;
           continue;
         }
@@ -5111,6 +5207,7 @@ function rewritePlainIndexedWriteInstrumentation(line, lineNumber, variables, al
 
 function shouldEmitPlainContainerMutation(variable, name, aliases = new Map(), source = '') {
   if (!variable || !isSnapshotSerializableCppType(variable.type, aliases)) return false;
+  if (/[&]/.test(variable.type || '') && isTraceWrappedCppType(variable.type, aliases)) return true;
   if (variable.parameter && /\bstd::/.test(variable.type)) {
     if (
       !variable.lambdaParameter &&
@@ -5166,10 +5263,19 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
     }
   }
 
-  const sortMatch = statement.match(/^(?:std::)?sort\s*\(\s*([A-Za-z_]\w*)\s*\.\s*begin\s*\(\s*\)\s*,\s*\1\s*\.\s*end\s*\(\s*\)(?:\s*,\s*.*)?\)\s*;\s*$/);
+  const sortMatch = statement.match(/^(?:std::)?sort\s*\(\s*((?:this->)?([A-Za-z_]\w*))\s*\.\s*begin\s*\(\s*\)\s*,\s*\1\s*\.\s*end\s*\(\s*\)(?:\s*,\s*.*)?\)\s*;\s*$/);
   if (sortMatch) {
-    const [, name] = sortMatch;
+    const [, receiver, name] = sortMatch;
     const variable = variables?.get(name);
+    if (receiver.startsWith('this->') && variable && isTraceWrappedCppType(variable.type, aliases)) {
+      const indexName = `__tc_sort_index_${lineNumber}_${name}`;
+      const rawName = `__tc_sort_values_${lineNumber}_${name}`;
+      return [
+        line,
+        `${indent}${receiver}.emit_mutate("sort", ${lineNumber}, tracecode::mutation_args_json());`,
+        `${indent}{ const auto& ${rawName} = ${receiver}.raw(); for (std::size_t ${indexName} = 0; ${indexName} < ${rawName}.size(); ++${indexName}) { ${receiver}.emit_write(${indexName}, ${rawName}[${indexName}], ${lineNumber}); } }`,
+      ].join('\n');
+    }
     if (variable && isSnapshotSerializableCppType(variable.type, aliases)) {
       return [
         line,
@@ -5179,7 +5285,46 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
     }
   }
 
-  const plainMethodMatch = statement.match(/^([A-Za-z_]\w*)\s*\.\s*(push_back|insert|pop_back|clear)\s*\((.*)\)\s*;\s*$/);
+  const thisMethodMatch = statement.match(/^this->([A-Za-z_]\w*)\s*\.\s*(push_back|insert|erase|pop_back|clear)\s*\((.*)\)\s*;\s*$/);
+  if (thisMethodMatch) {
+    const [, name, method, argsSource] = thisMethodMatch;
+    const variable = variables?.get(name);
+    if (!variable || isSnapshotSerializableCppType(variable.type, aliases)) {
+      const trimmedArgsSource = argsSource.trim();
+      const args = trimmedArgsSource.startsWith('{') && trimmedArgsSource.endsWith('}')
+        ? [trimmedArgsSource]
+        : splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
+      if ((method === 'push_back' || method === 'insert') && args.length === 1) {
+        const tempName = `__tc_member_mutation_arg_${lineNumber}_${name}`;
+        const argsJsonExpression = aggregateMutationArgsJsonExpression(args[0], tempName);
+        const writeIndex = `this->${name}.size() - 1`;
+        return [
+          `${indent}{`,
+          `${indent}  ${cppValueTypeTempInitialization(`this->${name}`, tempName, args[0])}`,
+          `${indent}  this->${name}.${method}(${tempName});`,
+          `${indent}  tracecode::emit_field_container_mutate_value("this", ${cppStringLiteral(name)}, this->${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${argsJsonExpression});`,
+          `${indent}  tracecode::emit_field_index_write_value("this", ${cppStringLiteral(name)}, this->${name}, ${writeIndex}, ${lineNumber}, nullptr);`,
+          `${indent}}`,
+        ].join('\n');
+      }
+      if (method === 'erase' && args.length === 1) {
+        const iteratorArg = args[0].replace(/\s+/g, '');
+        const mutationArgs = iteratorArg === `this->${name}.begin()` ? 'tracecode::mutation_args_json(0)' : 'tracecode::mutation_args_json()';
+        return [
+          line,
+          `${indent}tracecode::emit_field_container_mutate_value("this", ${cppStringLiteral(name)}, this->${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${mutationArgs});`,
+        ].join('\n');
+      }
+      if ((method === 'pop_back' || method === 'clear') && args.length === 0) {
+        return [
+          line,
+          `${indent}tracecode::emit_field_container_mutate_value("this", ${cppStringLiteral(name)}, this->${name}, ${cppStringLiteral(method)}, ${lineNumber}, tracecode::mutation_args_json());`,
+        ].join('\n');
+      }
+    }
+  }
+
+  const plainMethodMatch = statement.match(/^([A-Za-z_]\w*)\s*\.\s*(push_back|insert|erase|pop_back|clear)\s*\((.*)\)\s*;\s*$/);
   if (plainMethodMatch) {
     const [, name, method, argsSource] = plainMethodMatch;
     const variable = variables?.get(name);
@@ -5191,12 +5336,22 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_mutation_arg_${lineNumber}_${name}`;
         const argsJsonExpression = aggregateMutationArgsJsonExpression(args[0], tempName);
+        const writeIndex = `${name}.size() - 1`;
         return [
           `${indent}{`,
           `${indent}  ${cppValueTypeTempInitialization(name, tempName, args[0])}`,
           `${indent}  ${name}.${method}(${tempName});`,
           `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${argsJsonExpression});`,
+          `${indent}  tracecode::emit_index_write_value(${cppStringLiteral(name)}, ${name}, ${writeIndex}, ${lineNumber}, nullptr);`,
           `${indent}}`,
+        ].join('\n');
+      }
+      if (method === 'erase' && args.length === 1) {
+        const iteratorArg = args[0].replace(/\s+/g, '');
+        const mutationArgs = iteratorArg === `${name}.begin()` ? 'tracecode::mutation_args_json(0)' : 'tracecode::mutation_args_json()';
+        return [
+          line,
+          `${indent}tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${mutationArgs});`,
         ].join('\n');
       }
       if ((method === 'pop_back' || method === 'clear') && args.length === 0) {
@@ -5808,6 +5963,42 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       });
       signatures.sort((left, right) => left.line - right.line || left.bodyLine - right.bodyLine);
     }
+    const sourceLines = source.split(/\r?\n/);
+    for (const className of collectCppDeclaredClassNames(source)) {
+      if (className === options.traceMemberClassName) continue;
+      const helperConstructorSignature = parseConstructorSignature(source, className, aliases);
+      if (!helperConstructorSignature) continue;
+      const constructorLine = sourceLines[helperConstructorSignature.line - 1] || '';
+      if (!new RegExp(`\\b${escapeRegExp(className)}\\s*\\(`).test(stripCppStringsAndComments(constructorLine))) continue;
+      if (signatures.some((signature) => signature.line === helperConstructorSignature.line && signature.name === className)) continue;
+      signatures.push({
+        ...helperConstructorSignature,
+        name: className,
+        bodyLine: helperConstructorSignature.line,
+        customJsonReturn: false,
+        skipTraceParameterNames: new Set(),
+        skipScopedTraceNames: true,
+      });
+    }
+    signatures.sort((left, right) => left.line - right.line || left.bodyLine - right.bodyLine);
+  }
+  if (functionName === CPP_SCRIPT_FUNCTION_NAME) {
+    const sourceLines = source.split(/\r?\n/);
+    for (const className of collectCppDeclaredClassNames(source)) {
+      const constructorSignature = parseConstructorSignature(source, className, aliases);
+      const constructorLine = sourceLines[constructorSignature.line - 1] || '';
+      if (!new RegExp(`\\b${escapeRegExp(className)}\\s*\\(`).test(stripCppStringsAndComments(constructorLine))) continue;
+      if (signatures.some((signature) => signature.line === constructorSignature.line && signature.name === className)) continue;
+      signatures.push({
+        ...constructorSignature,
+        name: className,
+        bodyLine: constructorSignature.line,
+        customJsonReturn: false,
+        skipTraceParameterNames: new Set(),
+        skipScopedTraceNames: true,
+      });
+    }
+    signatures.sort((left, right) => left.line - right.line || left.bodyLine - right.bodyLine);
   }
   if (!signatures.some((signature) => signature.line === targetSignature.line && signature.name === functionName)) {
     signatures.push({
@@ -5928,6 +6119,11 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     if (shouldInstrumentLine || startsMultilineControlCondition || shouldAnchorMultilineStatement || shouldAnchorMultilineLambdaBodyLine) {
       output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
       output.push(buildCurrentLineInstrumentation(lineNumber));
+      if (shouldInstrumentLine && isCppControlHeaderLine(line)) {
+        output.push(buildLineInstrumentation(lineNumber, activeSignature.name));
+      } else if (shouldAnchorMultilineStatement) {
+        output.push(buildLineInstrumentation(lineNumber, activeSignature.name));
+      }
     }
 
     if (
@@ -5960,8 +6156,13 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     if (inFunctionBodyBeforeLine && !skipActiveInstrumentation && !unbracedControlHeaderLine && !unbracedControlBodyLine && !inMultilineControlCondition && !inMultilineStatement) {
       const declaration = findContainerDeclarationSemicolon(lines, index);
       if (strippedTrimmedLine && declaration) {
-        const rewrittenDeclaration = rewriteTraceContainerLocal(declaration.text, lineNumber, aliases, source);
+        let rewrittenDeclaration = rewriteTraceContainerLocal(declaration.text, lineNumber, aliases, source);
         if (rewrittenDeclaration !== declaration.text) {
+          const callSiteRewrittenDeclaration = activeSignature.name === CPP_SCRIPT_FUNCTION_NAME
+            ? rewriteCppCallSiteExpressionLines(rewrittenDeclaration, lineNumber, activeSignature.name, callSiteNames)
+            : rewrittenDeclaration;
+          const declarationEmitsCallSiteLine = callSiteRewrittenDeclaration !== rewrittenDeclaration;
+          rewrittenDeclaration = callSiteRewrittenDeclaration;
           output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
           output.push(buildCurrentLineInstrumentation(lineNumber));
           output.push(rewrittenDeclaration);
@@ -5974,7 +6175,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
             });
           }
           if (shouldInstrumentCppLine(declaration.text)) {
-            output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, activeFrame.depth, '', includeSnapshotsForActiveFrame));
+            output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, activeFrame.depth, '', includeSnapshotsForActiveFrame, !declarationEmitsCallSiteLine));
           }
           index = declaration.endIndex;
           continue;
@@ -6014,8 +6215,9 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
           if (normalizeCppType(variable.type, aliases).includes('*')) activeFrame.variables.delete(name);
         }
       }
+      const preControlLineEmitted = shouldInstrumentLine && isCppControlHeaderLine(line);
       const postLineInstrumentation = (shouldInstrumentLine || lineStartsElse)
-        ? buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, postLineDepth, '', includeSnapshotsForActiveFrame)
+        ? buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, postLineDepth, '', includeSnapshotsForActiveFrame, !preControlLineEmitted)
         : '';
       let postLineHandledInline = false;
       const allowReturnInstrumentation = !(insideLocalLambdaBody && !activeSignature.lambda);
@@ -6083,6 +6285,9 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteFieldContainerCountInstrumentation(lineForDriver, lineNumber);
       lineForDriver = rewriteTraceMutatingCallLineScope(lineForDriver, lineNumber);
+      if (activeSignature.name === CPP_SCRIPT_FUNCTION_NAME) {
+        lineForDriver = rewriteCppCallSiteExpressionLines(lineForDriver, lineNumber, activeSignature.name, callSiteNames);
+      }
       lineForDriver = rewriteBareMemberReadInstrumentation(
         lineForDriver,
         lineNumber,
@@ -6145,7 +6350,9 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       !/^\s*(?:return|break|continue)\b/.test(trimmedLine)
     ) {
       const externalPostLineDepth = activeFrame.depth + Math.min(0, braceDeltaForLine(line));
-      output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, externalPostLineDepth, '', includeSnapshotsForActiveFrame));
+      const preControlLineEmitted = shouldInstrumentLine && isCppControlHeaderLine(line);
+      const preCallSiteLineEmitted = shouldInstrumentLine && !unbracedControlHeaderLine && shouldEmitCppCallSiteLine(line, activeSignature, callSiteNames);
+      output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, externalPostLineDepth, '', includeSnapshotsForActiveFrame, !preControlLineEmitted && !preCallSiteLineEmitted));
     }
     if (lineForDriver.includes(`__TC_POST_LINE_HANDLED_${lineNumber}`)) {
       output[output.length - 1] = output[output.length - 1].replace(`\n#define __TC_POST_LINE_HANDLED_${lineNumber} 1`, '');
@@ -6376,9 +6583,15 @@ ${userCode}
 function buildScriptDriverSource(userCode, options = {}) {
   userCode = normalizeCppUserSource(userCode, options);
   const userLineCount = scriptLineCount(userCode);
+  const scriptClassNames = collectCppDeclaredClassNames(userCode);
+  const traceMemberClassName = scriptClassNames.length === 1 ? scriptClassNames[0] : null;
   const wrappedSource = buildScriptWrapperSource(userCode, options);
   const sourceForDriver = options.tracing === true
-    ? instrumentCppSourceForTracing(wrappedSource, CPP_SCRIPT_FUNCTION_NAME)
+    ? instrumentCppSourceForTracing(
+        wrappedSource,
+        CPP_SCRIPT_FUNCTION_NAME,
+        traceMemberClassName ? { traceMemberClassName } : {}
+      )
     : wrappedSource;
   const traceCall = options.tracing === true
     ? [
@@ -6626,10 +6839,91 @@ function isDroppableCppSyntheticHelperEvent(event) {
   );
 }
 
+function traceLineParenDelta(line) {
+  let delta = 0;
+  let quote = null;
+  let escaped = false;
+  for (const char of String(line ?? '')) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') delta += 1;
+    else if (char === ')') delta -= 1;
+  }
+  return delta;
+}
+
+function buildRuntimeStatementSourceMap(code) {
+  const lines = String(code ?? '').split(/\r?\n/);
+  const spans = new Map();
+  let startLine = 0;
+  let startColumn = 0;
+  let balance = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineNumber = index + 1;
+    const line = lines[index] ?? '';
+    const delta = traceLineParenDelta(line);
+    if (startLine === 0) {
+      if (delta > 0) {
+        startLine = lineNumber;
+        startColumn = /\S/.exec(line)?.index ?? 0;
+        balance = delta;
+      }
+      continue;
+    }
+    balance += delta;
+    if (balance <= 0) {
+      const span = {
+        statementId: `stmt:${startLine}:${lineNumber}:${startColumn}`,
+        startLine,
+        startColumn,
+        endLine: lineNumber,
+        endColumn: line.length,
+      };
+      for (let mappedLine = startLine; mappedLine <= lineNumber; mappedLine += 1) {
+        spans.set(mappedLine, span);
+      }
+      startLine = 0;
+      startColumn = 0;
+      balance = 0;
+    }
+  }
+  return spans;
+}
+
+function cppRuntimeTraceSourceOwnership(event, statementSourceMap) {
+  if (!(statementSourceMap instanceof Map) || typeof event?.line !== 'number') return {};
+  const span = statementSourceMap.get(Math.floor(event.line));
+  if (!span) return {};
+  const functionName = typeof event.function === 'string' && event.function.length > 0 ? event.function : undefined;
+  return {
+    statementId: functionName ? `${functionName}:${span.statementId}` : span.statementId,
+    sourceSpan: {
+      startLine: span.startLine,
+      startColumn: span.startColumn,
+      endLine: span.endLine,
+      endColumn: span.endColumn,
+    },
+  };
+}
+
 function finalizeRuntimeTrace(events, options = {}) {
   const runId = options.runId || 'cpp:run';
   const file = options.file || CPP_USER_SOURCE_FILE;
   const maxPathDepth = normalizeMaxPathDepth(options.maxPathDepth);
+  const statementSourceMap = typeof options.sourceCode === 'string'
+    ? buildRuntimeStatementSourceMap(options.sourceCode)
+    : new Map();
   const maxEvents = Number.isFinite(options.maxStoredEvents)
     ? Number(options.maxStoredEvents)
     : Number.isFinite(options.maxTraceSteps)
@@ -6644,7 +6938,10 @@ function finalizeRuntimeTrace(events, options = {}) {
       file,
     });
     if (isDroppableCppSyntheticHelperEvent(normalized)) return [];
-    return [normalizeRuntimeTraceEventTargetDepth(normalized, maxPathDepth)];
+    return [normalizeRuntimeTraceEventTargetDepth({
+      ...normalized,
+      ...cppRuntimeTraceSourceOwnership(normalized, statementSourceMap),
+    }, maxPathDepth)];
   });
   const traceLimitExceeded = maxEvents !== undefined && normalizedEvents.length > maxEvents;
   let storedEvents = traceLimitExceeded ? normalizedEvents.slice(0, Math.max(0, maxEvents)) : normalizedEvents;
@@ -6808,6 +7105,7 @@ async function runTool(module, fs, args) {
 
 function rejectPendingCompilerWorkerRequests(error) {
   for (const [, request] of pendingCompilerWorkerRequests) {
+    clearTimeout(request.timeoutId);
     request.reject(error);
   }
   pendingCompilerWorkerRequests.clear();
@@ -6837,7 +7135,9 @@ function getPersistentCompilerWorker() {
     if (message.type === 'worker-ready') return;
     const request = pendingCompilerWorkerRequests.get(message.id);
     if (!request) return;
+    if (message.protocolToken !== request.protocolToken) return;
     pendingCompilerWorkerRequests.delete(message.id);
+    clearTimeout(request.timeoutId);
     if (message.type !== 'compile-result') {
       request.reject(new Error(`Unexpected C++ compiler worker response: ${message.type}`));
       return;
@@ -6863,10 +7163,16 @@ function runCompilerWorker(driverSource) {
       return;
     }
     const id = `compile-${++compilerWorkerRequestId}`;
-    pendingCompilerWorkerRequests.set(id, { resolve, reject });
+    const protocolToken = `${id}-${Date.now()}-${Math.random()}`;
+    const timeoutId = setTimeout(() => {
+      pendingCompilerWorkerRequests.delete(id);
+      reject(new Error('C++ compiler worker request timed out.'));
+    }, 120_000);
+    pendingCompilerWorkerRequests.set(id, { protocolToken, resolve, reject, timeoutId });
     worker.postMessage({
       id,
       type: 'compile',
+      protocolToken,
       payload: {
         assets: configuredAssets,
         driverSource,
@@ -6888,10 +7194,16 @@ function runCompilerWorkerPayload(payload) {
       return;
     }
     const id = `compile-${++compilerWorkerRequestId}`;
-    pendingCompilerWorkerRequests.set(id, { resolve, reject });
+    const protocolToken = `${id}-${Date.now()}-${Math.random()}`;
+    const timeoutId = setTimeout(() => {
+      pendingCompilerWorkerRequests.delete(id);
+      reject(new Error('C++ compiler worker request timed out.'));
+    }, 120_000);
+    pendingCompilerWorkerRequests.set(id, { protocolToken, resolve, reject, timeoutId });
     worker.postMessage({
       id,
       type: 'compile',
+      protocolToken,
       payload,
     });
   });
@@ -6906,10 +7218,11 @@ function requestExternalCompile(driverSource) {
       reject(new Error('C++ external compiler request timed out.'));
     }, 120_000);
 
-    pendingExternalCompiles.set(requestId, { resolve, reject, timeoutId });
+    pendingExternalCompiles.set(requestId, { resolve, reject, timeoutId, protocolToken: activeRequestProtocolToken });
     postMessage({
       type: 'compile-request',
       requestId,
+      ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
       payload: {
         assets: configuredAssets,
         driverSource,
@@ -6930,10 +7243,11 @@ function requestExternalCompilePayload(payload) {
       reject(new Error('C++ external compiler request timed out.'));
     }, 120_000);
 
-    pendingExternalCompiles.set(requestId, { resolve, reject, timeoutId });
+    pendingExternalCompiles.set(requestId, { resolve, reject, timeoutId, protocolToken: activeRequestProtocolToken });
     postMessage({
       type: 'compile-request',
       requestId,
+      ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
       payload,
     });
   });
@@ -7709,7 +8023,7 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
       ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
-    const finalizedTrace = finalizeRuntimeTrace(parsed.events, options.traceOptions || {});
+    const finalizedTrace = finalizeRuntimeTrace(parsed.events, { ...(options.traceOptions || {}), sourceCode: source });
     const { trace } = finalizedTrace;
     const runtimeTraceLimitExceeded = finalizedTrace.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded) || programTimedOut;
     const droppedEventCount = (finalizedTrace.droppedEventCount || 0) + (Number(parsed.traceStatus?.droppedEventCount) || 0);
@@ -7728,7 +8042,7 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
     if (options.tracing) {
       const trace = finalizeRuntimeTrace(
         [{ kind: 'exception', line: signature.line, message: error instanceof Error ? error.message : String(error) }],
-        options.traceOptions || {}
+        { ...(options.traceOptions || {}), sourceCode: source }
       ).trace;
       return {
         success: false,
@@ -7879,7 +8193,7 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
       ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
-    const finalizedTrace = finalizeRuntimeTrace(parsed.events, options.traceOptions || {});
+    const finalizedTrace = finalizeRuntimeTrace(parsed.events, { ...(options.traceOptions || {}), sourceCode: source });
     const { trace } = finalizedTrace;
     const runtimeTraceLimitExceeded = finalizedTrace.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded) || programTimedOut;
     const droppedEventCount = (finalizedTrace.droppedEventCount || 0) + (Number(parsed.traceStatus?.droppedEventCount) || 0);
@@ -7898,7 +8212,7 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     if (options.tracing) {
       const trace = finalizeRuntimeTrace(
         [{ kind: 'exception', line: signature.line, message: error instanceof Error ? error.message : String(error) }],
-        options.traceOptions || {}
+        { ...(options.traceOptions || {}), sourceCode: source }
       ).trace;
       return {
         success: false,
@@ -8057,7 +8371,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
       ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
-    const finalizedTrace = finalizeRuntimeTrace(parsed.events, options.traceOptions || {});
+    const finalizedTrace = finalizeRuntimeTrace(parsed.events, { ...(options.traceOptions || {}), sourceCode: source });
     const { trace } = finalizedTrace;
     const runtimeTraceLimitExceeded = finalizedTrace.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded) || programTimedOut;
     const droppedEventCount = (finalizedTrace.droppedEventCount || 0) + (Number(parsed.traceStatus?.droppedEventCount) || 0);
@@ -8076,7 +8390,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
     if (options.tracing) {
       const trace = finalizeRuntimeTrace(
         [{ kind: 'exception', line: signature.line, message: error instanceof Error ? error.message : String(error) }],
-        options.traceOptions || {}
+        { ...(options.traceOptions || {}), sourceCode: source }
       ).trace;
       return {
         success: false,
@@ -8409,10 +8723,11 @@ async function handleExecuteCodeInterview(payload) {
 }
 
 self.onmessage = (event) => {
-  const { id, type, payload, requestId } = event.data || {};
+  const { id, type, payload, requestId, protocolToken } = event.data || {};
   if (type === 'compile-response') {
     const pending = pendingExternalCompiles.get(String(requestId || ''));
     if (!pending) return;
+    if (protocolToken !== pending.protocolToken) return;
     pendingExternalCompiles.delete(String(requestId));
     clearTimeout(pending.timeoutId);
     if (payload?.success === false && payload?.error) {
@@ -8424,6 +8739,14 @@ self.onmessage = (event) => {
   }
 
   if (!id) return;
+  if (typeof protocolToken !== 'string') {
+    postMessage({
+      id,
+      type: 'error',
+      payload: { error: 'Missing C++ worker protocol token.' },
+    });
+    return;
+  }
   clearIdleTimer();
   applyWorkerOptions(payload);
   queuedTasks += 1;
@@ -8432,6 +8755,7 @@ self.onmessage = (event) => {
     .catch(() => {})
     .then(async () => {
       activeRequestId = id;
+      activeRequestProtocolToken = protocolToken;
       activeRequestStartedAt = now();
       emitRequestProgress('request-start', { type });
       let result;
@@ -8454,8 +8778,6 @@ self.onmessage = (event) => {
                   : await Promise.reject(new Error(`Unknown C++ worker message: ${type}`));
       } finally {
         emitRequestProgress('request-complete', { type });
-        activeRequestId = null;
-        activeRequestStartedAt = 0;
       }
 
       postSuccess(id, type, result);
@@ -8468,6 +8790,9 @@ self.onmessage = (event) => {
       postFailure(id, error);
     })
     .finally(() => {
+      activeRequestId = null;
+      activeRequestProtocolToken = null;
+      activeRequestStartedAt = 0;
       queuedTasks = Math.max(0, queuedTasks - 1);
       if (queuedTasks === 0) resetIdleTimer();
     });

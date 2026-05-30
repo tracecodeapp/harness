@@ -20,12 +20,15 @@ interface WorkerMessage {
   id?: string;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
+  port?: MessagePort;
 }
 
 const workerScope = self as typeof self & {
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null;
   postMessage(message: unknown): void;
 };
+const postWorkerMessage = workerScope.postMessage.bind(workerScope);
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -37,6 +40,7 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
   private readonly listeners = new Map<string, RuntimeKernelHttpHandler>();
   private readonly listenerInfo = new Map<string, RuntimeKernelHttpListenerInfo>();
   private readonly dispatchRequests = new Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>();
+  private readonly serverRequestAbortControllers = new Map<string, AbortController>();
 
   constructor(
     private readonly postProtocolMessage: (message: RuntimeKernelHttpProtocolMessage) => void
@@ -109,6 +113,10 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
     this.listenerInfo.delete(listenerId);
   }
 
+  abortRequest(requestId: string): void {
+    this.serverRequestAbortControllers.get(requestId)?.abort();
+  }
+
   async handleRequest(listenerId: string, requestId: string, request: RuntimeKernelHttpRequest): Promise<void> {
     const handler = this.listeners.get(listenerId);
     if (!handler) {
@@ -120,8 +128,13 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
       });
       return;
     }
+    const abortController = new AbortController();
+    this.serverRequestAbortControllers.set(requestId, abortController);
     try {
-      const response = await handler(request);
+      const response = await handler({
+        ...request,
+        signal: abortController.signal,
+      });
       this.postProtocolMessage({
         type: 'kernel-http-response',
         requestId,
@@ -134,62 +147,113 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
         listenerId,
         error: errorMessage(error),
       });
+    } finally {
+      this.serverRequestAbortControllers.delete(requestId);
     }
   }
 }
 
-const activeHttpBridges = new Map<string, WorkerKernelHttpBridge>();
+interface ActiveWorkerCommand {
+  bridge: WorkerKernelHttpBridge;
+  protocolToken: string;
+}
 
-workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
-  const { id, type, payload } = event.data;
-  if (!id) return;
+const activeHttpBridges = new Map<string, ActiveWorkerCommand>();
+
+function postCommandMessage(
+  postMessage: (message: WorkerMessage) => void,
+  id: string,
+  protocolToken: string,
+  type: string,
+  payload: unknown
+): void {
+  postMessage({ id, type, payload, protocolToken });
+}
+
+function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
+  const { id, type, payload, protocolToken } = message;
+  if (!id) return false;
+  const command = activeHttpBridges.get(id);
+  if (!command) return false;
+  if (protocolToken !== command.protocolToken) return true;
 
   if (type === 'kernel-http-request') {
     const message = payload as RuntimeKernelHttpProtocolMessage;
     if (message.type === 'kernel-http-request') {
-      void activeHttpBridges.get(id)?.handleRequest(message.listenerId, message.requestId, message.request);
+      void command.bridge.handleRequest(message.listenerId, message.requestId, message.request);
     }
-    return;
+    return true;
+  }
+
+  if (type === 'kernel-http-abort-request') {
+    const message = payload as RuntimeKernelHttpProtocolMessage;
+    if (message.type === 'kernel-http-abort-request') {
+      command.bridge.abortRequest(message.requestId);
+    }
+    return true;
   }
 
   if (type === 'kernel-http-listen-result') {
     const message = payload as RuntimeKernelHttpProtocolMessage;
     if (message.type === 'kernel-http-listen-result') {
-      activeHttpBridges.get(id)?.updateListenerInfo(message.listenerId, message.info);
+      command.bridge.updateListenerInfo(message.listenerId, message.info);
     }
-    return;
+    return true;
   }
 
   if (type === 'kernel-http-dispatch-result') {
     const message = payload as RuntimeKernelHttpProtocolMessage;
     if (message.type === 'kernel-http-dispatch-result') {
-      activeHttpBridges.get(id)?.resolveDispatch(message.requestId, message.response);
+      command.bridge.resolveDispatch(message.requestId, message.response);
     }
-    return;
+    return true;
   }
 
   if (type === 'kernel-http-error') {
     const message = payload as RuntimeKernelHttpProtocolMessage;
     if (message.type === 'kernel-http-error' && message.requestId) {
-      activeHttpBridges.get(id)?.rejectDispatch(message.requestId, message.error);
+      command.bridge.rejectDispatch(message.requestId, message.error);
     } else if (message.type === 'kernel-http-error' && message.listenerId) {
-      activeHttpBridges.get(id)?.failListener(message.listenerId);
+      command.bridge.failListener(message.listenerId);
     }
+    return true;
+  }
+
+  return false;
+}
+
+workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
+  const { id, type, payload, protocolToken, port } = event.data;
+  if (!id) return;
+
+  if (handleKernelHttpHostMessage(event.data)) return;
+
+  if (type !== 'execute-project-javascript') {
+    postWorkerMessage({ id, type: 'error', payload: { error: `Unsupported JavaScript project worker message: ${type}` } });
     return;
   }
 
-  if (type !== 'execute-project-javascript') {
-    workerScope.postMessage({ id, type: 'error', payload: { error: `Unsupported JavaScript project worker message: ${type}` } });
+  if (typeof protocolToken !== 'string' || protocolToken.length === 0) {
+    postWorkerMessage({ id, type: 'error', payload: { error: 'Missing JavaScript project worker protocol token.' } });
     return;
+  }
+
+  const commandPort = port ?? null;
+  const postToHost = commandPort ? commandPort.postMessage.bind(commandPort) : postWorkerMessage;
+  commandPort?.start?.();
+  if (commandPort) {
+    commandPort.onmessage = (messageEvent: MessageEvent<WorkerMessage>) => {
+      handleKernelHttpHostMessage(messageEvent.data);
+    };
   }
 
   const request = payload as JavaScriptProjectCommandRequest;
   const options: BrowserJavaScriptProjectRunnerOptions = {};
   const executionState = { cancelled: false };
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
-    workerScope.postMessage({ id, type: message.type, payload: message });
+    postCommandMessage(postToHost, id, protocolToken, message.type, message);
   });
-  activeHttpBridges.set(id, kernelHttp);
+  activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken });
 
   runBrowserJavaScriptProjectRequest(
     {
@@ -202,7 +266,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
         ) {
           return;
         }
-        workerScope.postMessage({ id, type: 'project-event', payload: runtimeEvent });
+        postCommandMessage(postToHost, id, protocolToken, 'project-event', runtimeEvent);
       },
     },
     options,
@@ -210,13 +274,15 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   ).then(
     (result: RuntimeCommandResult) => {
       activeHttpBridges.delete(id);
-      workerScope.postMessage({ id, type: 'execute-result', payload: result });
+      postCommandMessage(postToHost, id, protocolToken, 'execute-result', result);
+      commandPort?.close();
     },
     (error) => {
       activeHttpBridges.delete(id);
-      workerScope.postMessage({ id, type: 'error', payload: { error: errorMessage(error) } });
+      postCommandMessage(postToHost, id, protocolToken, 'error', { error: errorMessage(error) });
+      commandPort?.close();
     }
   );
 };
 
-workerScope.postMessage({ type: 'worker-ready' });
+postWorkerMessage({ type: 'worker-ready' });

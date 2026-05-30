@@ -110,6 +110,7 @@ async function main(): Promise<void> {
           iframe.style.display = 'none';
           document.body.appendChild(iframe);
           const requestId = 'frame-' + (++nextId);
+          const frameProtocolToken = 'cpp-frame-token-' + requestId;
           let timeoutId;
           const cleanup = () => {
             clearTimeout(timeoutId);
@@ -119,10 +120,11 @@ async function main(): Promise<void> {
           const onFrameMessage = (event) => {
             if (event.source !== iframe.contentWindow) return;
             if (event.data?.type === 'frame-ready') {
-              iframe.contentWindow.postMessage({ id: requestId, type: 'compile', payload }, location.origin);
+              iframe.contentWindow.postMessage({ id: requestId, type: 'compile', payload, protocolToken: frameProtocolToken }, location.origin);
               return;
             }
             if (event.data?.id !== requestId) return;
+            if (event.data?.protocolToken !== frameProtocolToken) return;
             cleanup();
             resolve(event.data.payload);
           };
@@ -134,16 +136,18 @@ async function main(): Promise<void> {
         });
 
       worker.onmessage = (event) => {
-        const { id, type, payload, requestId } = event.data;
+        const { id, type, payload, requestId, protocolToken } = event.data;
         if (type === 'worker-ready') return;
         if (type === 'compile-request') {
+          if (![...pending.values()].some((request) => request.protocolToken === protocolToken)) return;
           compileInFrame(payload).then((result) => {
             const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
-            worker.postMessage({ type: 'compile-response', requestId, payload: result }, transfer);
+            worker.postMessage({ type: 'compile-response', requestId, protocolToken, payload: result }, transfer);
           }).catch((error) => {
             worker.postMessage({
               type: 'compile-response',
               requestId,
+              protocolToken,
               payload: { success: false, error: error instanceof Error ? error.message : String(error) },
             });
           });
@@ -152,19 +156,26 @@ async function main(): Promise<void> {
         if (!id) return;
         const request = pending.get(id);
         if (!request) return;
+        if (protocolToken !== request.protocolToken) return;
         if (type === 'project-event') {
           request.events.push(payload);
           return;
         }
+        if (type === 'runtime-progress') {
+          request.progress.push(payload);
+          return;
+        }
         pending.delete(id);
+        clearTimeout(request.timeoutId);
         if (type === 'error') {
           request.reject(new Error(request.label + ': ' + String((payload && payload.error) || 'C++ worker error')));
         } else {
-          request.resolve({ ...payload, events: request.events });
+          request.resolve({ ...payload, events: request.events, progress: request.progress });
         }
       };
       worker.onerror = (event) => {
         for (const request of pending.values()) {
+          clearTimeout(request.timeoutId);
           request.reject(new Error(event.message || 'C++ worker error'));
         }
         pending.clear();
@@ -173,13 +184,18 @@ async function main(): Promise<void> {
       const send = (type, payload) =>
         new Promise((resolve, reject) => {
           const id = String(++nextId);
+          const protocolToken = 'cpp-test-token-' + id;
           const label = [
             type,
             payload?.source,
             payload?.scriptPath,
             Array.isArray(payload?.args) ? payload.args.join(' ') : '',
           ].filter(Boolean).join(' ');
-          pending.set(id, { resolve, reject, events: [], label });
+          const timeoutId = setTimeout(() => {
+            pending.delete(id);
+            reject(new Error(label + ': C++ worker request timed out'));
+          }, 180_000);
+          pending.set(id, { resolve, reject, events: [], progress: [], label, protocolToken, timeoutId });
           const requestPayload = (() => {
             if (type !== 'execute-project-cpp' || payload?.source !== 'run' || !payload?.project || payload.project.kernelDevices !== undefined) {
               return payload;
@@ -188,7 +204,7 @@ async function main(): Promise<void> {
             if (noKernelDevicesForTest) return { ...payload, project };
             return { ...payload, project: { ...project, kernelDevices: traceKernelDevices } };
           })();
-          worker.postMessage({ id, type, payload: requestPayload });
+          worker.postMessage({ id, type, payload: requestPayload, protocolToken });
         });
 
       const decodeBase64 = (value) => {

@@ -16,6 +16,7 @@ interface WorkerMessage {
   id?: string;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 const JAVA_HTTP_SYNC_STATE_INDEX = 0;
@@ -53,12 +54,13 @@ class MockWorker {
   postMessage(message: WorkerMessage): void {
     this.messages.push(message);
     queueMicrotask(() => {
-      const { id, type, payload } = message;
+      const { id, type, payload, protocolToken } = message;
       if (type === 'init') {
         this.onmessage?.({
           data: {
             id,
             type: 'init',
+            protocolToken,
             payload: { success: true, loadTimeMs: 1 },
           },
         } as MessageEvent<WorkerMessage>);
@@ -70,6 +72,7 @@ class MockWorker {
           data: {
             id,
             type: 'warmup',
+            protocolToken,
             payload: { success: true, loadTimeMs: 2 },
           },
         } as MessageEvent<WorkerMessage>);
@@ -81,6 +84,14 @@ class MockWorker {
           data: {
             id,
             type,
+            payload: { success: false, error: 'spoofed missing protocol token' },
+          },
+        } as MessageEvent<WorkerMessage>);
+        this.onmessage?.({
+          data: {
+            id,
+            type,
+            protocolToken,
             payload: { success: true, output: payload ?? null, consoleOutput: [] },
           },
         } as MessageEvent<WorkerMessage>);
@@ -95,6 +106,7 @@ class MockWorker {
           data: {
             id,
             type,
+            protocolToken,
             payload: {
               success: true,
               results: inputBatch.map((inputs) => ({ success: true, output: inputs, consoleOutput: [] })),
@@ -110,9 +122,10 @@ class MockWorker {
           const buffer = new SharedArrayBuffer(4096);
           this.onmessage?.({
             data: {
-              id,
-              type: 'kernel-http-dispatch-sync',
-              payload: {
+                id,
+                type: 'kernel-http-dispatch-sync',
+                protocolToken,
+                payload: {
                 request: {
                   method: 'GET',
                   url: 'http://tracekernel.test/queue?limit=1',
@@ -131,6 +144,7 @@ class MockWorker {
               data: {
                 id,
                 type,
+                protocolToken,
                 payload: {
                   stdout: manifest,
                   stderr: '',
@@ -149,9 +163,10 @@ class MockWorker {
           const requestManifests: string[] = [];
           this.onmessage?.({
             data: {
-              id,
-              type: 'kernel-http-listen-sync',
-              payload: {
+                id,
+                type: 'kernel-http-listen-sync',
+                protocolToken,
+                payload: {
                 serverId: 'java-http-test',
                 options: { host: '127.0.0.1', port: 3210 },
                 requestBuffer,
@@ -164,6 +179,7 @@ class MockWorker {
               data: {
                 id,
                 type: 'kernel-http-close',
+                protocolToken,
                 payload: {
                   type: 'kernel-http-close',
                   serverId: 'java-http-test',
@@ -175,6 +191,7 @@ class MockWorker {
               data: {
                 id,
                 type,
+                protocolToken,
                 payload: {
                   stdout: `server-listened\n${requestManifests.join('\n---\n')}\n`,
                   stderr: '',
@@ -226,6 +243,7 @@ class MockWorker {
           data: {
             id,
             type,
+            protocolToken,
             payload: {
               stdout: `${type}:${(payload as { scriptPath?: string } | undefined)?.scriptPath ?? ''}\n`,
               stderr: '',
@@ -241,6 +259,7 @@ class MockWorker {
           data: {
             id,
             type,
+            protocolToken,
             payload: { success: true, output: payload ?? null, consoleOutput: [] },
           },
         } as MessageEvent<WorkerMessage>);
@@ -252,6 +271,7 @@ class MockWorker {
           data: {
             id,
             type,
+            protocolToken,
             payload: {
               success: true,
               output: null,
