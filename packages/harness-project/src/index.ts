@@ -59,6 +59,8 @@ import {
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
 } from '../../harness-core/src/runtime-kernel';
+import { getLanguageRuntimeInfo } from '../../harness-core/src/runtime-language-info';
+import type { Language } from '../../harness-core/src/runtime-types';
 import type {
   BashOptions,
   Command,
@@ -546,11 +548,13 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
 
 const DEFAULT_CWD = '/workspace';
 const TRACE_KERNEL_NAME = 'tracekernel';
+const TRACEKERNEL_BIN_PATH = '/tracekernel/bin';
 const CPP_COMPILER_COMMANDS = new Set(['clang++', 'clang', 'gcc', 'cc', 'g++', 'c++']);
 const TRACEKERNEL_EXEC_COMMAND = 'tracekernel-exec';
 const TRACEKERNEL_SHELL_COMMAND_PREFIX = 'tracekernel-shell-';
 const TRACEKERNEL_SHELL_COMMAND_REWRITES = new Map([
   ['bg', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}bg`],
+  ['command', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}command`],
   ['fg', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}fg`],
   ['jobs', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}jobs`],
   ['kill', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}kill`],
@@ -586,6 +590,57 @@ const TRACEKERNEL_SENSITIVE_URL_PARAM_NAMES = new Set([
   'signature',
   'token',
 ]);
+type TraceKernelCommandKind = 'control' | 'runtime' | 'package-manager' | 'tool' | 'virtual-executable';
+
+interface TraceKernelCommandInfo {
+  name: string;
+  path: string;
+  kind: TraceKernelCommandKind;
+  adapter: string;
+  available: boolean;
+  language?: Language;
+  displayName?: string;
+  versionLabel?: string;
+  description?: string;
+}
+
+interface TraceKernelRuntimeInfo {
+  language: Language;
+  displayName: string;
+  versionLabel: string;
+  available: boolean;
+  adapter: string;
+  commands: string[];
+  paths: string[];
+  runtime: ReturnType<typeof getLanguageRuntimeInfo>['runtime'];
+  compiler?: ReturnType<typeof getLanguageRuntimeInfo>['compiler'];
+  standard?: string;
+}
+
+function traceKernelCommandPath(command: string): string {
+  return `${TRACEKERNEL_BIN_PATH}/${command}`;
+}
+
+function traceKernelTsv(value: unknown): string {
+  return String(value ?? '').replace(/[\t\r\n]+/g, ' ');
+}
+
+function normalizeTraceKernelVirtualPath(path: string): string | null {
+  if (!path.startsWith('/')) return null;
+  return normalizeTerminalAbsolutePath(path);
+}
+
+function isTraceKernelVirtualNamespacePath(path: string): boolean {
+  const normalized = normalizeTraceKernelVirtualPath(path);
+  return normalized === '/tracekernel' || normalized?.startsWith('/tracekernel/') === true;
+}
+
+function traceKernelBinCommandName(path: string): string | null {
+  const normalized = normalizeTraceKernelVirtualPath(path);
+  if (!normalized?.startsWith(`${TRACEKERNEL_BIN_PATH}/`)) return null;
+  const name = normalized.slice(TRACEKERNEL_BIN_PATH.length + 1);
+  return name && !name.includes('/') ? name : null;
+}
 
 type VirtualExecutableKind = 'cpp';
 
@@ -663,6 +718,7 @@ interface RuntimeDynamicProcProvider {
   readDir(path: string): RuntimeDynamicProcEntry[] | null;
   entryKind(path: string): 'file' | 'directory' | null;
   stat(path: string): RuntimeKernelVirtualStat | null;
+  readonlyNamespace(path: string): boolean;
 }
 
 interface RuntimeKernelZombieRecord {
@@ -2699,17 +2755,25 @@ class KernelObservedFileSystem implements IFileSystem {
     }
   }
 
-  private readDynamicProcFile(path: string, options?: FsReadFileOptions): string | null {
-    const procPath = normalizeRuntimeProcPath(this.mapPath(path));
-    if (!procPath) return null;
+  private readDynamicVirtualFile(path: string, options?: FsReadFileOptions): string | null {
+    const content = this.dynamicProc.readFile(this.mapPath(path));
+    if (content === null) return null;
     if ((options as { encoding?: unknown } | undefined)?.encoding === 'base64') {
-      throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
+      throw new Error(`Kernel virtual path does not support base64 reads: ${path}`);
     }
-    return this.dynamicProc.readFile(procPath);
+    return content;
+  }
+
+  private assertDynamicVirtualWritable(path: string, operation: string): void {
+    if (!this.dynamicProc.readonlyNamespace(this.mapPath(path))) return;
+    throw Object.assign(
+      new Error(`EROFS: kernel virtual path is read-only, ${operation} '${path}'`),
+      { code: 'EROFS' }
+    );
   }
 
   readFile(path: string, options?: FsReadFileOptions): Promise<string> {
-    const dynamicProcFile = this.readDynamicProcFile(path, options);
+    const dynamicProcFile = this.readDynamicVirtualFile(path, options);
     if (dynamicProcFile !== null) return Promise.resolve(dynamicProcFile);
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'device-file') return Promise.resolve(this.readDeviceFile(readTarget.path, options));
@@ -2722,7 +2786,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
-    const dynamicProcFile = this.readDynamicProcFile(path);
+    const dynamicProcFile = this.readDynamicVirtualFile(path);
     if (dynamicProcFile !== null) {
       return Promise.resolve(textToByteString(dynamicProcFile)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
     }
@@ -2744,7 +2808,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   readFileBuffer(path: string): Promise<Uint8Array> {
-    const dynamicProcFile = this.readDynamicProcFile(path);
+    const dynamicProcFile = this.readDynamicVirtualFile(path);
     if (dynamicProcFile !== null) return Promise.resolve(new TextEncoder().encode(dynamicProcFile));
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'device-file') return Promise.resolve(new TextEncoder().encode(this.readDeviceFile(readTarget.path)));
@@ -2757,6 +2821,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async writeFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    this.assertDynamicVirtualWritable(path, 'write');
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
@@ -2780,6 +2845,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async appendFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    this.assertDynamicVirtualWritable(path, 'append');
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
@@ -2819,6 +2885,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
+    this.assertDynamicVirtualWritable(path, 'mkdir');
     const mkdirTarget = kernelMkdirTarget(path);
     if (mkdirTarget.kind === 'error') return Promise.reject(new Error(
       mkdirTarget.reason === 'proc-read-only'
@@ -2888,6 +2955,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async rm(path: string, options?: FsRmOptions): Promise<void> {
+    this.assertDynamicVirtualWritable(path, options?.recursive ? 'recursive-delete' : 'delete');
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const mappedPath = this.mapPath(path);
@@ -2909,6 +2977,12 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
+    this.assertDynamicVirtualWritable(dest, 'copy');
+    const dynamicSourceFile = this.readDynamicVirtualFile(src);
+    if (dynamicSourceFile !== null) {
+      await this.copyDynamicVirtualFile(dest, dynamicSourceFile);
+      return;
+    }
     const copyTarget = kernelFileCopyTarget(src, dest);
     if (copyTarget.kind === 'virtual-source' || copyTarget.kind === 'device-destination') {
       await this.copyFileLike(src, dest, copyTarget);
@@ -2965,6 +3039,24 @@ class KernelObservedFileSystem implements IFileSystem {
     return this.base.readFileBuffer(this.mapPath(path));
   }
 
+  private async copyDynamicVirtualFile(dest: string, content: string): Promise<void> {
+    const writeTarget = kernelWriteTarget(dest);
+    if (writeTarget.kind === 'error') throwKernelWriteTargetError(dest, writeTarget);
+    if (writeTarget.kind === 'device') {
+      this.writeDevice(writeTarget.device, content);
+      return;
+    }
+    const mappedDestination = this.mapPath(dest);
+    const mutationKind: RuntimeFileSystemMutationKind = await this.base.exists(mappedDestination) ? 'file-write' : 'file-create';
+    await this.withMutationLocks([mappedDestination], mutationKind, async () => {
+      this.assertWritable(mappedDestination, 'copy');
+      await this.base.writeFile(mappedDestination, content);
+      this.inodeForPath(mappedDestination);
+      this.recordMutation([mappedDestination], mutationKind);
+      await this.emitFileWrite(mappedDestination);
+    });
+  }
+
   private assertWritableFiles(paths: readonly string[], operation: string): void {
     for (const path of paths) {
       this.assertWritable(path, operation);
@@ -2980,6 +3072,8 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async mv(src: string, dest: string): Promise<void> {
+    this.assertDynamicVirtualWritable(src, 'move');
+    this.assertDynamicVirtualWritable(dest, 'move');
     const sourceMutationTarget = kernelMutationTarget(src);
     if (sourceMutationTarget.kind === 'error') throwKernelMutationTargetError(src, sourceMutationTarget, 'Kernel device namespace is read-only.');
     const destinationMutationTarget = kernelMutationTarget(dest);
@@ -3028,10 +3122,19 @@ class KernelObservedFileSystem implements IFileSystem {
           if (path.startsWith(`${root}/`)) return [path, `${alias}${path.slice(root.length)}`];
           return [path];
         });
-    return Array.from(new Set([...aliasPaths, ...runtimeKernelVirtualPaths()])).sort((left, right) => left.localeCompare(right));
+    const traceKernelBinPaths = (this.dynamicProc.readDir(TRACEKERNEL_BIN_PATH) ?? [])
+      .map((entry) => `${TRACEKERNEL_BIN_PATH}/${entry.name}`);
+    return Array.from(new Set([
+      ...aliasPaths,
+      ...runtimeKernelVirtualPaths(),
+      '/tracekernel',
+      TRACEKERNEL_BIN_PATH,
+      ...traceKernelBinPaths,
+    ])).sort((left, right) => left.localeCompare(right));
   }
 
   chmod(path: string, mode: number): Promise<void> {
+    this.assertDynamicVirtualWritable(path, 'chmod');
     const metadataTarget = kernelMetadataTarget(path);
     if (metadataTarget.kind === 'ignored-device') return Promise.resolve();
     if (metadataTarget.kind === 'error') throwKernelMetadataTargetError(path, metadataTarget);
@@ -3044,6 +3147,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   symlink(target: string, linkPath: string): Promise<void> {
+    this.assertDynamicVirtualWritable(linkPath, 'symlink');
     const symlinkTarget = kernelSymlinkTarget(linkPath);
     if (symlinkTarget.kind === 'error') throwKernelMutationTargetError(linkPath, symlinkTarget);
     const mappedPath = this.mapPath(linkPath);
@@ -3055,6 +3159,8 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   link(existingPath: string, newPath: string): Promise<void> {
+    this.assertDynamicVirtualWritable(existingPath, 'link');
+    this.assertDynamicVirtualWritable(newPath, 'link');
     const linkTarget = kernelLinkTarget(existingPath, newPath);
     if (linkTarget.kind === 'error') throwKernelMutationTargetError(linkTarget.side === 'source' ? existingPath : newPath, linkTarget);
     const mappedNewPath = this.mapPath(newPath);
@@ -3067,6 +3173,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   readlink(path: string): Promise<string> {
+    if (this.dynamicProc.entryKind(this.mapPath(path)) !== null) {
+      return Promise.reject(new Error(`Kernel virtual path is not a symbolic link: ${path}`));
+    }
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind !== 'workspace') return Promise.reject(new Error(`Kernel virtual path is not a symbolic link: ${path}`));
     const mappedPath = this.mapPath(path);
@@ -3074,6 +3183,8 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
+    const dynamicStat = this.dynamicProc.stat(this.mapPath(path));
+    if (dynamicStat) return Promise.resolve(this.virtualStat(dynamicStat));
     const statTarget = kernelStatTarget(path, this.kernelInfo());
     if (statTarget.kind === 'stat') return Promise.resolve(this.virtualStat(statTarget.stat));
     if (statTarget.kind === 'error') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
@@ -3083,11 +3194,13 @@ class KernelObservedFileSystem implements IFileSystem {
 
   realpath(path: string): Promise<string> {
     assertNoNul(path, 'Kernel path');
+    if (this.dynamicProc.entryKind(this.mapPath(path)) !== null) return Promise.resolve(this.mapPath(path));
     if (isRuntimeKernelVirtualNamespacePath(path)) return Promise.resolve(path);
     return this.base.realpath(this.mapPath(path));
   }
 
   utimes(path: string, atime: Date, mtime: Date): Promise<void> {
+    this.assertDynamicVirtualWritable(path, 'utimes');
     const metadataTarget = kernelMetadataTarget(path);
     if (metadataTarget.kind === 'ignored-device') return Promise.resolve();
     if (metadataTarget.kind === 'error') throwKernelMetadataTargetError(path, metadataTarget);
@@ -3977,6 +4090,72 @@ function rewriteKernelShellCommandInvocationsInAst(ast: unknown): void {
   if (script?.type === 'Script') transformStatements(script.statements);
 }
 
+function rewriteTraceKernelBinInvocationsInAst(ast: unknown, commandNames: ReadonlySet<string>): void {
+  const transformStatements = (statements: unknown): void => {
+    if (!Array.isArray(statements)) return;
+    for (const statement of statements) transformStatement(statement);
+  };
+
+  const transformCommand = (command: unknown): void => {
+    const candidate = command as {
+      type?: unknown;
+      name?: unknown;
+      clauses?: Array<{ condition?: unknown; body?: unknown }>;
+      elseBody?: unknown;
+      body?: unknown;
+      items?: Array<{ body?: unknown }>;
+    };
+    switch (candidate?.type) {
+      case 'SimpleCommand': {
+        const name = literalWordValue(candidate.name);
+        const commandName = name ? traceKernelBinCommandName(name) : null;
+        if (commandName && commandNames.has(commandName)) candidate.name = literalWord(commandName);
+        return;
+      }
+      case 'If':
+        for (const clause of candidate.clauses ?? []) {
+          transformStatements(clause.condition);
+          transformStatements(clause.body);
+        }
+        transformStatements(candidate.elseBody);
+        return;
+      case 'For':
+      case 'While':
+      case 'Until':
+      case 'Subshell':
+      case 'Group':
+        transformStatements(candidate.body);
+        return;
+      case 'Case':
+        for (const item of candidate.items ?? []) {
+          transformStatements(item.body);
+        }
+        return;
+      case 'FunctionDef':
+        transformCommand(candidate.body);
+        return;
+      default:
+        return;
+    }
+  };
+
+  const transformStatement = (statement: unknown): void => {
+    const candidate = statement as {
+      type?: unknown;
+      pipelines?: Array<{ commands?: unknown[] }>;
+    };
+    if (candidate?.type !== 'Statement' || !Array.isArray(candidate.pipelines)) return;
+    for (const pipeline of candidate.pipelines) {
+      for (const command of pipeline.commands ?? []) {
+        transformCommand(command);
+      }
+    }
+  };
+
+  const script = ast as { type?: unknown; statements?: unknown };
+  if (script?.type === 'Script') transformStatements(script.statements);
+}
+
 function rewriteVirtualExecutableInvocationsInAst(
   ast: unknown,
   initialCwd: string,
@@ -4317,7 +4496,9 @@ function runtimeLsIdentity(path: string, stat: RuntimeLsStat, info: RuntimeKerne
     normalized === '/dev' ||
     normalized.startsWith('/dev/') ||
     normalized === '/proc' ||
-    normalized.startsWith('/proc/')
+    normalized.startsWith('/proc/') ||
+    normalized === '/tracekernel' ||
+    normalized.startsWith('/tracekernel/')
   ) {
     return { owner: 'root', group: 'root', uid: 0, gid: 0 };
   }
@@ -4708,6 +4889,129 @@ function normalizePackageManagerConfig(
     autoLinkBins: source.autoLinkBins !== false,
     npmVersion: source.npmVersion ?? '11.12.1',
   };
+}
+
+function commandInfo(
+  name: string,
+  kind: TraceKernelCommandKind,
+  adapter: string,
+  options: Omit<TraceKernelCommandInfo, 'name' | 'path' | 'kind' | 'adapter' | 'available'> = {}
+): TraceKernelCommandInfo {
+  return {
+    name,
+    path: traceKernelCommandPath(name),
+    kind,
+    adapter,
+    available: true,
+    ...options,
+  };
+}
+
+function languageCommandInfo(
+  language: Language,
+  name: string,
+  adapter: string,
+  description?: string
+): TraceKernelCommandInfo {
+  const info = getLanguageRuntimeInfo(language);
+  return commandInfo(name, 'runtime', adapter, {
+    language,
+    displayName: info.displayName,
+    versionLabel: info.versionLabel,
+    ...(description ? { description } : {}),
+  });
+}
+
+function createTraceKernelCommandRegistry(
+  options: CreateRuntimeWorkspaceOptions,
+  packageManagerConfig: NormalizedRuntimePackageManagerConfig | null
+): TraceKernelCommandInfo[] {
+  const commands: TraceKernelCommandInfo[] = [
+    commandInfo('bg', 'control', 'tracekernel job control'),
+    commandInfo('curl', 'tool', 'tracekernel HTTP bridge'),
+    commandInfo('fg', 'control', 'tracekernel job control'),
+    commandInfo('jobs', 'control', 'tracekernel job control'),
+    commandInfo('kill', 'control', 'tracekernel process control'),
+    commandInfo('ls', 'tool', 'tracekernel-aware directory listing'),
+    commandInfo('ps', 'control', 'tracekernel process table'),
+    commandInfo('tracekernelctl', 'control', 'tracekernel control plane'),
+    commandInfo(TRACEKERNEL_EXEC_COMMAND, 'control', 'tracekernel virtual executable dispatcher'),
+    commandInfo('wait', 'control', 'tracekernel process control'),
+    commandInfo('which', 'tool', 'tracekernel command resolver'),
+    commandInfo('command', 'tool', 'tracekernel command resolver'),
+  ];
+
+  if (options.pythonRunner) {
+    commands.push(
+      languageCommandInfo('python', 'python3', 'Python project command adapter'),
+      languageCommandInfo('python', 'python', 'Python project command adapter')
+    );
+  }
+  if (options.nodeRunner) {
+    commands.push(languageCommandInfo(
+      'javascript',
+      'node',
+      'Node-compatible JavaScript project command adapter',
+      'Adapter command for JavaScript project execution; browser workspaces run this through the worker-backed JavaScript lane.'
+    ));
+  }
+  if (options.typescriptRunner) {
+    commands.push(languageCommandInfo('typescript', 'tsc', 'TypeScript project compile adapter'));
+  }
+  if (options.javaRunner) {
+    commands.push(
+      languageCommandInfo('java', 'javac', 'Java project compile adapter'),
+      languageCommandInfo('java', 'java', 'Java project run adapter')
+    );
+  }
+  if (options.cppRunner) {
+    for (const compiler of ['clang++', 'clang', 'gcc', 'cc', 'g++', 'c++']) {
+      commands.push(languageCommandInfo('cpp', compiler, 'C/C++ project compile adapter'));
+    }
+    commands.push(commandInfo('a.out', 'virtual-executable', 'C++ virtual executable adapter', {
+      language: 'cpp',
+      displayName: getLanguageRuntimeInfo('cpp').displayName,
+      versionLabel: getLanguageRuntimeInfo('cpp').versionLabel,
+      description: 'Default C++ project executable produced by compile commands.',
+    }));
+  }
+  if (options.csharpRunner) {
+    commands.push(languageCommandInfo('csharp', 'dotnet', '.NET/C# project command adapter'));
+  }
+  if (packageManagerConfig?.managers.includes('npm')) {
+    commands.push(
+      commandInfo('npm', 'package-manager', 'npm-compatible project package manager adapter'),
+      commandInfo('npx', 'package-manager', 'npm-compatible project executable adapter')
+    );
+  }
+
+  const deduped = new Map<string, TraceKernelCommandInfo>();
+  for (const command of commands) {
+    if (!deduped.has(command.name)) deduped.set(command.name, command);
+  }
+  return [...deduped.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function traceKernelRuntimeRegistry(commands: readonly TraceKernelCommandInfo[]): TraceKernelRuntimeInfo[] {
+  const runtimes: TraceKernelRuntimeInfo[] = [];
+  const runtimeLanguages: Language[] = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
+  for (const language of runtimeLanguages) {
+    const info = getLanguageRuntimeInfo(language);
+    const languageCommands = commands.filter((command) => command.language === language && command.kind === 'runtime');
+    runtimes.push({
+      language,
+      displayName: info.displayName,
+      versionLabel: info.versionLabel,
+      available: languageCommands.length > 0,
+      adapter: languageCommands.map((command) => command.adapter).filter(Boolean)[0] ?? 'not configured',
+      commands: languageCommands.map((command) => command.name),
+      paths: languageCommands.map((command) => command.path),
+      runtime: info.runtime,
+      ...(info.compiler ? { compiler: info.compiler } : {}),
+      ...(info.standard ? { standard: info.standard } : {}),
+    });
+  }
+  return runtimes;
 }
 
 function cleanPackageManagerPassthroughArgs(args: string[]): string[] {
@@ -5900,6 +6204,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly entrypoint?: string;
   private readonly kernelControl?: RuntimeTraceKernelControlOptions;
   private readonly cppRunner?: CppProjectCommandRunner;
+  private readonly traceKernelCommandRegistry: TraceKernelCommandInfo[];
+  private readonly traceKernelCommandNames: ReadonlySet<string>;
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly commandExecutionContexts = new AsyncLocalStorage<RuntimeCommandExecutionContext>();
   private readonly processTable = new Map<number, RuntimeKernelProcessRecord>();
@@ -6000,6 +6306,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       options.packageManager,
       Boolean(options.nodeRunner || options.typescriptRunner)
     );
+    this.traceKernelCommandRegistry = createTraceKernelCommandRegistry(options, packageManagerConfig);
+    this.traceKernelCommandNames = new Set(this.traceKernelCommandRegistry.map((command) => command.name));
     const emitPackageManagerOutput: PackageManagerOutputEmitter = (stream, data) => {
       this.emitLocalRuntimeEvent({
         type: 'output',
@@ -6033,8 +6341,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       defineCommand('ps', async (args) => this.runKernelPs(args)),
       defineCommand('tracekernelctl', (args) => this.runTraceKernelCtl(args)),
       defineCommand('wait', (args) => this.runKernelWait(args, 'wait')),
+      defineCommand('which', async (args) => this.runTraceKernelWhich(args, 'which')),
+      defineCommand('command', async (args) => this.runTraceKernelCommandBuiltin(args)),
       ...(options.customCommands ?? []),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}bg`, async (args) => this.runKernelJobPlacement(args, 'bg')),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}command`, async (args) => this.runTraceKernelCommandBuiltin(args)),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}fg`, async (args) => this.runKernelJobPlacement(args, 'fg')),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}kill`, async (args) => this.runKernelKill(args, 'kill')),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}jobs`, async (args) => this.runKernelJobs(args)),
@@ -6080,6 +6391,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     bash.registerTransformPlugin({
       name: 'tracekernel-command-rewrite',
       transform: ({ ast }: { ast: unknown }) => {
+        rewriteTraceKernelBinInvocationsInAst(ast, this.traceKernelCommandNames);
         rewriteKernelShellCommandInvocationsInAst(ast);
         const executableTransformCwd = this.currentCommandContext()?.executableTransformCwd;
         if (this.hasVirtualExecutableLoaders() && executableTransformCwd) {
@@ -6461,10 +6773,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private createDynamicProcProvider(): RuntimeDynamicProcProvider {
     return {
-      readFile: (path) => this.readDynamicProcFile(path),
-      readDir: (path) => this.readDynamicProcDir(path),
-      entryKind: (path) => this.dynamicProcEntryKind(path),
-      stat: (path) => this.dynamicProcStat(path),
+      readFile: (path) => this.readDynamicVirtualFile(path),
+      readDir: (path) => this.readDynamicVirtualDir(path),
+      entryKind: (path) => this.dynamicVirtualEntryKind(path),
+      stat: (path) => this.dynamicVirtualStat(path),
+      readonlyNamespace: (path) => Boolean(normalizeRuntimeProcPath(path)) || isTraceKernelVirtualNamespacePath(path),
     };
   }
 
@@ -6660,6 +6973,82 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return () => signal.removeEventListener('abort', abort);
   }
 
+  private traceKernelCommandInfo(nameOrPath: string): TraceKernelCommandInfo | undefined {
+    const commandName = traceKernelBinCommandName(nameOrPath) ?? nameOrPath;
+    return this.traceKernelCommandRegistry.find((command) => command.name === commandName);
+  }
+
+  private renderTraceKernelBinCommand(info: TraceKernelCommandInfo): string {
+    return JSON.stringify({
+      schema: 'tracekernel.command.v1',
+      name: info.name,
+      path: info.path,
+      kind: info.kind,
+      available: info.available,
+      adapter: info.adapter,
+      ...(info.language ? { language: info.language } : {}),
+      ...(info.displayName ? { displayName: info.displayName } : {}),
+      ...(info.versionLabel ? { versionLabel: info.versionLabel } : {}),
+      ...(info.description ? { description: info.description } : {}),
+    }, null, 2) + '\n';
+  }
+
+  private readDynamicTraceKernelFile(path: string): string | null {
+    const commandName = traceKernelBinCommandName(path);
+    if (!commandName) return null;
+    const info = this.traceKernelCommandInfo(commandName);
+    return info ? this.renderTraceKernelBinCommand(info) : null;
+  }
+
+  private readDynamicTraceKernelDir(path: string): RuntimeDynamicProcEntry[] | null {
+    const normalized = normalizeTraceKernelVirtualPath(path);
+    if (normalized === '/tracekernel') return [{ name: 'bin', kind: 'directory' }];
+    if (normalized === TRACEKERNEL_BIN_PATH) {
+      return this.traceKernelCommandRegistry.map((command) => ({ name: command.name, kind: 'file' as const }));
+    }
+    return null;
+  }
+
+  private dynamicTraceKernelEntryKind(path: string): 'file' | 'directory' | null {
+    if (this.readDynamicTraceKernelDir(path)) return 'directory';
+    return this.readDynamicTraceKernelFile(path) !== null ? 'file' : null;
+  }
+
+  private dynamicTraceKernelStat(path: string): RuntimeKernelVirtualStat | null {
+    const kind = this.dynamicTraceKernelEntryKind(path);
+    if (!kind) return null;
+    const content = kind === 'file' ? this.readDynamicTraceKernelFile(path) ?? '' : '';
+    return {
+      isFile: kind === 'file',
+      isDirectory: kind === 'directory',
+      isCharacterDevice: false,
+      mode: 0o555,
+      size: new TextEncoder().encode(content).byteLength,
+      uid: 0,
+      gid: 0,
+      owner: 'root',
+      group: 'root',
+    };
+  }
+
+  private readDynamicVirtualFile(path: string): string | null {
+    const traceKernelFile = this.readDynamicTraceKernelFile(path);
+    if (traceKernelFile !== null) return traceKernelFile;
+    return this.readDynamicProcFile(path);
+  }
+
+  private readDynamicVirtualDir(path: string): RuntimeDynamicProcEntry[] | null {
+    return this.readDynamicTraceKernelDir(path) ?? this.readDynamicProcDir(path);
+  }
+
+  private dynamicVirtualEntryKind(path: string): 'file' | 'directory' | null {
+    return this.dynamicTraceKernelEntryKind(path) ?? this.dynamicProcEntryKind(path);
+  }
+
+  private dynamicVirtualStat(path: string): RuntimeKernelVirtualStat | null {
+    return this.dynamicTraceKernelStat(path) ?? this.dynamicProcStat(path);
+  }
+
   private readDynamicProcFile(path: string): string | null {
     const procPath = normalizeRuntimeProcPath(path);
     if (!procPath) return null;
@@ -6671,12 +7060,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       const selfFdInfo = procPath.match(/^\/proc\/self\/fdinfo\/([0-9]+)$/);
       if (selfFdInfo) return this.renderProcFdInfo(this.currentProcSelfRecord(), Number(selfFdInfo[1]));
     }
+    if (procPath === '/proc/tracekernel/commands') return this.renderProcCommands();
     if (procPath === '/proc/tracekernel/events') return this.renderProcEvents();
     if (procPath === '/proc/tracekernel/inodes') return this.fs.renderInodes();
     if (procPath === '/proc/tracekernel/locks') return this.renderProcLocks();
     if (procPath === '/proc/tracekernel/net/listeners') return this.renderProcHttpListeners();
     if (procPath === '/proc/tracekernel/net/requests') return this.renderProcHttpRequests();
     if (procPath === '/proc/tracekernel/processes') return this.renderProcProcesses();
+    if (procPath === '/proc/tracekernel/runtimes') return this.renderProcRuntimes();
     if (procPath === '/proc/tracekernel/sched') return this.renderProcScheduler();
 
     const match = procPath.match(/^\/proc\/([1-9][0-9]*)\/(status|cmdline|fd\/[0-9]+|fdinfo\/[0-9]+)$/);
@@ -6718,11 +7109,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     if (procPath === '/proc/tracekernel') {
       return [
+        { name: 'commands', kind: 'file' },
         { name: 'events', kind: 'file' },
         { name: 'inodes', kind: 'file' },
         { name: 'locks', kind: 'file' },
         { name: 'net', kind: 'directory' },
         { name: 'processes', kind: 'file' },
+        { name: 'runtimes', kind: 'file' },
         { name: 'sched', kind: 'file' },
       ];
     }
@@ -6821,6 +7214,27 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       `mnt_id:\tdev`,
       `target:\t${descriptor.target}`,
     ].join('\n') + '\n';
+  }
+
+  private renderProcCommands(): string {
+    const rows = this.traceKernelCommandRegistry.map((command) => [
+      command.name,
+      command.path,
+      command.kind,
+      command.language ?? '',
+      command.adapter,
+      command.versionLabel ?? '',
+      command.description ?? '',
+    ].map(traceKernelTsv).join('\t'));
+    return ['name\tpath\tkind\tlanguage\tadapter\tversion\tdescription', ...rows].join('\n') + '\n';
+  }
+
+  private renderProcRuntimes(): string {
+    return JSON.stringify({
+      schema: 'tracekernel.runtimes.v1',
+      binPath: TRACEKERNEL_BIN_PATH,
+      runtimes: traceKernelRuntimeRegistry(this.traceKernelCommandRegistry),
+    }, null, 2) + '\n';
   }
 
   private renderProcProcesses(): string {
@@ -7154,6 +7568,51 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       stdout: outputBody,
       stderr: '',
       exitCode: 0,
+    };
+  }
+
+  private runTraceKernelWhich(args: string[], commandName: string): RuntimeCommandResult {
+    const names: string[] = [];
+    let endOfOptions = false;
+    for (const arg of args) {
+      if (!endOfOptions && arg === '--') {
+        endOfOptions = true;
+        continue;
+      }
+      if (!endOfOptions && arg === '-a') continue;
+      if (!endOfOptions && arg.startsWith('-')) {
+        return { stdout: '', stderr: `usage: ${commandName} [-a] <command>...\n`, exitCode: 2 };
+      }
+      names.push(arg);
+    }
+    if (names.length === 0) {
+      return { stdout: '', stderr: `usage: ${commandName} [-a] <command>...\n`, exitCode: 2 };
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let exitCode = 0;
+    for (const name of names) {
+      const info = this.traceKernelCommandInfo(name);
+      if (info) {
+        stdout += `${info.path}\n`;
+        continue;
+      }
+      exitCode = 1;
+      stderr += `${commandName}: no ${name} in ${TRACEKERNEL_BIN_PATH}\n`;
+    }
+    return { stdout, stderr, exitCode };
+  }
+
+  private runTraceKernelCommandBuiltin(args: string[]): RuntimeCommandResult {
+    const option = args[0];
+    if (option === '-v' || option === '-V') {
+      return this.runTraceKernelWhich(args.slice(1), 'command');
+    }
+    return {
+      stdout: '',
+      stderr: 'command: only -v and -V are supported by TraceKernel command discovery\n',
+      exitCode: 2,
     };
   }
 
@@ -7518,6 +7977,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     );
   }
 
+  private assertDynamicVirtualWritable(path: string, operation: string): void {
+    if (!isTraceKernelVirtualNamespacePath(path)) return;
+    throw Object.assign(
+      new Error(`EROFS: kernel virtual path is read-only, ${operation} '${path}'`),
+      { code: 'EROFS' }
+    );
+  }
+
   private assertWorkspaceUsableForRun(command: string): RuntimeCommandResult | null {
     if (this.destroyed) {
       return { stdout: '', stderr: 'tracekernel session has been destroyed\n', exitCode: 1 };
@@ -7658,7 +8125,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private async listTerminalDirectory(path: string): Promise<string[]> {
-    const dynamicEntries = this.readDynamicProcDir(path);
+    const dynamicEntries = this.readDynamicVirtualDir(path);
     if (dynamicEntries) return dynamicEntries.map((entry) => entry.name).sort();
     const directoryTarget = kernelDirectoryTarget(path);
     if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name).sort();
@@ -7682,7 +8149,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private async terminalPathIsDirectory(path: string): Promise<boolean> {
-    const dynamicKind = this.dynamicProcEntryKind(path);
+    const dynamicKind = this.dynamicVirtualEntryKind(path);
     if (dynamicKind) return dynamicKind === 'directory';
     const statTarget = kernelStatTarget(path, this.kernelInfo);
     if (statTarget.kind === 'stat') return statTarget.stat.isDirectory;
@@ -7830,6 +8297,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     phase: RuntimeFileMutationPhase = 'live'
   ): Promise<void> {
     this.assertWorkspaceUsableForMutation('write');
+    this.assertDynamicVirtualWritable(path, 'write');
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
@@ -7874,6 +8342,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
     this.assertWorkspaceUsableForMutation('append');
+    this.assertDynamicVirtualWritable(path, 'append');
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
@@ -7910,8 +8379,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string> {
     this.assertNotDestroyed();
-    const dynamicProcFile = this.readProcFile(path, encoding);
-    if (dynamicProcFile !== null) return dynamicProcFile;
+    const dynamicVirtualFile = this.readDynamicVirtualFile(path);
+    if (dynamicVirtualFile !== null) {
+      if (encoding === 'base64') throw new Error(`Kernel virtual path does not support base64 reads: ${path}`);
+      return dynamicVirtualFile;
+    }
+    const procFile = this.readProcFile(path, encoding);
+    if (procFile !== null) return procFile;
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'proc-file') {
       if (encoding === 'base64') throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
@@ -7935,7 +8409,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async exists(path: string): Promise<boolean> {
     this.assertNotDestroyed();
-    if (this.dynamicProcEntryKind(path) !== null) return true;
+    if (this.dynamicVirtualEntryKind(path) !== null) return true;
     const accessTarget = kernelAccessTarget(path);
     if (accessTarget.kind === 'allowed') return true;
     if (accessTarget.kind === 'denied') return false;
@@ -7944,7 +8418,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
     this.assertNotDestroyed();
-    const dynamicStat = this.dynamicProcStat(path);
+    const dynamicStat = this.dynamicVirtualStat(path);
     if (dynamicStat) return {
       isFile: dynamicStat.isFile,
       isDirectory: dynamicStat.isDirectory,
@@ -7988,7 +8462,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async readDir(path = '.'): Promise<string[]> {
     this.assertNotDestroyed();
-    const dynamicEntries = this.readDynamicProcDir(path);
+    const dynamicEntries = this.readDynamicVirtualDir(path);
     if (dynamicEntries) return dynamicEntries.map((entry) => entry.name);
     const directoryTarget = kernelDirectoryTarget(path);
     if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name);
@@ -8012,6 +8486,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async mkdir(path: string): Promise<void> {
     this.assertWorkspaceUsableForMutation('mkdir');
+    this.assertDynamicVirtualWritable(path, 'mkdir');
     const mkdirTarget = kernelMkdirTarget(path);
     if (mkdirTarget.kind === 'error') throwKernelMutationTargetError(path, mkdirTarget);
     const absolutePath = this.toWorkspaceEntryPath(path);
@@ -8032,6 +8507,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
     this.assertWorkspaceUsableForMutation('copy');
+    this.assertDynamicVirtualWritable(destinationPath, 'copy');
+    const dynamicSourceFile = this.readDynamicVirtualFile(sourcePath);
+    if (dynamicSourceFile !== null) {
+      await this.writeFileAs(destinationPath, dynamicSourceFile, PRINCIPAL_ACTOR, undefined, 'live');
+      return;
+    }
     const copyTarget = kernelFileCopyTarget(sourcePath, destinationPath);
     if (copyTarget.kind === 'virtual-source' || copyTarget.kind === 'device-destination') {
       await this.copyFileLike(sourcePath, destinationPath, copyTarget);
@@ -8084,6 +8565,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     sourcePath: string,
     sourceTarget: ReturnType<typeof runtimeKernelFileReadTarget> = kernelFileReadTarget(sourcePath)
   ): Promise<Uint8Array> {
+    const dynamicSourceFile = this.readDynamicVirtualFile(sourcePath);
+    if (dynamicSourceFile !== null) return new TextEncoder().encode(dynamicSourceFile);
     if (sourceTarget.kind === 'device-file') return new TextEncoder().encode(this.readDevice(sourceTarget.path));
     if (sourceTarget.kind === 'proc-file') return new TextEncoder().encode(readRuntimeProcFile(sourceTarget.path, this.kernelInfo));
     if (sourceTarget.kind === 'error') {
@@ -8098,6 +8581,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
     this.assertWorkspaceUsableForMutation('move');
+    this.assertDynamicVirtualWritable(sourcePath, 'move');
+    this.assertDynamicVirtualWritable(destinationPath, 'move');
     const renameTarget = kernelRenameTarget(sourcePath, destinationPath);
     if (renameTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
     const absoluteSourcePath = this.toWorkspacePath(sourcePath);
@@ -8129,6 +8614,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async deleteFile(path: string): Promise<void> {
     this.assertWorkspaceUsableForMutation('delete');
+    this.assertDynamicVirtualWritable(path, 'delete');
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const absolutePath = this.toWorkspacePath(path);
@@ -8146,6 +8632,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
     this.assertWorkspaceUsableForMutation('remove');
+    this.assertDynamicVirtualWritable(path, 'remove');
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     let deletedChanges: RuntimeFileChange[] = [];
@@ -8497,6 +8984,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
     const words = parseSimpleCommandWords(command);
     if (!words || words.length === 0) return null;
+    if (traceKernelBinCommandName(words[0] ?? '')) return null;
 
     const cwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
     if (!isWithinWorkspace(this.cwd, cwd)) return null;

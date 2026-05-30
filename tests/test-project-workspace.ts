@@ -1076,6 +1076,83 @@ async function testWorkspaceProcProcessState(): Promise<void> {
   );
 }
 
+async function testTraceKernelRuntimeDiscovery(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    nodeRunner: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+    pythonRunner: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+    packageManager: true,
+  });
+
+  try {
+    const runtimesText = await workspace.readFile('/proc/tracekernel/runtimes');
+    const runtimes = JSON.parse(runtimesText) as {
+      schema: string;
+      binPath: string;
+      runtimes: Array<{ language: string; available: boolean; commands: string[]; paths: string[] }>;
+    };
+    const javascriptRuntime = runtimes.runtimes.find((runtime) => runtime.language === 'javascript');
+    const pythonRuntime = runtimes.runtimes.find((runtime) => runtime.language === 'python');
+    assertCondition(runtimes.schema === 'tracekernel.runtimes.v1', 'runtime proc file should expose a stable schema');
+    assertCondition(runtimes.binPath === '/tracekernel/bin', 'runtime proc file should publish the virtual bin path');
+    assertCondition(
+      javascriptRuntime?.available === true &&
+        javascriptRuntime.commands.includes('node') &&
+        javascriptRuntime.paths.includes('/tracekernel/bin/node'),
+      `runtime proc file should expose configured JavaScript commands: ${runtimesText}`
+    );
+    assertCondition(
+      pythonRuntime?.available === true &&
+        pythonRuntime.commands.includes('python3') &&
+        pythonRuntime.commands.includes('python'),
+      `runtime proc file should expose configured Python commands: ${runtimesText}`
+    );
+
+    const commands = await workspace.readFile('/proc/tracekernel/commands');
+    assertCondition(
+      commands.includes('name\tpath\tkind\tlanguage\tadapter\tversion\tdescription\n') &&
+        commands.includes('node\t/tracekernel/bin/node\truntime\tjavascript') &&
+        commands.includes('npm\t/tracekernel/bin/npm\tpackage-manager'),
+      `command proc file should expose agent-facing command metadata: ${commands}`
+    );
+
+    const procEntries = await workspace.readDir('/proc/tracekernel');
+    assertCondition(
+      procEntries.join(',') === 'commands,events,inodes,locks,net,processes,runtimes,sched',
+      `tracekernel proc directory should list discovery and diagnostic files: ${JSON.stringify(procEntries)}`
+    );
+    const binEntries = await workspace.readDir('/tracekernel/bin');
+    assertCondition(
+      binEntries.includes('node') && binEntries.includes('python3') && binEntries.includes('npm'),
+      `virtual bin directory should list available commands: ${JSON.stringify(binEntries)}`
+    );
+    const nodeDescriptor = JSON.parse(await workspace.readFile('/tracekernel/bin/node')) as { name: string; kind: string; language?: string };
+    assertCondition(
+      nodeDescriptor.name === 'node' && nodeDescriptor.kind === 'runtime' && nodeDescriptor.language === 'javascript',
+      `virtual bin command descriptors should be readable: ${JSON.stringify(nodeDescriptor)}`
+    );
+
+    const whichNode = await workspace.runCommand('which node python3 missing-tool');
+    assertCondition(
+      whichNode.exitCode === 1 &&
+        whichNode.stdout === '/tracekernel/bin/node\n/tracekernel/bin/python3\n' &&
+        whichNode.stderr.includes('missing-tool'),
+      `which should resolve known commands and fail unknown commands: ${JSON.stringify(whichNode)}`
+    );
+    const commandV = await workspace.runCommand('command -v node');
+    assertCondition(
+      commandV.exitCode === 0 && commandV.stdout === '/tracekernel/bin/node\n',
+      `command -v should use the same command registry: ${JSON.stringify(commandV)}`
+    );
+    const pathWhich = await workspace.runCommand('/tracekernel/bin/which node');
+    assertCondition(
+      pathWhich.exitCode === 0 && pathWhich.stdout === '/tracekernel/bin/node\n',
+      `virtual bin paths returned by discovery should be invokable: ${JSON.stringify(pathWhich)}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
 async function testWorkspaceTraceKernelKillProcess(): Promise<void> {
   let commandStarted!: () => void;
   const commandStartedPromise = new Promise<void>((resolve) => {
@@ -9537,7 +9614,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self,tracekernel', 'browser workspace /proc should list virtual namespaces');
     assertCondition((await workspace.readDir('/proc/kernel')).join(',') === 'info,version', 'browser workspace /proc/kernel should list info and version');
     assertCondition(
-      (await workspace.readDir('/proc/tracekernel')).join(',') === 'events,inodes,locks,net,processes,sched',
+      (await workspace.readDir('/proc/tracekernel')).join(',') === 'commands,events,inodes,locks,net,processes,runtimes,sched',
       'browser workspace /proc/tracekernel should expose dynamic kernel diagnostics'
     );
     const browserPs = await workspace.runCommand('ps -ef');
@@ -9595,7 +9672,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         'tracekernel 0.7.0-beta6',
         'true:true:true',
         'info:true,version:true',
-        'events,inodes,locks,net,processes,sched',
+        'commands,events,inodes,locks,net,processes,runtimes,sched',
         'true',
         'true:true',
         'true:false',
@@ -12318,6 +12395,7 @@ async function main(): Promise<void> {
   await testWorkspaceSchedulerRejectsBeyondQueueLimit();
   await testWorkspaceSchedulerQueueSlotReleasedAfterCancellation();
   await testWorkspaceProcProcessState();
+  await testTraceKernelRuntimeDiscovery();
   await testWorkspaceTraceKernelKillProcess();
   await testWorkspaceTraceKernelKillPropagatesToNativeNodeRunner();
   await testWorkspaceTraceKernelKillProcessGroup();
