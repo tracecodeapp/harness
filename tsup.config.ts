@@ -13,6 +13,9 @@ const commonConfig = {
   target: 'es2022',
   splitting: false,
   bundle: true,
+  banner: {
+    js: 'var define = undefined;',
+  },
   skipNodeModulesBundle: true,
   noExternal: ['just-bash', 'balanced-match', 'brace-expansion', 'diff', 'fflate', 'minimatch', 'sprintf-js', 'turndown'],
   external: ['typescript'],

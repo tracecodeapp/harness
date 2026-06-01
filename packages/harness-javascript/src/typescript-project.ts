@@ -8,6 +8,10 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
+import {
+  TYPESCRIPT_PROJECT_DEFAULT_LIB_FILE,
+  TYPESCRIPT_PROJECT_LIB_FILES,
+} from './generated/typescript-project-libs';
 import type * as TypeScript from 'typescript';
 
 export type TypeScriptProjectFileEncoding = RuntimeFileEncoding;
@@ -24,38 +28,9 @@ export interface TypeScriptProjectRunnerOptions {
   loadCompiler?: () => Promise<TypeScriptProjectCompiler>;
 }
 
-const DEFAULT_LIB_PATH = '/__tracecode_typescript_lib.d.ts';
-const DEFAULT_LIB = [
-  'interface Array<T> { length: number; [n: number]: T; [Symbol.iterator](): Iterator<T>; forEach(callbackfn: (value: T, index: number, array: T[]) => void): void; map<U>(callbackfn: (value: T, index: number, array: T[]) => U): U[]; filter(callbackfn: (value: T, index: number, array: T[]) => unknown): T[]; reduce<U>(callbackfn: (previousValue: U, currentValue: T, currentIndex: number, array: T[]) => U, initialValue: U): U; slice(start?: number, end?: number): T[]; sort(compareFn?: (a: T, b: T) => number): this; join(separator?: string): string; push(...items: T[]): number; }',
-  'interface Boolean {}',
-  'interface CallableFunction {}',
-  'interface Error { name: string; message: string; stack?: string; }',
-  'interface Function {}',
-  'interface IArguments {}',
-  'interface ArrayLike<T> { readonly length: number; readonly [n: number]: T; }',
-  'interface Iterable<T> { [Symbol.iterator](): Iterator<T>; }',
-  'interface Iterator<T> { next(): { value: T; done?: boolean } }',
-  'interface NewableFunction {}',
-  'interface Number {}',
-  'interface Object {}',
-  'interface Promise<T> { then<TResult>(onfulfilled?: (value: T) => TResult | Promise<TResult>): Promise<TResult>; catch<TResult>(onrejected?: (reason: any) => TResult | Promise<TResult>): Promise<T | TResult>; }',
-  'interface RegExp {}',
-  'interface String { length: number; [Symbol.iterator](): Iterator<string>; trim(): string; split(separator: string | RegExp): string[]; includes(searchString: string): boolean; startsWith(searchString: string): boolean; endsWith(searchString: string): boolean; slice(start?: number, end?: number): string; toLowerCase(): string; toUpperCase(): string; }',
-  'interface Map<K, V> { get(key: K): V | undefined; set(key: K, value: V): this; has(key: K): boolean; entries(): Iterable<[K, V]>; }',
-  'interface Set<T> { add(value: T): this; has(value: T): boolean; }',
-  'declare const Array: { isArray(value: any): value is any[] };',
-  'declare const Number: { (value?: any): number };',
-  'declare const String: { (value?: any): string };',
-  'declare const Boolean: { (value?: any): boolean };',
-  'declare const Error: { new(message?: string): Error };',
-  'declare const Promise: { new<T>(executor: (resolve: (value: T) => void, reject: (reason?: any) => void) => void): Promise<T>; resolve<T>(value: T): Promise<T> };',
-  'declare const Map: { new<K, V>(): Map<K, V> };',
-  'declare const Set: { new<T>(): Set<T> };',
-  'declare const Symbol: { readonly iterator: unique symbol };',
-  'interface ArrayBuffer { readonly byteLength: number; slice(begin: number, end?: number): ArrayBuffer; }',
-  'interface ArrayBufferView { readonly buffer: ArrayBuffer; readonly byteOffset: number; readonly byteLength: number; }',
-  'interface Uint8Array extends ArrayBufferView { readonly length: number; [n: number]: number; }',
-  'declare const Uint8Array: { new(length: number): Uint8Array; new(array: ArrayLike<number>): Uint8Array; from(arrayLike: ArrayLike<number>): Uint8Array; }',
+const TYPESCRIPT_PROJECT_LIB_ROOT = '/__tracecode_typescript_lib';
+const TRACEKERNEL_OVERLAY_PATH = '/__tracecode_tracekernel.d.ts';
+const TRACEKERNEL_OVERLAY_LIB = [
   'type HeadersInit = Headers | Record<string, string> | Array<[string, string]>;',
   'type BodyInit = string | ArrayBuffer | Uint8Array;',
   'interface Headers { append(name: string, value: string): void; get(name: string): string | null; has(name: string): boolean; set(name: string, value: string): void; }',
@@ -71,16 +46,24 @@ const DEFAULT_LIB = [
   'declare function fetch(input: string | Request, init?: RequestInit): Promise<Response>;',
   'declare function setTimeout(handler: (...args: any[]) => void, timeout?: number, ...args: any[]): any;',
   'declare function clearTimeout(id: any): void;',
-  'declare const JSON: { parse(text: string): any; stringify(value: any): string };',
-  'declare const Math: { max(...values: number[]): number; min(...values: number[]): number; round(value: number): number; floor(value: number): number; ceil(value: number): number; abs(value: number): number };',
+  'declare function setInterval(handler: (...args: any[]) => void, timeout?: number, ...args: any[]): any;',
+  'declare function clearInterval(id: any): void;',
+  'declare function setImmediate(handler: (...args: any[]) => void, ...args: any[]): any;',
+  'declare function clearImmediate(id: any): void;',
   'declare const console: { log(...args: any[]): void; error(...args: any[]): void; warn(...args: any[]): void };',
-  'declare const process: { argv: string[]; env: Record<string, string | undefined>; exitCode?: number; cwd(): string };',
+  'declare const process: { argv: string[]; env: Record<string, string | undefined>; exitCode?: number; cwd(): string; exit(code?: number): never };',
+  'declare const Buffer: any;',
+  'declare const __filename: string;',
+  'declare const __dirname: string;',
   'declare function require(specifier: string): any;',
   'declare const exports: any;',
   'declare const module: { exports: any };',
-  'type Record<K extends keyof any, T> = { [P in K]: T };',
   '',
 ].join('\n');
+
+type TypeScriptParsedProjectConfig = TypeScript.ParsedCommandLine & {
+  traceKernelLibPaths: string[];
+};
 
 function normalizeProjectPath(path: string): string {
   const parts: string[] = [];
@@ -93,6 +76,111 @@ function normalizeProjectPath(path: string): string {
     parts.push(part);
   }
   return parts.join('/');
+}
+
+function typeScriptLibPath(fileName: string): string {
+  return `${TYPESCRIPT_PROJECT_LIB_ROOT}/${fileName}`;
+}
+
+function typeScriptLibFileNameFromPath(path: string): string | null {
+  const normalized = path.replace(/\\/g, '/');
+  return normalized.startsWith(`${TYPESCRIPT_PROJECT_LIB_ROOT}/`)
+    ? normalized.slice(TYPESCRIPT_PROJECT_LIB_ROOT.length + 1)
+    : null;
+}
+
+function isTraceKernelTypeScriptLibPath(path: string | undefined): boolean {
+  return Boolean(
+    path &&
+      (path === TRACEKERNEL_OVERLAY_PATH || path.startsWith(`${TYPESCRIPT_PROJECT_LIB_ROOT}/`))
+  );
+}
+
+function normalizeTypeScriptLibFileName(value: string): string | null {
+  const baseName = value.replace(/\\/g, '/').split('/').pop()?.toLowerCase();
+  if (!baseName) return null;
+  const fileName = baseName.startsWith('lib.')
+    ? baseName
+    : `lib.${baseName.replace(/\.d\.ts$/, '')}.d.ts`;
+  return TYPESCRIPT_PROJECT_LIB_FILES[fileName] !== undefined ? fileName : null;
+}
+
+function defaultLibFileNameForTarget(
+  compiler: TypeScriptProjectCompiler,
+  target: TypeScript.ScriptTarget | undefined
+): string {
+  switch (target) {
+    case compiler.ScriptTarget.ES3:
+    case compiler.ScriptTarget.ES5:
+      return 'lib.es5.d.ts';
+    case compiler.ScriptTarget.ES2015:
+      return 'lib.es2015.d.ts';
+    case compiler.ScriptTarget.ES2016:
+      return 'lib.es2016.d.ts';
+    case compiler.ScriptTarget.ES2017:
+      return 'lib.es2017.d.ts';
+    case compiler.ScriptTarget.ES2018:
+      return 'lib.es2018.d.ts';
+    case compiler.ScriptTarget.ES2019:
+      return 'lib.es2019.d.ts';
+    case compiler.ScriptTarget.ES2020:
+      return 'lib.es2020.d.ts';
+    case compiler.ScriptTarget.ES2021:
+      return 'lib.es2021.d.ts';
+    case compiler.ScriptTarget.ES2022:
+      return 'lib.es2022.d.ts';
+    case compiler.ScriptTarget.ES2023:
+      return 'lib.es2023.d.ts';
+    case compiler.ScriptTarget.ES2024:
+      return 'lib.es2024.d.ts';
+    case compiler.ScriptTarget.ESNext:
+    case compiler.ScriptTarget.JSON:
+    case compiler.ScriptTarget.Latest:
+      return 'lib.esnext.d.ts';
+    default:
+      return TYPESCRIPT_PROJECT_DEFAULT_LIB_FILE;
+  }
+}
+
+function referencedTypeScriptLibFileNames(fileName: string): string[] {
+  const source = TYPESCRIPT_PROJECT_LIB_FILES[fileName];
+  if (source === undefined) return [];
+  return [...source.matchAll(/^\s*\/\/\/\s*<reference\s+lib=["']([^"']+)["']\s*\/>/gm)]
+    .map((match) => normalizeTypeScriptLibFileName(match[1] ?? ''))
+    .filter((lib): lib is string => Boolean(lib));
+}
+
+function typeScriptLibClosure(fileNames: readonly string[]): string[] {
+  const visited = new Set<string>();
+  const ordered: string[] = [];
+  const visit = (fileName: string): void => {
+    if (visited.has(fileName) || TYPESCRIPT_PROJECT_LIB_FILES[fileName] === undefined) return;
+    visited.add(fileName);
+    for (const referenced of referencedTypeScriptLibFileNames(fileName)) {
+      visit(referenced);
+    }
+    ordered.push(fileName);
+  };
+  for (const fileName of fileNames) visit(fileName);
+  return ordered;
+}
+
+function selectedTypeScriptProjectLibPaths(
+  compiler: TypeScriptProjectCompiler,
+  options: TypeScript.CompilerOptions
+): string[] {
+  const configuredLibs = Array.isArray(options.lib)
+    ? options.lib
+        .map((lib) => normalizeTypeScriptLibFileName(lib))
+        .filter((lib): lib is string => Boolean(lib))
+    : [];
+  const rootLibs = configuredLibs.length > 0
+    ? configuredLibs
+    : [defaultLibFileNameForTarget(compiler, options.target)];
+  const uniqueLibs = [...new Set(rootLibs)]
+    .filter((fileName) => TYPESCRIPT_PROJECT_LIB_FILES[fileName] !== undefined);
+  return typeScriptLibClosure(uniqueLibs.length > 0 ? uniqueLibs : [TYPESCRIPT_PROJECT_DEFAULT_LIB_FILE])
+    .map(typeScriptLibPath);
 }
 
 function projectRoot(project: RuntimeProjectSnapshot): string {
@@ -304,7 +392,7 @@ function parseConfig(
   config: Record<string, unknown> | null,
   cliOptions: TypeScript.CompilerOptions,
   project: RuntimeProjectSnapshot
-): TypeScript.ParsedCommandLine {
+): TypeScriptParsedProjectConfig {
   const basePath = configDirectory(configPath, project);
   const defaultOptions: TypeScript.CompilerOptions = {
     target: compiler.ScriptTarget.ES2020,
@@ -319,15 +407,21 @@ function parseConfig(
   const parsedConfig = config
     ? compiler.parseJsonConfigFileContent(config, createConfigParseHost(compiler, project, files), basePath)
     : { options: {} as TypeScript.CompilerOptions, fileNames: allProjectSourceFiles(project), errors: [] };
+  const mergedOptions = {
+    ...defaultOptions,
+    ...parsedConfig.options,
+    ...cliOptions,
+  };
+  const traceKernelLibPaths = selectedTypeScriptProjectLibPaths(compiler, mergedOptions);
+  const { lib: _mergedLib, noLib: _mergedNoLib, types: _mergedTypes, ...compilerOptions } = mergedOptions;
   return {
     ...parsedConfig,
     options: {
-      ...defaultOptions,
-      ...parsedConfig.options,
-      ...cliOptions,
+      ...compilerOptions,
       noLib: true,
       types: [],
     },
+    traceKernelLibPaths,
   };
 }
 
@@ -341,10 +435,11 @@ function createCompilerHost(
   return {
     getSourceFile: (fileName, languageVersion) => {
       const normalized = fileName.replace(/\\/g, '/');
-      const contents = files.get(normalized);
+      const libFileName = typeScriptLibFileNameFromPath(normalized);
+      const contents = libFileName ? TYPESCRIPT_PROJECT_LIB_FILES[libFileName] : files.get(normalized);
       return contents === undefined ? undefined : compiler.createSourceFile(normalized, contents, languageVersion);
     },
-    getDefaultLibFileName: () => DEFAULT_LIB_PATH,
+    getDefaultLibFileName: () => typeScriptLibPath(TYPESCRIPT_PROJECT_DEFAULT_LIB_FILE),
     writeFile: (fileName, contents) => {
       outputs.set(fileName.replace(/\\/g, '/'), contents);
     },
@@ -352,16 +447,25 @@ function createCompilerHost(
     getCanonicalFileName: (fileName) => fileName,
     useCaseSensitiveFileNames: () => true,
     getNewLine: () => '\n',
-    fileExists: (fileName) => files.has(fileName.replace(/\\/g, '/')),
-    readFile: (fileName) => files.get(fileName.replace(/\\/g, '/')),
+    fileExists: (fileName) => {
+      const normalized = fileName.replace(/\\/g, '/');
+      const libFileName = typeScriptLibFileNameFromPath(normalized);
+      return libFileName ? TYPESCRIPT_PROJECT_LIB_FILES[libFileName] !== undefined : files.has(normalized);
+    },
+    readFile: (fileName) => {
+      const normalized = fileName.replace(/\\/g, '/');
+      const libFileName = typeScriptLibFileNameFromPath(normalized);
+      return libFileName ? TYPESCRIPT_PROJECT_LIB_FILES[libFileName] : files.get(normalized);
+    },
     directoryExists: (directoryName) => {
       const directory = directoryName.replace(/\\/g, '/').replace(/\/+$/, '');
-      return [...files.keys()].some((file) => file.startsWith(`${directory}/`));
+      return [...files.keys(), ...Object.keys(TYPESCRIPT_PROJECT_LIB_FILES).map(typeScriptLibPath)]
+        .some((file) => file.startsWith(`${directory}/`));
     },
     getDirectories: (directoryName) => {
       const directory = directoryName.replace(/\\/g, '/').replace(/\/+$/, '');
       const children = new Set<string>();
-      for (const file of files.keys()) {
+      for (const file of [...files.keys(), ...Object.keys(TYPESCRIPT_PROJECT_LIB_FILES).map(typeScriptLibPath)]) {
         if (!file.startsWith(`${directory}/`)) continue;
         const next = file.slice(directory.length + 1).split('/')[0];
         if (next && file.slice(directory.length + 1).includes('/')) children.add(next);
@@ -393,7 +497,7 @@ export function createTypeScriptProjectRunner(
     const compiler = options.compiler ?? await (options.loadCompiler ?? loadDefaultCompiler)();
 
     const files = new Map<string, string>([
-      [DEFAULT_LIB_PATH, DEFAULT_LIB],
+      [TRACEKERNEL_OVERLAY_PATH, TRACEKERNEL_OVERLAY_LIB],
     ]);
     for (const file of request.project.files) {
       files.set(absoluteProjectPath(file.path, request.project), decodeBytes(fileBytes(file)));
@@ -412,13 +516,17 @@ export function createTypeScriptProjectRunner(
       request.project
     );
     const compilerOptions = parsedConfig.options;
-    const rootNames = [DEFAULT_LIB_PATH, ...sourceRootsFromProject(request.project, parsedConfig)];
+    const rootNames = [
+      ...parsedConfig.traceKernelLibPaths,
+      TRACEKERNEL_OVERLAY_PATH,
+      ...sourceRootsFromProject(request.project, parsedConfig),
+    ];
     const outputs = new Map<string, string>();
     const host = createCompilerHost(compiler, request.project, files, outputs, compilerOptions);
     const program = compiler.createProgram(rootNames, compilerOptions, host);
     const emit = program.emit();
     const diagnostics = [...parsedConfig.errors, ...compiler.getPreEmitDiagnostics(program), ...emit.diagnostics]
-      .filter((diagnostic) => diagnostic.file?.fileName !== DEFAULT_LIB_PATH);
+      .filter((diagnostic) => !isTraceKernelTypeScriptLibPath(diagnostic.file?.fileName));
     const stderr = diagnostics.map((diagnostic) => formatDiagnostic(compiler, diagnostic, request.project)).join('\n');
     const resultFiles: RuntimeFileChange[] = compilerOptions.noEmit
       ? []

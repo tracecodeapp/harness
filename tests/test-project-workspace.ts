@@ -28,6 +28,7 @@ import {
   RuntimeProjectEventQueue,
   readRuntimeCommandStdinPipeBytes,
 } from '../packages/harness-core/src/runtime-project';
+import { getLanguageRuntimeInfo } from '../packages/harness-core/src/runtime-language-info';
 import { createNativePythonProjectRunner } from '../packages/harness-python/src/project-node';
 import {
   createBrowserPythonProjectRunner,
@@ -4569,6 +4570,17 @@ async function testProjectJavaScriptRunnersPreserveEmptyDirectories(): Promise<v
 async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     files: [
+      {
+        path: 'package.json',
+        contents: JSON.stringify({
+          scripts: {
+            test: 'node index.js',
+          },
+          devDependencies: {
+            typescript: 'latest',
+          },
+        }, null, 2),
+      },
       { path: 'config.json', contents: '{"offset":4}\n' },
       { path: 'stale.txt', contents: 'delete me\n' },
       { path: 'lib/math.js', contents: 'const config = require("../config.json"); module.exports = { add: (a, b) => a + b + config.offset };\n' },
@@ -4630,6 +4642,13 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const packageResult = await workspace.runCommand('node -e "const { add } = require(\\"adder\\"); console.log(add(1, 4))"');
   assertCondition(packageResult.exitCode === 0, `browser node package require should succeed: ${packageResult.stderr}`);
   assertCondition(packageResult.stdout === '105\n', `browser node package require should resolve package main: ${packageResult.stdout}`);
+
+  const typeScriptVersion = getLanguageRuntimeInfo('typescript').compiler?.version ?? '5.9.3';
+  const typeScriptRequireResult = await workspace.runCommand('node -p "require(\\"typescript\\").version"');
+  assertCondition(
+    typeScriptRequireResult.exitCode === 0 && typeScriptRequireResult.stdout === `${typeScriptVersion}\n`,
+    `browser node should expose the declared tracekernel TypeScript package version: ${JSON.stringify(typeScriptRequireResult)}`
+  );
 
   const requireResolveResult = await workspace.runCommand([
     'node',
@@ -11592,6 +11611,16 @@ async function testPackageManagerProjectCommands(): Promise<void> {
 }
 
 async function testTypeScriptProjectCommands(): Promise<void> {
+  const rootTsConfig = {
+    compilerOptions: {
+      outDir: 'dist',
+      rootDir: '.',
+      module: 'commonjs',
+      target: 'es2020',
+      strict: true,
+    },
+    files: ['src/index.ts', 'src/math.ts'],
+  };
   const workspace = await createRuntimeWorkspace({
     typescriptRunner: createTypeScriptProjectRunner(),
     nodeRunner: createNativeJavaScriptProjectRunner(),
@@ -11610,16 +11639,7 @@ async function testTypeScriptProjectCommands(): Promise<void> {
       files: [
         {
           path: 'tsconfig.json',
-          contents: JSON.stringify({
-            compilerOptions: {
-              outDir: 'dist',
-              rootDir: '.',
-              module: 'commonjs',
-              target: 'es2020',
-              strict: true,
-            },
-            files: ['src/index.ts', 'src/math.ts'],
-          }, null, 2),
+          contents: JSON.stringify(rootTsConfig, null, 2),
         },
         {
           path: 'src/math.ts',
@@ -11671,6 +11691,38 @@ async function testTypeScriptProjectCommands(): Promise<void> {
     `tsc --noEmit should surface project-path diagnostics: ${JSON.stringify(badTypecheck)}`
   );
 
+  await workspace.writeFile('tsconfig.json', JSON.stringify({
+    compilerOptions: {
+      outDir: 'dist',
+      rootDir: '.',
+      module: 'commonjs',
+      target: 'es2020',
+      strict: true,
+      lib: ['es2016'],
+    },
+    files: ['src/main.ts', 'src/rules.ts'],
+  }, null, 2));
+  await workspace.writeFile('src/rules.ts', [
+    'export type RulePatch = Partial<{ roles: string[]; enabled: boolean }>;',
+    'export function normalize(patch: RulePatch): string[] {',
+    '  return patch.roles ?? [];',
+    '}',
+    '',
+  ].join('\n'));
+  await workspace.writeFile('src/main.ts', [
+    'import { normalize } from "./rules";',
+    'const roles = normalize({ roles: ["free", "pro"] });',
+    'const hasPremium = roles.some((f) => f === "pro");',
+    'console.log(roles.includes("pro") && roles.indexOf("free") === 0 && hasPremium ? "access" : "deny");',
+    '',
+  ].join('\n'));
+  const libCompatibilityCompile = await workspace.runCommand('tsc --project tsconfig.json');
+  assertCondition(
+    libCompatibilityCompile.exitCode === 0,
+    `tsc should keep tracekernel ambient libs compatible with utility types, array methods, and user lib options: ${JSON.stringify(libCompatibilityCompile)}`
+  );
+
+  await workspace.writeFile('tsconfig.json', JSON.stringify(rootTsConfig, null, 2));
   await workspace.writeFile('src/index.ts', 'import { add } from "./math";\nconsole.log("ts=" + add(2, 3));\n');
   await workspace.remove('dist', { recursive: true, force: true });
   const stepped = await workspace.runProjectCommand('test');

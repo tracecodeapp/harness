@@ -28,6 +28,7 @@ import {
   runtimeCommandStdinPipeRemainingBytes,
   runtimeSignalExitCode,
 } from '../../harness-core/src/runtime-project';
+import { getLanguageRuntimeInfo } from '../../harness-core/src/runtime-language-info';
 import {
   createTypeScriptProjectRunner,
   type TypeScriptProjectCompiler,
@@ -205,6 +206,10 @@ interface PackageMetadata {
   main?: unknown;
   module?: unknown;
   exports?: unknown;
+  dependencies?: unknown;
+  devDependencies?: unknown;
+  optionalDependencies?: unknown;
+  peerDependencies?: unknown;
 }
 
 type PackageResolutionCondition = 'require' | 'import';
@@ -2224,7 +2229,8 @@ function moduleFileCandidates(path: string): string[] {
 }
 
 function parsePackageJson(modules: Map<string, string>, path: string): PackageMetadata | null {
-  const packageJson = modules.get(`${normalizeProjectPath(path)}/package.json`);
+  const normalized = normalizeProjectPath(path);
+  const packageJson = modules.get(normalized ? `${normalized}/package.json` : 'package.json');
   if (!packageJson) return null;
 
   try {
@@ -2232,6 +2238,26 @@ function parsePackageJson(modules: Map<string, string>, path: string): PackageMe
   } catch {
     return null;
   }
+}
+
+function manifestDeclaresDependency(manifest: PackageMetadata, dependency: string): boolean {
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const) {
+    const dependencies = manifest[field];
+    if (dependencies && typeof dependencies === 'object' && !Array.isArray(dependencies) && dependency in dependencies) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function projectDeclaresDependency(modules: Map<string, string>, dependency: string): boolean {
+  for (const path of modules.keys()) {
+    if (!path.endsWith('package.json')) continue;
+    const directory = dirname(path);
+    const manifest = parsePackageJson(modules, directory);
+    if (manifest && manifestDeclaresDependency(manifest, dependency)) return true;
+  }
+  return false;
 }
 
 function packageExportTarget(value: unknown, condition: PackageResolutionCondition): string | null {
@@ -3116,11 +3142,41 @@ export async function runBrowserJavaScriptProjectRequest(
       args: processArgvForRequest(request).slice(2),
       cwd: request.cwd,
     });
-    const fileStore = new Map(
-      request.project.files
-        .map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), fileBytes(file)] as const)
-        .filter(([path]) => !isHiddenProjectPath(path))
+    const visibleProjectFiles = request.project.files.filter((file) =>
+      !isHiddenProjectPath(assertSafeWorkspaceFilePath(file.path, '', workspacePathContext))
     );
+    const modules = new Map(
+      visibleProjectFiles
+        .filter((file) => file.encoding !== 'base64')
+        .map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), file.contents])
+    );
+    const virtualTextFiles = new Map<string, string>();
+    const hasTypeScriptPackage = Array.from(modules.keys()).some((path) => path.startsWith('node_modules/typescript/'));
+    if (!hasTypeScriptPackage && projectDeclaresDependency(modules, 'typescript')) {
+      const version = getLanguageRuntimeInfo('typescript').compiler?.version ?? '5.9.3';
+      virtualTextFiles.set('node_modules/typescript/package.json', JSON.stringify({
+        name: 'typescript',
+        version,
+        main: 'index.js',
+      }, null, 2) + '\n');
+      virtualTextFiles.set('node_modules/typescript/index.js', [
+        `const version = ${JSON.stringify(version)};`,
+        'module.exports = {',
+        '  version,',
+        '  versionMajorMinor: version.split(".").slice(0, 2).join("."),',
+        '};',
+        '',
+      ].join('\n'));
+    }
+    for (const [path, contents] of virtualTextFiles) {
+      modules.set(path, contents);
+    }
+    const fileStore = new Map(
+      visibleProjectFiles.map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), fileBytes(file)] as const)
+    );
+    for (const [path, contents] of virtualTextFiles) {
+      fileStore.set(path, textEncoder.encode(contents));
+    }
     const directoryStore = new Set<string>(['']);
     for (const filePath of fileStore.keys()) {
       const parts = filePath.split('/');
@@ -3224,11 +3280,6 @@ export async function runBrowserJavaScriptProjectRequest(
       return inodeForPath(group ? [...group].sort((left, right) => left.localeCompare(right))[0] ?? path : path);
     };
     const originalFiles = new Map(fileStore);
-    const modules = new Map(
-      request.project.files
-        .filter((file) => file.encoding !== 'base64')
-        .map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), file.contents])
-    );
     const cache = new Map<string, ModuleRecord>();
     const requireCache: Record<string, ModuleRecord> = {};
     let mainModule: ModuleRecord | undefined;
