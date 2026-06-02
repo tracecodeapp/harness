@@ -10,7 +10,7 @@ import vm from 'node:vm';
 
 const DEFAULT_ALGOFLOW_ROOT = process.env.TRACECODE_ALGOFLOW_ROOT || join(homedir(), 'Code', 'algoflow');
 const DEFAULT_MULTILANG_ROOT = join(DEFAULT_ALGOFLOW_ROOT, 'experiments', 'trusted-visualizer-corpus');
-const DEFAULT_PROBLEMS_ROOT = join(DEFAULT_MULTILANG_ROOT, 'generated-validated-cplusplus', 'problems');
+const DEFAULT_PROBLEMS_ROOT = join(DEFAULT_MULTILANG_ROOT, 'generated-validated-cpp', 'problems');
 const CPP_WORKER_PATH = join(process.cwd(), 'workers', 'cpp', 'cpp-worker.js');
 const CPP_RUNTIME_HEADER_PATH = join(process.cwd(), 'workers', 'cpp', 'tracecode_runtime.hpp');
 const YOWASP_COMPILER_BUNDLE_PATH = join(process.cwd(), 'node_modules', '@yowasp', 'clang', 'gen', 'bundle.js');
@@ -297,7 +297,7 @@ async function createCppWorkerHarness() {
 async function loadProblem(root: string, slug: string): Promise<{ problem: AlgoflowProblem; code: string }> {
   const problemDir = join(root, slug);
   const problem = await readJsonFile<AlgoflowProblem>(join(problemDir, 'problem.json'));
-  const code = await readFile(join(problemDir, 'cplusplus.cpp'), 'utf8');
+  const code = await readFile(join(problemDir, 'cpp.cpp'), 'utf8');
   return { problem, code };
 }
 
@@ -355,7 +355,7 @@ async function discoverSlugs(root: string): Promise<string[]> {
   const { readdir } = await import('node:fs/promises');
   const entries = await readdir(root, { withFileTypes: true });
   return entries
-    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, 'problem.json')) && existsSync(join(root, entry.name, 'cplusplus.cpp')))
+    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, 'problem.json')) && existsSync(join(root, entry.name, 'cpp.cpp')))
     .map((entry) => entry.name)
     .sort((left, right) => left.localeCompare(right));
 }

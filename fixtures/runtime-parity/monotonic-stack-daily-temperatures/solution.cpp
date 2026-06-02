@@ -1,7 +1,7 @@
 /**
  * Practice reference solution scaffold
  * id: daily-temperatures
- * language: cplusplus
+ * language: cpp
  * executionStyle: solution-method
  */
 #include <vector>
