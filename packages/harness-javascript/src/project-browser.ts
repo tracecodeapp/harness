@@ -109,6 +109,7 @@ export type BrowserJavaScriptProjectCommandRunner = JavaScriptProjectCommandRunn
 export interface BrowserJavaScriptProjectRunnerOptions {
   applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
   allowDynamicEval?: boolean;
+  hardened?: boolean;
   timeoutMs?: number;
   workerUrl?: string;
 }
@@ -1843,6 +1844,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
         let active = true;
         let timeoutHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
         let requestAbortListener: (() => void) | undefined;
+        const dispatchAbortController = new AbortController();
         const finishClientRequest = (): void => {
           if (!active) return;
           active = false;
@@ -1860,6 +1862,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
           if (destroyed) return;
           destroyed = true;
           clientRequest.destroyed = true;
+          if (!dispatchAbortController.signal.aborted) dispatchAbortController.abort();
           if (error) events.emit('error', error);
           events.emit('close');
           finishClientRequest();
@@ -1883,6 +1886,8 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
           headers,
           ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
           ...(chunks.length > 0 ? body : {}),
+        }, {
+          signal: dispatchAbortController.signal,
         }).then((response) => {
           if (destroyed) return;
           if (response.status === 0) {
@@ -2104,6 +2109,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
     let active = true;
     let abortListener: (() => void) | undefined;
     let rejectFetch: ((error: unknown) => void) | undefined;
+    const dispatchAbortController = new AbortController();
     const finishFetch = (): void => {
       if (!active) return;
       active = false;
@@ -2115,6 +2121,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
       }, 0);
     };
     const abortFetch = (): void => {
+      if (!dispatchAbortController.signal.aborted) dispatchAbortController.abort();
       rejectFetch?.(Object.assign(new Error('The operation was aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
       finishFetch();
     };
@@ -2137,6 +2144,8 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
         headers,
         ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
         ...(body !== undefined ? body : {}),
+      }, {
+        signal: dispatchAbortController.signal,
       }).then((response) => {
         if (!active) return;
         if (response.status === 0) {
@@ -2173,6 +2182,76 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
       ? Promise.resolve()
       : new Promise<void>((resolve) => closeWaiters.push(resolve)),
     closeAll,
+  };
+}
+
+function installBrowserHttpGlobalLockdown(httpApi: ReturnType<typeof createHttpApi>): () => void {
+  const global = globalThis as typeof globalThis & Record<string, unknown>;
+  const blockedNetworkApi = (name: string) => function blockedTraceKernelNetworkApi(): never {
+    throw Object.assign(new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`), { code: 'EACCES' });
+  };
+  const replacements: Record<string, unknown> = {
+    fetch: httpApi.fetch,
+    Headers: httpApi.Headers,
+    Request: httpApi.Request,
+    Response: httpApi.Response,
+    XMLHttpRequest: blockedNetworkApi('XMLHttpRequest'),
+    WebSocket: blockedNetworkApi('WebSocket'),
+    EventSource: blockedNetworkApi('EventSource'),
+  };
+  const previousDescriptors = new Map<string, PropertyDescriptor | undefined>();
+  for (const [name, value] of Object.entries(replacements)) {
+    previousDescriptors.set(name, Object.getOwnPropertyDescriptor(global, name));
+    try {
+      Object.defineProperty(global, name, {
+        configurable: true,
+        enumerable: false,
+        writable: false,
+        value,
+      });
+    } catch {
+      // Same-realm execution is best-effort; worker-backed execution remains the stronger boundary.
+    }
+  }
+  const navigatorValue = global.navigator;
+  const sendBeaconDescriptor = navigatorValue && typeof navigatorValue === 'object'
+    ? Object.getOwnPropertyDescriptor(navigatorValue, 'sendBeacon')
+    : undefined;
+  if (navigatorValue && typeof navigatorValue === 'object') {
+    try {
+      Object.defineProperty(navigatorValue, 'sendBeacon', {
+        configurable: true,
+        enumerable: false,
+        writable: false,
+        value: blockedNetworkApi('navigator.sendBeacon'),
+      });
+    } catch {
+      // Ignore read-only host navigator implementations.
+    }
+  }
+  return () => {
+    for (const [name, descriptor] of previousDescriptors) {
+      try {
+        if (descriptor) {
+          Object.defineProperty(global, name, descriptor);
+        } else {
+          delete global[name];
+        }
+      } catch {
+        // User code can still poison same-realm globals; later executions should prefer worker-backed mode.
+      }
+    }
+    if (navigatorValue && typeof navigatorValue === 'object') {
+      try {
+        if (sendBeaconDescriptor) {
+          Object.defineProperty(navigatorValue, 'sendBeacon', sendBeaconDescriptor);
+        } else {
+          delete (navigatorValue as unknown as Record<string, unknown>).sendBeacon;
+        }
+      } catch {
+        // Ignore read-only host navigator implementations.
+      }
+    }
   };
 }
 
@@ -2682,6 +2761,7 @@ interface BrowserJavaScriptProjectPendingMessage {
   port?: MessagePort;
   httpListeners: Map<string, RuntimeKernelHttpListenerHandle>;
   httpRequests: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
+  httpDispatchAbortControllers: Map<string, AbortController>;
 }
 
 function createBrowserJavaScriptProjectAbortError(): Error {
@@ -2755,6 +2835,7 @@ class BrowserJavaScriptProjectWorkerClient {
       type === 'kernel-http-close' ||
       type === 'kernel-http-response' ||
       type === 'kernel-http-dispatch' ||
+      type === 'kernel-http-abort-dispatch' ||
       type === 'kernel-http-error'
     ) {
       this.handleKernelHttpProtocolMessage(id, type, payload);
@@ -2798,6 +2879,7 @@ class BrowserJavaScriptProjectWorkerClient {
         ...(channel ? { port: channel.port1 } : {}),
         httpListeners: new Map(),
         httpRequests: new Map(),
+        httpDispatchAbortControllers: new Map(),
       });
       const message: BrowserJavaScriptProjectWorkerMessage = {
         id,
@@ -2855,18 +2937,30 @@ class BrowserJavaScriptProjectWorkerClient {
         this.postKernelHttpError(commandId, { requestId: message.requestId, error: 'TraceKernel HTTP is not available.' });
         return;
       }
-      pending.kernelHttp.dispatch(message.request).then((response) => {
+      const abortController = new AbortController();
+      pending.httpDispatchAbortControllers.set(message.requestId, abortController);
+      pending.kernelHttp.dispatch(message.request, {
+        signal: abortController.signal,
+        ...(message.timeoutMs !== undefined ? { timeoutMs: message.timeoutMs } : {}),
+      }).then((response) => {
+        pending.httpDispatchAbortControllers.delete(message.requestId);
         this.postWorkerMessage(commandId, 'kernel-http-dispatch-result', {
           type: 'kernel-http-dispatch-result',
           requestId: message.requestId,
           response,
         } satisfies RuntimeKernelHttpProtocolMessage);
       }, (error) => {
+        pending.httpDispatchAbortControllers.delete(message.requestId);
         this.postKernelHttpError(commandId, {
           requestId: message.requestId,
           error: error instanceof Error ? error.message : String(error),
         });
       });
+      return;
+    }
+    if (type === 'kernel-http-abort-dispatch' && message.type === 'kernel-http-abort-dispatch') {
+      pending.httpDispatchAbortControllers.get(message.requestId)?.abort();
+      pending.httpDispatchAbortControllers.delete(message.requestId);
       return;
     }
     if (type === 'kernel-http-error' && message.type === 'kernel-http-error') {
@@ -2951,6 +3045,8 @@ class BrowserJavaScriptProjectWorkerClient {
     pending.httpListeners.clear();
     for (const request of pending.httpRequests.values()) request.reject(new Error('JavaScript project worker finished before HTTP response.'));
     pending.httpRequests.clear();
+    for (const abortController of pending.httpDispatchAbortControllers.values()) abortController.abort();
+    pending.httpDispatchAbortControllers.clear();
     pending.port?.close();
   }
 
@@ -3035,6 +3131,19 @@ export function createBrowserJavaScriptProjectRunner(
       ...options,
       workerUrl: options.workerUrl,
     });
+  }
+  if (options.hardened === true) {
+    return (request) => {
+      const stderr = 'node: hardened browser JavaScript project runner requires a Worker-backed runner\n';
+      const io = createRuntimeProjectIoBridge(request.onEvent);
+      io.output('stderr', stderr);
+      io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
+      return Promise.resolve({
+        stdout: '',
+        stderr,
+        exitCode: 1,
+      });
+    };
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
@@ -6304,6 +6413,7 @@ export async function runBrowserJavaScriptProjectRequest(
     Object.assign(fsApi, { promises: fsPromisesApi });
     const zlibApi = createZlibApi();
     const httpApi = createHttpApi(request.kernelHttp, request.signal);
+    const restoreHttpGlobals = installBrowserHttpGlobalLockdown(httpApi);
     const builtins = new Map<string, unknown>([
       ['fs', fsApi],
       ['node:fs', fsApi],
@@ -6695,5 +6805,7 @@ export async function runBrowserJavaScriptProjectRequest(
         stderr: stderr.join(''),
         exitCode,
       };
+    } finally {
+      restoreHttpGlobals();
     }
 }

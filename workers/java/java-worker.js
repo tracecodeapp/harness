@@ -199,13 +199,21 @@ function dispatchJavaProjectHttpSync(requestJson) {
   } catch (error) {
     return javaHttpErrorManifest('Invalid Java TraceKernel HTTP request');
   }
+  const timeoutMs = Number(request?._tracekernelTimeoutMs);
+  if (request && typeof request === 'object') {
+    delete request._tracekernelTimeoutMs;
+  }
   const buffer = new SharedArrayBuffer(JAVA_HTTP_SYNC_HEADER_BYTES + JAVA_HTTP_SYNC_BUFFER_BYTES);
   const header = new Int32Array(buffer, 0, 2);
   try {
     postMessageResponse({
       id: context.messageId,
       type: 'kernel-http-dispatch-sync',
-      payload: { request, buffer },
+      payload: {
+        request,
+        buffer,
+        ...(Number.isFinite(timeoutMs) ? { timeoutMs: Math.max(1, Math.ceil(timeoutMs)) } : {}),
+      },
     });
     const waitResult = Atomics.wait(header, 0, 0, JAVA_HTTP_SYNC_TIMEOUT_MS);
     if (waitResult === 'timed-out') {

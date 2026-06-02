@@ -81,6 +81,7 @@ async function main(): Promise<void> {
       const pending = new Map();
       const listeners = new Map();
       const externalHttpListeners = new Map();
+      const externalHttpDispatches = [];
       const requestWaiters = new Map();
       const createRuntimeCommandStdinPipeFromText = (text) => {
         const encoded = new TextEncoder().encode(text);
@@ -137,6 +138,11 @@ async function main(): Promise<void> {
         if (type === 'kernel-http-dispatch') {
           const parsed = new URL(payload.request.url);
           const handler = externalHttpListeners.get(Number(parsed.port || 80));
+          externalHttpDispatches.push({
+            method: payload.request.method,
+            path: payload.request.path,
+            timeoutMs: payload.timeoutMs,
+          });
           if (!handler) {
             worker.postMessage({
               id,
@@ -983,6 +989,7 @@ async function main(): Promise<void> {
           client: request.headers['x-test'] || request.headers['content-type'] || '',
         }) + '\\n',
       }));
+      externalHttpDispatches.length = 0;
       const outboundHttpRun = await send('execute-project-python', {
         source: 'file',
         scriptPath: '/workspace/outbound.py',
@@ -1000,16 +1007,16 @@ async function main(): Promise<void> {
                 'import requests',
                 'import urllib.request',
                 '',
-                'with urllib.request.urlopen("http://localhost:8770/urllib?x=1") as response:',
+                'with urllib.request.urlopen("http://localhost:8770/urllib?x=1", timeout=1.25) as response:',
                 '    print("urllib:" + str(response.getcode()) + ":" + response.read().decode("utf-8").strip())',
                 '',
-                'conn = http.client.HTTPConnection("localhost", 8770)',
+                'conn = http.client.HTTPConnection("localhost", 8770, timeout=2.5)',
                 'conn.request("POST", "/client", body="payload", headers={"x-test": "yes"})',
                 'response = conn.getresponse()',
                 'print("http.client:" + str(response.status) + ":" + response.read().decode("utf-8").strip())',
                 'conn.close()',
                 '',
-                'response = requests.post("http://localhost:8770/requests", json={"ok": True})',
+                'response = requests.post("http://localhost:8770/requests", json={"ok": True}, timeout=(1, 3))',
                 'print("requests:" + str(response.status_code) + ":" + json.dumps(response.json(), separators=(",", ":")))',
                 '',
               ].join('\\n'),
@@ -1017,6 +1024,11 @@ async function main(): Promise<void> {
           ],
         },
       });
+      const outboundHttpTimeouts = externalHttpDispatches.map((entry) => ({
+        method: entry.method,
+        path: entry.path,
+        timeoutMs: entry.timeoutMs,
+      }));
       externalHttpListeners.delete(8770);
 
       let outsideCwdError = '';
@@ -1236,7 +1248,7 @@ async function main(): Promise<void> {
         // Terminating the worker is how this smoke test stops the long-lived server.
       }
 
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams, asgiInspect, asgiDelete, asgiConflict, stdlibEnqueue, stdlibInspect, stdlibDequeue };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outboundHttpTimeouts, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams, asgiInspect, asgiDelete, asgiConflict, stdlibEnqueue, stdlibInspect, stdlibDequeue };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -1256,6 +1268,7 @@ async function main(): Promise<void> {
       providerKernelVirtualMutationRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
       outboundHttpRun: PythonProjectWorkerResponse;
+      outboundHttpTimeouts: Array<{ method: string; path: string; timeoutMs?: number }>;
       outsideCwdError: string;
       asgiEnqueue: { status: number; headers?: Record<string, string>; body?: string };
       asgiDequeue: { status: number; headers?: Record<string, string>; body?: string };
@@ -1969,6 +1982,14 @@ async function main(): Promise<void> {
         '',
       ].join('\n'),
       `Python outbound HTTP shims should dispatch through TraceKernel: ${JSON.stringify(results.outboundHttpRun.stdout)}`
+    );
+    assertCondition(
+      JSON.stringify(results.outboundHttpTimeouts) === JSON.stringify([
+        { method: 'GET', path: '/urllib?x=1', timeoutMs: 1250 },
+        { method: 'POST', path: '/client', timeoutMs: 2500 },
+        { method: 'POST', path: '/requests', timeoutMs: 3000 },
+      ]),
+      `Python outbound HTTP shims should forward client timeouts to TraceKernel: ${JSON.stringify(results.outboundHttpTimeouts)}`
     );
     assertCondition(
       results.outsideCwdError.includes('Project cwd must stay inside the workspace'),

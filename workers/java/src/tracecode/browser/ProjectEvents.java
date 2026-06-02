@@ -2273,7 +2273,8 @@ public final class ProjectEvents {
           request.uri().toString(),
           httpRequestPath(request.uri()),
           request.headers().map(),
-          requestBody);
+          requestBody,
+          httpTimeoutMillis(request.timeout(), connectTimeout));
       HttpHeaders headers = httpHeaders(response.rawHeaders);
       ProjectHttpResponseInfo info = new ProjectHttpResponseInfo(response.status, headers, version);
       HttpResponse.BodySubscriber<T> subscriber = responseBodyHandler.apply(info);
@@ -2528,7 +2529,8 @@ public final class ProjectEvents {
         connection.getURL().toString(),
         httpRequestPath(connection.getURL()),
         connection.requestProperties,
-        connection.requestBody.toByteArray());
+        connection.requestBody.toByteArray(),
+        httpTimeoutMillis(connection.getReadTimeout(), connection.getConnectTimeout()));
   }
 
   private static TraceKernelHttpResponse dispatchHttpRequest(
@@ -2536,13 +2538,14 @@ public final class ProjectEvents {
       String url,
       String path,
       Map<String, List<String>> headers,
-      byte[] body)
+      byte[] body,
+      Long timeoutMs)
       throws IOException {
     TraceKernelHttpResponse localResponse = dispatchLocalHttpServer(method, url, headers, body);
     if (localResponse != null) return localResponse;
     String manifest;
     try {
-      manifest = dispatchHttp(httpRequestJson(method, url, path, headers, body));
+      manifest = dispatchHttp(httpRequestJson(method, url, path, headers, body, timeoutMs));
     } catch (UnsatisfiedLinkError | SecurityException error) {
       throw new IOException("TraceKernel HTTP bridge is not available", error);
     }
@@ -2580,7 +2583,8 @@ public final class ProjectEvents {
       String url,
       String path,
       Map<String, List<String>> headers,
-      byte[] body) {
+      byte[] body,
+      Long timeoutMs) {
     StringBuilder builder = new StringBuilder();
     builder.append('{');
     appendJsonField(builder, "method", method, false);
@@ -2598,8 +2602,23 @@ public final class ProjectEvents {
       appendJsonField(builder, "body", Base64.getEncoder().encodeToString(body), true);
       appendJsonField(builder, "bodyEncoding", "base64", true);
     }
+    if (timeoutMs != null && timeoutMs > 0) {
+      builder.append(",\"_tracekernelTimeoutMs\":").append(timeoutMs.longValue());
+    }
     builder.append('}');
     return builder.toString();
+  }
+
+  private static Long httpTimeoutMillis(Optional<Duration> requestTimeout, Optional<Duration> clientTimeout) {
+    Duration timeout = requestTimeout.orElseGet(() -> clientTimeout.orElse(null));
+    if (timeout == null) return null;
+    long millis = timeout.toMillis();
+    return millis <= 0 ? 1L : millis;
+  }
+
+  private static Long httpTimeoutMillis(int readTimeoutMs, int connectTimeoutMs) {
+    int timeoutMs = readTimeoutMs > 0 ? readTimeoutMs : connectTimeoutMs;
+    return timeoutMs > 0 ? Long.valueOf(timeoutMs) : null;
   }
 
   private static String httpRequestPath(URL url) {

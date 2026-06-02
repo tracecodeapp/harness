@@ -39,6 +39,7 @@ interface PendingMessage {
   kernelHttp?: RuntimeKernelHttpBridge;
   httpListeners?: Map<string, RuntimeKernelHttpListenerHandle>;
   httpRequests?: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
+  httpDispatchAbortControllers?: Map<string, AbortController>;
   timeoutId?: ReturnType<typeof globalThis.setTimeout>;
 }
 
@@ -181,6 +182,7 @@ export class PythonWorkerClient {
             type === 'kernel-http-close' ||
             type === 'kernel-http-response' ||
             type === 'kernel-http-dispatch' ||
+            type === 'kernel-http-abort-dispatch' ||
             type === 'kernel-http-error'
           ) {
             this.handleKernelHttpProtocolMessage(id, type, payload);
@@ -308,6 +310,7 @@ export class PythonWorkerClient {
         ...(kernelHttp ? { kernelHttp } : {}),
         httpListeners: new Map(),
         httpRequests: new Map(),
+        httpDispatchAbortControllers: new Map(),
       });
 
       logRuntimeDiagnostic('debug', {
@@ -391,18 +394,30 @@ export class PythonWorkerClient {
         this.postKernelHttpError(commandId, { requestId: message.requestId, error: 'TraceKernel HTTP is not available.' });
         return;
       }
-      pending.kernelHttp.dispatch(message.request).then((response) => {
+      const abortController = new AbortController();
+      pending.httpDispatchAbortControllers?.set(message.requestId, abortController);
+      pending.kernelHttp.dispatch(message.request, {
+        signal: abortController.signal,
+        ...(message.timeoutMs !== undefined ? { timeoutMs: message.timeoutMs } : {}),
+      }).then((response) => {
+        pending.httpDispatchAbortControllers?.delete(message.requestId);
         this.postWorkerMessage(commandId, 'kernel-http-dispatch-result', {
           type: 'kernel-http-dispatch-result',
           requestId: message.requestId,
           response,
         } satisfies RuntimeKernelHttpProtocolMessage);
       }, (error) => {
+        pending.httpDispatchAbortControllers?.delete(message.requestId);
         this.postKernelHttpError(commandId, {
           requestId: message.requestId,
           error: error instanceof Error ? error.message : String(error),
         });
       });
+      return;
+    }
+    if (type === 'kernel-http-abort-dispatch' && message.type === 'kernel-http-abort-dispatch') {
+      pending.httpDispatchAbortControllers?.get(message.requestId)?.abort();
+      pending.httpDispatchAbortControllers?.delete(message.requestId);
       return;
     }
     if (type === 'kernel-http-error' && message.type === 'kernel-http-error' && message.requestId) {
@@ -420,8 +435,31 @@ export class PythonWorkerClient {
     const pending = this.pendingMessages.get(commandId);
     if (!pending || !this.worker) return Promise.reject(new Error('Python worker is not running.'));
     const requestId = `${commandId}:http:${++this.httpRequestId}`;
+    let abortListener: (() => void) | undefined;
     return new Promise<RuntimeKernelHttpResponse>((resolve, reject) => {
-      pending.httpRequests?.set(requestId, { resolve, reject });
+      const cleanup = (): void => {
+        if (abortListener) request.signal?.removeEventListener?.('abort', abortListener);
+      };
+      pending.httpRequests?.set(requestId, {
+        resolve: (response) => {
+          cleanup();
+          resolve(response);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
+      });
+      if (request.signal) {
+        abortListener = () => {
+          this.postWorkerMessage(commandId, 'kernel-http-abort-request', {
+            type: 'kernel-http-abort-request',
+            requestId,
+          } satisfies RuntimeKernelHttpProtocolMessage);
+        };
+        request.signal.addEventListener?.('abort', abortListener, { once: true });
+        if (request.signal.aborted) abortListener();
+      }
       this.postWorkerMessage(commandId, 'kernel-http-request', {
         type: 'kernel-http-request',
         listenerId,
@@ -446,6 +484,8 @@ export class PythonWorkerClient {
     pending.httpListeners?.clear();
     for (const request of pending.httpRequests?.values() ?? []) request.reject(new Error('Python worker finished before HTTP response.'));
     pending.httpRequests?.clear();
+    for (const abortController of pending.httpDispatchAbortControllers?.values() ?? []) abortController.abort();
+    pending.httpDispatchAbortControllers?.clear();
   }
 
   /**

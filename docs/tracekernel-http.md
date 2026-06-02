@@ -10,6 +10,35 @@ This lets a consuming app test endpoint-defined problems in one workspace while
 keeping user terminals, agent commands, file mutations, process lifetime, and
 network-facing behavior inside the simulated system.
 
+## Browser-Side Security Model
+
+TraceKernel HTTP is a browser-side simulation. It should be treated as a
+deterministic workspace boundary, not as a host-network firewall. Browser
+project code can call only listeners registered inside the same workspace unless
+the consuming app explicitly grants an actor an external-fetch capability.
+
+HTTP operations are checked against workspace actor capabilities:
+
+- `principal` is the visible user/app actor.
+- `test` and `hidden-test` are intended for grading/probe code.
+- `runtime` is a user command process actor.
+- `system` is reserved for kernel-owned work and may use external fetch.
+
+The exported `RUNTIME_WORKSPACE_ACTOR_PRESETS`,
+`runtimeWorkspaceActorPreset(...)`, and
+`runtimeWorkspaceHttpCapabilitiesPreset(...)` helpers provide the default
+browser policies. The default non-system HTTP policy allows simulated
+`listen`, simulated `dispatch`, and diagnostics reads, while leaving
+`externalFetch` disabled.
+
+For JavaScript, prefer the worker-backed browser runner for any hardening-sensitive
+surface. `createBrowserJavaScriptProjectRunner({ hardened: true, workerUrl })`
+requires that worker-backed path and fails closed if a Worker is unavailable.
+The same-realm fallback still patches `fetch`, `Headers`, `Request`, and
+`Response` during execution and blocks common browser egress APIs such as
+`XMLHttpRequest`, `WebSocket`, `EventSource`, and `navigator.sendBeacon`, but it
+shares a realm with the page and should be considered compatibility mode.
+
 ## Shared Workspace Model
 
 Use one project workspace for both the visible user shell and agent work. A
@@ -255,7 +284,9 @@ console.log(await response.json());
 The TraceKernel fetch shim provides `Headers`, `Request`, and `Response` plus
 the common response helpers: `text()`, `json()`, `arrayBuffer()`, `clone()`,
 `status`, `ok`, `headers`, `bodyUsed`, and `url`. `AbortSignal` is supported for
-request cancellation.
+request cancellation. During same-realm browser execution, global `fetch` is
+routed back through TraceKernel even if page code assigned a different value
+before the run started.
 
 ## Python ASGI
 
@@ -300,7 +331,9 @@ print(response.json())
 ```
 
 These shims are scoped to project execution and dispatch through TraceKernel.
-They are intended for endpoint tests, not general internet access.
+They are intended for endpoint tests, not general internet access. `timeout=`
+values on `urllib.request.urlopen(...)`, `http.client.HTTPConnection(...)`, and
+`requests.*(...)` are forwarded as TraceKernel dispatch timeouts.
 
 Python browser project runs also patch the stdlib server path enough for small
 endpoint projects built with `http.server`:
@@ -356,6 +389,10 @@ System.out.println(response.body());
 and `HttpURLConnection` are routed through TraceKernel for browser Java project
 commands. They can call listeners started by JavaScript, Python, `curl`, or
 consumer-owned `workspace.http.listen(...)` handlers in the same workspace.
+`HttpRequest.timeout(...)`, `HttpClient.Builder.connectTimeout(...)`,
+`HttpURLConnection.setReadTimeout(...)`, and
+`HttpURLConnection.setConnectTimeout(...)` are forwarded as TraceKernel dispatch
+timeouts.
 
 Java also includes a `com.sun.net.httpserver.HttpServer` shim for project code
 that creates endpoints:
@@ -401,6 +438,27 @@ TraceKernel tracks listener ownership and port binding in the kernel:
 - Requests to `localhost` resolve to `127.0.0.1` and also match wildcard binds.
 - A wildcard listener conflicts with exact-host listeners on the same port.
 - Duplicate binds return `EADDRINUSE`.
+
+## Validation And Limits
+
+TraceKernel validates simulated HTTP traffic before it reaches listeners:
+
+- Methods must be HTTP tokens.
+- Hosts must be non-empty and cannot contain control characters, spaces, or
+  path delimiters.
+- Listener response statuses must be integers from `100` through `599`;
+  invalid handler responses are converted to handler-failure responses.
+- Request and response bodies are capped at 4 MiB.
+- Header maps and raw header lists are capped at 128 entries and 64 KiB of
+  encoded header bytes.
+- A workspace can hold up to 128 listeners and 256 in-flight HTTP requests.
+- `/proc/tracekernel/net/requests` keeps the latest 256 request diagnostics.
+- Diagnostic fields are control-character escaped and truncated to 4096
+  characters.
+
+Invalid client input is reported as a transport-style failure where possible.
+For example, a malformed connect target returns a `400` simulated response
+instead of throwing out of the kernel dispatcher.
 
 ## Built-In Curl
 

@@ -2,6 +2,7 @@ import type {
   RuntimeCommandEvent,
   RuntimeCommandResult,
   RuntimeKernelHttpBridge,
+  RuntimeKernelHttpDispatchOptions,
   RuntimeKernelHttpHandler,
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpListenerHandle,
@@ -39,7 +40,11 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
   private nextRequestId = 1;
   private readonly listeners = new Map<string, RuntimeKernelHttpHandler>();
   private readonly listenerInfo = new Map<string, RuntimeKernelHttpListenerInfo>();
-  private readonly dispatchRequests = new Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>();
+  private readonly dispatchRequests = new Map<string, {
+    resolve: (response: RuntimeKernelHttpResponse) => void;
+    reject: (error: Error) => void;
+    cleanup: () => void;
+  }>();
   private readonly serverRequestAbortControllers = new Map<string, AbortController>();
 
   constructor(
@@ -80,14 +85,29 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
     } as RuntimeKernelHttpListenerHandle;
   }
 
-  dispatch(request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse> {
+  dispatch(request: RuntimeKernelHttpRequest, options: RuntimeKernelHttpDispatchOptions = {}): Promise<RuntimeKernelHttpResponse> {
     const requestId = `worker-dispatch-${this.nextRequestId++}`;
     return new Promise<RuntimeKernelHttpResponse>((resolve, reject) => {
-      this.dispatchRequests.set(requestId, { resolve, reject });
+      let abortListener: (() => void) | undefined;
+      const cleanup = (): void => {
+        if (abortListener) options.signal?.removeEventListener?.('abort', abortListener);
+      };
+      this.dispatchRequests.set(requestId, { resolve, reject, cleanup });
+      if (options.signal) {
+        abortListener = () => {
+          this.postProtocolMessage({
+            type: 'kernel-http-abort-dispatch',
+            requestId,
+          });
+        };
+        options.signal.addEventListener?.('abort', abortListener, { once: true });
+        if (options.signal.aborted) abortListener();
+      }
       this.postProtocolMessage({
         type: 'kernel-http-dispatch',
         requestId,
         request,
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
       });
     });
   }
@@ -95,12 +115,14 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
   resolveDispatch(requestId: string, response: RuntimeKernelHttpResponse): void {
     const request = this.dispatchRequests.get(requestId);
     this.dispatchRequests.delete(requestId);
+    request?.cleanup();
     request?.resolve(response);
   }
 
   rejectDispatch(requestId: string, error: string): void {
     const request = this.dispatchRequests.get(requestId);
     this.dispatchRequests.delete(requestId);
+    request?.cleanup();
     request?.reject(new Error(error));
   }
 

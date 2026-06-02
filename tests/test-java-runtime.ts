@@ -25,6 +25,11 @@ interface RewriteCall {
   packageName: string;
 }
 
+const JAVA_HTTP_SYNC_HEADER_BYTES = 8;
+const JAVA_HTTP_SYNC_STATE_INDEX = 0;
+const JAVA_HTTP_SYNC_LENGTH_INDEX = 1;
+const JAVA_HTTP_SYNC_RESPONSE = 2;
+
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
@@ -52,6 +57,35 @@ function nativeEventMatches(event: string, expected: Record<string, unknown>): b
 
 function latestSourceContaining(files: Array<{ source: string }>, needle: string): string {
   return files.findLast((file) => file.source.includes(needle))?.source ?? '';
+}
+
+function javaHttpTestBase64(value: string): string {
+  return Buffer.from(value, 'utf8').toString('base64');
+}
+
+function writeJavaHttpTestManifest(buffer: SharedArrayBuffer, manifest: string): void {
+  const header = new Int32Array(buffer, 0, 2);
+  const bytes = new Uint8Array(buffer, JAVA_HTTP_SYNC_HEADER_BYTES);
+  const encoded = new TextEncoder().encode(manifest);
+  bytes.fill(0);
+  bytes.set(encoded.subarray(0, bytes.byteLength));
+  Atomics.store(header, JAVA_HTTP_SYNC_LENGTH_INDEX, Math.min(encoded.byteLength, bytes.byteLength));
+  Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_RESPONSE);
+  Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
+}
+
+function javaHttpOkTestManifest(status: number, body: string): string {
+  return [
+    'OK',
+    String(status),
+    '1',
+    `${javaHttpTestBase64('content-type')}\t${javaHttpTestBase64('text/plain')}`,
+    javaHttpTestBase64(body),
+  ].join('\n');
+}
+
+function isJavaHttpTestSharedArrayBuffer(value: unknown): value is SharedArrayBuffer {
+  return Object.prototype.toString.call(value) === '[object SharedArrayBuffer]';
 }
 
 function rewriteWithNativeJavaRewriter(source: string, entryName = 'solve'): string {
@@ -706,6 +740,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -738,6 +773,7 @@ public class ProjectEventsHttpSmoke {
 
     ProjectEvents.installHttpUrlHandler();
     HttpURLConnection connection = (HttpURLConnection) new URL("http://tracekernel.test/items?limit=1").openConnection();
+    connection.setReadTimeout(1234);
     connection.setRequestProperty("accept", "text/plain");
     String urlBody = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     System.out.println("url=" + connection.getResponseCode() + ":" + urlBody + ":" + connection.getHeaderField("x-mode"));
@@ -745,6 +781,7 @@ public class ProjectEventsHttpSmoke {
     HttpClient client = ProjectEvents.httpClientBuilder().version(HttpClient.Version.HTTP_1_1).build();
     HttpRequest post = HttpRequest.newBuilder(URI.create("http://tracekernel.test/post"))
       .header("content-type", "text/plain")
+      .timeout(Duration.ofMillis(2345))
       .POST(HttpRequest.BodyPublishers.ofString("job"))
       .build();
     HttpResponse<String> postResponse = client.send(post, HttpResponse.BodyHandlers.ofString());
@@ -798,6 +835,8 @@ public class ProjectEventsHttpSmoke {
     assertCondition(output.includes('requests=3'), `Java HTTP shims should dispatch three requests: ${output}`);
     assertCondition(
       output.includes('"path":"/items?limit=1"') &&
+        output.includes('"_tracekernelTimeoutMs":1234') &&
+        output.includes('"_tracekernelTimeoutMs":2345') &&
         output.includes('"method":"POST"') &&
         output.includes('"body":"am9i"') &&
         output.includes('"path":"/async"'),
@@ -1966,6 +2005,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
     workspaceCwd?: string;
   }> = [];
   const runLibraryClasspaths: string[] = [];
+  const httpDispatches: Array<{ request: Record<string, unknown>; timeoutMs?: number }> = [];
   let cheerpjInitOptions: { natives?: Record<string, (...args: unknown[]) => unknown> } | undefined;
   let nextId = 0;
 
@@ -1989,6 +2029,21 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
       if (message.protocolToken !== entry.protocolToken) return;
       if (message.type === 'project-event') {
         entry.events.push(message.payload);
+        return;
+      }
+      if (message.type === 'kernel-http-dispatch-sync') {
+        const payload = message.payload as {
+          request?: Record<string, unknown>;
+          buffer?: SharedArrayBuffer;
+          timeoutMs?: number;
+        } | undefined;
+        httpDispatches.push({
+          request: payload?.request ?? {},
+          ...(payload?.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
+        });
+        if (isJavaHttpTestSharedArrayBuffer(payload?.buffer)) {
+          writeJavaHttpTestManifest(payload.buffer, javaHttpOkTestManifest(209, 'java-http-ok\n'));
+        }
         return;
       }
       pending.delete(id);
@@ -2278,6 +2333,31 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               const hasCustomKernelDevices = hasKernelDevices &&
                 decodedSourceManifest.includes('/dev/log') &&
                 decodedSourceManifest.includes('/dev/custom-in');
+              if (decodedSourceManifest.includes('TRACEKERNEL_HTTP_TIMEOUT_BRIDGE_PROBE')) {
+                const dispatcher = cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_dispatchHttpNative;
+                const manifest = dispatcher?.(null, JSON.stringify({
+                  method: 'GET',
+                  url: 'http://localhost:8771/java-timeout',
+                  path: '/java-timeout',
+                  headers: {},
+                  _tracekernelTimeoutMs: 4567,
+                }));
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(JSON.stringify({
+                    stdout: String(manifest).startsWith('OK\n209\n') ? 'java-http-ok\n' : 'java-http-missing\n',
+                    stderr: '',
+                    exitCode: 0,
+                  })),
+                  compilerStdout: '',
+                  compilerStderr: '',
+                  compileTimeMs: 1,
+                  classLoadTimeMs: 1,
+                  runTimeMs: 1,
+                  compileCacheHit: true,
+                  compilerDebugProfile: compilerProfile,
+                });
+              }
               if (decodedSourceManifest.includes('boom-java-stack')) {
                 const rawStderr = [
                   'Exception in thread "main" java.lang.RuntimeException: boom-java-stack',
@@ -3186,7 +3266,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
     onmessage?.({ data: { type: 'terminate' } });
   }
 
-  return { projectClassCompileCalls, projectCompileCalls, rewriteCalls, runLibraryClasspaths, sendMessage, stringFiles, terminate };
+  return { httpDispatches, projectClassCompileCalls, projectCompileCalls, rewriteCalls, runLibraryClasspaths, sendMessage, stringFiles, terminate };
 }
 
 async function main(): Promise<void> {
@@ -4310,6 +4390,43 @@ async function main(): Promise<void> {
       'Java execute-project-java should pass full project workspace files to the browser helper'
     );
     console.log('PASS: java worker executes project requests through a multifile compile path');
+
+    harness.httpDispatches.length = 0;
+    const javaHttpTimeoutExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'Main',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        files: [
+          {
+            path: 'Main.java',
+            contents: [
+              'class Main {',
+              '  static final String PROBE = "TRACEKERNEL_HTTP_TIMEOUT_BRIDGE_PROBE";',
+              '  public static void main(String[] args) {}',
+              '}',
+              '',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+    assertCondition(javaHttpTimeoutExecute.exitCode === 0, 'Java execute-project-java HTTP timeout bridge probe should succeed');
+    assertCondition(
+      javaHttpTimeoutExecute.stdout === 'java-http-ok\n',
+      `Java execute-project-java should receive HTTP bridge responses: ${JSON.stringify(javaHttpTimeoutExecute)}`
+    );
+    const javaHttpDispatch = harness.httpDispatches.at(-1);
+    assertCondition(
+      harness.httpDispatches.length === 1 &&
+        javaHttpDispatch?.timeoutMs === 4567 &&
+        javaHttpDispatch.request.path === '/java-timeout',
+      `Java execute-project-java should forward HTTP timeoutMs through the sync bridge: ${JSON.stringify(harness.httpDispatches)}`
+    );
+    console.log('PASS: java worker forwards HTTP timeoutMs through the sync bridge');
 
     const runtimeFailureProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number; events?: Array<{ type: string; stream?: string; data?: string }> }>('execute-project-java', {
       code: '',

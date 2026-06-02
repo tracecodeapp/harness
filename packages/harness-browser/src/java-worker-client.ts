@@ -463,6 +463,7 @@ export class JavaWorkerClient {
     const { request, buffer } = (payload ?? {}) as {
       request?: RuntimeKernelHttpRequest;
       buffer?: SharedArrayBuffer;
+      timeoutMs?: number;
     };
     if (typeof SharedArrayBuffer === 'undefined' || !(buffer instanceof SharedArrayBuffer)) return;
     if (!pending.kernelHttp) {
@@ -473,7 +474,10 @@ export class JavaWorkerClient {
       writeJavaHttpSyncManifest(buffer, javaHttpErrorManifest('Invalid Java TraceKernel HTTP request'));
       return;
     }
-    pending.kernelHttp.dispatch(request)
+    const timeoutMs = Number((payload as { timeoutMs?: unknown } | undefined)?.timeoutMs);
+    pending.kernelHttp.dispatch(request, {
+      ...(Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
+    })
       .then((response) => {
         writeJavaHttpSyncManifest(buffer, javaHttpResponseManifest(response));
       })

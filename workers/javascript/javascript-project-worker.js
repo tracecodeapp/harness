@@ -4879,6 +4879,7 @@ function createHttpApi(kernelHttp, signal) {
         let active = true;
         let timeoutHandle;
         let requestAbortListener;
+        const dispatchAbortController = new AbortController();
         const finishClientRequest = () => {
           if (!active) return;
           active = false;
@@ -4896,6 +4897,7 @@ function createHttpApi(kernelHttp, signal) {
           if (destroyed) return;
           destroyed = true;
           clientRequest.destroyed = true;
+          if (!dispatchAbortController.signal.aborted) dispatchAbortController.abort();
           if (error) events.emit("error", error);
           events.emit("close");
           finishClientRequest();
@@ -4919,6 +4921,8 @@ function createHttpApi(kernelHttp, signal) {
           headers,
           ...rawHeaders.length > 0 ? { rawHeaders } : {},
           ...chunks.length > 0 ? body : {}
+        }, {
+          signal: dispatchAbortController.signal
         }).then((response) => {
           if (destroyed) return;
           if (response.status === 0) {
@@ -5091,6 +5095,7 @@ function createHttpApi(kernelHttp, signal) {
     let active = true;
     let abortListener;
     let rejectFetch;
+    const dispatchAbortController = new AbortController();
     const finishFetch = () => {
       if (!active) return;
       active = false;
@@ -5102,6 +5107,7 @@ function createHttpApi(kernelHttp, signal) {
       }, 0);
     };
     const abortFetch = () => {
+      if (!dispatchAbortController.signal.aborted) dispatchAbortController.abort();
       rejectFetch?.(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
       finishFetch();
     };
@@ -5124,6 +5130,8 @@ function createHttpApi(kernelHttp, signal) {
         headers,
         ...rawHeaders.length > 0 ? { rawHeaders } : {},
         ...body !== void 0 ? body : {}
+      }, {
+        signal: dispatchAbortController.signal
       }).then((response) => {
         if (!active) return;
         if (response.status === 0) {
@@ -5157,6 +5165,69 @@ function createHttpApi(kernelHttp, signal) {
     hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0,
     waitForClose: () => activeHandles.size === 0 && activeClientRequests === 0 ? Promise.resolve() : new Promise((resolve) => closeWaiters.push(resolve)),
     closeAll
+  };
+}
+function installBrowserHttpGlobalLockdown(httpApi) {
+  const global = globalThis;
+  const blockedNetworkApi = (name) => function blockedTraceKernelNetworkApi() {
+    throw Object.assign(new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`), { code: "EACCES" });
+  };
+  const replacements = {
+    fetch: httpApi.fetch,
+    Headers: httpApi.Headers,
+    Request: httpApi.Request,
+    Response: httpApi.Response,
+    XMLHttpRequest: blockedNetworkApi("XMLHttpRequest"),
+    WebSocket: blockedNetworkApi("WebSocket"),
+    EventSource: blockedNetworkApi("EventSource")
+  };
+  const previousDescriptors = /* @__PURE__ */ new Map();
+  for (const [name, value] of Object.entries(replacements)) {
+    previousDescriptors.set(name, Object.getOwnPropertyDescriptor(global, name));
+    try {
+      Object.defineProperty(global, name, {
+        configurable: true,
+        enumerable: false,
+        writable: false,
+        value
+      });
+    } catch {
+    }
+  }
+  const navigatorValue = global.navigator;
+  const sendBeaconDescriptor = navigatorValue && typeof navigatorValue === "object" ? Object.getOwnPropertyDescriptor(navigatorValue, "sendBeacon") : void 0;
+  if (navigatorValue && typeof navigatorValue === "object") {
+    try {
+      Object.defineProperty(navigatorValue, "sendBeacon", {
+        configurable: true,
+        enumerable: false,
+        writable: false,
+        value: blockedNetworkApi("navigator.sendBeacon")
+      });
+    } catch {
+    }
+  }
+  return () => {
+    for (const [name, descriptor] of previousDescriptors) {
+      try {
+        if (descriptor) {
+          Object.defineProperty(global, name, descriptor);
+        } else {
+          delete global[name];
+        }
+      } catch {
+      }
+    }
+    if (navigatorValue && typeof navigatorValue === "object") {
+      try {
+        if (sendBeaconDescriptor) {
+          Object.defineProperty(navigatorValue, "sendBeacon", sendBeaconDescriptor);
+        } else {
+          delete navigatorValue.sendBeacon;
+        }
+      } catch {
+      }
+    }
   };
 }
 function dirname(path) {
@@ -8436,6 +8507,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   Object.assign(fsApi, { promises: fsPromisesApi });
   const zlibApi = createZlibApi();
   const httpApi = createHttpApi(request.kernelHttp, request.signal);
+  const restoreHttpGlobals = installBrowserHttpGlobalLockdown(httpApi);
   const builtins = /* @__PURE__ */ new Map([
     ["fs", fsApi],
     ["node:fs", fsApi],
@@ -8780,6 +8852,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       stderr: stderr.join(""),
       exitCode
     };
+  } finally {
+    restoreHttpGlobals();
   }
 }
 
@@ -8832,25 +8906,42 @@ var WorkerKernelHttpBridge = class {
       }
     };
   }
-  dispatch(request) {
+  dispatch(request, options = {}) {
     const requestId = `worker-dispatch-${this.nextRequestId++}`;
     return new Promise((resolve, reject) => {
-      this.dispatchRequests.set(requestId, { resolve, reject });
+      let abortListener;
+      const cleanup = () => {
+        if (abortListener) options.signal?.removeEventListener?.("abort", abortListener);
+      };
+      this.dispatchRequests.set(requestId, { resolve, reject, cleanup });
+      if (options.signal) {
+        abortListener = () => {
+          this.postProtocolMessage({
+            type: "kernel-http-abort-dispatch",
+            requestId
+          });
+        };
+        options.signal.addEventListener?.("abort", abortListener, { once: true });
+        if (options.signal.aborted) abortListener();
+      }
       this.postProtocolMessage({
         type: "kernel-http-dispatch",
         requestId,
-        request
+        request,
+        ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {}
       });
     });
   }
   resolveDispatch(requestId, response) {
     const request = this.dispatchRequests.get(requestId);
     this.dispatchRequests.delete(requestId);
+    request?.cleanup();
     request?.resolve(response);
   }
   rejectDispatch(requestId, error) {
     const request = this.dispatchRequests.get(requestId);
     this.dispatchRequests.delete(requestId);
+    request?.cleanup();
     request?.reject(new Error(error));
   }
   updateListenerInfo(listenerId, info) {

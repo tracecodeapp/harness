@@ -19,6 +19,8 @@ import {
   runtimeHttpRequestText,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
+  runtimeWorkspaceActorPreset,
+  runtimeWorkspaceHttpCapabilitiesPreset,
   runtimeCommandStdinPipeClosed,
   RuntimeProjectLiveIoController,
   runtimeFileChangePath,
@@ -96,6 +98,7 @@ import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpBodyInit,
   RuntimeKernelHttpBodyPayload,
+  RuntimeKernelHttpDispatchOptions,
   RuntimeKernelHttpHandler,
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpListenerHandle,
@@ -563,11 +566,16 @@ const TRACEKERNEL_SHELL_COMMAND_REWRITES = new Map([
   ['ps', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}ps`],
   ['wait', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`],
 ]);
-const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = { id: 'principal', kind: 'principal' };
-const SYSTEM_ACTOR: RuntimeWorkspaceActor = { id: 'system', kind: 'system' };
+const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
+const SYSTEM_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('system');
 const TRACEKERNEL_EVENT_LOG_LIMIT = 256;
 const TRACEKERNEL_HTTP_LISTENER_LIMIT = 128;
 const TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT = 256;
+const TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS = 256;
+const TRACEKERNEL_HTTP_MAX_BODY_BYTES = 4 * 1024 * 1024;
+const TRACEKERNEL_HTTP_MAX_HEADER_COUNT = 128;
+const TRACEKERNEL_HTTP_MAX_HEADER_BYTES = 64 * 1024;
+const TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH = 4096;
 const TRACEKERNEL_ZOMBIE_RETENTION_MS = 30_000;
 const TRACEKERNEL_SIGNAL_NUMBERS = new Map<string, number>([
   ['SIGHUP', 1],
@@ -775,6 +783,7 @@ interface RuntimeKernelHttpListenerRecord {
 interface RuntimeKernelHttpListenerOwner {
   pid: number;
   idPrefix: string;
+  actor?: RuntimeWorkspaceActor;
 }
 
 interface RuntimeKernelHttpRequestRecord {
@@ -6283,6 +6292,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private nextHttpListenerSeq = 1;
   private nextHttpRequestSeq = 1;
   private nextEphemeralHttpPort = 49152;
+  private activeHttpRequests = 0;
   private destroyed = false;
   private terminalVerbose = false;
 
@@ -6480,10 +6490,31 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return this.currentCommandContext()?.runtimeIo;
   }
 
+  private hasHttpCapability(actor: RuntimeWorkspaceActor, capability: keyof NonNullable<RuntimeWorkspaceCapabilities['http']>): boolean {
+    return actor.capabilities?.http?.[capability] === true;
+  }
+
+  private assertHttpCapability(
+    actor: RuntimeWorkspaceActor,
+    capability: keyof NonNullable<RuntimeWorkspaceCapabilities['http']>
+  ): void {
+    if (this.hasHttpCapability(actor, capability)) return;
+    throw Object.assign(
+      new Error(`EACCES: TraceKernel HTTP ${capability} is not allowed for actor ${actor.kind}:${actor.id}`),
+      { code: 'EACCES' }
+    );
+  }
+
   private createKernelHttpBridge(): RuntimeKernelHttpBridge {
+    const actor = this.currentCommandActor() ?? SYSTEM_ACTOR;
     return {
-      listen: (options, handler) => this.registerHttpListener(options, handler),
-      dispatch: (request) => this.dispatchHttpRequest(request),
+      listen: (options, handler) => {
+        const context = this.currentCommandContext();
+        return this.registerHttpListener(options, handler, context
+          ? { pid: context.process.pid, idPrefix: 'http', actor }
+          : { pid: 0, idPrefix: 'http-system', actor });
+      },
+      dispatch: (request, options) => this.dispatchHttpRequest(request, { ...options, actor }),
     };
   }
 
@@ -6495,6 +6526,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return this.registerHttpListener(options, handler, {
       pid: 0,
       idPrefix: 'http-system',
+      actor: PRINCIPAL_ACTOR,
     });
   }
 
@@ -6517,6 +6549,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }, {
       ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
+      actor: PRINCIPAL_ACTOR,
     });
   }
 
@@ -6542,18 +6575,147 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
+  private sanitizeHttpDiagnosticField(value: unknown): string {
+    const text = String(value ?? '');
+    const escaped = text
+      .replace(/\\/g, '\\\\')
+      .replace(/\t/g, '\\t')
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n');
+    return escaped.length > TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH
+      ? `${escaped.slice(0, TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH)}...`
+      : escaped;
+  }
+
+  private normalizeHttpHost(host: string, kind: 'connect' | 'listen'): string {
+    if (host.length > 253 || /[\u0000-\u0020\u007f]/.test(host)) {
+      throw Object.assign(new Error(`EADDRNOTAVAIL: invalid ${kind} host '${this.sanitizeHttpDiagnosticField(host)}'`), {
+        code: 'EADDRNOTAVAIL',
+      });
+    }
+    return host;
+  }
+
+  private normalizeHttpMethod(method: unknown): string {
+    const normalized = String(method ?? 'GET').toUpperCase();
+    if (!/^[A-Z0-9!#$%&'*+\-.^_`|~]{1,64}$/.test(normalized)) {
+      throw Object.assign(new Error(`EINVAL: invalid HTTP method '${this.sanitizeHttpDiagnosticField(normalized)}'`), {
+        code: 'EINVAL',
+      });
+    }
+    return normalized;
+  }
+
+  private normalizeHttpHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+    if (!headers) return undefined;
+    const entries = Object.entries(headers);
+    if (entries.length > TRACEKERNEL_HTTP_MAX_HEADER_COUNT) {
+      throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP header count limit exceeded'), { code: 'EMSGSIZE' });
+    }
+    let headerBytes = 0;
+    const normalized: Record<string, string> = {};
+    for (const [name, value] of entries) {
+      const key = String(name).toLowerCase();
+      const text = String(value);
+      if (!/^[a-z0-9!#$%&'*+\-.^_`|~]{1,128}$/.test(key) || /[\r\n\u0000]/.test(text)) {
+        throw Object.assign(new Error(`EINVAL: invalid HTTP header '${this.sanitizeHttpDiagnosticField(name)}'`), {
+          code: 'EINVAL',
+        });
+      }
+      headerBytes += key.length + text.length;
+      if (headerBytes > TRACEKERNEL_HTTP_MAX_HEADER_BYTES) {
+        throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP header byte limit exceeded'), { code: 'EMSGSIZE' });
+      }
+      normalized[key] = text;
+    }
+    return normalized;
+  }
+
+  private normalizeHttpRawHeaders(
+    rawHeaders: readonly [string, string][] | undefined
+  ): readonly [string, string][] | undefined {
+    if (!rawHeaders) return undefined;
+    if (rawHeaders.length > TRACEKERNEL_HTTP_MAX_HEADER_COUNT) {
+      throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP raw header count limit exceeded'), { code: 'EMSGSIZE' });
+    }
+    let headerBytes = 0;
+    const normalized: [string, string][] = [];
+    for (const [name, value] of rawHeaders) {
+      const key = String(name);
+      const text = String(value);
+      if (!/^[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,128}$/.test(key) || /[\r\n\u0000]/.test(text)) {
+        throw Object.assign(new Error(`EINVAL: invalid HTTP raw header '${this.sanitizeHttpDiagnosticField(name)}'`), {
+          code: 'EINVAL',
+        });
+      }
+      headerBytes += key.length + text.length;
+      if (headerBytes > TRACEKERNEL_HTTP_MAX_HEADER_BYTES) {
+        throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP raw header byte limit exceeded'), { code: 'EMSGSIZE' });
+      }
+      normalized.push([key, text]);
+    }
+    return normalized;
+  }
+
+  private assertHttpBodyLimit(message: RuntimeKernelHttpBodyPayload, direction: 'request' | 'response'): void {
+    let bytes: Uint8Array;
+    try {
+      bytes = runtimeHttpBodyBytes(message);
+    } catch {
+      throw Object.assign(new Error(`EINVAL: invalid TraceKernel HTTP ${direction} body encoding`), { code: 'EINVAL' });
+    }
+    if (bytes.byteLength > TRACEKERNEL_HTTP_MAX_BODY_BYTES) {
+      throw Object.assign(new Error(`EMSGSIZE: TraceKernel HTTP ${direction} body limit exceeded`), { code: 'EMSGSIZE' });
+    }
+  }
+
+  private normalizeHttpRequest(request: RuntimeKernelHttpRequest): RuntimeKernelHttpRequest {
+    const normalized: RuntimeKernelHttpRequest = {
+      method: this.normalizeHttpMethod(request.method),
+      url: request.url,
+      path: request.path,
+    };
+    const headers = this.normalizeHttpHeaders(request.headers);
+    const rawHeaders = this.normalizeHttpRawHeaders(request.rawHeaders);
+    if (headers) normalized.headers = headers;
+    if (rawHeaders) normalized.rawHeaders = rawHeaders;
+    if (request.body !== undefined) normalized.body = String(request.body);
+    if (request.bodyEncoding) normalized.bodyEncoding = request.bodyEncoding;
+    if (request.signal) normalized.signal = request.signal;
+    this.assertHttpBodyLimit(normalized, 'request');
+    return normalized;
+  }
+
+  private normalizeHttpResponse(response: RuntimeKernelHttpResponse): RuntimeKernelHttpResponse {
+    const status = Math.trunc(Number(response.status));
+    if (!Number.isFinite(status) || status < 100 || status > 599) {
+      throw Object.assign(new Error(`EINVAL: invalid TraceKernel HTTP response status '${response.status}'`), {
+        code: 'EINVAL',
+      });
+    }
+    const normalized: RuntimeKernelHttpResponse = { status };
+    const headers = this.normalizeHttpHeaders(response.headers);
+    const rawHeaders = this.normalizeHttpRawHeaders(response.rawHeaders);
+    if (headers) normalized.headers = headers;
+    if (rawHeaders) normalized.rawHeaders = rawHeaders;
+    if (response.body !== undefined) normalized.body = String(response.body);
+    if (response.bodyEncoding) normalized.bodyEncoding = response.bodyEncoding;
+    this.assertHttpBodyLimit(normalized, 'response');
+    return normalized;
+  }
+
   private normalizeHttpConnectHost(host: string | undefined): string {
     const normalized = (host ?? '127.0.0.1').trim().toLowerCase();
     if (!normalized || normalized === '0.0.0.0' || normalized === '::' || normalized === '*') return '127.0.0.1';
     if (normalized === 'localhost') return '127.0.0.1';
-    return normalized;
+    return this.normalizeHttpHost(normalized, 'connect');
   }
 
   private normalizeHttpListenHost(host: string | undefined): string {
     const normalized = (host ?? '0.0.0.0').trim().toLowerCase();
     if (!normalized || normalized === '::' || normalized === '*') return '0.0.0.0';
     if (normalized === 'localhost') return '127.0.0.1';
-    return normalized;
+    return this.normalizeHttpHost(normalized, 'listen');
   }
 
   private isHttpWildcardHost(host: string): boolean {
@@ -6614,13 +6776,20 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     owner?: RuntimeKernelHttpListenerOwner
   ): RuntimeKernelHttpListenerHandle {
     const context = this.currentCommandContext();
+    const actor = owner?.actor ?? context?.actor ?? SYSTEM_ACTOR;
+    this.assertHttpCapability(actor, 'listen');
     const listenerOwner = owner ?? (context
-      ? { pid: context.process.pid, idPrefix: 'http' }
+      ? { pid: context.process.pid, idPrefix: 'http', actor }
       : undefined);
     if (!listenerOwner) {
       throw Object.assign(new Error('EINVAL: listen requires an active tracekernel process'), { code: 'EINVAL' });
     }
     const protocol = options.protocol ?? 'http';
+    if (protocol !== 'http') {
+      throw Object.assign(new Error(`EPROTONOSUPPORT: unsupported TraceKernel HTTP protocol '${protocol}'`), {
+        code: 'EPROTONOSUPPORT',
+      });
+    }
     const host = this.normalizeHttpListenHost(options.host);
     const port = this.normalizeHttpListenPort(options.port);
     const key = this.httpListenerKey(host, port, protocol);
@@ -6691,26 +6860,57 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private async dispatchHttpRequest(
     request: RuntimeKernelHttpRequest,
-    options: {
-      timeoutMs?: number;
+    options: RuntimeKernelHttpDispatchOptions & {
       timeoutBody?: string;
-      signal?: AbortSignal;
+      actor?: RuntimeWorkspaceActor;
     } = {}
   ): Promise<RuntimeKernelHttpResponse> {
+    const actor = options.actor ?? this.currentCommandActor() ?? SYSTEM_ACTOR;
+    try {
+      this.assertHttpCapability(actor, 'dispatch');
+    } catch (error) {
+      return { status: 403, body: `${error instanceof Error ? error.message : String(error)}\n` };
+    }
+    let normalizedRequest: RuntimeKernelHttpRequest;
+    try {
+      normalizedRequest = this.normalizeHttpRequest(request);
+    } catch (error) {
+      return { status: 400, body: `${error instanceof Error ? error.message : String(error)}\n` };
+    }
     let url: URL;
     try {
-      url = new URL(request.url);
+      url = new URL(normalizedRequest.url);
     } catch {
       return { status: 400, body: 'curl: invalid URL\n' };
     }
-    const listener = this.findHttpListener(url);
+    let listener: RuntimeKernelHttpListenerRecord | undefined;
+    try {
+      listener = this.findHttpListener(url);
+    } catch (error) {
+      this.recordHttpRequest({
+        method: normalizedRequest.method,
+        url: normalizedRequest.url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { status: 400, body: `${error instanceof Error ? error.message : String(error)}\n` };
+    }
     if (!listener) {
       this.recordHttpRequest({
-        method: request.method,
-        url: request.url,
+        method: normalizedRequest.method,
+        url: normalizedRequest.url,
         error: 'ECONNREFUSED',
       });
       return { status: 0, body: `curl: (7) Failed to connect to ${url.hostname} port ${url.port || '80'}: Connection refused\n` };
+    }
+    if (this.activeHttpRequests >= TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS) {
+      this.recordHttpRequest({
+        listenerId: listener.info.id,
+        pid: listener.info.pid,
+        method: normalizedRequest.method,
+        url: normalizedRequest.url,
+        error: 'EAGAIN',
+      });
+      return { status: 503, body: 'TraceKernel HTTP request limit reached\n' };
     }
     const timeoutMs = options.timeoutMs === undefined ? undefined : Math.max(1, Math.ceil(Number(options.timeoutMs)));
     if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) {
@@ -6721,8 +6921,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       this.recordHttpRequest({
         listenerId: listener.info.id,
         pid: listener.info.pid,
-        method: request.method,
-        url: request.url,
+        method: normalizedRequest.method,
+        url: normalizedRequest.url,
         error: 'EINTR',
       });
       return { status: 0, body: 'TraceKernel HTTP request aborted\n' };
@@ -6741,32 +6941,33 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         this.recordHttpRequest({
           listenerId: listener.info.id,
           pid: listener.info.pid,
-          method: request.method,
-          url: request.url,
+          method: normalizedRequest.method,
+          url: normalizedRequest.url,
           error,
         });
       }
       return { status: 0, body };
     };
+    this.activeHttpRequests += 1;
     const handlerResponse = (async (): Promise<RuntimeKernelHttpResponse> => {
       try {
-        const response = await listener.handler({
-          ...request,
+        const response = this.normalizeHttpResponse(await listener.handler({
+          ...normalizedRequest,
           signal: requestAbortController.signal,
-        });
-        const status = Math.trunc(Number(response.status)) || 200;
+        }));
+        const status = response.status;
         if (!settled) {
           this.recordHttpRequest({
             listenerId: listener.info.id,
             pid: listener.info.pid,
-            method: request.method,
-            url: request.url,
+            method: normalizedRequest.method,
+            url: normalizedRequest.url,
             status,
           });
           this.recordKernelEvent('net-request', listener.info.pid, {
             id: listener.info.id,
-            method: request.method,
-            url: redactRuntimeDiagnosticUrl(request.url),
+            method: normalizedRequest.method,
+            url: redactRuntimeDiagnosticUrl(normalizedRequest.url),
             status,
           });
         }
@@ -6783,12 +6984,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           this.recordHttpRequest({
             listenerId: listener.info.id,
             pid: listener.info.pid,
-            method: request.method,
-            url: request.url,
+            method: normalizedRequest.method,
+            url: normalizedRequest.url,
             error: message,
           });
         }
         return { status: 500, body: `${message}\n` };
+      } finally {
+        this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
       }
     })();
 
@@ -7418,12 +7621,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       .map((listener) => listener.info)
       .sort((left, right) => left.port - right.port || left.host.localeCompare(right.host))
       .map((listener) => [
-        listener.id,
+        this.sanitizeHttpDiagnosticField(listener.id),
         listener.pid,
-        listener.protocol,
-        listener.host,
+        this.sanitizeHttpDiagnosticField(listener.protocol),
+        this.sanitizeHttpDiagnosticField(listener.host),
         listener.port,
-        listener.startedAt,
+        this.sanitizeHttpDiagnosticField(listener.startedAt),
       ].join('\t'));
     return ['id\tpid\tproto\thost\tport\tstarted', ...rows].join('\n') + '\n';
   }
@@ -7431,13 +7634,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private renderProcHttpRequests(): string {
     const rows = this.httpRequestLog.map((request) => [
       request.seq,
-      request.time,
-      request.listenerId ?? '',
+      this.sanitizeHttpDiagnosticField(request.time),
+      this.sanitizeHttpDiagnosticField(request.listenerId ?? ''),
       request.pid ?? '',
-      request.method,
-      request.url,
+      this.sanitizeHttpDiagnosticField(request.method),
+      this.sanitizeHttpDiagnosticField(request.url),
       request.status ?? '',
-      request.error ?? '',
+      this.sanitizeHttpDiagnosticField(request.error ?? ''),
     ].join('\t'));
     return ['seq\ttime\tlistener\tpid\tmethod\turl\tstatus\terror', ...rows].join('\n') + '\n';
   }
@@ -9349,6 +9552,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         write: [`${this.cwd}/**`],
         delete: [`${this.cwd}/**`],
         execute: true,
+        http: runtimeWorkspaceHttpCapabilitiesPreset('workspace'),
       },
     };
   }

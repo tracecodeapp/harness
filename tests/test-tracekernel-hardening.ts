@@ -98,6 +98,39 @@ async function withProtocolTestWorker(run: (workerUrl: string) => Promise<void>)
   }
 }
 
+async function testBrowserJavaScriptHardenedModeRequiresWorker(): Promise<void> {
+  const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+  delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+  try {
+    const runner = createBrowserJavaScriptProjectRunner({ hardened: true, timeoutMs: 1000 });
+    const result = await runner({
+      code: 'console.log("should-not-run");',
+      source: 'inline',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        cwd: '/workspace',
+        workspaceRoot: '/workspace',
+        files: [],
+      },
+    });
+
+    assertCondition(result.exitCode === 1, `hardened browser JS without Worker should fail closed: ${JSON.stringify(result)}`);
+    assertCondition(result.stdout === '', `hardened browser JS should not execute same-realm code: ${JSON.stringify(result)}`);
+    assertCondition(
+      result.stderr.includes('requires a Worker-backed runner'),
+      `hardened browser JS should explain the missing Worker-backed runner: ${JSON.stringify(result)}`
+    );
+  } finally {
+    if (previousWorker === undefined) {
+      delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+    } else {
+      (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
+    }
+  }
+}
+
 async function testBrowserJavaScriptWorkerRejectsUserSpoofedResults(): Promise<void> {
   await withProtocolTestWorker(async (workerUrl) => {
     const runner = createBrowserJavaScriptProjectRunner({ workerUrl, timeoutMs: 1000 });
@@ -367,7 +400,178 @@ async function testTraceKernelHttpListenerLimit(): Promise<void> {
   }
 }
 
+async function testTraceKernelHttpRejectsMalformedInputs(): Promise<void> {
+  const workspace = await createRuntimeWorkspace();
+  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3652 }, () => ({ status: 200, body: 'ok\n' }));
+  try {
+    const invalidPort = await workspace.http.request({ url: 'http://localhost:0/' });
+    assertCondition(invalidPort.status === 400, `invalid connect port should be a clean HTTP rejection: ${JSON.stringify(invalidPort)}`);
+
+    let rejectedHost = false;
+    try {
+      workspace.http.listen({ host: 'bad\thost\nrow', port: 0 }, () => ({ status: 200, body: 'bad\n' }));
+    } catch (error) {
+      rejectedHost = (error as { code?: unknown }).code === 'EADDRNOTAVAIL';
+    }
+    assertCondition(rejectedHost, 'TraceKernel HTTP should reject listener hosts with control characters');
+
+    const invalidMethod = await workspace.http.request({
+      method: 'GET\tX\nROW',
+      url: 'http://localhost:3652/path',
+    });
+    assertCondition(invalidMethod.status === 400, `invalid HTTP method should be rejected: ${JSON.stringify(invalidMethod)}`);
+    const requests = await workspace.readFile('/proc/tracekernel/net/requests');
+    assertCondition(!requests.includes('GET\tX\nROW'), `request diagnostics should not contain injected control rows: ${requests}`);
+  } finally {
+    listener.close();
+    workspace.dispose();
+  }
+}
+
+async function testTraceKernelHttpRejectsInvalidResponseStatus(): Promise<void> {
+  const workspace = await createRuntimeWorkspace();
+  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3653 }, () => ({ status: -1, body: 'bad\n' }));
+  try {
+    const response = await workspace.http.request({ url: 'http://localhost:3653/status' });
+    assertCondition(response.status === 500, `invalid listener status should become a handler failure: ${JSON.stringify(response)}`);
+    assertCondition(
+      String(response.body ?? '').includes('invalid TraceKernel HTTP response status'),
+      `invalid listener status should explain the rejection: ${JSON.stringify(response)}`
+    );
+  } finally {
+    listener.close();
+    workspace.dispose();
+  }
+}
+
+async function testBrowserJavaScriptHttpAbortPropagatesToKernel(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    nodeRunner: createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 }),
+    files: [
+      {
+        path: 'fetch-abort.js',
+        contents: [
+          '(async () => {',
+          '  const controller = new AbortController();',
+          '  const promise = fetch("http://localhost:3654/slow", { signal: controller.signal });',
+          '  controller.abort();',
+          '  try { await promise; console.log("resolved"); }',
+          '  catch (error) { console.log(error.name + ":" + (error.code || "")); }',
+          '})().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
+    ],
+  });
+  let signalSeen = false;
+  let signalAborted = false;
+  let sideEffectsAfterAbort = 0;
+  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3654 }, async (request) => {
+    signalSeen = Boolean(request.signal);
+    request.signal?.addEventListener('abort', () => {
+      signalAborted = true;
+    }, { once: true });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    if (request.signal?.aborted) signalAborted = true;
+    if (!request.signal?.aborted) sideEffectsAfterAbort += 1;
+    return { status: 200, body: 'late\n' };
+  });
+  try {
+    const result = await workspace.runCommand('node fetch-abort.js');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assertCondition(result.exitCode === 0, `fetch abort client should finish: ${JSON.stringify(result)}`);
+    assertCondition(result.stdout === 'AbortError:ABORT_ERR\n', `fetch abort should reject locally: ${result.stdout}`);
+    assertCondition(signalSeen, 'TraceKernel HTTP handler should receive a signal for JS fetch');
+    assertCondition(signalAborted, 'JS fetch abort should abort the TraceKernel handler signal');
+    assertCondition(sideEffectsAfterAbort === 0, 'JS fetch abort should let cooperative handlers suppress late side effects');
+  } finally {
+    listener.close();
+    workspace.dispose();
+  }
+}
+
+async function testBrowserJavaScriptHttpTimeoutPropagatesToKernel(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    nodeRunner: createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 }),
+    files: [
+      {
+        path: 'http-timeout.js',
+        contents: [
+          'const http = require("node:http");',
+          'const req = http.request({ hostname: "localhost", port: 3655, path: "/slow" }, (res) => console.log("resolved:" + res.statusCode));',
+          'req.setTimeout(1, () => console.log("timeout"));',
+          'req.on("error", (error) => console.log(error.code || error.name));',
+          'req.end();',
+          '',
+        ].join('\n'),
+      },
+    ],
+  });
+  let signalAborted = false;
+  let sideEffectsAfterTimeout = 0;
+  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3655 }, async (request) => {
+    request.signal?.addEventListener('abort', () => {
+      signalAborted = true;
+    }, { once: true });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    if (request.signal?.aborted) signalAborted = true;
+    if (!request.signal?.aborted) sideEffectsAfterTimeout += 1;
+    return { status: 200, body: 'late\n' };
+  });
+  try {
+    const result = await workspace.runCommand('node http-timeout.js');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assertCondition(result.exitCode === 0, `node:http timeout client should finish: ${JSON.stringify(result)}`);
+    assertCondition(result.stdout === 'timeout\nETIMEDOUT\n', `node:http timeout should still look local to the client: ${result.stdout}`);
+    assertCondition(signalAborted, 'node:http timeout should abort the TraceKernel handler signal');
+    assertCondition(sideEffectsAfterTimeout === 0, 'node:http timeout should let cooperative handlers suppress late side effects');
+  } finally {
+    listener.close();
+    workspace.dispose();
+  }
+}
+
+async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    nodeRunner: createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 }),
+    files: [
+      {
+        path: 'global-fetch.js',
+        contents: [
+          '(async () => {',
+          '  try { globalThis.fetch = async () => ({ status: 299, text: async () => "ambient" }); console.log("assign:ok"); }',
+          '  catch (error) { console.log("assign:" + error.name); }',
+          '  const globalResponse = await globalThis.fetch("http://localhost:3656/global");',
+          '  console.log("global:" + globalResponse.status + ":" + await globalResponse.text());',
+          '  const injectedResponse = await fetch("http://localhost:3656/injected");',
+          '  console.log("injected:" + injectedResponse.status + ":" + await injectedResponse.text());',
+          '})().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
+    ],
+  });
+  let hits = 0;
+  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3656 }, (request) => {
+    hits += 1;
+    return { status: 207, body: `${request.path}\n` };
+  });
+  try {
+    const result = await workspace.runCommand('node global-fetch.js');
+    assertCondition(result.exitCode === 0, `global fetch lockdown test should finish: ${JSON.stringify(result)}`);
+    assertCondition(
+      result.stdout === 'assign:ok\nglobal:207:/global\n\ninjected:207:/injected\n\n',
+      `globalThis.fetch should remain routed through TraceKernel: ${result.stdout}`
+    );
+    assertCondition(hits === 2, `TraceKernel listener should receive both global and injected fetches: ${hits}`);
+  } finally {
+    listener.close();
+    workspace.dispose();
+  }
+}
+
 async function main(): Promise<void> {
+  await testBrowserJavaScriptHardenedModeRequiresWorker();
   await testBrowserJavaScriptWorkerRejectsUserSpoofedResults();
   await testBrowserJavaScriptReadonlyHardlinksAreRejected();
   await testBrowserJavaScriptHiddenFilesAreNotMounted();
@@ -375,6 +579,11 @@ async function main(): Promise<void> {
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
   await testTraceKernelHttpDiagnosticsAreRedacted();
   await testTraceKernelHttpListenerLimit();
+  await testTraceKernelHttpRejectsMalformedInputs();
+  await testTraceKernelHttpRejectsInvalidResponseStatus();
+  await testBrowserJavaScriptHttpAbortPropagatesToKernel();
+  await testBrowserJavaScriptHttpTimeoutPropagatesToKernel();
+  await testBrowserJavaScriptGlobalFetchUsesTraceKernel();
   console.log('tracekernel hardening tests passed');
 }
 

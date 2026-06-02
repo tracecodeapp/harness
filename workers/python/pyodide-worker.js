@@ -1330,8 +1330,11 @@ class TraceKernelHttpBridge {
     };
   }
 
-  dispatch(requestJson) {
+  dispatch(requestJson, optionsJson) {
     const request = typeof requestJson === 'string' ? JSON.parse(requestJson) : requestJson || {};
+    const options = typeof optionsJson === 'string' && optionsJson
+      ? JSON.parse(optionsJson)
+      : optionsJson || {};
     const requestId = `python-dispatch-${this.nextRequestId++}`;
     return new Promise((resolve, reject) => {
       this.dispatchRequests.set(requestId, { resolve, reject });
@@ -1343,6 +1346,7 @@ class TraceKernelHttpBridge {
           type: 'kernel-http-dispatch',
           requestId,
           request,
+          ...(Number.isFinite(Number(options.timeoutMs)) ? { timeoutMs: Math.max(1, Math.ceil(Number(options.timeoutMs))) } : {}),
         },
       });
     });
@@ -1367,6 +1371,11 @@ class TraceKernelHttpBridge {
   failListener(listenerId) {
     this.listeners.delete(listenerId);
     this.listenerInfo.delete(listenerId);
+  }
+
+  abortRequest(_requestId) {
+    // Python's synchronous http.server shims cannot preempt a running handler,
+    // but the host still sends aborts so future async handlers have a protocol hook.
   }
 
   async handleRequest(listenerId, requestId, request) {
@@ -1457,7 +1466,7 @@ async function executeProjectPython(request, messageId, protocolToken) {
   };
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
   self.__tracecodeKernelHttpListen = (optionsJson, handler) => httpBridge.listen(optionsJson, handler);
-  self.__tracecodeKernelHttpDispatch = (requestJson) => httpBridge.dispatch(requestJson);
+  self.__tracecodeKernelHttpDispatch = (requestJson, optionsJson) => httpBridge.dispatch(requestJson, optionsJson);
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
     request?.stdinPipe
@@ -1469,6 +1478,7 @@ import contextlib
 import io
 import importlib
 import json
+import math
 import os
 import runpy
 import shutil
@@ -1701,12 +1711,29 @@ def _install_tracekernel_asgi_modules():
             }
         return _json_response(_value, _status)
 
-    async def _tracekernel_http_dispatch_async(_request):
-        _response_json = await _js_self.__tracecodeKernelHttpDispatch(json.dumps(_request))
+    def _tracekernel_http_timeout_ms(_timeout):
+        if _timeout is None:
+            return None
+        if isinstance(_timeout, (tuple, list)):
+            _values = [float(_value) for _value in _timeout if _value is not None]
+            if not _values:
+                return None
+            _timeout = max(_values)
+        _seconds = float(_timeout)
+        if _seconds <= 0:
+            return 1
+        return max(1, int(math.ceil(_seconds * 1000)))
+
+    async def _tracekernel_http_dispatch_async(_request, _timeout=None):
+        _options = {}
+        _timeout_ms = _tracekernel_http_timeout_ms(_timeout)
+        if _timeout_ms is not None:
+            _options["timeoutMs"] = _timeout_ms
+        _response_json = await _js_self.__tracecodeKernelHttpDispatch(json.dumps(_request), json.dumps(_options))
         return json.loads(str(_response_json))
 
-    def _tracekernel_http_dispatch_sync(_request):
-        return asyncio.get_event_loop().run_until_complete(_tracekernel_http_dispatch_async(_request))
+    def _tracekernel_http_dispatch_sync(_request, _timeout=None):
+        return asyncio.get_event_loop().run_until_complete(_tracekernel_http_dispatch_async(_request, _timeout))
 
     class _TraceKernelHTTPResponse:
         def __init__(self, _response):
@@ -1766,7 +1793,7 @@ def _install_tracekernel_asgi_modules():
             "path": (_parsed.path or "/") + (("?" + _parsed.query) if _parsed.query else ""),
             "headers": _headers,
             **_body_payload,
-        })
+        }, timeout)
         return _TraceKernelHTTPResponse(_response)
 
     class _TraceKernelHTTPConnection:
@@ -1787,7 +1814,7 @@ def _install_tracekernel_asgi_modules():
                 "path": _target,
                 "headers": {str(_name).lower(): str(_value) for _name, _value in (headers or {}).items()},
                 **_body_payload,
-            })
+            }, self.timeout)
 
         def getresponse(self):
             return _TraceKernelHTTPResponse(self._response or {"status": 0, "body": ""})
@@ -1824,7 +1851,7 @@ def _install_tracekernel_asgi_modules():
             "path": (_parsed.path or "/") + (("?" + _parsed.query) if _parsed.query else ""),
             "headers": _headers,
             **_body_payload,
-        }))
+        }, _kwargs.get("timeout")))
 
     def _install_tracekernel_http_client_modules():
         import http.client as _http_client
@@ -4009,6 +4036,14 @@ self.onmessage = function(event) {
     if (!bridge || bridge.protocolToken !== protocolToken) return;
     if (payload?.type === 'kernel-http-request') {
       void bridge.handleRequest(payload.listenerId, payload.requestId, payload.request);
+    }
+    return;
+  }
+  if (type === 'kernel-http-abort-request') {
+    const bridge = activeProjectHttpBridges.get(id);
+    if (!bridge || bridge.protocolToken !== protocolToken) return;
+    if (payload?.type === 'kernel-http-abort-request') {
+      bridge.abortRequest(payload.requestId);
     }
     return;
   }
