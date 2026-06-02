@@ -28,7 +28,9 @@ jobs:
       - name: Test Java runtime
         run: pnpm test:java-sync && pnpm test:java-runtime
       - name: Test C# runtime
-        run: pnpm test:csharp-runtime && pnpm test:csharp-worker-browser
+        run: pnpm test:csharp-runtime
+      - name: Test C# browser worker
+        run: pnpm test:csharp-worker-browser
       - name: Test C++ runtime
         run: pnpm test:cpp-rewriter && pnpm test:cpp-script-lambda-trace && pnpm test:cpp-runtime
       - name: Test JavaScript and project runtime
