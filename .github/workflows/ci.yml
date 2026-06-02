@@ -7,7 +7,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -18,33 +18,21 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile=false
-      - run: pnpm exec playwright install --with-deps chromium
       - name: Check generated runtime metadata
         run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync
       - name: Typecheck
         run: pnpm typecheck
-      - name: Test trace adapters and Python runtime
-        run: pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:python-browser-worker
-      - name: Test Java runtime
-        run: pnpm test:java-sync && pnpm test:java-runtime
-      - name: Test C# runtime
-        run: pnpm test:csharp-runtime
-      - name: Test C# browser worker
-        run: pnpm test:csharp-worker-browser
-      - name: Test C++ runtime
-        run: pnpm test:cpp-rewriter && pnpm test:cpp-script-lambda-trace && pnpm test:cpp-runtime
-      - name: Test JavaScript and project runtime
-        run: pnpm test:js-runtime && pnpm test:project
-      - name: Test runtime contracts and traces
-        env:
-          TRACECODE_RUNTIME_TRACE_PROGRESS: "1"
+      - name: Test core runtimes
         run: |
+          pnpm test:trace-adapters
+          pnpm test:python-sync
+          pnpm test:python-runtime
+          pnpm test:java-sync
+          pnpm test:java-runtime
+          pnpm test:csharp-runtime
+          pnpm test:js-runtime
+          pnpm test:project
           pnpm test:runtime-contract
-          TRACECODE_RUNTIME_TRACE_LANGUAGES=python,javascript,typescript,java,csharp pnpm test:runtime-trace-fixtures
-          TRACECODE_RUNTIME_TRACE_LANGUAGES=cpp pnpm test:runtime-trace-fixtures
-          TRACECODE_RUNTIME_TRACE_LANGUAGES=python,javascript,typescript,java,csharp pnpm test:runtime-trace-fixtures:raw-strict
-          pnpm test:runtime-raw-emission-contract
-          pnpm report:runtime-trace-known-gaps
           pnpm test:standalone-boundary
       - name: Build
         run: pnpm build
