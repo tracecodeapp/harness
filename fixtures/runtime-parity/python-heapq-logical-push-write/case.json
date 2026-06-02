@@ -1,0 +1,129 @@
+{
+  "id": "python-heapq-logical-push-write",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "python"
+  ],
+  "inputs": {
+    "nums": [
+      4,
+      2
+    ]
+  },
+  "anchors": {
+    "pushFirst": {
+      "python": "heapq.heappush(heap, nums[0])"
+    },
+    "pushSecond": {
+      "python": "heapq.heappush(heap, nums[1])"
+    }
+  },
+  "expect": {
+    "pushFirst": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "heap",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "heap",
+          "method": "heappush"
+        },
+        {
+          "kind": "read",
+          "variable": "heap"
+        },
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "heap",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "pushSecond": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "heap",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "heap",
+          "method": "heappush"
+        },
+        {
+          "kind": "read",
+          "variable": "heap"
+        },
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "heap",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "read",
+        "variable": "heap",
+        "count": 2
+      },
+      {
+        "kind": "read",
+        "variable": "heap",
+        "pathDepth": 1,
+        "count": 1
+      },
+      {
+        "kind": "read",
+        "variable": "nums",
+        "pathDepth": 1,
+        "count": 2
+      },
+      {
+        "kind": "mutate",
+        "variable": "heap",
+        "count": 2
+      },
+      {
+        "kind": "write",
+        "variable": "heap",
+        "count": 1
+      },
+      {
+        "kind": "write",
+        "variable": "heap",
+        "pathDepth": 1,
+        "count": 2
+      }
+    ]
+  }
+}

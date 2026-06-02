@@ -1145,22 +1145,33 @@ print(json.dumps({
       JSON.stringify(access.indices) === JSON.stringify([0]) &&
       access.value === 10
     )) &&
-      (secondHeappushStep.accesses ?? []).some((access) => (
+      !(secondHeappushStep.accesses ?? []).some((access) => (
         access.variable === 'rooms' &&
         access.kind === 'indexed-write' &&
-        JSON.stringify(access.indices) === JSON.stringify([1]) &&
-        access.value === 30
+        JSON.stringify(access.indices) === JSON.stringify([1])
       )),
-    `Python heapq.heappush should emit concrete writes for sifted heap cells, received ${JSON.stringify(secondHeappushStep.accesses)}`
+    `Python heapq.heappush should emit only the logical inserted heap cell write, received ${JSON.stringify(secondHeappushStep.accesses)}`
   );
   assertCondition(
     (heappopStep.accesses ?? []).some((access) => (
       access.variable === 'rooms' &&
-      access.kind === 'indexed-write' &&
-      JSON.stringify(access.indices) === JSON.stringify([0]) &&
-      access.value === 30
+      access.kind === 'mutating-call' &&
+      access.method === 'heappop'
+    )) &&
+      !(heappopStep.accesses ?? []).some((access) => (
+        access.variable === 'rooms' &&
+        access.kind === 'indexed-write'
+      )),
+    `Python heapq.heappop should emit a logical mutate without shifted-cell writes, received ${JSON.stringify(heappopStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'mutate' &&
+      event.line === heappopLine &&
+      JSON.stringify(event.target) === JSON.stringify({ variable: 'rooms' }) &&
+      event.method === 'heappop'
     )),
-    `Python heapq.heappop should emit concrete writes for shifted heap cells, received ${JSON.stringify(heappopStep.accesses)}`
+    `Python runtime trace should emit a heappop mutate event, received ${JSON.stringify(parsed.runtimeTrace.events)}`
   );
   assertCondition(
     parsed.runtimeTrace.events.some((event) => (

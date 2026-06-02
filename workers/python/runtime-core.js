@@ -1280,6 +1280,32 @@ def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, 
         if after_values is not None:
             path_prefix = list(normalized or [])
             source_prefix = [None for _ in path_prefix]
+            if method_name == 'heappush' and len(args) >= 1:
+                pushed_value = args[0]
+                pushed_index = None
+                for index, value in enumerate(after_values):
+                    if value == pushed_value and (index >= len(before_values) or before_values[index] != value):
+                        pushed_index = index
+                        break
+                if pushed_index is None:
+                    for index, value in enumerate(after_values):
+                        if value == pushed_value:
+                            pushed_index = index
+                            break
+                if pushed_index is not None:
+                    __tracecode_record_access(
+                        sys._getframe(1),
+                        __tracecode_make_access_event(
+                            var_name,
+                            'indexed-write',
+                            path_prefix + [pushed_index],
+                            index_sources=source_prefix + [None],
+                            value=_serialize(pushed_value),
+                        ),
+                    )
+                return result
+            if method_name == 'heappop':
+                return result
             for index, value in enumerate(after_values):
                 if index >= len(before_values) or before_values[index] != value:
                     __tracecode_record_access(
@@ -2206,7 +2232,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
 
         if isinstance(node.func, ast.Attribute):
             method_name = node.func.attr
-            if method_name in _TRACE_MUTATING_METHODS and method_name not in self._tracecode_user_function_names:
+            if method_name in _TRACE_MUTATING_METHODS:
                 extracted = _tracecode_extract_named_subscript(node.func.value)
                 if extracted is not None:
                     var_name, indices = extracted
