@@ -7671,6 +7671,25 @@ async function testNativeCppProjectRunnerDirectAbsoluteOperandBoundaries(): Prom
   );
 }
 
+async function testNativeCppProjectRunnerClosedStdin(): Promise<void> {
+  const runner = createNativeCppProjectRunner({ compilerCommand: 'true' });
+  const result = await runner({
+    code: 'int main() { return 0; }\n'.repeat(1024),
+    source: 'compile',
+    scriptPath: 'main.cpp',
+    args: ['-'],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      files: [],
+    },
+    options: { compilerCommand: 'true' },
+  });
+
+  assertCondition(result.exitCode === 0, `native C++ runner should tolerate child stdin closing early: ${result.stderr}`);
+}
+
 async function testNativeCppProjectRunner(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     files: [
@@ -12612,6 +12631,7 @@ async function main(): Promise<void> {
   await testNativeCppProjectRunnerDirectCwdBoundary();
   await testNativeCppProjectRunnerDirectAbsoluteDefaultScriptPath();
   await testNativeCppProjectRunnerDirectAbsoluteOperandBoundaries();
+  await testNativeCppProjectRunnerClosedStdin();
   await testNativeCppProjectRunner();
   await testNativeCppProjectRunnerAbsoluteWorkspacePaths();
   await testNativeCSharpProjectRunner();

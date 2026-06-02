@@ -412,6 +412,11 @@ function runProcess(
     let abortedSignal: string | null = null;
     let abortForceKill: ReturnType<typeof setTimeout> | undefined;
 
+    const isClosedStdinError = (error: unknown): boolean => {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED';
+    };
+
     const settle = (result: CppProjectCommandResult, phase: string, message: string, detail: Record<string, unknown>): void => {
       if (settled) return;
       settled = true;
@@ -478,11 +483,36 @@ function runProcess(
         { command, exitCode, ...(abortedSignal ? { signal: abortedSignal } : {}) }
       );
     });
+    child.stdin.on('error', (error) => {
+      if (isClosedStdinError(error)) return;
+      if (settled) return;
+      const message = error instanceof Error ? error.message : String(error);
+      emitRuntimeCommandOutput(options.onEvent, 'stderr', `${message}\n`);
+      settle(
+        { stdout, stderr: `${stderr}${message}\n`, exitCode: 1 },
+        'process-error',
+        `${command} stdin failed`,
+        { command, error: message }
+      );
+    });
 
     if (options.stdinPipe) {
       void pumpStdinPipeToChild(options.stdinPipe, child.stdin).catch(() => undefined);
     } else {
-      child.stdin.end(options.inputText ?? '');
+      try {
+        child.stdin.end(options.inputText ?? '');
+      } catch (error) {
+        if (!isClosedStdinError(error) && !settled) {
+          const message = error instanceof Error ? error.message : String(error);
+          emitRuntimeCommandOutput(options.onEvent, 'stderr', `${message}\n`);
+          settle(
+            { stdout, stderr: `${stderr}${message}\n`, exitCode: 1 },
+            'process-error',
+            `${command} stdin failed`,
+            { command, error: message }
+          );
+        }
+      }
     }
   });
 }
