@@ -7,6 +7,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -18,4 +19,23 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile=false
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:ci
+      - name: Check generated runtime metadata
+        run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test trace adapters and Python runtime
+        run: pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:python-browser-worker
+      - name: Test Java runtime
+        run: pnpm test:java-sync && pnpm test:java-runtime
+      - name: Test C# runtime
+        run: pnpm test:csharp-runtime && pnpm test:csharp-worker-browser
+      - name: Test C++ runtime
+        run: pnpm test:cpp-rewriter && pnpm test:cpp-script-lambda-trace && pnpm test:cpp-runtime
+      - name: Test JavaScript and project runtime
+        run: pnpm test:js-runtime && pnpm test:project
+      - name: Test runtime contracts and traces
+        run: pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary
+      - name: Build
+        run: pnpm build
+      - name: Test package surfaces and smoke
+        run: pnpm test:packaged-surface && pnpm test:language-packages && pnpm test:smoke && pnpm test:asset-sync
