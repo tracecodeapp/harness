@@ -36,7 +36,16 @@ jobs:
       - name: Test JavaScript and project runtime
         run: pnpm test:js-runtime && pnpm test:project
       - name: Test runtime contracts and traces
-        run: pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary
+        env:
+          TRACECODE_RUNTIME_TRACE_PROGRESS: "1"
+        run: |
+          pnpm test:runtime-contract
+          TRACECODE_RUNTIME_TRACE_LANGUAGES=python,javascript,typescript,java,csharp pnpm test:runtime-trace-fixtures
+          TRACECODE_RUNTIME_TRACE_LANGUAGES=cpp pnpm test:runtime-trace-fixtures
+          TRACECODE_RUNTIME_TRACE_LANGUAGES=python,javascript,typescript,java,csharp pnpm test:runtime-trace-fixtures:raw-strict
+          pnpm test:runtime-raw-emission-contract
+          pnpm report:runtime-trace-known-gaps
+          pnpm test:standalone-boundary
       - name: Build
         run: pnpm build
       - name: Test package surfaces and smoke

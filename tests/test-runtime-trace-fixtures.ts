@@ -184,6 +184,13 @@ type RuntimeCore = {
 const ALL_FIXTURE_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
 const RAW_PARITY_REFERENCE_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java'];
 const RAW_PARITY_COMPARE_LANGUAGES: Language[] = [...RAW_PARITY_REFERENCE_LANGUAGES, 'csharp'];
+const TRACE_FIXTURE_PROGRESS = process.env.TRACECODE_RUNTIME_TRACE_PROGRESS === '1';
+
+function logFixtureProgress(message: string): void {
+  if (TRACE_FIXTURE_PROGRESS) {
+    console.log(`[runtime-trace-fixtures] ${message}`);
+  }
+}
 
 function selectedFixtureNames(allFixtureNames: string[]): string[] {
   const rawFilter = process.env.TRACECODE_RUNTIME_TRACE_FIXTURE;
@@ -1469,12 +1476,16 @@ async function runFixture(
   fixtureName: string,
   workerSource: string,
   cppHarness?: CppWorkerHarness
-): Promise<void> {
+): Promise<boolean> {
   const fixtureDir = join(FIXTURES_DIR, fixtureName);
   const fixture = JSON.parse(await readFile(join(fixtureDir, 'case.json'), 'utf8')) as FixtureCase;
   const fixtureLanguages = fixture.languages ? new Set(fixture.languages) : null;
   const languages = selectedFixtureLanguages().filter((language) => !fixtureLanguages || fixtureLanguages.has(language));
-  assertCondition(languages.length > 0, `${fixture.id}: no selected languages match fixture.languages`);
+  if (languages.length === 0) {
+    logFixtureProgress(`${fixture.id}:skip no selected languages match fixture.languages`);
+    return false;
+  }
+  logFixtureProgress(`${fixture.id}:start languages=${languages.join(',')}`);
   const sources = {} as Partial<Record<Language, string>>;
   for (const language of languages) {
     const sourcePath = join(fixtureDir, fixtureLanguageFile(language));
@@ -1488,6 +1499,7 @@ async function runFixture(
   for (const language of languages) {
     const source = sources[language];
     assertCondition(typeof source === 'string', `${fixture.id}: ${language} source was not loaded`);
+    logFixtureProgress(`${fixture.id}:${language}:start`);
     if (language === 'python') runs.python = await executePythonTrace(source, fixture);
     if (language === 'javascript') {
       runs.javascript = await executeJavaScriptTrace('javascript', workerSource, source, fixture);
@@ -1501,6 +1513,7 @@ async function runFixture(
       assertCondition(Boolean(cppHarness), `${fixture.id}: C++ harness was not initialized`);
       runs.cpp = await executeCppTrace(cppHarness as CppWorkerHarness, source, fixture);
     }
+    logFixtureProgress(`${fixture.id}:${language}:done events=${runs[language]?.trace.events.length ?? 0}`);
   }
   const traces = Object.fromEntries(
     Object.entries(runs).map(([language, run]) => [language, run.trace])
@@ -1708,21 +1721,34 @@ async function runFixture(
       assertOpaqueRefs(trace, `${fixture.id}:${language}`);
     }
   }
+  logFixtureProgress(`${fixture.id}:done`);
+  return true;
 }
 
 async function main(): Promise<void> {
   const workerSource = await readFile(JAVASCRIPT_WORKER_PATH, 'utf8');
   const languages = selectedFixtureLanguages();
-  const cppHarness = languages.includes('cpp') ? await createCppWorkerHarness() : undefined;
+  logFixtureProgress(`selected languages=${languages.join(',')}`);
+  logFixtureProgress('javascript worker source loaded');
+  let cppHarness: CppWorkerHarness | undefined;
+  if (languages.includes('cpp')) {
+    logFixtureProgress('cpp harness init:start');
+    cppHarness = await createCppWorkerHarness();
+    logFixtureProgress('cpp harness init:done');
+  }
   const fixtureNames = selectedFixtureNames((await readdir(FIXTURES_DIR, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort());
+  logFixtureProgress(`selected fixtures=${fixtureNames.length}`);
 
+  let executedFixtureCount = 0;
   for (const fixtureName of fixtureNames) {
-    await runFixture(fixtureName, workerSource, cppHarness);
+    if (await runFixture(fixtureName, workerSource, cppHarness)) {
+      executedFixtureCount += 1;
+    }
   }
-  console.log(`PASS: runtime trace fixture parity (${fixtureNames.length} fixtures)`);
+  console.log(`PASS: runtime trace fixture parity (${executedFixtureCount} fixtures)`);
 }
 
 main().catch((error) => {
