@@ -1,6 +1,9 @@
 #!/usr/bin/env npx tsx
 
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const smokeScript = String.raw`
 import { readFile } from 'node:fs/promises';
@@ -4165,14 +4168,17 @@ if (!nativeSetFindEvents.some((event) =>
 }
 `;
 
-execFileSync(
-  process.execPath,
-  ['--experimental-vm-modules', '--input-type=module', '-e', smokeScript],
-  {
+const tempDir = mkdtempSync(join(tmpdir(), 'tracecode-cpp-runtime-'));
+const smokeScriptPath = join(tempDir, 'smoke.mjs');
+try {
+  writeFileSync(smokeScriptPath, smokeScript, 'utf8');
+  execFileSync(process.execPath, ['--experimental-vm-modules', smokeScriptPath], {
     cwd: process.cwd(),
     stdio: 'inherit',
     maxBuffer: 20 * 1024 * 1024,
-  }
-);
+  });
+} finally {
+  rmSync(tempDir, { recursive: true, force: true });
+}
 
 console.log('PASS: C++ browser worker compiler/runtime smoke');
