@@ -236,24 +236,19 @@ async function createExternalCSharpDllBase64(): Promise<string> {
   }
 }
 
-function createArArchiveBase64(memberName: string, memberBase64: string): string {
-  const member = Buffer.from(memberBase64, 'base64');
-  const field = (value: string | number, width: number) => String(value).slice(0, width).padEnd(width, ' ');
-  const nameFieldLength = (Math.ceil(memberName.length / 8) * 8 || 8) + 4;
-  const nameField = Buffer.alloc(nameFieldLength);
-  nameField.write(memberName, 0, 'utf8');
-  const header = Buffer.from([
-    '!<arch>\n',
-    field(`#1/${nameFieldLength}`, 16),
-    field(0, 12),
-    field(0, 6),
-    field(0, 6),
-    field('100644', 8),
-    field(nameField.length + member.length, 10),
-    '`\n',
-  ].join(''));
-  const padding = member.length % 2 === 0 ? Buffer.alloc(0) : Buffer.from('\n');
-  return Buffer.concat([header, nameField, member, padding]).toString('base64');
+async function createIndexedArArchiveBase64(memberName: string, memberBase64: string): Promise<string> {
+  assertCondition(!memberName.includes('/'), `ar fixture member name must be local: ${memberName}`);
+  const root = await mkdtemp(join(tmpdir(), 'tracecode-cpp-ar-fixture-'));
+  try {
+    const memberPath = join(root, memberName);
+    const archivePath = join(root, 'libfixture.a');
+    await writeFile(memberPath, Buffer.from(memberBase64, 'base64'));
+    await execFileAsync('ar', ['rcs', archivePath, memberPath]);
+    await execFileAsync('ranlib', [archivePath]);
+    return (await readFile(archivePath)).toString('base64');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 function crc32(bytes: Buffer): number {
@@ -7884,7 +7879,7 @@ async function testNativeCppProjectRunnerAbsoluteWorkspacePaths(): Promise<void>
   assertCondition(relativeParentRun.stdout === '1234\n', `native C++ should execute relative-parent compiled output: ${relativeParentRun.stdout}`);
 
   const objectBase64 = await workspace.readFile('src/lib/linked.o', 'base64');
-  await workspace.writeFile('src/lib/liblinked.a', createArArchiveBase64('linked.o', objectBase64), 'base64');
+  await workspace.writeFile('src/lib/liblinked.a', await createIndexedArArchiveBase64('linked.o', objectBase64), 'base64');
   const archiveLink = await workspace.runCommand('clang++ -std=c++17 /workspace/src/link_main.cpp -L /workspace/src/lib -llinked -o /workspace/out/library-app');
   assertCondition(archiveLink.exitCode === 0, `native clang++ should resolve absolute workspace library archives: ${archiveLink.stderr}`);
   const libraryRun = await workspace.runCommand('/workspace/out/library-app');
