@@ -58,6 +58,9 @@ importers:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.37
+      esbuild:
+        specifier: 0.27.3
+        version: 0.27.3
       playwright:
         specifier: ^1.53.2
         version: 1.58.2

@@ -184,6 +184,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "esbuild": "0.27.3",
     "playwright": "^1.53.2",
     "pyodide": "^0.29.0",
     "tsup": "^8.5.0",
