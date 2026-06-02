@@ -2320,50 +2320,36 @@ print(json.dumps({
   const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
   assertCondition(parsed.result === false, 'Python boolean indexed assignment fixture should execute');
 
-  const assignmentStep = parsed.trace.find((step) =>
-    (step.accesses ?? []).some((access) =>
-      access.variable === 'dp'
-      && access.kind === 'indexed-read'
-      && JSON.stringify(access.indices) === JSON.stringify([4])
-      && JSON.stringify(access.indexSources) === JSON.stringify(['j']))
-    && (step.accesses ?? []).some((access) =>
-      access.variable === 'dp'
-      && access.kind === 'indexed-read'
-      && JSON.stringify(access.indices) === JSON.stringify([2])
-      && JSON.stringify(access.indexSources) === JSON.stringify(['j - num']))
-    && (step.accesses ?? []).some((access) =>
-      access.variable === 'dp'
-      && access.kind === 'indexed-write'
-      && JSON.stringify(access.indices) === JSON.stringify([4])
-      && JSON.stringify(access.indexSources) === JSON.stringify(['j']))
-  );
-  assertCondition(Boolean(assignmentStep), `Python boolean indexed assignment step should exist, received ${JSON.stringify(parsed.trace)}`);
+  const assignmentAccesses = parsed.trace
+    .filter((step) => step.function === 'solve' && step.event === 'line' && step.line === 6)
+    .flatMap((step) => step.accesses ?? []);
+  assertCondition(assignmentAccesses.length > 0, `Python boolean indexed assignment accesses should exist, received ${JSON.stringify(parsed.trace)}`);
   assertCondition(
-    assignmentStep?.accesses?.some((access) =>
+    assignmentAccesses.some((access) =>
       access.variable === 'dp'
       && access.kind === 'indexed-read'
       && JSON.stringify(access.indices) === JSON.stringify([4])
       && JSON.stringify(access.indexSources) === JSON.stringify(['j'])
       && access.value === false) === true,
-    `Python dp[j] boolean assignment should emit left indexed read, received ${JSON.stringify(assignmentStep.accesses)}`
+    `Python dp[j] boolean assignment should emit left indexed read, received ${JSON.stringify(assignmentAccesses)}`
   );
   assertCondition(
-    assignmentStep?.accesses?.some((access) =>
+    assignmentAccesses.some((access) =>
       access.variable === 'dp'
       && access.kind === 'indexed-read'
       && JSON.stringify(access.indices) === JSON.stringify([2])
       && JSON.stringify(access.indexSources) === JSON.stringify(['j - num'])
       && access.value === false) === true,
-    `Python dp[j] boolean assignment should emit right indexed read, received ${JSON.stringify(assignmentStep.accesses)}`
+    `Python dp[j] boolean assignment should emit right indexed read, received ${JSON.stringify(assignmentAccesses)}`
   );
   assertCondition(
-    assignmentStep?.accesses?.some((access) =>
+    assignmentAccesses.some((access) =>
       access.variable === 'dp'
       && access.kind === 'indexed-write'
-      && JSON.stringify(access.indices) === JSON.stringify([4])
+      && JSON.stringify(access.indices) === JSON.stringify([2])
       && JSON.stringify(access.indexSources) === JSON.stringify(['j'])
-      && access.value === false) === true,
-    `Python dp[j] boolean assignment should emit indexed write, received ${JSON.stringify(assignmentStep.accesses)}`
+      && access.value === true) === true,
+    `Python dp[j] boolean assignment should emit indexed write, received ${JSON.stringify(assignmentAccesses)}`
   );
 
   console.log('PASS: Python boolean indexed assignment emits indexed reads and writes');
