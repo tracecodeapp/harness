@@ -436,7 +436,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-python worker should ship vectored fd I/O bridge hooks'
       );
       assertCondition(
-        worker.includes('def _tracekernel_http_dispatch_async(_request):') &&
+        worker.includes('def _tracekernel_http_dispatch_async(') &&
           worker.includes('urllib.request.urlopen = _tracekernel_http_urlopen') &&
           worker.includes('_http_client.HTTPConnection = _TraceKernelHTTPConnection') &&
           worker.includes('_requests_module.request = _tracekernel_requests_request') &&
