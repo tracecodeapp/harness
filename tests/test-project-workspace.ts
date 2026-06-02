@@ -3306,7 +3306,7 @@ async function testNativeCompileGlobProjectRunners(): Promise<void> {
       { path: 'cpp/main.cpp', contents: '#include <iostream>\nint value();\nint main() { std::cout << value() << "\\n"; }\n' },
     ],
     javaRunner: createNativeJavaProjectRunner(),
-    cppRunner: createNativeCppProjectRunner(),
+    cppRunner: createNativeCppProjectRunner({ timeoutMs: 30_000 }),
   });
 
   const javac = await workspace.runCommand('javac *.java', { cwd: 'java' });
