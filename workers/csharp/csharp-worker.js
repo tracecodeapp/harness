@@ -1622,7 +1622,7 @@ self.addEventListener('message', (event) => {
   queue = queue
     .catch(() => {})
     .then(async () => {
-      const result = await handleMessage({ id, type, payload });
+      const result = await handleMessage({ id, type, payload, protocolToken });
       self.postMessage({ id, type, payload: result, protocolToken });
     })
     .catch((error) => {

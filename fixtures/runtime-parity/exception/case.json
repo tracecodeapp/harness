@@ -26,17 +26,6 @@
     }
   },
   "expectByLanguage": {
-    "python": {
-      "throw": {
-        "eventKinds": [
-          "exception",
-          "line",
-          "return"
-        ],
-        "variableSnapshots": [],
-        "accessTargets": []
-      }
-    },
     "csharp": {
       "throw": {
         "eventKinds": [

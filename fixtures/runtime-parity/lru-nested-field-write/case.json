@@ -30,7 +30,6 @@
         "write"
       ],
       "variableSnapshots": [
-        "node",
         "this",
         "value"
       ],
@@ -70,7 +69,6 @@
           "write"
         ],
         "variableSnapshots": [
-          "node",
           "self",
           "value"
         ],
@@ -84,6 +82,7 @@
       "nestedPrevWrite": {
         "eventKinds": [
           "line",
+          "read",
           "snapshot",
           "write"
         ],
@@ -93,6 +92,11 @@
           "value"
         ],
         "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "self",
+            "pathDepth": 2
+          },
           {
             "kind": "write",
             "variable": "self",

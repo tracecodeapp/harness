@@ -38,5 +38,32 @@
         }
       ]
     }
+  },
+  "expectByLanguage": {
+    "python": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "grid",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "grid",
+            "pathDepth": 2
+          }
+        ]
+      }
+    }
   }
 }

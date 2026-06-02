@@ -84,7 +84,6 @@
       "constructorWrite": {
         "eventKinds": [
           "line",
-          "return",
           "snapshot",
           "write"
         ],
@@ -169,6 +168,45 @@
         ],
         "variableSnapshots": [
           "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "methodRead": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "left",
+          "right"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 2
+          }
+        ]
+      }
+    },
+    "cpp": {
+      "constructorWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "this"
         ],
         "accessTargets": [
           {

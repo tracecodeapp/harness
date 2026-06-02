@@ -5207,7 +5207,7 @@ function rewritePlainIndexedWriteInstrumentation(line, lineNumber, variables, al
 
 function shouldEmitPlainContainerMutation(variable, name, aliases = new Map(), source = '') {
   if (!variable || !isSnapshotSerializableCppType(variable.type, aliases)) return false;
-  if (/[&]/.test(variable.type || '') && isTraceWrappedCppType(variable.type, aliases)) return true;
+  if (/[&]/.test(variable.type || '') && isTraceWrappedCppType(variable.type, aliases)) return false;
   if (variable.parameter && /\bstd::/.test(variable.type)) {
     if (
       !variable.lambdaParameter &&
@@ -5297,15 +5297,19 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_member_mutation_arg_${lineNumber}_${name}`;
         const argsJsonExpression = aggregateMutationArgsJsonExpression(args[0], tempName);
-        const writeIndex = `this->${name}.size() - 1`;
-        return [
+        const isSetInsert = method === 'insert' && variable && isSetCppType(variable.type, aliases);
+        const writeIndex = `tracecode::trace_container_raw_size(this->${name}) - 1`;
+        const rewritten = [
           `${indent}{`,
           `${indent}  ${cppValueTypeTempInitialization(`this->${name}`, tempName, args[0])}`,
           `${indent}  this->${name}.${method}(${tempName});`,
           `${indent}  tracecode::emit_field_container_mutate_value("this", ${cppStringLiteral(name)}, this->${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${argsJsonExpression});`,
-          `${indent}  tracecode::emit_field_index_write_value("this", ${cppStringLiteral(name)}, this->${name}, ${writeIndex}, ${lineNumber}, nullptr);`,
-          `${indent}}`,
-        ].join('\n');
+        ];
+        if (!isSetInsert) {
+          rewritten.push(`${indent}  tracecode::emit_field_index_write_value("this", ${cppStringLiteral(name)}, this->${name}, ${writeIndex}, ${lineNumber}, nullptr);`);
+        }
+        rewritten.push(`${indent}}`);
+        return rewritten.join('\n');
       }
       if (method === 'erase' && args.length === 1) {
         const iteratorArg = args[0].replace(/\s+/g, '');
@@ -5336,15 +5340,19 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_mutation_arg_${lineNumber}_${name}`;
         const argsJsonExpression = aggregateMutationArgsJsonExpression(args[0], tempName);
-        const writeIndex = `${name}.size() - 1`;
-        return [
+        const isSetInsert = variable && method === 'insert' && isSetCppType(variable.type, aliases);
+        const writeIndex = `tracecode::trace_container_raw_size(${name}) - 1`;
+        const rewritten = [
           `${indent}{`,
           `${indent}  ${cppValueTypeTempInitialization(name, tempName, args[0])}`,
           `${indent}  ${name}.${method}(${tempName});`,
           `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${argsJsonExpression});`,
-          `${indent}  tracecode::emit_index_write_value(${cppStringLiteral(name)}, ${name}, ${writeIndex}, ${lineNumber}, nullptr);`,
-          `${indent}}`,
-        ].join('\n');
+        ];
+        if (!isSetInsert) {
+          rewritten.push(`${indent}  tracecode::emit_index_write_value(${cppStringLiteral(name)}, ${name}, ${writeIndex}, ${lineNumber}, nullptr);`);
+        }
+        rewritten.push(`${indent}}`);
+        return rewritten.join('\n');
       }
       if (method === 'erase' && args.length === 1) {
         const iteratorArg = args[0].replace(/\s+/g, '');
@@ -6351,8 +6359,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     ) {
       const externalPostLineDepth = activeFrame.depth + Math.min(0, braceDeltaForLine(line));
       const preControlLineEmitted = shouldInstrumentLine && isCppControlHeaderLine(line);
-      const preCallSiteLineEmitted = shouldInstrumentLine && !unbracedControlHeaderLine && shouldEmitCppCallSiteLine(line, activeSignature, callSiteNames);
-      output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, externalPostLineDepth, '', includeSnapshotsForActiveFrame, !preControlLineEmitted && !preCallSiteLineEmitted));
+      output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, externalPostLineDepth, '', includeSnapshotsForActiveFrame, !preControlLineEmitted));
     }
     if (lineForDriver.includes(`__TC_POST_LINE_HANDLED_${lineNumber}`)) {
       output[output.length - 1] = output[output.length - 1].replace(`\n#define __TC_POST_LINE_HANDLED_${lineNumber} 1`, '');

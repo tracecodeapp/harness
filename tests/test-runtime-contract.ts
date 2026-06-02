@@ -414,12 +414,12 @@ function assertRuntimeKernelStatTarget(): void {
 
   assertCondition(
     stableStringify(runtimeKernelStatTarget('/dev/stdout', info, devices)) ===
-      '{"kind":"stat","path":"/dev/stdout","stat":{"isCharacterDevice":true,"isDirectory":false,"isFile":true,"mode":438,"size":0}}',
+      '{"kind":"stat","path":"/dev/stdout","stat":{"gid":0,"group":"root","isCharacterDevice":true,"isDirectory":false,"isFile":true,"mode":438,"owner":"root","size":0,"uid":0}}',
     'kernel stat target should stat write-only devices without requiring read permission'
   );
   assertCondition(
     stableStringify(runtimeKernelStatTarget('/dev/stdin', info, devices)) ===
-      '{"kind":"stat","path":"/dev/stdin","stat":{"isCharacterDevice":true,"isDirectory":false,"isFile":true,"mode":438,"size":0}}',
+      '{"kind":"stat","path":"/dev/stdin","stat":{"gid":0,"group":"root","isCharacterDevice":true,"isDirectory":false,"isFile":true,"mode":438,"owner":"root","size":0,"uid":0}}',
     'kernel stat target should stat read-only devices'
   );
   assertCondition(
@@ -429,9 +429,9 @@ function assertRuntimeKernelStatTarget(): void {
   );
   assertCondition(
     stableStringify(runtimeKernelStatTarget('/dev/pts', info, devices)) ===
-      '{"kind":"stat","path":"/dev/pts","stat":{"isCharacterDevice":false,"isDirectory":true,"isFile":false,"mode":493,"size":0}}' &&
+      '{"kind":"stat","path":"/dev/pts","stat":{"gid":0,"group":"root","isCharacterDevice":false,"isDirectory":true,"isFile":false,"mode":493,"owner":"root","size":0,"uid":0}}' &&
       stableStringify(runtimeKernelStatTarget('/dev/pts/0', info, devices)) ===
-        '{"kind":"stat","path":"/dev/pts/0","stat":{"isCharacterDevice":true,"isDirectory":false,"isFile":true,"mode":438,"size":0}}',
+        '{"kind":"stat","path":"/dev/pts/0","stat":{"gid":0,"group":"root","isCharacterDevice":true,"isDirectory":false,"isFile":true,"mode":438,"owner":"root","size":0,"uid":0}}',
     'kernel stat target should expose nested manifest device directories and files'
   );
   assertCondition(

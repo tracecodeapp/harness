@@ -1596,18 +1596,54 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         replacement = null;
         bool isForIncrementorMutationContext = IsForIncrementorMutationContext(invocation);
         bool isStatementMutationContext = invocation.Parent is ExpressionStatementSyntax || isForIncrementorMutationContext;
+        if (invocation.Expression is MemberAccessExpressionSyntax tryGetValueMemberAccess
+            && tryGetValueMemberAccess.Expression is IdentifierNameSyntax tryGetValueReceiver
+            && IsTrackedCollectionReceiver(tryGetValueReceiver.Identifier.ValueText)
+            && tryGetValueMemberAccess.Name.Identifier.ValueText == "TryGetValue"
+            && invocation.ArgumentList.Arguments.Count == 2
+            && invocation.ArgumentList.Arguments[0].NameColon is null
+            && invocation.ArgumentList.Arguments[0].RefOrOutKeyword.RawKind == 0
+            && invocation.ArgumentList.Arguments[1].NameColon is null
+            && invocation.ArgumentList.Arguments[1].RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword)
+            && !interfaceDispatchedCollectionVariables.Contains(tryGetValueReceiver.Identifier.ValueText)
+            && isStatementMutationContext
+            && !IsInsideTraceCodeSourceLineScope(invocation))
+        {
+            string keyExpression = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            string outArgument = invocation.ArgumentList.Arguments[1].ToString();
+            replacement = SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.DictionaryTryGetValue({tryGetValueReceiver.Identifier.ValueText}, {keyExpression}, {outArgument}, {line}, {CreateIndexSourcesExpression(keyExpression)})"
+            );
+            return true;
+        }
         if (invocation.Expression is MemberAccessExpressionSyntax expressionStatementMemberAccess
             && expressionStatementMemberAccess.Expression is IdentifierNameSyntax expressionStatementReceiver
             && IsTrackedCollectionReceiver(expressionStatementReceiver.Identifier.ValueText)
-            && expressionStatementMemberAccess.Name.Identifier.ValueText is "Sort" or "RemoveAt"
+            && expressionStatementMemberAccess.Name.Identifier.ValueText == "Remove"
+            && invocation.ArgumentList.Arguments.Count == 1
+            && invocation.ArgumentList.Arguments[0].NameColon is null
+            && invocation.ArgumentList.Arguments[0].RefOrOutKeyword.RawKind == 0
+            && isStatementMutationContext
+            && !IsInsideTraceCodeSourceLineScope(invocation))
+        {
+            string keyExpression = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            replacement = SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.WithIndexSources({CreateIndexSourcesExpression(keyExpression)}, (System.Action)(() => TraceCode.Internal.TraceCodeTrace.WithSourceLine({line}, (System.Action)(() => {invocation}))))"
+            );
+            return true;
+        }
+        if (invocation.Expression is MemberAccessExpressionSyntax expressionStatementMutationMemberAccess
+            && expressionStatementMutationMemberAccess.Expression is IdentifierNameSyntax expressionStatementMutationReceiver
+            && IsTrackedCollectionReceiver(expressionStatementMutationReceiver.Identifier.ValueText)
+            && expressionStatementMutationMemberAccess.Name.Identifier.ValueText is "Sort" or "RemoveAt"
             && invocation.ArgumentList.Arguments.All(argument => argument.NameColon is null && argument.RefOrOutKeyword.RawKind == 0)
             && isStatementMutationContext
             && !IsInsideTraceCodeSourceLineScope(invocation))
         {
-            string mutationMethod = expressionStatementMemberAccess.Name.Identifier.ValueText;
+            string mutationMethod = expressionStatementMutationMemberAccess.Name.Identifier.ValueText;
             string args = MutationArgsExpression(invocation);
             replacement = SyntaxFactory.ParseExpression(
-                $"TraceCode.Internal.TraceCodeTrace.CollectionMutationCall({line}, {Literal(expressionStatementReceiver.Identifier.ValueText)}, {Literal(mutationMethod)}, new object?[] {{ {args} }}, (System.Action)(() => {invocation}), {expressionStatementReceiver})"
+                $"TraceCode.Internal.TraceCodeTrace.CollectionMutationCall({line}, {Literal(expressionStatementMutationReceiver.Identifier.ValueText)}, {Literal(mutationMethod)}, new object?[] {{ {args} }}, (System.Action)(() => {invocation}), {expressionStatementMutationReceiver})"
             );
             return true;
         }
@@ -1694,6 +1730,22 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private bool TryRewriteMemberCollectionInvocationLine(InvocationExpressionSyntax invocation, int line, out ExpressionSyntax? replacement)
     {
         replacement = null;
+        if (invocation.Expression is MemberAccessExpressionSyntax expressionStatementMutationMemberAccess
+            && expressionStatementMutationMemberAccess.Expression is MemberAccessExpressionSyntax expressionStatementMutationReceiver
+            && TryGetMemberAccessPath(expressionStatementMutationReceiver, out string expressionStatementMutationVariable, out List<string>? expressionStatementMutationPath)
+            && IsDeclaredMemberCollectionPath(expressionStatementMutationVariable, expressionStatementMutationPath)
+            && IsIndexedReceiverMutationMethod(expressionStatementMutationMemberAccess.Name.Identifier.ValueText)
+            && invocation.ArgumentList.Arguments.All(argument => argument.NameColon is null && argument.RefOrOutKeyword.RawKind == 0)
+            && invocation.Parent is ExpressionStatementSyntax
+            && !IsInsideTraceCodeSourceLineScope(invocation))
+        {
+            string method = expressionStatementMutationMemberAccess.Name.Identifier.ValueText;
+            string args = MutationArgsExpression(invocation);
+            replacement = SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.FieldCollectionMutationCall({line}, {Literal(expressionStatementMutationVariable)}, {CreateStringArrayExpression(expressionStatementMutationPath)}, {Literal(method)}, new object?[] {{ {args} }}, (System.Action)(() => {invocation}), {expressionStatementMutationReceiver})"
+            );
+            return true;
+        }
         if (invocation.Expression is MemberAccessExpressionSyntax expressionStatementMemberAccess
             && expressionStatementMemberAccess.Expression is MemberAccessExpressionSyntax expressionStatementReceiver
             && TryGetMemberAccessPath(expressionStatementReceiver, out string expressionStatementVariable, out List<string>? expressionStatementPath)
@@ -2083,7 +2135,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             if (node.Expression is IdentifierNameSyntax identifier && !string.IsNullOrWhiteSpace(iterationName))
             {
                 scopedExpression = SyntaxFactory.ParseExpression(
-                    $"TraceCode.CSharpHost.RuntimeTraceSink.IterationBind(TraceCode.Internal.TraceCodeTrace.WithSourceLine({line}, () => {rewritten.Expression}), {Literal(identifier.Identifier.ValueText)}, {Literal(iterationName)}, {line}, {Literal(methodNames.Peek())}, true, {snapshotAction})"
+                    $"TraceCode.CSharpHost.RuntimeTraceSink.IterationBind({rewritten.Expression}, {Literal(identifier.Identifier.ValueText)}, {Literal(iterationName)}, {line}, {Literal(methodNames.Peek())}, true, {snapshotAction})"
                 );
             }
             else if (
@@ -2538,6 +2590,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || expressionStatement.Expression is not InvocationExpressionSyntax invocation
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not IdentifierNameSyntax receiver
+            || IsSystemArrayTypeExpression(memberAccess.Expression)
             || !IsIndexedReceiverMutationMethod(memberAccess.Name.Identifier.ValueText)
             || invocation.ArgumentList.Arguments.Count == 0
             || invocation.ArgumentList.Arguments.Any(argument =>
@@ -2860,8 +2913,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (memberAccess.Expression is IdentifierNameSyntax identifier
             && IsTrackedStringBuilderVariable(identifier.Identifier.ValueText))
         {
+            if (IsIndexedReceiverMutationMethod(method))
+            {
+                yield break;
+            }
+
+            string args = MutationArgsExpression(invocation);
             yield return TraceStatement(
-                $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(identifier.Identifier.ValueText)}, {Literal(method)}, System.Array.Empty<object?>(), {line});"
+                $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(identifier.Identifier.ValueText)}, {Literal(method)}, new object?[] {{ {args} }}, {line});"
             );
             yield break;
         }
@@ -2871,8 +2930,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && IsStringBuilderMemberPath(variable, path))
         {
             string pathExpression = CreateStringArrayExpression(path);
+            string args = MutationArgsExpression(invocation);
             yield return TraceStatement(
-                $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {pathExpression}, {Literal(method)}, System.Array.Empty<object?>(), {line});"
+                $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {pathExpression}, {Literal(method)}, new object?[] {{ {args} }}, {line});"
             );
         }
     }
@@ -2948,11 +3008,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && identifier.Parent is not QualifiedNameSyntax
             && identifier.Ancestors().OfType<ArgumentSyntax>().Any(argument =>
                 argument.Ancestors().OfType<InvocationExpressionSyntax>().Any())
-            && !identifier.Ancestors().Any(ancestor =>
-                ancestor is ParenthesizedLambdaExpressionSyntax
-                    or SimpleLambdaExpressionSyntax
-                    or AnonymousMethodExpressionSyntax
-                    or TypeOfExpressionSyntax);
+            && !identifier.Ancestors().Any(ancestor => ancestor is TypeOfExpressionSyntax)
+            && !IsInsideUserAnonymousFunction(identifier);
     }
 
     private IEnumerable<string> GetConstructorConsumptionReadNames(StatementSyntax statement)
@@ -3010,10 +3067,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         return identifier.Parent is not MemberAccessExpressionSyntax
             && identifier.Parent is not QualifiedNameSyntax
-            && !identifier.Ancestors().Any(ancestor =>
-                ancestor is ParenthesizedLambdaExpressionSyntax
-                    or SimpleLambdaExpressionSyntax
-                    or AnonymousMethodExpressionSyntax);
+            && !IsInsideUserAnonymousFunction(identifier);
     }
 
     private void RegisterDeclaredVariables(StatementSyntax statement)
@@ -3579,6 +3633,28 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 or SimpleLambdaExpressionSyntax
                 or AnonymousMethodExpressionSyntax
         );
+    }
+
+    private static bool IsInsideUserAnonymousFunction(SyntaxNode node)
+    {
+        return node.Ancestors().Any(ancestor =>
+            IsAnonymousFunctionNode(ancestor) && !IsTraceCodeSourceLineLambda(ancestor)
+        );
+    }
+
+    private static bool IsAnonymousFunctionNode(SyntaxNode node)
+    {
+        return node is ParenthesizedLambdaExpressionSyntax
+            or SimpleLambdaExpressionSyntax
+            or AnonymousMethodExpressionSyntax;
+    }
+
+    private static bool IsTraceCodeSourceLineLambda(SyntaxNode node)
+    {
+        return node.Parent is ArgumentSyntax argument
+            && argument.Parent is ArgumentListSyntax argumentList
+            && argumentList.Parent is InvocationExpressionSyntax invocation
+            && IsTraceCodeSourceLineInvocation(invocation);
     }
 
     private static bool ContainsPatternDeclaration(ExpressionSyntax expression)

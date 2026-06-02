@@ -900,6 +900,19 @@ public static class RuntimeTraceSink
         }
     }
 
+    public static void WithIndexSources(IReadOnlyList<string?>? indexSources, Action action)
+    {
+        ScopedIndexSources.Push(indexSources);
+        try
+        {
+            action();
+        }
+        finally
+        {
+            ScopedIndexSources.Pop();
+        }
+    }
+
     public static IReadOnlyList<string?>? CurrentScopedIndexSources =>
         ScopedIndexSources.Count > 0 ? ScopedIndexSources.Peek() : null;
 

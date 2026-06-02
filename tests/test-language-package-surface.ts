@@ -515,10 +515,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         projectWorker.includes('function createHttpApi(kernelHttp, signal)') &&
-          projectWorker.includes('class TraceKernelHeaders') &&
+        projectWorker.includes('class TraceKernelHeaders') &&
           projectWorker.includes('class TraceKernelRequest') &&
           projectWorker.includes('class TraceKernelResponse') &&
-          projectWorker.includes('activeHttpBridges.set(id, kernelHttp)') &&
+          projectWorker.includes('activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken })') &&
+          projectWorker.includes('protocolToken !== command.protocolToken') &&
           projectWorker.includes('["node:http", httpApi.module]'),
         '@tracecode/harness-javascript packaged project worker should include TraceKernel HTTP globals and node:http bridge'
       );

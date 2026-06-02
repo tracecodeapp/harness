@@ -70,27 +70,6 @@
     }
   },
   "expectByLanguage": {
-    "python": {
-      "readThroughAlias": {
-        "eventKinds": [
-          "line",
-          "read",
-          "return",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "alias",
-          "head"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "alias",
-            "pathDepth": 1
-          }
-        ]
-      }
-    },
     "java": {
       "readThroughAlias": {
         "eventKinds": [
@@ -129,6 +108,11 @@
             "kind": "read",
             "variable": "alias",
             "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "alias",
+            "pathDepth": 2
           }
         ]
       }

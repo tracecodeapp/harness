@@ -382,8 +382,7 @@
           "merged",
           "mid",
           "nums",
-          "pulled",
-          "tail"
+          "pulled"
         ],
         "accessTargets": [
           {
@@ -399,7 +398,6 @@
           "write"
         ],
         "variableSnapshots": [
-          "head",
           "i",
           "k",
           "left",
@@ -431,8 +429,7 @@
           "merged",
           "mid",
           "nums",
-          "pulled",
-          "tail"
+          "pulled"
         ],
         "accessTargets": [
           {
@@ -448,7 +445,6 @@
           "write"
         ],
         "variableSnapshots": [
-          "head",
           "i",
           "k",
           "left",
@@ -596,6 +592,10 @@
             "kind": "write",
             "variable": "merged",
             "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "k"
           }
         ]
       },

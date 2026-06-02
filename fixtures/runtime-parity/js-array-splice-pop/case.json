@@ -88,8 +88,7 @@
           "write"
         ],
         "variableSnapshots": [
-          "nums",
-          "value"
+          "nums"
         ]
       }
     },
@@ -118,8 +117,7 @@
           "write"
         ],
         "variableSnapshots": [
-          "nums",
-          "value"
+          "nums"
         ]
       }
     },

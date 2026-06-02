@@ -986,14 +986,14 @@
           if (currentMethod.adjacencyLists.has(name) && (method === 'add' )) {
             return '';
           }
-          if (currentMethod.lists.has(name) && (method === 'add' || method === 'offer' || method === 'remove')) {
+          if (currentMethod.lists.has(name) && (method === 'add' || method === 'remove')) {
             return '';
           }
           return match;
         });
         const staleInlineMutationPattern = /TraceHooks\.emit\("trace:\{\\"kind\\":\\"mutate\\",\\"line\\":\d+,\\"target\\":\{\\"variable\\":\\"([A-Za-z_][A-Za-z0-9_]*)\\"\},\\"method\\":\\"(add|offer|remove)\\"[^;]*?\);\s*/g;
         nextLine = nextLine.replace(staleInlineMutationPattern, (match, name, method) => {
-          if (currentMethod.lists.has(name) && (method === 'add' || method === 'offer' || method === 'remove')) {
+          if (currentMethod.lists.has(name) && (method === 'add' || method === 'remove')) {
             return '';
           }
           return match;

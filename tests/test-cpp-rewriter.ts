@@ -301,7 +301,11 @@ const fieldSource = [
 const fieldDriver = rewriter.buildDriverSource(fieldSource, 'solve', { key: 'a' }, { tracing: true });
 assertCondition(fieldDriver.includes('\\"kind\\":\\"write\\"'), 'field assignment should emit a native write event');
 assertCondition(fieldDriver.includes('\\"kind\\":\\"read\\"'), 'field return should emit a native read event');
-assertCondition(fieldDriver.includes('\\"path\\":[\\"children\\"'), 'field access targets should include field paths');
+assertCondition(
+  fieldDriver.includes(String.raw`"{\"variable\":\"node\",\"path\":[`) &&
+    fieldDriver.includes(String.raw`+ "\"children\"" +`),
+  'field access targets should include field paths'
+);
 assertCondition(fieldDriver.includes('\\"variable\\":\\"node\\"'), 'field access should target the object variable');
 assertCondition(!fieldDriver.includes('RawTraceStep') && !fieldDriver.includes('visualization'), 'field tracing must stay v4-native');
 

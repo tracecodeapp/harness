@@ -4621,6 +4621,11 @@ public class TreeNode
             return TraceCode.CSharpHost.RuntimeTraceSink.WithIndexSources(indexSources, action);
         }
 
+        public static void WithIndexSources(IReadOnlyList<string?>? indexSources, Action action)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.WithIndexSources(indexSources, action);
+        }
+
         public static bool DictionaryTryGetValue<TKey, TValue>(
             TraceCodeDictionary<TKey, TValue> dictionary,
             TKey key,

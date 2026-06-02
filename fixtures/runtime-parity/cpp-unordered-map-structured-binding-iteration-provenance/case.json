@@ -40,7 +40,9 @@
         "variable": "adj",
         "pathDepth": 1,
         "bindingVariable": "ch",
-        "value": "t"
+        "value": [
+          "f"
+        ]
       },
       {
         "kind": "read",
@@ -55,15 +57,6 @@
   },
   "rejectEventAssertions": {
     "loop": [
-      {
-        "kind": "read",
-        "variable": "adj",
-        "pathDepth": 1,
-        "bindingVariable": "ch",
-        "value": [
-          "f"
-        ]
-      },
       {
         "kind": "read",
         "variable": "adj",

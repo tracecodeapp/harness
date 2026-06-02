@@ -67,7 +67,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "nums",
@@ -78,6 +79,15 @@
             "kind": "mutate",
             "variable": "values",
             "method": "pop"
+          },
+          {
+            "kind": "write",
+            "variable": "values"
+          },
+          {
+            "kind": "write",
+            "variable": "values",
+            "pathDepth": 1
           }
         ]
       }

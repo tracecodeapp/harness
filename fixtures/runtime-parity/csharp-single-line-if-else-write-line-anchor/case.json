@@ -19,7 +19,8 @@
       "eventKinds": [
         "line",
         "mutate",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "fresh",
@@ -32,6 +33,11 @@
           "kind": "mutate",
           "variable": "queue",
           "method": "Enqueue"
+        },
+        {
+          "kind": "write",
+          "variable": "queue",
+          "pathDepth": 1
         }
       ]
     },

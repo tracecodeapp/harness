@@ -23,6 +23,7 @@
   "expect": {
     "guardedWrite": {
       "eventKinds": [
+        "line",
         "read",
         "snapshot",
         "write"

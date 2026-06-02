@@ -28,6 +28,19 @@
     }
   },
   "expectByLanguage": {
+    "java": {
+      "helperEntry": {
+        "eventKinds": [
+          "call",
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "x"
+        ],
+        "accessTargets": []
+      }
+    },
     "csharp": {
       "helperEntry": {
         "eventKinds": [

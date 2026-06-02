@@ -76,6 +76,14 @@
           "kind": "write",
           "variable": "merged",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "j"
+        },
+        {
+          "kind": "write",
+          "variable": "k"
         }
       ]
     }

@@ -42,33 +42,6 @@
     }
   },
   "expectByLanguage": {
-    "python": {
-      "helperAppend": {
-        "eventKinds": [
-          "line",
-          "mutate",
-          "return",
-          "snapshot",
-          "write"
-        ],
-        "variableSnapshots": [
-          "out",
-          "value"
-        ],
-        "accessTargets": [
-          {
-            "kind": "mutate",
-            "variable": "out",
-            "method": "append"
-          },
-          {
-            "kind": "write",
-            "variable": "out",
-            "pathDepth": 1
-          }
-        ]
-      }
-    },
     "csharp": {
       "helperAppend": {
         "eventKinds": [

@@ -36,6 +36,32 @@
     }
   },
   "expectByLanguage": {
+    "python": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "dp",
+          "key"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "dp",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "dp",
+            "pathDepth": 2
+          }
+        ]
+      }
+    },
     "java": {
       "write": {
         "eventKinds": [
@@ -152,6 +178,27 @@
     ]
   },
   "expectSummaryByLanguage": {
+    "python": {
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "dp",
+          "pathDepth": 1,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "count": 1
+        }
+      ]
+    },
     "csharp": {
       "accessTargets": [
         {

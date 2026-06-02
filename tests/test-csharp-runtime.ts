@@ -42,6 +42,7 @@ interface WorkerMessage {
   id?: string;
   type: string;
   payload?: unknown;
+  protocolToken?: string;
 }
 
 interface MockCSharpWorkerRawResult {
@@ -80,14 +81,19 @@ class MockCSharpWorker {
       const { id, type } = message;
       if (type === 'init') {
         this.onmessage?.({
-          data: { id, type, payload: { success: true, loadTimeMs: 1 } },
+          data: { id, type, payload: { success: true, loadTimeMs: 1 }, protocolToken: message.protocolToken },
         } as MessageEvent<WorkerMessage>);
         return;
       }
 
       if (type === 'warmup') {
         this.onmessage?.({
-          data: { id, type, payload: { success: true, loadTimeMs: 2, timings: { totalMs: 2, initMs: 0, warmupMs: 2 } } },
+          data: {
+            id,
+            type,
+            payload: { success: true, loadTimeMs: 2, timings: { totalMs: 2, initMs: 0, warmupMs: 2 } },
+            protocolToken: message.protocolToken,
+          },
         } as MessageEvent<WorkerMessage>);
         return;
       }
@@ -104,13 +110,18 @@ class MockCSharpWorker {
       const payload = MockCSharpWorker.responses.shift();
       if (!payload) {
         this.onmessage?.({
-          data: { id, type: 'error', payload: { error: `No mock response for ${type}` } },
+          data: {
+            id,
+            type: 'error',
+            payload: { error: `No mock response for ${type}` },
+            protocolToken: message.protocolToken,
+          },
         } as MessageEvent<WorkerMessage>);
         return;
       }
 
       this.onmessage?.({
-        data: { id, type, payload },
+        data: { id, type, payload, protocolToken: message.protocolToken },
       } as MessageEvent<WorkerMessage>);
     });
   }

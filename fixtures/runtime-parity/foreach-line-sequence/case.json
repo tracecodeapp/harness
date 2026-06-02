@@ -50,6 +50,17 @@
     "header",
     "after"
   ],
+  "expectLineSequenceByLanguage": {
+    "cpp": [
+      "header",
+      "body",
+      "body",
+      "body",
+      "body",
+      "header",
+      "after"
+    ]
+  },
   "expect": {
     "header": {
       "eventKinds": [

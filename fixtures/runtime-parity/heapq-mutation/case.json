@@ -76,7 +76,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "heap",
@@ -91,6 +92,11 @@
           {
             "kind": "read",
             "variable": "nums",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "heap",
             "pathDepth": 1
           }
         ]
@@ -126,7 +132,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "heap",
@@ -144,6 +151,11 @@
           {
             "kind": "read",
             "variable": "nums",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "heap",
             "pathDepth": 1
           }
         ]
@@ -185,7 +197,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "heap",
@@ -208,6 +221,11 @@
           {
             "kind": "read",
             "variable": "heap"
+          },
+          {
+            "kind": "write",
+            "variable": "heap",
+            "pathDepth": 1
           }
         ]
       },
@@ -243,6 +261,36 @@
       }
     },
     "javascript": {
+      "push": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "append"
+          },
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "heap",
+            "pathDepth": 1
+          }
+        ]
+      },
       "pop": {
         "eventKinds": [
           "line",
@@ -263,12 +311,41 @@
         ],
         "variableSnapshots": [
           "heap",
-          "nums",
-          "value"
+          "nums"
         ]
       }
     },
     "typescript": {
+      "push": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "append"
+          },
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "heap",
+            "pathDepth": 1
+          }
+        ]
+      },
       "pop": {
         "eventKinds": [
           "line",
@@ -289,8 +366,57 @@
         ],
         "variableSnapshots": [
           "heap",
-          "nums",
-          "value"
+          "nums"
+        ]
+      }
+    },
+    "cpp": {
+      "push": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "append"
+          },
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "heap",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "pop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "pop"
+          }
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums"
         ]
       }
     }

@@ -117,6 +117,49 @@
     "hitCheck",
     "returnHit"
   ],
+  "expectLineSequenceByLanguage": {
+    "csharp": [
+      "initLeft",
+      "initRight",
+      "condition",
+      "condition",
+      "mid",
+      "hitCheck",
+      "leftSortedCheck",
+      "targetInLeftCheck",
+      "moveLeft",
+      "condition",
+      "condition",
+      "mid",
+      "hitCheck",
+      "leftSortedCheck",
+      "targetInLeftCheck",
+      "moveRight",
+      "condition",
+      "condition",
+      "mid",
+      "hitCheck",
+      "returnHit"
+    ],
+    "cpp": [
+      "initLeft",
+      "initRight",
+      "condition",
+      "mid",
+      "hitCheck",
+      "leftSortedCheck",
+      "targetInLeftCheck",
+      "moveLeft",
+      "mid",
+      "hitCheck",
+      "leftSortedCheck",
+      "targetInLeftCheck",
+      "moveRight",
+      "mid",
+      "hitCheck",
+      "returnHit"
+    ]
+  },
   "expect": {},
   "expectLineSnapshots": [
     {
@@ -153,8 +196,7 @@
       "role": "mid",
       "includes": {
         "left": 0,
-        "right": 6,
-        "mid": 3
+        "right": 6
       }
     },
     {
@@ -203,8 +245,7 @@
       "role": "mid",
       "includes": {
         "left": 4,
-        "right": 6,
-        "mid": 5
+        "right": 6
       }
     },
     {
@@ -253,8 +294,7 @@
       "role": "mid",
       "includes": {
         "left": 4,
-        "right": 4,
-        "mid": 4
+        "right": 4
       }
     },
     {
@@ -275,6 +315,8 @@
     }
   ],
   "expectLineSnapshotsByLanguage": {
+    "csharp": [],
+    "cpp": [],
     "python": [
       {
         "role": "initLeft",

@@ -17,6 +17,7 @@
       "accessTargets": [
         { "kind": "mutate", "variable": "out" },
         { "kind": "read", "variable": "values", "pathDepth": 1 },
+        { "kind": "write", "variable": "out", "pathDepth": 1 },
         { "kind": "write", "variable": "i" }
       ]
     }

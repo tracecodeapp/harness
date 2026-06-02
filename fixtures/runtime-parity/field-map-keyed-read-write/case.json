@@ -52,11 +52,7 @@
         {
           "kind": "read",
           "variable": "this",
-          "pathDepth": 2,
-          "indexSources": [
-            null,
-            "key"
-          ]
+          "pathDepth": 2
         },
         {
           "kind": "write",
@@ -107,6 +103,11 @@
           "self"
         ],
         "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "self",
+            "pathDepth": 1
+          },
           {
             "kind": "read",
             "variable": "self",
@@ -541,11 +542,7 @@
         {
           "kind": "read",
           "variable": "this",
-          "pathDepth": 2,
-          "indexSources": [
-            null,
-            "key"
-          ]
+          "pathDepth": 2
         },
         {
           "kind": "write",
@@ -560,10 +557,6 @@
           "kind": "mutate",
           "variable": "this",
           "pathDepth": 2,
-          "indexSources": [
-            null,
-            "key"
-          ],
           "method": "set",
           "args": [
             "a",

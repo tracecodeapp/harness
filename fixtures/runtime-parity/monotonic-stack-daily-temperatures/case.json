@@ -102,7 +102,6 @@
         "variableSnapshots": [
           "i",
           "out",
-          "prev",
           "stack",
           "temperatures",
           "this"
@@ -152,7 +151,6 @@
         "variableSnapshots": [
           "i",
           "out",
-          "prev",
           "stack",
           "temperatures",
           "this"

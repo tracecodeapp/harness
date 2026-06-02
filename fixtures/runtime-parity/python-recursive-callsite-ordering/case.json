@@ -41,10 +41,11 @@
       ]
     },
     "enter": {
-      "eventKinds": ["line", "mutate", "snapshot"],
+      "eventKinds": ["line", "mutate", "snapshot", "write"],
       "variableSnapshots": ["depth", "seen"],
       "accessTargets": [
-        { "kind": "mutate", "variable": "seen" }
+        { "kind": "mutate", "variable": "seen" },
+        { "kind": "write", "variable": "seen", "pathDepth": 1 }
       ]
     },
     "check": {

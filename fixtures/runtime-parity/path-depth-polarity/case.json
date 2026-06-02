@@ -94,6 +94,11 @@
         "accessTargets": [
           {
             "kind": "read",
+            "pathDepth": 1,
+            "variable": "self"
+          },
+          {
+            "kind": "read",
             "pathDepth": 2,
             "variable": "self"
           },
@@ -388,14 +393,8 @@
     "python": {
       "accessTargets": [
         {
-          "count": 1,
+          "count": 2,
           "kind": "read",
-          "pathDepth": 1,
-          "variable": "self"
-        },
-        {
-          "count": 1,
-          "kind": "write",
           "pathDepth": 1,
           "variable": "self"
         },

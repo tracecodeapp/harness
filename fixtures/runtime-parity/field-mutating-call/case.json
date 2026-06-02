@@ -127,11 +127,44 @@
         "eventKinds": [
           "line",
           "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "this",
+            "method": "append",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 2
+          }
+        ]
+      }
+    },
+    "cpp": {
+      "fieldAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
           "read",
           "snapshot",
           "write"
         ],
         "variableSnapshots": [
+          "items",
+          "this",
           "value"
         ],
         "accessTargets": [

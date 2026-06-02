@@ -1400,6 +1400,15 @@ inline decltype(auto) trace_index_read_value(const Container& container, Index i
   }
 }
 
+template <typename Container>
+inline auto trace_container_raw_size(const Container& container) {
+  if constexpr (requires { container.raw().size(); }) {
+    return container.raw().size();
+  } else {
+    return container.size();
+  }
+}
+
 template <typename Container, typename Index>
 inline auto trace_index_read(const Container& container, const std::string& name, Index index, int line, const char* index_source = nullptr) {
   auto concrete_index = materialize_trace_index(index);

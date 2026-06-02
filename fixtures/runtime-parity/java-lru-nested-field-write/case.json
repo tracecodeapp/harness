@@ -64,8 +64,8 @@
         "write"
       ],
       "variableSnapshots": [
+        "head",
         "node",
-        "this",
         "value"
       ],
       "accessTargets": [
@@ -76,8 +76,8 @@
         },
         {
           "kind": "write",
-          "variable": "this",
-          "pathDepth": 3
+          "variable": "head",
+          "pathDepth": 2
         }
       ]
     }
@@ -108,13 +108,12 @@
     "nestedPrevWrite": [
       {
         "kind": "write",
-        "variable": "this",
+        "variable": "head",
         "path": [
-          "head",
           "next",
           "prev"
         ],
-        "pathDepth": 3
+        "pathDepth": 2
       }
     ]
   }

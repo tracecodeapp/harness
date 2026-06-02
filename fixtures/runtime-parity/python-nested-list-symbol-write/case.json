@@ -9,9 +9,10 @@
   },
   "expect": {
     "write": {
-      "eventKinds": ["line", "snapshot", "write"],
+      "eventKinds": ["line", "read", "snapshot", "write"],
       "variableSnapshots": ["board", "col", "row"],
       "accessTargets": [
+        { "kind": "read", "variable": "board", "pathDepth": 1 },
         { "kind": "write", "variable": "board", "pathDepth": 2 }
       ]
     }

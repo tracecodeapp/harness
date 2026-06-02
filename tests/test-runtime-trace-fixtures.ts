@@ -81,6 +81,7 @@ interface FixtureCase {
   anchors: Record<string, Record<Language, string>>;
   lineSequenceAnchors?: Record<string, Record<Language, string>>;
   expectLineSequence?: string[];
+  expectLineSequenceByLanguage?: Partial<Record<Language, string[]>>;
   expectLineSnapshots?: Array<{
     role: string;
     includes?: Record<string, unknown>;
@@ -749,6 +750,8 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
     ): Promise<JavaWorkerTraceResult> => {
       const workerSource = await readFile(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
       const augmentationSource = await readFile(JAVA_SOURCE_AUGMENTATIONS_PATH, 'utf8');
+      const initProtocolToken = 'runtime-trace-java-init-token';
+      const traceProtocolToken = 'runtime-trace-java-trace-token';
       let response: JavaWorkerRawTraceResult | null = null;
       let errorResponse: Error | null = null;
       const activeWorkerTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -789,6 +792,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         postMessage: (message: WorkerMessage) => {
           if (message.type === 'worker-ready') return;
           if (message.id !== 'trace') return;
+          if (message.protocolToken !== traceProtocolToken) return;
           if (message.type === 'error') {
             const payload = message.payload as { error?: unknown } | undefined;
             errorResponse = new Error(String(payload?.error ?? 'Java worker error'));
@@ -844,6 +848,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
             id: 'init',
             type: 'init',
             payload: undefined,
+            protocolToken: initProtocolToken,
           },
         });
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -852,6 +857,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
             id: 'trace',
             type: 'execute-with-tracing',
             payload: { code, functionName, inputs, options, executionStyle },
+            protocolToken: traceProtocolToken,
           },
         });
 
@@ -1547,7 +1553,8 @@ async function runFixture(
     assertCondition(Boolean(trace), `${fixture.id}: ${language} trace was not produced`);
     const roleLines = roleLinesByLanguage[language] ?? {};
     const actual = projectRoleSignature(trace, roleLines);
-    if (fixture.expectLineSequence) {
+    const expectedLineSequence = fixture.expectLineSequenceByLanguage?.[language] ?? fixture.expectLineSequence;
+    if (expectedLineSequence) {
       const lineSequenceRoleLines = Object.fromEntries(
         Object.entries({
           ...fixture.anchors,
@@ -1559,8 +1566,8 @@ async function runFixture(
       );
       const actualLineSequence = projectLineSequence(trace, lineSequenceRoleLines);
       assertCondition(
-        stableStringify(actualLineSequence) === stableStringify(fixture.expectLineSequence),
-        `${fixture.id}: ${language} runtime trace line sequence drifted.\nExpected: ${stableStringify(fixture.expectLineSequence)}\nReceived: ${stableStringify(actualLineSequence)}`
+        stableStringify(actualLineSequence) === stableStringify(expectedLineSequence),
+        `${fixture.id}: ${language} runtime trace line sequence drifted.\nExpected: ${stableStringify(expectedLineSequence)}\nReceived: ${stableStringify(actualLineSequence)}`
       );
     }
     const expectedLineSnapshots = fixture.expectLineSnapshotsByLanguage?.[language] ?? fixture.expectLineSnapshots;

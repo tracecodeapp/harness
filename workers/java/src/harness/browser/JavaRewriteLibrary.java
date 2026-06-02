@@ -87,6 +87,7 @@ public final class JavaRewriteLibrary {
   private static final Pattern MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
   private static final Pattern MAP_GET_OR_DEFAULT_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
   private static final Pattern MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
+  private static final Pattern LIST_REMOVE_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.remove\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
   private static final Pattern QUEUE_PEEK_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.peek\\(\\)");
   private static final Pattern QUEUE_REMOVE_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.(remove|poll)\\(\\)");
   private static final Pattern STACK_DEQUE_POP_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.pop\\(\\)");
@@ -1190,6 +1191,13 @@ public final class JavaRewriteLibrary {
         return "TraceHooks.readListAtLine(" + line + ", " + quote(name) + ", " + name + ", " + index + ", " + indexSourceArgument(rawIndex) + ")";
       }
       return match.group(0);
+    });
+    next = replaceAll(LIST_REMOVE_CALL, next, match -> {
+      String name = match.group(1);
+      if (!isListType(frame.typeOf(name))) return match.group(0);
+      String rawIndex = match.group(2).trim();
+      String index = rewriteReads(rawIndex, line, frame);
+      return "TraceHooks.popListAtLine(" + line + ", " + quote(name) + ", " + name + ", " + index + ")";
     });
     final String matrixReadSource = next;
     next = replaceAll(MATRIX_READ, matrixReadSource, match -> {
