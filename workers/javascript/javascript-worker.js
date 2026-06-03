@@ -1819,6 +1819,7 @@ function createTraceRecorder(options = {}) {
 
   function runtimeTraceAccessValue(step, access) {
     if (access && Object.prototype.hasOwnProperty.call(access, 'value')) return access.value;
+    if (access?.kind === 'indexed-write' || access?.kind === 'cell-write') return undefined;
     return valueAtPath(step?.variables?.[access.variable], access.indices);
   }
 
@@ -2136,14 +2137,22 @@ function createTraceRecorder(options = {}) {
         return;
       }
 
+      const hasExplicitPath = Array.isArray(event.indices) && event.indices.length > 0;
+      const normalizedIndices = hasExplicitPath
+        ? normalizeTraceIndices(event.indices, maxPathDepth, (value) => this.serialize(value))
+        : null;
+      if (hasExplicitPath && !normalizedIndices) {
+        return;
+      }
+      const normalizedIndexSources = normalizedIndices
+        ? normalizeTraceIndexSources(event.indexSources, normalizedIndices.length)
+        : null;
       const normalized = {
         variable,
         kind,
-        ...(Array.isArray(event.indices) && event.indices.length > 0
-          ? { indices: normalizeTraceIndices(event.indices, maxPathDepth, (value) => this.serialize(value)) ?? undefined }
-          : {}),
-        ...(Array.isArray(event.indexSources) && event.indexSources.length > 0
-          ? { indexSources: normalizeTraceIndexSources(event.indexSources, maxPathDepth) ?? undefined }
+        ...(normalizedIndices ? { indices: normalizedIndices } : {}),
+        ...(normalizedIndexSources && normalizedIndexSources.length > 0
+          ? { indexSources: normalizedIndexSources }
           : {}),
         ...(typeof event.method === 'string' && event.method.length > 0
           ? { method: event.method }
@@ -2969,6 +2978,7 @@ function isTraceStateMutationHelperCall(ts, expression) {
   }
   return [
     '__traceMutatingCall',
+    '__traceRecordIndexWrite',
     '__traceWriteIndex',
     '__traceAugAssignIndex',
     '__traceUpdateIndex',
@@ -3227,6 +3237,25 @@ function extractTraceableElementAccess(ts, node, maxPathDepth = DEFAULT_TRACE_MA
     receiverExpression: ts.factory.createIdentifier(current.text),
     indices,
   };
+}
+
+function isPassiveTraceIndexExpression(ts, node) {
+  const current = unwrapParenthesizedExpression(ts, node);
+  if (!current) return false;
+  return Boolean(
+    ts.isIdentifier(current) ||
+      ts.isStringLiteral(current) ||
+      ts.isNumericLiteral(current) ||
+      current.kind === ts.SyntaxKind.NullKeyword ||
+      current.kind === ts.SyntaxKind.TrueKeyword ||
+      current.kind === ts.SyntaxKind.FalseKeyword ||
+      (typeof ts.isBigIntLiteral === 'function' && ts.isBigIntLiteral(current)) ||
+      (typeof ts.isNoSubstitutionTemplateLiteral === 'function' && ts.isNoSubstitutionTemplateLiteral(current))
+  );
+}
+
+function arePassiveTraceIndexExpressions(ts, indices) {
+  return Array.isArray(indices) && indices.every((index) => isPassiveTraceIndexExpression(ts, index));
 }
 
 function extractTraceablePropertyAccess(ts, node) {
@@ -3624,6 +3653,15 @@ function createTraceWriteIndexExpression(ts, sourceFile, node, variableName, ind
   ]);
 }
 
+function createTraceRecordIndexWriteExpression(ts, sourceFile, node, variableName, indices, indexSourceExpressions = indices) {
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceRecordIndexWrite'), undefined, [
+    ts.factory.createStringLiteral(variableName),
+    createIndicesArrayExpression(ts, indices),
+    createIndexSourcesArrayExpression(ts, sourceFile, indexSourceExpressions),
+    createSourceLocationObject(ts, sourceFile, node),
+  ]);
+}
+
 function createSourceLocationObject(ts, sourceFile, node) {
   const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
   return ts.factory.createObjectLiteralExpression(
@@ -3663,6 +3701,17 @@ function createTraceWritePropertyExpression(ts, sourceFile, node, variableName, 
     value,
     createSourceLocationObject(ts, sourceFile, node),
   ]);
+}
+
+function createTraceRecordPropertyWriteExpression(ts, sourceFile, node, variableName, propertyName) {
+  return createTraceRecordIndexWriteExpression(
+    ts,
+    sourceFile,
+    node,
+    variableName,
+    [ts.factory.createStringLiteral(propertyName)],
+    [ts.factory.createNull()]
+  );
 }
 
 function createTraceHasIndexExpressionForReceiver(
@@ -3863,15 +3912,17 @@ function addDestructuringAssignmentWriteStatements(
 
   const tracedIndexedTarget = extractTraceableElementAccess(ts, current, maxPathDepth);
   if (tracedIndexedTarget) {
+    if (!arePassiveTraceIndexExpressions(ts, tracedIndexedTarget.indices)) {
+      return;
+    }
     statements.push(
       ts.factory.createExpressionStatement(
-        createTraceWriteIndexExpression(
+        createTraceRecordIndexWriteExpression(
           ts,
           sourceFile,
           current,
           tracedIndexedTarget.variableName,
           tracedIndexedTarget.indices,
-          current,
           tracedIndexedTarget.indices
         )
       )
@@ -3883,13 +3934,12 @@ function addDestructuringAssignmentWriteStatements(
   if (tracedPropertyTarget) {
     statements.push(
       ts.factory.createExpressionStatement(
-        createTraceWritePropertyExpression(
+        createTraceRecordPropertyWriteExpression(
           ts,
           sourceFile,
           current,
           tracedPropertyTarget.variableName,
-          tracedPropertyTarget.propertyName,
-          current
+          tracedPropertyTarget.propertyName
         )
       )
     );
@@ -5471,6 +5521,24 @@ function __traceReadProperty(__varName, __container, __propertyName, __scopeOrLo
     ...__traceNormalizeSourceLocation(__location),
   });
   return __value;
+}
+
+function __traceRecordIndexWrite(__varName, __indices, __indexSources, __location) {
+  const __normalized = __traceNormalizeIndices(__indices);
+  if (!__normalized) {
+    return undefined;
+  }
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized.length);
+  __traceRecorder.recordAccess({
+    variable: __varName,
+    kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
+    indices: __normalized,
+    ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+    pathDepth: __normalized.length,
+    ...__traceNormalizeSourceLocation(__location),
+  });
+  __traceFlushDeferredScalarUpdates(__indices);
+  return undefined;
 }
 
 function __traceWriteIndex(__varName, __container, __indices, __indexSources, __value, __location) {

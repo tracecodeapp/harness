@@ -3581,18 +3581,90 @@ function smallest(nums: number[]): number {
       destructuredIndexedSwapWrites.some(
         (event) =>
           JSON.stringify(event.target?.path) === JSON.stringify([0]) &&
-          JSON.stringify(event.target?.indexSources) === JSON.stringify(['parent']) &&
-          event.value === 1
+          JSON.stringify(event.target?.indexSources) === JSON.stringify(['parent'])
       ) &&
         destructuredIndexedSwapWrites.some(
           (event) =>
             JSON.stringify(event.target?.path) === JSON.stringify([1]) &&
-            JSON.stringify(event.target?.indexSources) === JSON.stringify(['i']) &&
-            event.value === 3
+            JSON.stringify(event.target?.indexSources) === JSON.stringify(['i'])
         ),
       `${language} destructuring indexed swap should emit writes for both targets, received ${JSON.stringify(destructuredIndexedSwapWrites)}`
     );
   }
+
+  const destructuringSideEffectTargetTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const arr = [0, 0];
+  let i = 0;
+  [arr[i++]] = [7];
+  return { arr, i };
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    destructuringSideEffectTargetTracing.success === true,
+    `JavaScript side-effecting destructuring target tracing should succeed: ${destructuringSideEffectTargetTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(destructuringSideEffectTargetTracing.output) === JSON.stringify({ arr: [7, 0], i: 1 }),
+    `JavaScript side-effecting destructuring target should execute once, got ${JSON.stringify(destructuringSideEffectTargetTracing.output)}`
+  );
+  assertCondition(
+    !traceAccessEvents(destructuringSideEffectTargetTracing).some(
+      (event) =>
+        event.kind === 'write' &&
+        event.target?.variable === 'arr' &&
+        JSON.stringify(event.target.path) === JSON.stringify([1])
+    ),
+    `JavaScript side-effecting destructuring target should not trace a replayed arr[1] write, received ${JSON.stringify(
+      destructuringSideEffectTargetTracing.trace?.events
+    )}`
+  );
+
+  const symbolKeyMutationTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const graph = {};
+  const key = Symbol("node");
+  graph[key] = [];
+  graph[key].push(1);
+  return graph[key].length;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    symbolKeyMutationTracing.success === true,
+    `JavaScript Symbol-key nested mutation tracing should succeed: ${symbolKeyMutationTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(symbolKeyMutationTracing.output === 1, 'JavaScript Symbol-key nested mutation should preserve output');
+  assertCondition(
+    !traceAccessEvents(symbolKeyMutationTracing).some(
+      (event) =>
+        event.line === 5 &&
+        event.target?.variable === 'graph' &&
+        (event.kind === 'read' || event.kind === 'mutate') &&
+        !Array.isArray(event.target.path)
+    ),
+    `JavaScript untraceable Symbol-key mutation should not emit root graph accesses, received ${JSON.stringify(
+      symbolKeyMutationTracing.trace?.events
+    )}`
+  );
+  console.log('PASS: execute-with-tracing JS destructuring target replay guard');
 
   const tuplePushArgsTracing = await harness.sendMessage<{
     success: boolean;
