@@ -5258,17 +5258,27 @@ function cppValueTypeTempInitialization(containerName, tempName, argumentSource)
   return `std::decay_t<decltype(${containerName})>::value_type ${tempName} = ${initializer};`;
 }
 
-function aggregateMutationArgsJsonExpression(argumentSource, fallbackExpression) {
+function buildMutationArgumentCapture(containerName, tempName, argumentSource, indent = '') {
   const trimmedArgument = argumentSource.trim();
   if (trimmedArgument.startsWith('{') && trimmedArgument.endsWith('}')) {
-    const aggregateArgs = splitTopLevelCommaList(trimmedArgument.slice(1, -1))
+    const aggregateArgs = splitTopLevel(trimmedArgument.slice(1, -1), ',', { trackAngleBrackets: false })
       .map((arg) => arg.trim())
       .filter(Boolean);
-    return aggregateArgs.length > 0
-      ? `std::string("[") + tracecode::mutation_args_json(${aggregateArgs.join(', ')}) + "]"`
-      : 'std::string("[[]]")';
+    if (aggregateArgs.length > 0 && aggregateArgs.every((arg) => !arg.startsWith('{'))) {
+      const valueNames = aggregateArgs.map((_, index) => `${tempName}_field_${index}`);
+      return {
+        initLines: [
+          ...aggregateArgs.map((arg, index) => `${indent}  auto ${valueNames[index]} = ${arg};`),
+          `${indent}  std::decay_t<decltype(${containerName})>::value_type ${tempName} = {${valueNames.join(', ')}};`,
+        ],
+        argsJsonExpression: `std::string("[") + tracecode::mutation_args_json(${valueNames.join(', ')}) + "]"`,
+      };
+    }
   }
-  return `tracecode::mutation_args_json(${fallbackExpression})`;
+  return {
+    initLines: [`${indent}  ${cppValueTypeTempInitialization(containerName, tempName, argumentSource)}`],
+    argsJsonExpression: `tracecode::mutation_args_json(${tempName})`,
+  };
 }
 
 function rewritePlainContainerMutationInstrumentation(line, lineNumber, variables, aliases = new Map(), source = '') {
@@ -5324,14 +5334,14 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
         : splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_member_mutation_arg_${lineNumber}_${name}`;
-        const argsJsonExpression = aggregateMutationArgsJsonExpression(args[0], tempName);
+        const capture = buildMutationArgumentCapture(`this->${name}`, tempName, args[0], indent);
         const isSetInsert = method === 'insert' && variable && isSetCppType(variable.type, aliases);
         const writeIndex = `tracecode::trace_container_raw_size(this->${name}) - 1`;
         const rewritten = [
           `${indent}{`,
-          `${indent}  ${cppValueTypeTempInitialization(`this->${name}`, tempName, args[0])}`,
+          ...capture.initLines,
           `${indent}  this->${name}.${method}(${tempName});`,
-          `${indent}  tracecode::emit_field_container_mutate_value("this", ${cppStringLiteral(name)}, this->${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${argsJsonExpression});`,
+          `${indent}  tracecode::emit_field_container_mutate_value("this", ${cppStringLiteral(name)}, this->${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${capture.argsJsonExpression});`,
         ];
         if (!isSetInsert) {
           rewritten.push(`${indent}  tracecode::emit_field_index_write_value("this", ${cppStringLiteral(name)}, this->${name}, ${writeIndex}, ${lineNumber}, nullptr);`);
@@ -5367,14 +5377,14 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
         : splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_mutation_arg_${lineNumber}_${name}`;
-        const argsJsonExpression = aggregateMutationArgsJsonExpression(args[0], tempName);
+        const capture = buildMutationArgumentCapture(name, tempName, args[0], indent);
         const isSetInsert = variable && method === 'insert' && isSetCppType(variable.type, aliases);
         const writeIndex = `tracecode::trace_container_raw_size(${name}) - 1`;
         const rewritten = [
           `${indent}{`,
-          `${indent}  ${cppValueTypeTempInitialization(name, tempName, args[0])}`,
+          ...capture.initLines,
           `${indent}  ${name}.${method}(${tempName});`,
-          `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${argsJsonExpression});`,
+          `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${capture.argsJsonExpression});`,
         ];
         if (!isSetInsert) {
           rewritten.push(`${indent}  tracecode::emit_index_write_value(${cppStringLiteral(name)}, ${name}, ${writeIndex}, ${lineNumber}, nullptr);`);
@@ -5408,7 +5418,7 @@ function shouldEmitPlainSetLookup(variable, aliases = new Map()) {
 }
 
 function rewritePlainContainerLookupInstrumentation(line, lineNumber, variables, aliases = new Map()) {
-  if (line.includes('tracecode::emit_container_lookup_read_value')) return line;
+  if (line.includes('tracecode::trace_container_find_value')) return line;
   const stripped = stripCppStringsAndComments(line);
   if (!stripped.includes('.find')) return line;
   const candidateNames = [...(variables || []).entries()]
@@ -5417,45 +5427,51 @@ function rewritePlainContainerLookupInstrumentation(line, lineNumber, variables,
     .sort((left, right) => right.length - left.length);
   if (candidateNames.length === 0) return line;
 
-  const reads = [];
+  let rewritten = line;
   for (const name of candidateNames) {
     let cursor = 0;
-    while (cursor < stripped.length) {
-      const nameIndex = stripped.indexOf(name, cursor);
+    while (cursor < rewritten.length) {
+      const nameIndex = rewritten.indexOf(name, cursor);
       if (nameIndex < 0) break;
-      const before = nameIndex > 0 ? stripped[nameIndex - 1] : '';
-      const afterName = stripped[nameIndex + name.length] || '';
-      if (/[A-Za-z0-9_]/.test(before) || /[A-Za-z0-9_]/.test(afterName)) {
+      const before = nameIndex > 0 ? rewritten[nameIndex - 1] : '';
+      const beforeTwo = nameIndex >= 2 ? rewritten.slice(nameIndex - 2, nameIndex) : '';
+      const afterName = rewritten[nameIndex + name.length] || '';
+      if (
+        /[A-Za-z0-9_]/.test(before) ||
+        /[A-Za-z0-9_]/.test(afterName) ||
+        before === '.' ||
+        beforeTwo === '->' ||
+        beforeTwo === '::' ||
+        isInsideCppStringOrCharLiteral(rewritten, nameIndex)
+      ) {
         cursor = nameIndex + name.length;
         continue;
       }
       let memberIndex = nameIndex + name.length;
-      while (/\s/.test(stripped[memberIndex] || '')) memberIndex += 1;
-      if (stripped[memberIndex] !== '.') {
+      while (/\s/.test(rewritten[memberIndex] || '')) memberIndex += 1;
+      if (rewritten[memberIndex] !== '.') {
         cursor = nameIndex + name.length;
         continue;
       }
-      const methodMatch = stripped.slice(memberIndex).match(/^\.\s*find\s*\(/);
+      const methodMatch = rewritten.slice(memberIndex).match(/^\.\s*find\s*\(/);
       if (!methodMatch) {
         cursor = memberIndex + 1;
         continue;
       }
       const openIndex = memberIndex + methodMatch[0].lastIndexOf('(');
-      const closeIndex = findMatchingParen(stripped, openIndex);
+      const closeIndex = findMatchingParen(rewritten, openIndex);
       if (closeIndex < 0) break;
-      const keyExpression = stripped.slice(openIndex + 1, closeIndex).trim();
-      if (keyExpression) reads.push({ name, keyExpression });
-      cursor = closeIndex + 1;
+      const keyExpression = rewritten.slice(openIndex + 1, closeIndex).trim();
+      if (!keyExpression) {
+        cursor = closeIndex + 1;
+        continue;
+      }
+      const replacement = `tracecode::trace_container_find_value(${cppStringLiteral(name)}, ${name}, ${keyExpression}, ${lineNumber}, ${cppIndexSourceForExpression(keyExpression)})`;
+      rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+      cursor = nameIndex + replacement.length;
     }
   }
-  if (reads.length === 0) return line;
-  const indent = line.match(/^(\s*)/)?.[1] ?? '';
-  const instrumentation = reads
-    .map(({ name, keyExpression }) =>
-      `${indent}tracecode::emit_container_lookup_read_value(${cppStringLiteral(name)}, ${name}, ${keyExpression}, ${lineNumber}, ${cppIndexSourceForExpression(keyExpression)});`
-    )
-    .join('\n');
-  return `${instrumentation}\n${line}`;
+  return rewritten;
 }
 
 function detectMapIteratorAlias(line, variables, aliases = new Map(), scopeDepth = 0) {

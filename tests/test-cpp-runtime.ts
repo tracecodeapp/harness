@@ -2490,6 +2490,42 @@ if (
   throw new Error('C++ aggregate push_back should emit evaluated aggregate as one mutation arg, received ' + JSON.stringify(auditAggregatePushBackEvents));
 }
 
+const aggregatePushBackSideEffectTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    '  struct Edge { int u; int v; double w; };',
+    'public:',
+    '  int build() {',
+    '    vector<Edge> edges;',
+    '    int i = 0;',
+    '    edges.push_back({++i, i + 10, 1.0});',
+    '    return i * 10 + edges[0].u;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!aggregatePushBackSideEffectTrace.success || aggregatePushBackSideEffectTrace.output !== 11) {
+  throw new Error('C++ aggregate push_back tracing should single-evaluate initializer elements, received ' + JSON.stringify(aggregatePushBackSideEffectTrace));
+}
+const aggregatePushBackSideEffectEvents = aggregatePushBackSideEffectTrace.trace.events;
+const aggregatePushBackSideEffectMutate = aggregatePushBackSideEffectEvents.find((event) =>
+  event.kind === 'mutate' &&
+  event.line === 7 &&
+  event.target?.variable === 'edges' &&
+  event.method === 'push_back'
+);
+if (
+  !aggregatePushBackSideEffectMutate ||
+  !Array.isArray(aggregatePushBackSideEffectMutate.args?.[0]) ||
+  aggregatePushBackSideEffectMutate.args[0][0] !== 1 ||
+  aggregatePushBackSideEffectMutate.args[0][1] !== 11
+) {
+  throw new Error('C++ aggregate push_back should serialize the evaluated temporary, received ' + JSON.stringify(aggregatePushBackSideEffectEvents));
+}
+
 const auditStructuredVectorRangeTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -4294,6 +4330,42 @@ if (!nativeSetFindEvents.some((event) =>
   JSON.stringify(event.target.indexSources) === JSON.stringify(['v'])
 )) {
   throw new Error('C++ native set find guard should emit lookup read, received ' + JSON.stringify(nativeSetFindEvents));
+}
+
+const nativeSetFindSideEffectTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int visit() {',
+    '    function<int(int, std::unordered_set<int>&)> dfs = [&](int start, std::unordered_set<int>& visited) {',
+    '      int v = start;',
+    '      if (visited.find(-1) != visited.end()) return 0;',
+    '      else if (visited.find(v++) != visited.end()) return v;',
+    '      return v;',
+    '    };',
+    '    unordered_set<int> visited;',
+    '    visited.insert(1);',
+    '    return dfs(1, visited);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'visit',
+  inputs: {},
+  options: {},
+});
+if (!nativeSetFindSideEffectTrace.success || nativeSetFindSideEffectTrace.output !== 2) {
+  throw new Error('C++ native set find tracing should preserve if/else structure and single-evaluate key expressions, received ' + JSON.stringify(nativeSetFindSideEffectTrace));
+}
+const nativeSetFindSideEffectEvents = nativeSetFindSideEffectTrace.trace.events;
+if (!nativeSetFindSideEffectEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 7 &&
+  event.target?.variable === 'visited' &&
+  event.target.path?.[0] === 1 &&
+  event.value === true &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['v'])
+)) {
+  throw new Error('C++ side-effecting native set find should emit one lookup read with key provenance, received ' + JSON.stringify(nativeSetFindSideEffectEvents));
 }
 `;
 

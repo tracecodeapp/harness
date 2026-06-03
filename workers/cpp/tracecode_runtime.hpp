@@ -1493,6 +1493,12 @@ inline void emit_container_lookup_read_value(const std::string& name, const Cont
 }
 
 template <typename Container, typename Key>
+inline auto trace_container_find_value(const std::string& name, Container& container, Key&& key, int line, const char* index_source = nullptr) -> decltype(container.find(key)) {
+  emit_container_lookup_read_value(name, container, key, line, index_source);
+  return container.find(key);
+}
+
+template <typename Container, typename Key>
 inline auto trace_field_container_count(const Container& container, const std::string& object_name, const std::string& field_name, const Key& key, int line, const char* index_source = nullptr) {
   const auto count = container.count(key);
   if (!minimal_trace_enabled() && check_trace_budget(line)) {
