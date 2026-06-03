@@ -2367,6 +2367,46 @@ if (!unorderedMapVectorEvents.some((event) =>
   throw new Error('C++ unordered_map<vector> push_back should emit mutation args and key provenance, received ' + JSON.stringify(unorderedMapVectorEvents));
 }
 
+const unorderedMapVectorReferenceTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int build() {',
+    '    unordered_map<int, vector<int>> graph;',
+    '    vector<int>& bucket = graph[1];',
+    '    bucket.push_back(4);',
+    '    return graph[1][0];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!unorderedMapVectorReferenceTrace.success || unorderedMapVectorReferenceTrace.output !== 4) {
+  throw new Error('C++ unordered_map<vector> explicit mapped reference tracing failed: ' + JSON.stringify(unorderedMapVectorReferenceTrace));
+}
+
+const orderedMapVectorReferenceTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int build() {',
+    '    map<int, vector<int>> graph;',
+    '    vector<int>& bucket = graph[1];',
+    '    bucket.push_back(5);',
+    '    return graph[1][0];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!orderedMapVectorReferenceTrace.success || orderedMapVectorReferenceTrace.output !== 5) {
+  throw new Error('C++ map<vector> explicit mapped reference tracing failed: ' + JSON.stringify(orderedMapVectorReferenceTrace));
+}
+
 const unorderedMapIteratorSecondTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',

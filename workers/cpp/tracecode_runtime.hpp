@@ -5290,11 +5290,11 @@ class UnorderedMapValueRef {
     return owner_.values_.at(key_);
   }
 
-  operator V() {
+  operator V&() {
     return get();
   }
 
-  operator V() const {
+  operator const V&() const {
     return get();
   }
 
@@ -5914,11 +5914,11 @@ class MapValueRef {
     return owner_.values_.at(key_);
   }
 
-  operator V() {
+  operator V&() {
     return get();
   }
 
-  operator V() const {
+  operator const V&() const {
     return get();
   }
 
