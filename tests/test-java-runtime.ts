@@ -1986,6 +1986,32 @@ class Solution {
       nativeWrappedDequeMutationSource.includes('q.offerLast(i); TraceHooks.emitMutatingCallAtLine'),
     `Java source augmentation should not double-wrap native-instrumented deque mutations, received ${nativeWrappedDequeMutationSource}`
   );
+  const spoofedStringQueueMarkerSource = loadSourceAugmentationsForTest().augmentJavaCollectionOperations(`import java.util.*;
+
+class Solution {
+  boolean solve() {
+    Deque<Integer> q = new ArrayDeque<>();
+    q.offerLast(1); String marker = "TraceHooks.emitMutatingCallAtLine";
+    return q.size() == 1;
+  }
+}`, '');
+  assertCondition(
+    spoofedStringQueueMarkerSource.includes('TraceHooks.offerDequeLastAtLine(6, "q", q, 1)'),
+    `Java source augmentation should ignore marker strings when tracing deque mutations, received ${spoofedStringQueueMarkerSource}`
+  );
+  const spoofedCommentQueueMarkerSource = loadSourceAugmentationsForTest().augmentJavaCollectionOperations(`import java.util.*;
+
+class Solution {
+  boolean solve() {
+    Deque<Integer> q = new ArrayDeque<>();
+    q.offerLast(1); // TraceHooks.emitMutatingCallAtLine(6, "q", "offerLast", 1)
+    return q.size() == 1;
+  }
+}`, '');
+  assertCondition(
+    spoofedCommentQueueMarkerSource.includes('TraceHooks.offerDequeLastAtLine(6, "q", q, 1)'),
+    `Java source augmentation should ignore marker comments when tracing deque mutations, received ${spoofedCommentQueueMarkerSource}`
+  );
   const queueRemoveSource = augmentRewrittenJavaForTest(`import java.util.*;
 
 class Solution {

@@ -27,6 +27,48 @@
     return quote !== null;
   }
 
+  function isInsideJavaComment(line, offset) {
+    let quote = null;
+    let escaped = false;
+    let blockDepth = 0;
+    for (let index = 0; index < offset; index += 1) {
+      const ch = line[index];
+      const next = line[index + 1] ?? '';
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (quote) {
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (blockDepth > 0) {
+        if (ch === '/' && next === '*') {
+          blockDepth += 1;
+          index += 1;
+          continue;
+        }
+        if (ch === '*' && next === '/') {
+          blockDepth -= 1;
+          index += 1;
+        }
+        continue;
+      }
+      if (ch === '/' && next === '/') return true;
+      if (ch === '/' && next === '*') {
+        blockDepth += 1;
+        index += 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'") quote = ch;
+    }
+    return blockDepth > 0;
+  }
+
   function parseNativeTraceLine(line) {
     const match = line.match(/TraceHooks\.[A-Za-z0-9_]+AtLine\((\d+)\b/);
     if (!match) return null;
@@ -687,8 +729,7 @@
     ]);
     if (
       nativeInstrumentedQueueMethods.has(methodName) &&
-      (source.includes('TraceHooks.emitMutatingCallAtLine') ||
-        source.includes('TraceHooks.emitNoArgMutatingCallAtLine'))
+      hasNativeMutatingHookForReceiver(source, receiverName, methodName)
     ) {
       return source;
     }
@@ -748,6 +789,24 @@
       callPattern.lastIndex = cursor;
     }
     return output + source.slice(cursor);
+  }
+
+  function hasNativeMutatingHookForReceiver(source, receiverName, methodName) {
+    const receiver = escapeRegExp(receiverName);
+    const method = escapeRegExp(methodName);
+    const hookPatterns = [
+      new RegExp(`TraceHooks\\.emitMutatingCallAtLine\\(\\s*\\d+\\s*,\\s*"${receiver}"\\s*,\\s*"${method}"(?:\\s*[,\\)])`, 'g'),
+      new RegExp(`TraceHooks\\.emitNoArgMutatingCallAtLine\\(\\s*\\d+\\s*,\\s*"${receiver}"\\s*,\\s*"${method}"(?:\\s*[,\\)])`, 'g'),
+    ];
+    for (const pattern of hookPatterns) {
+      let match;
+      while ((match = pattern.exec(source)) !== null) {
+        if (!isInsideJavaStringLiteral(source, match.index) && !isInsideJavaComment(source, match.index)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   function rewriteJavaArraysFillStatement(line, lineNumber, currentMethod) {
