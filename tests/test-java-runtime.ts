@@ -398,6 +398,11 @@ import tracecode.browser.BrowserCompileAndTraceLibrary;
 import tracecode.browser.ProjectEvents;
 
 public class ProjectWorkspaceDirectorySmoke {
+  static String rejection(Throwable ex) {
+    String message = ex.getMessage();
+    return ex.getClass().getSimpleName() + ":" + (message != null && message.contains("must not escape"));
+  }
+
   public static void main(String[] args) throws Exception {
     Path root = Paths.get(args[0]);
     String manifest = "\\tdir\\tempty/child";
@@ -416,6 +421,41 @@ public class ProjectWorkspaceDirectorySmoke {
     System.out.println(collectChangedProjectFilesJson.invoke(null, root, manifest));
     String kernelManifest = "/proc/kernel/version\\t" + java.util.Base64.getEncoder().encodeToString("kernel".getBytes(java.nio.charset.StandardCharsets.UTF_8));
     System.out.println(collectChangedProjectFilesJson.invoke(null, root, kernelManifest));
+    ProjectEvents.setProjectWorkspaceRoot(root);
+    ProjectEvents.setProjectVirtualWorkspaceRoot("/home/ada/weather-api", "/workspace");
+    ProjectEvents.writeString(Paths.get("/workspace/safe.txt"), "safe\\n");
+    String previousUserDir = System.getProperty("user.dir");
+    String virtualTraversal = "ok";
+    try {
+      ProjectEvents.writeString(Paths.get("/workspace/../../escape.txt"), "bad\\n");
+    } catch (Throwable ex) {
+      virtualTraversal = rejection(ex);
+    }
+    String relativeTraversal = "ok";
+    try {
+      ProjectEvents.writeString(Paths.get("../escape.txt"), "bad\\n");
+    } catch (Throwable ex) {
+      relativeTraversal = rejection(ex);
+    }
+    String cwdTraversal = "ok";
+    try {
+      try {
+        System.setProperty("user.dir", "/workspace/../../outside");
+        ProjectEvents.writeString(Paths.get("cwd.txt"), "bad\\n");
+      } finally {
+        if (previousUserDir == null) {
+          System.clearProperty("user.dir");
+        } else {
+          System.setProperty("user.dir", previousUserDir);
+        }
+      }
+    } catch (Throwable ex) {
+      cwdTraversal = rejection(ex);
+    }
+    System.out.println("workspace-guard=" + Files.readString(root.resolve("safe.txt")).replace("\\n", "|")
+      + ":" + virtualTraversal + ":" + relativeTraversal + ":" + cwdTraversal
+      + ":" + Files.exists(root.getParent().resolve("escape.txt")));
+    ProjectEvents.clearKernelDevices();
     ProjectEvents.setKernelDevices("L2Rldi9zdGRpbg==\\tMQ==\\t\\tL2Rldi9zdGRpbg==\\t");
     try (var channel = ProjectEvents.newByteChannel(Paths.get("/dev/stdin"), StandardOpenOption.READ)) {
       ByteBuffer bytes = ByteBuffer.allocate(64);
@@ -626,6 +666,7 @@ public class ProjectWorkspaceDirectorySmoke {
       isDirectory,
       changedFilesJson,
       kernelChangedFilesJson,
+      workspaceGuardOutput,
       deviceChannelInput,
       customDeviceInput,
       sharedStdinOutput,
@@ -644,6 +685,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       Array.isArray(JSON.parse(kernelChangedFilesJson ?? 'null')) && JSON.parse(kernelChangedFilesJson ?? 'null').length === 0,
       'Java browser helper should not report kernel virtual manifest entries as workspace deletions'
+    );
+    assertCondition(
+      workspaceGuardOutput === 'workspace-guard=safe|:SecurityException:true:SecurityException:true:SecurityException:true:false',
+      `Java browser helper should reject workspace path traversal: ${output}`
     );
     assertCondition(
       deviceChannelInput === '',

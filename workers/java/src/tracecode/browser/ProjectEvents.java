@@ -179,6 +179,7 @@ public final class ProjectEvents {
     KERNEL_VIRTUAL_FILES.remove();
     STDOUT_CAPTURE.remove();
     STDERR_CAPTURE.remove();
+    PROJECT_WORKSPACE_ROOT.remove();
     PROJECT_ENVIRONMENT.remove();
     PROJECT_VIRTUAL_WORKSPACE_ROOT.remove();
     PROJECT_WORKSPACE_ALIAS.remove();
@@ -3143,7 +3144,9 @@ public final class ProjectEvents {
     if (path == null) return null;
     String normalized = normalizeVirtualString(path.toString());
     String relative = virtualWorkspaceRelativePath(normalized);
-    return relative == null ? normalized : PROJECT_WORKSPACE_ROOT.get().resolve(relative).normalize().toString().replace('\\', '/');
+    Path workspaceRoot = PROJECT_WORKSPACE_ROOT.get();
+    if (relative == null || workspaceRoot == null) return normalized;
+    return resolveWorkspaceRelativePath(workspaceRoot, relative, normalized).toString().replace('\\', '/');
   }
 
   private static String normalizeVirtualString(String value) {
@@ -3192,16 +3195,33 @@ public final class ProjectEvents {
     Path workspaceRoot = PROJECT_WORKSPACE_ROOT.get();
     if (workspaceRoot == null) return path;
     if (!path.isAbsolute()) {
-      String cwdRelative = virtualWorkspaceRelativePath(normalizeKernelAbsoluteString(System.getProperty("user.dir")));
+      String userDir = System.getProperty("user.dir");
+      String cwdRelative = virtualWorkspaceRelativePath(normalizeVirtualString(userDir));
       Path runtimeCwd = cwdRelative == null || cwdRelative.isEmpty()
           ? workspaceRoot
-          : workspaceRoot.resolve(cwdRelative).normalize();
-      return runtimeCwd.resolve(path).normalize();
+          : resolveWorkspaceRelativePath(workspaceRoot, cwdRelative, userDir);
+      return requireWorkspacePath(workspaceRoot, runtimeCwd.resolve(path).normalize(), path.toString());
     }
     String normalized = normalizeVirtualString(path.toString());
     String relative = virtualWorkspaceRelativePath(normalized);
     if (relative == null) return path;
-    return relative.isEmpty() ? workspaceRoot : workspaceRoot.resolve(relative).normalize();
+    return resolveWorkspaceRelativePath(workspaceRoot, relative, normalized);
+  }
+
+  private static Path resolveWorkspaceRelativePath(Path workspaceRoot, String relative, String sourcePath) {
+    Path resolved = relative == null || relative.isEmpty()
+        ? workspaceRoot
+        : workspaceRoot.resolve(relative).normalize();
+    return requireWorkspacePath(workspaceRoot, resolved, sourcePath);
+  }
+
+  private static Path requireWorkspacePath(Path workspaceRoot, Path resolved, String sourcePath) {
+    Path normalizedRoot = workspaceRoot.toAbsolutePath().normalize();
+    Path normalizedPath = resolved.toAbsolutePath().normalize();
+    if (!normalizedPath.startsWith(normalizedRoot)) {
+      throw new SecurityException("Path must not escape the project workspace: " + sourcePath);
+    }
+    return normalizedPath;
   }
 
   private static boolean isVirtualDeviceDirectory(String normalized) {
