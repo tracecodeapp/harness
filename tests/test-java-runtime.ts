@@ -2030,6 +2030,99 @@ class Solution {
     `Java matrix update tracing should not re-evaluate side-effecting indexes, received ${sideEffectMatrixUpdateOutput}`
   );
 
+  const sideEffectIndexedMutationOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int cursor = 0;
+  int next() { return cursor++; }
+  int solve() {
+    List<List<Integer>> graph = new ArrayList<>();
+    graph.add(new ArrayList<>());
+    graph.get(next()).add(7);
+    return graph.get(0).get(0) * 10 + cursor;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectIndexedMutationOutput === '71',
+    `Java indexed collection mutation tracing should not re-evaluate side-effecting indexes, received ${sideEffectIndexedMutationOutput}`
+  );
+
+  const sideEffectArrayIndexedMutationOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int cursor = 0;
+  int next() { return cursor++; }
+  int solve() {
+    List<Integer>[] graph = new ArrayList[] { new ArrayList<>() };
+    graph[next()].add(7);
+    return graph[0].get(0) * 10 + cursor;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectArrayIndexedMutationOutput === '71',
+    `Java array-indexed mutation tracing should not re-evaluate side-effecting indexes, received ${sideEffectArrayIndexedMutationOutput}`
+  );
+
+  const sideEffectComputeMutationOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int cursor = 0;
+  int next() { return cursor++; }
+  int solve() {
+    Map<Integer, List<Integer>> graph = new HashMap<>();
+    graph.computeIfAbsent(next(), key -> new ArrayList<>()).add(7);
+    return graph.get(0).get(0) * 10 + cursor;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectComputeMutationOutput === '71',
+    `Java computeIfAbsent mutation tracing should not re-evaluate side-effecting keys, received ${sideEffectComputeMutationOutput}`
+  );
+
+  const sideEffectListArrayWriteOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int cursor = 0;
+  int next() { return cursor++; }
+  int solve() {
+    List<int[]> values = new ArrayList<>();
+    values.add(new int[] { 1 });
+    values.get(next())[0] = 7;
+    return values.get(0)[0] * 10 + cursor;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectListArrayWriteOutput === '71',
+    `Java list-array write tracing should not re-evaluate side-effecting row indexes, received ${sideEffectListArrayWriteOutput}`
+  );
+
+  const sideEffectPeekMutationOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Box {
+  List<Integer> items = new ArrayList<>();
+}
+
+class QueueLike {
+  int cursor = 0;
+  Box box = new Box();
+  Box peek() {
+    cursor++;
+    return box;
+  }
+}
+
+class Solution {
+  int solve() {
+    QueueLike queue = new QueueLike();
+    queue.peek().items.add(7);
+    return queue.cursor * 10 + queue.box.items.get(0);
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectPeekMutationOutput === '17',
+    `Java peek-field mutation tracing should not evaluate peek() twice, received ${sideEffectPeekMutationOutput}`
+  );
+
   const indexedSetMutationSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
 class Solution {

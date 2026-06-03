@@ -516,7 +516,9 @@ public final class JavaRewriteLibrary {
       String indent = fieldIndexedMutatingCall.group(1);
       String name = fieldIndexedMutatingCall.group(2);
       String field = fieldIndexedMutatingCall.group(3);
-      String index = rewriteReads(fieldIndexedMutatingCall.group(4).trim(), sourceLine, frame);
+      String rawIndex = fieldIndexedMutatingCall.group(4).trim();
+      RepeatedExpression indexExpression = repeatedExpression("Index", sourceLine, rawIndex, rewriteReads(rawIndex, sourceLine, frame));
+      String index = indexExpression.value;
       String method = fieldIndexedMutatingCall.group(5);
       MutatingArgs rewrittenArgs = mutatingArgs(fieldIndexedMutatingCall.group(6).trim(), sourceLine, frame);
       String target = name + "." + field + ".get(" + index + ")";
@@ -528,15 +530,14 @@ public final class JavaRewriteLibrary {
       java.util.List<String> rawArgs = splitTopLevel(fieldIndexedMutatingCall.group(6).trim());
       String writeEvent = "";
       if ("add".equals(method) && rawArgs.size() == 1) {
-        String value = rewriteReads(rawArgs.get(0), sourceLine, frame);
         writeEvent = " if (" + target + " instanceof java.util.List) TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
             ", new Object[] { " + quote(field) + ", " + index + ", ((java.util.List) " + target + ").size() - 1 }, " +
-            value + ", null, " + indexSourceArgument(index) + ", null);";
+            rewrittenArgs.callArgs + ", null, " + indexSourceArgument(rawIndex) + ", null);";
       }
       String snapshotEvent = "this".equals(name) && frame.isField(field)
           ? "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(field) + ", " + field + ");"
           : "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + indexExpression.prefix + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher frontFieldMutatingCall = FRONT_FIELD_MUTATING_CALL_STATEMENT.matcher(line);
@@ -547,9 +548,10 @@ public final class JavaRewriteLibrary {
       String method = frontFieldMutatingCall.group(4);
       MutatingArgs rewrittenArgs = mutatingArgs(frontFieldMutatingCall.group(5).trim(), sourceLine, frame);
       String target = name + ".peek()." + field;
+      String temp = "__tracecodeFrontFieldTarget" + sourceLine;
       String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[0,\\\"" + field + "\\\"]}";
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
+          pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
       java.util.List<String> rawArgs = splitTopLevel(frontFieldMutatingCall.group(5).trim());
@@ -558,7 +560,7 @@ public final class JavaRewriteLibrary {
         if ("add".equals(method) || "push".equals(method) || "offer".equals(method) ||
             "addLast".equals(method) || "offerLast".equals(method)) {
           writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
-              ", new Object[] { 0, " + quote(field) + ", ((java.util.Collection) " + target + ").size() - 1 }, " +
+              ", new Object[] { 0, " + quote(field) + ", ((java.util.Collection) " + temp + ").size() - 1 }, " +
               rewrittenArgs.callArgs + ", null, null, null);";
         } else if ("addFirst".equals(method) || "offerFirst".equals(method)) {
           writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
@@ -566,7 +568,7 @@ public final class JavaRewriteLibrary {
         }
       }
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
+      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher fieldMutatingCall = FIELD_MUTATING_CALL_STATEMENT.matcher(line);
@@ -623,7 +625,8 @@ public final class JavaRewriteLibrary {
       String indent = computeMutatingCall.group(1);
       String name = computeMutatingCall.group(2);
       String rawKey = computeMutatingCall.group(3).trim();
-      String key = rewriteReads(rawKey, sourceLine, frame);
+      RepeatedExpression keyExpression = repeatedExpression("Key", sourceLine, rawKey, rewriteReads(rawKey, sourceLine, frame));
+      String key = keyExpression.value;
       String fallback = computeMutatingCall.group(4).trim();
       String method = computeMutatingCall.group(5);
       MutatingArgs rewrittenArgs = mutatingArgs(computeMutatingCall.group(6).trim(), sourceLine, frame);
@@ -635,7 +638,7 @@ public final class JavaRewriteLibrary {
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]" + escapedIndexSourcesTargetSegment(rawKey) + "},\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + keyExpression.prefix + "var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
 
     Matcher indexedFieldMutatingCall = INDEXED_FIELD_MUTATING_CALL_STATEMENT.matcher(line);
@@ -643,7 +646,8 @@ public final class JavaRewriteLibrary {
       String indent = indexedFieldMutatingCall.group(1);
       String name = indexedFieldMutatingCall.group(2);
       String rawIndex = indexedFieldMutatingCall.group(3).trim();
-      String index = rewriteReads(rawIndex, sourceLine, frame);
+      RepeatedExpression indexExpression = repeatedExpression("Index", sourceLine, rawIndex, rewriteReads(rawIndex, sourceLine, frame));
+      String index = indexExpression.value;
       String field = indexedFieldMutatingCall.group(4);
       String method = indexedFieldMutatingCall.group(5);
       MutatingArgs rewrittenArgs = mutatingArgs(indexedFieldMutatingCall.group(6).trim(), sourceLine, frame);
@@ -655,7 +659,7 @@ public final class JavaRewriteLibrary {
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \",\\\"" + field + "\\\"]" + escapedIndexSourcesTargetSegment(rawIndex, null) + "},\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + indexExpression.prefix + "var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
 
     Matcher indexedMutatingCall = INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
@@ -663,7 +667,8 @@ public final class JavaRewriteLibrary {
       String indent = indexedMutatingCall.group(1);
       String name = indexedMutatingCall.group(2);
       String rawIndex = indexedMutatingCall.group(3).trim();
-      String index = rewriteReads(rawIndex, sourceLine, frame);
+      RepeatedExpression indexExpression = repeatedExpression("Index", sourceLine, rawIndex, rewriteReads(rawIndex, sourceLine, frame));
+      String index = indexExpression.value;
       String method = indexedMutatingCall.group(4);
       MutatingArgs rewrittenArgs = mutatingArgs(indexedMutatingCall.group(5).trim(), sourceLine, frame);
       String temp = "__tracecodeIndexedTarget" + sourceLine;
@@ -676,13 +681,12 @@ public final class JavaRewriteLibrary {
       java.util.List<String> rawArgs = splitTopLevel(indexedMutatingCall.group(5).trim());
       String writeEvent = "";
       if ("add".equals(method) && rawArgs.size() == 1) {
-        String value = rewriteReads(rawArgs.get(0), sourceLine, frame);
         writeEvent = " if (" + temp + " instanceof java.util.List) TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
             ", new Object[] { " + index + ", ((java.util.List) " + temp + ").size() - 1 }, " +
-            value + ", " + indexSourceArgument(rawIndex) + ", null);";
+            rewrittenArgs.callArgs + ", " + indexSourceArgument(rawIndex) + ", null);";
       }
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + indexExpression.prefix + "var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher arrayIndexedMapWrite = ARRAY_INDEXED_MAP_WRITE_STATEMENT.matcher(line);
@@ -690,14 +694,16 @@ public final class JavaRewriteLibrary {
       String indent = arrayIndexedMapWrite.group(1);
       String name = arrayIndexedMapWrite.group(2);
       String rawIndex = arrayIndexedMapWrite.group(3).trim();
-      String index = rewriteReads(rawIndex, sourceLine, frame);
+      RepeatedExpression indexExpression = repeatedExpression("Index", sourceLine, rawIndex, rewriteReads(rawIndex, sourceLine, frame));
+      String index = indexExpression.value;
       String method = arrayIndexedMapWrite.group(4);
       java.util.List<String> args = splitTopLevel(arrayIndexedMapWrite.group(5).trim());
       if (args.size() < 2) {
         return rewriteReads(line, sourceLine, frame);
       }
       String rawKey = args.get(0);
-      String key = rewriteReads(rawKey, sourceLine, frame);
+      RepeatedExpression keyExpression = repeatedExpression("Key", sourceLine, rawKey, rewriteReads(rawKey, sourceLine, frame));
+      String key = keyExpression.value;
       java.util.List<String> rewrittenArgs = new java.util.ArrayList<>();
       rewrittenArgs.add(key);
       for (int i = 1; i < args.size(); i++) {
@@ -709,7 +715,7 @@ public final class JavaRewriteLibrary {
       String writeEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"write\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \",\" + TraceHooks.serializeResult(" + key + ") + \"]" + escapedIndexSourcesTargetSegment(rawIndex, rawKey) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ".get(" + key + ")) + \"}\");";
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + target + "." + method + "(" + joinedArgs + "); " + writeEvent + " " + snapshotEvent;
+      return indent + "{ " + indexExpression.prefix + keyExpression.prefix + target + "." + method + "(" + joinedArgs + "); " + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher listArrayWrite = LIST_ARRAY_WRITE.matcher(line);
@@ -718,14 +724,16 @@ public final class JavaRewriteLibrary {
       String name = listArrayWrite.group(2);
       String rawRow = listArrayWrite.group(3).trim();
       String rawCol = listArrayWrite.group(4).trim();
-      String row = rewriteReads(rawRow, sourceLine, frame);
-      String col = rewriteReads(rawCol, sourceLine, frame);
+      RepeatedExpression rowExpression = repeatedExpression("Row", sourceLine, rawRow, rewriteReads(rawRow, sourceLine, frame));
+      RepeatedExpression colExpression = repeatedExpression("Col", sourceLine, rawCol, rewriteReads(rawCol, sourceLine, frame));
+      String row = rowExpression.value;
+      String col = colExpression.value;
       String value = rewriteReads(listArrayWrite.group(5).trim(), sourceLine, frame);
       String temp = "__tracecodeArrayListTarget" + sourceLine;
       String target = "((int[])((java.util.List)" + name + ").get(" + row + "))";
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + ",\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\" + TraceHooks.serializeResult(" + row + ") + \",\" + TraceHooks.serializeResult(" + col + ") + \"]" + escapedIndexSourcesTargetSegment(rawRow, rawCol) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + "[" + col + "]) + \"}\");";
       String writeEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"write\\\",\\\"line\\\":" + sourceLine + ",\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\" + TraceHooks.serializeResult(" + row + ") + \",\" + TraceHooks.serializeResult(" + col + ") + \"]" + escapedIndexSourcesTargetSegment(rawRow, rawCol) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + value + ") + \"}\");";
-      return indent + "{ int[] " + temp + " = " + target + "; " + readEvent + " " + temp + "[" + col + "] = " + value + "; " + writeEvent + " }";
+      return indent + "{ " + rowExpression.prefix + colExpression.prefix + "int[] " + temp + " = " + target + "; " + readEvent + " " + temp + "[" + col + "] = " + value + "; " + writeEvent + " }";
     }
 
     Matcher arraysFill = ARRAYS_FILL_STATEMENT.matcher(line);
@@ -775,7 +783,8 @@ public final class JavaRewriteLibrary {
       String indent = arrayIndexedMutatingCall.group(1);
       String name = arrayIndexedMutatingCall.group(2);
       String rawIndex = arrayIndexedMutatingCall.group(3).trim();
-      String index = rewriteReads(rawIndex, sourceLine, frame);
+      RepeatedExpression indexExpression = repeatedExpression("Index", sourceLine, rawIndex, rewriteReads(rawIndex, sourceLine, frame));
+      String index = indexExpression.value;
       String method = arrayIndexedMutatingCall.group(4);
       MutatingArgs rewrittenArgs = mutatingArgs(arrayIndexedMutatingCall.group(5).trim(), sourceLine, frame);
       String target = name + "[" + index + "]";
@@ -791,7 +800,7 @@ public final class JavaRewriteLibrary {
             rewrittenArgs.callArgs + ", " + indexSourceArgument(rawIndex) + ", null);";
       }
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + indexExpression.prefix + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher update2d = ARRAY_UPDATE_2D.matcher(line);
@@ -1574,6 +1583,14 @@ public final class JavaRewriteLibrary {
       }
     }
     return false;
+  }
+
+  private static RepeatedExpression repeatedExpression(String label, int sourceLine, String rawExpression, String rewrittenExpression) {
+    if (!hasIndexSideEffect(rawExpression)) {
+      return new RepeatedExpression("", rewrittenExpression);
+    }
+    String temp = "__tracecode" + label + sourceLine;
+    return new RepeatedExpression("var " + temp + " = " + rewrittenExpression + "; ", temp);
   }
 
   private static char nextNonWhitespace(String source, int start) {
@@ -2370,6 +2387,16 @@ public final class JavaRewriteLibrary {
       this.prefix = prefix;
       this.callArgs = callArgs;
       this.eventSegment = eventSegment;
+    }
+  }
+
+  private static final class RepeatedExpression {
+    final String prefix;
+    final String value;
+
+    RepeatedExpression(String prefix, String value) {
+      this.prefix = prefix;
+      this.value = value;
     }
   }
 
