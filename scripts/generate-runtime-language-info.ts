@@ -101,6 +101,17 @@ function parseJavaDefaultImports(javaWorkerSource: string): string[] {
     .filter((value): value is string => Boolean(value));
 }
 
+function parseCheerpJVersion(javaWorkerSource: string): string {
+  const localLoaderVersion = javaWorkerSource.match(/const\s+CHEERPJ_LOADER_VERSION\s*=\s*['"]([^'"]+)['"]/);
+  if (localLoaderVersion?.[1]) return localLoaderVersion[1];
+
+  return requireMatch(
+    javaWorkerSource,
+    /cjrtnc\.leaningtech\.com\/([^/]+)\/loader\.js/,
+    'CheerpJ loader version'
+  )[1]!;
+}
+
 function parseCSharpGlobalUsings(compilerHostSource: string): string[] {
   return unique(
     [...compilerHostSource.matchAll(/^\s*global using\s+([^;]+);/gm)]
@@ -314,7 +325,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
 
   const javaWorkerSource = await readText('workers', 'java', 'java-worker.js');
   const javaVersion = requireMatch(javaWorkerSource, /cheerpjInit\(\{\s*version:\s*([0-9]+)/, 'Java runtime version')[1]!;
-  const cheerpjVersion = requireMatch(javaWorkerSource, /cjrtnc\.leaningtech\.com\/([^/]+)\/loader\.js/, 'CheerpJ loader version')[1]!;
+  const cheerpjVersion = parseCheerpJVersion(javaWorkerSource);
   const javaParserVersion = requireMatch(javaWorkerSource, /javaparser-core-([0-9.]+)\.jar/, 'JavaParser version')[1]!;
   const javaDefaultImports = parseJavaDefaultImports(javaWorkerSource);
 

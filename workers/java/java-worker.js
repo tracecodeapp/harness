@@ -1,4 +1,5 @@
-const CHEERPJ_LOADER_URL = './vendor/cheerpj/loader.js';
+const CHEERPJ_LOADER_VERSION = '4.2';
+const CHEERPJ_LOADER_URL = `https://cjrtnc.leaningtech.com/${CHEERPJ_LOADER_VERSION}/loader.js`;
 const HELPER_JAR_PATH = '/app/workers/vendor/java-browser-helper.jar';
 const JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
 const REWRITER_JAR_PATH = '/app/workers/vendor/java-rewriter.jar';
@@ -48,12 +49,16 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
   });
 }
 
-function assertSameOriginJavaAsset(name, url) {
+function assertTrustedJavaAsset(name, url) {
   const parsed = new URL(url, self.location.href);
-  if (parsed.origin !== self.location.origin) {
-    throw new Error(`${name} must be served from the Java worker origin.`);
+  if (parsed.origin === self.location.origin) return parsed.href;
+
+  const expectedCheerpJLoaderPath = `/${CHEERPJ_LOADER_VERSION}/loader.js`;
+  if (parsed.origin === 'https://cjrtnc.leaningtech.com' && parsed.pathname === expectedCheerpJLoaderPath) {
+    return parsed.href;
   }
-  return parsed.href;
+
+  throw new Error(`${name} must be served from the Java worker origin or the pinned CheerpJ runtime CDN.`);
 }
 
 if (typeof self.importScripts === 'function') {
@@ -3278,7 +3283,7 @@ async function ensureReady() {
     workerReadyPromise = (async () => {
       const startedAt = performance.now();
       if (typeof self.cheerpjInit !== 'function') {
-        self.importScripts(assertSameOriginJavaAsset('CheerpJ loader', CHEERPJ_LOADER_URL));
+        self.importScripts(assertTrustedJavaAsset('CheerpJ loader', CHEERPJ_LOADER_URL));
       }
       if (typeof self.cheerpjInit !== 'function') {
         throw new Error('CheerpJ loader did not expose cheerpjInit');

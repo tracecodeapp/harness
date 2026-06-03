@@ -498,7 +498,9 @@ Detailed release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 Runtime dependencies and license notes are tracked in
 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md). Keep that file with any
-redistribution of worker assets.
+redistribution of worker assets. The Java lane does not redistribute CheerpJ;
+it loads the pinned hosted CheerpJ runtime from Leaning Technologies. That remote
+runtime is a trusted third-party dependency, not a hash-verified bundled asset.
 
 ## License
 
