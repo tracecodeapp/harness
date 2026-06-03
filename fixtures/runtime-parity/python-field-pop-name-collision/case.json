@@ -1,0 +1,49 @@
+{
+  "id": "python-field-pop-name-collision",
+  "functionName": "Bag",
+  "executionStyle": "ops-class",
+  "languages": [
+    "python"
+  ],
+  "inputs": {
+    "operations": [
+      "Bag",
+      "pop"
+    ],
+    "arguments": [
+      [],
+      []
+    ]
+  },
+  "anchors": {
+    "fieldPop": {
+      "python": "self.items.pop()"
+    }
+  },
+  "expect": {
+    "fieldPop": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "self"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "self",
+          "method": "pop",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "self",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}
