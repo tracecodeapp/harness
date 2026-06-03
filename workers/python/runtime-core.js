@@ -1267,10 +1267,9 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
                 pass
     return result
 
-def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, **kwargs):
+def _tracecode_heapq_mutation(var_name, container, indices, target, method_name, *args, **kwargs):
     import heapq as __tracecode_heapq
     effective_indices = list(indices or [])
-    target = __tracecode_read_value(container, effective_indices) if effective_indices else container
     normalized = __tracecode_normalize_indices(effective_indices)
     try:
         before_values = list(target) if isinstance(target, _builtins.list) else None
@@ -2360,6 +2359,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                         ast.Constant(value=var_name),
                         container,
                         ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
+                        self.visit(node.args[0]),
                         ast.Constant(value=node.func.attr),
                         *[self.visit(arg) for arg in node.args[1:]],
                     ],
