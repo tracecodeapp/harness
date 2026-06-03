@@ -915,49 +915,49 @@ public final class TraceHooks {
     return length;
   }
 
-  public static <K, V> V readMapAtLine(int line, String name, java.util.Map<K, V> values, K key) {
+  public static <V> V readMapAtLine(int line, String name, java.util.Map<?, V> values, Object key) {
     V value = values.get(key);
     emitTraceRead(line, name, "[" + serializeResult(key) + "]", value);
     return value;
   }
 
-  public static <K, V> V readMapAtLine(int line, String name, java.util.Map<K, V> values, K key, String keySource) {
+  public static <V> V readMapAtLine(int line, String name, java.util.Map<?, V> values, Object key, String keySource) {
     V value = values.get(key);
     emitTraceRead(line, name, "[" + serializeResult(key) + "]", value, indexSourcesJson(keySource));
     return value;
   }
 
-  public static <K, V> V readFieldMapAtLine(int line, String ownerName, String field, java.util.Map<K, V> values, K key) {
+  public static <V> V readFieldMapAtLine(int line, String ownerName, String field, java.util.Map<?, V> values, Object key) {
     V value = values.get(key);
     emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", value);
     return value;
   }
 
-  public static <K, V> V readFieldMapAtLine(int line, String ownerName, String field, java.util.Map<K, V> values, K key, String keySource) {
+  public static <V> V readFieldMapAtLine(int line, String ownerName, String field, java.util.Map<?, V> values, Object key, String keySource) {
     V value = values.get(key);
     emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", value, indexSourcesJson(null, keySource));
     return value;
   }
 
-  public static <K, V> V readMapOrDefaultAtLine(int line, String name, java.util.Map<K, V> values, K key, V defaultValue) {
+  public static <V> V readMapOrDefaultAtLine(int line, String name, java.util.Map<?, V> values, Object key, V defaultValue) {
     V value = values.getOrDefault(key, defaultValue);
     emitTraceRead(line, name, "[" + serializeResult(key) + "]", value);
     return value;
   }
 
-  public static <K, V> V readMapOrDefaultAtLine(int line, String name, java.util.Map<K, V> values, K key, V defaultValue, String keySource) {
+  public static <V> V readMapOrDefaultAtLine(int line, String name, java.util.Map<?, V> values, Object key, V defaultValue, String keySource) {
     V value = values.getOrDefault(key, defaultValue);
     emitTraceRead(line, name, "[" + serializeResult(key) + "]", value, indexSourcesJson(keySource));
     return value;
   }
 
-  public static <K, V> V readFieldMapOrDefaultAtLine(int line, String ownerName, String field, java.util.Map<K, V> values, K key, V defaultValue) {
+  public static <V> V readFieldMapOrDefaultAtLine(int line, String ownerName, String field, java.util.Map<?, V> values, Object key, V defaultValue) {
     V value = values.getOrDefault(key, defaultValue);
     emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", value);
     return value;
   }
 
-  public static <K, V> V readFieldMapOrDefaultAtLine(int line, String ownerName, String field, java.util.Map<K, V> values, K key, V defaultValue, String keySource) {
+  public static <V> V readFieldMapOrDefaultAtLine(int line, String ownerName, String field, java.util.Map<?, V> values, Object key, V defaultValue, String keySource) {
     V value = values.getOrDefault(key, defaultValue);
     emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", value, indexSourcesJson(null, keySource));
     return value;
@@ -1175,14 +1175,14 @@ public final class TraceHooks {
     return changed;
   }
 
-  public static <K, V> V removeMapAtLine(int line, String name, java.util.Map<K, V> values, K key) {
+  public static <V> V removeMapAtLine(int line, String name, java.util.Map<?, V> values, Object key) {
     V removed = values.remove(key);
     emitTraceMutate(line, name, "[" + serializeResult(key) + "]", "remove", null, "[" + serializeResult(key) + "]");
     emitRuntimeSnapshotAtLine(line, name, values);
     return removed;
   }
 
-  public static <K, V> V removeMapAtLine(int line, String name, java.util.Map<K, V> values, K key, String keySource) {
+  public static <V> V removeMapAtLine(int line, String name, java.util.Map<?, V> values, Object key, String keySource) {
     V removed = values.remove(key);
     emitTraceMutate(line, name, "[" + serializeResult(key) + "]", "remove", indexSourcesJson(keySource), "[" + serializeResult(key) + "]");
     emitRuntimeSnapshotAtLine(line, name, values);

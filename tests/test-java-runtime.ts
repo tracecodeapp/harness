@@ -1691,6 +1691,37 @@ class Solution {
     'Java rewriter should preserve computed string-concat map key provenance'
   );
 
+  assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  Integer solve(Map<String, Integer> values, Object key) {
+    return values.get(key);
+  }
+}`);
+  assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  Integer solve(Map<String, Integer> values, Object key) {
+    return values.getOrDefault(key, -1);
+  }
+}`);
+  assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  Integer solve(Map<String, Integer> values, Object key) {
+    return values.remove(key);
+  }
+}`);
+  assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  Map<String, Integer> values = new HashMap<>();
+  Integer solve(Object key) {
+    values.put("a", 1);
+    return this.values.get(key);
+  }
+}`);
+
   const explicitNullReturnSource = assertNativeJavaRewriterCompiles(`class Solution {
   Object solve(boolean done) {
     if (done) return null;
