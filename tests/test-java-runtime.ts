@@ -2186,6 +2186,24 @@ class Solution {
     `Java array enhanced-for tracing should not re-evaluate side-effecting indexes, received ${sideEffectArrayEnhancedForOutput}`
   );
 
+  const sideEffectMultilineMutationArgOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<int[]> values = new ArrayList<>();
+    Deque<Integer> source = new ArrayDeque<>();
+    source.add(7);
+    values.add(new int[] {
+      source.remove()
+    });
+    return values.get(0)[0] * 10 + source.size();
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectMultilineMutationArgOutput === '70',
+    `Java multiline mutation tracing should not re-evaluate side-effecting arguments, received ${sideEffectMultilineMutationArgOutput}`
+  );
+
   const indexedSetMutationSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
 class Solution {

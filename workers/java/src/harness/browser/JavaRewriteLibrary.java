@@ -2371,9 +2371,12 @@ public final class JavaRewriteLibrary {
     StringBuilder out = new StringBuilder(",\\\"args\\\":[");
     for (int index = 0; index < args.size(); index++) {
       if (index > 0) out.append(",");
-      out.append("\" + TraceHooks.serializeResult(")
-          .append(rewriteReads(args.get(index), sourceLine, frame))
-          .append(") + \"");
+      String rewritten = rewriteReads(args.get(index), sourceLine, frame);
+      if (rewritten.contains("TraceHooks.") || !isStableMutatingArgExpression(rewritten)) {
+        out.append("null");
+      } else {
+        out.append("\" + TraceHooks.serializeResult(").append(rewritten).append(") + \"");
+      }
     }
     out.append("]");
     return out.toString();
