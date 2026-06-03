@@ -14,6 +14,7 @@ import {
 } from '../packages/harness-python/src/python-harness';
 
 const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
+const PYODIDE_WORKER_PATH = join(process.cwd(), 'workers', 'python', 'pyodide-worker.js');
 
 type TraceAccess = {
   variable?: string;
@@ -114,6 +115,155 @@ async function loadRuntimeCore(): Promise<RuntimeCore> {
   );
 
   return runtime as RuntimeCore;
+}
+
+type FakePyodideFs = {
+  files: Map<string, Uint8Array>;
+  directories: Set<string>;
+  createDataFile: (parent: string, name: string, contents?: unknown) => unknown;
+  createPath: (parent: string, path: string) => unknown;
+  readFile: (path: string, options?: { encoding?: string }) => Uint8Array;
+  stat: (path: string) => { mode: number };
+  isFile: (mode: number) => boolean;
+  isDir: (mode: number) => boolean;
+  readdir: (path: string) => string[];
+};
+
+function normalizeFakeFsPath(path: string): string {
+  const parts: string[] = [];
+  for (const part of String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (parts.length > 0) parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
+function fakeFsTargetPath(parent: string, name: string): string {
+  const base = normalizeFakeFsPath(parent);
+  return normalizeFakeFsPath(name ? `${base.replace(/\/+$/, '')}/${String(name).replace(/^\/+/, '')}` : base);
+}
+
+function fakeFsBytes(contents: unknown): Uint8Array {
+  if (contents instanceof Uint8Array) return contents;
+  if (typeof contents === 'string') return new TextEncoder().encode(contents);
+  if (Array.isArray(contents)) return Uint8Array.from(contents as number[]);
+  return new Uint8Array();
+}
+
+function createFakePyodideFs(): FakePyodideFs {
+  const files = new Map<string, Uint8Array>();
+  const directories = new Set<string>(['/', '/workspace']);
+  const fileMode = 0x8000;
+  const directoryMode = 0x4000;
+  return {
+    files,
+    directories,
+    createDataFile(parent, name, contents) {
+      files.set(fakeFsTargetPath(parent, name), fakeFsBytes(contents));
+      return {};
+    },
+    createPath(parent, path) {
+      directories.add(fakeFsTargetPath(parent, path));
+      return {};
+    },
+    readFile(path) {
+      const normalized = normalizeFakeFsPath(path);
+      const contents = files.get(normalized);
+      if (!contents) throw new Error(`missing file: ${normalized}`);
+      return contents;
+    },
+    stat(path) {
+      const normalized = normalizeFakeFsPath(path);
+      if (files.has(normalized)) return { mode: fileMode };
+      if (directories.has(normalized)) return { mode: directoryMode };
+      throw new Error(`missing path: ${normalized}`);
+    },
+    isFile(mode) {
+      return (mode & fileMode) !== 0;
+    },
+    isDir(mode) {
+      return (mode & directoryMode) !== 0;
+    },
+    readdir(path) {
+      const normalized = normalizeFakeFsPath(path);
+      const prefix = normalized === '/' ? '/' : `${normalized}/`;
+      const names = new Set<string>(['.', '..']);
+      for (const candidate of [...directories, ...files.keys()]) {
+        if (!candidate.startsWith(prefix) || candidate === normalized) continue;
+        const rest = candidate.slice(prefix.length);
+        const name = rest.split('/')[0];
+        if (name) names.add(name);
+      }
+      return [...names];
+    },
+  };
+}
+
+function caughtMessage(run: () => unknown): string {
+  try {
+    run();
+    return '';
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
+  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const events: Array<{ type?: string; change?: { path?: string; directory?: boolean } }> = [];
+  const fakeFs = createFakePyodideFs();
+  const selfObject = {
+    __tracecodeProjectEvent: (event: { type?: string; change?: { path?: string; directory?: boolean } }) => {
+      events.push(event);
+    },
+    postMessage: () => {},
+  };
+  const context = vm.createContext({
+    console,
+    self: selfObject,
+    TextDecoder,
+    Uint8Array,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+  });
+  vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
+  (context as { __fakeFs?: FakePyodideFs }).__fakeFs = fakeFs;
+  vm.runInContext(
+    'pyodide = { FS: __fakeFs }; self.__cleanupProjectFs = installPyodideProjectFsMutationEvents("/workspace", []);',
+    context
+  );
+
+  fakeFs.createDataFile('/workspace', 'safe.txt', new TextEncoder().encode('safe'));
+  fakeFs.createPath('/workspace', 'nested');
+  events.length = 0;
+  fakeFs.createDataFile('/workspace/nested', '../safe2.txt', new TextEncoder().encode('safe2'));
+  const escapedDataFileMessage = caughtMessage(() => {
+    fakeFs.createDataFile('/workspace', '../escape.txt', new TextEncoder().encode('bad'));
+  });
+  const escapedCreatePathMessage = caughtMessage(() => {
+    fakeFs.createPath('/workspace', '../escape-dir');
+  });
+  vm.runInContext('self.__cleanupProjectFs();', context);
+
+  assertCondition(
+    events.some((event) => event.type === 'file-change' && event.change?.path === 'safe2.txt'),
+    `Pyodide live FS event should normalize in-workspace dot segments: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    !events.some((event) => String(event.change?.path ?? '').includes('..')),
+    `Pyodide live FS events should not emit traversal paths: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    escapedDataFileMessage.includes('Project path must stay within the workspace') &&
+      escapedCreatePathMessage.includes('Project path must stay within the workspace') &&
+      !fakeFs.files.has('/escape.txt') &&
+      !fakeFs.directories.has('/escape-dir'),
+    `Pyodide FS create hooks should reject workspace escapes: ${escapedDataFileMessage} / ${escapedCreatePathMessage}`
+  );
+  console.log('PASS: Pyodide project FS live events reject traversal paths');
 }
 
 async function runPythonScript(script: string): Promise<string> {
@@ -2978,6 +3128,7 @@ class Solution:
 }
 
 async function main(): Promise<void> {
+  await assertPyodideProjectFsEventsRejectTraversal();
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
   await assertIndexSourceProvenanceIsRecorded();

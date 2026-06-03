@@ -734,9 +734,24 @@ function normalizePyodideFsProjectPath(path) {
   return normalized.startsWith('/') ? normalized : `/${normalized}`;
 }
 
+function normalizePyodideFsAbsolutePath(path) {
+  const normalized = normalizePyodideFsProjectPath(path);
+  if (!normalized) return null;
+  const parts = [];
+  for (const part of normalized.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (parts.length > 0) parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
 function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   const fs = pyodide?.FS;
-  const normalizedRoot = normalizePyodideFsProjectPath(projectRoot);
+  const normalizedRoot = normalizePyodideFsAbsolutePath(projectRoot);
   if (!fs || !normalizedRoot || typeof self.__tracecodeProjectEvent !== 'function') {
     return () => {};
   }
@@ -821,8 +836,25 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     throw error;
   };
 
+  const rejectWorkspaceEscapingMutation = (path, operation) => {
+    const rawPath = normalizePyodideFsProjectPath(path);
+    if (!rawPath || (rawPath !== normalizedRoot && !rawPath.startsWith(`${normalizedRoot}/`))) return;
+    const resolvedPath = normalizePyodideFsAbsolutePath(rawPath);
+    if (resolvedPath === normalizedRoot || resolvedPath?.startsWith(`${normalizedRoot}/`)) return;
+    const error = new Error(`Project path must stay within the workspace: ${path}`);
+    error.code = 'EACCES';
+    error.operation = operation;
+    error.path = path;
+    throw error;
+  };
+
+  const rejectProjectMutation = (path, operation) => {
+    rejectWorkspaceEscapingMutation(path, operation);
+    rejectKernelVirtualMutation(path, operation);
+  };
+
   const relativePath = (path) => {
-    const normalized = normalizePyodideFsProjectPath(path);
+    const normalized = normalizePyodideFsAbsolutePath(path);
     if (!normalized || normalized === normalizedRoot || !normalized.startsWith(`${normalizedRoot}/`)) {
       return null;
     }
@@ -974,7 +1006,7 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   patch('open', (original) => function patchedOpen(path, flags, ...args) {
     const shouldEmitCreateSnapshot = isCreateOrTruncateOpenFlags(flags);
     if (isWritableOpenFlags(flags)) {
-      rejectKernelVirtualMutation(path, 'open');
+      rejectProjectMutation(path, 'open');
     }
     const stream = original.call(this, path, flags, ...args);
     if (shouldEmitCreateSnapshot) {
@@ -993,7 +1025,7 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     if (emitKernelDeviceWrite(path, args[0])) {
       return undefined;
     }
-    rejectKernelVirtualMutation(path, 'writeFile');
+    rejectProjectMutation(path, 'writeFile');
     const result = original.call(this, path, ...args);
     emitFileChange(path);
     return result;
@@ -1004,15 +1036,15 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     const targetPath = name === null || name === undefined || String(name) === ''
       ? basePath
       : `${String(basePath || '').replace(/\/+$/, '')}/${String(name).replace(/^\/+/, '')}`;
-    rejectKernelVirtualMutation(parent, 'createDataFile');
-    rejectKernelVirtualMutation(targetPath, 'createDataFile');
+    rejectProjectMutation(parent, 'createDataFile');
+    rejectProjectMutation(targetPath, 'createDataFile');
     const result = original.call(this, parent, name, ...args);
     emitFileChange(targetPath);
     return result;
   });
 
   patch('create', (original) => function patchedCreate(path, ...args) {
-    rejectKernelVirtualMutation(path, 'create');
+    rejectProjectMutation(path, 'create');
     const result = original.call(this, path, ...args);
     emitFileChange(path);
     return result;
@@ -1023,15 +1055,15 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     const targetPath = path === null || path === undefined || String(path) === ''
       ? basePath
       : `${String(basePath || '').replace(/\/+$/, '')}/${String(path).replace(/^\/+/, '')}`;
-    rejectKernelVirtualMutation(parent, 'createPath');
-    rejectKernelVirtualMutation(targetPath, 'createPath');
+    rejectProjectMutation(parent, 'createPath');
+    rejectProjectMutation(targetPath, 'createPath');
     const result = original.call(this, parent, path, ...args);
     emitPathSnapshot(targetPath);
     return result;
   });
 
   patch('truncate', (original) => function patchedTruncate(path, ...args) {
-    rejectKernelVirtualMutation(path, 'truncate');
+    rejectProjectMutation(path, 'truncate');
     const result = original.call(this, path, ...args);
     emitFileChange(path);
     return result;
@@ -1051,7 +1083,7 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
 
   for (const name of ['chmod', 'chown', 'utime']) {
     patch(name, (original) => function patchedPathMetadataMutation(path, ...args) {
-      rejectKernelVirtualMutation(path, name);
+      rejectProjectMutation(path, name);
       const result = original.call(this, path, ...args);
       emitPathSnapshot(path);
       return result;
@@ -1059,29 +1091,29 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   }
 
   patch('unlink', (original) => function patchedUnlink(path, ...args) {
-    rejectKernelVirtualMutation(path, 'unlink');
+    rejectProjectMutation(path, 'unlink');
     const result = original.call(this, path, ...args);
     emitFileDelete(path);
     return result;
   });
 
   patch('mkdir', (original) => function patchedMkdir(path, ...args) {
-    rejectKernelVirtualMutation(path, 'mkdir');
+    rejectProjectMutation(path, 'mkdir');
     const result = original.call(this, path, ...args);
     emitDirectoryCreate(path);
     return result;
   });
 
   patch('rmdir', (original) => function patchedRmdir(path, ...args) {
-    rejectKernelVirtualMutation(path, 'rmdir');
+    rejectProjectMutation(path, 'rmdir');
     const result = original.call(this, path, ...args);
     emitDirectoryDelete(path);
     return result;
   });
 
   patch('rename', (original) => function patchedRename(oldPath, newPath, ...args) {
-    rejectKernelVirtualMutation(oldPath, 'rename');
-    rejectKernelVirtualMutation(newPath, 'rename');
+    rejectProjectMutation(oldPath, 'rename');
+    rejectProjectMutation(newPath, 'rename');
     const oldIsDirectory = isDirectoryPath(oldPath);
     const result = original.call(this, oldPath, newPath, ...args);
     if (oldIsDirectory) {
@@ -1095,8 +1127,8 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   });
 
   patch('symlink', (original) => function patchedSymlink(oldPath, newPath, ...args) {
-    rejectKernelVirtualMutation(oldPath, 'symlink');
-    rejectKernelVirtualMutation(newPath, 'symlink');
+    rejectProjectMutation(oldPath, 'symlink');
+    rejectProjectMutation(newPath, 'symlink');
     if (relativePath(newPath)) {
       const error = new Error('Symbolic links are not supported by the project file manifest');
       error.code = 'ENOSYS';
