@@ -401,10 +401,9 @@ public final class JavaRewriteLibrary {
         String helper = arrayReadHelper(frame.typeOf(sourceName));
         if (helper != null) {
           String index = rewriteReads(rawIndex, sourceLine, frame);
-          return indent + "for (" + type + " " + name + " : TraceHooks.iterationBindAtLine(" +
-              sourceLine + ", " + quote(sourceName) + ", " + index + ", TraceHooks." + helper + "(" +
+          return indent + "for (" + type + " " + name + " : TraceHooks.<" + boxedIterationType(type) + ">iterationBindArrayAtLine(" +
               sourceLine + ", " + quote(sourceName) + ", " + sourceName + ", " + index + ", " +
-              indexSourceArgument(rawIndex) + "), " + quote(name) + ", " + indexSourceArgument(rawIndex) + ")) {";
+              quote(name) + ", " + indexSourceArgument(rawIndex) + ")) {";
         }
       }
       Matcher indexedListSource = Pattern.compile("^([A-Za-z_][A-Za-z0-9_]*)\\.get\\(((?:[^()]|\\([^()]*\\))+?)\\)$").matcher(source);
@@ -414,10 +413,9 @@ public final class JavaRewriteLibrary {
         if (isListType(frame.typeOf(sourceName))) {
           String index = rewriteReads(rawIndex, sourceLine, frame);
           String indexSource = indexSourceArgument(rawIndex);
-          return indent + "for (" + type + " " + name + " : TraceHooks.iterationBindAtLine(" +
-              sourceLine + ", " + quote(sourceName) + ", " + index + ", TraceHooks.readListAtLine(" +
+          return indent + "for (" + type + " " + name + " : TraceHooks.<" + boxedIterationType(type) + ">iterationBindListAtLine(" +
               sourceLine + ", " + quote(sourceName) + ", " + sourceName + ", " + index + ", " +
-              indexSource + "), " + quote(name) + ", " + indexSource + ")) {";
+              quote(name) + ", " + indexSource + ")) {";
         }
       }
       if (
@@ -1600,6 +1598,21 @@ public final class JavaRewriteLibrary {
     int index = start;
     while (index < source.length() && Character.isWhitespace(source.charAt(index))) index++;
     return index < source.length() ? source.charAt(index) : '\0';
+  }
+
+  private static String boxedIterationType(String type) {
+    String normalized = type.trim();
+    switch (normalized) {
+      case "boolean": return "Boolean";
+      case "byte": return "Byte";
+      case "char": return "Character";
+      case "double": return "Double";
+      case "float": return "Float";
+      case "int": return "Integer";
+      case "long": return "Long";
+      case "short": return "Short";
+      default: return normalized;
+    }
   }
 
   private static String arrayReadHelper(String type) {

@@ -2138,6 +2138,43 @@ class Solution {
     `Java inline-if tracing should preserve nearest-if else binding, received ${danglingElseOutput}`
   );
 
+  const sideEffectListEnhancedForOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int cursor = 0;
+  int next() { return cursor++; }
+  int solve() {
+    List<List<Integer>> graph = new ArrayList<>();
+    graph.add(Arrays.asList(7));
+    int total = 0;
+    for (int value : graph.get(next())) {
+      total += value;
+    }
+    return total * 10 + cursor;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectListEnhancedForOutput === '71',
+    `Java List.get enhanced-for tracing should not re-evaluate side-effecting indexes, received ${sideEffectListEnhancedForOutput}`
+  );
+
+  const sideEffectArrayEnhancedForOutput = executeNativeJavaRewrittenExpression(`class Solution {
+  int cursor = 0;
+  int next() { return cursor++; }
+  int solve() {
+    int[][] grid = new int[][] { { 7 } };
+    int total = 0;
+    for (int value : grid[next()]) {
+      total += value;
+    }
+    return total * 10 + cursor;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectArrayEnhancedForOutput === '71',
+    `Java array enhanced-for tracing should not re-evaluate side-effecting indexes, received ${sideEffectArrayEnhancedForOutput}`
+  );
+
   const indexedSetMutationSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
 class Solution {
@@ -2166,7 +2203,7 @@ class Solution {
   }
 }`);
   assertCondition(
-    cloneGraphWindowSource.includes('for (int neighbor : TraceHooks.iterationBindAtLine(7, "adjList", node, TraceHooks.readObjectArrayAtLine(7, "adjList", adjList, node, "node"), "neighbor", "node"))') &&
+    cloneGraphWindowSource.includes('for (int neighbor : TraceHooks.<Integer>iterationBindArrayAtLine(7, "adjList", adjList, node, "neighbor", "node"))') &&
       cloneGraphWindowSource.includes('"kind\\":\\"mutate\\",\\"line\\":8') &&
       cloneGraphWindowSource.includes('\\"method\\":\\"add\\",\\"args\\":[" + TraceHooks.serializeResult(neighbor) + "]}'),
     'Java rewriter should preserve clone-graph enhanced-for row reads and indexed cloned.add mutation args'
@@ -2263,7 +2300,8 @@ class Solution {
   }
 }`, 'solve');
   assertCondition(
-    courseScheduleSource.includes('TraceHooks.iterationBindAtLine(11, "graph", 0, TraceHooks.readObjectListAtLine(11, "graph", graph, 0, null), "next", null)') ||
+    courseScheduleSource.includes('TraceHooks.<Integer>iterationBindListAtLine(11, "graph", graph, 0, "next", null)') ||
+      courseScheduleSource.includes('TraceHooks.iterationBindAtLine(11, "graph", 0, TraceHooks.readObjectListAtLine(11, "graph", graph, 0, null), "next", null)') ||
       courseScheduleSource.includes('TraceHooks.iterationBindAtLine(11, "graph", 0, TraceHooks.readListAtLine(11, "graph", graph, 0, null), "next", null)'),
     'Java source augmentation should emit nested enhanced-for iteration binding over adjacency-list get(...) sources'
   );
@@ -2281,7 +2319,7 @@ class Solution {
   }
 }`);
   assertCondition(
-    nativeListGetEnhancedForSource.includes('for (int next : TraceHooks.iterationBindAtLine(8, "graph", node, TraceHooks.readListAtLine(8, "graph", graph, node, "node"), "next", "node"))'),
+    nativeListGetEnhancedForSource.includes('for (int next : TraceHooks.<Integer>iterationBindListAtLine(8, "graph", graph, node, "next", "node"))'),
     'Java native rewriter should emit nested enhanced-for iteration binding over List.get(...) sources'
   );
 
@@ -3569,7 +3607,7 @@ class Solution {
     TraceHooks.emitLineAtLine(11);
     for (int u = 0; u < n; u++) {
       TraceHooks.emitLineAtLine(12);
-      for (int v : graph.get(u)) {
+      for (int v : TraceHooks.<Integer>iterationBindListAtLine(12, "graph", graph, u, "v", "u")) {
         TraceHooks.emitLineAtLine(13);
         order[v] = v;
         TraceHooks.emitArrayWriteAtLine(13, "order", v, order[v]);
@@ -6580,9 +6618,9 @@ class Solution {
       'Java worker should rewrite indexed adjacency mutations with receiver indices and inserted-cell writes without semantic graph state'
     );
     assertCondition(
-      graphSource.includes('for (int v : TraceHooks.iterationBindAtLine(11, "graph", u,') &&
-        (graphSource.includes('TraceHooks.readObjectListAtLine(11, "graph", graph, u, "u")') ||
-          graphSource.includes('TraceHooks.readListAtLine(11, "graph", graph, u, "u")')),
+      graphSource.includes('iterationBindListAtLine(') &&
+        graphSource.includes('"graph", graph, u') &&
+        graphSource.includes('"v", "u"'),
       'Java worker should rewrite adjacency traversal graph.get(u) reads with iteration binding provenance'
     );
     assertCondition(JSON.stringify(graphExecute.output) === JSON.stringify([0, 1, 2]), 'Java graph adjacency output should serialize result');

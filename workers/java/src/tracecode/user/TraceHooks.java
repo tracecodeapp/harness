@@ -844,6 +844,31 @@ public final class TraceHooks {
     };
   }
 
+  @SuppressWarnings("unchecked")
+  public static <T> Iterable<T> iterationBindListAtLine(
+      int line,
+      String name,
+      java.util.List<?> values,
+      int index,
+      String bindingVariable,
+      String indexSource) {
+    Object row = values.get(index);
+    emitTraceRead(line, name, "[" + serializeResult(index) + "]", row, indexSourcesJson(indexSource));
+    return iterationBindNestedValuesAtLine(line, name, index, row, bindingVariable, indexSource);
+  }
+
+  public static <T> Iterable<T> iterationBindArrayAtLine(
+      int line,
+      String name,
+      Object values,
+      int index,
+      String bindingVariable,
+      String indexSource) {
+    Object row = java.lang.reflect.Array.get(values, index);
+    emitTraceRead(line, name, "[" + serializeResult(index) + "]", row, indexSourcesJson(indexSource));
+    return iterationBindNestedValuesAtLine(line, name, index, row, bindingVariable, indexSource);
+  }
+
   public static <T> Iterable<T> iterationBindAtLine(int line, String name, T[] values, String bindingVariable) {
     return iterationBindAtLine(line, name, java.util.Arrays.asList(values), bindingVariable);
   }
@@ -882,6 +907,61 @@ public final class TraceHooks {
     java.util.List<Boolean> boxed = new java.util.ArrayList<>(values.length);
     for (boolean value : values) boxed.add(value);
     return iterationBindAtLine(line, name, boxed, bindingVariable);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <T> Iterable<T> iterationBindNestedValuesAtLine(
+      int line,
+      String name,
+      Object parentKey,
+      Object values,
+      String bindingVariable,
+      String parentKeySource) {
+    if (values instanceof Iterable<?>) {
+      return iterationBindAtLine(line, name, parentKey, (Iterable<T>) values, bindingVariable, parentKeySource);
+    }
+    if (values instanceof Object[]) {
+      return iterationBindAtLine(line, name, parentKey, java.util.Arrays.asList((T[]) values), bindingVariable, parentKeySource);
+    }
+    if (values instanceof int[]) {
+      return (Iterable<T>) iterationBindAtLine(line, name, parentKey, (int[]) values, bindingVariable, parentKeySource);
+    }
+    if (values instanceof long[]) {
+      java.util.List<Long> boxed = new java.util.ArrayList<>(((long[]) values).length);
+      for (long value : (long[]) values) boxed.add(value);
+      return (Iterable<T>) iterationBindAtLine(line, name, parentKey, boxed, bindingVariable, parentKeySource);
+    }
+    if (values instanceof double[]) {
+      java.util.List<Double> boxed = new java.util.ArrayList<>(((double[]) values).length);
+      for (double value : (double[]) values) boxed.add(value);
+      return (Iterable<T>) iterationBindAtLine(line, name, parentKey, boxed, bindingVariable, parentKeySource);
+    }
+    if (values instanceof float[]) {
+      java.util.List<Float> boxed = new java.util.ArrayList<>(((float[]) values).length);
+      for (float value : (float[]) values) boxed.add(value);
+      return (Iterable<T>) iterationBindAtLine(line, name, parentKey, boxed, bindingVariable, parentKeySource);
+    }
+    if (values instanceof char[]) {
+      java.util.List<Character> boxed = new java.util.ArrayList<>(((char[]) values).length);
+      for (char value : (char[]) values) boxed.add(value);
+      return (Iterable<T>) iterationBindAtLine(line, name, parentKey, boxed, bindingVariable, parentKeySource);
+    }
+    if (values instanceof boolean[]) {
+      java.util.List<Boolean> boxed = new java.util.ArrayList<>(((boolean[]) values).length);
+      for (boolean value : (boolean[]) values) boxed.add(value);
+      return (Iterable<T>) iterationBindAtLine(line, name, parentKey, boxed, bindingVariable, parentKeySource);
+    }
+    if (values instanceof byte[]) {
+      java.util.List<Byte> boxed = new java.util.ArrayList<>(((byte[]) values).length);
+      for (byte value : (byte[]) values) boxed.add(value);
+      return (Iterable<T>) iterationBindAtLine(line, name, parentKey, boxed, bindingVariable, parentKeySource);
+    }
+    if (values instanceof short[]) {
+      java.util.List<Short> boxed = new java.util.ArrayList<>(((short[]) values).length);
+      for (short value : (short[]) values) boxed.add(value);
+      return (Iterable<T>) iterationBindAtLine(line, name, parentKey, boxed, bindingVariable, parentKeySource);
+    }
+    throw new IllegalArgumentException("Enhanced-for trace target is not iterable");
   }
 
   public static int readArrayLengthAtLine(int line, String name, Object value) {
