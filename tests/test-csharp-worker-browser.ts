@@ -23,6 +23,7 @@ interface CSharpWorkerResponse {
     function?: string;
     method?: string;
     value?: unknown;
+    text?: string;
     args?: unknown[] | Record<string, unknown>;
     reason?: string;
     callStack?: Array<{ function?: string; line?: number; args?: unknown[] }>;
@@ -644,6 +645,38 @@ async function main(): Promise<void> {
     assertCondition(add.output === 5, `C# worker Add should return 5, received ${JSON.stringify(add.output)}`);
     assertCondition(add.consoleOutput?.includes('adding 2 and 3') === true, 'C# worker should capture stdout');
     assertCondition(add.timings?.compileCacheHit === false, 'C# first Add execution should miss the compile cache');
+
+    const tracedPartialStdout = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'public class Solution {',
+        '  public int Emit() {',
+        '    Console.WriteLine("complete-line");',
+        '    Console.Write("partial-line");',
+        '    return 2;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Emit',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedPartialStdout.success,
+      `C# worker traced partial stdout should succeed: ${tracedPartialStdout.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedPartialStdout.consoleOutput?.includes('complete-line') === true &&
+        tracedPartialStdout.consoleOutput?.includes('partial-line') === true,
+      `C# worker should preserve partial stdout in console output, received ${JSON.stringify(tracedPartialStdout.consoleOutput)}`
+    );
+    assertCondition(
+      tracedPartialStdout.events?.some((event) => event.kind === 'stdout' && event.text === 'complete-line') === true &&
+        tracedPartialStdout.events?.some((event) => event.kind === 'stdout' && event.text === 'partial-line') === true,
+      `C# worker should trace trailing partial stdout, received ${JSON.stringify(tracedPartialStdout.events)}`
+    );
 
     const cachedAdd = await runWorkerCase(page, fixture('add.cs'), 'Add', { a: 5, b: 6 }, assetBaseUrl);
     assertCondition(cachedAdd.success, `C# worker cached Add should succeed: ${cachedAdd.error ?? 'unknown error'}`);

@@ -84,7 +84,7 @@ public static partial class CompilerHost
                         Error = diagnostics.FirstOrDefault()?.Message ?? "C# compilation failed.",
                         Diagnostics = diagnostics,
                         ConsoleOutput = SplitConsoleOutput(capturedOut),
-                        Events = RuntimeTraceSink.Snapshot(),
+                        Events = SnapshotTraceEvents(capturedOut),
                         ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
                         Timings = WithTotalTiming(timings, stopwatch),
                     });
@@ -112,7 +112,7 @@ public static partial class CompilerHost
             double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
             object? output = InvokeDriver(userAssembly);
             timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
-            List<RuntimeTraceEvent> events = RuntimeTraceSink.Snapshot();
+            List<RuntimeTraceEvent> events = SnapshotTraceEvents(capturedOut);
             BackfillSourceCollectionMutationEvents(request.Source, events);
             return Serialize(new CSharpExecuteResponse
             {
@@ -5523,7 +5523,7 @@ public class TreeNode
             Success = false,
             Error = error,
             ConsoleOutput = SplitConsoleOutput(capturedOut),
-            Events = RuntimeTraceSink.Snapshot(),
+            Events = SnapshotTraceEvents(capturedOut),
             TraceLimitExceeded = traceLimitExceeded,
             TimeoutReason = timeoutReason,
             ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
@@ -5562,9 +5562,31 @@ public class TreeNode
             .ToList();
     }
 
+    private static List<RuntimeTraceEvent> SnapshotTraceEvents(StringWriter capturedOut)
+    {
+        capturedOut.Flush();
+        return RuntimeTraceSink.Snapshot();
+    }
+
     private sealed class TracingConsoleWriter : StringWriter
     {
         private readonly StringBuilder lineBuffer = new();
+
+        public override void Flush()
+        {
+            base.Flush();
+            EmitBufferedPartialLine();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                EmitBufferedPartialLine();
+            }
+
+            base.Dispose(disposing);
+        }
 
         public override void Write(char value)
         {
@@ -5635,6 +5657,14 @@ public class TreeNode
             string text = lineBuffer.ToString();
             lineBuffer.Clear();
             RuntimeTraceSink.Stdout(text);
+        }
+
+        private void EmitBufferedPartialLine()
+        {
+            if (lineBuffer.Length > 0)
+            {
+                EmitBufferedLine();
+            }
         }
     }
 }
