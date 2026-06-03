@@ -565,6 +565,47 @@ async function testBrowserJavaScriptHttpTimeoutPropagatesToKernel(): Promise<voi
   }
 }
 
+async function testBrowserJavaScriptHttpDestroyCompletesActiveRequest(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    files: [
+      {
+        path: 'http-destroy.js',
+        contents: [
+          'const http = require("node:http");',
+          'const req = http.get("http://localhost:3657/slow", (res) => console.log("resolved:" + res.statusCode));',
+          'req.on("close", () => console.log("closed:" + req.destroyed));',
+          'req.on("error", (error) => console.log("error:" + (error.code || error.name)));',
+          'req.destroy();',
+          '',
+        ].join('\n'),
+      },
+    ],
+  });
+  let signalAborted = false;
+  let sideEffectsAfterDestroy = 0;
+  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3657 }, async (request) => {
+    request.signal?.addEventListener('abort', () => {
+      signalAborted = true;
+    }, { once: true });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    if (request.signal?.aborted) signalAborted = true;
+    if (!request.signal?.aborted) sideEffectsAfterDestroy += 1;
+    return { status: 200, body: 'late\n' };
+  });
+  try {
+    const result = await workspace.runCommand('node http-destroy.js');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assertCondition(result.exitCode === 0, `destroyed node:http request should finish: ${JSON.stringify(result)}`);
+    assertCondition(result.stdout === 'closed:true\n', `destroyed node:http request should emit close and not hang: ${result.stdout}`);
+    assertCondition(signalAborted, 'node:http destroy should abort the TraceKernel handler signal');
+    assertCondition(sideEffectsAfterDestroy === 0, 'node:http destroy should let cooperative handlers suppress late side effects');
+  } finally {
+    listener.close();
+    workspace.dispose();
+  }
+}
+
 async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
@@ -617,6 +658,7 @@ async function main(): Promise<void> {
   await testTraceKernelHttpRejectsInvalidResponseStatus();
   await testBrowserJavaScriptHttpAbortPropagatesToKernel();
   await testBrowserJavaScriptHttpTimeoutPropagatesToKernel();
+  await testBrowserJavaScriptHttpDestroyCompletesActiveRequest();
   await testBrowserJavaScriptGlobalFetchUsesTraceKernel();
   console.log('tracekernel hardening tests passed');
 }

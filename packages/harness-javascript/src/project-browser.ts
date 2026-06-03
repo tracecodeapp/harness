@@ -1797,6 +1797,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
     let destroyed = false;
     let timeoutMs: number | undefined;
     let timeoutCallback: (() => void) | undefined;
+    let activeAbortClientRequest: ((error?: Error) => void) | undefined;
     let requestOptions: ReturnType<typeof normalizeHttpClientRequest>;
     try {
       requestOptions = normalizeHttpClientRequest(args);
@@ -1862,6 +1863,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
         const finishClientRequest = (): void => {
           if (!active) return;
           active = false;
+          activeAbortClientRequest = undefined;
           if (timeoutHandle !== undefined) globalThis.clearTimeout(timeoutHandle);
           if (requestAbortListener) requestOptions.signal?.removeEventListener?.('abort', requestAbortListener);
           activeClientAborters.delete(abortClientRequest);
@@ -1881,6 +1883,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
           events.emit('close');
           finishClientRequest();
         };
+        activeAbortClientRequest = abortClientRequest;
         activeClientAborters.add(abortClientRequest);
         if (requestOptions.signal) {
           requestAbortListener = () => abortClientRequest(Object.assign(new Error('The operation was aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
@@ -1924,6 +1927,10 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
         events.emit('abort');
       },
       destroy: (error?: Error) => {
+        if (activeAbortClientRequest) {
+          activeAbortClientRequest(error);
+          return clientRequest;
+        }
         if (destroyed) return clientRequest;
         destroyed = true;
         clientRequest.destroyed = true;
