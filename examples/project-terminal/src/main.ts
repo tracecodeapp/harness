@@ -8,6 +8,8 @@ import type {
 } from '@tracecode/harness/core';
 
 const DEMO_KERNEL_STORAGE_KEY = 'tracecode:terminal:demo:iphone-compile';
+const DEMO_KERNEL_STORAGE_DATABASE = 'tracecode-project-terminal';
+const DEMO_KERNEL_STORAGE_STORE = 'workspaces';
 
 async function bootProjectTerminal(): Promise<void> {
   document.body.innerHTML = `
@@ -65,7 +67,12 @@ async function bootProjectTerminal(): Promise<void> {
     }
   ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
-  const kernelStorage = createIndexedDbKernelStorage({ key: DEMO_KERNEL_STORAGE_KEY });
+  const kernelStorage = createIndexedDbKernelStorage({
+    key: DEMO_KERNEL_STORAGE_KEY,
+    databaseName: DEMO_KERNEL_STORAGE_DATABASE,
+    storeName: DEMO_KERNEL_STORAGE_STORE,
+    trustedSameOriginPersistence: true,
+  });
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
     javaProjectTimeoutMs: 120_000,

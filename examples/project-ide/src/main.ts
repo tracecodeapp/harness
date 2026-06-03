@@ -41,6 +41,8 @@ monaco.editor.defineTheme('tracecodeDark', {
 // Constants & Fixtures
 // ----------------------------------------------------------------------
 const DEV_KERNEL_STORAGE_KEY = 'tracecode:dev:user:weather-api';
+const DEV_KERNEL_STORAGE_DATABASE = 'tracecode-project-ide';
+const DEV_KERNEL_STORAGE_STORE = 'workspaces';
 
 const getEditorLanguage = (lang: Language): string => {
   if (lang === 'typescript') return 'typescript';
@@ -210,7 +212,12 @@ async function bootDevTerminal(): Promise<void> {
     }
   ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
-  const kernelStorage = createIndexedDbKernelStorage({ key: DEV_KERNEL_STORAGE_KEY });
+  const kernelStorage = createIndexedDbKernelStorage({
+    key: DEV_KERNEL_STORAGE_KEY,
+    databaseName: DEV_KERNEL_STORAGE_DATABASE,
+    storeName: DEV_KERNEL_STORAGE_STORE,
+    trustedSameOriginPersistence: true,
+  });
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
     pythonProjectTimeoutMs: 120_000,
