@@ -2691,6 +2691,180 @@ print(json.dumps({
   console.log('PASS: Python builtin sum records consumed collection reads');
 }
 
+async function assertPythonTraceHelpersIgnoreUserShadowing(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def solve(values):
+    global TraceHooks
+    TraceHooks = None
+    print("still tracing")
+    return sum(values)
+`;
+
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    { values: [2, 3, 4] },
+    'function',
+    { maxTraceSteps: 1000, maxLineEvents: 10000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result),
+    'consoleOutput': _console_output
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+    consoleOutput: string[];
+  };
+  assertCondition(parsed.result === 9, `Python tracing should survive user TraceHooks shadowing, got ${JSON.stringify(parsed)}`);
+  assertCondition(
+    parsed.consoleOutput.includes('still tracing'),
+    `Python tracing should keep print hooked after TraceHooks shadowing, got ${JSON.stringify(parsed.consoleOutput)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => event.kind === 'read' && event.target?.variable === 'values'),
+    `Python tracing should keep recording accesses after TraceHooks shadowing, got ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python trace helpers ignore user TraceHooks shadowing');
+}
+
+async function assertPythonRuntimeSurvivesShadowedSetAcrossRuns(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const firstPayload = runtime.generateTracingCode(
+    deps,
+    `def poison():
+    global set
+    set = "shadowed"
+    return 1
+`,
+    'poison',
+    {},
+    'function',
+    { maxTraceSteps: 1000, maxLineEvents: 10000 }
+  );
+  const secondPayload = runtime.generateTracingCode(
+    deps,
+    `def solve(values):
+    seen = set(values)
+    return len(seen)
+`,
+    'solve',
+    { values: [1, 1, 2] },
+    'function',
+    { maxTraceSteps: 1000, maxLineEvents: 10000 }
+  );
+
+  const stdout = await runPythonScript(`${firstPayload.code}
+_first_result = _serialize_output(_result)
+${secondPayload.code}
+print(json.dumps({
+    'firstResult': _first_result,
+    'secondResult': _serialize_output(_result),
+    'traceFailed': _trace_failed,
+    'setBindingType': type(globals().get('set')).__name__ if 'set' in globals() else None
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    firstResult: unknown;
+    secondResult: unknown;
+    traceFailed: boolean;
+    setBindingType: string | null;
+  };
+  assertCondition(
+    parsed.firstResult === 1 && parsed.secondResult === 2 && parsed.traceFailed === false,
+    `Python harness should recover from a prior user set binding, got ${JSON.stringify(parsed)}`
+  );
+  assertCondition(
+    parsed.setBindingType === null,
+    `Python harness cleanup should remove user set binding before the second run, got ${JSON.stringify(parsed)}`
+  );
+
+  console.log('PASS: Python runtime survives shadowed set across runs');
+}
+
+async function assertBuiltinSumTraceRecordingIsBounded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def solve():
+    values = range(5000)
+    total = sum(values)
+    return total
+`;
+
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    {},
+    'function',
+    { maxTraceSteps: 1000, maxLineEvents: 10000, maxStoredEvents: 2000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  const sumLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'total = sum(values)') - 1;
+  const sumStep = findTraceStep(parsed.trace, sumLine);
+  const accesses = sumStep.accesses ?? [];
+  const valueReads = accesses.filter((access) => access.variable === 'values' && access.kind === 'indexed-read');
+  assertCondition(parsed.result === 12497500, `Python sum(range(...)) should keep native result, got ${parsed.result}`);
+  assertCondition(
+    valueReads.length <= 513,
+    `Python sum(range(...)) should cap trace reads, got ${valueReads.length} value reads`
+  );
+  assertCondition(
+    valueReads.some(
+      (access) =>
+        JSON.stringify(access.indices) === JSON.stringify(['<truncated>']) &&
+        access.value === '4488 additional values'
+    ),
+    `Python sum(range(...)) should record a truncation marker, got ${JSON.stringify(valueReads)}`
+  );
+  assertCondition(
+    !valueReads.some((access) => JSON.stringify(access.indices) === JSON.stringify([4999])),
+    `Python sum(range(...)) should not record every read, got ${JSON.stringify(valueReads)}`
+  );
+
+  console.log('PASS: Python builtin sum trace recording is bounded');
+}
+
 async function assertFunctionStyleFallsBackToSolutionMethod(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `class Solution:
@@ -2837,6 +3011,9 @@ async function main(): Promise<void> {
   await assertBooleanIndexedAssignmentReadsAndWrites();
   await assertRecursiveCallActivationRuntimeEventsAreRecorded();
   await assertBuiltinSumRecordsConsumedCollectionReads();
+  await assertPythonTraceHelpersIgnoreUserShadowing();
+  await assertPythonRuntimeSurvivesShadowedSetAcrossRuns();
+  await assertBuiltinSumTraceRecordingIsBounded();
   await assertFunctionStyleFallsBackToSolutionMethod();
   await assertExecuteCodeHydratesAnnotatedCustomObjects();
   console.log('\nPython runtime checks passed.');

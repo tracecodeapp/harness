@@ -66,11 +66,15 @@ import json
 import math
 import ast
 import operator as _tracecode_operator
-from typing import *
 import builtins as _builtins
+_TRACECODE_PRE_TYPING_GLOBALS = _builtins.set(globals().keys())
+from typing import *
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
 
-_TRACECODE_TYPING_GLOBALS = {name for name in globals().keys() if not name.startswith('_')}
+_TRACECODE_TYPING_GLOBALS = (
+    _builtins.set(name for name in globals().keys() if not name.startswith('_')) -
+    _builtins.set(name for name in _TRACECODE_PRE_TYPING_GLOBALS if not name.startswith('_'))
+)
 
 _trace_data = []
 _trace_events = []
@@ -81,8 +85,9 @@ _target_function = "${targetFunction}"
 _MIRROR_PRINT_TO_WORKER_CONSOLE = ${mirrorPrintToConsole ? 'True' : 'False'}
 _MINIMAL_TRACE = ${minimalTrace ? 'True' : 'False'}
 _TRACE_MAX_PATH_DEPTH = ${maxPathDepth}
+_TRACE_MAX_BULK_ACCESSES = 512
 _SCRIPT_MODE = ${functionName ? 'False' : 'True'}
-_TRACE_INPUT_NAMES = set(${JSON.stringify(Object.keys(inputs))})
+_TRACE_INPUT_NAMES = _builtins.set(${JSON.stringify(Object.keys(inputs))})
 
 class _InfiniteLoopDetected(Exception):
     pass
@@ -92,7 +97,7 @@ def _custom_print(*args, **kwargs):
     _console_output.append(output)
     try:
         _frame = sys._getframe(1)
-        TraceHooks.flush_completed_line(_frame)
+        _TracecodeTraceHooks.flush_completed_line(_frame)
         __tracecode_append_trace_step(_frame, {
             'line': _frame.f_lineno,
             'event': 'stdout',
@@ -113,15 +118,16 @@ _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
-_tracecode_user_class_names = set()
-_tracecode_explicit_return_function_names = set()
-_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_record_attr_write', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_tracecode_user_class_names = _builtins.set()
+_tracecode_explicit_return_function_names = _builtins.set()
+_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_record_attr_write', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
+    '_TRACE_MAX_BULK_ACCESSES',
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
     '_tracecode_builtin_id', '_tracecode_operator',
-    '_TRACECODE_TYPING_GLOBALS',
+    '_TRACECODE_PRE_TYPING_GLOBALS', '_TRACECODE_TYPING_GLOBALS',
     '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events',
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
@@ -131,11 +137,12 @@ _internal_locals = {
     '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry',
     '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token',
     '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result',
-    '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step',
+    '_TracecodeTraceHooks',
+    '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step',
     '__tracecode_append_trace_events_for_step', '__tracecode_frame_id_for_step',
     '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path',
     '__tracecode_access_value',
-    '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_indices',
+    '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices',
     '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id',
     '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses',
     '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value',
@@ -209,11 +216,11 @@ def _serialized_list_root_id(value):
 
 def _collect_serialized_list_component(value, node_ids=None, ref_ids=None, seen=None):
     if node_ids is None:
-        node_ids = set()
+        node_ids = _builtins.set()
     if ref_ids is None:
-        ref_ids = set()
+        ref_ids = _builtins.set()
     if seen is None:
-        seen = set()
+        seen = _builtins.set()
 
     if _is_serialized_ref(value):
         ref_ids.add(value.get('__ref__'))
@@ -256,7 +263,7 @@ def _collect_serialized_custom_object_payloads(value, payloads=None, seen=None):
     if payloads is None:
         payloads = {}
     if seen is None:
-        seen = set()
+        seen = _builtins.set()
     if isinstance(value, _builtins.list):
         marker = _tracecode_builtin_id(value)
         if marker in seen:
@@ -296,7 +303,7 @@ def _materialize_top_level_custom_object_aliases(local_vars):
 
 def _inline_component_list_refs(value, root_payloads, seen_root_ids=None):
     if seen_root_ids is None:
-        seen_root_ids = set()
+        seen_root_ids = _builtins.set()
 
     if _is_serialized_ref(value):
         ref_id = value.get('__ref__')
@@ -305,7 +312,7 @@ def _inline_component_list_refs(value, root_payloads, seen_root_ids=None):
         target = root_payloads.get(ref_id)
         if target is None or ref_id in seen_root_ids:
             return value
-        next_seen = set(seen_root_ids)
+        next_seen = _builtins.set(seen_root_ids)
         next_seen.add(ref_id)
         return _inline_component_list_refs(_clone_serialized_value(target), root_payloads, next_seen)
 
@@ -316,7 +323,7 @@ def _inline_component_list_refs(value, root_payloads, seen_root_ids=None):
         return value
 
     out = {}
-    next_seen = set(seen_root_ids)
+    next_seen = _builtins.set(seen_root_ids)
     value_id = value.get('__id__')
     if isinstance(value_id, _builtins.str):
         next_seen.add(value_id)
@@ -338,7 +345,7 @@ def _normalize_top_level_linked_list_locals(local_vars):
         if not isinstance(root_id, _builtins.str):
             continue
         node_ids, ref_ids = _collect_serialized_list_component(value)
-        all_ids = set(node_ids) | set(ref_ids)
+        all_ids = _builtins.set(node_ids) | _builtins.set(ref_ids)
         if not all_ids:
             all_ids.add(root_id)
         candidates.append({
@@ -417,7 +424,7 @@ def _normalize_top_level_linked_list_locals(local_vars):
             local_vars[canonical['name']] = _inline_component_list_refs(
                 _clone_serialized_value(canonical['value']),
                 root_payloads,
-                set([canonical.get('root_id')]) if isinstance(canonical.get('root_id'), _builtins.str) else set(),
+                _builtins.set([canonical.get('root_id')]) if isinstance(canonical.get('root_id'), _builtins.str) else _builtins.set(),
             )
 
         for candidate in group:
@@ -429,7 +436,7 @@ def _normalize_top_level_linked_list_locals(local_vars):
 
     return local_vars
 
-_SCRIPT_PRE_USER_GLOBALS = set()
+_SCRIPT_PRE_USER_GLOBALS = _builtins.set()
 
 def _snapshot_local_sources(frame):
     if _MINIMAL_TRACE:
@@ -623,7 +630,7 @@ def __tracecode_append_trace_events_for_step(step):
                 if not __tracecode_append_runtime_event(event):
                     return
 
-class TraceHooks:
+class _TracecodeTraceHooks:
     """
     RuntimeTrace is post-line: public line frames describe a source line after it
     completed. Python sys.settrace reports line events before execution, so the
@@ -650,7 +657,7 @@ class TraceHooks:
 
     @staticmethod
     def flush_completed_line(frame):
-        previous_step = TraceHooks._resolve_previous_step(frame)
+        previous_step = _TracecodeTraceHooks._resolve_previous_step(frame)
         if previous_step is None:
             return
         if previous_step.get('event') != 'line':
@@ -666,11 +673,11 @@ class TraceHooks:
         previous_step['accesses'] = accesses
         previous_step['callStack'] = _snapshot_call_stack()
         previous_step['stdoutLineCount'] = len(_console_output)
-        TraceHooks._append_step_runtime_events(previous_step)
+        _TracecodeTraceHooks._append_step_runtime_events(previous_step)
 
     @staticmethod
     def flush_callsite_line(frame, line_number):
-        previous_step = TraceHooks._resolve_previous_step(frame)
+        previous_step = _TracecodeTraceHooks._resolve_previous_step(frame)
         if previous_step is None:
             return
         if previous_step.get('event') != 'line':
@@ -691,14 +698,27 @@ class TraceHooks:
                 'accesses': accesses,
             }
             globals()['__tracecode_append_trace_step'](frame, callsite_step)
-            TraceHooks._append_step_runtime_events(callsite_step)
+            _TracecodeTraceHooks._append_step_runtime_events(callsite_step)
             return
         previous_step['variables'] = local_vars
         previous_step['variableSources'] = local_sources
         previous_step['accesses'] = accesses
         previous_step['callStack'] = _snapshot_call_stack()
         previous_step['stdoutLineCount'] = len(_console_output)
-        TraceHooks._append_step_runtime_events(previous_step)
+        _TracecodeTraceHooks._append_step_runtime_events(previous_step)
+
+TraceHooks = _TracecodeTraceHooks
+
+def __tracecode_pending_access_budget(frame, reserve=0):
+    if _trace_limit_exceeded or frame is None:
+        return 0
+    try:
+        frame_key = _tracecode_builtin_id(frame)
+        pending_count = len(_pending_accesses.get(frame_key, []))
+        remaining_events = _max_stored_events - len(_trace_events) - pending_count - int(reserve)
+        return max(0, min(_TRACE_MAX_BULK_ACCESSES, remaining_events))
+    except Exception:
+        return 0
 
 def __tracecode_append_trace_step(frame, step):
     global _trace_limit_exceeded, _timeout_reason
@@ -803,7 +823,7 @@ def _tracecode_user_call(line_number, function_name, func, *args, **kwargs):
     _tracecode_previous_tracer = sys.gettrace()
     sys.settrace(None)
     try:
-        TraceHooks.flush_callsite_line(sys._getframe(1), line_number)
+        _TracecodeTraceHooks.flush_callsite_line(sys._getframe(1), line_number)
     finally:
         sys.settrace(_tracecode_previous_tracer)
     return func(*args, **kwargs)
@@ -1367,10 +1387,29 @@ def _tracecode_sum(var_name, iterable, *args, **kwargs):
     frame = sys._getframe(1)
     try:
         if __tracecode_is_indexable_sequence(iterable) or isinstance(iterable, range):
-            for index, value in enumerate(iterable):
+            budget = __tracecode_pending_access_budget(frame, reserve=1)
+            total_length = None
+            try:
+                total_length = len(iterable)
+            except Exception:
+                pass
+            if budget > 0:
+                for index, value in enumerate(iterable):
+                    if index >= budget:
+                        break
+                    __tracecode_record_access(
+                        frame,
+                        __tracecode_make_access_event(var_name, 'indexed-read', [index], value=_serialize(value)),
+                    )
+            if isinstance(total_length, int) and total_length > budget:
                 __tracecode_record_access(
                     frame,
-                    __tracecode_make_access_event(var_name, 'indexed-read', [index], value=_serialize(value)),
+                    __tracecode_make_access_event(
+                        var_name,
+                        'indexed-read',
+                        ['<truncated>'],
+                        value=f'{total_length - budget} additional values',
+                    ),
                 )
         else:
             __tracecode_record_access(
@@ -1645,7 +1684,7 @@ def _tracecode_assignment_write_targets(target):
 
 def _tracecode_exception_value(line_number, error):
     frame = sys._getframe(1)
-    TraceHooks.flush_completed_line(frame)
+    _TracecodeTraceHooks.flush_completed_line(frame)
     __tracecode_append_trace_step(frame, {
         'line': line_number,
         'event': 'exception',
@@ -1733,21 +1772,21 @@ def _tracecode_is_annotation_node(node):
     return False
 
 def _tracecode_collect_user_function_names(tree):
-    names = set()
+    names = _builtins.set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             names.add(node.name)
     return names
 
 def _tracecode_collect_user_class_names(tree):
-    names = set()
+    names = _builtins.set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             names.add(node.name)
     return names
 
 def _tracecode_collect_explicit_return_function_names(tree):
-    names = set()
+    names = _builtins.set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for child in ast.walk(node):
@@ -1759,8 +1798,8 @@ def _tracecode_collect_explicit_return_function_names(tree):
 class __TracecodeAccessTransformer(ast.NodeTransformer):
     def __init__(self, user_function_names=None, user_class_names=None):
         super().__init__()
-        self._tracecode_user_function_names = set(user_function_names or [])
-        self._tracecode_user_class_names = set(user_class_names or [])
+        self._tracecode_user_function_names = _builtins.set(user_function_names or [])
+        self._tracecode_user_class_names = _builtins.set(user_class_names or [])
         self._tracecode_temp_counter = 0
 
     def _tracecode_next_temp_name(self, prefix):
@@ -2566,9 +2605,9 @@ def _tracecode_collect_collapsed_literal_lines(source):
     try:
         tree = ast.parse(source, filename='solution.py', mode='exec')
     except Exception:
-        return set()
+        return _builtins.set()
 
-    collapsed_lines = set()
+    collapsed_lines = _builtins.set()
     for node in ast.walk(tree):
         statement_line = getattr(node, 'lineno', None)
         value = None
@@ -2654,7 +2693,7 @@ def _tracer(frame, event, arg):
     if event == 'line':
         if frame.f_code.co_filename == 'solution.py' and frame.f_lineno in _tracecode_collapsed_literal_lines:
             return _tracer
-        previous_step = TraceHooks._resolve_previous_step(frame)
+        previous_step = _TracecodeTraceHooks._resolve_previous_step(frame)
         if (
             isinstance(previous_step, _builtins.dict)
             and previous_step.get('event') == 'line'
@@ -2663,7 +2702,7 @@ def _tracer(frame, event, arg):
             and not _pending_accesses.get(_tracecode_builtin_id(frame))
         ):
             return _tracer
-        TraceHooks.flush_completed_line(frame)
+        _TracecodeTraceHooks.flush_completed_line(frame)
         _total_line_events += 1
         
         # Check total line events
@@ -2767,7 +2806,7 @@ def _tracer(frame, event, arg):
             'accesses': []
         })
     elif event == 'return':
-        TraceHooks.flush_completed_line(frame)
+        _TracecodeTraceHooks.flush_completed_line(frame)
         is_class_body_return = func_name in _tracecode_user_class_names and frame.f_code.co_filename == 'solution.py'
         is_implicit_none_return = (
             arg is None
@@ -2975,9 +3014,9 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
             if _origin is _builtins.tuple:
                 return tuple(_items)
             if _origin is _builtins.set:
-                return set(_items)
+                return _builtins.set(_items)
             if _origin is _builtins.frozenset:
-                return frozenset(_items)
+                return _builtins.frozenset(_items)
             return _items
         return _obj
     if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
@@ -3122,7 +3161,7 @@ _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
 _tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 if _SCRIPT_MODE:
-    _SCRIPT_PRE_USER_GLOBALS = set(globals().keys()) - _TRACE_INPUT_NAMES
+    _SCRIPT_PRE_USER_GLOBALS = _builtins.set(globals().keys()) - _TRACE_INPUT_NAMES
 
 sys.settrace(_tracer)
 _trace_failed = False
@@ -3832,9 +3871,9 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
             if _origin is _builtins.tuple:
                 return tuple(_items)
             if _origin is _builtins.set:
-                return set(_items)
+                return _builtins.set(_items)
             if _origin is _builtins.frozenset:
-                return frozenset(_items)
+                return _builtins.frozenset(_items)
             return _items
         return _obj
     if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
@@ -4080,9 +4119,9 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
             if _origin is _builtins.tuple:
                 return tuple(_items)
             if _origin is _builtins.set:
-                return set(_items)
+                return _builtins.set(_items)
             if _origin is _builtins.frozenset:
-                return frozenset(_items)
+                return _builtins.frozenset(_items)
             return _items
         return _obj
     if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
