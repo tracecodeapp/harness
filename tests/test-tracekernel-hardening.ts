@@ -5,6 +5,9 @@ import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
+import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
+import { createNativeCppProjectRunner } from '../packages/harness-cpp/src/project-node';
+import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
 
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);
@@ -12,6 +15,15 @@ const testDirectory = dirname(testFilePath);
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+async function rejectedMessage(run: () => Promise<unknown>): Promise<string> {
+  try {
+    await run();
+    return '';
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -327,6 +339,63 @@ async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<voi
     !result.files?.some((file) => file.path.startsWith('.trace/') || file.contents.includes('hidden')),
     `hidden namespace files should not leak through final diffs: ${JSON.stringify(result.files)}`
   );
+}
+
+async function testNativeProjectRunnersRejectVirtualPathTraversal(): Promise<void> {
+  const projectRoot = '/home/obi/weather-api';
+  const project = {
+    cwd: projectRoot,
+    workspaceRoot: projectRoot,
+    workspaceAlias: '/workspace',
+    files: [
+      { path: 'main.cpp', contents: 'int main() { return 0; }\n' },
+      { path: 'Main.java', contents: 'public class Main { public static void main(String[] args) {} }\n' },
+      { path: 'Program.cs', contents: 'System.Console.WriteLine("ok");\n' },
+    ],
+  };
+
+  const cppError = await rejectedMessage(() => createNativeCppProjectRunner({
+    compilerCommand: process.execPath,
+    timeoutMs: 1000,
+  })({
+    code: '',
+    source: 'compile',
+    scriptPath: '/workspace/main.cpp',
+    args: ['-std=c++17', `${projectRoot}/../../escape.cpp`, '-o', '/workspace/../../pwn'],
+    cwd: projectRoot,
+    env: {},
+    project,
+  }));
+  assertCondition(cppError.includes('must not escape the workspace'), `native C++ runner should reject virtual traversal before spawn: ${cppError}`);
+
+  const javaError = await rejectedMessage(() => createNativeJavaProjectRunner({
+    javacCommand: process.execPath,
+    javaCommand: process.execPath,
+    timeoutMs: 1000,
+  })({
+    code: '',
+    source: 'compile',
+    scriptPath: '/workspace/Main.java',
+    args: ['-d', '/workspace/../../classes', 'Main.java'],
+    cwd: projectRoot,
+    env: {},
+    project,
+  }));
+  assertCondition(javaError.includes('must not escape the workspace'), `native Java runner should reject virtual traversal before spawn: ${javaError}`);
+
+  const csharpError = await rejectedMessage(() => createNativeCSharpProjectRunner({
+    dotnetCommand: process.execPath,
+    timeoutMs: 1000,
+  })({
+    code: '',
+    source: 'compile',
+    scriptPath: '/workspace/Program.cs',
+    args: ['--output', '/workspace/../../bin'],
+    cwd: projectRoot,
+    env: {},
+    project,
+  }));
+  assertCondition(csharpError.includes('must not escape the workspace'), `native C# runner should reject virtual traversal before spawn: ${csharpError}`);
 }
 
 async function testTraceKernelHttpTimeoutSignalsCooperativeHandlers(): Promise<void> {
@@ -651,6 +720,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptReadonlyHardlinksAreRejected();
   await testBrowserJavaScriptHiddenFilesAreNotMounted();
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
+  await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
   await testTraceKernelHttpDiagnosticsAreRedacted();
   await testTraceKernelHttpListenerLimit();

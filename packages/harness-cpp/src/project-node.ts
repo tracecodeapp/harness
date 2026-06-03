@@ -205,7 +205,8 @@ function mapWorkspaceAbsolutePath(root: string, value: string, project?: CppProj
   }
   if (normalized === VIRTUAL_WORKSPACE_ROOT) return root;
   if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
-    return join(root, normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1));
+    const relativePath = normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1);
+    return relativePath ? join(root, assertSafeProjectPath(relativePath)) : root;
   }
   return value;
 }
