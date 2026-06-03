@@ -1545,10 +1545,33 @@ public final class JavaRewriteLibrary {
   }
 
   private static boolean hasIndexSideEffect(String source) {
-    if (source.contains("++") || source.contains("--")) return true;
-    Matcher call = Pattern.compile("\\.([A-Za-z_][A-Za-z0-9_]*)\\s*\\(").matcher(source);
-    while (call.find()) {
-      if (isTrackedMutationMethod(call.group(1))) return true;
+    for (int index = 0; index < source.length(); index++) {
+      char ch = source.charAt(index);
+      if (ch == '"' || ch == '\'') {
+        index = skipJavaLiteral(source, index) - 1;
+        continue;
+      }
+      char next = index + 1 < source.length() ? source.charAt(index + 1) : '\0';
+      if ((ch == '+' && next == '+') || (ch == '-' && next == '-')) return true;
+      if (ch == '=' && next != '=') {
+        char previous = index > 0 ? source.charAt(index - 1) : '\0';
+        if (previous != '=' && previous != '!' && previous != '<' && previous != '>') return true;
+      }
+      if (isJavaIdentifierStart(ch)) {
+        int nameEnd = index + 1;
+        while (nameEnd < source.length() && isJavaIdentifierPart(source.charAt(nameEnd))) nameEnd++;
+        String name = source.substring(index, nameEnd);
+        int afterName = skipWhitespace(source, nameEnd);
+        if (
+            afterName < source.length() &&
+            source.charAt(afterName) == '(' &&
+            !"charAt".equals(name) &&
+            !"length".equals(name)
+        ) {
+          return true;
+        }
+        index = nameEnd - 1;
+      }
     }
     return false;
   }

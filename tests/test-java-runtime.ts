@@ -1986,6 +1986,50 @@ class Solution {
     'Java rewriter should force 1D array-write hooks away from the 2D overload'
   );
 
+  const sideEffectArrayUpdateOutput = executeNativeJavaRewrittenExpression(`class Solution {
+  int cursor = 0;
+  int next() { return cursor++; }
+  int solve() {
+    int[] values = new int[] { 1, 10 };
+    values[next()]++;
+    return values[0] * 100 + values[1] * 10 + cursor;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectArrayUpdateOutput === '301',
+    `Java array update tracing should not re-evaluate side-effecting indexes, received ${sideEffectArrayUpdateOutput}`
+  );
+
+  const sideEffectArrayCompoundOutput = executeNativeJavaRewrittenExpression(`class Solution {
+  int cursor = 0;
+  int next() { return cursor++; }
+  int solve() {
+    int[] values = new int[] { 1, 10 };
+    values[next()] += 3;
+    return values[0] * 100 + values[1] * 10 + cursor;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectArrayCompoundOutput === '501',
+    `Java compound array tracing should not re-evaluate side-effecting indexes, received ${sideEffectArrayCompoundOutput}`
+  );
+
+  const sideEffectMatrixUpdateOutput = executeNativeJavaRewrittenExpression(`class Solution {
+  int rowCursor = 0;
+  int colCursor = 0;
+  int row() { return rowCursor++; }
+  int col() { return colCursor++; }
+  int solve() {
+    int[][] values = new int[][] { { 1, 10 } };
+    values[row()][col()]++;
+    return values[0][0] * 100 + values[0][1] * 10 + rowCursor + colCursor;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectMatrixUpdateOutput === '302',
+    `Java matrix update tracing should not re-evaluate side-effecting indexes, received ${sideEffectMatrixUpdateOutput}`
+  );
+
   const indexedSetMutationSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
 class Solution {
