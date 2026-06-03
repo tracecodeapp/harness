@@ -144,9 +144,26 @@ function elapsedMs(startedAt) {
   return Math.max(0, Math.round(now() - startedAt));
 }
 
-function normalizeRawKernelDevicePath(value) {
+function normalizeRuntimeAbsolutePath(value, options = {}) {
   if (typeof value !== 'string' || value.length === 0) return null;
-  const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
+  const raw = value.replace(/\\/g, '/').replace(/\/+/g, '/');
+  if (!raw.startsWith('/')) return null;
+  const parts = [];
+  for (const part of raw.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (options.rejectParentTraversal) return null;
+      if (parts.length > 0) parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
+function normalizeRawKernelDevicePath(value) {
+  const normalized = normalizeRuntimeAbsolutePath(value, { rejectParentTraversal: true });
+  if (!normalized) return null;
   return normalized.startsWith('/dev/') && normalized.length > '/dev/'.length ? normalized : null;
 }
 
@@ -164,8 +181,8 @@ function isKernelDeviceNamespacePath(value) {
   if (typeof policy?.isRuntimeKernelDeviceNamespacePath === 'function') {
     return policy.isRuntimeKernelDeviceNamespacePath(value);
   }
-  if (typeof value !== 'string' || value.length === 0) return false;
-  const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
+  const normalized = normalizeRuntimeAbsolutePath(value, { rejectParentTraversal: true });
+  if (!normalized) return false;
   return normalized === '/dev' || normalized.startsWith('/dev/');
 }
 
@@ -174,8 +191,7 @@ function isKernelDeviceDirectoryPath(value) {
   if (typeof policy?.isRuntimeKernelDeviceDirectory === 'function') {
     return policy.isRuntimeKernelDeviceDirectory(value);
   }
-  if (typeof value !== 'string' || value.length === 0) return false;
-  return (value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/') === '/dev';
+  return normalizeRuntimeAbsolutePath(value, { rejectParentTraversal: true }) === '/dev';
 }
 
 function kernelDeviceEntries(request = activeProjectIo?.request) {
@@ -221,8 +237,8 @@ function kernelDeviceStream(path) {
 }
 
 function normalizeKernelVirtualManifestPath(value) {
-  if (typeof value !== 'string' || value.length === 0) return null;
-  const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
+  const normalized = normalizeRuntimeAbsolutePath(value, { rejectParentTraversal: true });
+  if (!normalized) return null;
   return normalized.startsWith('/') && normalized !== '/dev' && !normalized.startsWith('/dev/')
     ? normalized
     : null;
@@ -361,19 +377,55 @@ function isReadableOpenFlags(flags) {
   return accessMode === 0 || accessMode === 2;
 }
 
-function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
-  if (typeof path !== 'string' || !path) return null;
-  const normalized = path.replace(/\\/g, '/').replace(/\/+/g, '/');
-  if (normalized === '/dev/stdout' || normalized === '/dev/stderr' || isKernelVirtualFsPath(normalized, request)) return null;
-
+function projectFsRoots(request = activeProjectIo?.request) {
   const roots = ['/workspace', CSHARP_PROJECT_WORKSPACE_ROOT];
   const project = request?.project;
   if (typeof project?.cwd === 'string' && project.cwd) roots.push(project.cwd);
   if (typeof project?.workspaceRoot === 'string' && project.workspaceRoot) roots.push(project.workspaceRoot);
   if (typeof project?.workspaceAlias === 'string' && project.workspaceAlias) roots.push(project.workspaceAlias);
+  return Array.from(new Set(
+    roots
+      .map((root) => normalizeRuntimeAbsolutePath(root))
+      .filter(Boolean)
+  )).sort((left, right) => right.length - left.length);
+}
 
-  for (const root of roots.sort((left, right) => right.length - left.length)) {
-    const cleanRoot = root.replace(/\/+$/, '') || '/';
+function isRuntimePathUnderRoot(path, root) {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+function isProjectWorkspaceEscapingPath(path, request = activeProjectIo?.request) {
+  if (typeof path !== 'string' || !path) return false;
+  const raw = path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
+  if (!raw.startsWith('/')) return false;
+  const resolved = normalizeRuntimeAbsolutePath(raw);
+  if (!resolved) return false;
+  let matchedRawRoot = false;
+  for (const root of projectFsRoots(request)) {
+    if (isRuntimePathUnderRoot(raw, root)) matchedRawRoot = true;
+    if (isRuntimePathUnderRoot(resolved, root)) return false;
+  }
+  return matchedRawRoot;
+}
+
+function throwProjectWorkspaceEscapingMutationError(path, operation) {
+  if (!isProjectWorkspaceEscapingPath(path)) return;
+  throwKernelFsError(path, operation, 'EACCES', 'permission denied');
+}
+
+function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
+  if (typeof path !== 'string' || !path) return null;
+  const raw = path.replace(/\\/g, '/').replace(/\/+/g, '/');
+  const normalized = raw.startsWith('/') ? normalizeRuntimeAbsolutePath(raw) : raw;
+  if (!normalized) return null;
+  if (normalized === '/dev/stdout' || normalized === '/dev/stderr' || isKernelVirtualFsPath(normalized, request)) return null;
+
+  const roots = projectFsRoots(request);
+  const rawMatchedRoot = raw.startsWith('/') && roots.some((root) => isRuntimePathUnderRoot(raw, root));
+  const normalizedMatchedRoot = raw.startsWith('/') && roots.some((root) => isRuntimePathUnderRoot(normalized, root));
+  if (rawMatchedRoot && !normalizedMatchedRoot) return null;
+
+  for (const cleanRoot of roots) {
     if (normalized === cleanRoot) return null;
     if (normalized.startsWith(`${cleanRoot}/`)) {
       const relative = normalized.slice(cleanRoot.length + 1);
@@ -682,6 +734,7 @@ function throwKernelDevicePathError(path, operation, code = 'ENOENT') {
 }
 
 function throwKernelVirtualMutationError(path, operation) {
+  throwProjectWorkspaceEscapingMutationError(path, operation);
   const target = runtimeKernelVirtualMutationTarget(path);
   if (target.kind === 'workspace') return;
   if (target.reason === 'device-not-found') {
@@ -952,6 +1005,9 @@ function installRuntimeFsHooks(runtime) {
       if (activeProjectIo && isKernelVirtualFsPath(path)) {
         throwKernelFsError(path, 'write', 'EROFS', 'read-only file system');
       }
+      if (activeProjectIo) {
+        throwProjectWorkspaceEscapingMutationError(path, 'write');
+      }
       const result = originalWriteFile.apply(this, arguments);
       if (activeProjectIo) emitProjectFileSnapshot(path);
       return result;
@@ -995,6 +1051,7 @@ function installRuntimeFsHooks(runtime) {
         throwKernelFsError(path, 'open', 'ENOENT', 'no such file or directory');
       }
       if (activeProjectIo) {
+        throwProjectWorkspaceEscapingMutationError(path, 'open');
         const openTarget = runtimeKernelVirtualOpenTarget(path, flags);
         if (openTarget.kind === 'error') {
           const code = openTarget.reason === 'not-found' ? 'ENOENT' : openTarget.reason === 'is-directory' ? 'EISDIR' : 'EROFS';

@@ -1,8 +1,10 @@
 #!/usr/bin/env npx tsx
 
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import vm from 'node:vm';
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
@@ -398,6 +400,62 @@ async function testNativeProjectRunnersRejectVirtualPathTraversal(): Promise<voi
   assertCondition(csharpError.includes('must not escape the workspace'), `native C# runner should reject virtual traversal before spawn: ${csharpError}`);
 }
 
+async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'workers', 'csharp', 'csharp-worker.js'), 'utf8');
+  const context = vm.createContext({
+    console,
+    self: {
+      addEventListener: () => {},
+      postMessage: () => {},
+      close: () => {},
+      location: { search: '' },
+    },
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    SharedArrayBuffer,
+    Int32Array,
+    Atomics,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+    performance: { now: () => 0 },
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
+  vm.runInContext(source, context, { filename: 'csharp-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      const request = { project: { cwd: '/workspace/src', workspaceRoot: '/workspace', workspaceAlias: '/workspace' } };
+      let mutationError = '';
+      try {
+        throwProjectWorkspaceEscapingMutationError('/workspace/src/../../escape.txt', 'write');
+      } catch (error) {
+        mutationError = error && error.code ? error.code : String(error && error.message || error);
+      }
+      return {
+        kernelTraversal: normalizeKernelVirtualManifestPath('/proc/../workspace/pwn.txt'),
+        deviceTraversal: normalizeRawKernelDevicePath('/dev/../workspace/stdout'),
+        escapedLivePath: normalizeProjectFsPath('/workspace/src/../../escape.txt', request),
+        normalizedLivePath: normalizeProjectFsPath('/workspace/src/../safe.txt', request),
+        mutationError,
+      };
+    })()`,
+    context
+  ) as {
+    kernelTraversal: string | null;
+    deviceTraversal: string | null;
+    escapedLivePath: string | null;
+    normalizedLivePath: string | null;
+    mutationError: string;
+  };
+
+  assertCondition(result.kernelTraversal === null, `C# kernel manifest traversal should be rejected: ${JSON.stringify(result)}`);
+  assertCondition(result.deviceTraversal === null, `C# device manifest traversal should be rejected: ${JSON.stringify(result)}`);
+  assertCondition(result.escapedLivePath === null, `C# live event traversal path should not be emitted: ${JSON.stringify(result)}`);
+  assertCondition(result.normalizedLivePath === 'safe.txt', `C# live event path should normalize in-workspace dot segments: ${JSON.stringify(result)}`);
+  assertCondition(result.mutationError === 'EACCES', `C# workspace escape mutation should be rejected: ${JSON.stringify(result)}`);
+}
+
 async function testTraceKernelHttpTimeoutSignalsCooperativeHandlers(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
   let sideEffectsAfterTimeout = 0;
@@ -721,6 +779,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptHiddenFilesAreNotMounted();
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
   await testNativeProjectRunnersRejectVirtualPathTraversal();
+  await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
   await testTraceKernelHttpDiagnosticsAreRedacted();
   await testTraceKernelHttpListenerLimit();
