@@ -1570,6 +1570,28 @@ class Solution {
     'Java rewriter should not make a line hook the body of an unbraced nested loop'
   );
 
+  const compactControlSource = assertNativeJavaRewriterCompiles(`class Solution {
+  int solve(int x) {
+    int y = 0;
+    if(x > 0) {
+      y = 1;
+    }
+    for(int i = 0; i < 1; i++) {
+      y += i;
+    }
+    while(y < 2) {
+      y++;
+    }
+    return y;
+  }
+}`);
+  assertCondition(
+    compactControlSource.includes('TraceHooks.emitScalarWriteAtLine(5, "y", y);') &&
+      compactControlSource.includes('TraceHooks.emitScalarWriteAtLine(8, "y", y);') &&
+      compactControlSource.includes('TraceHooks.emitScalarWriteAtLine(11, "y", y);'),
+    'Java rewriter should trace compact control blocks written without a space before ('
+  );
+
   const enhancedForArraySource = assertNativeJavaRewriterCompiles(`class Solution {
   int solve(Object[][] accounts) {
     int total = 0;

@@ -1319,9 +1319,16 @@ public final class JavaRewriteLibrary {
 
   private static boolean startsMultilineInitializer(String trimmed) {
     return trimmed.contains("{") && !trimmed.contains(";") &&
-        !trimmed.startsWith("if ") && !trimmed.startsWith("for ") && !trimmed.startsWith("while ") &&
-        !trimmed.startsWith("switch ") && !trimmed.startsWith("try") && !trimmed.startsWith("catch") &&
-        !trimmed.startsWith("finally") && !trimmed.startsWith("else") && !trimmed.startsWith("do ");
+        !startsControlBlock(trimmed);
+  }
+
+  private static boolean startsControlBlock(String trimmed) {
+    return trimmed.matches("^(?:if|for|while|switch|catch)\\s*\\([\\s\\S]*") ||
+        trimmed.startsWith("try") ||
+        trimmed.startsWith("finally") ||
+        trimmed.startsWith("else") ||
+        trimmed.startsWith("do ") ||
+        trimmed.equals("do");
   }
 
   private static PendingMultilineMutation multilineMutationStart(String line, int sourceLine, MethodFrame frame) {
