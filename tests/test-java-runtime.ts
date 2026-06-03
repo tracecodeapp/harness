@@ -5814,6 +5814,25 @@ Object result = new Object[] { maxDepth(root), head.next.val, uf.find(2) };`;
       loopRewrite?.source.includes('for (int col = 0; col < cols; col++) { dp[0][col] = 1; }'),
       'Java function source should block-wrap sibling single-statement for loop bodies before rewrite'
     );
+    const trailingLoopCode = `class Solution {
+  int solve() {
+    int x = 0;
+    while (x < 1)
+      for (int i = 0; i < 1; i++) { x++; } x = 10;
+    return x;
+  }
+}`;
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
+      code: trailingLoopCode,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+    });
+    const trailingLoopRewrite = harness.rewriteCalls.at(-1)?.source ?? '';
+    assertCondition(
+      trailingLoopRewrite.includes('while (x < 1)\n      { for (int i = 0; i < 1; i++) { x++; } } x = 10;'),
+      `Java nested loop wrapper should leave trailing same-line statements outside the outer loop, received ${trailingLoopRewrite}`
+    );
     console.log('PASS: java worker block-wraps single-statement for loops before rewrite');
 
     const treeInputCode = `class TreeNode {

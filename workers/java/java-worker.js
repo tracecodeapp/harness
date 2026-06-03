@@ -1865,8 +1865,36 @@ function isUnbracedLoopHeaderLine(line) {
 }
 
 function startsBracedLoopLine(line) {
-  const trimmed = line.trim();
-  return /^(?:for|while)\s*\(.*\)\s*\{/.test(trimmed);
+  const lineStart = line.search(/\S/);
+  if (lineStart < 0) return false;
+  const keyword = startsWithJavaKeyword(line, lineStart, 'for')
+    ? 'for'
+    : startsWithJavaKeyword(line, lineStart, 'while')
+      ? 'while'
+      : null;
+  if (!keyword) return false;
+  let headerStart = lineStart + keyword.length;
+  while (/\s/.test(line[headerStart] ?? '')) headerStart += 1;
+  if (line[headerStart] !== '(') return false;
+  const closeParen = findMatchingParen(line, headerStart);
+  if (closeParen < 0) return false;
+  let bodyStart = closeParen + 1;
+  while (/\s/.test(line[bodyStart] ?? '')) bodyStart += 1;
+  if (line[bodyStart] !== '{') return false;
+  const closeBrace = findMatchingBrace(line, bodyStart);
+  return closeBrace < 0 || !hasJavaCodeAfter(line, closeBrace + 1);
+}
+
+function hasJavaCodeAfter(source, start) {
+  let found = false;
+  scanJavaCode(source, start, source.length, (_index, ch) => {
+    if (!/\s/.test(ch)) {
+      found = true;
+      return false;
+    }
+    return undefined;
+  });
+  return found;
 }
 
 function wrapNestedBracedLoopBodies(source) {
