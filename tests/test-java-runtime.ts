@@ -1666,6 +1666,17 @@ class Solution {
     'Java rewriter should preserve single-variable arithmetic index provenance such as i + 1'
   );
 
+  const nestedAllocationIndexSource = assertNativeJavaRewriterCompiles(`class Solution {
+  int solve(int[] temperatures) {
+    int[] copy = new int[temperatures[0]];
+    return copy.length;
+  }
+}`);
+  assertCondition(
+    nestedAllocationIndexSource.includes('new int[TraceHooks.readIntArrayAtLine(3, "temperatures", temperatures, 0, null)]'),
+    'Java rewriter should trace nested array reads inside allocation dimensions'
+  );
+
   const expressionIndexWriteSource = assertNativeJavaRewriterCompiles(`class Solution {
   long solve(int[] nums) {
     long[] prefix = new long[nums.length + 1];

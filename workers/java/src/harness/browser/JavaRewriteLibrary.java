@@ -1477,9 +1477,12 @@ public final class JavaRewriteLibrary {
       }
       String full = source.substring(nameStart, bracketEnd + 1);
       String helper = arrayReadHelper(frame.typeOf(name));
+      if (helper == null || isArrayAllocationTypeMatch(source, nameStart)) {
+        out.append(source, nameStart, nameEnd);
+        index = nameEnd;
+        continue;
+      }
       if (
-          helper == null ||
-          isArrayAllocationTypeMatch(source, nameStart) ||
           isArrayWriteTarget(source, nameStart, bracketEnd + 1) ||
           nextNonWhitespace(source, bracketEnd + 1) == '['
       ) {
