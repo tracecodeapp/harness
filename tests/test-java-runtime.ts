@@ -146,6 +146,48 @@ function assertNativeJavaRewriterCompiles(source: string, entryName = 'solve'): 
   }
 }
 
+function executeNativeJavaRewrittenExpression(source: string, expression: string, entryName = 'solve'): string {
+  const rewritten = rewriteWithNativeJavaRewriter(source, entryName);
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-rewriter-execute-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Exports.java');
+    const mainPath = join(tmpRoot, 'Main.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(sourcePath, rewritten, 'utf8');
+    writeFileSync(
+      mainPath,
+      `package tracecode.user;
+public final class Main {
+  public static void main(String[] args) {
+    System.out.println(String.valueOf(${expression}));
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      [
+        '-cp',
+        join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'),
+        '-d',
+        classesPath,
+        sourcePath,
+        mainPath,
+      ],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    return execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'tracecode.user.Main'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    ).trim();
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function assertJavaSourceCompiles(source: string, label: string): void {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-source-compile-'));
   try {
@@ -1770,6 +1812,79 @@ class Solution {
     listGetConditionIndexReadSource.includes('TraceHooks.readIntArrayAtLine(9, "temperatures", temperatures, TraceHooks.readListAtLine(9, "stack", stack, stack.size() - 1, "stack.size() - 1"), "stack.size() - 1")') &&
       listGetConditionIndexReadSource.includes('TraceHooks.readIntArrayAtLine(9, "temperatures", temperatures, i, "i")'),
     'Java rewriter should emit both outer array reads when a List.get call is used as an array-read index'
+  );
+
+  const listRemoveByStringSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  boolean solve() {
+    List<String> values = new ArrayList<>(Arrays.asList("a", "b"));
+    return values.remove("a");
+  }
+}`);
+  assertCondition(
+    !listRemoveByStringSource.includes('TraceHooks.popListAtLine(6, "values", values, "a")') &&
+      listRemoveByStringSource.includes('return __tracecodeReturnValue6;'),
+    'Java rewriter should not rewrite List.remove(Object) string values as indexed pops'
+  );
+  const augmentedListRemoveByStringSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  boolean solve() {
+    List<String> values = new ArrayList<>(Arrays.asList("a", "b"));
+    return values.remove("a");
+  }
+}`, 'solve');
+  assertCondition(
+    !augmentedListRemoveByStringSource.includes('TraceHooks.popListAtLine(6, "values", values, "a")') &&
+      augmentedListRemoveByStringSource.includes('values.remove("a")'),
+    'Java source augmentation should preserve List.remove(Object) string values after native rewrite'
+  );
+
+  const listRemoveBoxedOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<Integer> values = new ArrayList<>(Arrays.asList(0, 1, 2));
+    Integer boxed = Integer.valueOf(1);
+    boolean removed = values.remove(boxed);
+    return removed ? values.get(1) : -1;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    listRemoveBoxedOutput === '2',
+    `Java rewriter should preserve boxed List.remove(Object) semantics, received ${listRemoveBoxedOutput}`
+  );
+  const augmentedListRemoveBoxedDeclarationSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<Integer> values = new ArrayList<>(Arrays.asList(0, 1, 2));
+    Integer boxed = Integer.valueOf(1);
+    boolean removed = values.remove(boxed);
+    return removed ? values.get(1) : -1;
+  }
+}`, 'solve');
+  assertCondition(
+    !augmentedListRemoveBoxedDeclarationSource.includes('TraceHooks.popListAtLine(6, "values", values, boxed)') &&
+      augmentedListRemoveBoxedDeclarationSource.includes('values.remove(boxed); TraceHooks.emitMutatingCallAtLine'),
+    'Java source augmentation should keep the generic mutation event for boxed List.remove(Object)'
+  );
+
+  const listRemoveByIndexSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<Integer> values = new ArrayList<>(Arrays.asList(0, 1, 2));
+    int index = 1;
+    values.remove(index);
+    return values.get(1);
+  }
+}`);
+  assertCondition(
+    listRemoveByIndexSource.includes('TraceHooks.popListAtLine(7, "values", values, index)') &&
+      !listRemoveByIndexSource.includes('values.remove(index); TraceHooks.emitMutatingCallAtLine'),
+    'Java rewriter should keep tracing primitive int List.remove(index) as an indexed pop'
   );
 
   const mutatingIndexWriteSource = rewriteWithNativeJavaRewriter(`import java.util.*;

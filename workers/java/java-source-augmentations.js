@@ -83,6 +83,7 @@
       queues: [],
       adjacencyLists: [],
       arrays: [],
+      integerScalars: [],
     };
     const declarationPattern =
       /\b((?:java\.util\.)?(?:HashMap|LinkedHashMap|TreeMap|Map|HashSet|LinkedHashSet|TreeSet|Set|ArrayList|LinkedList|List|ArrayDeque|Deque|Queue)(?!\.)\s*(?:<[^;=(){}]+?>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
@@ -114,6 +115,11 @@
       const name = match[1];
       if (name) collections.arrays.push(name);
     }
+    const integerScalarDeclarationPattern = /\b(?:byte|short|char|int)\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
+    for (const match of line.matchAll(integerScalarDeclarationPattern)) {
+      const name = match[1];
+      if (name) collections.integerScalars.push(name);
+    }
     return collections;
   }
 
@@ -121,6 +127,69 @@
     const normalized = String(source).replace(/\s+/g, '');
     const escaped = escapeRegExp(receiverName);
     return new RegExp(`^${escaped}\\.size\\(\\)-1$`).test(normalized);
+  }
+
+  function stripOuterJavaParentheses(source) {
+    let value = String(source).trim();
+    let changed = true;
+    while (changed && value.startsWith('(') && value.endsWith(')')) {
+      changed = false;
+      let depth = 0;
+      let quote = null;
+      let escaped = false;
+      let wrapsWholeExpression = true;
+      for (let index = 0; index < value.length; index += 1) {
+        const ch = value[index];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (quote) {
+          if (ch === '\\') {
+            escaped = true;
+            continue;
+          }
+          if (ch === quote) quote = null;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch;
+          continue;
+        }
+        if (ch === '(') depth += 1;
+        if (ch === ')') depth -= 1;
+        if (depth === 0 && index < value.length - 1) {
+          wrapsWholeExpression = false;
+          break;
+        }
+      }
+      if (wrapsWholeExpression && depth === 0) {
+        value = value.slice(1, -1).trim();
+        changed = true;
+      }
+    }
+    return value;
+  }
+
+  function isDefinitelyListIndexExpression(source, receiverName, currentMethod) {
+    const value = stripOuterJavaParentheses(source);
+    if (!value) return false;
+    if (isLastListIndexExpression(value, receiverName)) return true;
+    if (/^[+-]?(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|[0-9][0-9_]*)$/.test(value)) return true;
+    if (/^'(?:\\.|[^'\\])'$/.test(value)) return true;
+    if (/^\(\s*(?:byte|short|char|int)\s*\)/.test(value)) return true;
+    if (/"(?:\\.|[^"\\])*"/.test(value)) return false;
+    const withoutCharLiterals = value.replace(/'(?:\\.|[^'\\])'/g, '0');
+    const identifiers = Array.from(withoutCharLiterals.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g), (match) => match[0]);
+    const uniqueIdentifiers = Array.from(new Set(identifiers));
+    if (uniqueIdentifiers.length === 0) return false;
+    if (!uniqueIdentifiers.every((name) => currentMethod.integerScalars.has(name))) return false;
+    const stripped = withoutCharLiterals
+      .replace(/0[xX][0-9a-fA-F_]+|0[bB][01_]+|[0-9][0-9_]*/g, '')
+      .replace(/[A-Za-z_][A-Za-z0-9_]*/g, '')
+      .replace(/\+\+|--/g, '')
+      .replace(/[+\-*/%() \t]/g, '');
+    return stripped.length === 0;
   }
 
   function isSimpleIdentifierExpression(source) {
@@ -827,6 +896,7 @@
           queues: new Set(),
           adjacencyLists: new Set(),
           arrays: new Set(),
+          integerScalars: new Set(),
         });
         const params = collectJavaCollectionDeclarations(methodMatch[3] ?? '');
         params.maps.forEach((name) => methodStack[methodStack.length - 1].maps.add(name));
@@ -835,6 +905,7 @@
         params.queues.forEach((name) => methodStack[methodStack.length - 1].queues.add(name));
         params.adjacencyLists.forEach((name) => methodStack[methodStack.length - 1].adjacencyLists.add(name));
         params.arrays.forEach((name) => methodStack[methodStack.length - 1].arrays.add(name));
+        params.integerScalars.forEach((name) => methodStack[methodStack.length - 1].integerScalars.add(name));
         return line;
       }
 
@@ -849,6 +920,7 @@
       declarations.queues.forEach((name) => currentMethod.queues.add(name));
       declarations.adjacencyLists.forEach((name) => currentMethod.adjacencyLists.add(name));
       declarations.arrays.forEach((name) => currentMethod.arrays.add(name));
+      declarations.integerScalars.forEach((name) => currentMethod.integerScalars.add(name));
 
       const traceLine = parseNativeTraceLine(line);
       if (traceLine !== null) currentMethod.currentTraceLine = traceLine;
@@ -959,13 +1031,17 @@
             `TraceHooks.offerDequeFirstAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
           );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'remove', (indexSource) => {
-            if (currentMethod.queues.has(name) && String(indexSource).trim() === '') {
+            const rawIndexSource = String(indexSource).trim();
+            if (currentMethod.queues.has(name) && rawIndexSource === '') {
               return `TraceHooks.pollQueueAtLine(${lineNumber}, "${name}", ${name})`;
             }
-            if (isLastListIndexExpression(indexSource, name)) {
+            if (isLastListIndexExpression(rawIndexSource, name)) {
               return `TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name})`;
             }
-            return `TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name}, ${indexSource})`;
+            if (isDefinitelyListIndexExpression(rawIndexSource, name, currentMethod)) {
+              return `TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name}, ${indexSource})`;
+            }
+            return `${name}.remove(${indexSource})`;
           });
           nextLine = replaceJavaReceiverCall(nextLine, name, 'poll', (indexSource) => {
             if (currentMethod.queues.has(name) && String(indexSource).trim() === '') {
@@ -986,14 +1062,28 @@
           if (currentMethod.adjacencyLists.has(name) && (method === 'add' )) {
             return '';
           }
-          if (currentMethod.lists.has(name) && (method === 'add' || method === 'remove')) {
+          if (currentMethod.lists.has(name) && method === 'add') {
+            return '';
+          }
+          if (
+            currentMethod.lists.has(name) &&
+            method === 'remove' &&
+            nextLine.includes(`TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name}`)
+          ) {
             return '';
           }
           return match;
         });
         const staleInlineMutationPattern = /TraceHooks\.emit\("trace:\{\\"kind\\":\\"mutate\\",\\"line\\":\d+,\\"target\\":\{\\"variable\\":\\"([A-Za-z_][A-Za-z0-9_]*)\\"\},\\"method\\":\\"(add|offer|remove)\\"[^;]*?\);\s*/g;
         nextLine = nextLine.replace(staleInlineMutationPattern, (match, name, method) => {
-          if (currentMethod.lists.has(name) && (method === 'add' || method === 'remove')) {
+          if (currentMethod.lists.has(name) && method === 'add') {
+            return '';
+          }
+          if (
+            currentMethod.lists.has(name) &&
+            method === 'remove' &&
+            nextLine.includes(`TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name}`)
+          ) {
             return '';
           }
           return match;

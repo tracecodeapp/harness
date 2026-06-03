@@ -928,6 +928,16 @@ public final class JavaRewriteLibrary {
           return indent + "TraceHooks.removeSetAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " + key + ", " + keySource + ");";
         }
       }
+      if ("remove".equals(method) && isListType(frame.typeOf(name))) {
+        java.util.List<String> parts = splitTopLevel(rawArgs);
+        if (parts.size() == 1 && isDefinitelyListIndexExpression(parts.get(0), name, frame)) {
+          if (isLastListIndexExpression(parts.get(0), name)) {
+            return indent + "TraceHooks.popListAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+          }
+          String index = rewriteReads(parts.get(0), sourceLine, frame);
+          return indent + "TraceHooks.popListAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " + index + ");";
+        }
+      }
       if ("set".equals(method) && isListType(frame.typeOf(name))) {
         java.util.List<String> parts = splitTopLevel(mutatingCall.group(4).trim());
         if (parts.size() >= 2) {
@@ -1196,6 +1206,13 @@ public final class JavaRewriteLibrary {
       String name = match.group(1);
       if (!isListType(frame.typeOf(name))) return match.group(0);
       String rawIndex = match.group(2).trim();
+      if (!isDefinitelyListIndexExpression(rawIndex, name, frame)) {
+        String arg = rewriteReads(rawIndex, line, frame);
+        return name + ".remove(" + arg + ")";
+      }
+      if (isLastListIndexExpression(rawIndex, name)) {
+        return "TraceHooks.popListAtLine(" + line + ", " + quote(name) + ", " + name + ")";
+      }
       String index = rewriteReads(rawIndex, line, frame);
       return "TraceHooks.popListAtLine(" + line + ", " + quote(name) + ", " + name + ", " + index + ")";
     });
@@ -2155,6 +2172,85 @@ public final class JavaRewriteLibrary {
 
   private static boolean isLiteralIndexSource(String value) {
     return value != null && value.trim().matches("^(?:\"(?:\\\\.|[^\"\\\\])*\"|[0-9]+)$");
+  }
+
+  private static boolean isLastListIndexExpression(String source, String receiverName) {
+    if (source == null || receiverName == null) return false;
+    String normalized = source.replaceAll("\\s+", "");
+    return normalized.equals(receiverName + ".size()-1");
+  }
+
+  private static String stripOuterJavaParentheses(String source) {
+    if (source == null) return "";
+    String value = source.trim();
+    boolean changed = true;
+    while (changed && value.startsWith("(") && value.endsWith(")")) {
+      changed = false;
+      int depth = 0;
+      char quote = 0;
+      boolean escaped = false;
+      boolean wrapsWholeExpression = true;
+      for (int index = 0; index < value.length(); index++) {
+        char ch = value.charAt(index);
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (quote != 0) {
+          if (ch == '\\') {
+            escaped = true;
+            continue;
+          }
+          if (ch == quote) quote = 0;
+          continue;
+        }
+        if (ch == '"' || ch == '\'') {
+          quote = ch;
+          continue;
+        }
+        if (ch == '(') depth++;
+        if (ch == ')') depth--;
+        if (depth == 0 && index < value.length() - 1) {
+          wrapsWholeExpression = false;
+          break;
+        }
+      }
+      if (wrapsWholeExpression && depth == 0) {
+        value = value.substring(1, value.length() - 1).trim();
+        changed = true;
+      }
+    }
+    return value;
+  }
+
+  private static boolean isPrimitiveIntegralType(String type) {
+    if (type == null) return false;
+    String normalized = normalizeJavaType(type);
+    return "byte".equals(normalized) || "short".equals(normalized) || "char".equals(normalized) || "int".equals(normalized);
+  }
+
+  private static boolean isDefinitelyListIndexExpression(String source, String receiverName, MethodFrame frame) {
+    String value = stripOuterJavaParentheses(source);
+    if (value.isEmpty()) return false;
+    if (isLastListIndexExpression(value, receiverName)) return true;
+    if (value.matches("^[+-]?(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|[0-9][0-9_]*)$")) return true;
+    if (value.matches("^'(?:\\\\.|[^'\\\\])'$")) return true;
+    if (value.matches("^\\(\\s*(?:byte|short|char|int)\\s*\\)[\\s\\S]+$")) return true;
+    if (Pattern.compile("\"(?:\\\\.|[^\"\\\\])*\"").matcher(value).find()) return false;
+    String withoutCharLiterals = value.replaceAll("'(?:\\\\.|[^'\\\\])'", "0");
+    java.util.Set<String> identifiers = new java.util.LinkedHashSet<>();
+    Matcher identifier = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*").matcher(withoutCharLiterals);
+    while (identifier.find()) identifiers.add(identifier.group());
+    if (identifiers.isEmpty()) return false;
+    for (String name : identifiers) {
+      if (!isPrimitiveIntegralType(frame.typeOf(name))) return false;
+    }
+    String stripped = withoutCharLiterals
+        .replaceAll("0[xX][0-9a-fA-F_]+|0[bB][01_]+|[0-9][0-9_]*", "")
+        .replaceAll("[A-Za-z_][A-Za-z0-9_]*", "")
+        .replaceAll("\\+\\+|--", "")
+        .replaceAll("[+\\-*/%() \\t]", "");
+    return stripped.isEmpty();
   }
 
   private static String tracedIndexedReadSource(String value) {
