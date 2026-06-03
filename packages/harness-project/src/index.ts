@@ -6721,19 +6721,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       throw Object.assign(new Error('EINVAL: invalid TraceKernel HTTP request URL'), { code: 'EINVAL' });
     }
     const rawHeaders = this.normalizeHttpRawHeaders(request.rawHeaders);
-    const headers = rawHeaders
-      ? this.httpHeadersFromRawHeaders(rawHeaders)
-      : this.normalizeHttpHeaders(request.headers);
+    const explicitHeaders = this.normalizeHttpHeaders(request.headers);
+    const headers = explicitHeaders ?? (rawHeaders ? this.httpHeadersFromRawHeaders(rawHeaders) : undefined);
     const normalized: RuntimeKernelHttpRequest = {
       method: this.normalizeHttpMethod(request.method),
       url: url.toString(),
       path: this.normalizeHttpRequestPath(request.path, url),
     };
     if (headers) normalized.headers = headers;
-    if (rawHeaders) {
+    if (explicitHeaders) {
+      normalized.rawHeaders = Object.entries(explicitHeaders);
+    } else if (rawHeaders) {
       normalized.rawHeaders = rawHeaders;
-    } else if (headers) {
-      normalized.rawHeaders = Object.entries(headers);
     }
     if (request.body !== undefined) normalized.body = String(request.body);
     if (request.bodyEncoding) normalized.bodyEncoding = request.bodyEncoding;

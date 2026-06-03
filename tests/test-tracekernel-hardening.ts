@@ -402,9 +402,13 @@ async function testTraceKernelHttpListenerLimit(): Promise<void> {
 
 async function testTraceKernelHttpRejectsMalformedInputs(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
-  const seenRequests: Array<{ path: string; visibleHeader?: string }> = [];
+  const seenRequests: Array<{ path: string; visibleHeader?: string; rawHeader?: string }> = [];
   const listener = workspace.http.listen({ host: '127.0.0.1', port: 3652 }, (request) => {
-    seenRequests.push({ path: request.path, visibleHeader: request.headers?.['x-visible'] });
+    seenRequests.push({
+      path: request.path,
+      visibleHeader: request.headers?.['x-visible'],
+      rawHeader: request.rawHeaders?.find(([name]) => name.toLowerCase() === 'x-visible')?.[1],
+    });
     return { status: 200, body: 'ok\n' };
   });
   try {
@@ -441,8 +445,12 @@ async function testTraceKernelHttpRejectsMalformedInputs(): Promise<void> {
     });
     assertCondition(canonicalRawHeader.status === 200, `canonical raw HTTP header request should succeed: ${JSON.stringify(canonicalRawHeader)}`);
     assertCondition(
-      seenRequests.some((request) => request.path === '/path' && request.visibleHeader === 'raw-pair'),
-      `raw HTTP headers should be canonical source for handler headers: ${JSON.stringify(seenRequests)}`
+      seenRequests.some((request) =>
+        request.path === '/path' &&
+        request.visibleHeader === 'headers-map' &&
+        request.rawHeader === 'headers-map'
+      ),
+      `HTTP header maps should be canonical over conflicting raw header pairs: ${JSON.stringify(seenRequests)}`
     );
     const requests = await workspace.readFile('/proc/tracekernel/net/requests');
     assertCondition(!requests.includes('GET\tX\nROW'), `request diagnostics should not contain injected control rows: ${requests}`);
