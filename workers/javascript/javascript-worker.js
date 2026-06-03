@@ -4200,16 +4200,32 @@ function ensureBlockStatement(ts, statement) {
   return ts.factory.createBlock([statement], true);
 }
 
+function expressionContainsAwaitOrYield(ts, expression) {
+  let found = false;
+  const visit = (node) => {
+    if (found) return;
+    if (node.kind === ts.SyntaxKind.AwaitExpression || node.kind === ts.SyntaxKind.YieldExpression) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(expression);
+  return found;
+}
+
 function wrapTraceCondition(ts, expression, deferAccessesToNextLine = false) {
   const recorderMethod = deferAccessesToNextLine ? 'tracePostLineCondition' : 'traceCondition';
-  const argument = ts.factory.createArrowFunction(
-    undefined,
-    undefined,
-    [],
-    undefined,
-    ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
-    expression
-  );
+  const argument = expressionContainsAwaitOrYield(ts, expression)
+    ? expression
+    : ts.factory.createArrowFunction(
+        undefined,
+        undefined,
+        [],
+        undefined,
+        ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+        expression
+      );
   return ts.factory.createCallExpression(
     ts.factory.createPropertyAccessExpression(
       ts.factory.createIdentifier('__traceRecorder'),

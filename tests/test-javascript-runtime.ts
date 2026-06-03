@@ -3195,6 +3195,66 @@ function smallest(nums: number[]): number {
   assertCondition(loopTracing.output !== undefined, 'Loop tracing should include output');
   console.log('PASS: execute-with-tracing multi-step loop contract');
 
+  const asyncConditionTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `async function solve(flags) {
+  let i = 0;
+  let total = 0;
+  async function nextFlag() {
+    return flags[i++] ?? false;
+  }
+  while (await nextFlag()) {
+    total += i;
+  }
+  return total;
+}`,
+    functionName: 'solve',
+    inputs: { flags: [true, true, false] },
+    executionStyle: 'function',
+  });
+  assertCondition(
+    asyncConditionTracing.success === true,
+    `JavaScript tracing should preserve await in loop conditions: ${asyncConditionTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(asyncConditionTracing.output === 3, 'JavaScript tracing should preserve async condition output');
+
+  const generatorConditionTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  function* counter() {
+    let count = 0;
+    while (yield count < 2) {
+      count++;
+    }
+    return count;
+  }
+  const iterator = counter();
+  const first = iterator.next();
+  const second = iterator.next(true);
+  const third = iterator.next(true);
+  const done = iterator.next(false);
+  return [first.value, second.value, third.value, done.value, done.done];
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    generatorConditionTracing.success === true,
+    `JavaScript tracing should preserve yield in loop conditions: ${generatorConditionTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(generatorConditionTracing.output) === JSON.stringify([true, true, false, 2, true]),
+    `JavaScript tracing should preserve generator condition output, got ${JSON.stringify(generatorConditionTracing.output)}`
+  );
+  console.log('PASS: execute-with-tracing JS async/generator condition contract');
+
   const tracingAccesses = await harness.sendMessage<{
     success: boolean;
     trace: Array<{ accesses?: RuntimeAccessEvent[] }>;
