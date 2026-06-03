@@ -885,6 +885,20 @@ public class ProjectEventsHttpSmoke {
     System.out.println("server-client=" + serverProxyResponse.statusCode() + ":" + serverProxyResponse.body() + ":" + serverProxyResponse.headers().firstValue("x-server").orElse(""));
     server.stop(0);
 
+    HttpServer staleServer = ProjectEvents.httpServer(new InetSocketAddress("127.0.0.1", 0), 0);
+    staleServer.createContext("/stale", (exchange) -> {
+      byte[] response = "stale-local".getBytes(StandardCharsets.UTF_8);
+      exchange.sendResponseHeaders(299, response.length);
+      exchange.getResponseBody().write(response);
+      exchange.close();
+    });
+    staleServer.start();
+    int stalePort = staleServer.getAddress().getPort();
+    ProjectEvents.clearKernelDevices();
+    HttpRequest afterClearRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + stalePort + "/stale")).GET().build();
+    HttpResponse<String> afterClearResponse = ProjectEvents.httpClient().send(afterClearRequest, HttpResponse.BodyHandlers.ofString());
+    System.out.println("after-clear=" + afterClearResponse.statusCode() + ":" + afterClearResponse.body() + ":" + afterClearResponse.headers().firstValue("x-mode").orElse(""));
+
     System.out.println("requests=" + requests.size());
     for (String request : requests) {
       System.out.println("request=" + request);
@@ -910,7 +924,8 @@ public class ProjectEventsHttpSmoke {
     assertCondition(output.includes('async=203:async-body'), `Java HttpClient.sendAsync shim should dispatch TraceKernel HTTP: ${output}`);
     assertCondition(output.includes('server=207:handled:POST:id=7:work:project'), `Java HttpServer shim should handle local TraceKernel HTTP clients: ${output}`);
     assertCondition(output.includes('server-client=208:proxy:206:upstream-body:java-proxy'), `Java HttpServer handlers should dispatch TraceKernel HTTP clients before responding: ${output}`);
-    assertCondition(output.includes('requests=4'), `Java HTTP shims should dispatch four requests: ${output}`);
+    assertCondition(output.includes('after-clear=201:url-body:url-mode'), `Java HttpServer cleanup should remove stale local handlers: ${output}`);
+    assertCondition(output.includes('requests=5'), `Java HTTP shims should dispatch five requests: ${output}`);
     assertCondition(
       output.includes('"path":"/items?limit=1"') &&
         output.includes('"_tracekernelTimeoutMs":1234') &&
@@ -919,7 +934,8 @@ public class ProjectEventsHttpSmoke {
         output.includes('"body":"am9i"') &&
         output.includes('"path":"/async"') &&
         output.includes('"path":"/proxy-upstream"') &&
-        output.includes('"body":"YnJpZGdlOnZpYS1qYXZhLXNlcnZlcg=="'),
+        output.includes('"body":"YnJpZGdlOnZpYS1qYXZhLXNlcnZlcg=="') &&
+        output.includes('"path":"/stale"'),
       `Java HTTP shims should preserve paths, methods, and request bodies: ${output}`
     );
     console.log('PASS: Java ProjectEvents HTTP client shims dispatch through TraceKernel bridge');

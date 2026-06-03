@@ -174,6 +174,7 @@ public final class ProjectEvents {
   }
 
   public static void clearKernelDevices() {
+    clearProjectHttpServers();
     KERNEL_DEVICES.remove();
     KERNEL_VIRTUAL_FILES.remove();
     STDOUT_CAPTURE.remove();
@@ -181,6 +182,20 @@ public final class ProjectEvents {
     PROJECT_ENVIRONMENT.remove();
     PROJECT_VIRTUAL_WORKSPACE_ROOT.remove();
     PROJECT_WORKSPACE_ALIAS.remove();
+  }
+
+  private static void clearProjectHttpServers() {
+    List<ProjectHttpServer> servers;
+    synchronized (PROJECT_HTTP_SERVERS) {
+      servers = new ArrayList<>(PROJECT_HTTP_SERVERS.values());
+      PROJECT_HTTP_SERVERS.clear();
+    }
+    for (ProjectHttpServer server : servers) {
+      try {
+        server.stop(0);
+      } catch (RuntimeException ignored) {
+      }
+    }
   }
 
   public static InputStream inputStream() {
