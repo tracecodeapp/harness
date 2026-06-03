@@ -772,6 +772,7 @@ export class JavaWorkerClient {
 
     for (const [, pending] of this.pendingMessages) {
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
+      this.closePendingHttpListeners(pending);
       pending.reject(reason);
     }
     this.pendingMessages.clear();

@@ -23,6 +23,7 @@ const JAVA_HTTP_SYNC_STATE_INDEX = 0;
 const JAVA_HTTP_SYNC_LENGTH_INDEX = 1;
 const JAVA_HTTP_SYNC_REQUEST = 1;
 const JAVA_HTTP_SYNC_RESPONSE = 2;
+const JAVA_HTTP_SYNC_CLOSED = 3;
 const JAVA_HTTP_SYNC_HEADER_BYTES = 8;
 
 function testBase64(value: string): string {
@@ -37,6 +38,8 @@ function testJavaHttpResponseManifest(status: number, headers: Record<string, st
 const workerInstances: MockWorker[] = [];
 let heldPythonProjectStarted: (() => void) | undefined;
 let releaseHeldPythonProject: (() => void) | undefined;
+let javaHttpTimeoutServerStarted: (() => void) | undefined;
+let javaHttpTimeoutRequestBuffer: SharedArrayBuffer | undefined;
 
 class MockWorker {
   public onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
@@ -258,6 +261,27 @@ class MockWorker {
             finish();
           };
           void serveRequests();
+          return;
+        }
+        if (type === 'execute-project-java' && (payload as { scriptPath?: string } | undefined)?.scriptPath === 'HttpServerTimeout.java') {
+          const requestBuffer = new SharedArrayBuffer(4096);
+          const controlBuffer = new SharedArrayBuffer(4096);
+          javaHttpTimeoutRequestBuffer = requestBuffer;
+          this.onmessage?.({
+            data: {
+              id,
+              type: 'kernel-http-listen-sync',
+              protocolToken,
+              payload: {
+                serverId: 'java-http-timeout-test',
+                options: { host: '127.0.0.1', port: 3211 },
+                requestBuffer,
+                controlBuffer,
+              },
+            },
+          } as MessageEvent<WorkerMessage>);
+          javaHttpTimeoutServerStarted?.();
+          javaHttpTimeoutServerStarted = undefined;
           return;
         }
         this.onmessage?.({
@@ -633,6 +657,64 @@ async function main(): Promise<void> {
     );
     assertCondition(javaListenClosed, 'Java worker client should close Java HttpServer listeners when the worker closes them');
     console.log('PASS: Java worker client bridges TraceKernel HTTP server listeners');
+
+    let javaTimeoutListenClosed = false;
+    javaHttpTimeoutRequestBuffer = undefined;
+    const javaTimeoutServerStarted = new Promise<void>((resolve) => {
+      javaHttpTimeoutServerStarted = resolve;
+    });
+    const javaTimeoutClient = new JavaWorkerClient({ workerUrl: '/instance-a/java-worker.js' });
+    const javaTimeoutRun = javaTimeoutClient.executeProjectJava({
+      code: '',
+      source: 'run',
+      scriptPath: 'HttpServerTimeout.java',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        files: [{ path: 'HttpServerTimeout.java', contents: 'class HttpServerTimeout {}\n' }],
+      },
+      kernelHttp: {
+        listen(options) {
+          return {
+            id: 'java-http-timeout-test',
+            info: {
+              id: 'java-http-timeout-test',
+              host: options.host ?? '127.0.0.1',
+              port: options.port ?? 0,
+              url: `http://127.0.0.1:${options.port ?? 0}`,
+            },
+            close() {
+              javaTimeoutListenClosed = true;
+            },
+          };
+        },
+        async dispatch() {
+          throw new Error('Java server timeout test should not dispatch outbound requests');
+        },
+      },
+    }, 25);
+    await javaTimeoutServerStarted;
+    let javaTimeoutError = '';
+    try {
+      await javaTimeoutRun;
+    } catch (error) {
+      javaTimeoutError = error instanceof Error ? error.message : String(error);
+    } finally {
+      javaHttpTimeoutServerStarted = undefined;
+      javaTimeoutClient.terminate();
+    }
+    assertCondition(
+      javaTimeoutError.includes('Java execution timed out'),
+      `Java server timeout should reject command execution: ${javaTimeoutError}`
+    );
+    assertCondition(javaTimeoutListenClosed, 'Java worker client should close Java HttpServer listeners when a command times out');
+    assertCondition(Boolean(javaHttpTimeoutRequestBuffer), 'Java server timeout test should expose the listener request buffer');
+    assertCondition(
+      Atomics.load(new Int32Array(javaHttpTimeoutRequestBuffer!, 0, 2), JAVA_HTTP_SYNC_STATE_INDEX) === JAVA_HTTP_SYNC_CLOSED,
+      'Java worker client should wake Java HttpServer bridge waits when a command times out'
+    );
+    console.log('PASS: Java worker client closes TraceKernel HTTP listeners on timeout');
 
     const cppWarmupResult = await harnessA.warmLanguage('cpp');
     const cppWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/cpp-worker.js'));
