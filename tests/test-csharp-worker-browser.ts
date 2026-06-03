@@ -1870,6 +1870,48 @@ async function main(): Promise<void> {
       `C# worker traced private trie-object case should return 1, received ${JSON.stringify(tracedPrivateTrieObject.output)}`
     );
 
+    const tracedPrivateFieldObject = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  private sealed class Bag {',
+        '    public string PublicValue = "public-value";',
+        '    private string secret = "private-secret";',
+        '    public int Score() { return PublicValue.Length + secret.Length; }',
+        '  }',
+        '  public int UseBag() {',
+        '    Bag bag = new Bag();',
+        '    return bag.Score();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UseBag',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedPrivateFieldObject.success,
+      `C# worker traced private-field object case should succeed: ${tracedPrivateFieldObject.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedPrivateFieldObject.output === 26,
+      `C# worker traced private-field object case should return 26, received ${JSON.stringify(tracedPrivateFieldObject.output)}`
+    );
+    {
+      const serializedBagValues = JSON.stringify(
+        tracedPrivateFieldObject.events
+          ?.filter((event) => event.target?.variable === 'bag' && event.value !== undefined)
+          .map((event) => event.value)
+      );
+      assertCondition(
+        serializedBagValues.includes('public-value') &&
+          !serializedBagValues.includes('private-secret') &&
+          !serializedBagValues.includes('secret'),
+        `C# worker trace should serialize public object fields without leaking private fields, received ${serializedBagValues}`
+      );
+    }
+
     const tracedCharArrayUnaryWrite = await runWorkerCase(
       page,
       [

@@ -1592,7 +1592,6 @@ public static class RuntimeTraceSink
         int emittedFields = 0;
         foreach (System.Reflection.FieldInfo field in type.GetFields(
             System.Reflection.BindingFlags.Public
-                | System.Reflection.BindingFlags.NonPublic
                 | System.Reflection.BindingFlags.Instance
         ))
         {
