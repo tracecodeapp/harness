@@ -2123,6 +2123,21 @@ class Solution {
     `Java peek-field mutation tracing should not evaluate peek() twice, received ${sideEffectPeekMutationOutput}`
   );
 
+  const danglingElseOutput = executeNativeJavaRewrittenExpression(`class Solution {
+  int score(boolean a, boolean b) {
+    int value = 0;
+    if (a) if (b) value = 1; else value = 2;
+    return value;
+  }
+  int solve() {
+    return score(true, false) * 10 + score(false, false);
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    danglingElseOutput === '20',
+    `Java inline-if tracing should preserve nearest-if else binding, received ${danglingElseOutput}`
+  );
+
   const indexedSetMutationSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
 class Solution {

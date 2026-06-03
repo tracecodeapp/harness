@@ -1028,6 +1028,9 @@ public final class JavaRewriteLibrary {
     if (thenBody.isEmpty() || !thenBody.endsWith(";")) {
       return null;
     }
+    if (elseIndex >= 0 && (thenBody.startsWith("if ") || thenBody.startsWith("if("))) {
+      return null;
+    }
     String condition = rewriteReads(line.substring(openParen + 1, closeParen).trim(), sourceLine, frame);
     StringBuilder out = new StringBuilder();
     out.append(indent).append("if (").append(condition).append(") {\n")
