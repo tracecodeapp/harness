@@ -3211,6 +3211,9 @@ function extractTraceableElementAccess(ts, node, maxPathDepth = DEFAULT_TRACE_MA
       continue;
     }
     if (ts.isPropertyAccessExpression(current)) {
+      if (ts.isPrivateIdentifier(current.name)) {
+        return null;
+      }
       indices.unshift(ts.factory.createStringLiteral(current.name.text));
       current = unwrapParenthesizedExpression(ts, current.expression);
       continue;
@@ -3260,7 +3263,12 @@ function arePassiveTraceIndexExpressions(ts, indices) {
 
 function extractTraceablePropertyAccess(ts, node) {
   const current = unwrapParenthesizedExpression(ts, node);
-  if (!current || !ts.isPropertyAccessExpression(current) || isOptionalChainAccess(ts, current)) {
+  if (
+    !current ||
+    !ts.isPropertyAccessExpression(current) ||
+    ts.isPrivateIdentifier(current.name) ||
+    isOptionalChainAccess(ts, current)
+  ) {
     return null;
   }
   const receiver = unwrapParenthesizedExpression(ts, current.expression);
@@ -3315,6 +3323,9 @@ function extractTraceableMutatingCall(ts, node, maxPathDepth = DEFAULT_TRACE_MAX
   if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
     return null;
   }
+  if (ts.isPrivateIdentifier(node.expression.name)) {
+    return null;
+  }
 
   const receiver = unwrapParenthesizedExpression(ts, node.expression.expression);
   const methodName = node.expression.name.text;
@@ -3333,6 +3344,7 @@ function extractTraceableMutatingCall(ts, node, maxPathDepth = DEFAULT_TRACE_MAX
 
   if (
     ts.isPropertyAccessExpression(receiver) &&
+    !ts.isPrivateIdentifier(receiver.name) &&
     ts.isThis(unwrapParenthesizedExpression(ts, receiver.expression))
   ) {
     return {

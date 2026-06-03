@@ -2071,6 +2071,38 @@ function smallest(nums: number[]): number {
   );
   console.log('PASS: execute-with-tracing preserves JS Map.size runtime semantics in ops-class');
 
+  const executeJavaScriptPrivateMapFieldTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  #graph;
+
+  constructor() {
+    this.#graph = new Map([[0, []]]);
+  }
+
+  solve() {
+    this.#graph.get(0).push(1);
+    return this.#graph.get(0).length;
+  }
+}`,
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    language: 'javascript',
+    inputs: {},
+  });
+  assertCondition(
+    executeJavaScriptPrivateMapFieldTracing.success === true,
+    `JavaScript private Map field tracing should succeed: ${executeJavaScriptPrivateMapFieldTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    executeJavaScriptPrivateMapFieldTracing.output === 1,
+    `JavaScript private Map field tracing should preserve output, got ${JSON.stringify(executeJavaScriptPrivateMapFieldTracing.output)}`
+  );
+  console.log('PASS: execute-with-tracing preserves JS private Map fields');
+
   const executeTypeScriptBfsLineMapping = await harness.sendMessage<{
     success: boolean;
     trace: Array<{
