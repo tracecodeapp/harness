@@ -221,9 +221,13 @@ public class Main {
   public static void main(String[] args) {
     List<Integer> values = new ArrayList<>();
     for (int i = 0; i < 70; i++) values.add(i);
+    Set<Integer> set = new LinkedHashSet<>();
+    set.add(1);
+    set.add(2);
     Map<String, Integer> map = new LinkedHashMap<>();
     for (int i = 0; i < 70; i++) map.put(String.valueOf(i), i);
     System.out.println(TraceHooks.serializeResult(values));
+    System.out.println(TraceHooks.serializeResult(set));
     System.out.println(TraceHooks.serializeResult(map));
     System.out.println(TraceHooks.serializeOutputResult(values));
   }
@@ -242,7 +246,7 @@ public class Main {
       ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const [listJson, mapJson, outputListJson] = output.trim().split('\n');
+    const [listJson, setJson, mapJson, outputListJson] = output.trim().split('\n');
     assertCondition(
       listJson.endsWith(',{"__truncated__":true,"remaining":6}]'),
       'Java large lists should serialize first 64 items plus truncation marker'
@@ -250,6 +254,11 @@ public class Main {
     assertCondition(
       mapJson.includes('"__truncated__":true,"remaining":6'),
       'Java large maps should serialize truncation fields'
+    );
+    const setPayload = JSON.parse(setJson) as { __type__?: string; values?: unknown[] };
+    assertCondition(
+      setPayload.__type__ === 'set' && Array.isArray(setPayload.values) && setPayload.values.join(',') === '1,2',
+      'Java sets should serialize as typed set payloads instead of generic arrays'
     );
     const outputList = JSON.parse(outputListJson) as unknown[];
     assertCondition(
@@ -732,6 +741,7 @@ function testJavaProjectEventsHttpClientShims(): void {
     writeFileSync(
       sourcePath,
       `import tracecode.browser.ProjectEvents;
+import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -767,6 +777,7 @@ public class ProjectEventsHttpSmoke {
     ProjectEvents.setHttpDispatcherForTesting((requestJson) -> {
       requests.add(requestJson);
       if (requestJson.contains("/async")) return response(203, "async-mode", "async-body");
+      if (requestJson.contains("/proxy-upstream")) return response(206, "proxy-mode", "upstream-body");
       if (requestJson.contains("/post")) return response(202, "client-mode", "client-body");
       return response(201, "url-mode", "url-body");
     });
@@ -800,12 +811,36 @@ public class ProjectEventsHttpSmoke {
       exchange.getResponseBody().write(response);
       exchange.close();
     });
+    server.createContext("/proxy", (exchange) -> {
+      String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+      HttpRequest upstreamRequest = HttpRequest.newBuilder(URI.create("http://tracekernel.test/proxy-upstream"))
+        .header("content-type", "text/plain")
+        .POST(HttpRequest.BodyPublishers.ofString(body + ":via-java-server"))
+        .build();
+      HttpResponse<String> upstreamResponse;
+      try {
+        upstreamResponse = ProjectEvents.httpClient().send(upstreamRequest, HttpResponse.BodyHandlers.ofString());
+      } catch (InterruptedException error) {
+        Thread.currentThread().interrupt();
+        throw new IOException("upstream interrupted", error);
+      }
+      byte[] response = ("proxy:" + upstreamResponse.statusCode() + ":" + upstreamResponse.body()).getBytes(StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().set("x-server", "java-proxy");
+      exchange.sendResponseHeaders(208, response.length);
+      exchange.getResponseBody().write(response);
+      exchange.close();
+    });
     server.start();
     HttpRequest serverRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/queue?id=7"))
       .POST(HttpRequest.BodyPublishers.ofString("work"))
       .build();
     HttpResponse<String> serverResponse = ProjectEvents.httpClient().send(serverRequest, HttpResponse.BodyHandlers.ofString());
     System.out.println("server=" + serverResponse.statusCode() + ":" + serverResponse.body() + ":" + serverResponse.headers().firstValue("x-server").orElse(""));
+    HttpRequest serverProxyRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/proxy"))
+      .POST(HttpRequest.BodyPublishers.ofString("bridge"))
+      .build();
+    HttpResponse<String> serverProxyResponse = ProjectEvents.httpClient().send(serverProxyRequest, HttpResponse.BodyHandlers.ofString());
+    System.out.println("server-client=" + serverProxyResponse.statusCode() + ":" + serverProxyResponse.body() + ":" + serverProxyResponse.headers().firstValue("x-server").orElse(""));
     server.stop(0);
 
     System.out.println("requests=" + requests.size());
@@ -832,14 +867,17 @@ public class ProjectEventsHttpSmoke {
     assertCondition(output.includes('client=202:client-body:client-mode'), `Java HttpClient.send shim should dispatch TraceKernel HTTP: ${output}`);
     assertCondition(output.includes('async=203:async-body'), `Java HttpClient.sendAsync shim should dispatch TraceKernel HTTP: ${output}`);
     assertCondition(output.includes('server=207:handled:POST:id=7:work:project'), `Java HttpServer shim should handle local TraceKernel HTTP clients: ${output}`);
-    assertCondition(output.includes('requests=3'), `Java HTTP shims should dispatch three requests: ${output}`);
+    assertCondition(output.includes('server-client=208:proxy:206:upstream-body:java-proxy'), `Java HttpServer handlers should dispatch TraceKernel HTTP clients before responding: ${output}`);
+    assertCondition(output.includes('requests=4'), `Java HTTP shims should dispatch four requests: ${output}`);
     assertCondition(
       output.includes('"path":"/items?limit=1"') &&
         output.includes('"_tracekernelTimeoutMs":1234') &&
         output.includes('"_tracekernelTimeoutMs":2345') &&
         output.includes('"method":"POST"') &&
         output.includes('"body":"am9i"') &&
-        output.includes('"path":"/async"'),
+        output.includes('"path":"/async"') &&
+        output.includes('"path":"/proxy-upstream"') &&
+        output.includes('"body":"YnJpZGdlOnZpYS1qYXZhLXNlcnZlcg=="'),
       `Java HTTP shims should preserve paths, methods, and request bodies: ${output}`
     );
     console.log('PASS: Java ProjectEvents HTTP client shims dispatch through TraceKernel bridge');

@@ -418,6 +418,22 @@ public final class TraceHooks {
       if (Float.isNaN(number)) return "\"NaN\"";
       if (Float.isInfinite(number)) return number > 0 ? "\"Infinity\"" : "\"-Infinity\"";
     }
+    if (value instanceof java.util.Set<?>) {
+      if (seen.containsKey(value)) return "{\"__ref__\":" + jsonString(seen.get(value)) + "}";
+      seen.put(value, "ref-" + seen.size());
+      java.util.Set<?> set = (java.util.Set<?>) value;
+      StringBuilder out = new StringBuilder("{\"__type__\":\"set\",\"values\":[");
+      int index = 0;
+      for (Object item : set) {
+        if (capValues && index >= MAX_SERIALIZED_ITEMS) break;
+        if (index > 0) out.append(",");
+        out.append(serializeResult(item, seen, depth + 1, capValues));
+        index++;
+      }
+      if (capValues) appendArrayTruncationMarker(out, index, set.size());
+      out.append("]}");
+      return out.toString();
+    }
     if (value instanceof java.util.Collection<?>) {
       if (seen.containsKey(value)) return "{\"__ref__\":" + jsonString(seen.get(value)) + "}";
       seen.put(value, "ref-" + seen.size());
