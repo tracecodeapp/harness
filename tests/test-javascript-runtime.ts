@@ -440,6 +440,123 @@ async function main(): Promise<void> {
   );
   console.log('PASS: execute-with-tracing preserves Set for-of semantics');
 
+  const nullPropertyTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const item = null;
+  return item.value;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(nullPropertyTracing.success === false, 'Null property tracing should preserve native TypeError failure');
+  assertCondition(
+    String(nullPropertyTracing.error ?? '').toLowerCase().includes('cannot read'),
+    `Null property tracing should surface a native read error, received ${JSON.stringify(nullPropertyTracing)}`
+  );
+
+  const nestedUndefinedElementTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `function solve(matrix) {
+  return matrix[0][1];
+}`,
+    functionName: 'solve',
+    inputs: { matrix: [] },
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(nestedUndefinedElementTracing.success === false, 'Nested element tracing should preserve native TypeError failure');
+  assertCondition(
+    String(nestedUndefinedElementTracing.error ?? '').toLowerCase().includes('cannot read'),
+    `Nested element tracing should surface a native read error, received ${JSON.stringify(nestedUndefinedElementTracing)}`
+  );
+
+  const strictThisPropertyTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  'use strict';
+  const read = function() {
+    'use strict';
+    return this.value;
+  };
+  return read();
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(strictThisPropertyTracing.success === false, 'Strict this-property tracing should preserve native TypeError failure');
+  assertCondition(
+    String(strictThisPropertyTracing.error ?? '').toLowerCase().includes('cannot read'),
+    `Strict this-property tracing should surface a native read error, received ${JSON.stringify(strictThisPropertyTracing)}`
+  );
+
+  const optionalChainTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `function solve(item) {
+  return item?.value ?? 7;
+}`,
+    functionName: 'solve',
+    inputs: { item: null },
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    optionalChainTracing.success === true && optionalChainTracing.output === 7,
+    `Optional-chain tracing should preserve native short-circuit semantics, received ${JSON.stringify(optionalChainTracing)}`
+  );
+
+  const getterValueTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const child = {
+    get boom() { throw new Error('getter boom'); }
+  };
+  const values = [child];
+  return values[0] === child;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    getterValueTracing.success === true && getterValueTracing.output === true,
+    `Getter-backed property read tracing should not fail during serialization, received ${JSON.stringify(getterValueTracing)}`
+  );
+  assertCondition(
+    traceAccessEvents(getterValueTracing).some((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'values' &&
+      event.target.path?.[0] === 0 &&
+      event.value &&
+      typeof event.value === 'object' &&
+      (event.value as { boom?: unknown }).boom === '<accessor>'
+    ),
+    `Getter-backed property read tracing should preserve accessor markers, received ${JSON.stringify(traceAccessEvents(getterValueTracing))}`
+  );
+  console.log('PASS: execute-with-tracing preserves JS property and element error semantics');
+
   const sameLineMapGuardTracing = await harness.sendMessage<{
     success: boolean;
     output: unknown;
@@ -1644,8 +1761,8 @@ class Solution {
     executeJavaScriptExplicitCustomObject.success === true,
     `JavaScript explicit custom object hydration should succeed: ${executeJavaScriptExplicitCustomObject.error ?? 'unknown error'}`
   );
-  assertCondition(executeJavaScriptExplicitCustomObject.output === 12, 'JavaScript __type__ metadata should hydrate custom objects');
-  console.log('PASS: execute-code javascript explicit custom object hydration');
+  assertCondition(executeJavaScriptExplicitCustomObject.output === -1, 'JavaScript untrusted __type__ metadata should not hydrate custom objects');
+  console.log('PASS: execute-code javascript untrusted custom metadata stays inert');
 
   const executeTypeScriptLibraryImport = await harness.sendMessage<{
     success: boolean;

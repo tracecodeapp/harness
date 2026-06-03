@@ -398,6 +398,20 @@ function limitedEntries(items, maxItems) {
   };
 }
 
+function ownEnumerableDataEntries(value) {
+  if (!value || typeof value !== 'object') return [];
+  const entries = [];
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.enumerable !== true) continue;
+    entries.push([
+      key,
+      Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : '<accessor>',
+    ]);
+  }
+  return entries;
+}
+
 function serializeValue(
   value,
   depth = 0,
@@ -429,6 +443,22 @@ function serializeValue(
     const limited = limitedEntries(value, activeSerializationLimits.maxItems);
     const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
     if (limited.remaining > 0) result.push(truncationMarker(value.length, limited.values.length));
+    return result;
+  }
+  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) {
+    const viewValues = value instanceof DataView
+      ? Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
+      : Array.from(value);
+    const limited = limitedEntries(viewValues, activeSerializationLimits.maxItems);
+    const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
+    if (limited.remaining > 0) result.push(truncationMarker(viewValues.length, limited.values.length));
+    return result;
+  }
+  if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+    const bytes = Array.from(new Uint8Array(value));
+    const limited = limitedEntries(bytes, activeSerializationLimits.maxItems);
+    const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
+    if (limited.remaining > 0) result.push(truncationMarker(bytes.length, limited.values.length));
     return result;
   }
   if (value instanceof Set) {
@@ -502,7 +532,7 @@ function serializeValue(
         isTree
           ? new Set(['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'])
           : new Set(['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev']);
-      const fields = Object.entries(value).filter(([k]) => !skipped.has(k));
+      const fields = ownEnumerableDataEntries(value).filter(([k]) => !skipped.has(k));
       for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
         out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
       }
@@ -536,7 +566,7 @@ function serializeValue(
         __class__: customClassName,
         __id__: objectId,
       };
-      const fields = Object.entries(value);
+      const fields = ownEnumerableDataEntries(value);
       for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
         out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
       }
@@ -562,7 +592,7 @@ function serializeValue(
       }
       out.__id__ = nodeId;
     }
-    const fields = Object.entries(value);
+    const fields = ownEnumerableDataEntries(value);
     for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
       out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
     }
@@ -637,7 +667,7 @@ function serializeTopLevelValue(value, nodeRefState) {
     const skipped = isTree
       ? new Set(['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'])
       : new Set(['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev']);
-    const fields = Object.entries(nodeValue).filter(([k]) => !skipped.has(k));
+    const fields = ownEnumerableDataEntries(nodeValue).filter(([k]) => !skipped.has(k));
     for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
       out[k] = serializeValue(v, 1, new WeakSet(), nodeRefState);
     }
@@ -663,7 +693,7 @@ function serializeTopLevelValue(value, nodeRefState) {
       __class__: customClassName,
       __id__: objectId,
     };
-    const fields = Object.entries(value);
+    const fields = ownEnumerableDataEntries(value);
     for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
       out[k] = serializeValue(v, 1, seen, nodeRefState);
     }
@@ -1577,6 +1607,14 @@ function createTraceRecorder(options = {}) {
     return result;
   }
 
+  function serializeTraceValue(value) {
+    try {
+      return serializeValue(value, 0, new WeakSet(), stableNodeRefState);
+    } catch {
+      return '<unserializable>';
+    }
+  }
+
   function isLikelyTreeObject(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const hasValue = Object.prototype.hasOwnProperty.call(value, 'val') || Object.prototype.hasOwnProperty.call(value, 'value');
@@ -2041,7 +2079,7 @@ function createTraceRecorder(options = {}) {
 
   return {
     serialize(value) {
-      return serializeValue(value, 0, new WeakSet(), stableNodeRefState);
+      return serializeTraceValue(value);
     },
     read(getter) {
       try {
@@ -2270,7 +2308,7 @@ function createTraceRecorder(options = {}) {
         typeof functionNameOverride === 'string' && functionNameOverride.length > 0
           ? functionNameOverride
           : callStack[callStack.length - 1]?.function ?? '<module>';
-      const serializedReturnValue = serializeValue(returnValue);
+      const serializedReturnValue = serializeTraceValue(returnValue);
       const variables = functionName === '<module>' ? { result: serializedReturnValue } : {};
 
       appendTrace({
@@ -2586,7 +2624,9 @@ function valueAtPath(value, path) {
   let current = value;
   for (const part of path) {
     if (current === null || current === undefined || typeof current !== 'object') return undefined;
-    current = current[String(part)];
+    const key = String(part);
+    if (!Object.prototype.hasOwnProperty.call(current, key)) return undefined;
+    current = current[key];
   }
   return current;
 }
@@ -3139,12 +3179,22 @@ function isNestedElementAccessExpression(ts, node) {
   return Boolean(parent && ts.isElementAccessExpression(parent) && parent.expression === node);
 }
 
+function isOptionalChainAccess(ts, node) {
+  if (!node) return false;
+  if (typeof ts.isPropertyAccessChain === 'function' && ts.isPropertyAccessChain(node)) return true;
+  if (typeof ts.isElementAccessChain === 'function' && ts.isElementAccessChain(node)) return true;
+  return Boolean(node.questionDotToken);
+}
+
 function extractTraceableElementAccess(ts, node, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   const indices = [];
   let current = unwrapParenthesizedExpression(ts, node);
   const effectiveMaxPathDepth = getMaxPathDepthOption(maxPathDepth);
 
   while (current && indices.length < effectiveMaxPathDepth) {
+    if (isOptionalChainAccess(ts, current)) {
+      return null;
+    }
     if (ts.isElementAccessExpression(current)) {
       indices.unshift(current.argumentExpression);
       current = unwrapParenthesizedExpression(ts, current.expression);
@@ -3181,7 +3231,7 @@ function extractTraceableElementAccess(ts, node, maxPathDepth = DEFAULT_TRACE_MA
 
 function extractTraceablePropertyAccess(ts, node) {
   const current = unwrapParenthesizedExpression(ts, node);
-  if (!current || !ts.isPropertyAccessExpression(current)) {
+  if (!current || !ts.isPropertyAccessExpression(current) || isOptionalChainAccess(ts, current)) {
     return null;
   }
   const receiver = unwrapParenthesizedExpression(ts, current.expression);
@@ -5077,6 +5127,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
 }
 
 function buildScriptExecutionRunner(code, sourceCode = code) {
+  const resultPrelude = javascriptRuntimeDeclaresBinding(sourceCode, 'result') ? '' : 'var result;';
   return new Function(
     'console',
     '__tracecodeStdin',
@@ -5096,6 +5147,7 @@ const require = (__moduleName) => {
   throw new Error('Module "' + __moduleName + '" is not available in this runtime');
 };
 try { delete globalThis.result; } catch (_err) {}
+${resultPrelude}
 ${javascriptRuntimeCheckedCode(code, sourceCode)}
 if (typeof result !== 'undefined') {
   return result;
@@ -5181,7 +5233,6 @@ function __traceReadValueAtIndices(__container, __indices) {
   const __resolvedIndices = __traceResolveIndexValues(__indices);
   for (let __i = 0; __i < __resolvedIndices.length; __i += 1) {
     const __index = __resolvedIndices[__i];
-    if (__current === null || __current === undefined) return undefined;
     if (
       __i === __resolvedIndices.length - 1 &&
       __traceIsMetadataProperty(__current, __index)
@@ -5211,11 +5262,9 @@ function __traceWriteValueAtIndices(__container, __indices, __value) {
   }
   let __parent = __container;
   for (let __i = 0; __i < __effectiveIndices.length - 1; __i++) {
-    __parent = __parent?.[__effectiveIndices[__i]];
+    __parent = __parent[__effectiveIndices[__i]];
   }
-  if (__parent !== null && __parent !== undefined) {
-    __parent[__effectiveIndices[__effectiveIndices.length - 1]] = __value;
-  }
+  __parent[__effectiveIndices[__effectiveIndices.length - 1]] = __value;
   return __value;
 }
 
@@ -5395,7 +5444,7 @@ function __traceNormalizeSourceLocation(__location) {
 function __traceReadProperty(__varName, __container, __propertyName, __scopeOrLocation, __maybeLocation) {
   const __scope = typeof __scopeOrLocation === 'string' ? __scopeOrLocation : undefined;
   const __location = typeof __scopeOrLocation === 'string' ? __maybeLocation : __scopeOrLocation;
-  const __value = __container?.[__propertyName];
+  const __value = __container[__propertyName];
   __traceRecorder.recordAccess({
     variable: __varName,
     kind: 'indexed-read',
@@ -5563,7 +5612,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
   const __path = __traceResolveIndexValues(__rawPath);
   let __target = __container;
   for (const __index of __path) {
-    __target = __traceIsMapLike(__target) ? __target.get(__index) : __target?.[__index];
+    __target = __traceIsMapLike(__target) ? __target.get(__index) : __target[__index];
   }
   const __sequenceInsertStartIndex = Array.isArray(__target) && (__method === 'push' || __method === 'unshift')
     ? (__method === 'push' ? __target.length : 0)
@@ -5861,6 +5910,7 @@ function createJavaScriptRuntimeGlobal(consoleProxy) {
 }
 
 function buildScriptTracingRunner(code, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH, sourceCode = code) {
+  const resultPrelude = javascriptRuntimeDeclaresBinding(sourceCode, 'result') ? '' : 'var result;';
   return new Function(
     'console',
     '__traceRecorder',
@@ -5883,6 +5933,7 @@ const require = (__moduleName) => {
   throw new Error('Module "' + __moduleName + '" is not available in this runtime');
 };
 try { delete globalThis.result; } catch (_err) {}
+${resultPrelude}
 ${javascriptRuntimeCheckedCode(code, sourceCode)}
 if (typeof result !== 'undefined') {
   return result;
