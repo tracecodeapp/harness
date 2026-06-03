@@ -4148,6 +4148,45 @@ if (!dequeFieldEvents.some((event) => event.kind === 'read' && event.target?.var
   throw new Error('C++ deque field indexed read should emit this.values[0] read, received ' + JSON.stringify(dequeFieldEvents));
 }
 
+const opsClassNestedVectorFieldTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Grid {',
+    '  vector<vector<int>> graph;',
+    'public:',
+    '  Grid() {',
+    '    graph = vector<vector<int>>(1);',
+    '  }',
+    '  void add(int value) {',
+    '    graph[0].push_back(value);',
+    '  }',
+    '  int first() {',
+    '    return graph[0][0];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'Grid',
+  inputs: {
+    operations: ['Grid', 'add', 'first'],
+    arguments: [[], [7], []],
+  },
+  executionStyle: 'ops-class',
+  options: {},
+});
+if (!opsClassNestedVectorFieldTrace.success || JSON.stringify(opsClassNestedVectorFieldTrace.output) !== JSON.stringify([null, null, 7])) {
+  throw new Error('C++ ops-class nested vector field failed: ' + JSON.stringify(opsClassNestedVectorFieldTrace));
+}
+const nestedVectorFieldEvents = opsClassNestedVectorFieldTrace.trace.events;
+if (!nestedVectorFieldEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.target?.variable === 'this' &&
+  event.target.path?.[0] === 'graph' &&
+  event.target.path?.[1] === 0 &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify([7])
+)) {
+  throw new Error('C++ unqualified nested vector field push_back should emit indexed mutation, received ' + JSON.stringify(nestedVectorFieldEvents));
+}
+
 const opsClassAdapterFieldTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Worklist {',

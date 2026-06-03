@@ -4447,7 +4447,7 @@ function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), 
       candidateNames.add(name);
     }
   }
-  for (const name of nestedVectorNames) {
+  for (const name of new Set([...nestedVectorNames, ...extraTraceContainerNames])) {
     rewritten = rewriteNestedVectorMemberMethodIndexSources(rewritten, name);
   }
   for (const name of candidateNames) {
