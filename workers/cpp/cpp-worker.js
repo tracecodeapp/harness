@@ -4839,7 +4839,7 @@ function updateStringPointerAliasesForLine(line, pointerAliases, variables, alia
   }
 }
 
-function detectIndexedElementAlias(line, variables, aliases = new Map(), scopeDepth = 0) {
+function detectIndexedElementAlias(line, variables, aliases = new Map(), scopeDepth = 0, lineNumber = 0) {
   const match = line.match(/^\s*(?:const\s+)?auto\s*&\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*\[([^\]]+)\]\s*;\s*$/);
   if (!match) return null;
   const [, aliasName, sourceName, outerIndex] = match;
@@ -4849,13 +4849,28 @@ function detectIndexedElementAlias(line, variables, aliases = new Map(), scopeDe
   if (!elementType || !isIndexReadInstrumentableCppType(elementType, aliases)) return null;
   const trimmedOuterIndex = outerIndex.trim();
   if (!trimmedOuterIndex) return null;
+  const indexVariableName = `__tracecode_alias_index_${lineNumber || 'local'}_${aliasName}`;
   return {
     name: aliasName,
     sourceName,
-    outerIndex: trimmedOuterIndex,
+    originalOuterIndex: trimmedOuterIndex,
+    outerIndex: indexVariableName,
     outerSource: cppIndexSourceForExpression(trimmedOuterIndex),
+    indexVariableName,
     scopeDepth,
   };
+}
+
+function rewriteIndexedElementAliasDeclaration(line, alias) {
+  if (!alias?.indexVariableName || !alias?.originalOuterIndex) return line;
+  const match = line.match(/^(\s*)((?:const\s+)?auto\s*&\s+)([A-Za-z_]\w*)(\s*=\s*)([A-Za-z_]\w*)(\s*)\[([^\]]+)\](\s*;\s*)$/);
+  if (!match) return line;
+  const [, indent, declarationPrefix, aliasName, assignment, sourceName, beforeBracket, , suffix] = match;
+  if (aliasName !== alias.name || sourceName !== alias.sourceName) return line;
+  return [
+    `${indent}const auto ${alias.indexVariableName} = ${alias.originalOuterIndex};`,
+    `${indent}${declarationPrefix}${aliasName}${assignment}${sourceName}${beforeBracket}[${alias.indexVariableName}]${suffix.trimEnd()}`,
+  ].join('\n');
 }
 
 function rewriteIndexedElementAliasReadInstrumentation(line, lineNumber, indexedElementAliases = new Map()) {
@@ -6227,9 +6242,10 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       if (iteratorAlias) {
         activeFrame.mapIterators.set(iteratorAlias.name, iteratorAlias);
       }
-      const indexedElementAlias = detectIndexedElementAlias(line, lexicalAccessVariables, aliases, declaredScopeDepth);
+      const indexedElementAlias = detectIndexedElementAlias(line, lexicalAccessVariables, aliases, declaredScopeDepth, lineNumber);
       if (indexedElementAlias) {
         activeFrame.indexedElementAliases.set(indexedElementAlias.name, indexedElementAlias);
+        lineForDriver = rewriteIndexedElementAliasDeclaration(lineForDriver, indexedElementAlias);
       }
       if (/\b(?:destroy|cleanup|deleteTree|deleteList)\s*\(/i.test(trimmedLine)) {
         for (const [name, variable] of activeFrame.variables) {

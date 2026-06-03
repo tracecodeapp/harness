@@ -3132,6 +3132,36 @@ if (!indexedElementAliasEvents.some((event) =>
   throw new Error('C++ const auto& vector element alias should emit source nested read for current[1], received ' + JSON.stringify(indexedElementAliasEvents));
 }
 
+const indexedElementAliasSideEffectTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int aliasSideEffect(vector<vector<int>>& grid) {',
+    '    int i = 0;',
+    '    const auto& row = grid[i++];',
+    '    int first = row[0];',
+    '    return first * 10 + i;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'aliasSideEffect',
+  inputs: { grid: [[7], [9]] },
+  options: {},
+});
+if (!indexedElementAliasSideEffectTrace.success || indexedElementAliasSideEffectTrace.output !== 71) {
+  throw new Error('C++ indexed element alias tracing should single-evaluate side-effecting outer index, received ' + JSON.stringify(indexedElementAliasSideEffectTrace));
+}
+const indexedElementAliasSideEffectEvents = indexedElementAliasSideEffectTrace.trace.events;
+if (!indexedElementAliasSideEffectEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 6 &&
+  event.target?.variable === 'grid' &&
+  JSON.stringify(event.target.path) === JSON.stringify([0, 0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['i', null])
+)) {
+  throw new Error('C++ side-effecting indexed alias should retain original index provenance, received ' + JSON.stringify(indexedElementAliasSideEffectEvents));
+}
+
 const indexedRangeForTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
