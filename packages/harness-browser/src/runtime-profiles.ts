@@ -262,7 +262,7 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: false,
       },
     },
-    project: FINAL_DIFF_PROJECT_IO_CAPABILITIES,
+    project: NO_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {
@@ -592,7 +592,8 @@ const PROJECT_IO_LIMITATIONS: Record<Language, readonly string[]> = {
     'Browser project mode is the reference live tracekernel path; node project mode uses host filesystem execution with final-diff reconciliation.',
   ],
   typescript: [
-    'Project mode supports tsc compile/typecheck commands through tracekernel snapshots; emitted JavaScript runs through the browser JavaScript live I/O path.',
+    'Browser project mode is disabled by default until TypeScript compiler loading is worker-backed or explicitly injected as trusted.',
+    'Node project mode supports tsc compile/typecheck commands through tracekernel snapshots; emitted JavaScript runs through the JavaScript project path.',
     'Package installation and watch/build mode are not implemented.',
   ],
   java: [

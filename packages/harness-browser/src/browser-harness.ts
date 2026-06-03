@@ -10,6 +10,7 @@ import {
 } from '../../harness-core/src/runtime-language-info';
 import { JavaScriptWorkerClient } from './javascript-worker-client';
 import { createJavaScriptRuntimeClient } from './javascript-runtime-client';
+import { createBrowserJavaScriptProjectRunner } from '../../harness-javascript/src/project-browser';
 import { JavaWorkerClient } from './java-worker-client';
 import { createJavaRuntimeClient } from './java-runtime-client';
 import { CSharpWorkerClient } from './csharp-worker-client';
@@ -120,7 +121,12 @@ class BrowserHarnessRuntime implements BrowserHarness {
     });
     this.clients = {
       python: createPythonRuntimeClient(this.pythonWorkerClient),
-      javascript: createJavaScriptRuntimeClient('javascript', this.javaScriptWorkerClient),
+      javascript: createJavaScriptRuntimeClient('javascript', this.javaScriptWorkerClient, {
+        executeProject: createBrowserJavaScriptProjectRunner({
+          workerUrl: this.assets.javascriptProjectWorker,
+          workerIsolation: 'per-command',
+        }),
+      }),
       typescript: createJavaScriptRuntimeClient('typescript', this.javaScriptWorkerClient),
       java: createJavaRuntimeClient(this.javaWorkerClient),
       csharp: createCSharpRuntimeClient(this.csharpWorkerClient),

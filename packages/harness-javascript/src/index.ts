@@ -12,6 +12,7 @@ export {
   createBrowserJavaScriptProjectRunner,
   type BrowserJavaScriptProjectCommandRunner,
   type BrowserJavaScriptProjectRunnerOptions,
+  type BrowserTypeScriptProjectRunnerOptions,
 } from './project-browser';
 export {
   createNativeJavaScriptProjectRunner,

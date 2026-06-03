@@ -16,12 +16,13 @@ import {
   createBrowserJavaScriptProjectRunner,
   createBrowserTypeScriptProjectRunner,
   type BrowserJavaScriptProjectRunnerOptions,
+  type BrowserTypeScriptProjectRunnerOptions,
 } from '../../harness-javascript/src/project-browser';
 import { createBrowserPythonProjectRunner } from '../../harness-python/src/project-browser';
-import { CSharpWorkerClient } from './csharp-worker-client';
-import { CppWorkerClient } from './cpp-worker-client';
-import { JavaWorkerClient } from './java-worker-client';
-import { PythonWorkerClient } from './pyodide-worker-client';
+import { CSharpWorkerClient, type CSharpWorkerClientOptions } from './csharp-worker-client';
+import { CppWorkerClient, type CppWorkerClientOptions } from './cpp-worker-client';
+import { JavaWorkerClient, type JavaWorkerClientOptions } from './java-worker-client';
+import { PythonWorkerClient, type PythonWorkerClientOptions } from './pyodide-worker-client';
 import {
   resolveBrowserHarnessAssets,
   type BrowserHarnessAssetOverrides,
@@ -54,6 +55,8 @@ export {
 
 export type BrowserProjectWorkspace = RuntimeWorkspace;
 export type BrowserProjectNodeOptions = Omit<BrowserJavaScriptProjectRunnerOptions, 'applyFileChange'>;
+export type BrowserProjectTypeScriptOptions = BrowserTypeScriptProjectRunnerOptions;
+export type BrowserProjectWorkerIsolation = 'shared' | 'per-command';
 
 function readonlySessionFiles(options: CreateRuntimeWorkspaceOptions): string[] {
   return [...new Set((options.projectSession?.files ?? [])
@@ -76,6 +79,86 @@ function isReadonlyDeletion(change: RuntimeFileChange, readonlyFiles: readonly s
   return omittedReadonlyFiles.includes(path);
 }
 
+function createPerCommandPythonWorkerClient(options: PythonWorkerClientOptions): Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'> {
+  const active = new Set<PythonWorkerClient>();
+  return {
+    async executeProjectPython(request, timeoutMs, onEvent, signal) {
+      const client = new PythonWorkerClient(options);
+      active.add(client);
+      try {
+        return await client.executeProjectPython(request, timeoutMs, onEvent, signal);
+      } finally {
+        active.delete(client);
+        client.terminate();
+      }
+    },
+    terminate() {
+      for (const client of active) client.terminate();
+      active.clear();
+    },
+  };
+}
+
+function createPerCommandJavaWorkerClient(options: JavaWorkerClientOptions): Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'> {
+  const active = new Set<JavaWorkerClient>();
+  return {
+    async executeProjectJava(request, timeoutMs, onEvent, signal) {
+      const client = new JavaWorkerClient(options);
+      active.add(client);
+      try {
+        return await client.executeProjectJava(request, timeoutMs, onEvent, signal);
+      } finally {
+        active.delete(client);
+        client.terminate();
+      }
+    },
+    terminate() {
+      for (const client of active) client.terminate();
+      active.clear();
+    },
+  };
+}
+
+function createPerCommandCSharpWorkerClient(options: CSharpWorkerClientOptions): Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'> {
+  const active = new Set<CSharpWorkerClient>();
+  return {
+    async executeProjectCSharp(request, timeoutMs, onEvent, signal) {
+      const client = new CSharpWorkerClient(options);
+      active.add(client);
+      try {
+        return await client.executeProjectCSharp(request, timeoutMs, onEvent, signal);
+      } finally {
+        active.delete(client);
+        client.terminate();
+      }
+    },
+    terminate() {
+      for (const client of active) client.terminate();
+      active.clear();
+    },
+  };
+}
+
+function createPerCommandCppWorkerClient(options: CppWorkerClientOptions): Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'> {
+  const active = new Set<CppWorkerClient>();
+  return {
+    async executeProjectCpp(request, timeoutMs, onEvent, signal) {
+      const client = new CppWorkerClient(options);
+      active.add(client);
+      try {
+        return await client.executeProjectCpp(request, timeoutMs, onEvent, signal);
+      } finally {
+        active.delete(client);
+        client.terminate();
+      }
+    },
+    terminate() {
+      for (const client of active) client.terminate();
+      active.clear();
+    },
+  };
+}
+
 export interface CreateBrowserProjectWorkspaceOptions
   extends Omit<CreateRuntimeWorkspaceOptions, 'pythonRunner' | 'nodeRunner' | 'javaRunner' | 'csharpRunner' | 'cppRunner'> {
   assetBaseUrl?: string;
@@ -86,6 +169,8 @@ export interface CreateBrowserProjectWorkspaceOptions
   csharpWorkerClient?: Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'>;
   cppWorkerClient?: Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'>;
   nodeProject?: BrowserProjectNodeOptions;
+  typescriptProject?: BrowserProjectTypeScriptOptions;
+  projectWorkerIsolation?: BrowserProjectWorkerIsolation;
   nodeProjectTimeoutMs?: number;
   pythonProjectTimeoutMs?: number;
   javaProjectTimeoutMs?: number;
@@ -110,6 +195,8 @@ export async function createBrowserProjectWorkspace(
     csharpWorkerClient: providedCSharpWorkerClient,
     cppWorkerClient: providedCppWorkerClient,
     nodeProject,
+    typescriptProject,
+    projectWorkerIsolation = 'per-command',
     nodeProjectTimeoutMs,
     pythonProjectTimeoutMs,
     javaProjectTimeoutMs,
@@ -122,41 +209,53 @@ export async function createBrowserProjectWorkspace(
     ...workspaceOptions
   } = options;
   const ownedWorkers: Array<{ terminate(): void }> = [];
+  const pythonWorkerOptions: PythonWorkerClientOptions = {
+    workerUrl: assets.pythonWorker,
+    debug,
+  };
+  const javaWorkerOptions: JavaWorkerClientOptions = {
+    workerUrl: assets.javaWorker,
+    debug,
+    workerIdleTimeoutMs: javaWorkerIdleTimeoutMs,
+  };
+  const csharpWorkerOptions: CSharpWorkerClientOptions = {
+    workerUrl: assets.csharpWorker,
+    assetBaseUrl: assets.csharpAssetBaseUrl,
+    debug,
+    workerIdleTimeoutMs: csharpWorkerIdleTimeoutMs,
+  };
+  const cppWorkerOptions: CppWorkerClientOptions = {
+    workerUrl: assets.cppWorker,
+    compilerFrameUrl: assets.cppCompilerFrame,
+    compilerWorkerUrl: assets.cppCompilerWorker,
+    clangWasmUrl: assets.cppClangWasm,
+    lldWasmUrl: assets.cppLldWasm,
+    sysrootUrl: assets.cppSysroot,
+    runtimeHeaderUrl: assets.cppRuntimeHeader,
+    compilerBundleUrl: assets.cppCompilerBundle,
+    debug,
+    workerIdleTimeoutMs: cppWorkerIdleTimeoutMs,
+  };
   const pythonWorkerClient =
     providedPythonWorkerClient ??
-    new PythonWorkerClient({
-      workerUrl: assets.pythonWorker,
-      debug,
-    });
+    (projectWorkerIsolation === 'per-command'
+      ? createPerCommandPythonWorkerClient(pythonWorkerOptions)
+      : new PythonWorkerClient(pythonWorkerOptions));
   const javaWorkerClient =
     providedJavaWorkerClient ??
-    new JavaWorkerClient({
-      workerUrl: assets.javaWorker,
-      debug,
-      workerIdleTimeoutMs: javaWorkerIdleTimeoutMs,
-    });
+    (projectWorkerIsolation === 'per-command'
+      ? createPerCommandJavaWorkerClient(javaWorkerOptions)
+      : new JavaWorkerClient(javaWorkerOptions));
   const csharpWorkerClient =
     providedCSharpWorkerClient ??
-    new CSharpWorkerClient({
-      workerUrl: assets.csharpWorker,
-      assetBaseUrl: assets.csharpAssetBaseUrl,
-      debug,
-      workerIdleTimeoutMs: csharpWorkerIdleTimeoutMs,
-    });
+    (projectWorkerIsolation === 'per-command'
+      ? createPerCommandCSharpWorkerClient(csharpWorkerOptions)
+      : new CSharpWorkerClient(csharpWorkerOptions));
   const cppWorkerClient =
     providedCppWorkerClient ??
-    new CppWorkerClient({
-      workerUrl: assets.cppWorker,
-      compilerFrameUrl: assets.cppCompilerFrame,
-      compilerWorkerUrl: assets.cppCompilerWorker,
-      clangWasmUrl: assets.cppClangWasm,
-      lldWasmUrl: assets.cppLldWasm,
-      sysrootUrl: assets.cppSysroot,
-      runtimeHeaderUrl: assets.cppRuntimeHeader,
-      compilerBundleUrl: assets.cppCompilerBundle,
-      debug,
-      workerIdleTimeoutMs: cppWorkerIdleTimeoutMs,
-    });
+    (projectWorkerIsolation === 'per-command'
+      ? createPerCommandCppWorkerClient(cppWorkerOptions)
+      : new CppWorkerClient(cppWorkerOptions));
 
   if (!providedPythonWorkerClient) ownedWorkers.push(pythonWorkerClient);
   if (!providedJavaWorkerClient) ownedWorkers.push(javaWorkerClient);
@@ -209,11 +308,13 @@ export async function createBrowserProjectWorkspace(
     nodeRunner: createBrowserJavaScriptProjectRunner({
       timeoutMs: nodeProjectTimeoutMs,
       workerUrl: assets.javascriptProjectWorker,
+      workerIsolation: projectWorkerIsolation,
       ...nodeProject,
       applyFileChange: applyWorkerFileChange,
     }),
     typescriptRunner: createBrowserTypeScriptProjectRunner({
       compilerUrl: assets.typescriptCompiler,
+      ...typescriptProject,
     }),
     javaRunner: createBrowserJavaProjectRunner(javaWorkerClient, {
       timeoutMs: javaProjectTimeoutMs,

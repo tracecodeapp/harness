@@ -5,6 +5,51 @@ var __export = (target, all) => {
 };
 
 // packages/harness-core/src/runtime-project.ts
+var RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS = {
+  workspace: {
+    listen: true,
+    dispatch: true,
+    externalFetch: false,
+    readDiagnostics: true
+  },
+  system: {
+    listen: true,
+    dispatch: true,
+    externalFetch: true,
+    readDiagnostics: true
+  },
+  none: {}
+};
+var RUNTIME_WORKSPACE_ACTOR_PRESETS = {
+  principal: {
+    id: "principal",
+    kind: "principal",
+    capabilities: { http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.workspace }
+  },
+  test: {
+    id: "test",
+    kind: "test",
+    capabilities: { http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.workspace }
+  },
+  "hidden-test": {
+    id: "hidden-test",
+    kind: "hidden-test",
+    capabilities: { http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.workspace }
+  },
+  runtime: {
+    id: "runtime",
+    kind: "runtime",
+    capabilities: {
+      execute: true,
+      http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.workspace
+    }
+  },
+  system: {
+    id: "system",
+    kind: "system",
+    capabilities: { http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.system }
+  }
+};
 var RUNTIME_STDIN_PIPE_HEADER_INTS = 3;
 var RUNTIME_STDIN_PIPE_HEADER_BYTES = RUNTIME_STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
 var RUNTIME_STDIN_PIPE_READ_INDEX = 0;
@@ -82,6 +127,33 @@ function filterRuntimeCommandResultFiles(result, shouldFilter) {
   const { files: _files, ...rest } = result;
   return rest;
 }
+var RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
+var RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
+var RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
+var runtimeProjectTextEncoder = new TextEncoder();
+function runtimeProjectUtf8Bytes(value) {
+  return runtimeProjectTextEncoder.encode(value).byteLength;
+}
+function runtimeProjectTruncateUtf8(value, maxBytes) {
+  if (maxBytes <= 0) return "";
+  let bytes = 0;
+  let end = 0;
+  for (const char of value) {
+    const nextBytes = runtimeProjectUtf8Bytes(char);
+    if (bytes + nextBytes > maxBytes) break;
+    bytes += nextBytes;
+    end += char.length;
+  }
+  return value.slice(0, end);
+}
+function runtimeFileChangeByteSize(change) {
+  let size = runtimeProjectUtf8Bytes(change.path);
+  const file = change;
+  if (file.contents !== void 0) {
+    size += file.encoding === "base64" ? Math.ceil(file.contents.length * 3 / 4) : runtimeProjectUtf8Bytes(file.contents);
+  }
+  return size;
+}
 var RuntimeProjectOutputTracker = class {
   stdoutStreamed = "";
   stderrStreamed = "";
@@ -138,12 +210,21 @@ var RuntimeProjectLiveIoController = class {
   outputTracker = new RuntimeProjectOutputTracker();
   eventQueue;
   appliedFileChangePaths = /* @__PURE__ */ new Set();
+  outputBytes = { stdout: 0, stderr: 0 };
+  truncatedOutputStreams = /* @__PURE__ */ new Set();
+  liveFileChangeCount = 0;
+  liveFileChangeBytes = 0;
   pendingFileChanges = 0;
+  closed = false;
   emit(event) {
-    this.outputTracker.observe(event);
-    this.options.onEvent?.(event);
+    const budgetedEvent = this.applyEventBudgets(event);
+    if (!budgetedEvent) return;
+    this.outputTracker.observe(budgetedEvent);
+    this.options.onEvent?.(budgetedEvent);
   }
   handleRuntimeEvent(event) {
+    if (this.closed || this.options.signal?.aborted) return;
+    if (event.type === "file-change" && !this.eventQueue) this.recordLiveFileChangeBudget(event.change);
     if (event.type !== "file-change" && this.pendingFileChanges === 0) {
       this.emit(event);
       return;
@@ -157,6 +238,7 @@ var RuntimeProjectLiveIoController = class {
       actor: this.options.actor,
       applyFileChange: async (change, phase) => {
         try {
+          if (phase === "live") this.recordLiveFileChangeBudget(change);
           const shouldEmit = await this.options.applyFileChange?.(change, phase);
           this.appliedFileChangePaths.add(runtimeFileChangePath(change));
           return shouldEmit;
@@ -166,6 +248,41 @@ var RuntimeProjectLiveIoController = class {
       },
       emit: (nextEvent) => this.emit(nextEvent)
     });
+  }
+  close() {
+    this.closed = true;
+  }
+  applyEventBudgets(event) {
+    if (event.type !== "output") return event;
+    if (this.truncatedOutputStreams.has(event.stream)) return null;
+    const used = this.outputBytes[event.stream];
+    const remaining = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+    const bytes = runtimeProjectUtf8Bytes(event.data);
+    if (bytes <= remaining) {
+      this.outputBytes[event.stream] = used + bytes;
+      return event;
+    }
+    this.truncatedOutputStreams.add(event.stream);
+    const marker = `
+[tracekernel: ${event.stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]
+`;
+    const truncated = `${runtimeProjectTruncateUtf8(event.data, Math.max(0, remaining))}${marker}`;
+    this.outputBytes[event.stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
+    return truncated ? { ...event, data: truncated } : null;
+  }
+  recordLiveFileChangeBudget(change) {
+    this.liveFileChangeCount += 1;
+    if (this.liveFileChangeCount > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES) {
+      throw Object.assign(new Error("EMSGSIZE: TraceKernel live file-change count limit exceeded"), { code: "EMSGSIZE" });
+    }
+    const size = runtimeFileChangeByteSize(change);
+    if (size > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) {
+      throw Object.assign(new Error("EMSGSIZE: TraceKernel live file-change size limit exceeded"), { code: "EMSGSIZE" });
+    }
+    this.liveFileChangeBytes += size;
+    if (this.liveFileChangeBytes > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) {
+      throw Object.assign(new Error("EMSGSIZE: TraceKernel live file-change byte limit exceeded"), { code: "EMSGSIZE" });
+    }
   }
   async flush() {
     await this.eventQueue?.flush();
@@ -5611,7 +5728,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     } : void 0,
     onEvent: (event) => {
       if (!executionState.cancelled) request.onEvent?.(event);
-    }
+    },
+    signal: request.signal
   });
   const emitRuntimeEvent = (event) => {
     liveIo.handleRuntimeEvent(event);
@@ -8806,6 +8924,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       await httpApi.waitForClose();
     }
     await eventLoopApi.drain();
+    liveIo.close();
     await liveIo.flush();
     const resultFiles = [
       ...Array.from(fileStore.entries()).filter(([path, contents]) => !byteEqual(originalFiles.get(path), contents)).sort(([left], [right]) => left.localeCompare(right)).map(([path, contents]) => bytesToRuntimeFile(path, contents)),
@@ -8819,7 +8938,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }).files ?? [];
     httpApi.closeAll();
     eventLoopApi.clearAll();
-    io.status("process-exit", "Browser Node exited", { command: "node", exitCode: 0 });
+    createRuntimeProjectIoBridge(request.onEvent).status("process-exit", "Browser Node exited", { command: "node", exitCode: 0 });
     return {
       stdout: stdout.join(""),
       stderr: stderr.join(""),
@@ -8831,22 +8950,27 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     eventLoopApi.clearAll();
     const exitCode = typeof error.exitCode === "number" ? error.exitCode : 1;
     const stderrSuffix = error.suppressStderr ? "" : formatBrowserJavaScriptErrorForStderr(error);
-    if (stderrSuffix) emitOutput("stderr", stderrSuffix);
+    const hostIo = createRuntimeProjectIoBridge(request.onEvent);
+    if (stderrSuffix) {
+      stderr.push(stderrSuffix);
+      hostIo.output("stderr", stderrSuffix);
+    }
+    liveIo.close();
     try {
       await liveIo.flush();
     } catch (flushError) {
       const flushStderr = flushError instanceof Error ? `${flushError.message}
 ` : `${String(flushError)}
 `;
-      createRuntimeProjectIoBridge(request.onEvent).output("stderr", flushStderr);
-      io.status("process-exit", "Browser Node exited", { command: "node", exitCode: 1 });
+      hostIo.output("stderr", flushStderr);
+      hostIo.status("process-exit", "Browser Node exited", { command: "node", exitCode: 1 });
       return {
         stdout: stdout.join(""),
         stderr: stderr.join("") + flushStderr,
         exitCode: 1
       };
     }
-    io.status("process-exit", "Browser Node exited", { command: "node", exitCode });
+    hostIo.status("process-exit", "Browser Node exited", { command: "node", exitCode });
     return {
       stdout: stdout.join(""),
       stderr: stderr.join(""),
@@ -9039,7 +9163,7 @@ function handleKernelHttpHostMessage(message) {
   return false;
 }
 workerScope.onmessage = (event) => {
-  const { id, type, payload, protocolToken, port } = event.data;
+  const { id, type, payload, protocolToken, runnerOptions, port } = event.data;
   if (!id) return;
   if (handleKernelHttpHostMessage(event.data)) return;
   if (type !== "execute-project-javascript") {
@@ -9059,12 +9183,17 @@ workerScope.onmessage = (event) => {
     };
   }
   const request = payload;
-  const options = {};
+  const options = {
+    allowDynamicEval: runnerOptions?.allowDynamicEval
+  };
   const executionState = { cancelled: false };
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
     postCommandMessage(postToHost, id, protocolToken, message.type, message);
   });
   activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken });
+  const clearActiveCommand = () => {
+    activeHttpBridges.delete(id);
+  };
   runBrowserJavaScriptProjectRequest(
     {
       ...request,
@@ -9080,12 +9209,12 @@ workerScope.onmessage = (event) => {
     executionState
   ).then(
     (result) => {
-      activeHttpBridges.delete(id);
+      clearActiveCommand();
       postCommandMessage(postToHost, id, protocolToken, "execute-result", result);
       commandPort?.close();
     },
     (error) => {
-      activeHttpBridges.delete(id);
+      clearActiveCommand();
       postCommandMessage(postToHost, id, protocolToken, "error", { error: errorMessage(error) });
       commandPort?.close();
     }

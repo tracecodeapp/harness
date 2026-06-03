@@ -105,22 +105,30 @@ export type JavaScriptProjectCommandRequest = RuntimeProjectCommandRequest<
 export type JavaScriptProjectCommandResult = RuntimeCommandResult;
 export type JavaScriptProjectCommandRunner = RuntimeProjectCommandRunner<JavaScriptProjectCommandRequest>;
 export type BrowserJavaScriptProjectCommandRunner = JavaScriptProjectCommandRunner;
+export type BrowserJavaScriptProjectWorkerIsolation = 'shared' | 'per-command';
 
 export interface BrowserJavaScriptProjectRunnerOptions {
   applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
   allowDynamicEval?: boolean;
+  allowMainThreadExecution?: boolean;
   hardened?: boolean;
   timeoutMs?: number;
+  workerIsolation?: BrowserJavaScriptProjectWorkerIsolation;
   workerUrl?: string;
 }
 
 export interface BrowserTypeScriptProjectRunnerOptions {
+  allowDomCompilerScript?: boolean;
+  compiler?: TypeScriptProjectCompiler;
   compilerUrl?: string;
 }
 
 const browserTypeScriptCompilerPromises = new Map<string, Promise<TypeScriptProjectCompiler>>();
 
-async function loadBrowserTypeScriptCompiler(compilerUrl = 'workers/vendor/typescript.js'): Promise<TypeScriptProjectCompiler> {
+async function loadBrowserTypeScriptCompiler(
+  compilerUrl = 'workers/vendor/typescript.js',
+  options: Pick<BrowserTypeScriptProjectRunnerOptions, 'allowDomCompilerScript'> = {}
+): Promise<TypeScriptProjectCompiler> {
   const globalRecord = globalThis as typeof globalThis & { ts?: TypeScriptProjectCompiler };
   if (globalRecord.ts) return globalRecord.ts;
   if (typeof document === 'undefined') {
@@ -128,6 +136,9 @@ async function loadBrowserTypeScriptCompiler(compilerUrl = 'workers/vendor/types
       specifier: string
     ) => Promise<TypeScriptProjectCompiler>;
     return dynamicImport('typescript');
+  }
+  if (options.allowDomCompilerScript !== true) {
+    throw new Error('TypeScript project compile in the browser requires a trusted compiler object or a worker-backed compiler.');
   }
   let compilerPromise = browserTypeScriptCompilerPromises.get(compilerUrl);
   if (!compilerPromise) {
@@ -156,7 +167,10 @@ export function createBrowserTypeScriptProjectRunner(
   options: BrowserTypeScriptProjectRunnerOptions = {}
 ) {
   return createTypeScriptProjectRunner({
-    loadCompiler: () => loadBrowserTypeScriptCompiler(options.compilerUrl),
+    ...(options.compiler ? { compiler: options.compiler } : {}),
+    loadCompiler: () => loadBrowserTypeScriptCompiler(options.compilerUrl, {
+      allowDomCompilerScript: options.allowDomCompilerScript,
+    }),
   });
 }
 
@@ -2749,6 +2763,7 @@ interface BrowserJavaScriptProjectWorkerMessage {
   type: string;
   payload?: unknown;
   protocolToken?: string;
+  runnerOptions?: Pick<BrowserJavaScriptProjectRunnerOptions, 'allowDynamicEval'>;
   port?: MessagePort;
 }
 
@@ -2784,7 +2799,10 @@ class BrowserJavaScriptProjectWorkerClient {
   private httpRequestId = 0;
   private readonly pendingMessages = new Map<string, BrowserJavaScriptProjectPendingMessage>();
 
-  constructor(private readonly workerUrl: string) {}
+  constructor(
+    private readonly workerUrl: string,
+    private readonly runnerOptions: Pick<BrowserJavaScriptProjectRunnerOptions, 'allowDynamicEval'> = {}
+  ) {}
 
   executeProject(
     request: JavaScriptProjectCommandRequest,
@@ -2886,6 +2904,7 @@ class BrowserJavaScriptProjectWorkerClient {
         type,
         payload,
         protocolToken,
+        runnerOptions: this.runnerOptions,
         ...(channel ? { port: channel.port2 } : {}),
       };
       if (channel) {
@@ -3105,7 +3124,36 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
   options: BrowserJavaScriptProjectRunnerOptions & { workerUrl: string }
 ): JavaScriptProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl);
+  const workerIsolation = options.workerIsolation ?? 'per-command';
+  if (workerIsolation === 'per-command') {
+    return (request) =>
+      runRuntimeProjectWorkerBridge({
+        request,
+        startPhase: 'process-start',
+        startMessage: 'Starting browser Node',
+        startDetail: {
+          command: 'node',
+          args: processArgvForRequest(request).slice(2),
+          cwd: request.cwd,
+        },
+        finishPhase: 'process-exit',
+        finishMessage: 'Browser Node exited',
+        applyFileChange: options.applyFileChange,
+        run: async (workerRequest, onEvent) => {
+          const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
+            allowDynamicEval: options.allowDynamicEval,
+          });
+          try {
+            return await client.executeProject(workerRequest, timeoutMs, onEvent);
+          } finally {
+            client.terminate();
+          }
+        },
+      });
+  }
+  const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
+    allowDynamicEval: options.allowDynamicEval,
+  });
   return (request) =>
     runRuntimeProjectWorkerBridge({
       request,
@@ -3132,9 +3180,9 @@ export function createBrowserJavaScriptProjectRunner(
       workerUrl: options.workerUrl,
     });
   }
-  if (options.hardened === true) {
+  if (options.hardened === true || options.allowMainThreadExecution !== true) {
     return (request) => {
-      const stderr = 'node: hardened browser JavaScript project runner requires a Worker-backed runner\n';
+      const stderr = 'node: browser JavaScript project runner requires a Worker-backed runner unless allowMainThreadExecution is explicitly enabled\n';
       const io = createRuntimeProjectIoBridge(request.onEvent);
       io.output('stderr', stderr);
       io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
@@ -3216,6 +3264,7 @@ export async function runBrowserJavaScriptProjectRequest(
       onEvent: (event) => {
         if (!executionState.cancelled) request.onEvent?.(event);
       },
+      signal: request.signal,
     });
     const emitRuntimeEvent = (event: RuntimeCommandEvent): void => {
       liveIo.handleRuntimeEvent(event);
@@ -6750,6 +6799,7 @@ export async function runBrowserJavaScriptProjectRequest(
         await httpApi.waitForClose();
       }
       await eventLoopApi.drain();
+      liveIo.close();
       await liveIo.flush();
       const resultFiles = [
         ...Array.from(fileStore.entries())
@@ -6770,7 +6820,7 @@ export async function runBrowserJavaScriptProjectRequest(
       }).files ?? [];
       httpApi.closeAll();
       eventLoopApi.clearAll();
-      io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 0 });
+      createRuntimeProjectIoBridge(request.onEvent).status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 0 });
       return {
         stdout: stdout.join(''),
         stderr: stderr.join(''),
@@ -6786,20 +6836,25 @@ export async function runBrowserJavaScriptProjectRequest(
       const stderrSuffix = (error as { suppressStderr?: unknown }).suppressStderr
         ? ''
         : formatBrowserJavaScriptErrorForStderr(error);
-      if (stderrSuffix) emitOutput('stderr', stderrSuffix);
+      const hostIo = createRuntimeProjectIoBridge(request.onEvent);
+      if (stderrSuffix) {
+        stderr.push(stderrSuffix);
+        hostIo.output('stderr', stderrSuffix);
+      }
+      liveIo.close();
       try {
         await liveIo.flush();
       } catch (flushError) {
         const flushStderr = flushError instanceof Error ? `${flushError.message}\n` : `${String(flushError)}\n`;
-        createRuntimeProjectIoBridge(request.onEvent).output('stderr', flushStderr);
-        io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
+        hostIo.output('stderr', flushStderr);
+        hostIo.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
         return {
           stdout: stdout.join(''),
           stderr: stderr.join('') + flushStderr,
           exitCode: 1,
         };
       }
-      io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode });
+      hostIo.status('process-exit', 'Browser Node exited', { command: 'node', exitCode });
       return {
         stdout: stdout.join(''),
         stderr: stderr.join(''),

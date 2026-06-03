@@ -788,6 +788,7 @@ const TYPESCRIPT_BUILTIN_TYPE_NAMES = new Set([
 const CUSTOM_OBJECT_MATERIALIZER_SOURCE = `
 function __tracecodeResolveConstructor(__typeName) {
   if (typeof __typeName !== 'string' || __typeName.length === 0) return undefined;
+  if (!/^[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*$/.test(__typeName)) return undefined;
   try {
     return eval(__typeName);
   } catch (_err) {
@@ -815,6 +816,7 @@ function __tracecodeMaterializeCustomObject(value, __targetTypeName, __seen) {
     : (typeof value.__type__ === 'string'
       ? value.__type__
       : (typeof value.__class__ === 'string' ? value.__class__ : null));
+  const __trustedTypeName = typeof __targetTypeName === 'string';
   if (!__typeName) {
     __seen.set(value, value);
     for (const [__key, __child] of Object.entries(value)) {
@@ -831,7 +833,7 @@ function __tracecodeMaterializeCustomObject(value, __targetTypeName, __seen) {
     if (__key === '__type__' || __key === '__class__' || __key === '__id__') continue;
     __fields[__key] = __tracecodeMaterializeCustomObject(__child, undefined, __seen);
   }
-  const __ctor = __tracecodeResolveConstructor(__typeName);
+  const __ctor = __trustedTypeName ? __tracecodeResolveConstructor(__typeName) : undefined;
   if (typeof __ctor !== 'function') return __fields;
   const __args = Object.values(__fields).filter((__value, __index) => {
     const __key = Object.keys(__fields)[__index];

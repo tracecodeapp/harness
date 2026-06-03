@@ -22,6 +22,7 @@ interface WorkerMessage {
   type: string;
   payload?: unknown;
   protocolToken?: string;
+  runnerOptions?: Pick<BrowserJavaScriptProjectRunnerOptions, 'allowDynamicEval'>;
   port?: MessagePort;
 }
 
@@ -245,7 +246,7 @@ function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
 }
 
 workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
-  const { id, type, payload, protocolToken, port } = event.data;
+  const { id, type, payload, protocolToken, runnerOptions, port } = event.data;
   if (!id) return;
 
   if (handleKernelHttpHostMessage(event.data)) return;
@@ -270,12 +271,17 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   }
 
   const request = payload as JavaScriptProjectCommandRequest;
-  const options: BrowserJavaScriptProjectRunnerOptions = {};
+  const options: BrowserJavaScriptProjectRunnerOptions = {
+    allowDynamicEval: runnerOptions?.allowDynamicEval,
+  };
   const executionState = { cancelled: false };
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
     postCommandMessage(postToHost, id, protocolToken, message.type, message);
   });
   activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken });
+  const clearActiveCommand = (): void => {
+    activeHttpBridges.delete(id);
+  };
 
   runBrowserJavaScriptProjectRequest(
     {
@@ -295,12 +301,12 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     executionState
   ).then(
     (result: RuntimeCommandResult) => {
-      activeHttpBridges.delete(id);
+      clearActiveCommand();
       postCommandMessage(postToHost, id, protocolToken, 'execute-result', result);
       commandPort?.close();
     },
     (error) => {
-      activeHttpBridges.delete(id);
+      clearActiveCommand();
       postCommandMessage(postToHost, id, protocolToken, 'error', { error: errorMessage(error) });
       commandPort?.close();
     }

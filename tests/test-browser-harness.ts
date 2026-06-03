@@ -35,6 +35,8 @@ function testJavaHttpResponseManifest(status: number, headers: Record<string, st
 }
 
 const workerInstances: MockWorker[] = [];
+let heldPythonProjectStarted: (() => void) | undefined;
+let releaseHeldPythonProject: (() => void) | undefined;
 
 class MockWorker {
   public onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
@@ -118,6 +120,25 @@ class MockWorker {
       }
 
       if (type.startsWith('execute-project-')) {
+        if (type === 'execute-project-python' && (payload as { scriptPath?: string } | undefined)?.scriptPath === 'hold.py') {
+          heldPythonProjectStarted?.();
+          heldPythonProjectStarted = undefined;
+          releaseHeldPythonProject = () => {
+            this.onmessage?.({
+              data: {
+                id,
+                type,
+                protocolToken,
+                payload: {
+                  stdout: 'held-python-finished\n',
+                  stderr: '',
+                  exitCode: 0,
+                },
+              },
+            } as MessageEvent<WorkerMessage>);
+          };
+          return;
+        }
         if (type === 'execute-project-java' && (payload as { scriptPath?: string } | undefined)?.scriptPath === 'HttpClient.java') {
           const buffer = new SharedArrayBuffer(4096);
           this.onmessage?.({
@@ -389,6 +410,39 @@ async function main(): Promise<void> {
     }
     console.log('PASS: browser project workspace routes Node commands through worker');
 
+    const concurrentProjectWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-concurrency',
+      pythonProjectTimeoutMs: 5000,
+      files: [
+        { path: 'hold.py', contents: 'print("hold")\n' },
+        { path: 'client.py', contents: 'print("client")\n' },
+      ],
+    });
+    try {
+      const beforeWorkerCount = workerInstances.length;
+      const heldStarted = new Promise<void>((resolve) => {
+        heldPythonProjectStarted = resolve;
+      });
+      const held = concurrentProjectWorkspace.runCommand('python3 hold.py');
+      await heldStarted;
+      const client = await concurrentProjectWorkspace.runCommand('python3 client.py');
+      const projectPythonWorkers = workerInstances
+        .slice(beforeWorkerCount)
+        .filter((worker) => String(worker.url).startsWith('/project-concurrency/pyodide-worker.js'));
+      assertCondition(client.exitCode === 0, `Browser project workspace should run a second Python command while the first is active: ${JSON.stringify(client)}`);
+      assertCondition(client.stdout === 'execute-project-python:client.py\n', `Second Python project command should complete normally: ${client.stdout}`);
+      assertCondition(projectPythonWorkers.length >= 2, `Browser project workspace should create separate Python workers for concurrent commands: ${projectPythonWorkers.length}`);
+      releaseHeldPythonProject?.();
+      releaseHeldPythonProject = undefined;
+      const heldResult = await held;
+      assertCondition(heldResult.exitCode === 0 && heldResult.stdout === 'held-python-finished\n', `Held Python command should finish after release: ${JSON.stringify(heldResult)}`);
+    } finally {
+      heldPythonProjectStarted = undefined;
+      releaseHeldPythonProject = undefined;
+      concurrentProjectWorkspace.dispose();
+    }
+    console.log('PASS: browser project workspace isolates concurrent project runtime commands');
+
     const harnessA = createBrowserHarness({ assetBaseUrl: '/instance-a' });
     const harnessB = createBrowserHarness({ assetBaseUrl: '/instance-b', debug: true });
     assertCondition(harnessA.isLanguageSupported('java'), 'Browser harness should expose Java support');
@@ -645,9 +699,18 @@ async function main(): Promise<void> {
       ],
     });
     assertCondition(javascriptBatchResult.success, 'JavaScript unified execute should route multi-case run requests');
+    const javascriptBatchWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-b/javascript-worker.js'));
     assertCondition(
-      workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-b/javascript-worker.js'))?.messages.at(-1)?.type === 'execute-code-batch',
+      javascriptBatchWorker?.messages.at(-1)?.type === 'execute-code-batch',
       'JavaScript unified execute should send execute-code-batch for multi-case run requests'
+    );
+    assertCondition(Boolean(javascriptBatchWorker?.terminated), 'JavaScript worker should terminate after a code execution');
+    const javascriptSingleResult = await harnessB.getClient('javascript').executeCode('function id(x) { return x; }', 'id', { x: 1 }, 'function');
+    const javascriptSingleWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-b/javascript-worker.js'));
+    assertCondition(javascriptSingleResult.success, 'JavaScript runtime should execute again after worker isolation reset');
+    assertCondition(
+      Boolean(javascriptSingleWorker && javascriptSingleWorker !== javascriptBatchWorker && javascriptSingleWorker.terminated),
+      'JavaScript runtime should create and terminate a fresh worker for the next execution'
     );
     console.log('PASS: browser harness instances are isolated');
 

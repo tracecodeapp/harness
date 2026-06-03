@@ -19,10 +19,15 @@ import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 import { batchCodeResultToExecuteResult, executeRuntimeRequest, isRuntimeProjectExecuteRequest } from './runtime-execute';
 
+export interface JavaScriptRuntimeClientOptions {
+  executeProject?: (request: RuntimeExecuteProjectRequest) => Promise<RuntimeCommandResult>;
+}
+
 class JavaScriptRuntimeClient implements RuntimeClient {
   constructor(
     private readonly runtimeLanguage: JavaScriptWorkerLanguage,
-    private readonly workerClient: JavaScriptWorkerClient
+    private readonly workerClient: JavaScriptWorkerClient,
+    private readonly options: JavaScriptRuntimeClientOptions = {}
   ) {}
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
@@ -36,10 +41,10 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       return executeRuntimeRequest(request, {
         defaultExecutionStyle: 'function',
         executeProject: async (projectRequest) => {
-          const projectModule = await import('../../harness-javascript/src/project-browser');
-          return this.runtimeLanguage === 'typescript'
-            ? projectModule.createBrowserTypeScriptProjectRunner()(projectRequest as never)
-            : projectModule.createBrowserJavaScriptProjectRunner()(projectRequest);
+          if (!this.options.executeProject) {
+            throw new Error(`${this.runtimeLanguage} project execution requires an explicit worker-backed project runner.`);
+          }
+          return this.options.executeProject(projectRequest);
         },
         executeCode: this.executeCode.bind(this),
         executeWithTracing: this.executeWithTracing.bind(this),
@@ -138,7 +143,8 @@ class JavaScriptRuntimeClient implements RuntimeClient {
 
 export function createJavaScriptRuntimeClient(
   runtimeLanguage: JavaScriptWorkerLanguage,
-  workerClient: JavaScriptWorkerClient
+  workerClient: JavaScriptWorkerClient,
+  options: JavaScriptRuntimeClientOptions = {}
 ): RuntimeClient {
-  return new JavaScriptRuntimeClient(runtimeLanguage, workerClient);
+  return new JavaScriptRuntimeClient(runtimeLanguage, workerClient, options);
 }

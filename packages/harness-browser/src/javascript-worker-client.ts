@@ -53,6 +53,7 @@ export class JavaScriptWorkerClient {
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
+  private executionTail: Promise<void> = Promise.resolve();
   private readonly debug: boolean;
 
   constructor(private readonly options: JavaScriptWorkerClientOptions) {
@@ -237,6 +238,22 @@ export class JavaScriptWorkerClient {
     });
   }
 
+  private async runIsolatedExecution<T>(executor: () => Promise<T>): Promise<T> {
+    const previous = this.executionTail;
+    let release!: () => void;
+    this.executionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => undefined);
+    try {
+      await this.init();
+      return await executor();
+    } finally {
+      this.terminateAndReset();
+      release();
+    }
+  }
+
   private terminateAndReset(reason: Error = new Error('Worker was terminated')): void {
     this.workerReadyReject?.(reason);
     if (this.worker) {
@@ -315,22 +332,23 @@ export class JavaScriptWorkerClient {
     executionStyle: JavaScriptExecutionStyle = 'function',
     language: JavaScriptWorkerLanguage = 'javascript'
   ): Promise<ExecutionResult> {
-    await this.init();
-    return this.executeWithTimeout(
-      () =>
-        this.sendMessage<ExecutionResult>(
-          'execute-with-tracing',
-          {
-            code,
-            functionName,
-            inputs,
-            options,
-            executionStyle,
-            language,
-          },
-          TRACING_TIMEOUT_MS + 2000
-        ),
-      TRACING_TIMEOUT_MS
+    return this.runIsolatedExecution(() =>
+      this.executeWithTimeout(
+        () =>
+          this.sendMessage<ExecutionResult>(
+            'execute-with-tracing',
+            {
+              code,
+              functionName,
+              inputs,
+              options,
+              executionStyle,
+              language,
+            },
+            TRACING_TIMEOUT_MS + 2000
+          ),
+        TRACING_TIMEOUT_MS
+      )
     );
   }
 
@@ -341,21 +359,22 @@ export class JavaScriptWorkerClient {
     executionStyle: JavaScriptExecutionStyle = 'function',
     language: JavaScriptWorkerLanguage = 'javascript'
   ): Promise<CodeExecutionResult> {
-    await this.init();
-    return this.executeWithTimeout(
-      () =>
-        this.sendMessage<CodeExecutionResult>(
-          'execute-code',
-          {
-            code,
-            functionName,
-            inputs,
-            executionStyle,
-            language,
-          },
-          EXECUTION_TIMEOUT_MS + 2000
-        ),
-      EXECUTION_TIMEOUT_MS
+    return this.runIsolatedExecution(() =>
+      this.executeWithTimeout(
+        () =>
+          this.sendMessage<CodeExecutionResult>(
+            'execute-code',
+            {
+              code,
+              functionName,
+              inputs,
+              executionStyle,
+              language,
+            },
+            EXECUTION_TIMEOUT_MS + 2000
+          ),
+        EXECUTION_TIMEOUT_MS
+      )
     );
   }
 
@@ -366,21 +385,22 @@ export class JavaScriptWorkerClient {
     executionStyle: JavaScriptExecutionStyle = 'function',
     language: JavaScriptWorkerLanguage = 'javascript'
   ): Promise<CodeExecutionBatchResult> {
-    await this.init();
-    return this.executeWithTimeout(
-      () =>
-        this.sendMessage<CodeExecutionBatchResult>(
-          'execute-code-batch',
-          {
-            code,
-            functionName,
-            inputBatch,
-            executionStyle,
-            language,
-          },
-          EXECUTION_TIMEOUT_MS + 2000
-        ),
-      EXECUTION_TIMEOUT_MS
+    return this.runIsolatedExecution(() =>
+      this.executeWithTimeout(
+        () =>
+          this.sendMessage<CodeExecutionBatchResult>(
+            'execute-code-batch',
+            {
+              code,
+              functionName,
+              inputBatch,
+              executionStyle,
+              language,
+            },
+            EXECUTION_TIMEOUT_MS + 2000
+          ),
+        EXECUTION_TIMEOUT_MS
+      )
     );
   }
 
@@ -391,9 +411,7 @@ export class JavaScriptWorkerClient {
     executionStyle: JavaScriptExecutionStyle = 'function',
     language: JavaScriptWorkerLanguage = 'javascript'
   ): Promise<CodeExecutionResult> {
-    await this.init();
-
-    try {
+    return this.runIsolatedExecution(async () => {
       const result = await this.executeWithTimeout(
         () =>
           this.sendMessage<CodeExecutionResult>(
@@ -433,14 +451,12 @@ export class JavaScriptWorkerClient {
       }
 
       return result;
-    } catch {
-      return {
-        success: false,
-        output: null,
-        error: 'Time Limit Exceeded',
-        consoleOutput: [],
-      };
-    }
+    }).catch(() => ({
+      success: false,
+      output: null,
+      error: 'Time Limit Exceeded',
+      consoleOutput: [],
+    }));
   }
 
   terminate(): void {

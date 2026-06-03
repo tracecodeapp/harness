@@ -152,6 +152,7 @@ type SerializedTreeNode = {
 const CUSTOM_OBJECT_MATERIALIZER_SOURCE = `
 function __tracecodeResolveConstructor(__typeName) {
   if (typeof __typeName !== 'string' || __typeName.length === 0) return undefined;
+  if (!/^[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*$/.test(__typeName)) return undefined;
   try {
     return eval(__typeName);
   } catch (_err) {
@@ -179,6 +180,7 @@ function __tracecodeMaterializeCustomObject(value, __targetTypeName, __seen) {
     : (typeof value.__type__ === 'string'
       ? value.__type__
       : (typeof value.__class__ === 'string' ? value.__class__ : null));
+  const __trustedTypeName = typeof __targetTypeName === 'string';
   if (!__typeName) {
     __seen.set(value, value);
     for (const [__key, __child] of Object.entries(value)) {
@@ -195,7 +197,7 @@ function __tracecodeMaterializeCustomObject(value, __targetTypeName, __seen) {
     if (__key === '__type__' || __key === '__class__' || __key === '__id__') continue;
     __fields[__key] = __tracecodeMaterializeCustomObject(__child, undefined, __seen);
   }
-  const __ctor = __tracecodeResolveConstructor(__typeName);
+  const __ctor = __trustedTypeName ? __tracecodeResolveConstructor(__typeName) : undefined;
   if (typeof __ctor !== 'function') return __fields;
   const __args = Object.values(__fields).filter((__value, __index) => {
     const __key = Object.keys(__fields)[__index];
@@ -5079,7 +5081,6 @@ function buildScriptExecutionRunner(code, sourceCode = code) {
     'console',
     '__tracecodeStdin',
     '__tracecode_global',
-    '__tracecode_host_global',
 `${javascriptRuntimeSandboxPrelude()}
 ${JAVASCRIPT_RUNTIME_PRELUDE}
 ${javascriptRuntimePreludeBindings(sourceCode)}
@@ -5094,7 +5095,7 @@ const require = (__moduleName) => {
   }
   throw new Error('Module "' + __moduleName + '" is not available in this runtime');
 };
-try { delete __tracecode_host_global.result; } catch (_err) {}
+try { delete globalThis.result; } catch (_err) {}
 ${javascriptRuntimeCheckedCode(code, sourceCode)}
 if (typeof result !== 'undefined') {
   return result;
@@ -5866,7 +5867,6 @@ function buildScriptTracingRunner(code, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DE
     '__traceCtx',
     '__tracecodeStdin',
     '__tracecode_global',
-    '__tracecode_host_global',
 `${javascriptRuntimeSandboxPrelude()}
 ${JAVASCRIPT_RUNTIME_PRELUDE}
 ${javascriptRuntimePreludeBindings(sourceCode)}
@@ -5882,7 +5882,7 @@ const require = (__moduleName) => {
   }
   throw new Error('Module "' + __moduleName + '" is not available in this runtime');
 };
-try { delete __tracecode_host_global.result; } catch (_err) {}
+try { delete globalThis.result; } catch (_err) {}
 ${javascriptRuntimeCheckedCode(code, sourceCode)}
 if (typeof result !== 'undefined') {
   return result;
@@ -6204,7 +6204,7 @@ async function executeCode(payload) {
       }
       const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
       const runner = buildScriptExecutionRunner(executableCode, code);
-      output = await Promise.resolve(runner(consoleProxy, scriptStdin, runtimeGlobal, globalThis));
+      output = await Promise.resolve(runner(consoleProxy, scriptStdin, runtimeGlobal));
       if (scriptStdin !== undefined && output === null) {
         output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
       }
@@ -6373,7 +6373,7 @@ async function executeWithTracing(payload) {
       const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
       const runner = buildScriptTracingRunner(instrumentedCode, maxPathDepth, code);
       output = await Promise.resolve(
-        runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, scriptStdin, runtimeGlobal, globalThis)
+        runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, scriptStdin, runtimeGlobal)
       );
       if (scriptStdin !== undefined && output === null) {
         output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
