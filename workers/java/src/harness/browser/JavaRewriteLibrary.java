@@ -1071,8 +1071,10 @@ public final class JavaRewriteLibrary {
       String index = rewriteReads(rawIndex, line, frame);
       return "TraceHooks.readStringCharAtLine(" + line + ", " + quote(match.group(1)) + ", " + match.group(1) + ", " + index + ", " + indexSourceArgument(rawIndex) + ")";
     });
-    next = replaceAll(LIST_ARRAY_READ, next, match -> {
+    final String listArrayReadSource = next;
+    next = replaceAll(LIST_ARRAY_READ, listArrayReadSource, match -> {
       String name = match.group(1);
+      if (isArrayWriteTarget(listArrayReadSource, match.start(), match.end())) return match.group(0);
       String helper = listArrayReadHelper(frame.typeOf(name));
       if (helper == null) return match.group(0);
       String rawRow = match.group(2).trim();

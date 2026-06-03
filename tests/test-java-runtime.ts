@@ -1918,6 +1918,19 @@ class Solution {
     'Java rewriter should keep tracing primitive int List.remove(index) as an indexed pop'
   );
 
+  assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<int[]> values = new ArrayList<>();
+    values.add(new int[] { 1, 2 });
+    values.get(0)[1] = 5;
+    values.get(0)[1] += 3;
+    values.get(0)[1]++;
+    return values.get(0)[1];
+  }
+}`);
+
   const mutatingIndexWriteSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
 class Solution {
