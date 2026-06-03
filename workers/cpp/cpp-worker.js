@@ -3778,6 +3778,19 @@ function isCppPointerVariable(variable) {
   return typeof variable?.type === 'string' && /\*\s*$/.test(variable.type.trim());
 }
 
+function shouldGuardNullCheckedPointerFieldRead(strippedExpression, objectName, accessStart) {
+  const before = strippedExpression.slice(0, accessStart);
+  const escapedName = escapeRegExp(objectName);
+  const nullValue = String.raw`(?:nullptr|NULL|0)`;
+  return (
+    new RegExp(String.raw`\b${escapedName}\s*(?:\?|\&\&)\s*$`).test(before) ||
+    new RegExp(String.raw`\b${escapedName}\s*(?:!=|==)\s*${nullValue}\s*(?:\?|\&\&)\s*$`).test(before) ||
+    new RegExp(String.raw`${nullValue}\s*(?:!=|==)\s*\b${escapedName}\s*(?:\?|\&\&)\s*$`).test(before) ||
+    new RegExp(String.raw`\b${escapedName}\s*(?:!=|==)\s*${nullValue}\s*\?[^:]*:\s*$`).test(before) ||
+    new RegExp(String.raw`${nullValue}\s*(?:!=|==)\s*\b${escapedName}\s*\?[^:]*:\s*$`).test(before)
+  );
+}
+
 function buildPointerFieldReadsForExpression(expression, lineNumber, variables = new Map(), indent = '') {
   const stripped = stripCppStringsAndComments(expression);
   const reads = [];
@@ -3798,7 +3811,9 @@ function buildPointerFieldReadsForExpression(expression, lineNumber, variables =
     seen.add(accessExpression);
     const readInstrumentation = buildFieldReadInstrumentation(accessExpression, accessExpression, lineNumber, indent);
     if (!readInstrumentation) continue;
-    reads.push(objectVariable && isCppPointerVariable(objectVariable)
+    const shouldGuard = (objectVariable && isCppPointerVariable(objectVariable)) ||
+      (!objectVariable && shouldGuardNullCheckedPointerFieldRead(stripped, access.objectName, accessStart));
+    reads.push(shouldGuard
       ? `${indent}if (${access.objectName}) {\n${readInstrumentation}\n${indent}}`
       : readInstrumentation);
   }
@@ -3867,7 +3882,9 @@ function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = ne
     const indent = line.match(/^(\s*)/)?.[1] ?? '';
     const readInstrumentation = buildFieldReadInstrumentation(expression, expression, lineNumber, `${indent}  `);
     if (readInstrumentation) {
-      if (objectVariable && isCppPointerVariable(objectVariable)) {
+      const shouldGuard = (objectVariable && isCppPointerVariable(objectVariable)) ||
+        (!objectVariable && shouldGuardNullCheckedPointerFieldRead(stripped, objectName, accessStart));
+      if (shouldGuard) {
         reads.push(`${indent}if (${objectName}) {\n${readInstrumentation}\n${indent}}`);
       } else {
         reads.push(readInstrumentation);

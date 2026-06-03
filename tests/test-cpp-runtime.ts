@@ -734,6 +734,28 @@ if (!nodeFieldReadEvents.some((event) => event.kind === 'read' && event.target?.
   throw new Error('C++ ListNode next->val should emit field read, received ' + JSON.stringify(nodeFieldReadEvents));
 }
 
+const nullSafeUnknownPointerFieldReadTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct Box {',
+    '  int val;',
+    '  Box(int value) : val(value) {}',
+    '};',
+    'class Solution {',
+    'public:',
+    '  int safeRead() {',
+    '    Box* node = nullptr;',
+    '    return node ? node->val : 0;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'safeRead',
+  inputs: {},
+  options: {},
+});
+if (!nullSafeUnknownPointerFieldReadTracing.success || nullSafeUnknownPointerFieldReadTracing.output !== 0) {
+  throw new Error('C++ null-safe unknown pointer field read tracing failed: ' + JSON.stringify(nullSafeUnknownPointerFieldReadTracing));
+}
+
 const nestedPointerFieldAssignmentTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'struct Node {',
