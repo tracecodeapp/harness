@@ -1214,6 +1214,11 @@ public static class RuntimeTraceSink
             return NormalizeArray(array, depth, references);
         }
 
+        if (IsSetType(type) && value is System.Collections.IEnumerable setEnumerable)
+        {
+            return NormalizeSet(setEnumerable, depth, references);
+        }
+
         if (value is System.Collections.IEnumerable enumerable && IsSafeFrameworkEnumerableType(type))
         {
             return NormalizeEnumerable(enumerable, depth, references);
@@ -1258,6 +1263,29 @@ public static class RuntimeTraceSink
             || fullName.StartsWith("System.Linq.", StringComparison.Ordinal)
             || fullName.StartsWith("TraceCode.Internal.TraceCode", StringComparison.Ordinal)
             || fullName.StartsWith("TraceCode.CSharpHost.TraceCode", StringComparison.Ordinal);
+    }
+
+    private static bool IsSetType(Type type)
+    {
+        for (Type? current = type; current is not null; current = current.BaseType)
+        {
+            if (current.IsGenericType
+                && current.GetGenericTypeDefinition() == typeof(HashSet<>))
+            {
+                return true;
+            }
+        }
+
+        foreach (Type interfaceType in type.GetInterfaces())
+        {
+            if (interfaceType.IsGenericType
+                && interfaceType.GetGenericTypeDefinition() == typeof(ISet<>))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static object? NormalizeStringBuilder(System.Text.StringBuilder builder)
@@ -1431,6 +1459,40 @@ public static class RuntimeTraceSink
         }
 
         return values;
+    }
+
+    private static object? NormalizeSet(System.Collections.IEnumerable enumerable, int depth, ReferenceTracker references)
+    {
+        if (depth >= MaxNodeDepth)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["__type__"] = "set",
+                ["values"] = new List<object?>(),
+            };
+        }
+        if (references.TryCreateReference(enumerable, enumerable.GetType().Name, out Dictionary<string, object?> reference))
+        {
+            return reference;
+        }
+        references.Track(enumerable, enumerable.GetType().Name);
+
+        var values = new List<object?>();
+        foreach (object? item in enumerable)
+        {
+            if (values.Count >= MaxCollectionItems)
+            {
+                break;
+            }
+
+            values.Add(NormalizeTraceValue(item, depth + 1, references));
+        }
+
+        return new Dictionary<string, object?>
+        {
+            ["__type__"] = "set",
+            ["values"] = values,
+        };
     }
 
     private static object? NormalizeListNode(object node, int depth, ReferenceTracker references)

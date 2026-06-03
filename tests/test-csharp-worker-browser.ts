@@ -3765,9 +3765,10 @@ async function main(): Promise<void> {
         (event.kind === 'write' || event.kind === 'snapshot')
         && event.line === 4
         && event.target?.variable === 'dead'
-        && Array.isArray(event.value)
-        && event.value.includes('0201')
-        && event.value.includes('0101')
+        && event.value?.__type__ === 'set'
+        && Array.isArray(event.value.values)
+        && event.value.values.includes('0201')
+        && event.value.values.includes('0101')
       ) === true,
       `C# worker traced HashSet constructor consumption should not record an empty dead set, received ${JSON.stringify(tracedHashSetConstructorConsumption.events)}`
     );
