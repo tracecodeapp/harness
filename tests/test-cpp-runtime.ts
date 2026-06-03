@@ -29,8 +29,11 @@ const readAsset = async (url) => {
   };
 };
 
+const workerLocation = new URL(pathToFileURL(process.cwd() + '/workers/cpp/cpp-worker.js').href);
+
 const sandbox = {
   console,
+  URL,
   TextEncoder,
   TextDecoder,
   WebAssembly,
@@ -50,6 +53,7 @@ const sandbox = {
   Promise,
   globalThis: null,
   self: null,
+  location: workerLocation,
   postMessage() {},
   fetch: readAsset,
   crypto: globalThis.crypto,
@@ -2772,6 +2776,12 @@ if (!setEvents.some((event) => event.kind === 'snapshot' && event.target?.variab
 if (!setEvents.some((event) => event.kind === 'snapshot' && event.target?.variable === 'banned')) {
   throw new Error('C++ unordered_set parameter tracing should emit snapshot, received ' + JSON.stringify(setEvents));
 }
+if (!setEvents.some((event) => event.kind === 'snapshot' && event.target?.variable === 'seen' && event.value?.__type__ === 'set')) {
+  throw new Error('C++ set snapshots should preserve set identity, received ' + JSON.stringify(setEvents));
+}
+if (!setEvents.some((event) => event.kind === 'snapshot' && event.target?.variable === 'banned' && event.value?.__type__ === 'set')) {
+  throw new Error('C++ unordered_set snapshots should preserve set identity, received ' + JSON.stringify(setEvents));
+}
 if (!setEvents.some((event) => event.kind === 'write' && event.target?.variable === 'seen' && event.target.path?.[0] === 2 && event.value === true)) {
   throw new Error('C++ set insert should emit membership write, received ' + JSON.stringify(setEvents));
 }
@@ -2780,6 +2790,46 @@ if (!setEvents.some((event) => event.kind === 'read' && event.target?.variable =
 }
 if (!setEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'banned' && event.method === 'clear')) {
   throw new Error('C++ unordered_set clear should emit mutation, received ' + JSON.stringify(setEvents));
+}
+
+const setRangeTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int sumSet(set<int>& values) {',
+    '    int total = 0;',
+    '    for (int value : values) total += value;',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'sumSet',
+  inputs: { values: [1, 2] },
+  options: {},
+});
+if (!setRangeTrace.success || setRangeTrace.output !== 3) {
+  throw new Error('C++ set range-for tracing failed: ' + JSON.stringify(setRangeTrace));
+}
+const setRangeEvents = setRangeTrace.trace.events;
+if (!setRangeEvents.some((event) =>
+  event.kind === 'read' &&
+  event.target?.variable === 'values' &&
+  event.target.path?.[0] === 1 &&
+  event.value === 1 &&
+  event.binding?.kind === 'iteration' &&
+  event.binding.variable === 'value'
+)) {
+  throw new Error('C++ set range-for should emit value-keyed iteration read for 1, received ' + JSON.stringify(setRangeEvents));
+}
+if (!setRangeEvents.some((event) =>
+  event.kind === 'read' &&
+  event.target?.variable === 'values' &&
+  event.target.path?.[0] === 2 &&
+  event.value === 2 &&
+  event.binding?.kind === 'iteration' &&
+  event.binding.variable === 'value'
+)) {
+  throw new Error('C++ set range-for should emit value-keyed iteration read for 2, received ' + JSON.stringify(setRangeEvents));
 }
 
 const dequeQueueStackTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -3190,9 +3240,21 @@ if (!structuredMapValueBindingEvents.some((event) =>
   event.target.path?.[0] === 'a' &&
   event.binding?.kind === 'iteration' &&
   event.binding?.variable === 'neighbors' &&
-  JSON.stringify(event.value) === JSON.stringify(['b'])
+  event.value?.__type__ === 'set' &&
+  JSON.stringify(event.value.values) === JSON.stringify(['b'])
 )) {
   throw new Error('C++ structured map range-for should emit value binding provenance, received ' + JSON.stringify(structuredMapValueBindingEvents));
+}
+if (!structuredMapValueBindingEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 9 &&
+  event.target?.variable === 'neighbors' &&
+  event.target.path?.[0] === 'b' &&
+  event.value === 'b' &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 'neighbor'
+)) {
+  throw new Error('C++ nested set range-for should emit value-keyed member reads, received ' + JSON.stringify(structuredMapValueBindingEvents));
 }
 if (!structuredMapValueBindingEvents.some((event) =>
   event.kind === 'mutate' &&

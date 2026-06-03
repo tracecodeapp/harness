@@ -1834,6 +1834,86 @@ class IndexedRangeReadable {
   const char* binding_name_;
 };
 
+template <typename Container>
+class SetRangeReadIterator {
+ public:
+  using RawIterator = decltype(std::declval<Container&>().raw().begin());
+  using difference_type = typename std::iterator_traits<RawIterator>::difference_type;
+  using value_type = typename std::iterator_traits<RawIterator>::value_type;
+  using reference = typename std::iterator_traits<RawIterator>::reference;
+  using pointer = typename std::iterator_traits<RawIterator>::pointer;
+  using iterator_category = std::input_iterator_tag;
+
+  SetRangeReadIterator(Container& container, RawIterator iterator, int line, const char* binding_name, bool is_end = false)
+      : container_(container), iterator_(iterator), line_(line), binding_name_(binding_name), is_end_(is_end) {}
+
+  reference operator*() const {
+    if (binding_name_ && *binding_name_) {
+      container_.emit_iteration_bind_read(*iterator_, line_, binding_name_);
+    } else {
+      container_.emit_read(*iterator_, true, line_);
+    }
+    return *iterator_;
+  }
+
+  pointer operator->() const {
+    if (binding_name_ && *binding_name_) {
+      container_.emit_iteration_bind_read(*iterator_, line_, binding_name_);
+    } else {
+      container_.emit_read(*iterator_, true, line_);
+    }
+    return &(*iterator_);
+  }
+
+  SetRangeReadIterator& operator++() {
+    ++iterator_;
+    return *this;
+  }
+
+  SetRangeReadIterator operator++(int) {
+    SetRangeReadIterator copy = *this;
+    ++(*this);
+    return copy;
+  }
+
+  bool operator==(const SetRangeReadIterator& other) const {
+    const bool equal = iterator_ == other.iterator_;
+    if (equal && (is_end_ || other.is_end_)) emit_line(line_, "");
+    return equal;
+  }
+
+  bool operator!=(const SetRangeReadIterator& other) const {
+    return !(*this == other);
+  }
+
+ private:
+  Container& container_;
+  RawIterator iterator_;
+  int line_;
+  const char* binding_name_;
+  bool is_end_;
+};
+
+template <typename Container>
+class SetRangeReadable {
+ public:
+  explicit SetRangeReadable(Container& container, int line, const char* binding_name = nullptr)
+      : container_(container), line_(line), binding_name_(binding_name) {}
+
+  auto begin() {
+    return SetRangeReadIterator<Container>(container_, container_.raw().begin(), line_, binding_name_, false);
+  }
+
+  auto end() {
+    return SetRangeReadIterator<Container>(container_, container_.raw().end(), line_, binding_name_, true);
+  }
+
+ private:
+  Container& container_;
+  int line_;
+  const char* binding_name_;
+};
+
 template <typename T>
 class IndexedNestedRangeReadIterator {
  public:
@@ -2887,6 +2967,114 @@ inline IndexedStringRangeReadable indexed_range_readable(std::string& value, int
 
 inline IndexedConstStringRangeReadable indexed_range_readable(const std::string& value, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {
   return IndexedConstStringRangeReadable(value, line, binding_name, source_name);
+}
+
+template <typename SetType>
+class StdSetRangeReadIterator {
+ public:
+  using RawIterator = decltype(std::declval<SetType&>().begin());
+  using difference_type = typename std::iterator_traits<RawIterator>::difference_type;
+  using value_type = typename std::iterator_traits<RawIterator>::value_type;
+  using reference = typename std::iterator_traits<RawIterator>::reference;
+  using pointer = typename std::iterator_traits<RawIterator>::pointer;
+  using iterator_category = std::input_iterator_tag;
+
+  StdSetRangeReadIterator(SetType& container, RawIterator iterator, int line, const char* binding_name, const char* source_name, bool is_end = false)
+      : container_(container), iterator_(iterator), line_(line), binding_name_(binding_name), source_name_(source_name), is_end_(is_end) {}
+
+  reference operator*() const {
+    emit_read();
+    return *iterator_;
+  }
+
+  pointer operator->() const {
+    emit_read();
+    return &(*iterator_);
+  }
+
+  StdSetRangeReadIterator& operator++() {
+    ++iterator_;
+    return *this;
+  }
+
+  StdSetRangeReadIterator operator++(int) {
+    StdSetRangeReadIterator copy = *this;
+    ++(*this);
+    return copy;
+  }
+
+  bool operator==(const StdSetRangeReadIterator& other) const {
+    const bool equal = iterator_ == other.iterator_;
+    if (equal && (is_end_ || other.is_end_)) emit_line(line_, "");
+    return equal;
+  }
+
+  bool operator!=(const StdSetRangeReadIterator& other) const {
+    return !(*this == other);
+  }
+
+ private:
+  void emit_read() const {
+    if (minimal_trace_enabled() || !source_name_ || !*source_name_ || !check_trace_budget(line_)) return;
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line_) +
+      ",\"target\":" + target_json_key(source_name_, *iterator_) +
+      ",\"value\":" + to_json(*iterator_) +
+      ((binding_name_ && *binding_name_)
+        ? std::string(",\"binding\":{\"kind\":\"iteration\",\"variable\":") + to_json(binding_name_) + "}"
+        : std::string("")) +
+      "}"
+    );
+  }
+
+  SetType& container_;
+  RawIterator iterator_;
+  int line_;
+  const char* binding_name_;
+  const char* source_name_;
+  bool is_end_;
+};
+
+template <typename SetType>
+class StdSetRangeReadable {
+ public:
+  explicit StdSetRangeReadable(SetType& container, int line, const char* binding_name = nullptr, const char* source_name = nullptr)
+      : container_(container), line_(line), binding_name_(binding_name), source_name_(source_name) {}
+
+  auto begin() {
+    return StdSetRangeReadIterator<SetType>(container_, container_.begin(), line_, binding_name_, source_name_, false);
+  }
+
+  auto end() {
+    return StdSetRangeReadIterator<SetType>(container_, container_.end(), line_, binding_name_, source_name_, true);
+  }
+
+ private:
+  SetType& container_;
+  int line_;
+  const char* binding_name_;
+  const char* source_name_;
+};
+
+template <typename T, typename Compare, typename Allocator>
+inline StdSetRangeReadable<std::set<T, Compare, Allocator>> set_range_readable(std::set<T, Compare, Allocator>& container, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {
+  return StdSetRangeReadable<std::set<T, Compare, Allocator>>(container, line, binding_name, source_name);
+}
+
+template <typename T, typename Compare, typename Allocator>
+inline StdSetRangeReadable<const std::set<T, Compare, Allocator>> set_range_readable(const std::set<T, Compare, Allocator>& container, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {
+  return StdSetRangeReadable<const std::set<T, Compare, Allocator>>(container, line, binding_name, source_name);
+}
+
+template <typename T, typename Hash, typename Equal, typename Allocator>
+inline StdSetRangeReadable<std::unordered_set<T, Hash, Equal, Allocator>> set_range_readable(std::unordered_set<T, Hash, Equal, Allocator>& container, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {
+  return StdSetRangeReadable<std::unordered_set<T, Hash, Equal, Allocator>>(container, line, binding_name, source_name);
+}
+
+template <typename T, typename Hash, typename Equal, typename Allocator>
+inline StdSetRangeReadable<const std::unordered_set<T, Hash, Equal, Allocator>> set_range_readable(const std::unordered_set<T, Hash, Equal, Allocator>& container, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {
+  return StdSetRangeReadable<const std::unordered_set<T, Hash, Equal, Allocator>>(container, line, binding_name, source_name);
 }
 
 template <typename T, typename Index>
@@ -6121,6 +6309,18 @@ class Set : public std::set<T> {
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
+  void emit_iteration_bind_read(const T& value, int line, const char* binding_name) const {
+    if (!trace_) return;
+    write_trace_event_json(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_key(value) +
+      ",\"value\":" + to_json(value) +
+      ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name ? binding_name : "") + "}}",
+      line
+    );
+    if (!path_prefix_json_.empty()) emit_snapshot(line);
+  }
+
   void emit_write(const T& value, int line) {
     if (!trace_) return;
     write_trace_event_json(
@@ -6193,20 +6393,25 @@ class Set : public std::set<T> {
 
 template <typename T, typename Compare, typename Allocator>
 std::string to_json(const std::set<T, Compare, Allocator>& values) {
-  std::string json = "[";
+  std::string json = "{\"__type__\":\"set\",\"values\":[";
   bool first = true;
   for (const auto& value : values) {
     if (!first) json += ",";
     first = false;
     json += to_json(value);
   }
-  json += "]";
+  json += "]}";
   return json;
 }
 
 template <typename T>
 std::string to_json(const Set<T>& values) {
   return to_json(values.raw());
+}
+
+template <typename T>
+inline SetRangeReadable<Set<T>> set_range_readable(Set<T>& container, int line, const char* binding_name = nullptr, const char* = nullptr) {
+  return SetRangeReadable<Set<T>>(container, line, binding_name);
 }
 
 template <typename T>
@@ -6380,6 +6585,18 @@ class UnorderedSet : public std::unordered_set<T> {
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
+  void emit_iteration_bind_read(const T& value, int line, const char* binding_name) const {
+    if (!trace_) return;
+    write_trace_event_json(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_key(value) +
+      ",\"value\":" + to_json(value) +
+      ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name ? binding_name : "") + "}}",
+      line
+    );
+    if (!path_prefix_json_.empty()) emit_snapshot(line);
+  }
+
   void emit_write(const T& value, int line) {
     if (!trace_) return;
     write_trace_event_json(
@@ -6452,20 +6669,25 @@ class UnorderedSet : public std::unordered_set<T> {
 
 template <typename T, typename Hash, typename Equal, typename Allocator>
 std::string to_json(const std::unordered_set<T, Hash, Equal, Allocator>& values) {
-  std::string json = "[";
+  std::string json = "{\"__type__\":\"set\",\"values\":[";
   bool first = true;
   for (const auto& value : values) {
     if (!first) json += ",";
     first = false;
     json += to_json(value);
   }
-  json += "]";
+  json += "]}";
   return json;
 }
 
 template <typename T>
 std::string to_json(const UnorderedSet<T>& values) {
   return to_json(values.raw());
+}
+
+template <typename T>
+inline SetRangeReadable<UnorderedSet<T>> set_range_readable(UnorderedSet<T>& container, int line, const char* binding_name = nullptr, const char* = nullptr) {
+  return SetRangeReadable<UnorderedSet<T>>(container, line, binding_name);
 }
 
 inline void write_result_json_raw(const std::string& value_json) {

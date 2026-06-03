@@ -423,4 +423,20 @@ assertCondition(
   'C++ string indexed assignment should emit indexed write instrumentation'
 );
 
+const setRangeSource = [
+  'class Solution {',
+  'public:',
+  '  int sumSet(set<int>& values) {',
+  '    int total = 0;',
+  '    for (int value : values) total += value;',
+  '    return total;',
+  '  }',
+  '};',
+].join('\n');
+const setRangeDriver = rewriter.buildDriverSource(setRangeSource, 'sumSet', { values: [1, 2] }, { tracing: true });
+assertCondition(
+  setRangeDriver.includes('tracecode::set_range_readable(values, 5, "value", "values")'),
+  'C++ set range-for should emit member reads through set_range_readable'
+);
+
 console.log('PASS: C++ rewriter source snapshots');
