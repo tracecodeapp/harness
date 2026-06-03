@@ -10,6 +10,14 @@ function encodeUtf8(value) {
   return new TextEncoder().encode(value);
 }
 
+function assertSameOriginCompilerAsset(name, url) {
+  const parsed = new URL(url, self.location.href);
+  if (parsed.origin !== self.location.origin) {
+    throw new Error(`${name} must be served from the compiler worker origin.`);
+  }
+  return parsed.href;
+}
+
 function concatBytes(chunks) {
   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const out = new Uint8Array(total);
@@ -26,7 +34,7 @@ async function fetchText(name, url) {
     throw new Error(`Missing C++ compiler asset URL for ${name}.`);
   }
 
-  const response = await fetch(url);
+  const response = await fetch(assertSameOriginCompilerAsset(name, url));
   if (!response.ok) {
     throw new Error(`${name} failed to load from ${url} (${response.status} ${response.statusText})`);
   }
@@ -48,8 +56,9 @@ let pchCacheKey = '';
 let pchPromise = null;
 
 function loadRuntimeHeader(url) {
-  if (runtimeHeaderPromise && runtimeHeaderUrl === url) return runtimeHeaderPromise;
-  runtimeHeaderUrl = url;
+  const safeUrl = assertSameOriginCompilerAsset('tracecode_runtime.hpp', url);
+  if (runtimeHeaderPromise && runtimeHeaderUrl === safeUrl) return runtimeHeaderPromise;
+  runtimeHeaderUrl = safeUrl;
   runtimeHeaderPromise = fetchText('tracecode_runtime.hpp', url);
   runtimeHeaderPromise.catch(() => {
     runtimeHeaderPromise = null;
@@ -58,9 +67,10 @@ function loadRuntimeHeader(url) {
 }
 
 function loadCompilerBundle(url) {
-  if (compilerBundlePromise && compilerBundleUrl === url) return compilerBundlePromise;
-  compilerBundleUrl = url;
-  compilerBundlePromise = import(url);
+  const safeUrl = assertSameOriginCompilerAsset('C++ compiler bundle', url);
+  if (compilerBundlePromise && compilerBundleUrl === safeUrl) return compilerBundlePromise;
+  compilerBundleUrl = safeUrl;
+  compilerBundlePromise = import(safeUrl);
   compilerBundlePromise.catch(() => {
     compilerBundlePromise = null;
   });
@@ -380,7 +390,7 @@ function shouldLinkTracekernelStatvfs(args) {
 async function compileProjectWithYowasp(payload) {
   const startedAt = performance.now();
   const assets = payload?.assets || {};
-  const compilerBundle = await import(assets.compilerBundleUrl);
+  const compilerBundle = await import(assertSameOriginCompilerAsset('C++ compiler bundle', assets.compilerBundleUrl));
   if (typeof compilerBundle.runClang !== 'function') {
     throw new Error('C++ compiler bundle does not expose runClang.');
   }

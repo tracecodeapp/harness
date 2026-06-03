@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.Loader;
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -2655,7 +2656,7 @@ public sealed class ProjectFileStream : System.IO.FileStream
     {
         return JsonSerializer.Serialize(new
         {
-            request.Source,
+            SourceHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request.Source ?? string.Empty))),
             request.FunctionName,
             request.ExecutionStyle,
             request.Trace,
@@ -5185,7 +5186,10 @@ public class TreeNode
                 .Split(Path.PathSeparator)
                 .Where(path => !string.IsNullOrWhiteSpace(path)))
             {
-                referencePaths.Add(path);
+                if (IsAllowedUserMetadataReference(path))
+                {
+                    referencePaths.Add(path);
+                }
             }
         }
 
@@ -5193,7 +5197,10 @@ public class TreeNode
         {
             if (!string.IsNullOrWhiteSpace(assembly.Location))
             {
-                referencePaths.Add(assembly.Location);
+                if (IsAllowedUserMetadataReference(assembly.Location))
+                {
+                    referencePaths.Add(assembly.Location);
+                }
             }
         }
 
@@ -5212,11 +5219,27 @@ public class TreeNode
                 .Select(type => type.Assembly.Location)
                 .Where(path => !string.IsNullOrWhiteSpace(path)))
             {
-                referencePaths.Add(path);
+                if (IsAllowedUserMetadataReference(path))
+                {
+                    referencePaths.Add(path);
+                }
             }
         }
 
         return referencePaths.Select(path => MetadataReference.CreateFromFile(path));
+    }
+
+    private static bool IsAllowedUserMetadataReference(string path)
+    {
+        string fileName = Path.GetFileName(path);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return false;
+        }
+
+        return !fileName.StartsWith("System.Net.", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(fileName, "System.Net.Http.dll", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(fileName, "System.Runtime.InteropServices.JavaScript.dll", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AddVfsReferences(ISet<string> referencePaths)
@@ -5229,7 +5252,10 @@ public class TreeNode
 
         foreach (string path in Directory.EnumerateFiles(referenceDirectory, "*.dll"))
         {
-            referencePaths.Add(path);
+            if (IsAllowedUserMetadataReference(path))
+            {
+                referencePaths.Add(path);
+            }
         }
     }
 

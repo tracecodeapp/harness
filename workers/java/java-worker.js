@@ -1,4 +1,4 @@
-const CHEERPJ_LOADER_URL = 'https://cjrtnc.leaningtech.com/4.2/loader.js';
+const CHEERPJ_LOADER_URL = './vendor/cheerpj/loader.js';
 const HELPER_JAR_PATH = '/app/workers/vendor/java-browser-helper.jar';
 const JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
 const REWRITER_JAR_PATH = '/app/workers/vendor/java-rewriter.jar';
@@ -46,6 +46,14 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
     message,
     ...(detail === undefined ? {} : { detail }),
   });
+}
+
+function assertSameOriginJavaAsset(name, url) {
+  const parsed = new URL(url, self.location.href);
+  if (parsed.origin !== self.location.origin) {
+    throw new Error(`${name} must be served from the Java worker origin.`);
+  }
+  return parsed.href;
 }
 
 if (typeof self.importScripts === 'function') {
@@ -3241,7 +3249,9 @@ async function ensureReady() {
   if (!workerReadyPromise) {
     workerReadyPromise = (async () => {
       const startedAt = performance.now();
-      self.importScripts(CHEERPJ_LOADER_URL);
+      if (typeof self.cheerpjInit !== 'function') {
+        self.importScripts(assertSameOriginJavaAsset('CheerpJ loader', CHEERPJ_LOADER_URL));
+      }
       if (typeof self.cheerpjInit !== 'function') {
         throw new Error('CheerpJ loader did not expose cheerpjInit');
       }

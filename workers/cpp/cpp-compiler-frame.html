@@ -3,6 +3,8 @@
 let nextId = 0;
 let compilerWorker = null;
 const pendingCompiles = new Map();
+const frameToken = new URLSearchParams(location.search).get('tracecodeFrameToken') || '';
+const allowedParentOrigin = location.origin;
 
 function encodeError(error) {
   return error instanceof Error ? error.message : String(error);
@@ -69,17 +71,21 @@ function compile(payload) {
 
 addEventListener('message', async (event) => {
   if (event.data?.type !== 'compile') return;
+  if (event.origin !== allowedParentOrigin) return;
+  if (typeof frameToken !== 'string' || frameToken.length === 0) return;
+  if (event.data.frameToken !== frameToken) return;
   if (typeof event.data.protocolToken !== 'string' || event.data.protocolToken.length === 0) return;
 
   try {
     const payload = await compile(event.data.payload);
     const transfer = payload?.programBuffer instanceof ArrayBuffer ? [payload.programBuffer] : [];
-    event.source?.postMessage({ id: event.data.id, type: 'compile-result', protocolToken: event.data.protocolToken, payload }, event.origin, transfer);
+    event.source?.postMessage({ id: event.data.id, type: 'compile-result', frameToken, protocolToken: event.data.protocolToken, payload }, event.origin, transfer);
   } catch (error) {
     event.source?.postMessage(
       {
         id: event.data.id,
         type: 'compile-result',
+        frameToken,
         protocolToken: event.data.protocolToken,
         payload: { success: false, error: encodeError(error) },
       },
@@ -88,5 +94,7 @@ addEventListener('message', async (event) => {
   }
 });
 
-parent.postMessage({ type: 'frame-ready' }, '*');
+if (frameToken) {
+  parent.postMessage({ type: 'frame-ready', frameToken }, allowedParentOrigin);
+}
 </script>

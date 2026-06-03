@@ -354,12 +354,20 @@ function postProjectEvent(id, payload) {
   postMessage({ id, type: 'project-event', payload, ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}) });
 }
 
+function assertSameOriginCppAsset(name, url) {
+  const parsed = new URL(url, self.location.href);
+  if (parsed.origin !== self.location.origin) {
+    throw new Error(`${name} must be served from the C++ worker origin.`);
+  }
+  return parsed.href;
+}
+
 async function fetchAsset(name, url, responseType) {
   if (!url || typeof url !== 'string') {
     throw new Error(`Missing C++ toolchain asset URL for ${name}.`);
   }
 
-  const response = await fetch(url);
+  const response = await fetch(assertSameOriginCppAsset(name, url));
   if (!response.ok) {
     throw new Error(`${name} failed to load from ${url} (${response.status} ${response.statusText})`);
   }
@@ -1561,7 +1569,7 @@ async function loadToolchain() {
 
     if (configuredAssets.compilerBundleUrl) {
       try {
-        const compilerBundle = await import(configuredAssets.compilerBundleUrl);
+        const compilerBundle = await import(assertSameOriginCppAsset('C++ compiler bundle', configuredAssets.compilerBundleUrl));
         if (typeof compilerBundle.runClang === 'function') {
           return {
             compiler: 'yowasp',
@@ -3587,7 +3595,12 @@ function rewriteRangeForIndexedReads(line, lineNumber, variables, aliases = new 
   if (!match) return line;
   const [, prefix, bindingName, rangeName, suffix] = match;
   const variable = variables?.get(rangeName);
-  if (!variable || (!isVectorCppType(variable.type, aliases) && !isStringCppType(variable.type, aliases))) return line;
+  if (!variable) return line;
+  if (isSetCppType(variable.type, aliases)) {
+    const rewritten = `${prefix}tracecode::set_range_readable(${rangeName}, ${lineNumber}, ${cppStringLiteral(bindingName)}, ${cppStringLiteral(rangeName)})${suffix}`;
+    return line.replace(stripped, rewritten);
+  }
+  if (!isVectorCppType(variable.type, aliases) && !isStringCppType(variable.type, aliases)) return line;
   const rewritten = `${prefix}tracecode::indexed_range_readable(${rangeName}, ${lineNumber}, ${cppStringLiteral(bindingName)}, ${cppStringLiteral(rangeName)})${suffix}`;
   return line.replace(stripped, rewritten);
 }
@@ -7172,8 +7185,7 @@ function runCompilerWorker(driverSource) {
     const id = `compile-${++compilerWorkerRequestId}`;
     const protocolToken = `${id}-${Date.now()}-${Math.random()}`;
     const timeoutId = setTimeout(() => {
-      pendingCompilerWorkerRequests.delete(id);
-      reject(new Error('C++ compiler worker request timed out.'));
+      resetCompilerWorker(new Error('C++ compiler worker request timed out.'));
     }, 120_000);
     pendingCompilerWorkerRequests.set(id, { protocolToken, resolve, reject, timeoutId });
     worker.postMessage({
@@ -7203,8 +7215,7 @@ function runCompilerWorkerPayload(payload) {
     const id = `compile-${++compilerWorkerRequestId}`;
     const protocolToken = `${id}-${Date.now()}-${Math.random()}`;
     const timeoutId = setTimeout(() => {
-      pendingCompilerWorkerRequests.delete(id);
-      reject(new Error('C++ compiler worker request timed out.'));
+      resetCompilerWorker(new Error('C++ compiler worker request timed out.'));
     }, 120_000);
     pendingCompilerWorkerRequests.set(id, { protocolToken, resolve, reject, timeoutId });
     worker.postMessage({

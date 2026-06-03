@@ -106,7 +106,8 @@ async function main(): Promise<void> {
       const compileInFrame = (payload) =>
         new Promise((resolve, reject) => {
           const iframe = document.createElement('iframe');
-          iframe.src = '/workers/cpp-compiler-frame.html';
+          const frameToken = 'tracecode-frame-token-' + (++nextId);
+          iframe.src = `/workers/cpp-compiler-frame.html?tracecodeFrameToken=${encodeURIComponent(frameToken)}`;
           iframe.style.display = 'none';
           document.body.appendChild(iframe);
           const requestId = 'frame-' + (++nextId);
@@ -119,8 +120,9 @@ async function main(): Promise<void> {
           };
           const onFrameMessage = (event) => {
             if (event.source !== iframe.contentWindow) return;
+            if (event.data?.frameToken !== frameToken) return;
             if (event.data?.type === 'frame-ready') {
-              iframe.contentWindow.postMessage({ id: requestId, type: 'compile', payload, protocolToken: frameProtocolToken }, location.origin);
+              iframe.contentWindow.postMessage({ id: requestId, type: 'compile', frameToken, payload, protocolToken: frameProtocolToken }, location.origin);
               return;
             }
             if (event.data?.id !== requestId) return;

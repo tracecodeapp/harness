@@ -19,6 +19,8 @@
   <Target Name="TraceCodeIncludeCompilerReferenceAssembliesInVfs" BeforeTargets="_WasmGenerateAppBundle">
     <ItemGroup>
       <TraceCodeCompilerReference Include="$(TargetDir)*.dll" />
+      <TraceCodeCompilerReference Remove="$(TargetDir)System.Net*.dll" />
+      <TraceCodeCompilerReference Remove="$(TargetDir)System.Runtime.InteropServices.JavaScript.dll" />
       <WasmFilesToIncludeInFileSystem
         Include="@(TraceCodeCompilerReference)"
         TargetPath="/tracecode-refs/%(TraceCodeCompilerReference.FileName)%(TraceCodeCompilerReference.Extension)" />

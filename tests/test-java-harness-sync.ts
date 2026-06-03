@@ -44,7 +44,8 @@ async function main(): Promise<void> {
     'utf8'
   );
   const requiredMarkers = [
-    'https://cjrtnc.leaningtech.com/4.2/loader.js',
+    './vendor/cheerpj/loader.js',
+    'assertSameOriginJavaAsset',
     '/app/workers/vendor/java-browser-helper.jar',
     '/app/workers/vendor/jdk.compiler-17.jar',
     '/app/workers/vendor/java-rewriter.jar',

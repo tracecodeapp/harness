@@ -139,6 +139,7 @@ export class CppWorkerClient {
   private compilerFrameReadyResolve: (() => void) | null = null;
   private compilerFrameReadyReject: ((error: Error) => void) | null = null;
   private compilerFrameTargetOrigin = '';
+  private compilerFrameToken = '';
   private compilerFrameRequestId = 0;
   private compilerFrameMessageHandler: ((event: MessageEvent) => void) | null = null;
   private pendingCompilerFrameRequests = new Map<string, PendingCompilerFrameRequest>();
@@ -627,6 +628,7 @@ export class CppWorkerClient {
     this.pendingCompilerFrameRequests.clear();
     this.compilerFrame = null;
     this.compilerFrameTargetOrigin = '';
+    this.compilerFrameToken = '';
     for (const frame of this.activeCompilerFrames) {
       frame.remove();
     }
@@ -746,7 +748,13 @@ export class CppWorkerClient {
     if (this.compilerFrame && this.compilerFrameReadyPromise) return this.compilerFrameReadyPromise;
 
     const frameUrl = new URL(this.compilerFrameUrl, globalThis.location?.href);
+    const hostOrigin = new URL(globalThis.location?.href ?? frameUrl.href).origin;
+    if (frameUrl.origin !== hostOrigin) {
+      return Promise.reject(new Error('C++ compiler frame must be served from the same origin as the harness page.'));
+    }
     this.compilerFrameTargetOrigin = frameUrl.origin;
+    this.compilerFrameToken = createWorkerProtocolToken();
+    frameUrl.searchParams.set('tracecodeFrameToken', this.compilerFrameToken);
     const iframe = document.createElement('iframe');
     iframe.src = frameUrl.href;
     iframe.style.display = 'none';
@@ -769,6 +777,7 @@ export class CppWorkerClient {
       const onMessage = (event: MessageEvent) => {
         if (event.source !== iframe.contentWindow) return;
         if (event.origin !== this.compilerFrameTargetOrigin) return;
+        if ((event.data as { frameToken?: unknown })?.frameToken !== this.compilerFrameToken) return;
         if ((event.data as { type?: string })?.type === 'frame-ready') {
           finishReady();
           return;
@@ -828,6 +837,7 @@ export class CppWorkerClient {
         {
           id: requestId,
           type: 'compile',
+          frameToken: this.compilerFrameToken,
           protocolToken,
           payload,
         },
