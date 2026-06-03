@@ -1644,6 +1644,10 @@ public static class RuntimeTraceSink
                 result[property.Name] = NormalizeTraceValue(property.GetValue(value), depth + 1, references);
                 emittedFields++;
             }
+            catch (Exception error) when (error.GetBaseException() is TraceCodeTimeoutException or TraceLimitExceededException)
+            {
+                throw;
+            }
             catch
             {
                 // Some framework properties expose by-ref/pointer-backed values that System.Text.Json

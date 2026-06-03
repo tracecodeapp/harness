@@ -2548,6 +2548,28 @@ async function main(): Promise<void> {
     assertCondition(!timedOut.success, 'C# worker infinite loop should fail');
     assertCondition(timedOut.timeoutReason === 'client-timeout', 'C# worker infinite loop should use client-timeout');
 
+    const outputPropertyTimeout = await runWorkerCase(
+      page,
+      [
+        'public class Payload {',
+        '  public int Value = 1;',
+        '  public int Timeout { get { throw new TraceCode.CSharpHost.TraceCodeTimeoutException("property timeout"); } }',
+        '}',
+        'public class Solution {',
+        '  public Payload ReturnPayload() { return new Payload(); }',
+        '}',
+      ].join('\n'),
+      'ReturnPayload',
+      {},
+      assetBaseUrl
+    );
+    assertCondition(!outputPropertyTimeout.success, 'C# worker output property timeout should fail');
+    assertCondition(
+      outputPropertyTimeout.timeoutReason === 'client-timeout' &&
+        outputPropertyTimeout.error?.includes('property timeout') === true,
+      `C# worker output property timeout should propagate timeout exceptions, received ${JSON.stringify(outputPropertyTimeout)}`
+    );
+
     const runtimeError = await runWorkerCase(
       page,
       [

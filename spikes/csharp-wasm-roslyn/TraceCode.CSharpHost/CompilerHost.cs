@@ -5451,6 +5451,10 @@ public class TreeNode
             {
                 result[property.Name] = NormalizeOutputValue(property.GetValue(value), depth + 1, references);
             }
+            catch (Exception error) when (error.GetBaseException() is TraceCodeTimeoutException or TraceLimitExceededException)
+            {
+                throw;
+            }
             catch
             {
                 // Keep output serialization best-effort for user-defined objects with throwing accessors.
