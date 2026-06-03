@@ -1034,6 +1034,43 @@ if (!priorityQueueMutationEvents.some((event) => event.kind === 'mutate' && even
   throw new Error('C++ priority_queue pop should emit mutate with empty args, received ' + JSON.stringify(priorityQueueMutationEvents));
 }
 
+const priorityQueueRangeConstructorTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int fromRange(vector<int>& nums) {',
+    '    priority_queue<int> heap(nums.begin(), nums.end());',
+    '    return heap.top();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'fromRange',
+  inputs: { nums: [3, 9, 1] },
+  options: {},
+});
+if (!priorityQueueRangeConstructorTrace.success || priorityQueueRangeConstructorTrace.output !== 9) {
+  throw new Error('C++ priority_queue range constructor tracing failed: ' + JSON.stringify(priorityQueueRangeConstructorTrace));
+}
+
+const priorityQueueComparatorContainerTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int fromComparatorContainer(vector<int>& nums) {',
+    '    auto compare = [](int left, int right) { return left > right; };',
+    '    priority_queue<int, vector<int>, decltype(compare)> heap(compare, nums);',
+    '    return heap.top();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'fromComparatorContainer',
+  inputs: { nums: [3, 9, 1] },
+  options: {},
+});
+if (!priorityQueueComparatorContainerTrace.success || priorityQueueComparatorContainerTrace.output !== 1) {
+  throw new Error('C++ priority_queue comparator/container constructor tracing failed: ' + JSON.stringify(priorityQueueComparatorContainerTrace));
+}
+
 const stringIndexedWriteTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',

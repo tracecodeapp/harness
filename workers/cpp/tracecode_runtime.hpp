@@ -4487,6 +4487,22 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   PriorityQueue(const char* name, const char* field, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
   PriorityQueue(const Compare& compare, const char* name, int line) : Base(compare), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
   PriorityQueue(const Compare& compare, const char* name, const char* field, int line) : Base(compare), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  PriorityQueue(const Compare& compare, const Container& container, const char* name, int line) : Base(compare, container), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  PriorityQueue(const Compare& compare, Container&& container, const char* name, int line) : Base(compare, std::move(container)), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  PriorityQueue(const Compare& compare, const Container& container, const char* name, const char* field, int line) : Base(compare, container), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  PriorityQueue(const Compare& compare, Container&& container, const char* name, const char* field, int line) : Base(compare, std::move(container)), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  template <typename InputIt>
+  PriorityQueue(InputIt first, InputIt last, const char* name, int line) : Base(first, last), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  template <typename InputIt>
+  PriorityQueue(InputIt first, InputIt last, const char* name, const char* field, int line) : Base(first, last), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  template <typename InputIt>
+  PriorityQueue(InputIt first, InputIt last, const Compare& compare, const char* name, int line) : Base(first, last, compare), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  template <typename InputIt>
+  PriorityQueue(InputIt first, InputIt last, const Compare& compare, const char* name, const char* field, int line) : Base(first, last, compare), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  template <typename InputIt>
+  PriorityQueue(InputIt first, InputIt last, const Compare& compare, const Container& container, const char* name, int line) : Base(first, last, compare, container), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  template <typename InputIt>
+  PriorityQueue(InputIt first, InputIt last, const Compare& compare, const Container& container, const char* name, const char* field, int line) : Base(first, last, compare, container), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
   PriorityQueue(const std::vector<T>& values, const char* name, int line) : Base(values.begin(), values.end()), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
