@@ -1760,6 +1760,13 @@ class Solution {
     stringArrayLengthCallSource.includes('TraceHooks.readIndexedStringLengthAtLine(3, "board", board, 0, null)'),
     'Java rewriter should instrument String[] element length() reads as indexed length reads'
   );
+  assertNativeJavaRewriterCompiles(`class Solution {
+  String[] grid = new String[] { "ab" };
+  String value = "xy";
+  int solve() {
+    return this.grid[0].charAt(1) + this.grid[0].length() + this.value.charAt(0);
+  }
+}`);
 
   const ternaryContinuationSource = assertNativeJavaRewriterCompiles(`import java.util.*;
 
