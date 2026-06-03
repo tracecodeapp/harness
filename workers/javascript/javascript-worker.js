@@ -4276,6 +4276,30 @@ function expressionContainsAwaitOrYield(ts, expression) {
   return found;
 }
 
+function expressionMayHaveSideEffects(ts, expression) {
+  let found = false;
+  const visit = (node) => {
+    if (found) return;
+    if (
+      ts.isCallExpression(node) ||
+      ts.isNewExpression(node) ||
+      ts.isDeleteExpression(node) ||
+      ts.isPostfixUnaryExpression(node) ||
+      (ts.isPrefixUnaryExpression(node) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) ||
+      (ts.isBinaryExpression(node) && isAssignmentOperatorToken(ts, node.operatorToken.kind)) ||
+      node.kind === ts.SyntaxKind.AwaitExpression ||
+      node.kind === ts.SyntaxKind.YieldExpression
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(expression);
+  return found;
+}
+
 function wrapTraceCondition(ts, expression, deferAccessesToNextLine = false) {
   const recorderMethod = deferAccessesToNextLine ? 'tracePostLineCondition' : 'traceCondition';
   const argument = expressionContainsAwaitOrYield(ts, expression)
@@ -4851,6 +4875,14 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
         if (tracedLeft && isAssignmentOperatorToken(ts, node.operatorToken.kind)) {
           const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedLeft.indices, visit);
           const visitedRight = ts.visitNode(node.right, visit);
+          if (tracedLeft.indices.length > 1 && expressionMayHaveSideEffects(ts, node.right)) {
+            return ts.factory.updateBinaryExpression(
+              node,
+              node.left,
+              node.operatorToken,
+              visitedRight
+            );
+          }
           if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
             return createTraceWriteIndexExpression(
               ts,

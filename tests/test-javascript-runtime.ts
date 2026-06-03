@@ -3698,6 +3698,34 @@ function smallest(nums: number[]): number {
   );
   console.log('PASS: execute-with-tracing JS destructuring target replay guard');
 
+  const nestedWriteEvaluationOrderTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const original = { c: 0 };
+  const obj = { a: { b: original } };
+  obj.a.b.c = (obj.a.b = {}, 1);
+  return [original.c, Object.prototype.hasOwnProperty.call(obj.a.b, "c")];
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    nestedWriteEvaluationOrderTracing.success === true,
+    `JavaScript nested write evaluation-order tracing should succeed: ${nestedWriteEvaluationOrderTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(nestedWriteEvaluationOrderTracing.output) === JSON.stringify([1, false]),
+    `JavaScript nested write tracing should preserve native LHS/RHS evaluation order, got ${JSON.stringify(
+      nestedWriteEvaluationOrderTracing.output
+    )}`
+  );
+  console.log('PASS: execute-with-tracing JS nested write evaluation order');
+
   const tuplePushArgsTracing = await harness.sendMessage<{
     success: boolean;
     trace?: { events?: RuntimeTraceEvent[] };
