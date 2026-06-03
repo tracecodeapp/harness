@@ -1,12 +1,13 @@
 import type {
+  RuntimeFile,
   RuntimeProjectSnapshot,
   RuntimeWorkspace,
   RuntimeWorkspaceUnsubscribe,
 } from '../../harness-core/src/runtime-project';
+import { normalizeRuntimeProjectPath } from '../../harness-project/src/index';
 
-const DEFAULT_INDEXED_DB_NAME = 'tracecode-kernel';
-const DEFAULT_INDEXED_DB_STORE = 'workspaces';
 const STORAGE_VERSION = 1;
+const MAX_STORAGE_OPTION_LENGTH = 256;
 
 export interface BrowserKernelStorageSnapshot {
   version: 1;
@@ -23,8 +24,9 @@ export interface BrowserKernelStorage {
 
 export interface IndexedDbKernelStorageOptions {
   key: string;
-  databaseName?: string;
-  storeName?: string;
+  databaseName: string;
+  storeName: string;
+  trustedSameOriginPersistence: true;
 }
 
 export interface BrowserKernelStorageBinding {
@@ -33,10 +35,14 @@ export interface BrowserKernelStorageBinding {
 }
 
 export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOptions): BrowserKernelStorage {
-  const databaseName = options.databaseName ?? DEFAULT_INDEXED_DB_NAME;
-  const storeName = options.storeName ?? DEFAULT_INDEXED_DB_STORE;
-  const key = options.key.trim();
-  if (!key) throw new Error('IndexedDB kernel storage key is required.');
+  if (options.trustedSameOriginPersistence !== true) {
+    throw new Error(
+      'IndexedDB kernel storage is same-origin browser persistence and requires trustedSameOriginPersistence: true.'
+    );
+  }
+  const databaseName = normalizeStorageOption(options.databaseName, 'IndexedDB kernel storage databaseName');
+  const storeName = normalizeStorageOption(options.storeName, 'IndexedDB kernel storage storeName');
+  const key = normalizeStorageOption(options.key, 'IndexedDB kernel storage key');
 
   let dbPromise: Promise<IDBDatabase> | null = null;
   let pendingWrite: Promise<void> = Promise.resolve();
@@ -103,7 +109,9 @@ export async function hydrateBrowserKernelStorage(
   storage: BrowserKernelStorage | undefined
 ): Promise<RuntimeProjectSnapshot | null> {
   if (!storage) return null;
-  return (await storage.load())?.snapshot ?? null;
+  const stored = await storage.load();
+  if (!stored) return null;
+  return normalizeStoredSnapshot(stored);
 }
 
 export async function persistInitialBrowserKernelSnapshot(
@@ -154,4 +162,80 @@ function idbRequest<Result>(request: IDBRequest<Result>): Promise<Result> {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('IndexedDB kernel storage request failed.'));
   });
+}
+
+function normalizeStorageOption(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error(`${label} is required.`);
+  if (trimmed.length > MAX_STORAGE_OPTION_LENGTH) {
+    throw new Error(`${label} must be ${MAX_STORAGE_OPTION_LENGTH} characters or fewer.`);
+  }
+  if (/[\0\r\n]/.test(trimmed)) throw new Error(`${label} must not contain control characters.`);
+  return trimmed;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function normalizeStoredSnapshot(stored: BrowserKernelStorageSnapshot): RuntimeProjectSnapshot {
+  if (!isRecord(stored) || stored.version !== STORAGE_VERSION || !isRecord(stored.snapshot)) {
+    throw new Error('IndexedDB kernel storage snapshot is malformed.');
+  }
+  const snapshot = stored.snapshot;
+  if (!Array.isArray(snapshot.files)) {
+    throw new Error('IndexedDB kernel storage snapshot files must be an array.');
+  }
+
+  const seenFiles = new Set<string>();
+  const files = snapshot.files.map((file, index) => {
+    const normalized = normalizeStoredFile(file, `IndexedDB kernel storage snapshot files[${index}]`);
+    if (seenFiles.has(normalized.path)) {
+      throw new Error(`IndexedDB kernel storage snapshot contains duplicate file path: ${normalized.path}`);
+    }
+    seenFiles.add(normalized.path);
+    return normalized;
+  });
+
+  let directories: string[] | undefined;
+  if (snapshot.directories !== undefined) {
+    if (!Array.isArray(snapshot.directories)) {
+      throw new Error('IndexedDB kernel storage snapshot directories must be an array.');
+    }
+    directories = [...new Set(snapshot.directories.map((directory, index) => {
+      if (typeof directory !== 'string') {
+        throw new Error(`IndexedDB kernel storage snapshot directories[${index}] must be a string.`);
+      }
+      return normalizeRuntimeProjectPath(directory);
+    }))].sort((left, right) => left.localeCompare(right));
+  }
+
+  let entrypoint: string | undefined;
+  if (snapshot.entrypoint !== undefined) {
+    if (typeof snapshot.entrypoint !== 'string') {
+      throw new Error('IndexedDB kernel storage snapshot entrypoint must be a string.');
+    }
+    entrypoint = normalizeRuntimeProjectPath(snapshot.entrypoint);
+  }
+
+  return {
+    files,
+    ...(directories && directories.length > 0 ? { directories } : {}),
+    ...(entrypoint ? { entrypoint } : {}),
+  };
+}
+
+function normalizeStoredFile(value: unknown, label: string): RuntimeFile {
+  if (!isRecord(value)) throw new Error(`${label} must be an object.`);
+  if (typeof value.path !== 'string') throw new Error(`${label}.path must be a string.`);
+  if (typeof value.contents !== 'string') throw new Error(`${label}.contents must be a string.`);
+  const path = normalizeRuntimeProjectPath(value.path);
+  if (value.encoding !== undefined && value.encoding !== 'utf8' && value.encoding !== 'base64') {
+    throw new Error(`${label}.encoding must be "utf8" or "base64".`);
+  }
+  return {
+    path,
+    contents: value.contents,
+    ...(value.encoding ? { encoding: value.encoding } : {}),
+  };
 }

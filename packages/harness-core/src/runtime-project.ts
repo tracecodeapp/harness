@@ -831,6 +831,39 @@ export function filterRuntimeCommandResultFiles(
   return rest;
 }
 
+const RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
+const RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
+const RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
+const runtimeProjectTextEncoder = new TextEncoder();
+
+function runtimeProjectUtf8Bytes(value: string): number {
+  return runtimeProjectTextEncoder.encode(value).byteLength;
+}
+
+function runtimeProjectTruncateUtf8(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  let bytes = 0;
+  let end = 0;
+  for (const char of value) {
+    const nextBytes = runtimeProjectUtf8Bytes(char);
+    if (bytes + nextBytes > maxBytes) break;
+    bytes += nextBytes;
+    end += char.length;
+  }
+  return value.slice(0, end);
+}
+
+function runtimeFileChangeByteSize(change: RuntimeFileChange): number {
+  let size = runtimeProjectUtf8Bytes(change.path);
+  const file = change as RuntimeFile;
+  if (file.contents !== undefined) {
+    size += file.encoding === 'base64'
+      ? Math.ceil(file.contents.length * 3 / 4)
+      : runtimeProjectUtf8Bytes(file.contents);
+  }
+  return size;
+}
+
 function runtimeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -913,24 +946,34 @@ export interface RuntimeProjectLiveIoControllerOptions {
   actor?: RuntimeWorkspaceActor;
   applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
   onEvent?: RuntimeCommandEventHandler;
+  signal?: AbortSignal;
 }
 
 export class RuntimeProjectLiveIoController {
   private readonly outputTracker = new RuntimeProjectOutputTracker();
   private readonly eventQueue: RuntimeProjectEventQueue | null;
   private readonly appliedFileChangePaths = new Set<string>();
+  private readonly outputBytes: Record<RuntimeCommandEventStream, number> = { stdout: 0, stderr: 0 };
+  private readonly truncatedOutputStreams = new Set<RuntimeCommandEventStream>();
+  private liveFileChangeCount = 0;
+  private liveFileChangeBytes = 0;
   private pendingFileChanges = 0;
+  private closed = false;
 
   constructor(private readonly options: RuntimeProjectLiveIoControllerOptions) {
     this.eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
   }
 
   emit(event: RuntimeCommandEvent): void {
-    this.outputTracker.observe(event);
-    this.options.onEvent?.(event);
+    const budgetedEvent = this.applyEventBudgets(event);
+    if (!budgetedEvent) return;
+    this.outputTracker.observe(budgetedEvent);
+    this.options.onEvent?.(budgetedEvent);
   }
 
   handleRuntimeEvent(event: RuntimeCommandEvent): void {
+    if (this.closed || this.options.signal?.aborted) return;
+    if (event.type === 'file-change' && !this.eventQueue) this.recordLiveFileChangeBudget(event.change);
     if (event.type !== 'file-change' && this.pendingFileChanges === 0) {
       this.emit(event);
       return;
@@ -944,6 +987,7 @@ export class RuntimeProjectLiveIoController {
       actor: this.options.actor,
       applyFileChange: async (change, phase) => {
         try {
+          if (phase === 'live') this.recordLiveFileChangeBudget(change);
           const shouldEmit = await this.options.applyFileChange?.(change, phase);
           this.appliedFileChangePaths.add(runtimeFileChangePath(change));
           return shouldEmit;
@@ -953,6 +997,42 @@ export class RuntimeProjectLiveIoController {
       },
       emit: (nextEvent) => this.emit(nextEvent),
     });
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+
+  private applyEventBudgets(event: RuntimeCommandEvent): RuntimeCommandEvent | null {
+    if (event.type !== 'output') return event;
+    if (this.truncatedOutputStreams.has(event.stream)) return null;
+    const used = this.outputBytes[event.stream];
+    const remaining = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+    const bytes = runtimeProjectUtf8Bytes(event.data);
+    if (bytes <= remaining) {
+      this.outputBytes[event.stream] = used + bytes;
+      return event;
+    }
+    this.truncatedOutputStreams.add(event.stream);
+    const marker = `\n[tracekernel: ${event.stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+    const truncated = `${runtimeProjectTruncateUtf8(event.data, Math.max(0, remaining))}${marker}`;
+    this.outputBytes[event.stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
+    return truncated ? { ...event, data: truncated } : null;
+  }
+
+  private recordLiveFileChangeBudget(change: RuntimeFileChange): void {
+    this.liveFileChangeCount += 1;
+    if (this.liveFileChangeCount > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES) {
+      throw Object.assign(new Error('EMSGSIZE: TraceKernel live file-change count limit exceeded'), { code: 'EMSGSIZE' });
+    }
+    const size = runtimeFileChangeByteSize(change);
+    if (size > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) {
+      throw Object.assign(new Error('EMSGSIZE: TraceKernel live file-change size limit exceeded'), { code: 'EMSGSIZE' });
+    }
+    this.liveFileChangeBytes += size;
+    if (this.liveFileChangeBytes > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) {
+      throw Object.assign(new Error('EMSGSIZE: TraceKernel live file-change byte limit exceeded'), { code: 'EMSGSIZE' });
+    }
   }
 
   async flush(): Promise<void> {
@@ -1010,6 +1090,7 @@ export async function runRuntimeProjectWorkerBridge<
   const liveIo = new RuntimeProjectLiveIoController({
     applyFileChange: options.applyFileChange,
     onEvent: options.request.onEvent,
+    signal: options.request.signal,
   });
   const io = createRuntimeProjectIoBridge((event) => liveIo.emit(event));
   const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
@@ -1020,8 +1101,10 @@ export async function runRuntimeProjectWorkerBridge<
   let result: Result;
   try {
     result = await options.run(workerRequest, forwardWorkerEvent);
+    liveIo.close();
     await liveIo.flush();
   } catch (error) {
+    liveIo.close();
     const message = runtimeErrorMessage(error);
     const aborted = isRuntimeAbortError(error) || options.request.signal?.aborted;
     const signalName = aborted ? runtimeAbortSignalName(options.request.signal) : undefined;
@@ -1138,6 +1221,10 @@ export interface RuntimeProjectTerminalRunOptions extends RuntimeCommandOptions 
   onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 }
 
+export interface RuntimeProjectCommandOptions extends RuntimeCommandOptions {
+  allowHidden?: boolean;
+}
+
 export type RuntimeProjectCommandSource = 'argument' | 'file' | 'stdin';
 
 export interface RuntimeProjectCommandRequest<
@@ -1181,7 +1268,7 @@ export interface RuntimeWorkspace {
   remove(path: string, options?: RuntimeWorkspaceRemoveOptions): Promise<void>;
   isReadOnly(path: string): boolean;
   runCommand(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
-  runProjectCommand(name: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
+  runProjectCommand(name: string, options?: RuntimeProjectCommandOptions): Promise<RuntimeCommandResult>;
   completeCommand(input: string, cursor: number, options?: RuntimeCommandCompletionOptions): Promise<RuntimeCommandCompletion | null>;
   createTerminalSession(options?: RuntimeProjectTerminalSessionOptions): RuntimeProjectTerminalSession;
   checkExpiration(now?: Date | string | number): Promise<RuntimeProjectSessionLifecycle | null>;

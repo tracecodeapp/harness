@@ -34,7 +34,7 @@ import {
   createBrowserPythonProjectRunner,
   createPyodidePythonProjectRunner,
 } from '../packages/harness-python/src/project-browser';
-import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
+import { createBrowserProjectWorkspace, createIndexedDbKernelStorage } from '../packages/harness-browser/src/project';
 import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../packages/harness-javascript/src/project-node';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
@@ -61,11 +61,13 @@ function stdinPipe(text: string) {
 }
 
 class FakeModuleWorker {
+  private static nextInstanceId = 1;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   private workerOnMessage: ((event: MessageEvent) => void) | null = null;
   private readonly queuedMessages: unknown[] = [];
   private terminated = false;
+  private readonly instanceId = FakeModuleWorker.nextInstanceId++;
 
   constructor(private readonly url: string) {
     void this.load();
@@ -97,7 +99,9 @@ class FakeModuleWorker {
     };
     try {
       (globalThis as typeof globalThis & { self?: unknown }).self = scope;
-      await import(this.url);
+      const importUrl = new URL(this.url);
+      importUrl.searchParams.set('fake-worker-instance', String(this.instanceId));
+      await import(importUrl.href);
       this.workerOnMessage = scope.onmessage;
       for (const message of this.queuedMessages.splice(0)) {
         this.workerOnMessage?.({ data: message } as MessageEvent);
@@ -4124,7 +4128,7 @@ async function testProjectJavaScriptRunnersDirectAbsoluteScriptPath(): Promise<v
     `native node direct runner should accept /workspace scriptPath: ${nativeResult.stdout}`
   );
 
-  const browserResult = await createBrowserJavaScriptProjectRunner()(request);
+  const browserResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })(request);
   assertCondition(browserResult.exitCode === 0, `browser node direct absolute scriptPath should succeed: ${browserResult.stderr}`);
   assertCondition(
     browserResult.stdout === '71\nalpha,beta\n',
@@ -4138,7 +4142,7 @@ async function testProjectJavaScriptRunnersDirectAbsoluteScriptPath(): Promise<v
     }),
     'native node direct runner should reject absolute scriptPath outside the workspace'
   );
-  const browserOutsideResult = await createBrowserJavaScriptProjectRunner()({
+  const browserOutsideResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
     ...request,
     scriptPath: '/outside/index.js',
   });
@@ -4154,7 +4158,7 @@ async function testProjectJavaScriptRunnersDirectAbsoluteScriptPath(): Promise<v
     'native node direct runner should reject cwd outside the workspace'
   );
   await assertRejectsAsync(
-    () => createBrowserJavaScriptProjectRunner()({
+    () => createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
       ...request,
       cwd: '/outside',
     }),
@@ -4166,6 +4170,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   const appliedChanges: string[] = [];
   const events: RuntimeCommandEvent[] = [];
   const runner = createBrowserJavaScriptProjectRunner({
+    allowMainThreadExecution: true,
     applyFileChange: async (change, phase) => {
       appliedChanges.push(`${phase}:${change.path}`);
       return false;
@@ -4211,6 +4216,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
 
   const failedEvents: RuntimeCommandEvent[] = [];
   const failedRunner = createBrowserJavaScriptProjectRunner({
+    allowMainThreadExecution: true,
     applyFileChange: async (change) => {
       throw new Error(`reject-live:${change.path}`);
     },
@@ -4252,6 +4258,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   const timerAppliedChanges: string[] = [];
   const timerEvents: RuntimeCommandEvent[] = [];
   const timerResult = await createBrowserJavaScriptProjectRunner({
+    allowMainThreadExecution: true,
     applyFileChange: async (change, phase) => {
       timerAppliedChanges.push(`${phase}:${change.path}`);
       return true;
@@ -4295,7 +4302,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   );
 
   const timeoutTimerEvents: RuntimeCommandEvent[] = [];
-  const timeoutTimerResult = await createBrowserJavaScriptProjectRunner({ timeoutMs: 5 })({
+  const timeoutTimerResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 5 })({
     code: [
       'const fs = require("node:fs");',
       'setTimeout(() => {',
@@ -4339,7 +4346,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
 
 async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promise<void> {
   const events: RuntimeCommandEvent[] = [];
-  const result = await createBrowserJavaScriptProjectRunner()({
+  const result = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
     code: [
       'const fs = require("node:fs");',
       'process.stdout.write(fs.readFileSync("/dev/tty", "utf8").trim() + "\\n");',
@@ -4458,7 +4465,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     `browser node custom device output events should stream before process-exit: ${JSON.stringify(events)}`
   );
 
-  const sharedStdinCursorResult = await createBrowserJavaScriptProjectRunner()({
+  const sharedStdinCursorResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
     code: [
       'const fs = require("node:fs");',
       'process.stdin.setEncoding("utf8");',
@@ -4487,7 +4494,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     `browser node process.stdin and /dev devices should share one stdin cursor: ${JSON.stringify(sharedStdinCursorResult)}`
   );
 
-  const restrictedResult = await createBrowserJavaScriptProjectRunner()({
+  const restrictedResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
     code: [
       'const fs = require("node:fs");',
       'try { fs.readFileSync(0, "utf8"); console.log("fd0:ok"); } catch (error) { console.log("fd0:" + error.code); }',
@@ -4554,7 +4561,7 @@ async function testProjectJavaScriptRunnersPreserveEmptyDirectories(): Promise<v
     `native node should preserve project snapshot directories: ${nativeResult.stdout}`
   );
 
-  const browserResult = await createBrowserJavaScriptProjectRunner()(request);
+  const browserResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })(request);
   assertCondition(browserResult.exitCode === 0, `browser node should see project snapshot directories: ${browserResult.stderr}`);
   assertCondition(
     browserResult.stdout === 'true\nchild\n',
@@ -4606,7 +4613,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       { path: 'src/app/index.js', contents: 'console.log(require("localpkg").value);\nconsole.log(require("exportedpkg/feature").value);\n' },
       { path: 'index.js', contents: 'const { add } = require("./lib/math"); console.log(add(2, 3)); console.log(process.argv.slice(2).join(","));\n' },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand('node index.js alpha beta');
@@ -5990,7 +5997,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
 
   const terminal = workspace.createTerminalSession();
@@ -6179,7 +6186,7 @@ async function testTraceKernelHttpBindSemantics(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
 
   const terminal = workspace.createTerminalSession();
@@ -6197,13 +6204,13 @@ async function testTraceKernelHttpBindSemantics(): Promise<void> {
   assertCondition(Number(port) >= 49152, `listen(0) should allocate an ephemeral port: ${port}`);
   const listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
   assertCondition(
-    listeners.includes(`\thttp\t0.0.0.0\t${port}\t`),
-    `default listen host should bind wildcard and expose allocated port: ${listeners}`
+    listeners.includes(`\thttp\t127.0.0.1\t${port}\t`),
+    `default runtime listen host should bind loopback and expose allocated port: ${listeners}`
   );
 
   const response = await workspace.runCommand(`curl -s http://localhost:${port}/`);
-  assertCondition(response.exitCode === 0, `wildcard listener should accept localhost requests: ${JSON.stringify(response)}`);
-  assertCondition(response.stdout === `0.0.0.0:${port}\n`, `wildcard listener should report bound address: ${response.stdout}`);
+  assertCondition(response.exitCode === 0, `loopback listener should accept localhost requests: ${JSON.stringify(response)}`);
+  assertCondition(response.stdout === `127.0.0.1:${port}\n`, `loopback listener should report bound address: ${response.stdout}`);
 
   await workspace.writeFile('duplicate.js', [
     'const http = require("node:http");',
@@ -6217,9 +6224,23 @@ async function testTraceKernelHttpBindSemantics(): Promise<void> {
   ].join('\n'));
   const duplicate = await workspace.runCommand('node duplicate.js');
   assertCondition(duplicate.exitCode === 0, `duplicate bind check should finish: ${JSON.stringify(duplicate)}`);
-  assertCondition(duplicate.stdout === 'EADDRINUSE\n', `wildcard listener should conflict with exact bind: ${duplicate.stdout}`);
+  assertCondition(duplicate.stdout === 'EADDRINUSE\n', `loopback listener should conflict with exact bind: ${duplicate.stdout}`);
 
-  const listenerRow = listeners.split('\n').find((line) => line.includes(`\thttp\t0.0.0.0\t${port}\t`));
+  await workspace.writeFile('wildcard.js', [
+    'const http = require("node:http");',
+    'try {',
+    '  http.createServer((req, res) => res.end("wildcard")).listen(0, "0.0.0.0");',
+    '  console.log("unexpected");',
+    '} catch (error) {',
+    '  console.log(error.code);',
+    '}',
+    '',
+  ].join('\n'));
+  const wildcard = await workspace.runCommand('node wildcard.js');
+  assertCondition(wildcard.exitCode === 0, `explicit wildcard bind check should finish: ${JSON.stringify(wildcard)}`);
+  assertCondition(wildcard.stdout === 'EACCES\n', `runtime wildcard bind should be rejected: ${wildcard.stdout}`);
+
+  const listenerRow = listeners.split('\n').find((line) => line.includes(`\thttp\t127.0.0.1\t${port}\t`));
   const serverPid = listenerRow?.split('\t')[1];
   assertCondition(serverPid !== undefined, `ephemeral listener row should include pid: ${listeners}`);
   const killed = await workspace.runCommand(`kill ${serverPid}`);
@@ -6247,7 +6268,7 @@ async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
     pythonRunner: async (request) => {
       const handle = request.kernelHttp?.listen({ host: '127.0.0.1', port: 3200 }, async (httpRequest) => ({
         status: httpRequest.method === 'POST' ? 201 : 200,
@@ -6378,7 +6399,7 @@ async function testTraceKernelHttpJavaRunnerBridge(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
     javaRunner: createBrowserJavaProjectRunner({
       async executeProjectJava(request, _timeoutMs, _onEvent, signal) {
         const handle = request.kernelHttp?.listen({ host: '127.0.0.1', port: 3220 }, async (httpRequest) => ({
@@ -6456,7 +6477,7 @@ async function testTraceKernelHttpLanguageBridgeConformance(): Promise<void> {
       { path: 'client.py', contents: 'print("python")\n' },
       { path: 'Client.java', contents: 'class Client { public static void main(String[] args) {} }\n' },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
     pythonRunner: async (request) => {
       const response = await request.kernelHttp?.dispatch({
         method: 'POST',
@@ -6526,7 +6547,7 @@ async function testBrowserJavaScriptProjectRunnerAbortSignal(): Promise<void> {
   const controller = new AbortController();
   const workspace = await createRuntimeWorkspace({
     files: [{ path: 'abort-browser.js', contents: 'await new Promise(() => {});\n' }],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
 
   const command = workspace.runCommand('node abort-browser.js', {
@@ -6570,7 +6591,7 @@ async function testBrowserJavaScriptProjectRunnerCwd(): Promise<void> {
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand('node index.js', { cwd: 'src' });
@@ -6604,7 +6625,7 @@ async function testBrowserJavaScriptProjectRunnerStdin(): Promise<void> {
     files: [
       { path: 'src/helper.js', contents: 'exports.value = 47;\n' },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand(
@@ -6651,7 +6672,7 @@ async function testBrowserJavaScriptProjectRunnerLiveIoEvents(): Promise<void> {
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
   const watchEvents: RuntimeWorkspaceEvent[] = [];
   const commandEvents: RuntimeCommandEvent[] = [];
@@ -6820,7 +6841,7 @@ async function testBrowserJavaScriptProjectRunnerModuleGlobals(): Promise<void> 
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand('node src/index.js');
@@ -6905,7 +6926,7 @@ async function testBrowserJavaScriptProjectRunnerEsmImports(): Promise<void> {
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand('node src/index.mjs alpha beta');
@@ -7029,7 +7050,7 @@ async function testBrowserJavaScriptProjectRunnerDuplicateBasenameImports(): Pro
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
 
   const cjsA = await workspace.runCommand('node index.js', { cwd: 'src/a' });
@@ -8539,7 +8560,7 @@ async function testLiveStdinAcrossProjectRunners(): Promise<void> {
         '',
       ].join('\n'),
     }],
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
   });
   const browserNodeResult = await runCommandWithLiveInput(browserNodeWorkspace, 'node ask.js', 'browser-node> ', 'browser-node\n');
   assertCondition(browserNodeResult.exitCode === 0, `browser Node live stdin should succeed: ${browserNodeResult.stderr}`);
@@ -9136,7 +9157,7 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
 async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   const dynamicEvalDisabledWorkspace = await createBrowserProjectWorkspace({
     files: [{ path: 'index.js', contents: 'console.log("node")\n' }],
-    nodeProject: { allowDynamicEval: false },
+    nodeProject: { allowDynamicEval: false, allowMainThreadExecution: true },
     pythonWorkerClient: {
       async executeProjectPython() {
         throw new Error('unexpected Python runner call');
@@ -9175,6 +9196,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
 
   const nodeTimeoutWorkspace = await createBrowserProjectWorkspace({
     files: [],
+    nodeProject: { allowMainThreadExecution: true },
     nodeProjectTimeoutMs: 5,
     pythonWorkerClient: {
       async executeProjectPython() {
@@ -9328,6 +9350,66 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   );
   await assertRejectsAsync(() => resetStorageWorkspace.readFile('persisted.txt'), 'tracekernelctl reset should destroy browser project workspace');
 
+  assertRejects(
+    () => createIndexedDbKernelStorage({
+      key: 'workspace',
+      databaseName: 'tracecode-kernel-test',
+      storeName: 'workspaces',
+    } as Parameters<typeof createIndexedDbKernelStorage>[0]),
+    'IndexedDB kernel storage should require an explicit trusted same-origin persistence opt-in'
+  );
+  assertRejects(
+    () => createIndexedDbKernelStorage({
+      key: 'workspace',
+      databaseName: ' ',
+      storeName: 'workspaces',
+      trustedSameOriginPersistence: true,
+    }),
+    'IndexedDB kernel storage should require an explicit non-empty database name'
+  );
+  await assertRejectsAsync(
+    () => createBrowserProjectWorkspace({
+      kernelStorage: {
+        async load() {
+          return {
+            version: 1,
+            savedAt: new Date().toISOString(),
+            snapshot: {
+              files: [{ path: '../escape.js', contents: 'escape\n' }],
+            },
+          };
+        },
+        async save() {},
+        async flush() {},
+      },
+      pythonWorkerClient: {
+        async executeProjectPython() {
+          throw new Error('unexpected Python runner call');
+        },
+        terminate() {},
+      },
+      javaWorkerClient: {
+        async executeProjectJava() {
+          throw new Error('unexpected Java runner call');
+        },
+        terminate() {},
+      },
+      csharpWorkerClient: {
+        async executeProjectCSharp() {
+          throw new Error('unexpected C# runner call');
+        },
+        terminate() {},
+      },
+      cppWorkerClient: {
+        async executeProjectCpp() {
+          throw new Error('unexpected C++ runner call');
+        },
+        terminate() {},
+      },
+    }),
+    'browser kernel storage should reject malformed stored workspace snapshots before hydration'
+  );
+
   let pythonTimeoutMs: number | undefined;
   let javaTimeoutMs: number | undefined;
   let csharpTimeoutMs: number | undefined;
@@ -9352,6 +9434,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     ],
     directories: ['empty/child'],
     pythonProjectTimeoutMs: 11,
+    nodeProject: { allowMainThreadExecution: true },
     javaProjectTimeoutMs: 12,
     csharpProjectTimeoutMs: 13,
     cppProjectTimeoutMs: 14,
@@ -9669,6 +9752,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     skills: [
       { path: 'browser/guide.md', contents: 'browser skill\n' },
     ],
+    nodeProject: { allowMainThreadExecution: true },
     pythonWorkerClient: {
       async executeProjectPython(request) {
         pythonRequests.push(request);
@@ -11267,6 +11351,15 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   assertCondition(workspace.isReadOnly('README.md'), 'workspace should report readonly files');
   assertCondition(workspace.isReadOnly('.trace/fixtures/input.txt'), 'workspace should treat hidden fixtures as readonly files');
   assertCondition(!workspace.isReadOnly('src/main.py'), 'workspace should not report editable files as readonly');
+  assertCondition(!(await workspace.exists('.trace/fixtures/input.txt')), 'workspace exists should hide hidden fixture files');
+  await assertRejectsAsync(() => workspace.readFile('.trace/fixtures/input.txt'), 'workspace readFile should hide hidden fixture files');
+  await assertRejectsAsync(() => workspace.stat('.trace/fixtures/input.txt'), 'workspace stat should hide hidden fixture files');
+  await assertRejectsAsync(() => workspace.readDir('.trace'), 'workspace readDir should hide hidden fixture directories');
+  await assertRejectsAsync(
+    () => workspace.copyFile('.trace/fixtures/input.txt', 'src/copied-fixture.txt'),
+    'workspace copyFile should not copy hidden fixtures into visible files'
+  );
+  assertCondition(!(await workspace.exists('src/copied-fixture.txt')), 'hidden fixture copy target should not be created');
   assertCondition(!(await workspace.readDir('.')).includes('.trace'), 'workspace file tree reads should hide hidden fixture directories');
   const visibleSnapshot = await workspace.snapshot();
   assertCondition(
@@ -11347,10 +11440,16 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
     fixtures.stdout === 'fixture:hidden-input\n',
     `project session commands should receive hidden fixture files in runtime snapshots: ${JSON.stringify(fixtures)}`
   );
-  const hiddenGate = await workspace.runProjectCommand('hiddenGate');
+  const hiddenGateBlocked = await workspace.runProjectCommand('hiddenGate');
+  assertCondition(
+    hiddenGateBlocked.exitCode === 403 &&
+      hiddenGateBlocked.stderr === 'Project command is hidden: hiddenGate\n',
+    `hidden project session commands should be blocked unless explicitly allowed: ${JSON.stringify(hiddenGateBlocked)}`
+  );
+  const hiddenGate = await workspace.runProjectCommand('hiddenGate', { allowHidden: true });
   assertCondition(
     hiddenGate.stdout === 'fixture:hidden-input\n',
-    `hidden project session commands should still be runnable by host APIs: ${JSON.stringify(hiddenGate)}`
+    `hidden project session commands should still be runnable by explicit host opt-in: ${JSON.stringify(hiddenGate)}`
   );
 
   const failEvents: RuntimeCommandEvent[] = [];
@@ -11400,7 +11499,7 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
 
 async function testPackageManagerProjectCommands(): Promise<void> {
   const nodeRequests: JavaScriptProjectCommandRequest[] = [];
-  const installRequests: Array<{ manager: string; command: string; cwd: string; manifestName: unknown }> = [];
+  const installRequests: Array<{ manager: string; command: string; args: string[]; cwd: string; manifestName: unknown }> = [];
   const workspace = await createRuntimeWorkspace({
     nodeRunner: async (request) => {
       nodeRequests.push(request);
@@ -11442,6 +11541,7 @@ async function testPackageManagerProjectCommands(): Promise<void> {
           installRequests.push({
             manager: request.manager,
             command: request.command,
+            args: [...request.args],
             cwd: request.cwd,
             manifestName: request.manifest.json.name,
           });
@@ -11513,10 +11613,18 @@ async function testPackageManagerProjectCommands(): Promise<void> {
     installRequests.length === 1 &&
       installRequests[0]?.manager === 'npm' &&
       installRequests[0]?.command === 'install' &&
+      installRequests[0]?.args.length === 0 &&
       installRequests[0]?.manifestName === 'weather-app',
     `package dependency provider should receive normalized install request: ${JSON.stringify(installRequests)}`
   );
   assertCondition(await workspace.exists('node_modules/.bin/weather-cli'), 'package install should materialize local package bin shims');
+
+  const safeInstall = await workspace.runCommand('npm install --ignore-scripts left-pad');
+  assertCondition(safeInstall.exitCode === 0, `npm install --ignore-scripts should delegate to dependency provider: ${JSON.stringify(safeInstall)}`);
+  assertCondition(
+    installRequests[1]?.args.join(',') === '--ignore-scripts,left-pad',
+    `package dependency provider should receive install safety flags: ${JSON.stringify(installRequests)}`
+  );
 
   const build = await workspace.runCommand('npm run build -- --prod');
   assertCondition(

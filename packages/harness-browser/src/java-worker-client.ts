@@ -37,6 +37,7 @@ interface PendingMessage {
 interface JavaHttpServerQueueEntry {
   request: RuntimeKernelHttpRequest;
   resolve: (response: RuntimeKernelHttpResponse) => void;
+  abortListener?: () => void;
 }
 
 interface JavaHttpServerBridge {
@@ -552,6 +553,7 @@ export class JavaWorkerClient {
     Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
     const queued = bridge.queue.splice(0);
     for (const entry of queued) {
+      if (entry.abortListener) entry.request.signal?.removeEventListener?.('abort', entry.abortListener);
       entry.resolve({
         status: 503,
         headers: { 'content-type': 'text/plain' },
@@ -579,7 +581,25 @@ export class JavaWorkerClient {
       });
     }
     return new Promise<RuntimeKernelHttpResponse>((resolve) => {
-      bridge.queue.push({ request, resolve });
+      const entry: JavaHttpServerQueueEntry = { request, resolve };
+      if (request.signal) {
+        entry.abortListener = () => {
+          const index = bridge.queue.indexOf(entry);
+          if (index >= 0) bridge.queue.splice(index, 1);
+          request.signal?.removeEventListener?.('abort', entry.abortListener!);
+          resolve({
+            status: 0,
+            headers: { 'content-type': 'text/plain' },
+            body: 'TraceKernel HTTP request aborted\n',
+          });
+        };
+        request.signal.addEventListener?.('abort', entry.abortListener, { once: true });
+        if (request.signal.aborted) {
+          entry.abortListener();
+          return;
+        }
+      }
+      bridge.queue.push(entry);
       this.drainJavaHttpServerQueue(bridge);
     });
   }
@@ -588,8 +608,9 @@ export class JavaWorkerClient {
     if (bridge.active || bridge.closed) return;
     const entry = bridge.queue.shift();
     if (!entry) return;
+    if (entry.abortListener) entry.request.signal?.removeEventListener?.('abort', entry.abortListener);
     bridge.active = true;
-    this.dispatchJavaHttpServerRequest(bridge.requestBuffer, entry.request)
+    this.dispatchJavaHttpServerRequest(bridge, entry.request)
       .then(entry.resolve)
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -605,7 +626,8 @@ export class JavaWorkerClient {
       });
   }
 
-  private dispatchJavaHttpServerRequest(buffer: SharedArrayBuffer, request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse> {
+  private dispatchJavaHttpServerRequest(bridge: JavaHttpServerBridge, request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse> {
+    const buffer = bridge.requestBuffer;
     const header = new Int32Array(buffer, 0, 2);
     const bytes = new Uint8Array(buffer, JAVA_HTTP_SYNC_HEADER_BYTES);
     if (Atomics.load(header, JAVA_HTTP_SYNC_STATE_INDEX) !== JAVA_HTTP_SYNC_IDLE) {
@@ -629,7 +651,31 @@ export class JavaWorkerClient {
     Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
 
     return new Promise((resolve) => {
+      let settled = false;
+      let abortListener: (() => void) | undefined;
+      const settle = (response: RuntimeKernelHttpResponse): void => {
+        if (settled) return;
+        settled = true;
+        if (abortListener) request.signal?.removeEventListener?.('abort', abortListener);
+        resolve(response);
+      };
+      if (request.signal) {
+        abortListener = () => {
+          this.closeJavaHttpServerBridge(bridge);
+          settle({
+            status: 0,
+            headers: { 'content-type': 'text/plain' },
+            body: 'TraceKernel HTTP request aborted\n',
+          });
+        };
+        request.signal.addEventListener?.('abort', abortListener, { once: true });
+        if (request.signal.aborted) {
+          abortListener();
+          return;
+        }
+      }
       const poll = () => {
+        if (settled) return;
         const state = Atomics.load(header, JAVA_HTTP_SYNC_STATE_INDEX);
         if (state === JAVA_HTTP_SYNC_RESPONSE) {
           const length = Atomics.load(header, JAVA_HTTP_SYNC_LENGTH_INDEX);
@@ -637,11 +683,11 @@ export class JavaWorkerClient {
           Atomics.store(header, JAVA_HTTP_SYNC_LENGTH_INDEX, 0);
           Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_IDLE);
           Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
-          resolve(javaHttpResponseFromManifest(manifest));
+          settle(javaHttpResponseFromManifest(manifest));
           return;
         }
         if (state === JAVA_HTTP_SYNC_CLOSED) {
-          resolve({
+          settle({
             status: 503,
             headers: { 'content-type': 'text/plain' },
             body: 'Java TraceKernel HTTP server closed\n',

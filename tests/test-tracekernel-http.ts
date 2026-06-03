@@ -210,7 +210,7 @@ async function main(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner(),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
     typescriptRunner: createBrowserTypeScriptProjectRunner(),
   });
 
@@ -388,6 +388,12 @@ async function main(): Promise<void> {
     const failingResponse = await workspace.http.request({ url: 'http://localhost:3502/fail' });
     assertCondition(failingResponse.status === 500, `consumer listener exceptions should return 500: ${JSON.stringify(failingResponse)}`);
     assertCondition(failingResponse.body === 'mock exploded\n', `consumer listener exception body should include message: ${JSON.stringify(failingResponse)}`);
+    const failingProjectResponse = await workspace.runCommand('curl -s http://localhost:3502/fail');
+    assertCondition(failingProjectResponse.exitCode === 0, `project curl should receive redacted host listener failure body: ${JSON.stringify(failingProjectResponse)}`);
+    assertCondition(
+      failingProjectResponse.stdout === 'TraceKernel HTTP listener failed\n',
+      `project-visible host listener failures should be redacted: ${failingProjectResponse.stdout}`
+    );
     failingMock.close();
 
     const stalledMock = workspace.http.listen({ host: '127.0.0.1', port: 3504 }, () => new Promise(() => {}));

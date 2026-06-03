@@ -1,26 +1,23 @@
 export class AsyncLocalStorage<T> {
   private store: T | undefined;
+  private queue: Promise<void> = Promise.resolve();
 
   getStore(): T | undefined {
     return this.store;
   }
 
   run<R>(store: T, callback: (...args: never[]) => R, ...args: never[]): R {
-    const previous = this.store;
-    this.store = store;
-    try {
-      const result = callback(...args);
-      const maybePromise = result as unknown as { finally?: (onFinally: () => void) => unknown };
-      if (maybePromise && typeof maybePromise.finally === 'function') {
-        return maybePromise.finally(() => {
-          if (this.store === store) this.store = previous;
-        }) as R;
+    const execute = async (): Promise<R> => {
+      const previous = this.store;
+      this.store = store;
+      try {
+        return await callback(...args);
+      } finally {
+        if (this.store === store) this.store = previous;
       }
-      this.store = previous;
-      return result;
-    } catch (error) {
-      this.store = previous;
-      throw error;
-    }
+    };
+    const queued = this.queue.then(execute, execute);
+    this.queue = queued.then(() => undefined, () => undefined);
+    return queued as R;
   }
 }

@@ -47,6 +47,11 @@ function createExecutionAbortError(): Error {
   return Object.assign(new Error('Execution aborted'), { name: 'AbortError' });
 }
 
+function serializableKernelHttpRequest(request: RuntimeKernelHttpRequest): RuntimeKernelHttpRequest {
+  const { signal: _signal, ...serializable } = request;
+  return serializable;
+}
+
 interface WorkerMessage {
   id?: MessageId;
   type: string;
@@ -464,7 +469,7 @@ export class PythonWorkerClient {
         type: 'kernel-http-request',
         listenerId,
         requestId,
-        request,
+        request: serializableKernelHttpRequest(request),
       } satisfies RuntimeKernelHttpProtocolMessage);
     });
   }

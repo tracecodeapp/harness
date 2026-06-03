@@ -625,6 +625,66 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
     `runtime live I/O controller should preserve queued event ordering and reconcile final output suffixes: ${stableStringify(controllerEvents)}`
   );
 
+  const closedControllerEvents: RuntimeCommandEvent[] = [];
+  const closedControllerAppliedChanges: string[] = [];
+  const closedController = new RuntimeProjectLiveIoController({
+    onEvent: (event) => closedControllerEvents.push(event),
+    applyFileChange: async (change, phase) => {
+      closedControllerAppliedChanges.push(`${phase}:${change.path}`);
+    },
+  });
+  closedController.close();
+  closedController.handleRuntimeEvent({ type: 'file-change', phase: 'live', change: { path: 'late-live.txt', contents: 'late\n' } });
+  closedController.handleRuntimeEvent({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'late-output\n' });
+  await closedController.flush();
+  assertCondition(
+    closedControllerEvents.length === 0 && closedControllerAppliedChanges.length === 0,
+    `runtime live I/O controller should ignore late runner events after close: ${stableStringify({ closedControllerEvents, closedControllerAppliedChanges })}`
+  );
+
+  const budgetedOutputEvents: RuntimeCommandEvent[] = [];
+  const budgetedOutputController = new RuntimeProjectLiveIoController({
+    onEvent: (event) => budgetedOutputEvents.push(event),
+  });
+  budgetedOutputController.handleRuntimeEvent({
+    type: 'output',
+    stream: 'stdout',
+    device: '/dev/stdout',
+    data: 'x'.repeat(1024 * 1024 + 10),
+  });
+  budgetedOutputController.handleRuntimeEvent({
+    type: 'output',
+    stream: 'stdout',
+    device: '/dev/stdout',
+    data: 'late\n',
+  });
+  assertCondition(
+    budgetedOutputEvents.length === 1 &&
+      budgetedOutputEvents[0]?.type === 'output' &&
+      budgetedOutputEvents[0].data.includes('stdout output truncated after 1048576 bytes') &&
+      !budgetedOutputEvents[0].data.includes('late'),
+    `runtime live I/O controller should cap streamed stdout: ${stableStringify(budgetedOutputEvents)}`
+  );
+
+  const oversizedFileController = new RuntimeProjectLiveIoController({
+    applyFileChange: async () => undefined,
+  });
+  oversizedFileController.handleRuntimeEvent({
+    type: 'file-change',
+    phase: 'live',
+    change: { path: 'too-large.txt', contents: 'x'.repeat(4 * 1024 * 1024 + 1) },
+  });
+  let oversizedFileError = '';
+  try {
+    await oversizedFileController.flush();
+  } catch (error) {
+    oversizedFileError = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    oversizedFileError.includes('live file-change size limit exceeded'),
+    `runtime live I/O controller should reject oversized live file changes: ${oversizedFileError}`
+  );
+
   const events: RuntimeCommandEvent[] = [];
   const appliedChanges: string[] = [];
   const request: RuntimeProjectCommandRequest<'run'> = {
@@ -699,6 +759,35 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
     events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1 &&
       events.filter((event) => event.type === 'output' && event.stream === 'stderr').length === 1,
     `runtime worker bridge should not duplicate final stdout/stderr after streamed output: ${stableStringify(events)}`
+  );
+
+  const lateEvents: RuntimeCommandEvent[] = [];
+  const lateAppliedChanges: string[] = [];
+  let lateOnEvent: ((event: RuntimeCommandEvent) => void) | undefined;
+  const lateResult = await runRuntimeProjectWorkerBridge({
+    request: { ...request, onEvent: (event) => lateEvents.push(event) },
+    startPhase: 'process-start',
+    startMessage: 'Starting late-event worker',
+    finishPhase: 'process-exit',
+    finishMessage: 'Finished late-event worker',
+    applyFileChange: async (change, phase) => {
+      lateAppliedChanges.push(`${phase}:${change.path}`);
+    },
+    run: async (_workerRequest, onEvent) => {
+      lateOnEvent = onEvent;
+      return { stdout: 'late-result\n', stderr: '', exitCode: 0 };
+    },
+  });
+  lateOnEvent?.({ type: 'file-change', phase: 'live', change: { path: 'late-bridge.txt', contents: 'late\n' } });
+  lateOnEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'late-output\n' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertCondition(
+    lateResult.exitCode === 0 &&
+      lateEvents.some((event) => event.type === 'status' && event.phase === 'process-exit') &&
+      !lateEvents.some((event) => event.type === 'file-change' && event.change.path === 'late-bridge.txt') &&
+      !lateEvents.some((event) => event.type === 'output' && event.data === 'late-output\n') &&
+      lateAppliedChanges.length === 0,
+    `runtime worker bridge should drop late events after worker completion: ${stableStringify({ lateResult, lateEvents, lateAppliedChanges })}`
   );
 
   const partialOutputEvents: RuntimeCommandEvent[] = [];
@@ -1457,14 +1546,14 @@ async function main(): Promise<void> {
     'TypeScript should preserve mapped compile error lines'
   );
   assertCondition(
-    typescriptProfile.capabilities.project.workspace.supported &&
-      typescriptProfile.capabilities.project.filesystem.finalDiff &&
+    !typescriptProfile.capabilities.project.workspace.supported &&
+      !typescriptProfile.capabilities.project.filesystem.finalDiff &&
       !typescriptProfile.capabilities.project.filesystem.liveMutationEvents,
-    'TypeScript should advertise final-diff project I/O through the tsc project command runner'
+    'TypeScript should not advertise browser project I/O without a trusted worker compiler path'
   );
   assertCondition(
-    getRuntimeProjectIoSupport('typescript').tier === 'final-diff',
-    'TypeScript should expose a final-diff project I/O support tier'
+    getRuntimeProjectIoSupport('typescript').tier === 'unsupported',
+    'TypeScript browser project I/O should be unsupported by default'
   );
   assertCondition(
     pythonProfile.capabilities.project.filesystem.providerLiveInterception &&
@@ -1566,9 +1655,9 @@ async function main(): Promise<void> {
     'JavaScript should advertise browser-native live project I/O and node final-diff project I/O'
   );
   assertCondition(
-    getRuntimeProjectIoCapability('typescript').browser.tier === 'final-diff' &&
+    getRuntimeProjectIoCapability('typescript').browser.tier === 'unsupported' &&
       getRuntimeProjectIoCapability('typescript').node.tier === 'final-diff',
-    'TypeScript should advertise final-diff project I/O in both browser and node environments'
+    'TypeScript should advertise unsupported browser project I/O and node final-diff project I/O'
   );
   assertCondition(
     getRuntimeProjectIoCapability('java').browser.tier === 'bridged-live' &&

@@ -162,7 +162,7 @@ async function testBrowserJavaScriptWorkerRejectsUserSpoofedResults(): Promise<v
 
 async function testBrowserJavaScriptReadonlyHardlinksAreRejected(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
     projectSession: {
       id: 'hardening-session',
       projectId: 'hardening',
@@ -211,7 +211,7 @@ async function testBrowserJavaScriptReadonlyHardlinksAreRejected(): Promise<void
 }
 
 async function testBrowserJavaScriptHiddenFilesAreNotMounted(): Promise<void> {
-  const runner = createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 });
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
   const result = await runner({
     code: '',
     source: 'file',
@@ -266,7 +266,7 @@ async function testBrowserJavaScriptHiddenFilesAreNotMounted(): Promise<void> {
 }
 
 async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<void> {
-  const runner = createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 });
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
   const operations = [
     'writeFileSync("readonly.txt","x")',
     'appendFileSync("readonly.txt","x")',
@@ -402,7 +402,11 @@ async function testTraceKernelHttpListenerLimit(): Promise<void> {
 
 async function testTraceKernelHttpRejectsMalformedInputs(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
-  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3652 }, () => ({ status: 200, body: 'ok\n' }));
+  const seenRequests: Array<{ path: string; visibleHeader?: string }> = [];
+  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3652 }, (request) => {
+    seenRequests.push({ path: request.path, visibleHeader: request.headers?.['x-visible'] });
+    return { status: 200, body: 'ok\n' };
+  });
   try {
     const invalidPort = await workspace.http.request({ url: 'http://localhost:0/' });
     assertCondition(invalidPort.status === 400, `invalid connect port should be a clean HTTP rejection: ${JSON.stringify(invalidPort)}`);
@@ -420,8 +424,30 @@ async function testTraceKernelHttpRejectsMalformedInputs(): Promise<void> {
       url: 'http://localhost:3652/path',
     });
     assertCondition(invalidMethod.status === 400, `invalid HTTP method should be rejected: ${JSON.stringify(invalidMethod)}`);
+    const invalidPath = await workspace.http.request({
+      url: 'http://localhost:3652/path',
+      path: '/safe\r\nX-Smuggled: yes',
+    });
+    assertCondition(invalidPath.status === 400, `invalid HTTP path should be rejected: ${JSON.stringify(invalidPath)}`);
+    const invalidRawHeader = await workspace.http.request({
+      url: 'http://localhost:3652/path',
+      rawHeaders: [['x-safe', 'ok'], ['x-bad', 'ok\r\nX-Smuggled: yes']],
+    });
+    assertCondition(invalidRawHeader.status === 400, `invalid raw HTTP header should be rejected: ${JSON.stringify(invalidRawHeader)}`);
+    const canonicalRawHeader = await workspace.http.request({
+      url: 'http://localhost:3652/path',
+      headers: { 'x-visible': 'headers-map' },
+      rawHeaders: [['x-visible', 'raw-pair']],
+    });
+    assertCondition(canonicalRawHeader.status === 200, `canonical raw HTTP header request should succeed: ${JSON.stringify(canonicalRawHeader)}`);
+    assertCondition(
+      seenRequests.some((request) => request.path === '/path' && request.visibleHeader === 'raw-pair'),
+      `raw HTTP headers should be canonical source for handler headers: ${JSON.stringify(seenRequests)}`
+    );
     const requests = await workspace.readFile('/proc/tracekernel/net/requests');
     assertCondition(!requests.includes('GET\tX\nROW'), `request diagnostics should not contain injected control rows: ${requests}`);
+    assertCondition(!requests.includes('X-Smuggled'), `request diagnostics should not contain smuggled header rows: ${requests}`);
+
   } finally {
     listener.close();
     workspace.dispose();
@@ -446,7 +472,7 @@ async function testTraceKernelHttpRejectsInvalidResponseStatus(): Promise<void> 
 
 async function testBrowserJavaScriptHttpAbortPropagatesToKernel(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
     files: [
       {
         path: 'fetch-abort.js',
@@ -492,7 +518,7 @@ async function testBrowserJavaScriptHttpAbortPropagatesToKernel(): Promise<void>
 
 async function testBrowserJavaScriptHttpTimeoutPropagatesToKernel(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
     files: [
       {
         path: 'http-timeout.js',
@@ -533,7 +559,7 @@ async function testBrowserJavaScriptHttpTimeoutPropagatesToKernel(): Promise<voi
 
 async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
     files: [
       {
         path: 'global-fetch.js',

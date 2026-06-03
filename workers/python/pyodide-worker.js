@@ -1138,6 +1138,51 @@ function normalizeProjectKernelDevices(value) {
   return devices;
 }
 
+function fallbackRuntimeKernelVirtualPathTarget(path, devices = {}) {
+  const normalized = normalizePyodideFsProjectPath(path);
+  if (!normalized) return { kind: 'error', reason: 'not-found', path: '' };
+  if (normalized === '/proc' || normalized.startsWith('/proc/')) return { kind: 'proc', path: normalized };
+  if (normalized === '/dev') return { kind: 'device-directory', path: normalized };
+  if (normalized.startsWith('/dev/')) {
+    return devices[normalized] ? { kind: 'device-file', path: normalized } : { kind: 'device-not-found', path: normalized };
+  }
+  return { kind: 'workspace', path: normalized };
+}
+
+function fallbackRuntimeKernelVirtualMutationTarget(path, devices = {}) {
+  const target = fallbackRuntimeKernelVirtualPathTarget(path, devices);
+  if (target.kind === 'workspace') return target;
+  if (target.kind === 'device-not-found') return { kind: 'error', reason: 'device-not-found', path: target.path };
+  if (target.kind === 'proc') return { kind: 'error', reason: 'proc-read-only', path: target.path };
+  return { kind: 'error', reason: 'device-read-only', path: target.path };
+}
+
+function fallbackRuntimeKernelVirtualOpenTarget(path, request = {}, options = {}) {
+  const devices = options.devices || {};
+  const target = fallbackRuntimeKernelVirtualPathTarget(path, devices);
+  if (target.kind === 'workspace') return target;
+  if (target.kind === 'device-directory') return { kind: 'error', reason: 'is-directory', path: target.path };
+  if (target.kind === 'device-not-found') return { kind: 'error', reason: 'not-found', path: target.path };
+  if (target.kind === 'device-file') {
+    const info = devices[target.path];
+    return {
+      kind: 'device',
+      device: target.path,
+      readable: Boolean(info?.readable && request.readable === true),
+      writable: Boolean(info?.writable && request.writable === true),
+    };
+  }
+  if (target.kind === 'proc') {
+    if (options.procEntryKind === 'directory') return { kind: 'error', reason: 'is-directory', path: target.path };
+    if (options.procEntryKind !== 'file') return { kind: 'error', reason: 'not-found', path: target.path };
+    if (request.writable || request.create || request.truncate || request.exclusive) {
+      return { kind: 'error', reason: 'read-only', path: target.path };
+    }
+    return { kind: 'proc-file', path: target.path, readable: true, writable: false };
+  }
+  return { kind: 'error', reason: 'read-only', path: target.path };
+}
+
 const STDIN_PIPE_HEADER_INTS = 3;
 const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
 const STDIN_PIPE_READ_INDEX = 0;
@@ -1290,6 +1335,8 @@ class TraceKernelHttpBridge {
     this.nextRequestId = 1;
     this.listeners = new Map();
     this.listenerInfo = new Map();
+    this.listenerReady = new Set();
+    this.listenerFailures = new Map();
     this.dispatchRequests = new Map();
   }
 
@@ -1315,11 +1362,23 @@ class TraceKernelHttpBridge {
         options,
       },
     });
+    const bridge = this;
     return {
       id: listenerId,
+      get info() {
+        return bridge.listenerInfo.get(listenerId) || null;
+      },
+      get ready() {
+        return bridge.listenerReady.has(listenerId);
+      },
+      get error() {
+        return bridge.listenerFailures.get(listenerId) || null;
+      },
       close: () => {
         this.listeners.delete(listenerId);
         this.listenerInfo.delete(listenerId);
+        this.listenerReady.delete(listenerId);
+        this.listenerFailures.delete(listenerId);
         self.postMessage({
           id: this.messageId,
           type: 'kernel-http-close',
@@ -1366,11 +1425,15 @@ class TraceKernelHttpBridge {
 
   updateListenerInfo(listenerId, info) {
     this.listenerInfo.set(listenerId, info);
+    this.listenerReady.add(listenerId);
+    this.listenerFailures.delete(listenerId);
   }
 
-  failListener(listenerId) {
+  failListener(listenerId, error) {
     this.listeners.delete(listenerId);
     this.listenerInfo.delete(listenerId);
+    this.listenerReady.delete(listenerId);
+    this.listenerFailures.set(listenerId, error || 'TraceKernel HTTP listener registration failed');
   }
 
   abortRequest(_requestId) {
@@ -1451,7 +1514,14 @@ async function executeProjectPython(request, messageId, protocolToken) {
             procEntryKind: parsed?.procEntryKind,
           }
         )
-      : { kind: 'workspace', path: parsed?.path };
+      : fallbackRuntimeKernelVirtualOpenTarget(
+          parsed?.path,
+          parsed?.request ?? {},
+          {
+            devices: normalizeProjectKernelDevices(request?.project?.kernelDevices),
+            procEntryKind: parsed?.procEntryKind,
+          }
+        );
     return JSON.stringify(openTarget);
   };
   self.__tracecodeRuntimeKernelMutationTarget = (payload) => {
@@ -1461,7 +1531,10 @@ async function executeProjectPython(request, messageId, protocolToken) {
       ? policy.runtimeKernelVirtualMutationTarget(parsed?.path, {
           devices: normalizeProjectKernelDevices(request?.project?.kernelDevices),
         })
-      : { kind: 'workspace', path: parsed?.path };
+      : fallbackRuntimeKernelVirtualMutationTarget(
+          parsed?.path,
+          normalizeProjectKernelDevices(request?.project?.kernelDevices)
+        );
     return JSON.stringify(mutationTarget);
   };
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
@@ -1585,6 +1658,30 @@ class _TraceKernelHttpHandle:
     def __init__(self, _js_handle):
         self._js_handle = _js_handle
         self.closed = False
+
+    @property
+    def ready(self):
+        return bool(getattr(self._js_handle, "ready", False))
+
+    @property
+    def error(self):
+        return getattr(self._js_handle, "error", None)
+
+    def raise_if_failed(self):
+        _error = self.error
+        if _error:
+            raise OSError(str(_error))
+
+    async def wait_ready(self, _timeout=0.25):
+        import asyncio
+        _loop = asyncio.get_event_loop()
+        _deadline = _loop.time() + float(_timeout or 0)
+        while not self.ready and not self.error and _loop.time() < _deadline:
+            await asyncio.sleep(0.001)
+        self.raise_if_failed()
+        if not self.ready:
+            raise OSError("TraceKernel HTTP listener registration did not complete")
+        return None
 
     def close(self):
         if self.closed:
@@ -1898,15 +1995,40 @@ def _install_tracekernel_asgi_modules():
         def response_bytes(self):
             return self._response.getvalue()
 
+    def _tracekernel_http_header_pairs(_request):
+        _source = []
+        if isinstance((_request or {}).get("rawHeaders"), list):
+            _source = [
+                (_entry[0], _entry[1])
+                for _entry in (_request or {}).get("rawHeaders")
+                if isinstance(_entry, list) and len(_entry) >= 2
+            ]
+        else:
+            _source = list(((_request or {}).get("headers") or {}).items())
+        _headers = []
+        for _name, _value in _source:
+            _header_name = str(_name).lower()
+            _header_value = str(_value)
+            if (
+                not _header_name
+                or any(_char in _header_name for _char in "\\r\\n\\x00")
+                or any(_char in _header_value for _char in "\\r\\n\\x00")
+            ):
+                raise ValueError("Invalid TraceKernel HTTP header")
+            _headers.append((_header_name, _header_value))
+        return _headers
+
     def _tracekernel_http_server_request_bytes(_request):
         _method = str((_request or {}).get("method") or "GET").upper()
         _parsed = urllib.parse.urlsplit(str((_request or {}).get("url") or "http://localhost/"))
         _path = str((_request or {}).get("path") or ((_parsed.path or "/") + (("?" + _parsed.query) if _parsed.query else "")))
-        _headers = {str(_name).lower(): str(_value) for _name, _value in ((_request or {}).get("headers") or {}).items()}
+        if any(_char in _method for _char in "\\r\\n\\x00") or any(_char in _path for _char in "\\r\\n\\x00"):
+            raise ValueError("Invalid TraceKernel HTTP request line")
+        _headers = _tracekernel_http_header_pairs(_request)
         _body = _http_bytes_from_message(_request)
         _host = _parsed.netloc or "localhost"
         _lines = [f"{_method} {_path or '/'} HTTP/1.1", f"Host: {_host}"]
-        for _name, _value in _headers.items():
+        for _name, _value in _headers:
             if _name.lower() in ("host", "content-length"):
                 continue
             _lines.append(f"{_name}: {_value}")
@@ -1987,6 +2109,9 @@ def _install_tracekernel_asgi_modules():
                 "port": self.server_port,
                 "protocol": "http",
             }), self._tracekernel_handler_proxy))
+            _loop = asyncio.get_event_loop()
+            if not _loop.is_running():
+                _loop.run_until_complete(self._tracekernel_handle.wait_ready())
 
         def _tracekernel_dispatch(self, _request_json):
             _request = json.loads(str(_request_json))
@@ -2002,6 +2127,8 @@ def _install_tracekernel_asgi_modules():
                 _loop = asyncio.get_event_loop()
                 async def _wait_until_closed():
                     while not self.__shutdown_request:
+                        if self._tracekernel_handle is not None:
+                            self._tracekernel_handle.raise_if_failed()
                         await asyncio.sleep(float(poll_interval or 0.05))
                 return _loop.run_until_complete(_wait_until_closed())
             finally:
@@ -2209,17 +2336,16 @@ def _install_tracekernel_asgi_modules():
             _path, _query = _path.split("?", 1)
         elif _parsed.query:
             _query = _parsed.query
-        if isinstance(_request.get("rawHeaders"), list):
-            _headers = [
-                (str(_entry[0]).lower().encode("latin1"), str(_entry[1]).encode("latin1"))
-                for _entry in _request.get("rawHeaders")
-                if isinstance(_entry, list) and len(_entry) >= 2
-            ]
-        else:
-            _headers = [
-                (str(_name).lower().encode("latin1"), str(_value).encode("latin1"))
-                for _name, _value in (_request.get("headers") or {}).items()
-            ]
+        if (
+            any(_char in _path for _char in "\\r\\n\\x00")
+            or any(_char in _query for _char in "\\r\\n\\x00")
+            or any(_char in str(_request.get("method") or "GET") for _char in "\\r\\n\\x00")
+        ):
+            raise ValueError("Invalid TraceKernel ASGI request")
+        _headers = [
+            (_name.encode("latin1"), _value.encode("latin1"))
+            for _name, _value in _tracekernel_http_header_pairs(_request)
+        ]
         _body = _http_bytes_from_message(_request)
         _sent = []
         _received = False
@@ -2277,6 +2403,7 @@ def _install_tracekernel_asgi_modules():
             "protocol": "http",
         }), _handler_proxy)
         _handle = _TraceKernelHttpHandle(_js_handle)
+        await _handle.wait_ready()
         try:
             while not _handle.closed:
                 await asyncio.sleep(0.05)
@@ -4069,7 +4196,7 @@ self.onmessage = function(event) {
     if (payload?.type === 'kernel-http-error' && payload.requestId) {
       bridge.rejectDispatch(payload.requestId, payload.error);
     } else if (payload?.type === 'kernel-http-error' && payload.listenerId) {
-      bridge.failListener(payload.listenerId);
+      bridge.failListener(payload.listenerId, payload.error);
     }
     return;
   }

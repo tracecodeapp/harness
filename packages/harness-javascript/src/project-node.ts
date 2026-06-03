@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, lstat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import {
@@ -133,7 +133,8 @@ async function collectChangedFiles(
   originalDirectories: Set<string>,
   files: RuntimeFileChange[]
 ): Promise<void> {
-  const info = await stat(absolutePath);
+  const info = await lstat(absolutePath);
+  if (info.isSymbolicLink()) return;
   const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
   if (info.isDirectory()) {
     if (relativePath && !relativePath.startsWith('..')) {
@@ -193,10 +194,12 @@ function projectVirtualAliases(project: JavaScriptProjectSnapshot): string[] {
 }
 
 function stripProjectVirtualPrefix(value: string, project: JavaScriptProjectSnapshot): string | null {
+  const stripSafe = (relativePath: string): string => relativePath ? assertSafeProjectPath(relativePath) : '';
+  const normalized = value.replace(/\\/g, '/');
   const roots = [projectVirtualRoot(project), ...projectVirtualAliases(project)];
   for (const root of roots) {
-    if (value === root) return '';
-    if (value.startsWith(`${root}/`)) return value.slice(root.length + 1);
+    if (normalized === root) return '';
+    if (normalized.startsWith(`${root}/`)) return stripSafe(normalized.slice(root.length + 1));
   }
   return null;
 }

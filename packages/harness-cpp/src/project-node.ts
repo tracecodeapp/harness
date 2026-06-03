@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, lstat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import {
@@ -119,7 +119,8 @@ async function collectChangedFiles(
   originalDirectories: Set<string>,
   files: RuntimeFileChange[]
 ): Promise<void> {
-  const info = await stat(absolutePath);
+  const info = await lstat(absolutePath);
+  if (info.isSymbolicLink()) return;
   const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
   if (info.isDirectory()) {
     if (relativePath && !relativePath.startsWith('..')) {
@@ -176,13 +177,14 @@ function projectVirtualAliases(project: CppProjectSnapshot): string[] {
 }
 
 function stripProjectVirtualPrefix(value: string, project: CppProjectSnapshot): string | null {
+  const stripSafe = (relativePath: string): string => relativePath ? assertSafeProjectPath(relativePath) : '';
   const normalized = value.replace(/\\/g, '/');
   if (normalized === VIRTUAL_WORKSPACE_ROOT) return '';
-  if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) return normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1);
+  if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) return stripSafe(normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1));
   const roots = [projectVirtualRoot(project), ...projectVirtualAliases(project)];
   for (const root of roots) {
     if (normalized === root) return '';
-    if (normalized.startsWith(`${root}/`)) return normalized.slice(root.length + 1);
+    if (normalized.startsWith(`${root}/`)) return stripSafe(normalized.slice(root.length + 1));
   }
   return null;
 }

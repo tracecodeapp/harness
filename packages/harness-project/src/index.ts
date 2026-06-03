@@ -116,6 +116,7 @@ import type {
   RuntimeTraceKernelConfig,
   RuntimeTraceKernelSchedulerConfig,
   RuntimeProjectCommandRequest,
+  RuntimeProjectCommandOptions,
   RuntimeProjectCommandRunner,
   RuntimeProjectTerminalPrompt,
   RuntimeProjectTerminalEvent,
@@ -778,6 +779,7 @@ interface RuntimeKernelEventRecord {
 interface RuntimeKernelHttpListenerRecord {
   info: RuntimeKernelHttpListenerInfo;
   handler: RuntimeKernelHttpHandler;
+  actor: RuntimeWorkspaceActor;
 }
 
 interface RuntimeKernelHttpListenerOwner {
@@ -5110,6 +5112,7 @@ function parsePackageManagerInvocation(
   let workspace: string | undefined;
   let ifPresent = false;
   let silent = false;
+  const installFlags: string[] = [];
   const positional: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -5156,7 +5159,8 @@ function parsePackageManagerInvocation(
       workspace = arg.slice('--workspace='.length);
       continue;
     }
-    if (arg === '--ignore-scripts') {
+    if (arg === '--ignore-scripts' || arg.startsWith('--ignore-scripts=')) {
+      installFlags.push(arg);
       continue;
     }
     positional.push(arg);
@@ -5207,7 +5211,7 @@ function parsePackageManagerInvocation(
       ...common,
       kind: 'install',
       installCommand: command === 'i' ? 'install' : command,
-      installArgs: rest,
+      installArgs: [...installFlags, ...rest],
       scriptArgs: [],
       execArgs: [],
     };
@@ -6355,17 +6359,34 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           : undefined;
         const stdinPipe = request.stdinPipe ?? activeStdinPipe;
         const signal = commandContext?.process.abortController?.signal ?? request.signal;
-        const result = await runner({
-          ...request,
-          ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
-          ...(signal ? { signal } : {}),
-          kernelHttp: this.createKernelHttpBridge(),
-          onEvent: (event) => {
-            this.handleRuntimeCommandEvent(event);
-          },
-        } as Request);
+        const runtimeIo = commandContext?.runtimeIo;
+        let acceptingRunnerEvents = true;
+        let result: RuntimeCommandResult;
+        try {
+          result = await runner({
+            ...request,
+            ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
+            ...(signal ? { signal } : {}),
+            kernelHttp: this.createKernelHttpBridge(),
+            onEvent: (event) => {
+              if (!acceptingRunnerEvents || signal?.aborted) return;
+              if (runtimeIo) {
+                runtimeIo.handleRuntimeEvent(event);
+              } else {
+                this.handleRuntimeCommandEvent(event);
+              }
+            },
+          } as Request);
+        } finally {
+          acceptingRunnerEvents = false;
+          runtimeIo?.close();
+        }
+        if (runtimeIo) {
+          await runtimeIo.flush();
+          return runtimeIo.filterAppliedResultFiles(result) as RuntimeCommandResult;
+        }
         await this.flushRuntimeEventQueue();
-        return this.currentRuntimeIo()?.filterAppliedResultFiles(result) ?? result;
+        return result;
       }
     );
     const observeFileChange: RuntimeFileChangeObserver = (change, phase) => {
@@ -6631,6 +6652,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return normalized;
   }
 
+  private httpHeadersFromRawHeaders(rawHeaders: readonly [string, string][]): Record<string, string> {
+    const headers: Record<string, string> = {};
+    for (const [name, value] of rawHeaders) {
+      headers[String(name).toLowerCase()] = String(value);
+    }
+    return headers;
+  }
+
   private normalizeHttpRawHeaders(
     rawHeaders: readonly [string, string][] | undefined
   ): readonly [string, string][] | undefined {
@@ -6640,7 +6669,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     let headerBytes = 0;
     const normalized: [string, string][] = [];
-    for (const [name, value] of rawHeaders) {
+    for (const entry of rawHeaders) {
+      if (!Array.isArray(entry) || entry.length < 2) {
+        throw Object.assign(new Error('EINVAL: invalid HTTP raw header entry'), { code: 'EINVAL' });
+      }
+      const [name, value] = entry;
       const key = String(name);
       const text = String(value);
       if (!/^[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,128}$/.test(key) || /[\r\n\u0000]/.test(text)) {
@@ -6653,6 +6686,17 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP raw header byte limit exceeded'), { code: 'EMSGSIZE' });
       }
       normalized.push([key, text]);
+    }
+    return normalized;
+  }
+
+  private normalizeHttpRequestPath(path: unknown, url: URL): string {
+    const fallback = `${url.pathname || '/'}${url.search}`;
+    const normalized = String(path ?? fallback) || fallback;
+    if (!normalized.startsWith('/') || normalized.length > 8192 || /[\r\n\u0000]/.test(normalized)) {
+      throw Object.assign(new Error(`EINVAL: invalid HTTP request path '${this.sanitizeHttpDiagnosticField(normalized)}'`), {
+        code: 'EINVAL',
+      });
     }
     return normalized;
   }
@@ -6670,15 +6714,27 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private normalizeHttpRequest(request: RuntimeKernelHttpRequest): RuntimeKernelHttpRequest {
+    let url: URL;
+    try {
+      url = new URL(String(request.url));
+    } catch {
+      throw Object.assign(new Error('EINVAL: invalid TraceKernel HTTP request URL'), { code: 'EINVAL' });
+    }
+    const rawHeaders = this.normalizeHttpRawHeaders(request.rawHeaders);
+    const headers = rawHeaders
+      ? this.httpHeadersFromRawHeaders(rawHeaders)
+      : this.normalizeHttpHeaders(request.headers);
     const normalized: RuntimeKernelHttpRequest = {
       method: this.normalizeHttpMethod(request.method),
-      url: request.url,
-      path: request.path,
+      url: url.toString(),
+      path: this.normalizeHttpRequestPath(request.path, url),
     };
-    const headers = this.normalizeHttpHeaders(request.headers);
-    const rawHeaders = this.normalizeHttpRawHeaders(request.rawHeaders);
     if (headers) normalized.headers = headers;
-    if (rawHeaders) normalized.rawHeaders = rawHeaders;
+    if (rawHeaders) {
+      normalized.rawHeaders = rawHeaders;
+    } else if (headers) {
+      normalized.rawHeaders = Object.entries(headers);
+    }
     if (request.body !== undefined) normalized.body = String(request.body);
     if (request.bodyEncoding) normalized.bodyEncoding = request.bodyEncoding;
     if (request.signal) normalized.signal = request.signal;
@@ -6694,10 +6750,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       });
     }
     const normalized: RuntimeKernelHttpResponse = { status };
-    const headers = this.normalizeHttpHeaders(response.headers);
     const rawHeaders = this.normalizeHttpRawHeaders(response.rawHeaders);
+    const headers = rawHeaders
+      ? this.httpHeadersFromRawHeaders(rawHeaders)
+      : this.normalizeHttpHeaders(response.headers);
     if (headers) normalized.headers = headers;
-    if (rawHeaders) normalized.rawHeaders = rawHeaders;
+    if (rawHeaders) {
+      normalized.rawHeaders = rawHeaders;
+    } else if (headers) {
+      normalized.rawHeaders = Object.entries(headers);
+    }
     if (response.body !== undefined) normalized.body = String(response.body);
     if (response.bodyEncoding) normalized.bodyEncoding = response.bodyEncoding;
     this.assertHttpBodyLimit(normalized, 'response');
@@ -6711,10 +6773,24 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return this.normalizeHttpHost(normalized, 'connect');
   }
 
-  private normalizeHttpListenHost(host: string | undefined): string {
-    const normalized = (host ?? '0.0.0.0').trim().toLowerCase();
-    if (!normalized || normalized === '::' || normalized === '*') return '0.0.0.0';
+  private normalizeHttpListenHost(host: string | undefined, actor: RuntimeWorkspaceActor): string {
+    const defaultHost = actor.kind === 'runtime' ? '127.0.0.1' : '0.0.0.0';
+    const normalized = (host ?? defaultHost).trim().toLowerCase();
+    if (!normalized) return defaultHost;
+    if (normalized === '::' || normalized === '*') {
+      if (actor.kind === 'runtime') {
+        throw Object.assign(new Error('EACCES: TraceKernel HTTP wildcard listen is not allowed for runtime actors'), {
+          code: 'EACCES',
+        });
+      }
+      return '0.0.0.0';
+    }
     if (normalized === 'localhost') return '127.0.0.1';
+    if (this.isHttpWildcardHost(normalized) && actor.kind === 'runtime') {
+      throw Object.assign(new Error('EACCES: TraceKernel HTTP wildcard listen is not allowed for runtime actors'), {
+        code: 'EACCES',
+      });
+    }
     return this.normalizeHttpHost(normalized, 'listen');
   }
 
@@ -6790,7 +6866,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         code: 'EPROTONOSUPPORT',
       });
     }
-    const host = this.normalizeHttpListenHost(options.host);
+    const host = this.normalizeHttpListenHost(options.host, actor);
     const port = this.normalizeHttpListenPort(options.port);
     const key = this.httpListenerKey(host, port, protocol);
     if (!this.httpListeners.has(key) && this.httpListeners.size >= TRACEKERNEL_HTTP_LISTENER_LIMIT) {
@@ -6807,7 +6883,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       protocol,
       startedAt: new Date().toISOString(),
     };
-    this.httpListeners.set(key, { info, handler });
+    this.httpListeners.set(key, { info, handler, actor });
     this.recordKernelEvent('net-listen', listenerOwner.pid, { id: info.id, protocol, host, port });
     let closed = false;
     return {
@@ -6856,6 +6932,17 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (this.httpRequestLog.length > TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT) {
       this.httpRequestLog.splice(0, this.httpRequestLog.length - TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT);
     }
+  }
+
+  private httpListenerErrorBody(
+    listener: RuntimeKernelHttpListenerRecord,
+    requester: RuntimeWorkspaceActor,
+    message: string
+  ): string {
+    if (requester.kind === 'runtime' && listener.actor.kind !== 'runtime') {
+      return 'TraceKernel HTTP listener failed\n';
+    }
+    return `${message}\n`;
   }
 
   private async dispatchHttpRequest(
@@ -6989,7 +7076,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
             error: message,
           });
         }
-        return { status: 500, body: `${message}\n` };
+        return { status: 500, body: this.httpListenerErrorBody(listener, actor, message) };
       } finally {
         this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
       }
@@ -8349,6 +8436,19 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     );
   }
 
+  private isWorkspacePathHidden(absolutePath: string): boolean {
+    if (!isWithinWorkspace(this.cwd, absolutePath) || absolutePath === this.cwd) return false;
+    return this.isProjectPathHidden(toProjectPath(this.cwd, absolutePath));
+  }
+
+  private assertWorkspacePathVisible(absolutePath: string, operation: string): void {
+    if (!this.isWorkspacePathHidden(absolutePath)) return;
+    throw Object.assign(
+      new Error(`ENOENT: no such file or directory, ${operation} '${toProjectPath(this.cwd, absolutePath)}'`),
+      { code: 'ENOENT' }
+    );
+  }
+
   private isWorkspaceSubtreeReadOnly(absolutePath: string): boolean {
     if (!isWithinWorkspace(this.cwd, absolutePath)) return false;
     if (this.isWorkspacePathReadOnly(absolutePath)) return true;
@@ -8766,6 +8866,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (readTarget.kind === 'error') throwKernelReadTargetError(path, readTarget);
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = this.toWorkspacePath(path);
+    this.assertWorkspacePathVisible(absolutePath, 'open');
     if (normalizedEncoding === 'base64') {
       const bytes = await this.bash.fs.readFileBuffer(absolutePath);
       return base64FromBytes(bytes);
@@ -8779,7 +8880,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const accessTarget = kernelAccessTarget(path);
     if (accessTarget.kind === 'allowed') return true;
     if (accessTarget.kind === 'denied') return false;
-    return this.bash.fs.exists(this.toWorkspaceEntryPath(path));
+    const absolutePath = this.toWorkspaceEntryPath(path);
+    if (this.isWorkspacePathHidden(absolutePath)) return false;
+    return this.bash.fs.exists(absolutePath);
   }
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
@@ -8814,6 +8917,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     if (statTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
     const absolutePath = this.toWorkspaceEntryPath(path);
+    this.assertWorkspacePathVisible(absolutePath, 'stat');
     const stat = await this.bash.fs.stat(absolutePath);
     return {
       isFile: stat.isFile,
@@ -8840,6 +8944,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       );
     }
     const absoluteDirectoryPath = this.toWorkspaceEntryPath(path);
+    this.assertWorkspacePathVisible(absoluteDirectoryPath, 'scandir');
     const entries = await this.bash.fs.readdir(absoluteDirectoryPath);
     const directoryPath = absoluteDirectoryPath === this.cwd ? '' : toProjectPath(this.cwd, absoluteDirectoryPath);
     return [...entries]
@@ -8895,6 +9000,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
     const absoluteSourcePath = this.toWorkspacePath(sourcePath);
+    this.assertWorkspacePathVisible(absoluteSourcePath, 'open');
     const sourceBytes = await this.fs.withBaseMutation(
       [absoluteSourcePath, absoluteDestinationPath],
       async (fs) => {
@@ -8942,7 +9048,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           : `Kernel virtual path not found: ${sourcePath}`
       );
     }
-    return this.bash.fs.readFileBuffer(this.toWorkspacePath(sourcePath));
+    const absolutePath = this.toWorkspacePath(sourcePath);
+    this.assertWorkspacePathVisible(absolutePath, 'open');
+    return this.bash.fs.readFileBuffer(absolutePath);
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
@@ -9052,7 +9160,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       actor,
       process,
       stdinPipe,
-      runtimeIo: this.createRuntimeLiveIoController(actor),
+      runtimeIo: this.createRuntimeLiveIoController(actor, abortController.signal),
       generationBaseline: this.fs.snapshotGenerations(),
       mutatedGenerationPaths: new Set(),
       executableTransformCwd: commandCwd,
@@ -9185,7 +9293,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     });
   }
 
-  async runProjectCommand(name: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
+  async runProjectCommand(name: string, options: RuntimeProjectCommandOptions = {}): Promise<RuntimeCommandResult> {
     const unusable = this.assertWorkspaceUsableForRun(name);
     if (unusable) return unusable;
     const command = this.projectSession?.commands[name];
@@ -9194,6 +9302,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         stdout: '',
         stderr: `Project command not found: ${name}\n`,
         exitCode: 127,
+      };
+    }
+    if (command.hidden === true && options.allowHidden !== true) {
+      return {
+        stdout: '',
+        stderr: `Project command is hidden: ${name}\n`,
+        exitCode: 403,
       };
     }
     const runStep = (step: RuntimeProjectSessionCommandStep): Promise<RuntimeCommandResult> => {
@@ -9557,11 +9672,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private createRuntimeLiveIoController(actor?: RuntimeWorkspaceActor): RuntimeProjectLiveIoController {
+  private createRuntimeLiveIoController(actor?: RuntimeWorkspaceActor, signal?: AbortSignal): RuntimeProjectLiveIoController {
     return new RuntimeProjectLiveIoController({
       actor: actor ?? SYSTEM_ACTOR,
       applyFileChange: (change, phase) => this.applyRuntimeFileChangeSilently(change, phase),
       onEvent: (event) => this.emitRuntimeEvent(event),
+      signal,
     });
   }
 
