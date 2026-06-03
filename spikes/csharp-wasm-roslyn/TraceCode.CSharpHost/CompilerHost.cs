@@ -24,6 +24,10 @@ public static partial class CompilerHost
     private const string UserCodePath = "solution.cs";
     private const string ProjectWorkspaceRoot = "/tmp/tracecode-csharp-project";
     private const string ScriptRunnerClassName = "__TraceCodeScriptRunner";
+    private const int MaxInputDepth = 128;
+    private const int MaxInputCollectionItems = 200_000;
+    private const int MaxInputObjectProperties = 50_000;
+    private const int MaxInputTraversalNodes = 750_000;
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp14);
     private static readonly Lazy<MetadataReference[]> CachedReferences = new(() => ResolveReferences().ToArray());
     private static readonly Dictionary<string, byte[]> CompilationCache = new(StringComparer.Ordinal);
@@ -61,6 +65,9 @@ public static partial class CompilerHost
             {
                 return SerializeError("Invalid C# execution request.", stopwatch, capturedOut);
             }
+
+            request.Inputs ??= new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            ValidateExecutionInputs(request.Inputs);
 
             string compileCacheKey = BuildCompilationCacheKey(request);
             if (!CompilationCache.TryGetValue(compileCacheKey, out byte[]? peBytes))
@@ -2693,6 +2700,80 @@ public sealed class ProjectFileStream : System.IO.FileStream
             .ToDictionary(entry => entry.Key, entry => BuildInputShape(entry.Value), StringComparer.Ordinal);
     }
 
+    private static void ValidateExecutionInputs(IReadOnlyDictionary<string, JsonElement> inputs)
+    {
+        InputTraversalBudget budget = new();
+        int inputIndex = 0;
+        foreach (KeyValuePair<string, JsonElement> input in inputs)
+        {
+            budget.RecordObjectProperty(inputIndex++, "C# inputs");
+            ValidateInputElement(input.Value, budget, 0);
+        }
+    }
+
+    private static void ValidateInputElement(JsonElement value, InputTraversalBudget budget, int depth)
+    {
+        budget.EnterNode(depth);
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Array:
+            {
+                int itemIndex = 0;
+                foreach (JsonElement item in value.EnumerateArray())
+                {
+                    budget.RecordCollectionItem(itemIndex++, "C# input array");
+                    ValidateInputElement(item, budget, depth + 1);
+                }
+                break;
+            }
+            case JsonValueKind.Object:
+            {
+                int propertyIndex = 0;
+                foreach (JsonProperty property in value.EnumerateObject())
+                {
+                    budget.RecordObjectProperty(propertyIndex++, "C# input object");
+                    ValidateInputElement(property.Value, budget, depth + 1);
+                }
+                break;
+            }
+        }
+    }
+
+    private sealed class InputTraversalBudget
+    {
+        private int nodes;
+
+        public void EnterNode(int depth)
+        {
+            if (depth > MaxInputDepth)
+            {
+                throw new InvalidOperationException($"C# input exceeds maximum depth of {MaxInputDepth}.");
+            }
+
+            nodes++;
+            if (nodes > MaxInputTraversalNodes)
+            {
+                throw new InvalidOperationException($"C# input exceeds maximum JSON value count of {MaxInputTraversalNodes}.");
+            }
+        }
+
+        public void RecordCollectionItem(int index, string label)
+        {
+            if (index >= MaxInputCollectionItems)
+            {
+                throw new InvalidOperationException($"{label} exceeds maximum item count of {MaxInputCollectionItems}.");
+            }
+        }
+
+        public void RecordObjectProperty(int index, string label)
+        {
+            if (index >= MaxInputObjectProperties)
+            {
+                throw new InvalidOperationException($"{label} exceeds maximum property count of {MaxInputObjectProperties}.");
+            }
+        }
+    }
+
     private static void StoreCompilationCacheEntry(string cacheKey, byte[] peBytes)
     {
         if (CompilationCache.ContainsKey(cacheKey))
@@ -3238,7 +3319,13 @@ namespace TraceCode.Internal
             PropertyNameCaseInsensitive = true,
             IncludeFields = true,
             NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+            MaxDepth = 256,
         };
+
+        private const int MaxInputDepth = 128;
+        private const int MaxInputCollectionItems = 200_000;
+        private const int MaxInputObjectProperties = 50_000;
+        private const int MaxInputHydrationNodes = 750_000;
 """ + GenerateRuntimeSourceTail();
     }
 
@@ -3342,39 +3429,40 @@ public class TreeNode
 
         public static object? Convert(JsonElement value, Type targetType)
         {
+            InputHydrationBudget budget = new();
             if (targetType == typeof(ListNode))
             {
-                return ReadListNode(value, new Dictionary<string, ListNode>(StringComparer.Ordinal));
+                return ReadListNode(value, new Dictionary<string, ListNode>(StringComparer.Ordinal), budget, 0);
             }
 
             if (targetType == typeof(TreeNode))
             {
-                return ReadTreeNode(value, new Dictionary<string, TreeNode>(StringComparer.Ordinal));
+                return ReadTreeNode(value, new Dictionary<string, TreeNode>(StringComparer.Ordinal), budget, 0);
             }
 
             if (targetType == typeof(object[]))
             {
-                return ReadObjectArray(value);
+                return ReadObjectArray(value, budget, 0);
             }
 
             if (targetType == typeof(object[][]))
             {
-                return value.EnumerateArray().Select(item => ReadObjectArray(item)).ToArray();
+                return ReadObjectMatrix(value, budget, 0);
             }
 
             if (targetType == typeof(object))
             {
-                return ReadObjectValue(value);
+                return ReadObjectValue(value, budget, 0);
             }
 
-            if (TryReadObjectValueDictionary(value, targetType, out object? objectValueDictionary))
+            if (TryReadObjectValueDictionary(value, targetType, budget, 0, out object? objectValueDictionary))
             {
                 return objectValueDictionary;
             }
 
             if (ShouldUseStructuredObjectReader(value, targetType))
             {
-                return ReadStructuredValue(value, targetType, new Dictionary<string, object>(StringComparer.Ordinal));
+                return ReadStructuredValue(value, targetType, new Dictionary<string, object>(StringComparer.Ordinal), budget, 0);
             }
 
             return JsonSerializer.Deserialize(value.GetRawText(), targetType, JsonOptions);
@@ -3382,39 +3470,40 @@ public class TreeNode
 
         private static T? ReadValue<T>(JsonElement value)
         {
+            InputHydrationBudget budget = new();
             if (typeof(T) == typeof(ListNode))
             {
-                return (T?)(object?)ReadListNode(value, new Dictionary<string, ListNode>(StringComparer.Ordinal));
+                return (T?)(object?)ReadListNode(value, new Dictionary<string, ListNode>(StringComparer.Ordinal), budget, 0);
             }
 
             if (typeof(T) == typeof(TreeNode))
             {
-                return (T?)(object?)ReadTreeNode(value, new Dictionary<string, TreeNode>(StringComparer.Ordinal));
+                return (T?)(object?)ReadTreeNode(value, new Dictionary<string, TreeNode>(StringComparer.Ordinal), budget, 0);
             }
 
             if (typeof(T) == typeof(object[]))
             {
-                return (T?)(object?)ReadObjectArray(value);
+                return (T?)(object?)ReadObjectArray(value, budget, 0);
             }
 
             if (typeof(T) == typeof(object[][]))
             {
-                return (T?)(object?)value.EnumerateArray().Select(item => ReadObjectArray(item)).ToArray();
+                return (T?)(object?)ReadObjectMatrix(value, budget, 0);
             }
 
             if (typeof(T) == typeof(object))
             {
-                return (T?)ReadObjectValue(value);
+                return (T?)ReadObjectValue(value, budget, 0);
             }
 
-            if (TryReadObjectValueDictionary(value, typeof(T), out object? objectValueDictionary))
+            if (TryReadObjectValueDictionary(value, typeof(T), budget, 0, out object? objectValueDictionary))
             {
                 return (T?)objectValueDictionary;
             }
 
             if (ShouldUseStructuredObjectReader(value, typeof(T)))
             {
-                return (T?)ReadStructuredValue(value, typeof(T), new Dictionary<string, object>(StringComparer.Ordinal));
+                return (T?)ReadStructuredValue(value, typeof(T), new Dictionary<string, object>(StringComparer.Ordinal), budget, 0);
             }
 
             return JsonSerializer.Deserialize<T>(value.GetRawText(), JsonOptions);
@@ -3454,8 +3543,9 @@ public class TreeNode
                 && targetType.GetGenericTypeDefinition() == typeof(List<>);
         }
 
-        private static object? ReadStructuredValue(JsonElement value, Type targetType, IDictionary<string, object> refs)
+        private static object? ReadStructuredValue(JsonElement value, Type targetType, IDictionary<string, object> refs, InputHydrationBudget budget, int depth)
         {
+            budget.EnterNode(depth);
             Type effectiveType = Nullable.GetUnderlyingType(targetType) ?? targetType;
             if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
             {
@@ -3474,7 +3564,7 @@ public class TreeNode
 
             if (effectiveType == typeof(object))
             {
-                return ReadObjectValue(value);
+                return ReadObjectValue(value, budget, depth);
             }
 
             if (effectiveType.IsPrimitive || effectiveType.IsEnum || effectiveType == typeof(decimal))
@@ -3484,7 +3574,7 @@ public class TreeNode
 
             if (IsSupportedDictionaryType(effectiveType))
             {
-                if (TryReadObjectValueDictionary(value, effectiveType, out object? objectValueDictionary))
+                if (TryReadObjectValueDictionary(value, effectiveType, budget, depth, out object? objectValueDictionary))
                 {
                     return objectValueDictionary;
                 }
@@ -3495,11 +3585,11 @@ public class TreeNode
             if (effectiveType.IsArray)
             {
                 Type elementType = effectiveType.GetElementType() ?? typeof(object);
-                JsonElement[] values = value.EnumerateArray().ToArray();
+                JsonElement[] values = ReadInputArrayItems(value, budget, "C# input array");
                 Array array = Array.CreateInstance(elementType, values.Length);
                 for (int i = 0; i < values.Length; i++)
                 {
-                    array.SetValue(ReadStructuredValue(values[i], elementType, refs), i);
+                    array.SetValue(ReadStructuredValue(values[i], elementType, refs, budget, depth + 1), i);
                 }
                 return array;
             }
@@ -3508,9 +3598,9 @@ public class TreeNode
             {
                 Type elementType = effectiveType.GetGenericArguments()[0];
                 System.Collections.IList list = (System.Collections.IList)Activator.CreateInstance(effectiveType)!;
-                foreach (JsonElement item in value.EnumerateArray())
+                foreach (JsonElement item in ReadInputArrayItems(value, budget, "C# input list"))
                 {
-                    list.Add(ReadStructuredValue(item, elementType, refs));
+                    list.Add(ReadStructuredValue(item, elementType, refs, budget, depth + 1));
                 }
                 return list;
             }
@@ -3527,7 +3617,8 @@ public class TreeNode
                     : throw new InvalidOperationException($"Unknown object reference \"{refId}\".");
             }
 
-            object instance = CreateStructuredObject(value, effectiveType, refs);
+            GuardInputObjectPropertyCount(value, budget, "C# input object");
+            object instance = CreateStructuredObject(value, effectiveType, refs, budget, depth);
             if (TryReadStringProperty(value, "__id__", out string? id))
             {
                 refs[id] = instance;
@@ -3537,7 +3628,7 @@ public class TreeNode
             {
                 if (TryGetProperty(value, field.Name, out JsonElement property))
                 {
-                    field.SetValue(instance, ReadStructuredValue(property, field.FieldType, refs));
+                    field.SetValue(instance, ReadStructuredValue(property, field.FieldType, refs, budget, depth + 1));
                 }
             }
 
@@ -3550,7 +3641,7 @@ public class TreeNode
                     continue;
                 }
 
-                property.SetValue(instance, ReadStructuredValue(propertyValue, property.PropertyType, refs));
+                property.SetValue(instance, ReadStructuredValue(propertyValue, property.PropertyType, refs, budget, depth + 1));
             }
 
             return instance;
@@ -3594,7 +3685,7 @@ public class TreeNode
                 || type == typeof(IReadOnlyDictionary<,>);
         }
 
-        private static bool TryReadObjectValueDictionary(JsonElement value, Type targetType, out object? dictionary)
+        private static bool TryReadObjectValueDictionary(JsonElement value, Type targetType, InputHydrationBudget budget, int depth, out object? dictionary)
         {
             Type effectiveType = Nullable.GetUnderlyingType(targetType) ?? targetType;
             if (value.ValueKind != JsonValueKind.Object
@@ -3609,9 +3700,10 @@ public class TreeNode
                 ? typeof(Dictionary<,>).MakeGenericType(keyType, typeof(object))
                 : effectiveType;
             System.Collections.IDictionary result = (System.Collections.IDictionary)Activator.CreateInstance(dictionaryType)!;
+            GuardInputObjectPropertyCount(value, budget, "C# input dictionary");
             foreach (JsonProperty property in value.EnumerateObject())
             {
-                result[ReadDictionaryKey(property.Name, keyType)] = ReadObjectValue(property.Value);
+                result[ReadDictionaryKey(property.Name, keyType)] = ReadObjectValue(property.Value, budget, depth + 1);
             }
 
             dictionary = result;
@@ -3633,7 +3725,7 @@ public class TreeNode
             return System.Convert.ChangeType(key, keyType, System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        private static object CreateStructuredObject(JsonElement value, Type targetType, IDictionary<string, object> refs)
+        private static object CreateStructuredObject(JsonElement value, Type targetType, IDictionary<string, object> refs, InputHydrationBudget budget, int depth)
         {
             foreach (ConstructorInfo constructor in targetType
                 .GetConstructors(BindingFlags.Public | BindingFlags.Instance)
@@ -3647,7 +3739,7 @@ public class TreeNode
 
                 object?[] args = parameters.Select(parameter =>
                     TryGetProperty(value, parameter.Name ?? string.Empty, out JsonElement property)
-                        ? ReadStructuredValue(property, parameter.ParameterType, refs)
+                        ? ReadStructuredValue(property, parameter.ParameterType, refs, budget, depth + 1)
                         : parameter.DefaultValue
                 ).ToArray();
                 return constructor.Invoke(args);
@@ -3667,13 +3759,33 @@ public class TreeNode
             throw new InvalidOperationException($"Cannot hydrate input object of type {targetType.FullName}.");
         }
 
-        private static object[] ReadObjectArray(JsonElement value)
+        private static object[][] ReadObjectMatrix(JsonElement value, InputHydrationBudget budget, int depth)
         {
-            return value.EnumerateArray().Select(ReadObjectValue).ToArray();
+            budget.EnterNode(depth);
+            JsonElement[] rows = ReadInputArrayItems(value, budget, "C# input object matrix");
+            object[][] matrix = new object[rows.Length][];
+            for (int i = 0; i < rows.Length; i++)
+            {
+                matrix[i] = ReadObjectArray(rows[i], budget, depth + 1);
+            }
+            return matrix;
         }
 
-        private static object? ReadObjectValue(JsonElement value)
+        private static object[] ReadObjectArray(JsonElement value, InputHydrationBudget budget, int depth)
         {
+            budget.EnterNode(depth);
+            JsonElement[] values = ReadInputArrayItems(value, budget, "C# input array");
+            object[] result = new object[values.Length];
+            for (int i = 0; i < values.Length; i++)
+            {
+                result[i] = ReadObjectValue(values[i], budget, depth + 1);
+            }
+            return result;
+        }
+
+        private static object? ReadObjectValue(JsonElement value, InputHydrationBudget budget, int depth)
+        {
+            budget.EnterNode(depth);
             return value.ValueKind switch
             {
                 JsonValueKind.String => value.GetString(),
@@ -3681,14 +3793,21 @@ public class TreeNode
                 JsonValueKind.True => true,
                 JsonValueKind.False => false,
                 JsonValueKind.Null or JsonValueKind.Undefined => null,
-                JsonValueKind.Array => ReadObjectArray(value),
-                JsonValueKind.Object => value.EnumerateObject().ToDictionary(
-                    property => property.Name,
-                    property => ReadObjectValue(property.Value),
-                    StringComparer.Ordinal
-                ),
+                JsonValueKind.Array => ReadObjectArray(value, budget, depth),
+                JsonValueKind.Object => ReadObjectDictionary(value, budget, depth),
                 _ => null,
             };
+        }
+
+        private static Dictionary<string, object?> ReadObjectDictionary(JsonElement value, InputHydrationBudget budget, int depth)
+        {
+            GuardInputObjectPropertyCount(value, budget, "C# input object");
+            Dictionary<string, object?> result = new(StringComparer.Ordinal);
+            foreach (JsonProperty property in value.EnumerateObject())
+            {
+                result[property.Name] = ReadObjectValue(property.Value, budget, depth + 1);
+            }
+            return result;
         }
 
         private static object ReadObjectNumber(JsonElement value)
@@ -3720,8 +3839,9 @@ public class TreeNode
             return doubleValue;
         }
 
-        private static ListNode? ReadListNode(JsonElement value, IDictionary<string, ListNode> refs)
+        private static ListNode? ReadListNode(JsonElement value, IDictionary<string, ListNode> refs, InputHydrationBudget budget, int depth)
         {
+            budget.EnterNode(depth);
             if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
             {
                 return null;
@@ -3731,8 +3851,9 @@ public class TreeNode
             {
                 ListNode? head = null;
                 ListNode? cursor = null;
-                foreach (JsonElement item in value.EnumerateArray())
+                foreach (JsonElement item in ReadInputArrayItems(value, budget, "C# ListNode input array"))
                 {
+                    budget.EnterNode(depth + 1);
                     if (item.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
                     {
                         continue;
@@ -3756,6 +3877,7 @@ public class TreeNode
 
             if (value.ValueKind == JsonValueKind.Object)
             {
+                GuardInputObjectPropertyCount(value, budget, "C# ListNode input object");
                 if (TryReadStringProperty(value, "__ref__", out string? refId))
                 {
                     return refs.TryGetValue(refId, out ListNode? referenced)
@@ -3772,7 +3894,7 @@ public class TreeNode
 
                 if (TryGetProperty(value, "next", out JsonElement next))
                 {
-                    node.next = ReadListNode(next, refs);
+                    node.next = ReadListNode(next, refs, budget, depth + 1);
                 }
 
                 return node;
@@ -3781,8 +3903,9 @@ public class TreeNode
             return new ListNode(value.GetInt32());
         }
 
-        private static TreeNode? ReadTreeNode(JsonElement value, IDictionary<string, TreeNode> refs)
+        private static TreeNode? ReadTreeNode(JsonElement value, IDictionary<string, TreeNode> refs, InputHydrationBudget budget, int depth)
         {
+            budget.EnterNode(depth);
             if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
             {
                 return null;
@@ -3790,7 +3913,7 @@ public class TreeNode
 
             if (value.ValueKind == JsonValueKind.Array)
             {
-                JsonElement[] values = value.EnumerateArray().ToArray();
+                JsonElement[] values = ReadInputArrayItems(value, budget, "C# TreeNode input array");
                 if (values.Length == 0 || values[0].ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
                 {
                     return null;
@@ -3825,6 +3948,7 @@ public class TreeNode
 
             if (value.ValueKind == JsonValueKind.Object)
             {
+                GuardInputObjectPropertyCount(value, budget, "C# TreeNode input object");
                 if (TryReadStringProperty(value, "__ref__", out string? refId))
                 {
                     return refs.TryGetValue(refId, out TreeNode? referenced)
@@ -3840,18 +3964,74 @@ public class TreeNode
 
                 if (TryGetProperty(value, "left", out JsonElement left))
                 {
-                    node.left = ReadTreeNode(left, refs);
+                    node.left = ReadTreeNode(left, refs, budget, depth + 1);
                 }
 
                 if (TryGetProperty(value, "right", out JsonElement right))
                 {
-                    node.right = ReadTreeNode(right, refs);
+                    node.right = ReadTreeNode(right, refs, budget, depth + 1);
                 }
 
                 return node;
             }
 
             return new TreeNode(value.GetInt32());
+        }
+
+        private static JsonElement[] ReadInputArrayItems(JsonElement value, InputHydrationBudget budget, string label)
+        {
+            List<JsonElement> items = new();
+            int index = 0;
+            foreach (JsonElement item in value.EnumerateArray())
+            {
+                budget.RecordCollectionItem(index++, label);
+                items.Add(item);
+            }
+            return items.ToArray();
+        }
+
+        private static void GuardInputObjectPropertyCount(JsonElement value, InputHydrationBudget budget, string label)
+        {
+            int index = 0;
+            foreach (JsonProperty _ in value.EnumerateObject())
+            {
+                budget.RecordObjectProperty(index++, label);
+            }
+        }
+
+        private sealed class InputHydrationBudget
+        {
+            private int nodes;
+
+            public void EnterNode(int depth)
+            {
+                if (depth > MaxInputDepth)
+                {
+                    throw new InvalidOperationException($"C# input exceeds maximum depth of {MaxInputDepth}.");
+                }
+
+                nodes++;
+                if (nodes > MaxInputHydrationNodes)
+                {
+                    throw new InvalidOperationException($"C# input hydration exceeds maximum JSON value count of {MaxInputHydrationNodes}.");
+                }
+            }
+
+            public void RecordCollectionItem(int index, string label)
+            {
+                if (index >= MaxInputCollectionItems)
+                {
+                    throw new InvalidOperationException($"{label} exceeds maximum item count of {MaxInputCollectionItems}.");
+                }
+            }
+
+            public void RecordObjectProperty(int index, string label)
+            {
+                if (index >= MaxInputObjectProperties)
+                {
+                    throw new InvalidOperationException($"{label} exceeds maximum property count of {MaxInputObjectProperties}.");
+                }
+            }
         }
 
         private static bool TryGetProperty(JsonElement value, string name, out JsonElement property)

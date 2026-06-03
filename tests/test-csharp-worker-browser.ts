@@ -3225,6 +3225,49 @@ async function main(): Promise<void> {
       `C# worker nested Node input case should return 4, received ${JSON.stringify(nestedNodeInput.output)}`
     );
 
+    type DeepNodeInput = { __type__: string; val: number; children: DeepNodeInput[] };
+    const tooDeepNodeInput: DeepNodeInput = { __type__: 'Node', val: 0, children: [] };
+    let deepNodeCursor = tooDeepNodeInput;
+    for (let depth = 0; depth < 80; depth++) {
+      const child: DeepNodeInput = { __type__: 'Node', val: depth + 1, children: [] };
+      deepNodeCursor.children = [child];
+      deepNodeCursor = child;
+    }
+    const rejectedDeepNodeInput = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public class Node {',
+        '    public int val;',
+        '    public List<Node> children;',
+        '    public Node(int val) {',
+        '      this.val = val;',
+        '      this.children = new List<Node>();',
+        '    }',
+        '    public Node(int val, List<Node> children) {',
+        '      this.val = val;',
+        '      this.children = children;',
+        '    }',
+        '  }',
+        '  public int SumNode(Node root) {',
+        '    return root.val;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SumNode',
+      { root: tooDeepNodeInput },
+      assetBaseUrl
+    );
+    assertCondition(
+      !rejectedDeepNodeInput.success,
+      `C# worker should reject overly deep structured input, received success with output ${JSON.stringify(rejectedDeepNodeInput.output)}`
+    );
+    assertCondition(
+      String(rejectedDeepNodeInput.error ?? '').includes('maximum depth'),
+      `C# worker deep structured input rejection should mention maximum depth, received ${JSON.stringify(rejectedDeepNodeInput.error)}`
+    );
+
     const customNodeOutput = await runWorkerCase(
       page,
       [
