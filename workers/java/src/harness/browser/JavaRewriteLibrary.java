@@ -1708,7 +1708,7 @@ public final class JavaRewriteLibrary {
 
   private static boolean isPriorityQueueType(String type) {
     if (type == null) return false;
-    return normalizeJavaType(type).contains("PriorityQueue<");
+    return "PriorityQueue".equals(rawSimpleTypeName(type));
   }
 
   private static boolean isStackType(String type) {
@@ -1740,6 +1740,17 @@ public final class JavaRewriteLibrary {
 
   private static String normalizeJavaType(String type) {
     return type.trim().replaceAll("\\s+", " ").replaceAll("\\s*\\[\\s*\\]", "[]");
+  }
+
+  private static String rawSimpleTypeName(String type) {
+    String normalized = normalizeJavaType(type);
+    int genericStart = normalized.indexOf('<');
+    if (genericStart >= 0) normalized = normalized.substring(0, genericStart).trim();
+    int arrayStart = normalized.indexOf("[]");
+    if (arrayStart >= 0) normalized = normalized.substring(0, arrayStart).trim();
+    int packageStart = normalized.lastIndexOf('.');
+    if (packageStart >= 0) normalized = normalized.substring(packageStart + 1);
+    return normalized;
   }
 
   private static java.util.List<String> registerLocalDeclarators(

@@ -6365,6 +6365,22 @@ class Solution {
       'Java lambda/block initializers should not emit local declaration writes inside the initializer before assignment completes'
     );
 
+    const customPriorityQueueSource = assertNativeJavaRewriterCompiles(`class MyPriorityQueue<T> {
+  void offer(T value) {}
+}
+
+class Solution {
+  int solve() {
+    MyPriorityQueue<Integer> heap = new MyPriorityQueue<>();
+    heap.offer(1);
+    return 1;
+  }
+}`, 'solve');
+    assertCondition(
+      !customPriorityQueueSource.includes('emitCollectionIndexedWritesAtLine'),
+      'Java rewriter should not treat user-defined PriorityQueue-like classes as java.util.PriorityQueue'
+    );
+
     const twoSumCode = `import java.util.*;
 
 class Solution {
