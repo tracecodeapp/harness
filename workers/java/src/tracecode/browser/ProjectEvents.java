@@ -98,6 +98,11 @@ public final class ProjectEvents {
   private static volatile ProjectHttpDispatcher HTTP_DISPATCHER_FOR_TESTING = null;
   private static final Map<Integer, ProjectHttpServer> PROJECT_HTTP_SERVERS = new HashMap<>();
   private static int NEXT_PROJECT_HTTP_PORT = 32000;
+  private static final int PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
+  private static final int PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
+  private static final long PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4L * 1024L * 1024L;
+  private static final ThreadLocal<ProjectEventBudget> PROJECT_EVENT_BUDGET =
+      ThreadLocal.withInitial(ProjectEventBudget::new);
 
   private ProjectEvents() {}
 
@@ -142,6 +147,11 @@ public final class ProjectEvents {
 
   public static void setProjectEventBridgeEnabled(boolean enabled) {
     PROJECT_EVENT_BRIDGE_ENABLED.set(enabled);
+    if (enabled) {
+      PROJECT_EVENT_BUDGET.set(new ProjectEventBudget());
+    } else {
+      PROJECT_EVENT_BUDGET.remove();
+    }
   }
 
   public static void setProjectWorkspaceRoot(Path root) {
@@ -183,6 +193,7 @@ public final class ProjectEvents {
     PROJECT_ENVIRONMENT.remove();
     PROJECT_VIRTUAL_WORKSPACE_ROOT.remove();
     PROJECT_WORKSPACE_ALIAS.remove();
+    PROJECT_EVENT_BUDGET.remove();
   }
 
   private static void clearProjectHttpServers() {
@@ -3488,15 +3499,95 @@ public final class ProjectEvents {
     }
   }
 
+  private static int utf8ByteLength(String value) {
+    return value == null ? 0 : value.getBytes(StandardCharsets.UTF_8).length;
+  }
+
+  private static byte[] copyBytes(byte[] bytes, int offset, int length) {
+    if (bytes == null || length <= 0) return new byte[0];
+    int safeOffset = Math.max(0, Math.min(bytes.length, offset));
+    int safeLength = Math.max(0, Math.min(length, bytes.length - safeOffset));
+    byte[] copy = new byte[safeLength];
+    System.arraycopy(bytes, safeOffset, copy, 0, safeLength);
+    return copy;
+  }
+
+  private static byte[] budgetProjectOutputBytes(String stream, byte[] bytes, int offset, int length) {
+    return PROJECT_EVENT_BUDGET.get().captureOutput(stream, bytes, offset, length);
+  }
+
+  private static boolean reserveLiveFileChange(String relativePath, long contentsBytes) {
+    return PROJECT_EVENT_BUDGET.get().reserveLiveFileChange(relativePath, contentsBytes);
+  }
+
+  private static final class ProjectEventBudget {
+    private long stdoutBytes = 0;
+    private long stderrBytes = 0;
+    private boolean stdoutTruncated = false;
+    private boolean stderrTruncated = false;
+    private int liveFileChangeCount = 0;
+    private long liveFileChangeBytes = 0;
+
+    byte[] captureOutput(String stream, byte[] bytes, int offset, int length) {
+      if (bytes == null || length <= 0) return new byte[0];
+      boolean stderr = "stderr".equals(stream);
+      if (stderr ? stderrTruncated : stdoutTruncated) return new byte[0];
+
+      long used = stderr ? stderrBytes : stdoutBytes;
+      long remaining = PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+      if (length <= remaining) {
+        if (stderr) {
+          stderrBytes = used + length;
+        } else {
+          stdoutBytes = used + length;
+        }
+        return copyBytes(bytes, offset, length);
+      }
+
+      int prefixLength = (int) Math.max(0, Math.min(remaining, length));
+      byte[] prefix = copyBytes(bytes, offset, prefixLength);
+      byte[] marker = ("\n[tracekernel: " + (stderr ? "stderr" : "stdout") +
+          " output truncated after " + PROJECT_MAX_OUTPUT_STREAM_BYTES + " bytes]\n")
+          .getBytes(StandardCharsets.UTF_8);
+      byte[] output = new byte[prefix.length + marker.length];
+      System.arraycopy(prefix, 0, output, 0, prefix.length);
+      System.arraycopy(marker, 0, output, prefix.length, marker.length);
+
+      if (stderr) {
+        stderrBytes = PROJECT_MAX_OUTPUT_STREAM_BYTES + marker.length;
+        stderrTruncated = true;
+      } else {
+        stdoutBytes = PROJECT_MAX_OUTPUT_STREAM_BYTES + marker.length;
+        stdoutTruncated = true;
+      }
+      return output;
+    }
+
+    boolean reserveLiveFileChange(String relativePath, long contentsBytes) {
+      liveFileChangeCount += 1;
+      long safeContentsBytes = Math.max(0, contentsBytes);
+      long eventBytes = utf8ByteLength(relativePath) + safeContentsBytes;
+      boolean overBudget =
+          liveFileChangeCount > PROJECT_MAX_LIVE_FILE_CHANGES ||
+          eventBytes > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES ||
+          liveFileChangeBytes + eventBytes > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES;
+      if (overBudget) return false;
+      liveFileChangeBytes += eventBytes;
+      return true;
+    }
+  }
+
   private static void writeKernelDevice(KernelDevice device, byte[] bytes) {
     String outputDevice = device.outputDevice.isEmpty() ? device.path : device.outputDevice;
     if ("/dev/null".equals(outputDevice)) return;
     String stream = "/dev/stderr".equals(outputDevice) ? "stderr" : "stdout";
     ByteArrayOutputStream capture = "stderr".equals(stream) ? STDERR_CAPTURE.get() : STDOUT_CAPTURE.get();
+    byte[] outputBytes = budgetProjectOutputBytes(stream, bytes, 0, bytes.length);
+    if (outputBytes.length == 0) return;
     if (capture != null) {
-      capture.write(bytes, 0, bytes.length);
+      capture.write(outputBytes, 0, outputBytes.length);
     }
-    emitOutput(stream, new String(bytes, StandardCharsets.UTF_8), device.path.equals(outputDevice) ? "" : device.path, outputDevice);
+    emitOutput(stream, new String(outputBytes, StandardCharsets.UTF_8), device.path.equals(outputDevice) ? "" : device.path, outputDevice);
   }
 
   private static final class KernelDevice {
@@ -3875,6 +3966,8 @@ public final class ProjectEvents {
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
     try {
+      long size = Files.size(path);
+      if (!reserveLiveFileChange(relativePath, size)) return;
       emitFileSnapshotNative(relativePath, Base64.getEncoder().encodeToString(Files.readAllBytes(path)));
     } catch (UnsatisfiedLinkError | SecurityException | IOException ignored) {
       // Final-diff persistence still captures writes when live browser bridge emission is unavailable.
@@ -3894,6 +3987,7 @@ public final class ProjectEvents {
     if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
+    if (!reserveLiveFileChange(relativePath, 0)) return;
     try {
       emitFileDeleteNative(relativePath);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
@@ -3905,6 +3999,7 @@ public final class ProjectEvents {
     if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
+    if (!reserveLiveFileChange(relativePath, 0)) return;
     try {
       emitDirectoryCreateNative(relativePath);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
@@ -3916,6 +4011,7 @@ public final class ProjectEvents {
     if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
+    if (!reserveLiveFileChange(relativePath, 0)) return;
     try {
       emitDirectoryDeleteNative(relativePath);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
@@ -3964,15 +4060,30 @@ public final class ProjectEvents {
 
     @Override
     public void write(int value) throws IOException {
-      capture.write(value);
-      pending.write(value);
+      byte[] bytes = new byte[] { (byte) value };
+      byte[] outputBytes = budgetProjectOutputBytes(stream, bytes, 0, 1);
+      if (outputBytes.length == 0) return;
+      capture.write(outputBytes, 0, outputBytes.length);
+      if (outputBytes.length == 1 && outputBytes[0] == (byte) value) {
+        pending.write(value);
+        flush();
+        return;
+      }
+      pending.write(outputBytes, 0, outputBytes.length);
       flush();
     }
 
     @Override
     public void write(byte[] bytes, int offset, int length) throws IOException {
-      capture.write(bytes, offset, length);
-      pending.write(bytes, offset, length);
+      byte[] outputBytes = budgetProjectOutputBytes(stream, bytes, offset, length);
+      if (outputBytes.length == 0) return;
+      capture.write(outputBytes, 0, outputBytes.length);
+      if (outputBytes.length == length) {
+        pending.write(bytes, offset, length);
+        flush();
+        return;
+      }
+      pending.write(outputBytes, 0, outputBytes.length);
       flush();
     }
 

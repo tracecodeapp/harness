@@ -532,6 +532,140 @@ async function testCSharpWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `C# worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
+async function testJavaWorkerProjectEventBudgets(): Promise<void> {
+  const source = (await readFile(join(dirname(testDirectory), 'workers', 'java', 'java-worker.js'), 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
+    ''
+  );
+  const posted: Array<{ type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } }> = [];
+  const context = vm.createContext({
+    console,
+    self: {
+      postMessage: (message: unknown) => {
+        posted.push(message as { type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } });
+      },
+      location: { href: 'http://localhost/workers/java/java-worker.js', origin: 'http://localhost', search: '' },
+    },
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    SharedArrayBuffer,
+    Int32Array,
+    Atomics,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+    performance: { now: () => 0 },
+    queueMicrotask: (callback: () => void) => callback(),
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
+  vm.runInContext(source, context, { filename: 'java-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      activeJavaProjectIo = {
+        messageId: 'java-budget-test',
+        request: { project: { kernelDevices: [] } },
+        stdinPipe: null,
+        stdoutEmitted: false,
+        stderrEmitted: false,
+        eventStdout: [],
+        eventStderr: [],
+        outputBytes: { stdout: 0, stderr: 0 },
+        truncatedOutputStreams: new Set(),
+        liveFileChangeCount: 0,
+        liveFileChangeBytes: 0,
+        warnedLiveFileBudget: false,
+      };
+      emitLiveJavaProjectOutput('stdout', 'x'.repeat(1024 * 1024 + 16), '', '');
+      emitLiveJavaProjectOutput('stdout', 'late', '', '');
+      emitLiveJavaProjectFileSnapshot('huge.txt', 'x'.repeat(6 * 1024 * 1024));
+      const stdout = activeJavaProjectIo.eventStdout.join('');
+      const truncated = activeJavaProjectIo.truncatedOutputStreams.has('stdout');
+      const emitted = { stdout: activeJavaProjectIo.stdoutEmitted, stderr: activeJavaProjectIo.stderrEmitted };
+      activeJavaProjectIo = null;
+      return { stdout, truncated, emitted };
+    })()`,
+    context
+  ) as { stdout: string; truncated: boolean; emitted: { stdout: boolean; stderr: boolean } };
+  const projectEvents = posted.filter((message) => message.type === 'project-event');
+  const outputEvents = projectEvents.filter((message) => message.payload?.type === 'output');
+  const fileChangeEvents = projectEvents.filter((message) => message.payload?.type === 'file-change');
+
+  assertCondition(result.truncated, `Java worker should mark oversized stdout as truncated: ${JSON.stringify(result)}`);
+  assertCondition(result.emitted.stdout, `Java worker should track emitted stdout after budgeted events: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stdout.includes('output truncated after 1048576 bytes'),
+    `Java worker should keep a capped stdout buffer with marker: ${JSON.stringify(result)}`
+  );
+  assertCondition(outputEvents.length === 1, `Java worker should drop stdout chunks after truncation: ${JSON.stringify(projectEvents)}`);
+  assertCondition(fileChangeEvents.length === 0, `Java worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
+}
+
+async function testCppWorkerProjectEventBudgets(): Promise<void> {
+  const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
+    ''
+  );
+  const posted: Array<{ type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } }> = [];
+  const context = vm.createContext({
+    console,
+    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
+    location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+    postMessage: (message: unknown) => {
+      posted.push(message as { type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } });
+    },
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    WebAssembly,
+    BigInt,
+    Map,
+    Set,
+    Promise,
+    JSON,
+    Math,
+    Date,
+    performance: { now: () => 0 },
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+  });
+  vm.runInContext(source, context, { filename: 'cpp-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      const events = createProjectEventBridge('cpp-budget-test');
+      const result = { stdout: 'x'.repeat(1024 * 1024 + 16), stderr: '' };
+      emitProjectResultOutputEvents(events, result);
+      events.output('stdout', 'late');
+      events.fileBytesChange('huge.bin', new Uint8Array(4 * 1024 * 1024 + 1));
+      const byteBudget = createProjectOutputByteBudget();
+      const first = byteBudget.capture('stderr', [encodeUtf8('e'.repeat(1024 * 1024 + 16))]);
+      const second = byteBudget.capture('stderr', [encodeUtf8('late')]);
+      return {
+        stdout: result.stdout,
+        byteBudgetOutput: decodeUtf8(concatBytes(first)),
+        secondChunks: second.length,
+      };
+    })()`,
+    context
+  ) as { stdout: string; byteBudgetOutput: string; secondChunks: number };
+  const projectEvents = posted.filter((message) => message.type === 'project-event');
+  const outputEvents = projectEvents.filter((message) => message.payload?.type === 'output');
+  const fileChangeEvents = projectEvents.filter((message) => message.payload?.type === 'file-change');
+
+  assertCondition(
+    result.stdout.includes('output truncated after 1048576 bytes'),
+    `C++ worker should cap returned stdout after project event truncation: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.byteBudgetOutput.includes('stderr output truncated after 1048576 bytes') && result.secondChunks === 0,
+    `C++ WASI byte budget should cap stored stderr chunks: ${JSON.stringify(result)}`
+  );
+  assertCondition(outputEvents.length === 1, `C++ worker should drop stdout chunks after truncation: ${JSON.stringify(projectEvents)}`);
+  assertCondition(fileChangeEvents.length === 0, `C++ worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
+}
+
 async function testTraceKernelHttpTimeoutSignalsCooperativeHandlers(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
   let sideEffectsAfterTimeout = 0;
@@ -857,6 +991,8 @@ async function main(): Promise<void> {
   await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();
+  await testJavaWorkerProjectEventBudgets();
+  await testCppWorkerProjectEventBudgets();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
   await testTraceKernelHttpDiagnosticsAreRedacted();
   await testTraceKernelHttpListenerLimit();

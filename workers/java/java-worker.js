@@ -104,6 +104,9 @@ const JAVA_HTTP_SYNC_IDLE = 0;
 const JAVA_HTTP_SYNC_REQUEST = 1;
 const JAVA_HTTP_SYNC_RESPONSE = 2;
 const JAVA_HTTP_SYNC_CLOSED = 3;
+const PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
+const PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
+const PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
 const javaHttpServers = new Map();
 let nextJavaHttpServerId = 1;
 
@@ -120,6 +123,92 @@ function javaHttpDecodeUtf8(bytes) {
   let text = '';
   for (let index = 0; index < bytes.length; index += 1) text += String.fromCharCode(bytes[index]);
   return decodeURIComponent(escape(text));
+}
+
+function projectUtf8Bytes(value) {
+  return javaHttpEncodeUtf8(String(value ?? '')).byteLength;
+}
+
+function projectTruncateUtf8(value, maxBytes) {
+  if (maxBytes <= 0) return '';
+  let bytes = 0;
+  let output = '';
+  for (const char of String(value ?? '')) {
+    const nextBytes = projectUtf8Bytes(char);
+    if (bytes + nextBytes > maxBytes) break;
+    bytes += nextBytes;
+    output += char;
+  }
+  return output;
+}
+
+function projectFileChangeByteSize(change) {
+  if (!change || typeof change !== 'object') return 0;
+  let size = projectUtf8Bytes(change.path ?? '');
+  if (typeof change.contents === 'string') {
+    size += change.encoding === 'base64'
+      ? Math.ceil(change.contents.length * 3 / 4)
+      : projectUtf8Bytes(change.contents);
+  }
+  return size;
+}
+
+function applyJavaProjectEventBudget(context, payload) {
+  if (!context || !payload || typeof payload !== 'object') return payload;
+
+  if (
+    payload.type === 'output' &&
+    (payload.stream === 'stdout' || payload.stream === 'stderr') &&
+    typeof payload.data === 'string'
+  ) {
+    if (context.truncatedOutputStreams.has(payload.stream)) return null;
+    const used = context.outputBytes[payload.stream] ?? 0;
+    const remaining = PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+    const bytes = projectUtf8Bytes(payload.data);
+    if (bytes <= remaining) {
+      context.outputBytes[payload.stream] = used + bytes;
+      return payload;
+    }
+
+    context.truncatedOutputStreams.add(payload.stream);
+    const marker = `\n[tracekernel: ${payload.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+    const data = `${projectTruncateUtf8(payload.data, Math.max(0, remaining))}${marker}`;
+    context.outputBytes[payload.stream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + projectUtf8Bytes(marker);
+    return data ? { ...payload, data } : null;
+  }
+
+  if (payload.type === 'file-change' && (payload.phase ?? 'live') === 'live') {
+    context.liveFileChangeCount += 1;
+    const size = projectFileChangeByteSize(payload.change);
+    const overBudget =
+      context.liveFileChangeCount > PROJECT_MAX_LIVE_FILE_CHANGES ||
+      size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES ||
+      context.liveFileChangeBytes + size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES;
+    if (overBudget) {
+      if (!context.warnedLiveFileBudget) {
+        context.warnedLiveFileBudget = true;
+        emitRuntimeDiagnostic('warn', 'project-event-budget', 'Dropped oversized Java live file-change event.', {
+          count: context.liveFileChangeCount,
+          bytes: context.liveFileChangeBytes,
+          eventBytes: size,
+        });
+      }
+      return null;
+    }
+    context.liveFileChangeBytes += size;
+  }
+
+  return payload;
+}
+
+function applyJavaProjectResultOutputBudget(result, context) {
+  if (!result || !context) return;
+  if (context.truncatedOutputStreams.has('stdout')) {
+    result.stdout = context.eventStdout.join('');
+  }
+  if (context.truncatedOutputStreams.has('stderr')) {
+    result.stderr = context.eventStderr.join('');
+  }
 }
 
 function stdinPipeState(pipe) {
@@ -369,11 +458,6 @@ function emitLiveJavaProjectOutput(stream, data, sourceDevice, outputDevice) {
   const eventStream = outputDevicePath === '/dev/stderr' ? 'stderr' : normalizedStream;
   const outputData = eventStream === 'stderr' ? sanitizeJavaRuntimeStderr(data) : data;
   if (outputData.length === 0) return;
-  if (eventStream === 'stderr') {
-    activeJavaProjectIo.stderrEmitted = true;
-  } else {
-    activeJavaProjectIo.stdoutEmitted = true;
-  }
   postProjectEvent(activeJavaProjectIo.messageId, {
     type: 'output',
     stream: eventStream,
@@ -4980,22 +5064,35 @@ function javaSyntheticClassOutputPath(sourcePath, outputDir, projectCwd = '/work
   return `${projectCwd.replace(/\/+$/, '') || '/workspace'}/${relativeOutput}`;
 }
 
-function postProjectEvent(id, payload) {
+function postProjectEvent(id, payload, options = {}) {
   if (!id) return;
-  postMessageResponse({ id, type: 'project-event', payload });
+  const context = options.context ?? (activeJavaProjectIo?.messageId === id ? activeJavaProjectIo : null);
+  const budgetedPayload = applyJavaProjectEventBudget(context, payload);
+  if (!budgetedPayload) return;
+  if (context && budgetedPayload?.type === 'output' && typeof budgetedPayload.data === 'string') {
+    const outputBuffer = budgetedPayload.stream === 'stderr' ? context.eventStderr : context.eventStdout;
+    outputBuffer.push(budgetedPayload.data);
+    if (budgetedPayload.stream === 'stderr') {
+      context.stderrEmitted = true;
+    } else {
+      context.stdoutEmitted = true;
+    }
+  }
+  postMessageResponse({ id, type: 'project-event', payload: budgetedPayload });
 }
 
 function emitJavaProjectResultEvents(id, result, options = {}) {
   if (!id || !result) return;
   const skipStdout = options.skipStdout === true;
   const skipStderr = options.skipStderr === true;
+  const context = options.context ?? null;
   if (!skipStdout && typeof result.stdout === 'string' && result.stdout.length > 0) {
     postProjectEvent(id, {
       type: 'output',
       stream: 'stdout',
       device: '/dev/stdout',
       data: result.stdout,
-    });
+    }, { context });
   }
   if (!skipStderr && typeof result.stderr === 'string' && result.stderr.length > 0) {
     postProjectEvent(id, {
@@ -5003,15 +5100,16 @@ function emitJavaProjectResultEvents(id, result, options = {}) {
       stream: 'stderr',
       device: '/dev/stderr',
       data: result.stderr,
-    });
+    }, { context });
   }
+  applyJavaProjectResultOutputBudget(result, context);
   if (Array.isArray(result.files)) {
     for (const change of result.files) {
       postProjectEvent(id, {
         type: 'file-change',
         phase: 'final-diff',
         change,
-      });
+      }, { context });
     }
   }
 }
@@ -5424,6 +5522,13 @@ async function runJavaProjectRequest(payload, requestId) {
     stdinPipe: stdinPipeState(payload?.stdinPipe),
     stdoutEmitted: false,
     stderrEmitted: false,
+    eventStdout: [],
+    eventStderr: [],
+    outputBytes: { stdout: 0, stderr: 0 },
+    truncatedOutputStreams: new Set(),
+    liveFileChangeCount: 0,
+    liveFileChangeBytes: 0,
+    warnedLiveFileBudget: false,
     kernelDevicePaths: new Set(
       (Array.isArray(payload?.project?.kernelDevices) ? payload.project.kernelDevices : [])
         .map((device) => normalizeKernelDeviceReference(device?.path))
@@ -5541,6 +5646,7 @@ async function runJavaProjectRequest(payload, requestId) {
   emitJavaProjectResultEvents(requestId, result, {
     skipStdout: projectIo.stdoutEmitted,
     skipStderr: projectIo.stderrEmitted,
+    context: projectIo,
   });
   return result;
 }

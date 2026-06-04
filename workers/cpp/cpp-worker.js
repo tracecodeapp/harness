@@ -55,6 +55,9 @@ const WHENCE_SET = 0;
 const WHENCE_CUR = 1;
 const WHENCE_END = 2;
 const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
+const PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
+const PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
+const PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
 const CPP_BASE_GENERATED_INCLUDES = Object.freeze([
   '#include "/tracecode_runtime.hpp"',
   '#include <algorithm>',
@@ -279,6 +282,141 @@ function concatBytes(chunks) {
     offset += chunk.length;
   }
   return out;
+}
+
+function projectUtf8Bytes(value) {
+  return encodeUtf8(String(value ?? '')).byteLength;
+}
+
+function projectTruncateUtf8(value, maxBytes) {
+  if (maxBytes <= 0) return '';
+  let bytes = 0;
+  let output = '';
+  for (const char of String(value ?? '')) {
+    const nextBytes = projectUtf8Bytes(char);
+    if (bytes + nextBytes > maxBytes) break;
+    bytes += nextBytes;
+    output += char;
+  }
+  return output;
+}
+
+function projectFileChangeByteSize(change) {
+  if (!change || typeof change !== 'object') return 0;
+  let size = projectUtf8Bytes(change.path ?? '');
+  if (typeof change.contents === 'string') {
+    size += change.encoding === 'base64'
+      ? Math.ceil(change.contents.length * 3 / 4)
+      : projectUtf8Bytes(change.contents);
+  }
+  return size;
+}
+
+function createProjectOutputByteBudget() {
+  const outputBytes = { stdout: 0, stderr: 0 };
+  const truncatedOutputStreams = new Set();
+
+  return {
+    capture(stream, chunks) {
+      const normalizedStream = stream === 'stderr' ? 'stderr' : 'stdout';
+      if (truncatedOutputStreams.has(normalizedStream)) return [];
+      const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const used = outputBytes[normalizedStream] ?? 0;
+      const remaining = PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+      if (total <= remaining) {
+        outputBytes[normalizedStream] = used + total;
+        return chunks;
+      }
+
+      const output = [];
+      let remainingBytes = Math.max(0, remaining);
+      for (const chunk of chunks) {
+        if (remainingBytes <= 0) break;
+        if (chunk.length <= remainingBytes) {
+          output.push(chunk);
+          remainingBytes -= chunk.length;
+        } else {
+          output.push(chunk.subarray(0, remainingBytes));
+          remainingBytes = 0;
+        }
+      }
+
+      const marker = encodeUtf8(`\n[tracekernel: ${normalizedStream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`);
+      output.push(marker);
+      outputBytes[normalizedStream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + marker.length;
+      truncatedOutputStreams.add(normalizedStream);
+      return output;
+    },
+  };
+}
+
+function createProjectEventBudget(runtimeName) {
+  const outputBytes = { stdout: 0, stderr: 0 };
+  const truncatedOutputStreams = new Set();
+  let liveFileChangeCount = 0;
+  let liveFileChangeBytes = 0;
+  let warnedLiveFileBudget = false;
+
+  function warnLiveFileBudget(size) {
+    if (warnedLiveFileBudget) return;
+    warnedLiveFileBudget = true;
+    emitRuntimeDiagnostic('warn', 'project-event-budget', `Dropped oversized ${runtimeName} live file-change event.`, {
+      count: liveFileChangeCount,
+      bytes: liveFileChangeBytes,
+      eventBytes: size,
+    });
+  }
+
+  function reserveLiveFileChangeSize(path, contentsBytes = 0) {
+    liveFileChangeCount += 1;
+    const size = projectUtf8Bytes(path ?? '') + Math.max(0, contentsBytes);
+    const overBudget =
+      liveFileChangeCount > PROJECT_MAX_LIVE_FILE_CHANGES ||
+      size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES ||
+      liveFileChangeBytes + size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES;
+    if (overBudget) {
+      warnLiveFileBudget(size);
+      return false;
+    }
+    liveFileChangeBytes += size;
+    return true;
+  }
+
+  return {
+    truncatedOutputStreams,
+    apply(event) {
+      if (!event || typeof event !== 'object') return event;
+
+      if (
+        event.type === 'output' &&
+        (event.stream === 'stdout' || event.stream === 'stderr') &&
+        typeof event.data === 'string'
+      ) {
+        if (truncatedOutputStreams.has(event.stream)) return null;
+        const used = outputBytes[event.stream] ?? 0;
+        const remaining = PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+        const bytes = projectUtf8Bytes(event.data);
+        if (bytes <= remaining) {
+          outputBytes[event.stream] = used + bytes;
+          return event;
+        }
+
+        truncatedOutputStreams.add(event.stream);
+        const marker = `\n[tracekernel: ${event.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+        const data = `${projectTruncateUtf8(event.data, Math.max(0, remaining))}${marker}`;
+        outputBytes[event.stream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + projectUtf8Bytes(marker);
+        return data ? { ...event, data } : null;
+      }
+
+      if (event.type === 'file-change' && (event.phase ?? 'live') === 'live') {
+        const size = projectFileChangeByteSize(event.change);
+        if (!reserveLiveFileChangeSize('', size)) return null;
+      }
+
+      return event;
+    },
+    reserveLiveFileChangeSize,
+  };
 }
 
 function normalizePath(pathname) {
@@ -758,6 +896,7 @@ class WasiProcess {
       : options.stdinText !== undefined
         ? staticStdinBytesFromText(options.stdinText)
         : new Uint8Array();
+    this.outputBudget = options.outputBudget || null;
     this.inputDeviceOffsets = new Map();
     this.stdoutChunks = [];
     this.stderrChunks = [];
@@ -1037,9 +1176,12 @@ class WasiProcess {
         return ESUCCESS;
       }
       const stream = entry.outputDevice === '/dev/stderr' ? 'stderr' : 'stdout';
-      if (stream === 'stdout') this.stdoutChunks.push(...chunks);
-      if (stream === 'stderr') this.stderrChunks.push(...chunks);
-      this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)), entry.device, entry.outputDevice);
+      const outputChunks = this.outputBudget ? this.outputBudget.capture(stream, chunks) : chunks;
+      if (stream === 'stdout') this.stdoutChunks.push(...outputChunks);
+      if (stream === 'stderr') this.stderrChunks.push(...outputChunks);
+      if (outputChunks.length > 0) {
+        this.onOutput?.(stream, decodeUtf8(concatBytes(outputChunks)), entry.device, entry.outputDevice);
+      }
     } else if (entry.kind === 'file') {
       const current = this.fs.exists(entry.path) ? this.fs.readFile(entry.path) : new Uint8Array();
       const offset = entry.append ? current.length : entry.offset;
@@ -1513,6 +1655,7 @@ async function runWasi(module, args, fs, options = {}) {
     env: options.env || { USER: 'tracecode' },
     kernelDevices: options.kernelDevices,
     filestatSizeOffset: options.filestatSizeOffset,
+    outputBudget: options.outputBudget,
     onOutput: options.onOutput,
   });
   const instance = await instantiateWasi(module, process);
@@ -7801,13 +7944,27 @@ function sanitizeCppProjectDiagnostics(value, request) {
 }
 
 function createProjectEventBridge(messageId, sanitizeOutput) {
+  const budget = createProjectEventBudget('C++');
+  const eventStdout = [];
+  const eventStderr = [];
+
+  function postBudgetedEvent(payload) {
+    const budgetedPayload = budget.apply(payload);
+    if (!budgetedPayload) return;
+    if (budgetedPayload.type === 'output' && typeof budgetedPayload.data === 'string') {
+      const outputBuffer = budgetedPayload.stream === 'stderr' ? eventStderr : eventStdout;
+      outputBuffer.push(budgetedPayload.data);
+    }
+    postProjectEvent(messageId, budgetedPayload);
+  }
+
   return {
     output(stream, data, device, outputDevice) {
       if (!data) return;
       const outputData = typeof sanitizeOutput === 'function' ? sanitizeOutput(stream, data) : data;
       if (!outputData) return;
       const resolvedOutputDevice = outputDevice || (stream === 'stderr' ? '/dev/stderr' : '/dev/stdout');
-      postProjectEvent(messageId, {
+      postBudgetedEvent({
         type: 'output',
         stream,
         device: resolvedOutputDevice,
@@ -7816,7 +7973,20 @@ function createProjectEventBridge(messageId, sanitizeOutput) {
       });
     },
     fileChange(change) {
-      postProjectEvent(messageId, { type: 'file-change', phase: 'live', change });
+      postBudgetedEvent({ type: 'file-change', phase: 'live', change });
+    },
+    fileBytesChange(path, bytes) {
+      if (!budget.reserveLiveFileChangeSize(path, bytes?.byteLength ?? 0)) return;
+      postProjectEvent(messageId, { type: 'file-change', phase: 'live', change: encodeProjectFileChange(path, bytes) });
+    },
+    applyResultOutputBudget(result) {
+      if (!result) return;
+      if (budget.truncatedOutputStreams.has('stdout')) {
+        result.stdout = eventStdout.join('');
+      }
+      if (budget.truncatedOutputStreams.has('stderr')) {
+        result.stderr = eventStderr.join('');
+      }
     },
   };
 }
@@ -7829,6 +7999,7 @@ function emitProjectResultOutputEvents(events, result) {
   if (typeof result.stderr === 'string' && result.stderr.length > 0) {
     events.output('stderr', result.stderr);
   }
+  events.applyResultOutputBudget?.(result);
 }
 
 async function handleProjectCpp(request, messageId) {
@@ -7872,11 +8043,15 @@ async function handleProjectCpp(request, messageId) {
   fs.setFileChangeObserver((change) => {
     const relativePath = relativeProjectPath(change.path, request?.project);
     if (!relativePath) return;
-    events.fileChange(change.directory
-      ? { path: relativePath, directory: true, ...(change.deleted ? { deleted: true } : {}) }
-      : change.deleted
-      ? { path: relativePath, deleted: true }
-      : encodeProjectFileChange(relativePath, change.bytes));
+    if (change.directory) {
+      events.fileChange({ path: relativePath, directory: true, ...(change.deleted ? { deleted: true } : {}) });
+      return;
+    }
+    if (change.deleted) {
+      events.fileChange({ path: relativePath, deleted: true });
+      return;
+    }
+    events.fileBytesChange(relativePath, change.bytes);
   });
   const executablePath = `/${resolveProjectRequestPath(request, request?.scriptPath || './a.out', 'a.out')}`;
   if (!fs.isFile(executablePath)) {
@@ -7893,9 +8068,10 @@ async function handleProjectCpp(request, messageId) {
     stdinPipe: request?.stdinPipe,
     env: request?.env || { USER: 'tracecode' },
     kernelDevices: projectKernelDevices(request?.project),
+    outputBudget: createProjectOutputByteBudget(),
     onOutput: (stream, data, device, outputDevice) => events.output(stream, data, device, outputDevice),
   });
-  return {
+  const result = {
     stdout: program.stdout,
     stderr: sanitizeCppProjectDiagnostics(program.stderr, request),
     exitCode: program.exitCode,
@@ -7905,6 +8081,8 @@ async function handleProjectCpp(request, messageId) {
       totalMs: elapsedMs(startedAt),
     },
   };
+  events.applyResultOutputBudget(result);
+  return result;
 }
 
 async function compileAndRun(source, functionName, inputs, options = {}) {
