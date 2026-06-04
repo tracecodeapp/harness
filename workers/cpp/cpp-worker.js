@@ -3414,6 +3414,14 @@ function toCppNumericLiteral(value, normalized, type) {
   return String(value);
 }
 
+function toCppInferredNumericLiteral(value, type) {
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Expected finite numeric input for ${type}.`);
+  }
+  return String(value);
+}
+
 function toCppLiteral(value, type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   if (normalized === 'JsonValue' || normalized === 'tracecode::JsonValue') {
@@ -3486,6 +3494,9 @@ function toCppLiteral(value, type, aliases = new Map()) {
   if (normalized === 'bool') return value ? 'true' : 'false';
   if (value === null || value === undefined) return 'nullptr';
   if (normalized === 'auto') {
+    if (typeof value === 'number' || typeof value === 'bigint') {
+      return toCppInferredNumericLiteral(value, type);
+    }
     if (Array.isArray(value)) return `{ ${value.map((entry) => toCppLiteral(entry, 'auto', aliases)).join(', ')} }`;
     if (isRecord(value)) {
       if (typeof value.__type__ !== 'string') {
@@ -3500,7 +3511,9 @@ function toCppLiteral(value, type, aliases = new Map()) {
   if (isCppNumericType(normalized)) {
     return toCppNumericLiteral(value, normalized, type);
   }
-  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
+  if (typeof value === 'number' || typeof value === 'bigint') {
+    return toCppInferredNumericLiteral(value, type);
+  }
   if (typeof value === 'string') return quoteCppString(value);
   const customLiteral = buildCustomCppObjectLiteral(value, type, aliases);
   if (customLiteral) return customLiteral;

@@ -1586,6 +1586,60 @@ async function testCppTraceIdsDoNotExposePointers(): Promise<void> {
   );
 }
 
+async function testCppInferredNumericLiteralsRejectNonFiniteValues(): Promise<void> {
+  const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
+    ''
+  );
+  const context = vm.createContext({
+    console,
+    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
+    location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+    postMessage: () => {},
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    WebAssembly,
+    BigInt,
+    Map,
+    Set,
+    Promise,
+    JSON,
+    Math,
+    Date,
+    performance: { now: () => 0 },
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+  });
+  vm.runInContext(source, context, { filename: 'cpp-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      const messages = [];
+      for (const value of [Infinity, -Infinity, NaN]) {
+        try {
+          messages.push(toCppLiteral(value, 'auto'));
+        } catch (error) {
+          messages.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      return {
+        finiteAuto: toCppLiteral(1.5, 'auto'),
+        finiteUnknown: toCppLiteral(7, 'UserNumber'),
+        messages,
+      };
+    })()`,
+    context
+  ) as { finiteAuto: string; finiteUnknown: string; messages: string[] };
+
+  assertCondition(result.finiteAuto === '1.5', `C++ inferred auto numeric literals should preserve finite doubles: ${JSON.stringify(result)}`);
+  assertCondition(result.finiteUnknown === '7', `C++ inferred unknown-type numeric literals should preserve finite integers: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.messages.length === 3 && result.messages.every((message) => message.includes('Expected finite numeric input')),
+    `C++ inferred numeric literals should reject NaN/Infinity instead of emitting raw identifiers: ${JSON.stringify(result)}`
+  );
+}
+
 async function testBulkTraceWritesAreBudgetedBeforeLoops(): Promise<void> {
   const root = dirname(testDirectory);
   const [javascriptSource, pythonSource, javaSource, csharpSinkSource, csharpHostSource, cppSource] = await Promise.all([
@@ -2200,6 +2254,7 @@ async function main(): Promise<void> {
   await testCppWorkerProjectEventBudgets();
   await testCppInheritedStdioRespectsKernelDevices();
   await testCppTraceIdsDoNotExposePointers();
+  await testCppInferredNumericLiteralsRejectNonFiniteValues();
   await testBulkTraceWritesAreBudgetedBeforeLoops();
   await testSharedKernelPolicyCachesDeviceManifests();
   testRuntimeFinalDiffBudgets();
