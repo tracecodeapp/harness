@@ -2095,6 +2095,7 @@ function csharpProjectSource(targetFramework: string): string {
 function csharpDriverSource(userCode: string, functionName: string, executionStyle: RuntimeExecutionStyle, trace: boolean): string {
   return `
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -2166,14 +2167,9 @@ public static class __TraceCodeNativeCSharpDriver
             for (var index = 0; index < parameters.Length; index++)
             {
                 var parameter = parameters[index];
-                JsonElement value;
-                if (inputs.ValueKind == JsonValueKind.Object && parameter.Name != null && inputs.TryGetProperty(parameter.Name, out value))
+                if (TryGetInputValue(inputs, parameter, index, out var value))
                 {
-                    args[index] = JsonSerializer.Deserialize(value.GetRawText(), parameter.ParameterType);
-                }
-                else if (inputs.ValueKind == JsonValueKind.Object && inputs.TryGetProperty(index.ToString(), out value))
-                {
-                    args[index] = JsonSerializer.Deserialize(value.GetRawText(), parameter.ParameterType);
+                    args[index] = ConvertJsonElement(value, parameter.ParameterType);
                 }
                 else
                 {
@@ -2206,6 +2202,193 @@ public static class __TraceCodeNativeCSharpDriver
         {
             Console.SetOut(originalOut);
             return new { success = false, output = (object?)null, error = error.Message, consoleOutput = CapturedLines(captured) };
+        }
+    }
+
+    private static bool TryGetInputValue(JsonElement inputs, ParameterInfo parameter, int index, out JsonElement value)
+    {
+        value = default;
+        if (inputs.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+        if (parameter.Name != null && inputs.TryGetProperty(parameter.Name, out value))
+        {
+            return true;
+        }
+        if (inputs.TryGetProperty(index.ToString(), out value))
+        {
+            return true;
+        }
+        var currentIndex = 0;
+        foreach (var property in inputs.EnumerateObject())
+        {
+            if (currentIndex == index)
+            {
+                value = property.Value;
+                return true;
+            }
+            currentIndex++;
+        }
+        return false;
+    }
+
+    private static object? ConvertJsonElement(JsonElement value, Type targetType)
+    {
+        var nullableType = Nullable.GetUnderlyingType(targetType);
+        if (nullableType != null)
+        {
+            return value.ValueKind == JsonValueKind.Null ? null : ConvertJsonElement(value, nullableType);
+        }
+        if (targetType == typeof(JsonElement))
+        {
+            return value;
+        }
+        if (targetType == typeof(object))
+        {
+            return ConvertJsonElementToClrObject(value);
+        }
+        if (targetType == typeof(string))
+        {
+            return value.ValueKind == JsonValueKind.Null ? null : value.GetString();
+        }
+        if (targetType == typeof(bool))
+        {
+            return value.GetBoolean();
+        }
+        if (targetType == typeof(int))
+        {
+            return value.GetInt32();
+        }
+        if (targetType == typeof(long))
+        {
+            return value.GetInt64();
+        }
+        if (targetType == typeof(double))
+        {
+            return value.GetDouble();
+        }
+        if (targetType == typeof(float))
+        {
+            return value.GetSingle();
+        }
+        if (targetType == typeof(decimal))
+        {
+            return value.GetDecimal();
+        }
+        if (targetType.IsEnum)
+        {
+            return value.ValueKind == JsonValueKind.String
+                ? Enum.Parse(targetType, value.GetString() ?? string.Empty)
+                : Enum.ToObject(targetType, value.GetInt32());
+        }
+        if (targetType.IsArray)
+        {
+            var elementType = targetType.GetElementType() ?? typeof(object);
+            var items = value.ValueKind == JsonValueKind.Array ? value.EnumerateArray().ToArray() : Array.Empty<JsonElement>();
+            var output = Array.CreateInstance(elementType, items.Length);
+            for (var i = 0; i < items.Length; i++)
+            {
+                output.SetValue(ConvertJsonElement(items[i], elementType), i);
+            }
+            return output;
+        }
+        var listElementType = ListElementType(targetType);
+        if (listElementType != null)
+        {
+            var listType = typeof(List<>).MakeGenericType(listElementType);
+            var output = (IList)Activator.CreateInstance(listType)!;
+            if (value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in value.EnumerateArray())
+                {
+                    output.Add(ConvertJsonElement(item, listElementType));
+                }
+            }
+            return output;
+        }
+        var dictionaryValueType = StringDictionaryValueType(targetType);
+        if (dictionaryValueType != null)
+        {
+            var dictionaryType = typeof(Dictionary<,>).MakeGenericType(typeof(string), dictionaryValueType);
+            var output = (IDictionary)Activator.CreateInstance(dictionaryType)!;
+            if (value.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in value.EnumerateObject())
+                {
+                    output[property.Name] = ConvertJsonElement(property.Value, dictionaryValueType);
+                }
+            }
+            return output;
+        }
+        return JsonSerializer.Deserialize(value.GetRawText(), targetType);
+    }
+
+    private static Type? ListElementType(Type type)
+    {
+        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
+        {
+            return type.GetGenericArguments()[0];
+        }
+        if (type.IsGenericType && (
+            type.GetGenericTypeDefinition() == typeof(IList<>) ||
+            type.GetGenericTypeDefinition() == typeof(ICollection<>) ||
+            type.GetGenericTypeDefinition() == typeof(IEnumerable<>) ||
+            type.GetGenericTypeDefinition() == typeof(IReadOnlyList<>) ||
+            type.GetGenericTypeDefinition() == typeof(IReadOnlyCollection<>)))
+        {
+            return type.GetGenericArguments()[0];
+        }
+        var collectionInterface = type.GetInterfaces()
+            .FirstOrDefault(candidate => candidate.IsGenericType && (
+                candidate.GetGenericTypeDefinition() == typeof(IList<>) ||
+                candidate.GetGenericTypeDefinition() == typeof(ICollection<>) ||
+                candidate.GetGenericTypeDefinition() == typeof(IEnumerable<>) ||
+                candidate.GetGenericTypeDefinition() == typeof(IReadOnlyList<>) ||
+                candidate.GetGenericTypeDefinition() == typeof(IReadOnlyCollection<>)));
+        if (collectionInterface != null)
+        {
+            return collectionInterface.GetGenericArguments()[0];
+        }
+        return typeof(IList).IsAssignableFrom(type) ? typeof(object) : null;
+    }
+
+    private static Type? StringDictionaryValueType(Type type)
+    {
+        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Dictionary<,>) && type.GetGenericArguments()[0] == typeof(string))
+        {
+            return type.GetGenericArguments()[1];
+        }
+        var dictionaryInterface = type.GetInterfaces()
+            .FirstOrDefault(candidate => candidate.IsGenericType &&
+                candidate.GetGenericTypeDefinition() == typeof(IDictionary<,>) &&
+                candidate.GetGenericArguments()[0] == typeof(string));
+        return dictionaryInterface?.GetGenericArguments()[1];
+    }
+
+    private static object? ConvertJsonElementToClrObject(JsonElement value)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Null:
+            case JsonValueKind.Undefined:
+                return null;
+            case JsonValueKind.String:
+                return value.GetString();
+            case JsonValueKind.True:
+                return true;
+            case JsonValueKind.False:
+                return false;
+            case JsonValueKind.Number:
+                if (value.TryGetInt32(out var intValue)) return intValue;
+                if (value.TryGetInt64(out var longValue)) return longValue;
+                return value.GetDouble();
+            case JsonValueKind.Array:
+                return value.EnumerateArray().Select(ConvertJsonElementToClrObject).ToList();
+            case JsonValueKind.Object:
+                return value.EnumerateObject().ToDictionary(property => property.Name, property => ConvertJsonElementToClrObject(property.Value));
+            default:
+                return null;
         }
     }
 

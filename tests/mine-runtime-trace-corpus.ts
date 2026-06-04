@@ -1,11 +1,12 @@
 #!/usr/bin/env npx tsx
 
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
@@ -226,6 +227,25 @@ interface MineReport {
   failures: FailureRecord[];
   executionTimingMs?: Record<MineLanguage, number>;
   executionCounts?: Record<MineLanguage, number>;
+  executionCacheHits?: number;
+  executionCacheMisses?: number;
+}
+
+interface ExecutionCacheRecord {
+  version: 1;
+  key: string;
+  status: 'success' | 'failure';
+  language: MineLanguage;
+  output?: unknown;
+  error?: string;
+  createdAt: string;
+}
+
+interface ExecutionCache {
+  path: string | null;
+  rows: Map<string, ExecutionCacheRecord>;
+  hits: number;
+  misses: number;
 }
 
 type CSharpExecute = (requestJson: string) => string;
@@ -324,6 +344,98 @@ function stableStringify(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`)
     .join(',') + '}';
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function executionCachePath(): string | null {
+  const explicit = parseStringFlag('execution-cache') ?? parseStringFlag('execution-cache-path');
+  if (explicit) return resolve(explicit);
+  const dir = parseStringFlag('execution-cache-dir');
+  return dir ? resolve(dir, 'execution-cache.jsonl') : null;
+}
+
+async function loadExecutionCache(): Promise<ExecutionCache> {
+  const path = executionCachePath();
+  const cache: ExecutionCache = { path, rows: new Map(), hits: 0, misses: 0 };
+  if (!path || !existsSync(path)) return cache;
+  const contents = await readFile(path, 'utf8');
+  for (const line of contents.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as ExecutionCacheRecord;
+      if (row.version === 1 && typeof row.key === 'string') cache.rows.set(row.key, row);
+    } catch {
+      // A concurrent append can leave a partial line if a process is killed. Ignore it.
+    }
+  }
+  return cache;
+}
+
+function executionCacheKey(entry: CorpusEntry, code: string): string {
+  return sha256(stableStringify({
+    version: 1,
+    mode: hasFlag('no-trace') ? 'no-trace' : 'trace',
+    language: entry.language,
+    sourceSha256: sha256(code),
+    functionName: entry.functionName,
+    runtimeExecutionStyle: entry.runtimeExecutionStyle ?? 'solution-method',
+    inputs: entry.inputs,
+  }));
+}
+
+async function appendExecutionCache(cache: ExecutionCache, row: ExecutionCacheRecord): Promise<void> {
+  cache.rows.set(row.key, row);
+  if (!cache.path) return;
+  await mkdir(dirname(cache.path), { recursive: true });
+  await appendFile(cache.path, `${JSON.stringify(row)}\n`, 'utf8');
+}
+
+async function executeEntryWithCache(
+  cache: ExecutionCache,
+  pythonRuntime: RuntimeCore,
+  workerSource: string,
+  entry: CorpusEntry,
+  code: string,
+  maxTraceSteps: number,
+  maxLineEvents: number,
+  maxSingleLineHits: number
+): Promise<TraceRun> {
+  if (!hasFlag('no-trace')) {
+    return executeEntry(pythonRuntime, workerSource, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits);
+  }
+  const key = executionCacheKey(entry, code);
+  const cached = cache.rows.get(key);
+  if (cached) {
+    cache.hits += 1;
+    if (cached.status === 'failure') throw new Error(cached.error ?? 'cached execution failure');
+    return emptyTraceRun(cached.language, entry, cached.output);
+  }
+  cache.misses += 1;
+  try {
+    const run = await executeEntry(pythonRuntime, workerSource, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits);
+    await appendExecutionCache(cache, {
+      version: 1,
+      key,
+      status: 'success',
+      language: entry.language,
+      output: run.output,
+      createdAt: new Date().toISOString(),
+    });
+    return run;
+  } catch (error) {
+    await appendExecutionCache(cache, {
+      version: 1,
+      key,
+      status: 'failure',
+      language: entry.language,
+      error: error instanceof Error ? error.message : String(error),
+      createdAt: new Date().toISOString(),
+    });
+    throw error;
+  }
 }
 
 function collectDeclaredVariables(language: MineLanguage, sourceLine: string): string[] {
@@ -456,6 +568,13 @@ function outputComparisonKey(value: unknown, compareMode?: string): string {
 
 function outputsEqual(left: unknown, right: unknown, compareMode?: string): boolean {
   return outputComparisonKey(left, compareMode) === outputComparisonKey(right, compareMode);
+}
+
+function entryExpectedOutputMatches(entry: CorpusEntry, received: unknown): boolean {
+  // Native harness case.passed uses runtime deep equality. Corpus mining must
+  // keep the compareMode-aware validator because some corpus outputs allow
+  // looser matching, such as unordered or any-valid outputs.
+  return outputsEqual(entry.expectedOutput, received, entry.compareMode);
 }
 
 function collectSerializedRefs(value: unknown, refs: Map<string, Record<string, unknown>>, seen = new WeakSet<object>()): void {
@@ -2269,6 +2388,17 @@ async function writeReport(reportPath: string, value: unknown): Promise<void> {
 async function loadMineGroups(corpusPath: string, sourceRoot: string): Promise<Array<[string, CorpusEntry[]]>> {
   const entries = JSON.parse(await readFile(corpusPath, 'utf8')) as CorpusEntry[];
   if (hasFlag('expected-only')) {
+    if (hasFlag('expected-only-group-by-source')) {
+      const bySource = new Map<string, CorpusEntry[]>();
+      for (const entry of entries) {
+        if (!['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'].includes(entry.language)) continue;
+        const key = `${entry.slug}:${entry.language}:${entry.functionName}:${entry.source.path}`;
+        const group = bySource.get(key) ?? [];
+        group.push(entry);
+        bySource.set(key, group);
+      }
+      return [...bySource.entries()];
+    }
     return entries
       .filter((entry) => ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'].includes(entry.language))
       .map((entry) => [`${entry.slug}:${entry.solutionId ?? entry.source.path}`, [entry]]);
@@ -2516,6 +2646,8 @@ async function runConcurrentMine(
     (counts, report) => mergeCountMaps(counts, report.executionCounts ?? emptyLanguageNumberMap()),
     emptyLanguageNumberMap()
   );
+  const executionCacheHits = reports.reduce((sum, report) => sum + (report.executionCacheHits ?? 0), 0);
+  const executionCacheMisses = reports.reduce((sum, report) => sum + (report.executionCacheMisses ?? 0), 0);
   const driftCountsByLanguage = reports.reduce(
     (counts, report) => mergeCountMaps(counts, report.driftCountsByLanguage),
     { python: 0, javascript: 0, typescript: 0, java: 0, csharp: 0, cpp: 0 }
@@ -2583,6 +2715,8 @@ async function runConcurrentMine(
       .map((failure) => trimFailureForReport(failure, maxReportErrorChars)),
     executionTimingMs,
     executionCounts,
+    executionCacheHits,
+    executionCacheMisses,
     jobs,
     chunkSize,
     chunkCount: chunks.length,
@@ -2598,6 +2732,7 @@ async function runConcurrentMine(
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
   console.log(`Drift classifications: ${Object.entries(mergedReport.classificationSummary.counts).map(([classification, count]) => `${classification}=${count}`).join(' ')}`);
   console.log(`Execution timing ms: ${Object.entries(executionTimingMs).map(([language, ms]) => `${language}=${Math.round(ms)}/${executionCounts[language as MineLanguage] ?? 0}`).join(' ')}`);
+  console.log(`Execution cache: hits=${executionCacheHits} misses=${executionCacheMisses}`);
   console.log(`Temporal invariant violations: ${mergedReport.temporalInvariantViolationCount}`);
   console.log(`Report: ${reportPath}`);
   console.log(`Worker reports: ${workDir}`);
@@ -2650,6 +2785,8 @@ async function main(): Promise<void> {
   ).length;
   const pythonRuntime = await loadPythonRuntimeCore();
   const workerSource = await readFile(JAVASCRIPT_WORKER_PATH, 'utf8');
+  const executionCache = await loadExecutionCache();
+  const sourceTextCache = new Map<string, string>();
   const drifts: DriftRecord[] = [];
   const failures: FailureRecord[] = [];
   const temporalInvariantViolations: TemporalInvariantViolation[] = [];
@@ -2665,9 +2802,14 @@ async function main(): Promise<void> {
       const sourcePath = resolveSourcePath(sourceRoot, entry);
       let executionStartedAt: number | null = null;
       try {
-        const code = await readFile(sourcePath, 'utf8');
+        let code = sourceTextCache.get(sourcePath);
+        if (code === undefined) {
+          code = await readFile(sourcePath, 'utf8');
+          sourceTextCache.set(sourcePath, code);
+        }
         executionStartedAt = performance.now();
-        const run = await executeEntry(
+        const run = await executeEntryWithCache(
+          executionCache,
           pythonRuntime,
           workerSource,
           entry,
@@ -2680,7 +2822,7 @@ async function main(): Promise<void> {
         executionCounts[entry.language] += 1;
         runs.set(entry.language, run);
         temporalInvariantViolations.push(...auditTemporalInvariants(entry, code, run.trace));
-        if (hasExpectedOutput(entry) && !outputsEqual(entry.expectedOutput, run.output, entry.compareMode)) {
+        if (hasExpectedOutput(entry) && !entryExpectedOutputMatches(entry, run.output)) {
           drifts.push({
             slug,
             solutionId: entry.solutionId,
@@ -2773,6 +2915,8 @@ async function main(): Promise<void> {
     failures: reportedFailures,
     executionTimingMs,
     executionCounts,
+    executionCacheHits: executionCache.hits,
+    executionCacheMisses: executionCache.misses,
   };
   await writeReport(reportPath, report);
 
@@ -2781,6 +2925,7 @@ async function main(): Promise<void> {
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
   console.log(`Drift classifications: ${Object.entries(report.classificationSummary.counts).map(([classification, count]) => `${classification}=${count}`).join(' ')}`);
   console.log(`Execution timing ms: ${Object.entries(executionTimingMs).map(([language, ms]) => `${language}=${Math.round(ms)}/${executionCounts[language as MineLanguage] ?? 0}`).join(' ')}`);
+  console.log(`Execution cache: hits=${executionCache.hits} misses=${executionCache.misses}${executionCache.path ? ` path=${executionCache.path}` : ''}`);
   console.log(`Temporal invariant violations: ${report.temporalInvariantViolationCount}`);
   console.log(`Synthesized Java entries: ${synthesizedJavaEntries}`);
   console.log(`Report: ${reportPath}`);
