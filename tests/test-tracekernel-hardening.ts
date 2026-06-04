@@ -1204,6 +1204,7 @@ public class JavaHelperStateSmoke {
   public static void main(String[] args) throws Exception {
     runTraceHooksStaleThread();
     runProjectEventsStaleStream();
+    runCompileAndRunClearsTraceHooks(args[0]);
     runCompileCacheManifest(args[0]);
   }
 
@@ -1271,6 +1272,29 @@ public class JavaHelperStateSmoke {
     System.out.println("project-events-ok");
   }
 
+  private static void runCompileAndRunClearsTraceHooks(String helperJar) throws Exception {
+    Path root = Files.createTempDirectory("tracecode-java-run-state-smoke-");
+    Path source = root.resolve("Main.java");
+    Path classes = root.resolve("classes");
+    Files.writeString(
+        source,
+        String.join("\\n",
+            "import tracecode.user.TraceHooks;",
+            "public class Main {",
+            "  public static String run() {",
+            "    TraceHooks.emit(\\\"trace:{\\\\\\\"kind\\\\\\\":\\\\\\\"line\\\\\\\",\\\\\\\"line\\\\\\\":7}\\\");",
+            "    return \\\"ok\\\";",
+            "  }",
+            "}") + "\\n",
+        StandardCharsets.UTF_8);
+    String report = BrowserCompileAndTraceLibrary.compileAndRun(source.toString(), classes.toString(), "Main", helperJar, "none");
+    String events = String.join("\\\\n", TraceHooks.drainEvents());
+    if (!report.contains("\\\"success\\\":true") || !events.isEmpty()) {
+      throw new IllegalStateException("compileAndRun left TraceHooks state behind: " + report + "\\n" + events);
+    }
+    System.out.println("compile-run-tracehooks-clear-ok");
+  }
+
   private static void runCompileCacheManifest(String helperJar) throws Exception {
     Path root = Files.createTempDirectory("tracecode-java-cache-smoke-");
     Path source = root.resolve("Main.java");
@@ -1303,6 +1327,7 @@ public class JavaHelperStateSmoke {
     );
     assertCondition(output.includes('trace-hooks-ok'), `TraceHooks run-scope smoke should pass: ${output}`);
     assertCondition(output.includes('project-events-ok'), `ProjectEvents run-scope smoke should pass: ${output}`);
+    assertCondition(output.includes('compile-run-tracehooks-clear-ok'), `compileAndRun should clear TraceHooks run state: ${output}`);
     assertCondition(output.includes('compile-cache-ok'), `Java compile cache manifest smoke should pass: ${output}`);
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });

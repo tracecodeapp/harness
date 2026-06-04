@@ -85,6 +85,7 @@ public final class TraceHooks {
     synchronized (STATE_LOCK) {
       if (activeRunToken == runToken) {
         activeRunToken = 0;
+        resetStateLocked(DEFAULT_MAX_EVENTS);
       }
     }
     CALL_STACK.remove();
