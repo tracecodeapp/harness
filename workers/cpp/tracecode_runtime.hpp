@@ -1496,10 +1496,9 @@ inline decltype(auto) trace_index_address_read(Container& container, const std::
   }
 }
 
-template <typename Container, typename Key>
-inline void emit_container_lookup_read_value(const std::string& name, const Container& container, const Key& key, int line, const char* index_source = nullptr) {
+template <typename Key>
+inline void emit_container_lookup_presence_value(const std::string& name, const Key& key, bool present, int line, const char* index_source = nullptr) {
   if (minimal_trace_enabled() || !check_trace_budget(line)) return;
-  const bool present = container.find(key) != container.end();
   trace_event_count() += 1;
   write_trace_event_json_raw(
     std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
@@ -1509,9 +1508,29 @@ inline void emit_container_lookup_read_value(const std::string& name, const Cont
 }
 
 template <typename Container, typename Key>
+inline void emit_container_lookup_read_value(const std::string& name, const Container& container, const Key& key, int line, const char* index_source = nullptr) {
+  const bool present = container.find(key) != container.end();
+  emit_container_lookup_presence_value(name, key, present, line, index_source);
+}
+
+template <typename Container, typename Key>
 inline auto trace_container_find_value(const std::string& name, Container& container, Key&& key, int line, const char* index_source = nullptr) -> decltype(container.find(key)) {
   emit_container_lookup_read_value(name, container, key, line, index_source);
   return container.find(key);
+}
+
+template <typename Container, typename Key>
+inline auto trace_container_count_value(const std::string& name, Container& container, Key&& key, int line, const char* index_source = nullptr) -> decltype(container.count(key)) {
+  auto count = container.count(key);
+  emit_container_lookup_presence_value(name, key, count > 0, line, index_source);
+  return count;
+}
+
+template <typename Container, typename Key>
+inline auto trace_container_contains_value(const std::string& name, Container& container, Key&& key, int line, const char* index_source = nullptr) -> decltype(container.contains(key)) {
+  auto present = container.contains(key);
+  emit_container_lookup_presence_value(name, key, present, line, index_source);
+  return present;
 }
 
 template <typename Container, typename Key>

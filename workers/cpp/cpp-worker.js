@@ -5636,9 +5636,11 @@ function shouldEmitPlainSetLookup(variable, aliases = new Map()) {
 }
 
 function rewritePlainContainerLookupInstrumentation(line, lineNumber, variables, aliases = new Map()) {
-  if (line.includes('tracecode::trace_container_find_value')) return line;
+  if (line.includes('tracecode::trace_container_find_value') ||
+    line.includes('tracecode::trace_container_count_value') ||
+    line.includes('tracecode::trace_container_contains_value')) return line;
   const stripped = stripCppStringsAndComments(line);
-  if (!stripped.includes('.find')) return line;
+  if (!stripped.includes('.find') && !stripped.includes('.count') && !stripped.includes('.contains')) return line;
   const candidateNames = [...(variables || []).entries()]
     .filter(([, variable]) => shouldEmitPlainSetLookup(variable, aliases))
     .map(([name]) => name)
@@ -5671,11 +5673,12 @@ function rewritePlainContainerLookupInstrumentation(line, lineNumber, variables,
         cursor = nameIndex + name.length;
         continue;
       }
-      const methodMatch = rewritten.slice(memberIndex).match(/^\.\s*find\s*\(/);
+      const methodMatch = rewritten.slice(memberIndex).match(/^\.\s*(find|count|contains)\s*\(/);
       if (!methodMatch) {
         cursor = memberIndex + 1;
         continue;
       }
+      const method = methodMatch[1];
       const openIndex = memberIndex + methodMatch[0].lastIndexOf('(');
       const closeIndex = findMatchingParen(rewritten, openIndex);
       if (closeIndex < 0) break;
@@ -5684,7 +5687,12 @@ function rewritePlainContainerLookupInstrumentation(line, lineNumber, variables,
         cursor = closeIndex + 1;
         continue;
       }
-      const replacement = `tracecode::trace_container_find_value(${cppStringLiteral(name)}, ${name}, ${keyExpression}, ${lineNumber}, ${cppIndexSourceForExpression(keyExpression)})`;
+      const helper = method === 'count'
+        ? 'trace_container_count_value'
+        : method === 'contains'
+          ? 'trace_container_contains_value'
+          : 'trace_container_find_value';
+      const replacement = `tracecode::${helper}(${cppStringLiteral(name)}, ${name}, ${keyExpression}, ${lineNumber}, ${cppIndexSourceForExpression(keyExpression)})`;
       rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
       cursor = nameIndex + replacement.length;
     }

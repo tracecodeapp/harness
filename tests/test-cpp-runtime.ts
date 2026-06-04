@@ -4485,6 +4485,52 @@ if (!nativeSetFindSideEffectEvents.some((event) =>
 )) {
   throw new Error('C++ side-effecting native set find should emit one lookup read with key provenance, received ' + JSON.stringify(nativeSetFindSideEffectEvents));
 }
+
+const nativeSetCountContainsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int visit() {',
+    '    function<int(std::unordered_set<int>&)> dfs = [&](std::unordered_set<int>& visited) {',
+    '      int v = 2;',
+    '      bool counted = visited.count(v++) > 0;',
+    '      bool contained = visited.contains(v++);',
+    '      return (counted ? 100 : 0) + (contained ? 10 : 0) + v;',
+    '    };',
+    '    unordered_set<int> visited;',
+    '    visited.insert(2);',
+    '    return dfs(visited);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'visit',
+  inputs: {},
+  options: {},
+});
+if (!nativeSetCountContainsTrace.success || nativeSetCountContainsTrace.output !== 104) {
+  throw new Error('C++ native set count/contains tracing should single-evaluate keys and preserve output, received ' + JSON.stringify(nativeSetCountContainsTrace));
+}
+const nativeSetCountContainsEvents = nativeSetCountContainsTrace.trace.events;
+if (!nativeSetCountContainsEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 6 &&
+  event.target?.variable === 'visited' &&
+  event.target.path?.[0] === 2 &&
+  event.value === true &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['v'])
+)) {
+  throw new Error('C++ native set count should emit a lookup read with key provenance, received ' + JSON.stringify(nativeSetCountContainsEvents));
+}
+if (!nativeSetCountContainsEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 7 &&
+  event.target?.variable === 'visited' &&
+  event.target.path?.[0] === 3 &&
+  event.value === false &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['v'])
+)) {
+  throw new Error('C++ native set contains should emit a lookup read with key provenance, received ' + JSON.stringify(nativeSetCountContainsEvents));
+}
 `;
 
 const tempDir = mkdtempSync(join(tmpdir(), 'tracecode-cpp-runtime-'));
