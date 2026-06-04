@@ -12,6 +12,7 @@ import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../packages/harness-project/src/async-hooks-browser-shim';
 import { assertRuntimeFinalDiffBudget } from '../packages/harness-core/src/runtime-project';
+import { createIndexedDbKernelStorage } from '../packages/harness-browser/src/project';
 import {
   createBrowserJavaScriptProjectRunner,
   createBrowserTypeScriptProjectRunner,
@@ -349,6 +350,103 @@ async function testBrowserTypeScriptDomCompilerScriptPolicy(): Promise<void> {
     restoreTs();
     restoreLocation();
     restoreDocument();
+  }
+}
+
+async function testIndexedDbKernelStorageEncryptsSnapshots(): Promise<void> {
+  const stores = new Map<string, Map<string, unknown>>();
+  const requestAsync = <Result>(result: Result): IDBRequest<Result> => {
+    const request = { result, error: null } as IDBRequest<Result>;
+    queueMicrotask(() => request.onsuccess?.({} as Event));
+    return request;
+  };
+  const fakeDb = {
+    objectStoreNames: {
+      contains(name: string) {
+        return stores.has(name);
+      },
+    },
+    createObjectStore(name: string) {
+      const store = new Map<string, unknown>();
+      stores.set(name, store);
+      return store;
+    },
+    transaction(storeName: string) {
+      const store = stores.get(storeName);
+      if (!store) throw new Error(`Missing fake IndexedDB object store: ${storeName}`);
+      return {
+        objectStore() {
+          return {
+            get(key: string) {
+              return requestAsync(store.get(key));
+            },
+            put(value: unknown, key: string) {
+              store.set(key, value);
+              return requestAsync(undefined);
+            },
+            delete(key: string) {
+              store.delete(key);
+              return requestAsync(undefined);
+            },
+          };
+        },
+      };
+    },
+  };
+  const fakeIndexedDb = {
+    open() {
+      const request = { result: fakeDb, error: null } as IDBOpenDBRequest;
+      queueMicrotask(() => {
+        request.onupgradeneeded?.({} as IDBVersionChangeEvent);
+        request.onsuccess?.({} as Event);
+      });
+      return request;
+    },
+  };
+  const restoreIndexedDb = setTestGlobalProperty('indexedDB', fakeIndexedDb);
+  try {
+    const encryptionKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+    const storage = createIndexedDbKernelStorage({
+      key: 'workspace',
+      databaseName: 'tracecode-secure-workspace',
+      storeName: 'workspaces',
+      trustedSameOriginPersistence: true,
+      encryptionKey,
+      keyId: 'test-key',
+    });
+    await storage.save({
+      files: [{ path: 'secret.txt', contents: 'do-not-store-plaintext\n' }],
+      entrypoint: 'secret.txt',
+    });
+
+    const rawRecord = stores.get('workspaces')?.get('workspace') as
+      | { version?: number; encrypted?: { ciphertext?: string; iv?: string; keyId?: string } }
+      | undefined;
+    assertCondition(
+      rawRecord?.version === 2 &&
+        typeof rawRecord.encrypted?.ciphertext === 'string' &&
+        typeof rawRecord.encrypted.iv === 'string' &&
+        rawRecord.encrypted.keyId === 'test-key',
+      `IndexedDB kernel storage should persist an encrypted record: ${JSON.stringify(rawRecord)}`
+    );
+    assertCondition(
+      !JSON.stringify(rawRecord).includes('do-not-store-plaintext'),
+      `IndexedDB kernel storage should not persist plaintext workspace contents: ${JSON.stringify(rawRecord)}`
+    );
+
+    const loaded = await storage.load();
+    assertCondition(
+      loaded?.snapshot.files[0]?.path === 'secret.txt' &&
+        loaded.snapshot.files[0]?.contents === 'do-not-store-plaintext\n' &&
+        loaded.snapshot.entrypoint === 'secret.txt',
+      `IndexedDB kernel storage should decrypt snapshots through the storage API: ${JSON.stringify(loaded)}`
+    );
+  } finally {
+    restoreIndexedDb();
   }
 }
 
@@ -2637,6 +2735,7 @@ async function main(): Promise<void> {
   await testBrowserAsyncLocalStorageSingleFlightContexts();
   await testBrowserJavaScriptHardenedModeRequiresWorker();
   await testBrowserTypeScriptDomCompilerScriptPolicy();
+  await testIndexedDbKernelStorageEncryptsSnapshots();
   await testBrowserJavaScriptWorkerRejectsUserSpoofedResults();
   await testBrowserJavaScriptReadonlyHardlinksAreRejected();
   await testBrowserJavaScriptHiddenFilesAreNotMounted();

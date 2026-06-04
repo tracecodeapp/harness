@@ -40,10 +40,6 @@ monaco.editor.defineTheme('tracecodeDark', {
 // ----------------------------------------------------------------------
 // Constants & Fixtures
 // ----------------------------------------------------------------------
-const DEV_KERNEL_STORAGE_KEY = 'tracecode:dev:user:weather-api';
-const DEV_KERNEL_STORAGE_DATABASE = 'tracecode-project-ide';
-const DEV_KERNEL_STORAGE_STORE = 'workspaces';
-
 const getEditorLanguage = (lang: Language): string => {
   if (lang === 'typescript') return 'typescript';
   if (lang === 'javascript') return 'javascript';
@@ -66,7 +62,7 @@ async function bootDevTerminal(): Promise<void> {
             <button id="dev-menu-refresh-files" type="button">Refresh Explorer</button>
             <div class="dev-menu-separator" role="separator"></div>
             <button id="dev-menu-reset-session" type="button">Restart Project Session</button>
-            <button id="dev-menu-delete-local-data" type="button">Delete Local Project Data</button>
+            <button id="dev-menu-delete-local-data" type="button">Destroy Project Session</button>
           </div>
         </div>
         <div class="dev-menu-group">
@@ -205,19 +201,13 @@ async function bootDevTerminal(): Promise<void> {
 
   appendLine('Loading project workspace...');
 
-  const { createBrowserProjectWorkspace, createIndexedDbKernelStorage } = await import('@tracecode/harness/browser/project');
+  const { createBrowserProjectWorkspace } = await import('@tracecode/harness/browser/project');
   (
     window as Window & {
       __tracecodeCreateBrowserProjectWorkspace?: typeof createBrowserProjectWorkspace;
     }
   ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
-  const kernelStorage = createIndexedDbKernelStorage({
-    key: DEV_KERNEL_STORAGE_KEY,
-    databaseName: DEV_KERNEL_STORAGE_DATABASE,
-    storeName: DEV_KERNEL_STORAGE_STORE,
-    trustedSameOriginPersistence: true,
-  });
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
     pythonProjectTimeoutMs: 120_000,
@@ -229,7 +219,6 @@ async function bootDevTerminal(): Promise<void> {
       host: { hostname: 'tracevm' },
       workspace: { name: 'weather-api' },
     },
-    kernelStorage,
     projectSession: {
       id: 'dev-weather-api',
       projectId: 'dev-project',
@@ -1423,20 +1412,13 @@ int main(int argc, char** argv) {
     if (!window.confirm('Restart this project session? This clears the saved /dev workspace and reloads the starter files.')) return;
     resetSessionButton.disabled = true;
     appendLine('Restarting project session...');
-    void kernelStorage.clear()
-      .then(() => {
-        workspace.dispose();
-        window.location.reload();
-      })
-      .catch((error) => {
-        resetSessionButton.disabled = false;
-        appendLine(error instanceof Error ? error.message : String(error), 'stderr');
-      });
+    workspace.dispose();
+    window.location.reload();
   });
   deleteLocalDataButton.addEventListener('click', () => {
-    if (!window.confirm('Delete local project data for this session? This destroys the current kernel session and clears saved browser storage.')) return;
+    if (!window.confirm('Destroy the current kernel session and reload the starter files?')) return;
     deleteLocalDataButton.disabled = true;
-    appendLine('Deleting local project data...');
+    appendLine('Destroying project session...');
     void workspace.destroy({ reason: 'user-requested', clearStorage: true })
       .then(() => {
         window.location.reload();

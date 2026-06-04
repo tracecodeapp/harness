@@ -6,7 +6,6 @@ This app exists to test the full browser workspace experience:
 
 - create a browser project workspace
 - boot a configurable tracekernel identity and `/home/<user>/<project>` root
-- persist the workspace through browser storage
 - expose a VS Code-like editor, explorer, and terminal shell
 - run project commands across Python, JavaScript, TypeScript, Java, C#, and C++
 - exercise live file mutation events, stdio streaming, `/dev`, `/proc`, readonly files, hidden fixtures, and session commands
@@ -27,10 +26,14 @@ The app syncs harness worker assets into `public/workers` before `dev`, `build`,
 ## What It Demonstrates
 
 - `createBrowserProjectWorkspace(...)` from `@tracecode/harness/browser/project`
-- `createIndexedDbKernelStorage(...)` for browser persistence
 - `ProjectSession` commands, readonly starter files, and hidden fixture data
 - shell-style project commands through tracekernel
 - live runtime filesystem and stdio events across browser runtimes
+
+Browser workspace persistence is intentionally not enabled by default in this
+demo. Apps that persist workspaces should provide their own encrypted storage
+key to `createIndexedDbKernelStorage(...)` and should not store that key in
+same-origin browser storage.
 
 ## Production Note
 

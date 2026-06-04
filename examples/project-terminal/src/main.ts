@@ -7,10 +7,6 @@ import type {
   RuntimeWorkspaceEvent,
 } from '@tracecode/harness/core';
 
-const DEMO_KERNEL_STORAGE_KEY = 'tracecode:terminal:demo:iphone-compile';
-const DEMO_KERNEL_STORAGE_DATABASE = 'tracecode-project-terminal';
-const DEMO_KERNEL_STORAGE_STORE = 'workspaces';
-
 async function bootProjectTerminal(): Promise<void> {
   document.body.innerHTML = `
     <main class="dev-terminal-root">
@@ -60,19 +56,13 @@ async function bootProjectTerminal(): Promise<void> {
 
   appendLine('Loading tracekernel project workspace...');
 
-  const { createBrowserProjectWorkspace, createIndexedDbKernelStorage } = await import('@tracecode/harness/browser/project');
+  const { createBrowserProjectWorkspace } = await import('@tracecode/harness/browser/project');
   (
     window as Window & {
       __tracecodeCreateBrowserProjectWorkspace?: typeof createBrowserProjectWorkspace;
     }
   ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
-  const kernelStorage = createIndexedDbKernelStorage({
-    key: DEMO_KERNEL_STORAGE_KEY,
-    databaseName: DEMO_KERNEL_STORAGE_DATABASE,
-    storeName: DEMO_KERNEL_STORAGE_STORE,
-    trustedSameOriginPersistence: true,
-  });
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
     javaProjectTimeoutMs: 120_000,
@@ -82,7 +72,6 @@ async function bootProjectTerminal(): Promise<void> {
       host: { hostname: 'tracevm' },
       workspace: { name: 'demo' },
     },
-    kernelStorage,
     projectSession: {
       id: 'demo',
       projectId: 'demo',

@@ -19,10 +19,14 @@ The app syncs harness worker assets into `public/workers` before `dev`, `build`,
 
 - `createBrowserProjectWorkspace(...)` from `@tracecode/harness/browser/project`
 - `workspace.createTerminalSession(...)` for prompt state and live stdin
-- `createIndexedDbKernelStorage(...)` for browser persistence
 - C++ compile/run through tracekernel
 - Java compile/run through tracekernel
 - prompted stdin, stdout/stderr, and generated project files
+
+Browser workspace persistence is intentionally not enabled by default in this
+demo. Apps that persist workspaces should provide their own encrypted storage
+key to `createIndexedDbKernelStorage(...)` and should not store that key in
+same-origin browser storage.
 
 The terminal does not parse stdout locally to decide whether to show the input
 row. It renders `terminal.inputState` and writes prompted input with

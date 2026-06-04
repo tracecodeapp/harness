@@ -7,13 +7,31 @@ import type {
 import { normalizeRuntimeProjectPath } from '../../harness-project/src/index';
 
 const STORAGE_VERSION = 1;
+const ENCRYPTED_STORAGE_VERSION = 2;
 const MAX_STORAGE_OPTION_LENGTH = 256;
+const STORAGE_ENCRYPTION_ALGORITHM = 'AES-GCM';
+const STORAGE_ENCRYPTION_IV_BYTES = 12;
+const storageTextEncoder = new TextEncoder();
+const storageTextDecoder = new TextDecoder();
 
 export interface BrowserKernelStorageSnapshot {
   version: 1;
   savedAt: string;
   snapshot: RuntimeProjectSnapshot;
 }
+
+interface BrowserKernelStorageEncryptedRecord {
+  version: 2;
+  savedAt: string;
+  encrypted: {
+    algorithm: 'AES-GCM';
+    iv: string;
+    ciphertext: string;
+    keyId?: string;
+  };
+}
+
+type BrowserKernelStorageIndexedDbRecord = BrowserKernelStorageSnapshot | BrowserKernelStorageEncryptedRecord;
 
 export interface BrowserKernelStorage {
   load(): Promise<BrowserKernelStorageSnapshot | null>;
@@ -27,6 +45,9 @@ export interface IndexedDbKernelStorageOptions {
   databaseName: string;
   storeName: string;
   trustedSameOriginPersistence: true;
+  encryptionKey: CryptoKey;
+  keyId?: string;
+  allowPlaintextSnapshotMigration?: true;
 }
 
 export interface BrowserKernelStorageBinding {
@@ -40,9 +61,18 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
       'IndexedDB kernel storage is same-origin browser persistence and requires trustedSameOriginPersistence: true.'
     );
   }
+  if (!options.encryptionKey) {
+    throw new Error(
+      'IndexedDB kernel storage persists workspace snapshots and requires an AES-GCM encryptionKey that is not stored in same-origin browser storage.'
+    );
+  }
   const databaseName = normalizeStorageOption(options.databaseName, 'IndexedDB kernel storage databaseName');
   const storeName = normalizeStorageOption(options.storeName, 'IndexedDB kernel storage storeName');
   const key = normalizeStorageOption(options.key, 'IndexedDB kernel storage key');
+  const keyId = options.keyId === undefined
+    ? undefined
+    : normalizeStorageOption(options.keyId, 'IndexedDB kernel storage keyId');
+  const encryptionKey = options.encryptionKey;
 
   let dbPromise: Promise<IDBDatabase> | null = null;
   let pendingWrite: Promise<void> = Promise.resolve();
@@ -74,21 +104,28 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
   return {
     async load(): Promise<BrowserKernelStorageSnapshot | null> {
       const store = await transaction('readonly');
-      return idbRequest<BrowserKernelStorageSnapshot | undefined>(store.get(key)).then((value) => value ?? null);
+      const value = await idbRequest<BrowserKernelStorageIndexedDbRecord | undefined>(store.get(key));
+      if (!value) return null;
+      if (isEncryptedStorageRecord(value)) return decryptStorageSnapshot(value, encryptionKey);
+      if (isRecord(value) && value.version === STORAGE_VERSION) {
+        if (options.allowPlaintextSnapshotMigration === true) {
+          return value as BrowserKernelStorageSnapshot;
+        }
+        throw new Error(
+          'IndexedDB kernel storage contains a plaintext workspace snapshot; clear it or enable allowPlaintextSnapshotMigration to re-save it encrypted.'
+        );
+      }
+      throw new Error('IndexedDB kernel storage record is malformed.');
     },
     async save(snapshot: RuntimeProjectSnapshot): Promise<void> {
       pendingWrite = pendingWrite.then(async () => {
         const store = await transaction('readwrite');
-        await idbRequest(
-          store.put(
-            {
-              version: STORAGE_VERSION,
-              savedAt: new Date().toISOString(),
-              snapshot,
-            } satisfies BrowserKernelStorageSnapshot,
-            key
-          )
-        );
+        const savedAt = new Date().toISOString();
+        await idbRequest(store.put(await encryptStorageSnapshot({
+          version: STORAGE_VERSION,
+          savedAt,
+          snapshot,
+        }, encryptionKey, keyId), key));
       });
       await pendingWrite;
     },
@@ -103,6 +140,92 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
       await pendingWrite;
     },
   };
+}
+
+function getStorageCrypto(): Crypto {
+  if (!globalThis.crypto?.subtle || typeof globalThis.crypto.getRandomValues !== 'function') {
+    throw new Error('Encrypted IndexedDB kernel storage requires Web Crypto with AES-GCM support.');
+  }
+  return globalThis.crypto;
+}
+
+function isEncryptedStorageRecord(value: unknown): value is BrowserKernelStorageEncryptedRecord {
+  return (
+    isRecord(value) &&
+    value.version === ENCRYPTED_STORAGE_VERSION &&
+    isRecord(value.encrypted) &&
+    value.encrypted.algorithm === STORAGE_ENCRYPTION_ALGORITHM &&
+    typeof value.encrypted.iv === 'string' &&
+    typeof value.encrypted.ciphertext === 'string'
+  );
+}
+
+async function encryptStorageSnapshot(
+  snapshot: BrowserKernelStorageSnapshot,
+  encryptionKey: CryptoKey,
+  keyId: string | undefined
+): Promise<BrowserKernelStorageEncryptedRecord> {
+  const storageCrypto = getStorageCrypto();
+  const iv = new Uint8Array(STORAGE_ENCRYPTION_IV_BYTES);
+  storageCrypto.getRandomValues(iv);
+  const plaintext = storageTextEncoder.encode(JSON.stringify(snapshot));
+  const ciphertext = new Uint8Array(await storageCrypto.subtle.encrypt(
+    { name: STORAGE_ENCRYPTION_ALGORITHM, iv },
+    encryptionKey,
+    plaintext
+  ));
+  return {
+    version: ENCRYPTED_STORAGE_VERSION,
+    savedAt: snapshot.savedAt,
+    encrypted: {
+      algorithm: STORAGE_ENCRYPTION_ALGORITHM,
+      iv: bytesToBase64(iv),
+      ciphertext: bytesToBase64(ciphertext),
+      ...(keyId ? { keyId } : {}),
+    },
+  };
+}
+
+async function decryptStorageSnapshot(
+  record: BrowserKernelStorageEncryptedRecord,
+  encryptionKey: CryptoKey
+): Promise<BrowserKernelStorageSnapshot> {
+  try {
+    const storageCrypto = getStorageCrypto();
+    const iv = base64ToBytes(record.encrypted.iv);
+    const ciphertext = base64ToBytes(record.encrypted.ciphertext);
+    const plaintext = await storageCrypto.subtle.decrypt(
+      { name: STORAGE_ENCRYPTION_ALGORITHM, iv },
+      encryptionKey,
+      ciphertext
+    );
+    const parsed = JSON.parse(storageTextDecoder.decode(plaintext)) as unknown;
+    if (!isRecord(parsed) || parsed.version !== STORAGE_VERSION || !isRecord(parsed.snapshot)) {
+      throw new Error('decrypted snapshot is malformed');
+    }
+    return parsed as BrowserKernelStorageSnapshot;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to decrypt IndexedDB kernel storage snapshot: ${message}`);
+  }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
+    const chunk = bytes.subarray(offset, offset + 0x8000);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(encoded: string): Uint8Array {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 export async function hydrateBrowserKernelStorage(

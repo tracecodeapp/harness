@@ -9361,9 +9361,19 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   assertRejects(
     () => createIndexedDbKernelStorage({
       key: 'workspace',
+      databaseName: 'tracecode-kernel-test',
+      storeName: 'workspaces',
+      trustedSameOriginPersistence: true,
+    } as Parameters<typeof createIndexedDbKernelStorage>[0]),
+    'IndexedDB kernel storage should require an encryption key for persisted workspace snapshots'
+  );
+  assertRejects(
+    () => createIndexedDbKernelStorage({
+      key: 'workspace',
       databaseName: ' ',
       storeName: 'workspaces',
       trustedSameOriginPersistence: true,
+      encryptionKey: {} as CryptoKey,
     }),
     'IndexedDB kernel storage should require an explicit non-empty database name'
   );

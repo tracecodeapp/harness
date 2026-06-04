@@ -434,9 +434,11 @@ A minimal tracing/problem-style browser IDE lives in [examples/web-ide](./exampl
 - initialize all supported runtimes
 - execute and trace code without any app-specific state wiring
 
-A separate project-mode IDE lives in [examples/project-ide](./examples/project-ide). It exercises tracekernel workspace behavior, browser persistence, project sessions, live filesystem mutation events, stdio streaming, and shell-style project commands.
+A separate project-mode IDE lives in [examples/project-ide](./examples/project-ide). It exercises tracekernel workspace behavior, project sessions, live filesystem mutation events, stdio streaming, and shell-style project commands.
 
 A fullscreen project terminal lives in [examples/project-terminal](./examples/project-terminal). It uses the same project harness and tracekernel terminal path without the IDE editor or explorer surface.
+
+Browser workspace persistence is application-owned. The built-in `createIndexedDbKernelStorage(...)` helper encrypts persisted snapshots and requires an AES-GCM `CryptoKey`; do not store that key in same-origin browser storage.
 
 All examples are reference consumers for the SDK contract, not canonical product UI.
 
