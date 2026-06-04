@@ -501,6 +501,14 @@ export interface RuntimeProjectSessionInfo {
   metadata?: Record<string, unknown>;
 }
 
+export interface RuntimeCommandExecutionLimits {
+  maxCommandCount?: number;
+  maxLoopIterations?: number;
+  maxCallDepth?: number;
+  maxOutputBytes?: number;
+  timeoutMs?: number;
+}
+
 export interface RuntimeCommandOptions {
   cwd?: string;
   env?: Record<string, string>;
@@ -510,6 +518,7 @@ export interface RuntimeCommandOptions {
   presentation?: 'programmatic' | 'terminal';
   foreground?: boolean;
   retainOnExit?: boolean;
+  executionLimits?: RuntimeCommandExecutionLimits;
   onEvent?: RuntimeCommandEventHandler;
 }
 
@@ -831,7 +840,7 @@ export function filterRuntimeCommandResultFiles(
   return rest;
 }
 
-const RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
+export const RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
 const RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
 const RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
 const RUNTIME_PROJECT_MAX_FINAL_DIFF_CHANGES = 4096;
@@ -839,11 +848,11 @@ const RUNTIME_PROJECT_MAX_FINAL_DIFF_FILE_BYTES = 16 * 1024 * 1024;
 const RUNTIME_PROJECT_MAX_FINAL_DIFF_BYTES = 32 * 1024 * 1024;
 const runtimeProjectTextEncoder = new TextEncoder();
 
-function runtimeProjectUtf8Bytes(value: string): number {
+export function runtimeProjectUtf8Bytes(value: string): number {
   return runtimeProjectTextEncoder.encode(value).byteLength;
 }
 
-function runtimeProjectTruncateUtf8(value: string, maxBytes: number): string {
+export function runtimeProjectTruncateUtf8(value: string, maxBytes: number): string {
   if (maxBytes <= 0) return '';
   let bytes = 0;
   let end = 0;

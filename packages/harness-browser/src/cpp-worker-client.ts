@@ -400,9 +400,7 @@ export class CppWorkerClient {
           component: 'CppWorkerClient',
           runtime: 'cpp',
           phase: 'execution-timeout',
-          message: shouldTerminate
-            ? 'C++ execution timed out; terminating worker.'
-            : 'C++ execution timed out before program execution; keeping worker alive for compiler reuse.',
+          message: 'C++ execution timed out; terminating worker.',
           detail: { timeoutMs, stage, terminateWorker: shouldTerminate, lastProgress: progress ?? undefined },
         }, { enabled: this.debug });
         if (shouldTerminate) {
@@ -434,9 +432,8 @@ export class CppWorkerClient {
   }
 
   private shouldTerminateWorkerForTimeout(progress: CppRuntimeProgress | null): boolean {
-    const stage = progress?.stage;
-    if (!stage) return true;
-    return stage === 'program-run:start' || stage.startsWith('program-run:');
+    void progress;
+    return true;
   }
 
   private timeoutCodeResult(error: unknown): CodeExecutionResult {
@@ -456,9 +453,7 @@ export class CppWorkerClient {
             component: 'CppWorkerClient',
             runtime: 'cpp',
             phase: 'execution-timeout',
-            message: this.shouldTerminateWorkerForTimeout(timeoutError.progress)
-              ? 'C++ execution timed out; terminating worker.'
-              : 'C++ execution timed out before program execution; keeping worker alive for compiler reuse.',
+            message: 'C++ execution timed out; terminating worker.',
             detail: {
               timeoutMs: timeoutError.timeoutMs,
               stage: timeoutError.stage,
@@ -501,9 +496,7 @@ export class CppWorkerClient {
             component: 'CppWorkerClient',
             runtime: 'cpp',
             phase: 'execution-timeout',
-            message: this.shouldTerminateWorkerForTimeout(timeoutError.progress)
-              ? 'C++ execution timed out; terminating worker.'
-              : 'C++ execution timed out before program execution; keeping worker alive for compiler reuse.',
+            message: 'C++ execution timed out; terminating worker.',
             detail: {
               timeoutMs: timeoutError.timeoutMs,
               stage: timeoutError.stage,

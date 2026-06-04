@@ -5,10 +5,11 @@ import { dirname, join } from 'node:path';
 
 import type { CppConformanceEntryStyle, CppConformanceFixture } from '../tests/conformance/cpp-fixtures';
 import type { CppConformanceRunResult, CppExecutionResult } from '../tests/conformance/cpp-runner';
-import { createInitializedCppConformanceBridge, runCppConformanceFixture } from '../tests/conformance/cpp-runner';
+import { runCppConformanceFixtureInIsolatedProcess } from '../tests/conformance/cpp-runner';
 
 const DEFAULT_OUTPUT_PATH = 'tests/conformance/generated/cpp-fixtures.json';
 const DEFAULT_FAILURE_DIR = 'reports/conformance-failures/cpp';
+const DEFAULT_FIXTURE_TIMEOUT_MS = 15_000;
 const ENTRY_STYLES = new Set<CppConformanceEntryStyle>([
   'solution_instance_method',
   'solution_static_method',
@@ -26,6 +27,7 @@ interface ImportArgs {
   dryRun: boolean;
   failOnReject: boolean;
   limit?: number;
+  fixtureTimeoutMs: number;
 }
 
 interface RejectedFixture {
@@ -46,6 +48,7 @@ function usage(): string {
     `  --failure-dir <path>  Rejected fixture reports. Default: ${DEFAULT_FAILURE_DIR}`,
     '  --append              Merge passing fixtures into an existing output file by id.',
     '  --limit <n>           Validate only the first n candidates.',
+    `  --fixture-timeout-ms <n>  Kill an individual fixture run after n milliseconds. Default: ${DEFAULT_FIXTURE_TIMEOUT_MS}`,
     '  --dry-run             Validate and write failure reports, but do not write passing fixtures.',
     '  --fail-on-reject      Exit nonzero if any candidate is rejected.',
     '  --help                Show this help.',
@@ -68,7 +71,7 @@ function hasFlag(argv: string[], name: string): boolean {
 }
 
 function positionalArgs(argv: string[]): string[] {
-  const optionsWithValues = new Set(['--input', '--out', '--failure-dir', '--limit']);
+  const optionsWithValues = new Set(['--input', '--out', '--failure-dir', '--limit', '--fixture-timeout-ms']);
   const positionals: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -98,6 +101,11 @@ function parseArgs(argv: string[]): ImportArgs {
   if (limitRaw !== undefined && (!Number.isInteger(limit) || Number(limit) < 1)) {
     throw new Error(`--limit must be a positive integer, received ${limitRaw}`);
   }
+  const fixtureTimeoutRaw = readOption(argv, 'fixture-timeout-ms');
+  const fixtureTimeoutMs = fixtureTimeoutRaw === undefined ? DEFAULT_FIXTURE_TIMEOUT_MS : Number(fixtureTimeoutRaw);
+  if (!Number.isInteger(fixtureTimeoutMs) || fixtureTimeoutMs < 1) {
+    throw new Error(`--fixture-timeout-ms must be a positive integer, received ${fixtureTimeoutRaw}`);
+  }
 
   return {
     inputPath,
@@ -106,6 +114,7 @@ function parseArgs(argv: string[]): ImportArgs {
     append: hasFlag(argv, 'append'),
     dryRun: hasFlag(argv, 'dry-run'),
     failOnReject: hasFlag(argv, 'fail-on-reject'),
+    fixtureTimeoutMs,
     ...(limit !== undefined ? { limit } : {}),
   };
 }
@@ -263,7 +272,6 @@ if (!Array.isArray(rawCandidates)) {
 }
 
 const candidates = args.limit ? rawCandidates.slice(0, args.limit) : rawCandidates;
-const bridge = await createInitializedCppConformanceBridge();
 const accepted: CppConformanceFixture[] = [];
 const rejected: RejectedFixture[] = [];
 
@@ -278,7 +286,10 @@ for (const [index, candidate] of candidates.entries()) {
 
   const fixture = normalizeCandidate(candidate as Record<string, unknown>);
   console.log(`RUN: C++ conformance import ${fixture.id}`);
-  const run = await runCppConformanceFixture(bridge, fixture, { includeGeneratedSource: true });
+  const run = await runCppConformanceFixtureInIsolatedProcess(fixture, {
+    includeGeneratedSource: true,
+    timeoutMs: args.fixtureTimeoutMs,
+  });
   if (run.success) {
     accepted.push(fixture);
     console.log(`ACCEPT: ${fixture.id}`);

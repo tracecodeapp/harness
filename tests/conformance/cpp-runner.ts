@@ -1,6 +1,7 @@
+import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import type { CppConformanceFixture } from './cpp-fixtures';
 
@@ -32,6 +33,15 @@ export interface CppConformanceRunResult {
   phase?: 'untraced' | 'traced' | 'mutation';
   error?: string;
 }
+
+export interface CppConformanceIsolatedRunOptions {
+  includeGeneratedSource?: boolean;
+  timeoutMs?: number;
+}
+
+const CPP_CONFORMANCE_CHILD_ARG = '--__tracecode-cpp-conformance-child';
+const CPP_CONFORMANCE_CHILD_RESULT_PREFIX = '__TRACECODE_CPP_CONFORMANCE_RESULT__';
+const DEFAULT_CPP_CONFORMANCE_FIXTURE_TIMEOUT_MS = 15_000;
 
 export function normalizeJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalizeJson);
@@ -210,4 +220,124 @@ export async function runCppConformanceFixture(
     ...(phase ? { phase } : {}),
     ...(error ? { error } : {}),
   };
+}
+
+function expectedCppFixtureOutput(fixture: CppConformanceFixture): unknown {
+  return fixture.expectedHarnessOutput ?? fixture.expectedReturn;
+}
+
+function failedIsolatedCppConformanceResult(
+  fixture: CppConformanceFixture,
+  error: string,
+  phase: CppConformanceRunResult['phase'] = 'untraced'
+): CppConformanceRunResult {
+  return {
+    success: false,
+    expectedOutput: expectedCppFixtureOutput(fixture),
+    phase,
+    error,
+  };
+}
+
+function appendBoundedOutput(current: string, chunk: Buffer, maxBytes: number): string {
+  if (Buffer.byteLength(current) >= maxBytes) return current;
+  const remaining = maxBytes - Buffer.byteLength(current);
+  return `${current}${chunk.subarray(0, Math.max(0, remaining)).toString('utf8')}`;
+}
+
+export async function runCppConformanceFixtureInIsolatedProcess(
+  fixture: CppConformanceFixture,
+  options: CppConformanceIsolatedRunOptions = {}
+): Promise<CppConformanceRunResult> {
+  const timeoutMs = Number.isFinite(options.timeoutMs)
+    ? Math.max(1, Math.floor(Number(options.timeoutMs)))
+    : DEFAULT_CPP_CONFORMANCE_FIXTURE_TIMEOUT_MS;
+  const modulePath = fileURLToPath(import.meta.url);
+  const child = spawn(process.execPath, [...process.execArgv, modulePath, CPP_CONFORMANCE_CHILD_ARG], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let stdout = '';
+  let stderr = '';
+  let timedOut = false;
+  const maxBufferedOutputBytes = 4 * 1024 * 1024;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    child.kill('SIGKILL');
+  }, timeoutMs);
+
+  child.stdout.on('data', (chunk: Buffer) => {
+    stdout = appendBoundedOutput(stdout, chunk, maxBufferedOutputBytes);
+  });
+  child.stderr.on('data', (chunk: Buffer) => {
+    stderr = appendBoundedOutput(stderr, chunk, maxBufferedOutputBytes);
+  });
+
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code, signal) => resolve({ code, signal }));
+  });
+
+  child.stdin.end(JSON.stringify({
+    fixture,
+    includeGeneratedSource: options.includeGeneratedSource === true,
+  }));
+
+  try {
+    const { code, signal } = await closed;
+    if (timedOut) {
+      return failedIsolatedCppConformanceResult(
+        fixture,
+        `${fixture.id}: C++ conformance fixture timed out after ${timeoutMs}ms`
+      );
+    }
+    const resultLine = stdout
+      .split(/\r?\n/)
+      .find((line) => line.startsWith(CPP_CONFORMANCE_CHILD_RESULT_PREFIX));
+    if (!resultLine) {
+      return failedIsolatedCppConformanceResult(
+        fixture,
+        `${fixture.id}: isolated C++ conformance runner exited without a result` +
+          (code === 0 ? '' : ` (exit=${code ?? 'null'} signal=${signal ?? 'null'})`) +
+          (stderr ? `\n${stderr}` : '')
+      );
+    }
+    return JSON.parse(resultLine.slice(CPP_CONFORMANCE_CHILD_RESULT_PREFIX.length)) as CppConformanceRunResult;
+  } catch (error) {
+    return failedIsolatedCppConformanceResult(
+      fixture,
+      `${fixture.id}: isolated C++ conformance runner failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function readCppConformanceChildStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function runCppConformanceChild(): Promise<void> {
+  const payload = JSON.parse(await readCppConformanceChildStdin()) as {
+    fixture: CppConformanceFixture;
+    includeGeneratedSource?: boolean;
+  };
+  const bridge = await createInitializedCppConformanceBridge();
+  const result = await runCppConformanceFixture(bridge, payload.fixture, {
+    includeGeneratedSource: payload.includeGeneratedSource === true,
+  });
+  process.stdout.write(`${CPP_CONFORMANCE_CHILD_RESULT_PREFIX}${JSON.stringify(result)}\n`);
+}
+
+if (process.argv.includes(CPP_CONFORMANCE_CHILD_ARG)) {
+  runCppConformanceChild().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
 }

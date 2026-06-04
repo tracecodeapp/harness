@@ -12,6 +12,7 @@ import {
   createRuntimeCommandStdinPipeFromText,
   createRuntimeProjectIoBridge,
   readRuntimeCommandStdinPipeBytes,
+  RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES,
   runtimeHttpBodyBytes,
   runtimeHttpBodyFromBytes,
   runtimeHttpBodyFromText,
@@ -23,6 +24,8 @@ import {
   runtimeWorkspaceActorPreset,
   runtimeWorkspaceHttpCapabilitiesPreset,
   runtimeCommandStdinPipeClosed,
+  runtimeProjectTruncateUtf8,
+  runtimeProjectUtf8Bytes,
   RuntimeProjectLiveIoController,
   runtimeFileChangePath,
   runRuntimeProjectWorkerBridge,
@@ -83,6 +86,7 @@ import type {
   RuntimeCommandEvent,
   RuntimeCommandEventHandler,
   RuntimeCommandEventStream,
+  RuntimeCommandExecutionLimits,
   RuntimeCommandFileChangeEvent,
   RuntimeCommandOutputEvent,
   RuntimeCommandStatusEvent,
@@ -157,13 +161,7 @@ export interface ProjectWorkspaceJavaScriptConfig {
   invokeTool?: (path: string, argsJson: string) => Promise<string>;
 }
 
-export interface ProjectWorkspaceExecutionLimits {
-  maxCommandCount?: number;
-  maxLoopIterations?: number;
-  maxCallDepth?: number;
-  maxOutputBytes?: number;
-  timeoutMs?: number;
-}
+export interface ProjectWorkspaceExecutionLimits extends RuntimeCommandExecutionLimits {}
 
 export type RuntimePackageManagerName = 'npm';
 
@@ -699,6 +697,8 @@ interface RuntimeCommandExecutionContext {
   executableTransformCwd?: string;
   deviceStdout: string;
   deviceStderr: string;
+  outputBytes: Record<RuntimeCommandEventStream, number>;
+  truncatedOutputStreams: Set<RuntimeCommandEventStream>;
 }
 
 type RuntimeFileSystemGenerationSnapshot = ReadonlyMap<string, number>;
@@ -970,6 +970,8 @@ function normalizeRuntimeSchedulerConfig(config: RuntimeTraceKernelSchedulerConf
   };
 }
 
+const TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS = 64;
+
 function normalizeProjectSessionCommand(
   command: RuntimeProjectSessionCommandDefinition
 ): RuntimeProjectSessionCommand {
@@ -1001,6 +1003,11 @@ function normalizeProjectSessionCommands(
     if ('steps' in normalizedCommand) {
       if (normalizedCommand.steps.length === 0) {
         throw new Error(`Project session command "${name}" must include at least one step.`);
+      }
+      if (normalizedCommand.steps.length > TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS) {
+        throw new Error(
+          `Project session command "${name}" must include at most ${TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS} steps.`
+        );
       }
       for (const step of normalizedCommand.steps) {
         if (!step.command.trim()) {
@@ -4932,6 +4939,7 @@ interface ParsedPackageManagerInvocation {
   workspace?: string;
   ifPresent: boolean;
   silent: boolean;
+  ignoreScripts: boolean;
 }
 
 const DEFAULT_PACKAGE_MANAGERS: readonly RuntimePackageManagerName[] = ['npm'];
@@ -5095,7 +5103,7 @@ function parsePackageManagerInvocation(
 ): ParsedPackageManagerInvocation {
   if (manager === 'npx') {
     if (args[0] === '--version' || args[0] === '-v') {
-      return { kind: 'version', command: 'version', scriptArgs: [], execArgs: [], installArgs: [], ifPresent: false, silent: false };
+      return { kind: 'version', command: 'version', scriptArgs: [], execArgs: [], installArgs: [], ifPresent: false, silent: false, ignoreScripts: false };
     }
     const execArgs = cleanPackageManagerPassthroughArgs(args);
     return {
@@ -5107,6 +5115,7 @@ function parsePackageManagerInvocation(
       installArgs: [],
       ifPresent: false,
       silent: false,
+      ignoreScripts: false,
     };
   }
 
@@ -5114,6 +5123,7 @@ function parsePackageManagerInvocation(
   let workspace: string | undefined;
   let ifPresent = false;
   let silent = false;
+  let ignoreScripts = false;
   const installFlags: string[] = [];
   const positional: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
@@ -5123,7 +5133,7 @@ function parsePackageManagerInvocation(
       break;
     }
     if (arg === '--version' || arg === '-v') {
-      return { kind: 'version', command: 'version', scriptArgs: [], execArgs: [], installArgs: [], ifPresent, silent };
+      return { kind: 'version', command: 'version', scriptArgs: [], execArgs: [], installArgs: [], ifPresent, silent, ignoreScripts };
     }
     if (arg === '--if-present') {
       ifPresent = true;
@@ -5162,6 +5172,7 @@ function parsePackageManagerInvocation(
       continue;
     }
     if (arg === '--ignore-scripts' || arg.startsWith('--ignore-scripts=')) {
+      ignoreScripts = true;
       installFlags.push(arg);
       continue;
     }
@@ -5170,7 +5181,7 @@ function parsePackageManagerInvocation(
 
   const command = positional[0] ?? '';
   const rest = positional.slice(1);
-  const common = { command, prefix, workspace, ifPresent, silent };
+  const common = { command, prefix, workspace, ifPresent, silent, ignoreScripts };
 
   if (command === '' || command === 'run' || command === 'run-script') {
     const scriptName = command === '' ? undefined : rest[0];
@@ -5575,10 +5586,13 @@ async function runPackageScript(
   options: NormalizedRuntimePackageManagerConfig,
   ifPresent: boolean,
   silent: boolean,
+  ignoreScripts: boolean,
   emitOutput?: PackageManagerOutputEmitter
 ): Promise<RuntimeCommandResult> {
   const scripts = packageScripts(manifest);
-  const events = lifecycleScriptNames(scriptName, scripts);
+  const events = ignoreScripts
+    ? (scripts[scriptName] === undefined ? [] : [scriptName])
+    : lifecycleScriptNames(scriptName, scripts);
   if (events.length === 0) {
     return ifPresent
       ? { stdout: '', stderr: '', exitCode: 0 }
@@ -5756,7 +5770,19 @@ async function runPackageManagerCommand(
   switch (invocation.kind) {
     case 'run':
       if (!invocation.scriptName) return listPackageScripts(manifest);
-      return runPackageScript(manager, ctx, workspaceRoot, manifest, invocation.scriptName, invocation.scriptArgs, options, invocation.ifPresent, invocation.silent, emitOutput);
+      return runPackageScript(
+        manager,
+        ctx,
+        workspaceRoot,
+        manifest,
+        invocation.scriptName,
+        invocation.scriptArgs,
+        options,
+        invocation.ifPresent,
+        invocation.silent,
+        invocation.ignoreScripts,
+        emitOutput
+      );
     case 'exec':
       return runPackageExec(manager, ctx, workspaceRoot, manifest, invocation.execCommand, invocation.execArgs, options);
     case 'install':
@@ -6478,8 +6504,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return signal && signal !== ctx.signal ? { ...ctx, signal } : ctx;
   }
 
-  private createBash(): Bash {
-    const bash = new Bash(this.bashOptions);
+  private createBash(executionLimits?: RuntimeCommandExecutionLimits): Bash {
+    const bash = new Bash({
+      ...this.bashOptions,
+      ...(executionLimits ? { executionLimits: executionLimits as never } : {}),
+    });
     bash.registerTransformPlugin({
       name: 'tracekernel-command-rewrite',
       transform: ({ ast }: { ast: unknown }) => {
@@ -8719,8 +8748,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     const commandContext = this.currentCommandContext();
     if (commandContext) {
-      if (route.stream === 'stdout') commandContext.deviceStdout += data;
-      if (route.stream === 'stderr') commandContext.deviceStderr += data;
+      this.captureDeviceOutput(commandContext, route.stream, data);
     }
     this.emitLocalRuntimeEvent({
       type: 'output',
@@ -8730,6 +8758,46 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       data,
       ...(actor ? { actor } : {}),
     });
+  }
+
+  private captureDeviceOutput(
+    context: RuntimeCommandExecutionContext,
+    stream: RuntimeCommandEventStream,
+    data: string
+  ): void {
+    const chunk = this.captureCommandOutput(context, stream, data);
+    if (stream === 'stdout') context.deviceStdout += chunk;
+    if (stream === 'stderr') context.deviceStderr += chunk;
+  }
+
+  private captureCommandOutput(
+    context: RuntimeCommandExecutionContext,
+    stream: RuntimeCommandEventStream,
+    data: string
+  ): string {
+    if (!data || context.truncatedOutputStreams.has(stream)) return '';
+    const used = context.outputBytes[stream];
+    const remaining = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+    const bytes = runtimeProjectUtf8Bytes(data);
+    if (bytes <= remaining) {
+      context.outputBytes[stream] = used + bytes;
+      return data;
+    }
+    context.truncatedOutputStreams.add(stream);
+    const marker = `\n[tracekernel: ${stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+    const chunk = `${runtimeProjectTruncateUtf8(data, Math.max(0, remaining))}${marker}`;
+    context.outputBytes[stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
+    return chunk;
+  }
+
+  private captureReturnedOutput(
+    context: RuntimeCommandExecutionContext,
+    result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>
+  ): Pick<RuntimeCommandResult, 'stdout' | 'stderr'> {
+    return {
+      stdout: this.captureCommandOutput(context, 'stdout', result.stdout),
+      stderr: this.captureCommandOutput(context, 'stderr', result.stderr),
+    };
   }
 
   private async writeFileAs(
@@ -9167,6 +9235,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       executableTransformCwd: commandCwd,
       deviceStdout: '',
       deviceStderr: '',
+      outputBytes: { stdout: 0, stderr: 0 },
+      truncatedOutputStreams: new Set(),
     };
     this.processTable.set(process.pid, process);
     this.recordKernelEvent('process-queue', process.pid, {
@@ -9182,9 +9252,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       try {
         if (process.signal) {
           const result = this.signalCommandResult(process);
+          const output = this.captureReturnedOutput(commandContext, result);
           processExitCode = result.exitCode;
-          this.emitReturnedOutputEvents(result);
-          return result;
+          this.emitReturnedOutputEvents(output);
+          return { ...result, ...output };
         }
         process.state = 'running';
         const schedulerSnapshot = this.commandScheduler.snapshot();
@@ -9204,22 +9275,25 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         const directExecutableResult = await this.tryRunVirtualExecutable(command, { ...options, stdinPipe, signal: abortController.signal });
         if (directExecutableResult) {
           await this.flushRuntimeEventQueue();
-          this.emitReturnedOutputEvents(directExecutableResult);
+          const output = this.captureReturnedOutput(commandContext, directExecutableResult);
+          this.emitReturnedOutputEvents(output);
           processExitCode = directExecutableResult.exitCode;
           return {
             ...directExecutableResult,
+            ...output,
             ...(!directExecutableResult.error && process.signal ? { error: this.signalCommandError(process) } : {}),
           };
         }
 
-        const result = await this.createBash().exec(command, {
+        const result = await this.createBash(options.executionLimits).exec(command, {
           cwd: commandCwd,
           env: options.env,
           signal: abortController.signal,
           args: options.args,
         });
         await this.flushRuntimeEventQueue();
-        this.emitReturnedOutputEvents(result);
+        const output = this.captureReturnedOutput(commandContext, result);
+        this.emitReturnedOutputEvents(output);
         processExitCode = result.exitCode;
         if (commandContext.kernelError?.code === 'EINTR' && process.signal) {
           const signalResult = this.signalCommandResult(process);
@@ -9227,8 +9301,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           return signalResult;
         }
         return {
-          stdout: `${result.stdout}${commandContext.deviceStdout}`,
-          stderr: `${result.stderr}${commandContext.deviceStderr}`,
+          stdout: `${output.stdout}${commandContext.deviceStdout}`,
+          stderr: `${output.stderr}${commandContext.deviceStderr}`,
           exitCode: result.exitCode,
           ...(commandContext.kernelError ? { error: commandContext.kernelError } : {}),
           ...(!commandContext.kernelError && (result as RuntimeCommandResult).error ? { error: (result as RuntimeCommandResult).error } : {}),
@@ -9240,19 +9314,21 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         }
         if (process.signal) {
           const result = this.signalCommandResult(process);
+          const output = this.captureReturnedOutput(commandContext, result);
           processExitCode = result.exitCode;
           await this.flushRuntimeEventQueue();
-          this.emitReturnedOutputEvents(result);
-          return result;
+          this.emitReturnedOutputEvents(output);
+          return { ...result, ...output };
         }
         throw error;
       }
     })).catch((error) => {
       if (process.signal) {
         const result = this.signalCommandResult(process);
+        const output = this.captureReturnedOutput(commandContext, result);
         processExitCode = result.exitCode;
-        this.emitReturnedOutputEvents(result);
-        return result;
+        this.emitReturnedOutputEvents(output);
+        return { ...result, ...output };
       }
       if (error instanceof RuntimeKernelAdmissionRejectedError) {
         const commandError = error.toCommandError();
@@ -9294,6 +9370,36 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     });
   }
 
+  private effectiveCommandExecutionLimits(
+    override?: RuntimeCommandExecutionLimits
+  ): RuntimeCommandExecutionLimits | undefined {
+    return override ?? (this.bashOptions.executionLimits as RuntimeCommandExecutionLimits | undefined);
+  }
+
+  private finiteMaxCommandCount(limits: RuntimeCommandExecutionLimits | undefined): number | undefined {
+    const value = limits?.maxCommandCount;
+    return Number.isFinite(value) ? Math.max(1, Math.floor(Number(value))) : undefined;
+  }
+
+  private projectCommandStepLimit(limits: RuntimeCommandExecutionLimits | undefined): number {
+    const maxCommandCount = this.finiteMaxCommandCount(limits);
+    return maxCommandCount === undefined
+      ? TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS
+      : Math.min(TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS, maxCommandCount);
+  }
+
+  private projectCommandStepExecutionLimits(
+    limits: RuntimeCommandExecutionLimits | undefined,
+    stepCount: number
+  ): RuntimeCommandExecutionLimits | undefined {
+    const maxCommandCount = this.finiteMaxCommandCount(limits);
+    if (maxCommandCount === undefined) return limits;
+    return {
+      ...limits,
+      maxCommandCount: Math.max(1, Math.floor(maxCommandCount / stepCount)),
+    };
+  }
+
   async runProjectCommand(name: string, options: RuntimeProjectCommandOptions = {}): Promise<RuntimeCommandResult> {
     const unusable = this.assertWorkspaceUsableForRun(name);
     if (unusable) return unusable;
@@ -9312,10 +9418,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         exitCode: 403,
       };
     }
-    const runStep = (step: RuntimeProjectSessionCommandStep): Promise<RuntimeCommandResult> => {
+    const runStep = (
+      step: RuntimeProjectSessionCommandStep,
+      executionLimits?: RuntimeCommandExecutionLimits
+    ): Promise<RuntimeCommandResult> => {
       const commandCwd = options.cwd ?? step.cwd;
       return this.runCommand(step.command, {
         ...options,
+        ...(executionLimits ? { executionLimits } : {}),
         cwd: commandCwd
           ? this.resolveTerminalPath(this.cwd, commandCwd)
           : this.projectSession?.cwd,
@@ -9329,6 +9439,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (!('steps' in command)) {
       return runStep(command);
     }
+    const commandLimits = this.effectiveCommandExecutionLimits(options.executionLimits);
+    const maxStepCount = this.projectCommandStepLimit(commandLimits);
+    if (command.steps.length > maxStepCount) {
+      return {
+        stdout: '',
+        stderr: `Project command has too many steps: ${name} (${command.steps.length}/${maxStepCount})\n`,
+        exitCode: 2,
+      };
+    }
+    const stepExecutionLimits = this.projectCommandStepExecutionLimits(commandLimits, command.steps.length);
     const files: RuntimeFileChange[] = [];
     let stdout = '';
     let stderr = '';
@@ -9346,7 +9466,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         },
         actor: SYSTEM_ACTOR,
       });
-      const result = await runStep(step);
+      const result = await runStep(step, stepExecutionLimits);
       stdout += result.stdout;
       stderr += result.stderr;
       if (result.files) files.push(...result.files);

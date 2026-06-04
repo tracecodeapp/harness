@@ -3112,11 +3112,16 @@ function minimalTraceForOptions(options = {}) {
 
 function traceBudgetHardStopForOptions(options = {}) {
   const traceOptions = options.traceOptions || {};
-  if (traceOptions.softTraceBudget === true) return false;
-  return (
-    (Number.isFinite(traceOptions.maxTraceSteps) && !Number.isFinite(traceOptions.maxStoredEvents)) ||
+  if (
     Number.isFinite(traceOptions.maxLineEvents) ||
     Number.isFinite(traceOptions.maxSingleLineHits)
+  ) {
+    return true;
+  }
+  if (traceOptions.softTraceBudget === true) return false;
+  return (
+    Number.isFinite(traceOptions.maxTraceSteps) &&
+    !Number.isFinite(traceOptions.maxStoredEvents)
   );
 }
 
@@ -3369,6 +3374,47 @@ function buildCustomCppObjectLiteral(value, type, aliases = new Map()) {
   return null;
 }
 
+function isCppUnsignedNumericType(normalized) {
+  return /^(?:unsigned|size_t|std::size_t)/.test(normalized);
+}
+
+function isCppIntegerNumericType(normalized) {
+  return /^(?:signed)?(?:char|short|int|long|longint|longlong|longlongint)$/.test(normalized) ||
+    /^(?:unsigned)(?:char|short|int|long|longint|longlong|longlongint)?$/.test(normalized) ||
+    normalized === 'size_t' ||
+    normalized === 'std::size_t';
+}
+
+function isCppFloatingNumericType(normalized) {
+  return normalized === 'float' || normalized === 'double' || normalized === 'longdouble';
+}
+
+function isCppNumericType(normalized) {
+  return isCppIntegerNumericType(normalized) || isCppFloatingNumericType(normalized);
+}
+
+function toCppNumericLiteral(value, normalized, type) {
+  if (isCppIntegerNumericType(normalized)) {
+    if (typeof value === 'bigint') {
+      if (isCppUnsignedNumericType(normalized) && value < 0n) {
+        throw new Error(`Expected non-negative integer input for ${type}.`);
+      }
+      return value.toString();
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+      throw new Error(`Expected integer input for ${type}.`);
+    }
+    if (isCppUnsignedNumericType(normalized) && value < 0) {
+      throw new Error(`Expected non-negative integer input for ${type}.`);
+    }
+    return String(value);
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Expected finite numeric input for ${type}.`);
+  }
+  return String(value);
+}
+
 function toCppLiteral(value, type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   if (normalized === 'JsonValue' || normalized === 'tracecode::JsonValue') {
@@ -3452,8 +3498,8 @@ function toCppLiteral(value, type, aliases = new Map()) {
       return `{ ${entries.map(([, child]) => toCppLiteral(child, 'auto', aliases)).join(', ')} }`;
     }
   }
-  if (/^(?:unsigned)?(?:short|int|long|longlong|longlongint|size_t|std::size_t|float|double|longdouble)$/.test(normalized)) {
-    return String(value);
+  if (isCppNumericType(normalized)) {
+    return toCppNumericLiteral(value, normalized, type);
   }
   if (typeof value === 'number' || typeof value === 'bigint') return String(value);
   if (typeof value === 'string') return quoteCppString(value);
