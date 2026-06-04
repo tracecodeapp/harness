@@ -215,7 +215,7 @@ if (typeof importScripts === 'function') {
  * Convert a JavaScript value to a Python literal string.
  * Prefer the generated shared implementation when available.
  */
-function fallbackToPythonLiteral(value) {
+function fallbackToPythonLiteral(value, seen = new WeakSet()) {
   if (value === null || value === undefined) {
     return 'None';
   }
@@ -229,13 +229,25 @@ function fallbackToPythonLiteral(value) {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
-    return '[' + value.map(fallbackToPythonLiteral).join(', ') + ']';
+    if (seen.has(value)) return 'None';
+    seen.add(value);
+    try {
+      return '[' + value.map((item) => fallbackToPythonLiteral(item, seen)).join(', ') + ']';
+    } finally {
+      seen.delete(value);
+    }
   }
   if (typeof value === 'object') {
-    const entries = Object.entries(value)
-      .map(([k, v]) => `${JSON.stringify(k)}: ${fallbackToPythonLiteral(v)}`)
-      .join(', ');
-    return '{' + entries + '}';
+    if (seen.has(value)) return 'None';
+    seen.add(value);
+    try {
+      const entries = Object.entries(value)
+        .map(([k, v]) => `${JSON.stringify(k)}: ${fallbackToPythonLiteral(v, seen)}`)
+        .join(', ');
+      return '{' + entries + '}';
+    } finally {
+      seen.delete(value);
+    }
   }
   return JSON.stringify(value);
 }

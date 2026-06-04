@@ -11,7 +11,7 @@
  * Convert a JavaScript value to a Python literal string.
  * Handles null -> None, booleans -> True/False, and nested structures.
  */
-export function templateToPythonLiteral(value: unknown): string {
+export function templateToPythonLiteral(value: unknown, seen: WeakSet<object> = new WeakSet()): string {
   if (value === null || value === undefined) {
     return 'None';
   }
@@ -25,13 +25,25 @@ export function templateToPythonLiteral(value: unknown): string {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
-    return '[' + value.map(templateToPythonLiteral).join(', ') + ']';
+    if (seen.has(value)) return 'None';
+    seen.add(value);
+    try {
+      return '[' + value.map((item) => templateToPythonLiteral(item, seen)).join(', ') + ']';
+    } finally {
+      seen.delete(value);
+    }
   }
   if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .map(([k, v]) => `${JSON.stringify(k)}: ${templateToPythonLiteral(v)}`)
-      .join(', ');
-    return '{' + entries + '}';
+    if (seen.has(value)) return 'None';
+    seen.add(value);
+    try {
+      const entries = Object.entries(value as Record<string, unknown>)
+        .map(([k, v]) => `${JSON.stringify(k)}: ${templateToPythonLiteral(v, seen)}`)
+        .join(', ');
+      return '{' + entries + '}';
+    } finally {
+      seen.delete(value);
+    }
   }
   return JSON.stringify(value);
 }

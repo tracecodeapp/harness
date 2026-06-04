@@ -84,6 +84,46 @@ function runtimeDeps(): RuntimeDeps {
   };
 }
 
+async function testPythonInputLiteralSerializationHandlesCycles(): Promise<void> {
+  const cyclicObject: Record<string, unknown> = { label: 'root' };
+  cyclicObject.self = cyclicObject;
+  const cyclicArray: unknown[] = [1];
+  cyclicArray.push(cyclicArray);
+
+  const generatedLiteral = toPythonLiteral({ cyclicObject, cyclicArray });
+  assertCondition(
+    generatedLiteral === '{"cyclicObject": {"label": "root", "self": None}, "cyclicArray": [1, None]}',
+    `generated Python input literal serialization should replace cycles with None: ${generatedLiteral}`
+  );
+
+  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const context = vm.createContext({
+    console,
+    self: {
+      location: { search: '' },
+      onmessage: null,
+      postMessage: () => {},
+    },
+  });
+  vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
+  const fallbackLiteral = vm.runInContext(
+    `(() => {
+      const objectValue = { label: 'root' };
+      objectValue.self = objectValue;
+      const arrayValue = [1];
+      arrayValue.push(arrayValue);
+      return fallbackToPythonLiteral({ objectValue, arrayValue });
+    })()`,
+    context
+  ) as string;
+
+  assertCondition(
+    fallbackLiteral === '{"objectValue": {"label": "root", "self": None}, "arrayValue": [1, None]}',
+    `fallback Python input literal serialization should replace cycles with None: ${fallbackLiteral}`
+  );
+  console.log('PASS: Python input literal serialization handles cyclic values');
+}
+
 async function runTracingCase(
   source: string,
   functionName: string,
@@ -219,6 +259,7 @@ async function testPythonProjectBridgeHardeningHooksArePresent(): Promise<void> 
   console.log('PASS: Python project bridge hardening hooks are present');
 }
 
+await testPythonInputLiteralSerializationHandlesCycles();
 await testRepeatedLineSuppressionStillCountsBudget();
 await testSolutionConstructorRunsUnderTraceGuard();
 await testCallsiteFlushRunsUserReprUnderTraceGuard();
