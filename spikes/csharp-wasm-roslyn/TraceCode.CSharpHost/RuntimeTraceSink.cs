@@ -4,6 +4,7 @@ public static class RuntimeTraceSink
 {
     private const int MaxNodeDepth = 64;
     private const int MaxCollectionItems = 64;
+    private const int MaxBulkIndexedWrites = 512;
     private const int MaxObjectFields = 32;
     private static readonly List<RuntimeTraceEvent> Events = new();
     private static readonly List<RuntimeTraceCallFrame> CallStack = new();
@@ -624,7 +625,8 @@ public static class RuntimeTraceSink
     {
         if (receiver is Array array)
         {
-            for (int index = 0; index < array.Length; index++)
+            int limit = BulkIndexedWriteLimit(array.Length);
+            for (int index = 0; index < limit; index++)
             {
                 IndexedWrite(variable, index, array.GetValue(index), line, new string?[] { null });
             }
@@ -633,7 +635,8 @@ public static class RuntimeTraceSink
 
         if (receiver is System.Collections.IList list)
         {
-            for (int index = 0; index < list.Count; index++)
+            int limit = BulkIndexedWriteLimit(list.Count);
+            for (int index = 0; index < limit; index++)
             {
                 IndexedWrite(variable, index, list[index], line, new string?[] { null });
             }
@@ -648,10 +651,22 @@ public static class RuntimeTraceSink
             return;
         }
 
-        for (int index = 0; index < values.Count; index++)
+        int limit = BulkIndexedWriteLimit(values.Count);
+        for (int index = 0; index < limit; index++)
         {
             IndexedWrite(variable, index, values[index], line, new string?[] { null });
         }
+    }
+
+    public static int BulkIndexedWriteLimit(int requested)
+    {
+        if (requested <= 0 || traceLimitExceeded)
+        {
+            return 0;
+        }
+
+        int remainingEvents = StoredEventLimit is int limit ? Math.Max(0, limit - Events.Count) : requested;
+        return Math.Min(Math.Min(requested, MaxBulkIndexedWrites), remainingEvents);
     }
 
     public static void FieldRead(string variable, string field, object? value, int line)

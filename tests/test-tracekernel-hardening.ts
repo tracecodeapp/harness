@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
+import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../packages/harness-project/src/async-hooks-browser-shim';
 import { assertRuntimeFinalDiffBudget } from '../packages/harness-core/src/runtime-project';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
@@ -45,6 +46,52 @@ async function rejectedMessage(run: () => Promise<unknown>): Promise<string> {
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+async function testBrowserAsyncLocalStorageSingleFlightContexts(): Promise<void> {
+  assertCondition(
+    (BrowserAsyncLocalStorage as unknown as { __tracecodeBrowserSingleFlight?: boolean }).__tracecodeBrowserSingleFlight === true,
+    'browser AsyncLocalStorage shim should advertise single-flight context semantics'
+  );
+  const storage = new BrowserAsyncLocalStorage<{ id: string }>();
+  const events: string[] = [];
+  let releaseA!: () => void;
+  const aReleased = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+
+  const first = storage.run({ id: 'a' }, async () => {
+    events.push(`a:start:${storage.getStore()?.id ?? 'none'}`);
+    await aReleased;
+    events.push(`a:end:${storage.getStore()?.id ?? 'none'}`);
+    return storage.getStore()?.id;
+  });
+  const second = storage.run({ id: 'b' }, async () => {
+    events.push(`b:start:${storage.getStore()?.id ?? 'none'}`);
+    return storage.getStore()?.id;
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assertCondition(
+    events.join('|') === 'a:start:a',
+    `browser AsyncLocalStorage shim should not overlap queued contexts: ${JSON.stringify(events)}`
+  );
+  releaseA();
+  const [firstStore, secondStore] = await Promise.all([first, second]);
+  assertCondition(
+    firstStore === 'a' &&
+      secondStore === 'b' &&
+      storage.getStore() === undefined &&
+      events.join('|') === 'a:start:a|a:end:a|b:start:b',
+    `browser AsyncLocalStorage shim should restore isolated queued contexts: ${JSON.stringify({ firstStore, secondStore, events, store: storage.getStore() })}`
+  );
+
+  const projectSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-project', 'src', 'index.ts'), 'utf8');
+  assertCondition(
+    projectSource.includes('singleFlightAsyncContext: isSingleFlightBrowserAsyncLocalStorage()'),
+    'TraceKernel scheduler should clamp browser command concurrency when the async context shim is single-flight'
+  );
 }
 
 class ProtocolTestWorker {
@@ -1539,6 +1586,52 @@ async function testCppTraceIdsDoNotExposePointers(): Promise<void> {
   );
 }
 
+async function testBulkTraceWritesAreBudgetedBeforeLoops(): Promise<void> {
+  const root = dirname(testDirectory);
+  const [javascriptSource, pythonSource, javaSource, csharpSinkSource, csharpHostSource, cppSource] = await Promise.all([
+    readFile(join(root, 'workers', 'javascript', 'javascript-worker.js'), 'utf8'),
+    readFile(join(root, 'workers', 'python', 'runtime-core.js'), 'utf8'),
+    readFile(join(root, 'workers', 'java', 'src', 'tracecode', 'user', 'TraceHooks.java'), 'utf8'),
+    readFile(join(root, 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'RuntimeTraceSink.cs'), 'utf8'),
+    readFile(join(root, 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8'),
+    readFile(join(root, 'workers', 'cpp', 'tracecode_runtime.hpp'), 'utf8'),
+  ]);
+  assertCondition(
+    javascriptSource.includes('const MAX_TRACE_BULK_ACCESSES = 512') &&
+      javascriptSource.includes('pendingAccessBudget(reserve = 0)') &&
+      javascriptSource.includes('Math.min(__target.length, __traceRecorder.pendingAccessBudget())') &&
+      javascriptSource.includes('Math.min(__args.length, __traceRecorder.pendingAccessBudget())'),
+    'JavaScript bulk trace writes should cap pending access allocation before sort/reverse/push loops'
+  );
+  assertCondition(
+    pythonSource.includes('_TRACE_MAX_BULK_ACCESSES = 512') &&
+      pythonSource.includes('budget = __tracecode_pending_access_budget(frame)') &&
+      pythonSource.includes('if index >= budget:') &&
+      pythonSource.includes('before_values = list(target[:snapshot_budget])'),
+    'Python bulk trace writes should cap pending access loops and heap snapshots before allocation'
+  );
+  assertCondition(
+    javaSource.includes('MAX_BULK_INDEXED_WRITES = 512') &&
+      javaSource.includes('bulkIndexedWriteLimit') &&
+      javaSource.includes('for (int index = 0; index < limit; index++)'),
+    'Java bulk trace writes should cap array write loops before walking full containers'
+  );
+  assertCondition(
+    csharpSinkSource.includes('MaxBulkIndexedWrites = 512') &&
+      csharpSinkSource.includes('BulkIndexedWriteLimit') &&
+      csharpHostSource.includes('RuntimeTraceSink.BulkIndexedWriteLimit(Count)') &&
+      csharpHostSource.includes('if (index >= limit)'),
+    'C# bulk trace writes should cap sink and helper loops before walking full containers'
+  );
+  assertCondition(
+    cppSource.includes('trace_bulk_index_write_limit') &&
+      cppSource.includes('snapshot_values(std::size_t limit)') &&
+      cppSource.includes('out.size() < limit') &&
+      cppSource.includes('for (std::size_t index = 0; index < limit; ++index)'),
+    'C++ bulk trace writes should cap priority queue snapshots and write loops before walking full containers'
+  );
+}
+
 async function testSharedKernelPolicyCachesDeviceManifests(): Promise<void> {
   const source = await readFile(join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy.js'), 'utf8');
   assertCondition(
@@ -2080,6 +2173,7 @@ async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> 
 }
 
 async function main(): Promise<void> {
+  await testBrowserAsyncLocalStorageSingleFlightContexts();
   await testBrowserJavaScriptHardenedModeRequiresWorker();
   await testBrowserJavaScriptWorkerRejectsUserSpoofedResults();
   await testBrowserJavaScriptReadonlyHardlinksAreRejected();
@@ -2106,6 +2200,7 @@ async function main(): Promise<void> {
   await testCppWorkerProjectEventBudgets();
   await testCppInheritedStdioRespectsKernelDevices();
   await testCppTraceIdsDoNotExposePointers();
+  await testBulkTraceWritesAreBudgetedBeforeLoops();
   await testSharedKernelPolicyCachesDeviceManifests();
   testRuntimeFinalDiffBudgets();
   await testTraceKernelProjectCommandStepsAreBounded();

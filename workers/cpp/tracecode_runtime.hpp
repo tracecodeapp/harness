@@ -116,6 +116,15 @@ inline bool& hard_stop_on_trace_budget() {
   return value;
 }
 
+inline std::size_t trace_bulk_index_write_limit(std::size_t requested) {
+  if (requested == 0 || trace_budget_exceeded()) return 0;
+  const int remaining = trace_event_budget() - trace_event_count();
+  if (remaining <= 0) return 0;
+  const std::size_t event_remaining = static_cast<std::size_t>(remaining);
+  const std::size_t hard_limit = 512;
+  return std::min(requested, std::min(hard_limit, event_remaining));
+}
+
 inline bool& minimal_trace_enabled() {
   static bool value = false;
   return value;
@@ -1536,7 +1545,8 @@ inline void emit_index_write_value(const std::string& name, const Container& con
 template <typename Container>
 inline void emit_index_writes_value(const std::string& name, const Container& container, int line) {
   if (minimal_trace_enabled()) return;
-  for (std::size_t index = 0; index < container.size(); ++index) {
+  const std::size_t limit = trace_bulk_index_write_limit(container.size());
+  for (std::size_t index = 0; index < limit; ++index) {
     if (!check_trace_budget(line)) return;
     auto value = trace_index_read_value(container, index);
     trace_event_count() += 1;
@@ -4611,11 +4621,34 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   }
 
   std::vector<T> snapshot_values() const {
-    auto copy = values_;
+    return snapshot_values(trace_bulk_index_write_limit(this->c.size()));
+  }
+
+  std::vector<T> snapshot_values(std::size_t limit) const {
     std::vector<T> out;
-    while (!copy.empty()) {
-      out.push_back(copy.top());
-      copy.pop();
+    if (limit == 0 || this->c.empty()) {
+      return out;
+    }
+    struct CandidateCompare {
+      const Container* values;
+      Compare compare;
+
+      bool operator()(std::size_t left, std::size_t right) const {
+        return compare((*values)[left], (*values)[right]);
+      }
+    };
+    std::priority_queue<std::size_t, std::vector<std::size_t>, CandidateCompare> candidates(
+      CandidateCompare{&this->c, this->comp}
+    );
+    candidates.push(0);
+    while (!candidates.empty() && out.size() < limit) {
+      const std::size_t index = candidates.top();
+      candidates.pop();
+      out.push_back(this->c[index]);
+      const std::size_t left = index * 2 + 1;
+      const std::size_t right = left + 1;
+      if (left < this->c.size()) candidates.push(left);
+      if (right < this->c.size()) candidates.push(right);
     }
     return out;
   }
@@ -4658,14 +4691,16 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   void emit_index_writes(int line) const {
     if (!trace_) return;
     auto values = snapshot_values();
-    for (std::size_t index = 0; index < values.size(); ++index) {
+    const std::size_t limit = trace_bulk_index_write_limit(values.size());
+    for (std::size_t index = 0; index < limit; ++index) {
       emit_index_write_json(index, to_json(values[index]), line);
     }
   }
 
   void emit_index_writes(int line, const std::vector<T>& before, const std::vector<T>& after) const {
     if (!trace_) return;
-    for (std::size_t index = 0; index < after.size(); ++index) {
+    const std::size_t limit = trace_bulk_index_write_limit(after.size());
+    for (std::size_t index = 0; index < limit; ++index) {
       std::string value_json = to_json(after[index]);
       if (index < before.size() && to_json(before[index]) == value_json) {
         continue;

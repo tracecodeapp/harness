@@ -1459,6 +1459,7 @@ function getNumericOption(value, fallback) {
 
 const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
 const MAX_TRACE_MAX_PATH_DEPTH = 8;
+const MAX_TRACE_BULK_ACCESSES = 512;
 
 function getMaxPathDepthOption(value) {
   const numeric = getNumericOption(value, DEFAULT_TRACE_MAX_PATH_DEPTH);
@@ -2275,8 +2276,24 @@ function createTraceRecorder(options = {}) {
       };
 
       const existing = pendingAccessesByFrame.get(frameId) ?? [];
+      if (this.pendingAccessBudget() <= 0) {
+        return;
+      }
       existing.push(normalized);
       pendingAccessesByFrame.set(frameId, existing);
+    },
+    pendingAccessBudget(reserve = 0) {
+      if (traceLimitExceeded) {
+        return 0;
+      }
+      const frameId = getCurrentFrameId();
+      if (frameId === undefined) {
+        return 0;
+      }
+      const pendingCount = pendingAccessesByFrame.get(frameId)?.length ?? 0;
+      const reserved = Number.isFinite(reserve) ? Math.max(0, Math.trunc(reserve)) : 0;
+      const remainingEvents = effectiveMaxRuntimeTraceEvents - runtimeTraceEvents.length - pendingCount - reserved;
+      return Math.max(0, Math.min(MAX_TRACE_BULK_ACCESSES, remainingEvents));
     },
     deferPendingAccesses(lineFlushes = 1) {
       if (traceLimitExceeded) {
@@ -5964,7 +5981,8 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
       ...__sourceLocation,
     });
     if (__sequenceInsertStartIndex !== undefined) {
-      for (let __offset = 0; __offset < __args.length; __offset += 1) {
+      const __bulkWriteLimit = Math.min(__args.length, __traceRecorder.pendingAccessBudget());
+      for (let __offset = 0; __offset < __bulkWriteLimit; __offset += 1) {
         const __writePath = [...__path, __sequenceInsertStartIndex + __offset];
         const __writeSources = __traceNormalizeIndexSources(
           Array.isArray(__normalizedSources) ? [...__normalizedSources, null] : undefined,
@@ -5981,7 +5999,8 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
         });
       }
     } else if (Array.isArray(__target) && (__method === 'sort' || __method === 'reverse')) {
-      for (let __index = 0; __index < __target.length; __index += 1) {
+      const __bulkWriteLimit = Math.min(__target.length, __traceRecorder.pendingAccessBudget());
+      for (let __index = 0; __index < __bulkWriteLimit; __index += 1) {
         const __writePath = [...__path, __index];
         const __writeSources = __traceNormalizeIndexSources(
           Array.isArray(__normalizedSources) ? [...__normalizedSources, null] : undefined,

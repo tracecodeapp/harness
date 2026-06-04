@@ -4318,8 +4318,15 @@ public class TreeNode
             }
 
             int index = 0;
+            int limit = TraceCode.CSharpHost.RuntimeTraceSink.BulkIndexedWriteLimit(collection is System.Collections.ICollection collectionWithCount
+                ? collectionWithCount.Count
+                : int.MaxValue);
             foreach (object? item in enumerable)
             {
+                if (index >= limit)
+                {
+                    break;
+                }
                 object?[] indexedPath = new object?[path.Length + 1];
                 for (int pathIndex = 0; pathIndex < path.Length; pathIndex += 1)
                 {
@@ -5031,7 +5038,8 @@ public class TreeNode
         {
             int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Sort", args, line);
-            for (int index = 0; index < Count; index += 1)
+            int limit = TraceCode.CSharpHost.RuntimeTraceSink.BulkIndexedWriteLimit(Count);
+            for (int index = 0; index < limit; index += 1)
             {
                 TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, base[index], line);
             }

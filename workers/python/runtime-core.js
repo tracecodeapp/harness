@@ -1165,6 +1165,7 @@ def _tracecode_augassign_index(var_name, container, indices, index_sources, op_n
     return next_value
 
 def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
+    frame = sys._getframe(1)
     index_sources = kwargs.pop('__tracecode_index_sources', None)
     before_len = None
     try:
@@ -1213,18 +1214,24 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
                 )
             elif method_name == 'extend' and len(args) >= 1:
                 try:
+                    budget = __tracecode_pending_access_budget(frame)
                     for offset, value in enumerate(args[0]):
+                        if offset >= budget:
+                            break
                         __tracecode_record_access(
-                            sys._getframe(1),
+                            frame,
                             __tracecode_make_access_event(var_name, 'indexed-write', [before_len + offset], value=_serialize(value)),
                         )
                 except Exception:
                     pass
         elif method_name in {'sort', 'reverse'} and isinstance(container, _builtins.list):
             try:
+                budget = __tracecode_pending_access_budget(frame)
                 for index, value in enumerate(container):
+                    if index >= budget:
+                        break
                     __tracecode_record_access(
-                        sys._getframe(1),
+                        frame,
                         __tracecode_make_access_event(var_name, 'indexed-write', [index], value=_serialize(value)),
                     )
             except Exception:
@@ -1232,6 +1239,7 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
     return result
 
 def _tracecode_mutating_index_call(var_name, container, indices, index_sources, method_name, *args, **kwargs):
+    frame = sys._getframe(1)
     effective_indices = list(indices)
     target = __tracecode_read_value(container, effective_indices)
     before_len = None
@@ -1264,18 +1272,24 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
                 )
             elif method_name == 'extend' and len(args) >= 1:
                 try:
+                    budget = __tracecode_pending_access_budget(frame)
                     for offset, value in enumerate(args[0]):
+                        if offset >= budget:
+                            break
                         __tracecode_record_access(
-                            sys._getframe(1),
+                            frame,
                             __tracecode_make_access_event(var_name, 'indexed-write', list(normalized) + [before_len + offset], index_sources=list(index_sources or []) + [None], value=_serialize(value)),
                         )
                 except Exception:
                     pass
         elif normalized is not None and method_name in {'sort', 'reverse'} and isinstance(target, _builtins.list):
             try:
+                budget = __tracecode_pending_access_budget(frame)
                 for index, value in enumerate(target):
+                    if index >= budget:
+                        break
                     __tracecode_record_access(
-                        sys._getframe(1),
+                        frame,
                         __tracecode_make_access_event(var_name, 'indexed-write', list(normalized) + [index], index_sources=list(index_sources or []) + [None], value=_serialize(value)),
                     )
             except Exception:
@@ -1284,10 +1298,12 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
 
 def _tracecode_heapq_mutation(var_name, container, indices, target, method_name, *args, **kwargs):
     import heapq as __tracecode_heapq
+    frame = sys._getframe(1)
     effective_indices = list(indices or [])
     normalized = __tracecode_normalize_indices(effective_indices)
     try:
-        before_values = list(target) if isinstance(target, _builtins.list) else None
+        snapshot_budget = __tracecode_pending_access_budget(frame, reserve=2)
+        before_values = list(target[:snapshot_budget]) if isinstance(target, _builtins.list) and snapshot_budget > 0 else None
     except Exception:
         before_values = None
     __tracecode_record_access(
@@ -1316,7 +1332,7 @@ def _tracecode_heapq_mutation(var_name, container, indices, target, method_name,
             __tracecode_make_access_event(var_name, 'mutating-call', method_name=method_name, args=__tracecode_serialize_call_args(args, kwargs)),
         )
     try:
-        after_values = list(target) if before_values is not None else None
+        after_values = list(target[:len(before_values)]) if before_values is not None else None
         if after_values is not None:
             path_prefix = list(normalized or [])
             source_prefix = [None for _ in path_prefix]
@@ -1346,10 +1362,13 @@ def _tracecode_heapq_mutation(var_name, container, indices, target, method_name,
                 return result
             if method_name == 'heappop':
                 return result
+            budget = __tracecode_pending_access_budget(frame)
             for index, value in enumerate(after_values):
+                if index >= budget:
+                    break
                 if index >= len(before_values) or before_values[index] != value:
                     __tracecode_record_access(
-                        sys._getframe(1),
+                        frame,
                         __tracecode_make_access_event(
                             var_name,
                             'indexed-write',

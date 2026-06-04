@@ -960,10 +960,20 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
   };
 }
 
-function normalizeRuntimeSchedulerConfig(config: RuntimeTraceKernelSchedulerConfig | undefined): RuntimeCommandSchedulerOptions {
-  const maxConcurrentCommands = Number.isFinite(config?.maxConcurrentCommands)
+function isSingleFlightBrowserAsyncLocalStorage(): boolean {
+  return (AsyncLocalStorage as unknown as { __tracecodeBrowserSingleFlight?: boolean }).__tracecodeBrowserSingleFlight === true;
+}
+
+function normalizeRuntimeSchedulerConfig(
+  config: RuntimeTraceKernelSchedulerConfig | undefined,
+  options: { singleFlightAsyncContext?: boolean } = {}
+): RuntimeCommandSchedulerOptions {
+  const configuredMaxConcurrentCommands = Number.isFinite(config?.maxConcurrentCommands)
     ? Math.max(1, Math.floor(config?.maxConcurrentCommands ?? 0))
     : 32;
+  const maxConcurrentCommands = options.singleFlightAsyncContext
+    ? 1
+    : configuredMaxConcurrentCommands;
   const maxQueuedCommands = config?.maxQueuedCommands === undefined || !Number.isFinite(config.maxQueuedCommands)
     ? undefined
     : Math.max(0, Math.floor(config.maxQueuedCommands));
@@ -6343,7 +6353,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       json: (requestOptions) => this.requestHttpJson(requestOptions),
       listen: (listenOptions, handler) => this.listenHttp(listenOptions, handler),
     };
-    this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler));
+    this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler, {
+      singleFlightAsyncContext: isSingleFlightBrowserAsyncLocalStorage(),
+    }));
     this.cwd = this.kernelInfo.workspaceRoot;
     this.projectSession = options.projectSession ? createProjectSessionInfo(options.projectSession, this.kernelInfo) : undefined;
     for (const path of this.projectSession?.readonlyFiles ?? []) {

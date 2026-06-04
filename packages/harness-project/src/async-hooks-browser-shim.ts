@@ -1,4 +1,5 @@
 export class AsyncLocalStorage<T> {
+  static readonly __tracecodeBrowserSingleFlight = true;
   private store: T | undefined;
   private queue: Promise<void> = Promise.resolve();
 

@@ -7,6 +7,7 @@ public final class TraceHooks {
   private static final int DEFAULT_MAX_EVENTS = 50000;
   private static final int MAX_SERIALIZE_DEPTH = 48;
   private static final int MAX_SERIALIZED_ITEMS = 64;
+  private static final int MAX_BULK_INDEXED_WRITES = 512;
   private static final int MAX_OBJECT_FIELDS = 32;
   private static final Object STATE_LOCK = new Object();
   private static final List<String> EVENTS = new ArrayList<>();
@@ -1771,15 +1772,17 @@ public final class TraceHooks {
 
   private static void emitArrayIndexedWritesAtLine(int line, String name, Object values) {
     int length = java.lang.reflect.Array.getLength(values);
-    for (int index = 0; index < length; index++) {
+    int limit = bulkIndexedWriteLimit(length);
+    for (int index = 0; index < limit; index++) {
       emitTraceWrite(line, name, "[" + serializeResult(index) + "]", java.lang.reflect.Array.get(values, index), null);
     }
   }
 
   public static void emitCollectionIndexedWritesAtLine(int line, String name, java.util.Collection<?> values) {
     int index = 0;
+    int limit = bulkIndexedWriteLimit(Math.min(values.size(), MAX_SERIALIZED_ITEMS));
     for (Object value : values) {
-      if (index >= MAX_SERIALIZED_ITEMS) {
+      if (index >= limit) {
         break;
       }
       emitTraceWrite(line, name, "[" + serializeResult(index) + "]", value, null);
@@ -1789,14 +1792,24 @@ public final class TraceHooks {
 
   public static void emitCollectionIndexedWritesAtLine(int line, String name, Object[] prefixPath, java.util.Collection<?> values) {
     int index = 0;
+    int limit = bulkIndexedWriteLimit(Math.min(values.size(), MAX_SERIALIZED_ITEMS));
     for (Object value : values) {
-      if (index >= MAX_SERIALIZED_ITEMS) {
+      if (index >= limit) {
         break;
       }
       Object[] path = java.util.Arrays.copyOf(prefixPath, prefixPath.length + 1);
       path[prefixPath.length] = index;
       emitIndexedWriteAtLine(line, name, path, value);
       index++;
+    }
+  }
+
+  private static int bulkIndexedWriteLimit(int requested) {
+    if (requested <= 0 || !runActiveForCurrentThread()) return 0;
+    synchronized (STATE_LOCK) {
+      if (!runActiveForCurrentThread() || traceLimitExceeded) return 0;
+      int remainingEvents = Math.max(0, maxEvents - EVENTS.size());
+      return Math.min(Math.min(requested, MAX_BULK_INDEXED_WRITES), remainingEvents);
     }
   }
 
