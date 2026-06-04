@@ -3307,6 +3307,52 @@ function smallest(nums: number[]): number {
     JSON.stringify(generatorConditionTracing.output) === JSON.stringify([true, true, false, 2, true]),
     `JavaScript tracing should preserve generator condition output, got ${JSON.stringify(generatorConditionTracing.output)}`
   );
+
+  const typeScriptNullPropertyTracing = await harness.sendMessage<{
+    success: boolean;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `function solve(): number {
+  const box: { next?: { value: number } } | null = null;
+  return box.next.value;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'typescript',
+  });
+  assertCondition(typeScriptNullPropertyTracing.success === false, 'TypeScript null property tracing should fail');
+  assertCondition(
+    String(typeScriptNullPropertyTracing.error ?? '').includes("Cannot read properties of null"),
+    `TypeScript null property tracing should preserve native null-property error, got ${JSON.stringify(typeScriptNullPropertyTracing)}`
+  );
+
+  const typeScriptAsyncConditionTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `async function solve(flags: boolean[]): Promise<number> {
+  let i = 0;
+  let total = 0;
+  async function nextFlag(): Promise<boolean> {
+    return flags[i++] ?? false;
+  }
+  while (await nextFlag()) {
+    total += i;
+  }
+  return total;
+}`,
+    functionName: 'solve',
+    inputs: { flags: [true, true, false] },
+    executionStyle: 'function',
+    language: 'typescript',
+  });
+  assertCondition(
+    typeScriptAsyncConditionTracing.success === true,
+    `TypeScript tracing should preserve await in loop conditions: ${typeScriptAsyncConditionTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(typeScriptAsyncConditionTracing.output === 3, 'TypeScript tracing should preserve async condition output');
   console.log('PASS: execute-with-tracing JS async/generator condition contract');
 
   const tracingAccesses = await harness.sendMessage<{
@@ -3683,6 +3729,43 @@ function smallest(nums: number[]): number {
     )}`
   );
 
+  const typeScriptDestructuringSideEffectTargetTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve(): { arr: number[]; i: number } {
+  const arr = [0, 0];
+  let i = 0;
+  [arr[i++]] = [7];
+  return { arr, i };
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'typescript',
+  });
+  assertCondition(
+    typeScriptDestructuringSideEffectTargetTracing.success === true,
+    `TypeScript side-effecting destructuring target tracing should succeed: ${typeScriptDestructuringSideEffectTargetTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(typeScriptDestructuringSideEffectTargetTracing.output) === JSON.stringify({ arr: [7, 0], i: 1 }),
+    `TypeScript side-effecting destructuring target should execute once, got ${JSON.stringify(typeScriptDestructuringSideEffectTargetTracing.output)}`
+  );
+  assertCondition(
+    !traceAccessEvents(typeScriptDestructuringSideEffectTargetTracing).some(
+      (event) =>
+        event.kind === 'write' &&
+        event.target?.variable === 'arr' &&
+        JSON.stringify(event.target.path) === JSON.stringify([1])
+    ),
+    `TypeScript side-effecting destructuring target should not trace a replayed arr[1] write, received ${JSON.stringify(
+      typeScriptDestructuringSideEffectTargetTracing.trace?.events
+    )}`
+  );
+
   const symbolKeyMutationTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;
@@ -3719,6 +3802,132 @@ function smallest(nums: number[]): number {
     )}`
   );
   console.log('PASS: execute-with-tracing JS destructuring target replay guard');
+
+  const typeScriptPrivateFieldTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  #graph = new Map<number, number[]>();
+  solve(value: number): number {
+    this.#graph.set(value, [value]);
+    return this.#graph.get(value)![0];
+  }
+}`,
+    functionName: 'solve',
+    inputs: { value: 5 },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    typeScriptPrivateFieldTracing.success === true,
+    `TypeScript private field tracing should succeed: ${typeScriptPrivateFieldTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(typeScriptPrivateFieldTracing.output === 5, 'TypeScript private field tracing should preserve output');
+  assertCondition(
+    !traceAccessEvents(typeScriptPrivateFieldTracing).some(
+      (event) =>
+        event.target?.variable === 'this' &&
+        Array.isArray(event.target.path) &&
+        event.target.path.some((part) => String(part).includes('graph'))
+    ),
+    `TypeScript private field tracing should not emit bogus this.graph/#graph accesses, received ${JSON.stringify(typeScriptPrivateFieldTracing.trace?.events)}`
+  );
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const spliceTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number[][] {
+  const front = [1, 2, 3];
+  const middle = [4, 5, 6];
+  const tail = [7, 8, 9];
+  front.splice(0, 1);
+  middle.splice(1, 1);
+  tail.splice(-1, 1);
+  return [front, middle, tail];
+}`
+          : `function solve() {
+  const front = [1, 2, 3];
+  const middle = [4, 5, 6];
+  const tail = [7, 8, 9];
+  front.splice(0, 1);
+  middle.splice(1, 1);
+  tail.splice(-1, 1);
+  return [front, middle, tail];
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      spliceTracing.success === true,
+      `${language} splice normalization tracing should succeed: ${spliceTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(spliceTracing.output) === JSON.stringify([[2, 3], [4, 6], [7, 8]]),
+      `${language} splice normalization should preserve output, received ${JSON.stringify(spliceTracing.output)}`
+    );
+    const spliceMutations = traceAccessEvents(spliceTracing).filter(
+      (event) =>
+        event.kind === 'mutate' &&
+        (event.target?.variable === 'front' || event.target?.variable === 'middle' || event.target?.variable === 'tail')
+    );
+    assertCondition(
+      spliceMutations.length >= 3 && spliceMutations.every((event) => event.method === 'splice'),
+      `${language} splice mutations should remain method=splice, received ${JSON.stringify(spliceMutations)}`
+    );
+  }
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const functionValueReadTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const obj = { fn(): number { return 2; } };
+  const picked = obj.fn;
+  return picked();
+}`
+          : `function solve() {
+  const obj = { fn() { return 2; } };
+  const picked = obj.fn;
+  return picked();
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      functionValueReadTracing.success === true,
+      `${language} function-valued property tracing should succeed: ${functionValueReadTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(functionValueReadTracing.output === 2, `${language} function-valued property tracing should preserve output`);
+    const functionValueRead = traceAccessEvents(functionValueReadTracing).find(
+      (event) =>
+        event.kind === 'read' &&
+        event.target?.variable === 'obj' &&
+        JSON.stringify(event.target.path) === JSON.stringify(['fn'])
+    );
+    assertCondition(
+      functionValueRead?.value === '<function>',
+      `${language} function-valued property reads should emit clone-safe values, received ${JSON.stringify(functionValueRead)}`
+    );
+  }
+  console.log('PASS: execute-with-tracing JS/TS splice and clone-safe function-value regressions');
 
   const nestedWriteEvaluationOrderTracing = await harness.sendMessage<{
     success: boolean;
