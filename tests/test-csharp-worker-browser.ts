@@ -4163,6 +4163,125 @@ async function main(): Promise<void> {
       `C# worker traced this.heap.Enqueue should emit a member-field mutate, received ${JSON.stringify(tracedPriorityQueueMemberField.events)}`
     );
 
+    const tracedContainsSideEffectKey = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private int nextCalls;',
+        '  private int Next() { nextCalls += 1; return 4; }',
+        '  public int ContainsSideEffectKey() {',
+        '    var seen = new HashSet<int> { 4 };',
+        '    bool found = seen.Contains(Next());',
+        '    return (found ? 100 : 0) + nextCalls;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ContainsSideEffectKey',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedContainsSideEffectKey.success,
+      `C# worker traced Contains side-effect key case should succeed: ${tracedContainsSideEffectKey.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedContainsSideEffectKey.output === 101,
+      `C# worker traced Contains should evaluate side-effecting key once, received ${JSON.stringify(tracedContainsSideEffectKey.output)}`
+    );
+
+    const tracedNestedContainsSideEffectKey = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private int fromCalls;',
+        '  private int toCalls;',
+        '  private string NextFrom() { fromCalls += 1; return "a"; }',
+        '  private string NextTo() { toCalls += 1; return "b"; }',
+        '  public int NestedContainsSideEffectKey() {',
+        '    var adj = new Dictionary<string, HashSet<string>>();',
+        '    adj["a"] = new HashSet<string> { "b" };',
+        '    bool found = adj[NextFrom()].Contains(NextTo());',
+        '    return (found ? 100 : 0) + fromCalls * 10 + toCalls;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'NestedContainsSideEffectKey',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedNestedContainsSideEffectKey.success,
+      `C# worker traced nested Contains side-effect key case should succeed: ${tracedNestedContainsSideEffectKey.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedNestedContainsSideEffectKey.output === 111,
+      `C# worker traced nested Contains should evaluate receiver index/key once, received ${JSON.stringify(tracedNestedContainsSideEffectKey.output)}`
+    );
+
+    const tracedIndexedEnqueueSideEffectArgs = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private int indexCalls;',
+        '  private int valueCalls;',
+        '  private int NextIndex() { indexCalls += 1; return 0; }',
+        '  private int NextValue() { valueCalls += 1; return 5; }',
+        '  public int IndexedEnqueueSideEffectArgs() {',
+        '    var queues = new List<Queue<int>> { new Queue<int>() };',
+        '    queues[NextIndex()].Enqueue(NextValue());',
+        '    return queues[0].Dequeue() * 100 + indexCalls * 10 + valueCalls;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'IndexedEnqueueSideEffectArgs',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedIndexedEnqueueSideEffectArgs.success,
+      `C# worker traced indexed Enqueue side-effect args case should succeed: ${tracedIndexedEnqueueSideEffectArgs.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedIndexedEnqueueSideEffectArgs.output === 511,
+      `C# worker traced indexed Enqueue should evaluate receiver index/value once, received ${JSON.stringify(tracedIndexedEnqueueSideEffectArgs.output)}`
+    );
+
+    const tracedMemberFieldEnqueueSideEffectArgs = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private PriorityQueue<int, int> heap = new PriorityQueue<int, int>();',
+        '  private int valueCalls;',
+        '  private int priorityCalls;',
+        '  private int NextValue() { valueCalls += 1; return 7; }',
+        '  private int NextPriority() { priorityCalls += 1; return 1; }',
+        '  public int MemberFieldEnqueueSideEffectArgs() {',
+        '    this.heap.Enqueue(NextValue(), NextPriority());',
+        '    return this.heap.Peek() * 100 + valueCalls * 10 + priorityCalls;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'MemberFieldEnqueueSideEffectArgs',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedMemberFieldEnqueueSideEffectArgs.success,
+      `C# worker traced member-field Enqueue side-effect args case should succeed: ${tracedMemberFieldEnqueueSideEffectArgs.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedMemberFieldEnqueueSideEffectArgs.output === 711,
+      `C# worker traced member-field Enqueue should evaluate value/priority once, received ${JSON.stringify(tracedMemberFieldEnqueueSideEffectArgs.output)}`
+    );
+
     const tracedQueueStackPeekReads = await runWorkerCase(
       page,
       [

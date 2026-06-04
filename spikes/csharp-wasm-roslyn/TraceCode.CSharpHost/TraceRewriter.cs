@@ -32,6 +32,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private int exceptionValueCounter;
     private int conditionValueCounter;
     private int tupleAssignmentCounter;
+    private int mutationCaptureCounter;
 
     private TraceRewriter(
         bool emitTraceEvents,
@@ -1648,6 +1649,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && IsTrackedCollectionReceiver(expressionStatementMutationReceiver.Identifier.ValueText)
             && expressionStatementMutationMemberAccess.Name.Identifier.ValueText is "Sort" or "RemoveAt"
             && invocation.ArgumentList.Arguments.All(argument => argument.NameColon is null && argument.RefOrOutKeyword.RawKind == 0)
+            && !invocation.ArgumentList.Arguments.Any(argument => ShouldCaptureMutationExpression(argument.Expression))
             && isStatementMutationContext
             && !IsInsideTraceCodeSourceLineScope(invocation))
         {
@@ -1702,6 +1704,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         if (method == "Enqueue" && isForIncrementorMutationContext)
         {
+            if (invocation.ArgumentList.Arguments.Any(argument => ShouldCaptureMutationExpression(argument.Expression)))
+            {
+                return false;
+            }
+
             string args = MutationArgsExpression(invocation);
             replacement = SyntaxFactory.ParseExpression(
                 $"TraceCode.Internal.TraceCodeTrace.CollectionMutationCall({line}, {Literal(receiver.Identifier.ValueText)}, {Literal(method)}, new object?[] {{ {args} }}, () => {invocation})"
@@ -1747,6 +1754,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && IsDeclaredMemberCollectionPath(expressionStatementMutationVariable, expressionStatementMutationPath)
             && IsIndexedReceiverMutationMethod(expressionStatementMutationMemberAccess.Name.Identifier.ValueText)
             && invocation.ArgumentList.Arguments.All(argument => argument.NameColon is null && argument.RefOrOutKeyword.RawKind == 0)
+            && !invocation.ArgumentList.Arguments.Any(argument => ShouldCaptureMutationExpression(argument.Expression))
             && invocation.Parent is ExpressionStatementSyntax
             && !IsInsideTraceCodeSourceLineScope(invocation))
         {
@@ -1762,6 +1770,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && TryGetMemberAccessPath(expressionStatementReceiver, out string expressionStatementVariable, out List<string>? expressionStatementPath)
             && expressionStatementMemberAccess.Name.Identifier.ValueText is "Sort"
             && invocation.ArgumentList.Arguments.All(argument => argument.NameColon is null && argument.RefOrOutKeyword.RawKind == 0)
+            && !invocation.ArgumentList.Arguments.Any(argument => ShouldCaptureMutationExpression(argument.Expression))
             && invocation.Parent is ExpressionStatementSyntax
             && !IsInsideTraceCodeSourceLineScope(invocation))
         {
@@ -1990,7 +1999,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return false;
         }
 
-        string keyExpression = invocation.ArgumentList.Arguments[0].Expression.ToString();
+        ExpressionSyntax keySyntax = invocation.ArgumentList.Arguments[0].Expression;
+        if (ShouldCaptureMutationExpression(keySyntax))
+        {
+            return false;
+        }
+
+        string keyExpression = keySyntax.ToString();
         int line = GetLine(invocation);
 
         if (memberAccess.Expression is IdentifierNameSyntax identifier)
@@ -2009,6 +2024,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         if (memberAccess.Expression is ElementAccessExpressionSyntax elementAccess)
         {
+            ExpressionSyntax receiverIndexSyntax = elementAccess.ArgumentList.Arguments.Count == 1
+                ? elementAccess.ArgumentList.Arguments[0].Expression
+                : SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression);
+            if (ShouldCaptureMutationExpression(receiverIndexSyntax))
+            {
+                return false;
+            }
+
             if (TryGetIdentifierElementAccessPath(elementAccess, out string variable, out string index))
             {
                 if (IsRangeIndex(index))
@@ -2600,33 +2623,89 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (statement is not ExpressionStatementSyntax expressionStatement
             || expressionStatement.Expression is not InvocationExpressionSyntax invocation
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
-            || memberAccess.Expression is not IdentifierNameSyntax receiver
             || IsSystemArrayTypeExpression(memberAccess.Expression)
             || !IsIndexedReceiverMutationMethod(memberAccess.Name.Identifier.ValueText)
-            || invocation.ArgumentList.Arguments.Count == 0
             || invocation.ArgumentList.Arguments.Any(argument =>
                 argument.NameColon is not null
                 || argument.RefOrOutKeyword.RawKind != 0
-                || argument.Expression.DescendantNodesAndSelf().Any(node =>
-                    node is LambdaExpressionSyntax or AnonymousMethodExpressionSyntax)))
+                || IsDirectAnonymousFunctionExpression(argument.Expression)))
         {
             return statement;
         }
 
         SeparatedSyntaxList<ArgumentSyntax> arguments = invocation.ArgumentList.Arguments;
+        ExpressionSyntax rewrittenReceiver = CaptureCollectionMutationReceiverExpression(memberAccess.Expression, line, captureStatements);
         var rewrittenArguments = new List<ArgumentSyntax>(arguments.Count);
         for (int index = 0; index < arguments.Count; index++)
         {
             ArgumentSyntax argument = arguments[index];
-            string captureName = $"__tracecode_mutation_arg_{line}_{index}";
+            if (!ShouldCaptureMutationExpression(argument.Expression))
+            {
+                rewrittenArguments.Add(argument);
+                continue;
+            }
+
+            string captureName = CreateMutationCaptureName("arg", line);
             captureStatements.Add(TraceStatement($"var {captureName} = {argument.Expression};"));
             rewrittenArguments.Add(argument.WithExpression(SyntaxFactory.IdentifierName(captureName)));
         }
 
+        if (captureStatements.Count == 0)
+        {
+            return statement;
+        }
+
+        MemberAccessExpressionSyntax rewrittenMemberAccess = memberAccess.WithExpression(rewrittenReceiver);
         InvocationExpressionSyntax rewrittenInvocation = invocation.WithArgumentList(
             invocation.ArgumentList.WithArguments(SyntaxFactory.SeparatedList(rewrittenArguments))
-        );
+        ).WithExpression(rewrittenMemberAccess);
         return expressionStatement.WithExpression(rewrittenInvocation);
+    }
+
+    private ExpressionSyntax CaptureCollectionMutationReceiverExpression(
+        ExpressionSyntax expression,
+        int line,
+        List<StatementSyntax> captureStatements)
+    {
+        if (expression is ElementAccessExpressionSyntax elementAccess)
+        {
+            ExpressionSyntax rewrittenElementReceiver = CaptureCollectionMutationReceiverExpression(
+                elementAccess.Expression,
+                line,
+                captureStatements
+            );
+            SeparatedSyntaxList<ArgumentSyntax> elementArguments = elementAccess.ArgumentList.Arguments;
+            if (elementArguments.Count != 1
+                || elementArguments[0].NameColon is not null
+                || elementArguments[0].RefKindKeyword.RawKind != 0
+                || !ShouldCaptureMutationExpression(elementArguments[0].Expression))
+            {
+                return elementAccess.WithExpression(rewrittenElementReceiver);
+            }
+
+            string captureName = CreateMutationCaptureName("index", line);
+            captureStatements.Add(TraceStatement($"var {captureName} = {elementArguments[0].Expression};"));
+            ArgumentSyntax rewrittenArgument = elementArguments[0].WithExpression(SyntaxFactory.IdentifierName(captureName));
+            return elementAccess
+                .WithExpression(rewrittenElementReceiver)
+                .WithArgumentList(elementAccess.ArgumentList.WithArguments(SyntaxFactory.SingletonSeparatedList(rewrittenArgument)));
+        }
+
+        if (expression is MemberAccessExpressionSyntax memberAccess)
+        {
+            return memberAccess.WithExpression(CaptureCollectionMutationReceiverExpression(
+                memberAccess.Expression,
+                line,
+                captureStatements
+            ));
+        }
+
+        return expression;
+    }
+
+    private string CreateMutationCaptureName(string kind, int line)
+    {
+        return $"__tracecode_mutation_{kind}_{line}_{mutationCaptureCounter++}";
     }
 
     private IEnumerable<StatementSyntax> CreateImplicitFieldAliasReadStatements(StatementSyntax statement, int line)
@@ -3581,6 +3660,39 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || expression.StartsWith("^", StringComparison.Ordinal);
     }
 
+    private static bool IsDirectAnonymousFunctionExpression(ExpressionSyntax expression)
+    {
+        return expression is LambdaExpressionSyntax or AnonymousMethodExpressionSyntax;
+    }
+
+    private static bool ShouldCaptureMutationExpression(ExpressionSyntax expression)
+    {
+        if (IsDirectAnonymousFunctionExpression(expression))
+        {
+            return false;
+        }
+
+        return expression.DescendantNodesAndSelf().Any(IsEvaluationSensitiveExpressionNode);
+    }
+
+    private static bool IsEvaluationSensitiveExpressionNode(SyntaxNode node)
+    {
+        return node switch
+        {
+            InvocationExpressionSyntax => true,
+            ObjectCreationExpressionSyntax => true,
+            ImplicitObjectCreationExpressionSyntax => true,
+            AssignmentExpressionSyntax => true,
+            AwaitExpressionSyntax => true,
+            ThrowExpressionSyntax => true,
+            PrefixUnaryExpressionSyntax prefix => prefix.IsKind(SyntaxKind.PreIncrementExpression)
+                || prefix.IsKind(SyntaxKind.PreDecrementExpression),
+            PostfixUnaryExpressionSyntax postfix => postfix.IsKind(SyntaxKind.PostIncrementExpression)
+                || postfix.IsKind(SyntaxKind.PostDecrementExpression),
+            _ => false,
+        };
+    }
+
     private static bool IsStringBuilderCreation(ExpressionSyntax creation, TypeSyntax? declaredType)
     {
         TypeSyntax? creationType = creation switch
@@ -4091,6 +4203,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         string trimmed = expression.Trim();
         if (trimmed.Length == 0) return null;
+        if (trimmed.StartsWith("__tracecode_", StringComparison.Ordinal)) return null;
 
         ExpressionSyntax parsed;
         try
