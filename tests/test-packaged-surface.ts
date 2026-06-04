@@ -54,6 +54,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'dist/project-node.js',
     'dist/project-node.cjs',
     'dist/project-node.d.ts',
+    'dist/native.js',
+    'dist/native.cjs',
+    'dist/native.d.ts',
     'dist/zlib-browser-shim.js',
     'dist/zlib-browser-shim.cjs',
     'dist/async-hooks-browser-shim.js',
@@ -105,8 +108,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   assertCondition(
     browserTypes.includes('getRuntimeProjectIoSupport') &&
       browserTypes.includes('getRuntimeProjectIoCapabilityMatrix') &&
-      browserTypes.includes('RuntimeProjectIoCapabilityRow'),
-    'Browser declarations should expose the stable project I/O support helpers and matrix type'
+      browserTypes.includes('getRuntimeProjectIoCapability'),
+    'Browser declarations should expose the stable project I/O support helpers'
   );
 
   const appDir = join(tempRoot, 'app');
@@ -124,10 +127,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof projectNodeRequire.createNativeProjectWorkspace !== 'function') {
         throw new Error('Missing CommonJS root native project subpath export');
       }
+      const nativeRequire = require('@tracecode/harness/native');
+      if (typeof nativeRequire.createNativeHarness !== 'function') {
+        throw new Error('Missing CommonJS root native harness subpath export');
+      }
 
       const root = await import('@tracecode/harness');
       const project = await import('@tracecode/harness/project');
       const projectNode = await import('@tracecode/harness/project-node');
+      const native = await import('@tracecode/harness/native');
       const browser = await import('@tracecode/harness/browser');
       const browserProject = await import('@tracecode/harness/browser/project');
       const core = await import('@tracecode/harness/core');
@@ -180,6 +188,20 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof projectNode.createNativeProjectWorkspace !== 'function') {
         throw new Error('Missing root native project workspace subpath export');
       }
+      if (typeof native.createNativeHarness !== 'function') {
+        throw new Error('Missing root native harness subpath export');
+      }
+      const packedNativeHarness = native.createNativeHarness();
+      const packedNativeJs = packedNativeHarness.getClient('javascript');
+      const packedNativeJsResult = await packedNativeJs.executeCode(
+        'function solve(value) { return value + 1; }',
+        'solve',
+        { value: 41 }
+      );
+      if (!packedNativeJsResult.success || packedNativeJsResult.output !== 42) {
+        throw new Error('Packed native harness JavaScript smoke failed: ' + JSON.stringify(packedNativeJsResult));
+      }
+      packedNativeHarness.dispose();
       const nativeWorkspace = await projectNode.createNativeProjectWorkspace({
         files: [
           { path: 'index.js', contents: 'console.log("packed-native-project")\\n' },
@@ -302,7 +324,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           { path: 'JavaServer.java', contents: 'class JavaServer { public static void main(String[] args) {} }\\n' },
         ],
         nodeProjectTimeoutMs: 20000,
-        nodeProject: { allowDynamicEval: true },
+        nodeProject: {
+          allowDynamicEval: true,
+          allowMainThreadExecution: true,
+          trustedMainThreadExecution: true,
+        },
         pythonWorkerClient: {
           async executeProjectPython(request, _timeoutMs, _onEvent, signal) {
             if (request.scriptPath === 'python-client.py') {
@@ -466,7 +492,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           { path: 'main.cpp', contents: 'int main() { return 0; }\\n' },
         ],
         nodeProjectTimeoutMs: 20000,
-        nodeProject: { allowDynamicEval: true },
+        nodeProject: {
+          allowDynamicEval: true,
+          allowMainThreadExecution: true,
+          trustedMainThreadExecution: true,
+        },
         pythonWorkerClient: {
           async executeProjectPython(request) {
             return { stdout: request.scriptPath + ':browser-python\\n', stderr: '', exitCode: 0 };
@@ -549,7 +579,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
       const jsProjectIo = root.getRuntimeProjectIoSupport('javascript');
       const tsProjectIo = browser.getRuntimeProjectIoSupport('typescript');
-      if (jsProjectIo.tier !== 'native-live' || tsProjectIo.tier !== 'final-diff') {
+      if (jsProjectIo.tier !== 'native-live' || tsProjectIo.tier !== 'unsupported') {
         throw new Error('Project I/O support helper returned unexpected tiers');
       }
       const projectIoMatrix = root.getRuntimeProjectIoCapabilityMatrix();

@@ -35,6 +35,43 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     assets: [],
   },
   {
+    packageDir: 'packages/harness-native',
+    assets: [
+      {
+        source: ['workers', 'python', 'runtime-core.js'],
+        target: ['workers', 'python', 'runtime-core.js'],
+      },
+      {
+        source: ['workers', 'javascript', 'javascript-worker.js'],
+        target: ['workers', 'javascript', 'javascript-worker.js'],
+      },
+      {
+        source: ['workers', 'vendor', 'typescript.js'],
+        target: ['workers', 'vendor', 'typescript.js'],
+      },
+      {
+        source: ['workers', 'vendor', 'javascript-libraries.js'],
+        target: ['workers', 'vendor', 'javascript-libraries.js'],
+      },
+      {
+        source: ['workers', 'java', 'java-worker.js'],
+        target: ['workers', 'java', 'java-worker.js'],
+      },
+      {
+        source: ['workers', 'vendor', 'java-browser-helper.jar'],
+        target: ['workers', 'vendor', 'java-browser-helper.jar'],
+      },
+      {
+        source: ['workers', 'cpp', 'cpp-worker.js'],
+        target: ['workers', 'cpp', 'cpp-worker.js'],
+      },
+      {
+        source: ['workers', 'cpp', 'tracecode_runtime.hpp'],
+        target: ['workers', 'cpp', 'tracecode_runtime.hpp'],
+      },
+    ],
+  },
+  {
     packageDir: 'packages/harness-python',
     assets: [
       {

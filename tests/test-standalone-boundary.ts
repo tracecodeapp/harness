@@ -8,6 +8,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCANNED_FILES = [
   'src/index.ts',
   'src/cli.ts',
+  'src/native.ts',
   'packages/harness-browser/src/browser-harness.ts',
   'packages/harness-browser/src/index.ts',
   'packages/harness-browser/src/internal.ts',
@@ -29,6 +30,7 @@ const SCANNED_FILES = [
   'packages/harness-core/src/types.ts',
   'packages/harness-project/src/index.ts',
   'packages/harness-project/src/zlib-browser-shim.ts',
+  'packages/harness-native/src/index.ts',
   'packages/harness-javascript/src/index.ts',
   'packages/harness-javascript/src/javascript-executor.ts',
   'packages/harness-javascript/src/project-browser.ts',

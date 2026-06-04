@@ -161,6 +161,8 @@ The package publishes built ESM and CommonJS entrypoints plus `.d.ts` files.
   C# runtime client and worker client.
 - `@tracecode/harness/cpp`
   C++ runtime client and worker client.
+- `@tracecode/harness/native`
+  Opt-in native Node harness for faster trusted batch execution and tracing.
 
 The same core, browser, and language surfaces are available as standalone
 packages:
@@ -172,6 +174,7 @@ packages:
 - `@tracecode/harness-java`
 - `@tracecode/harness-csharp`
 - `@tracecode/harness-cpp`
+- `@tracecode/harness-native`
 
 The browser entrypoint is intentionally narrow. Low-level worker constructors, language gates, and isolation helpers are internal implementation details, not public SDK surface.
 Project/workspace mode is an additive surface exposed through explicit
@@ -180,6 +183,10 @@ Project/workspace mode is an additive surface exposed through explicit
 `@tracecode/harness-project`; see
 [Advanced: Project Workspaces](#advanced-project-workspaces) when you need
 shell-style multi-file execution.
+Native batch/code execution is also additive and exposed through
+`@tracecode/harness/native` or `@tracecode/harness-native`; see
+[Native Harness](#native-harness) when you need host-native runners for trusted
+high-throughput jobs.
 
 ## Browser API
 
@@ -424,6 +431,65 @@ building prompt/stdin heuristics around raw command output. See
 For fuller references, see [packages/harness-project](./packages/harness-project),
 [examples/project-ide](./examples/project-ide), and
 [examples/project-terminal](./examples/project-terminal).
+
+## Native Harness
+
+Native harness is for trusted local automation, CI, regression mining, and
+high-throughput batch inference where browser startup and WebAssembly runtime
+costs are too high. It exposes the same code/trace `RuntimeClient` shape as the
+browser harness for supported native code clients, while `createNativeProjectWorkspace`
+continues to provide shell-style project execution.
+
+```ts
+import { createNativeHarness } from '@tracecode/harness/native';
+
+const harness = createNativeHarness({
+  pythonCommand: 'python3',
+});
+
+const client = harness.getClient('python');
+
+const result = await client.execute({
+  kind: 'code',
+  code: 'def solve(nums):\n    return sum(nums)\n',
+  functionName: 'solve',
+  cases: [
+    { id: 'small', inputs: { nums: [1, 2, 3] }, expected: 6 },
+  ],
+});
+```
+
+Use `runJobs` or `createQueue` for native batch inference across many
+independent jobs:
+
+```ts
+const results = await harness.runJobs(jobs, { workers: 8 });
+```
+
+For very large corpora, prefer the streaming form so results can be written as
+they complete and the producer is backpressured by the worker pool:
+
+```ts
+await harness.runJobsEach(solutionJobs, async (result) => {
+  await writeResult(result);
+}, { workers: 8 });
+```
+
+For best throughput, make each job one solution with many `cases`; avoid one job
+per individual test case.
+
+Each worker owns its own runtime clients. `python`, `javascript`, `typescript`,
+`java`, `csharp`, and `cpp` support the native code-client API and queue
+scheduling. Native event tracing is available for Python, JavaScript,
+TypeScript, and C++; Java and C# native code clients run and batch through host
+toolchains, but host-side trace instrumentation is still reported as unsupported
+by `getNativeLanguageSupport()`.
+
+Native harness is not a sandbox. It runs code through host-native tools and
+Node VM contexts, so it must not be used as the isolation boundary for arbitrary
+untrusted code. Browser runtimes remain the default for normal product usage.
+Use native harness when speed and host-tool access are the goal, and put it
+inside an OS/container/VM sandbox if the submitted code is not trusted.
 
 ## Example Consumer
 

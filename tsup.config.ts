@@ -30,6 +30,7 @@ export default defineConfig([
       'browser/project': 'packages/harness-browser/src/project.ts',
       project: 'packages/harness-project/src/index.ts',
       'project-node': 'src/project-node.ts',
+      native: 'src/native.ts',
       'internal/browser': 'packages/harness-browser/src/internal.ts',
       'zlib-browser-shim': 'packages/harness-project/src/zlib-browser-shim.ts',
       'async-hooks-browser-shim': 'packages/harness-project/src/async-hooks-browser-shim.ts',
@@ -113,5 +114,12 @@ export default defineConfig([
       'async-hooks-browser-shim': 'packages/harness-project/src/async-hooks-browser-shim.ts',
     },
     outDir: 'packages/harness-project/dist',
+  },
+  {
+    ...commonConfig,
+    entry: {
+      index: 'packages/harness-native/src/index.ts',
+    },
+    outDir: 'packages/harness-native/dist',
   },
 ]);

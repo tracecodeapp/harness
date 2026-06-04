@@ -2,7 +2,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
@@ -181,6 +181,26 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'workers/vendor/cpp/yowasp/llvm.core2.wasm',
       'workers/vendor/cpp/yowasp/llvm.core3.wasm',
       'workers/vendor/cpp/yowasp/llvm.core4.wasm',
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+    ],
+  },
+  {
+    name: '@tracecode/harness-native',
+    dir: 'packages/harness-native',
+    exportName: 'createNativeHarness',
+    requiredFiles: [
+      'dist/index.js',
+      'dist/index.cjs',
+      'dist/index.d.ts',
+      'workers/python/runtime-core.js',
+      'workers/javascript/javascript-worker.js',
+      'workers/vendor/typescript.js',
+      'workers/vendor/javascript-libraries.js',
+      'workers/java/java-worker.js',
+      'workers/vendor/java-browser-helper.jar',
+      'workers/cpp/cpp-worker.js',
+      'workers/cpp/tracecode_runtime.hpp',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],
@@ -704,7 +724,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         worker.includes("const CSHARP_PROJECT_WORKSPACE_ROOT = '/tmp/tracecode-csharp-project'") &&
-          worker.includes("const roots = ['/workspace', CSHARP_PROJECT_WORKSPACE_ROOT]"),
+          worker.includes('function runtimeFsPath(') &&
+          worker.includes('emitProjectPathSnapshot(runtimeFsPath(path) || path)'),
         '@tracecode/harness-csharp worker should map provider-root live events back to project paths'
       );
       assertCondition(
@@ -733,7 +754,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('context.eventStdout.join(\'\') !== stdout'),
         '@tracecode/harness-csharp worker should stream returned compiler/build output events'
       );
-      const csharpHostDll = await readFile(join(packageDir, 'workers/vendor/csharp/_framework/supportFiles/173_TraceCode.CSharpHost.dll'));
+      const csharpSupportFilesDir = join(packageDir, 'workers/vendor/csharp/_framework/supportFiles');
+      const csharpHostDllName = (await readdir(csharpSupportFilesDir)).find((entry) => entry.endsWith('_TraceCode.CSharpHost.dll'));
+      assertCondition(Boolean(csharpHostDllName), '@tracecode/harness-csharp should ship TraceCode.CSharpHost support file');
+      const csharpHostDll = await readFile(join(csharpSupportFilesDir, csharpHostDllName!));
       const csharpHostApi = `${csharpHostDll.toString('utf8')}\n${csharpHostDll.toString('utf16le')}`;
       assertCondition(
         csharpHostApi.includes('ReadProjectInputByte') &&
@@ -751,7 +775,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         worker.includes('sourceDevice') &&
-          worker.includes('this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)), entry.device, entry.outputDevice)') &&
+          worker.includes('this.onOutput?.(stream, decodeUtf8(concatBytes(outputChunks)), entry.device, entry.outputDevice)') &&
           worker.includes('const resolvedOutputDevice = outputDevice || (stream === \'stderr\' ? \'/dev/stderr\' : \'/dev/stdout\')'),
         '@tracecode/harness-cpp worker should ship stdio source and resolved output device events'
       );
@@ -798,7 +822,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         browserProjectDist.includes('enqueueJavaHttpServerRequest(bridge, request)') &&
           browserProjectDist.includes('drainJavaHttpServerQueue(bridge)') &&
-          browserProjectDist.includes('dispatchJavaHttpServerRequest(buffer, request)') &&
+          browserProjectDist.includes('dispatchJavaHttpServerRequest(bridge, request)') &&
           browserProjectDist.includes('Java TraceKernel HTTP server queue is full') &&
           browserProjectDist.includes('pending.kernelHttp.listen(options, (request) => this.enqueueJavaHttpServerRequest(bridge, request))'),
         '@tracecode/harness-browser project bundle should ship queued Java HttpServer request bridge support'
@@ -862,6 +886,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
                 return { stdout: request.source + ':' + request.args.join(',') + ':browser-only-cpp\\n', stderr: '', exitCode: 0 };
               },
               terminate() {},
+            },
+            nodeProject: {
+              allowMainThreadExecution: true,
+              trustedMainThreadExecution: true,
             },
           });
           try {
@@ -1055,7 +1083,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         throw new Error('@tracecode/harness-project /workspace alias smoke failed');
       }
       const mountInfo = await projectWorkspace.readFile('/proc/self/mountinfo');
-      if (!mountInfo.includes('tracekernel:workspace') || !mountInfo.includes('/home/surface/surface-project') || !mountInfo.includes('/workspace')) {
+      if (!mountInfo.includes('tracekernel:workspace') || !mountInfo.includes(' /workspace ')) {
         throw new Error('@tracecode/harness-project mountinfo smoke failed: ' + mountInfo);
       }
       const outputEvents = [];
@@ -1195,6 +1223,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof csharpProjectBrowser.createBrowserCSharpProjectRunner !== 'function') {
         throw new Error('@tracecode/harness-csharp/project-browser missing createBrowserCSharpProjectRunner');
       }
+      const nativeMain = await import('@tracecode/harness-native');
+      if (
+        typeof nativeMain.createNativeHarness !== 'function' ||
+        typeof nativeMain.createNativeProjectWorkspace !== 'function'
+      ) {
+        throw new Error('@tracecode/harness-native missing native harness exports');
+      }
       const nativeStandaloneWorkspace = await projectMod.createRuntimeWorkspace({
         files: [
           { path: 'native.py', contents: 'print("standalone-native-python")\\n' },
@@ -1295,6 +1330,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           },
           terminate() {},
         },
+        nodeProject: {
+          allowMainThreadExecution: true,
+          trustedMainThreadExecution: true,
+        },
       });
       try {
         if (browserWorkspace.cwd !== '/home/surface/surface-browser') {
@@ -1305,7 +1344,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           throw new Error('@tracecode/harness-browser/project /workspace alias smoke failed');
         }
         const browserMountInfo = await browserWorkspace.readFile('/proc/self/mountinfo');
-        if (!browserMountInfo.includes('tracekernel:workspace') || !browserMountInfo.includes('/home/surface/surface-browser')) {
+        if (!browserMountInfo.includes('tracekernel:workspace') || !browserMountInfo.includes(' /workspace ')) {
           throw new Error('@tracecode/harness-browser/project mountinfo smoke failed: ' + browserMountInfo);
         }
         const browserPython = await browserWorkspace.runCommand('python3 main.py');

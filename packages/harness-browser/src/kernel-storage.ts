@@ -203,7 +203,7 @@ async function decryptStorageSnapshot(
     if (!isRecord(parsed) || parsed.version !== STORAGE_VERSION || !isRecord(parsed.snapshot)) {
       throw new Error('decrypted snapshot is malformed');
     }
-    return parsed as BrowserKernelStorageSnapshot;
+    return parsed as unknown as BrowserKernelStorageSnapshot;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to decrypt IndexedDB kernel storage snapshot: ${message}`);
@@ -219,7 +219,7 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function base64ToBytes(encoded: string): Uint8Array {
+function base64ToBytes(encoded: string): Uint8Array<ArrayBuffer> {
   const binary = atob(encoded);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {

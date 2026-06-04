@@ -83,6 +83,12 @@ Native project mode runs real host binaries such as `python3`, `node`, `javac`,
 runners validate TraceKernel paths before materializing files and collecting
 results, but the child process itself is still a host process.
 
+The native harness code API is the same security class. It is an opt-in
+throughput interface for trusted batch execution and tracing using host-native
+runners and Node VM-backed adapters. It is not designed to securely execute
+arbitrary code; it exists to reuse TraceCode runtime contracts faster outside
+the browser.
+
 Use native mode for trusted local development, CI smoke tests, and packaging
 verification. Do not use native mode as the only isolation layer for arbitrary
 untrusted code.
