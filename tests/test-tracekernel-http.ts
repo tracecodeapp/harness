@@ -210,7 +210,7 @@ async function main(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
     typescriptRunner: createBrowserTypeScriptProjectRunner(),
   });
 

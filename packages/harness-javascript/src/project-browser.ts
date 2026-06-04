@@ -112,6 +112,8 @@ export interface BrowserJavaScriptProjectRunnerOptions {
   allowDynamicEval?: boolean;
   allowMainThreadExecution?: boolean;
   hardened?: boolean;
+  trustedMainThreadExecution?: boolean;
+  trustedReusableWorker?: boolean;
   timeoutMs?: number;
   workerIsolation?: BrowserJavaScriptProjectWorkerIsolation;
   workerUrl?: string;
@@ -2836,6 +2838,19 @@ function createBrowserJavaScriptProjectProtocolToken(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
+function createBrowserJavaScriptProjectPolicyFailureRunner(stderr: string): JavaScriptProjectCommandRunner {
+  return (request) => {
+    const io = createRuntimeProjectIoBridge(request.onEvent);
+    io.output('stderr', stderr);
+    io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
+    return Promise.resolve({
+      stdout: '',
+      stderr,
+      exitCode: 1,
+    });
+  };
+}
+
 class BrowserJavaScriptProjectWorkerClient {
   private worker: Worker | null = null;
   private messageId = 0;
@@ -3168,6 +3183,11 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
 ): JavaScriptProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const workerIsolation = options.workerIsolation ?? 'per-command';
+  if (workerIsolation === 'shared' && options.trustedReusableWorker !== true) {
+    return createBrowserJavaScriptProjectPolicyFailureRunner(
+      'node: browser JavaScript shared worker isolation is trusted-only and requires trustedReusableWorker: true\n'
+    );
+  }
   if (workerIsolation === 'per-command') {
     return (request) =>
       runRuntimeProjectWorkerBridge({
@@ -3223,18 +3243,14 @@ export function createBrowserJavaScriptProjectRunner(
       workerUrl: options.workerUrl,
     });
   }
-  if (options.hardened === true || options.allowMainThreadExecution !== true) {
-    return (request) => {
-      const stderr = 'node: browser JavaScript project runner requires a Worker-backed runner unless allowMainThreadExecution is explicitly enabled\n';
-      const io = createRuntimeProjectIoBridge(request.onEvent);
-      io.output('stderr', stderr);
-      io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
-      return Promise.resolve({
-        stdout: '',
-        stderr,
-        exitCode: 1,
-      });
-    };
+  if (
+    options.hardened === true ||
+    options.allowMainThreadExecution !== true ||
+    options.trustedMainThreadExecution !== true
+  ) {
+    return createBrowserJavaScriptProjectPolicyFailureRunner(
+      'node: browser JavaScript project runner requires a Worker-backed runner unless allowMainThreadExecution and trustedMainThreadExecution are explicitly enabled\n'
+    );
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {

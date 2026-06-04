@@ -4128,7 +4128,7 @@ async function testProjectJavaScriptRunnersDirectAbsoluteScriptPath(): Promise<v
     `native node direct runner should accept /workspace scriptPath: ${nativeResult.stdout}`
   );
 
-  const browserResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })(request);
+  const browserResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })(request);
   assertCondition(browserResult.exitCode === 0, `browser node direct absolute scriptPath should succeed: ${browserResult.stderr}`);
   assertCondition(
     browserResult.stdout === '71\nalpha,beta\n',
@@ -4142,7 +4142,7 @@ async function testProjectJavaScriptRunnersDirectAbsoluteScriptPath(): Promise<v
     }),
     'native node direct runner should reject absolute scriptPath outside the workspace'
   );
-  const browserOutsideResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
+  const browserOutsideResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })({
     ...request,
     scriptPath: '/outside/index.js',
   });
@@ -4158,7 +4158,7 @@ async function testProjectJavaScriptRunnersDirectAbsoluteScriptPath(): Promise<v
     'native node direct runner should reject cwd outside the workspace'
   );
   await assertRejectsAsync(
-    () => createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
+    () => createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })({
       ...request,
       cwd: '/outside',
     }),
@@ -4170,7 +4170,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   const appliedChanges: string[] = [];
   const events: RuntimeCommandEvent[] = [];
   const runner = createBrowserJavaScriptProjectRunner({
-    allowMainThreadExecution: true,
+    allowMainThreadExecution: true, trustedMainThreadExecution: true,
     applyFileChange: async (change, phase) => {
       appliedChanges.push(`${phase}:${change.path}`);
       return false;
@@ -4216,7 +4216,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
 
   const failedEvents: RuntimeCommandEvent[] = [];
   const failedRunner = createBrowserJavaScriptProjectRunner({
-    allowMainThreadExecution: true,
+    allowMainThreadExecution: true, trustedMainThreadExecution: true,
     applyFileChange: async (change) => {
       throw new Error(`reject-live:${change.path}`);
     },
@@ -4258,7 +4258,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   const timerAppliedChanges: string[] = [];
   const timerEvents: RuntimeCommandEvent[] = [];
   const timerResult = await createBrowserJavaScriptProjectRunner({
-    allowMainThreadExecution: true,
+    allowMainThreadExecution: true, trustedMainThreadExecution: true,
     applyFileChange: async (change, phase) => {
       timerAppliedChanges.push(`${phase}:${change.path}`);
       return true;
@@ -4302,7 +4302,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   );
 
   const timeoutTimerEvents: RuntimeCommandEvent[] = [];
-  const timeoutTimerResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 5 })({
+  const timeoutTimerResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 5 })({
     code: [
       'const fs = require("node:fs");',
       'setTimeout(() => {',
@@ -4346,7 +4346,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
 
 async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promise<void> {
   const events: RuntimeCommandEvent[] = [];
-  const result = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
+  const result = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })({
     code: [
       'const fs = require("node:fs");',
       'process.stdout.write(fs.readFileSync("/dev/tty", "utf8").trim() + "\\n");',
@@ -4465,7 +4465,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     `browser node custom device output events should stream before process-exit: ${JSON.stringify(events)}`
   );
 
-  const sharedStdinCursorResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
+  const sharedStdinCursorResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })({
     code: [
       'const fs = require("node:fs");',
       'process.stdin.setEncoding("utf8");',
@@ -4494,7 +4494,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     `browser node process.stdin and /dev devices should share one stdin cursor: ${JSON.stringify(sharedStdinCursorResult)}`
   );
 
-  const restrictedResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })({
+  const restrictedResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })({
     code: [
       'const fs = require("node:fs");',
       'try { fs.readFileSync(0, "utf8"); console.log("fd0:ok"); } catch (error) { console.log("fd0:" + error.code); }',
@@ -4561,7 +4561,7 @@ async function testProjectJavaScriptRunnersPreserveEmptyDirectories(): Promise<v
     `native node should preserve project snapshot directories: ${nativeResult.stdout}`
   );
 
-  const browserResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true })(request);
+  const browserResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })(request);
   assertCondition(browserResult.exitCode === 0, `browser node should see project snapshot directories: ${browserResult.stderr}`);
   assertCondition(
     browserResult.stdout === 'true\nchild\n',
@@ -4613,7 +4613,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       { path: 'src/app/index.js', contents: 'console.log(require("localpkg").value);\nconsole.log(require("exportedpkg/feature").value);\n' },
       { path: 'index.js', contents: 'const { add } = require("./lib/math"); console.log(add(2, 3)); console.log(process.argv.slice(2).join(","));\n' },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand('node index.js alpha beta');
@@ -5997,7 +5997,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
 
   const terminal = workspace.createTerminalSession();
@@ -6186,7 +6186,7 @@ async function testTraceKernelHttpBindSemantics(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
 
   const terminal = workspace.createTerminalSession();
@@ -6268,7 +6268,7 @@ async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
     pythonRunner: async (request) => {
       const handle = request.kernelHttp?.listen({ host: '127.0.0.1', port: 3200 }, async (httpRequest) => ({
         status: httpRequest.method === 'POST' ? 201 : 200,
@@ -6399,7 +6399,7 @@ async function testTraceKernelHttpJavaRunnerBridge(): Promise<void> {
       },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
     javaRunner: createBrowserJavaProjectRunner({
       async executeProjectJava(request, _timeoutMs, _onEvent, signal) {
         const handle = request.kernelHttp?.listen({ host: '127.0.0.1', port: 3220 }, async (httpRequest) => ({
@@ -6477,7 +6477,7 @@ async function testTraceKernelHttpLanguageBridgeConformance(): Promise<void> {
       { path: 'client.py', contents: 'print("python")\n' },
       { path: 'Client.java', contents: 'class Client { public static void main(String[] args) {} }\n' },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
     pythonRunner: async (request) => {
       const response = await request.kernelHttp?.dispatch({
         method: 'POST',
@@ -6547,7 +6547,7 @@ async function testBrowserJavaScriptProjectRunnerAbortSignal(): Promise<void> {
   const controller = new AbortController();
   const workspace = await createRuntimeWorkspace({
     files: [{ path: 'abort-browser.js', contents: 'await new Promise(() => {});\n' }],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
 
   const command = workspace.runCommand('node abort-browser.js', {
@@ -6591,7 +6591,7 @@ async function testBrowserJavaScriptProjectRunnerCwd(): Promise<void> {
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand('node index.js', { cwd: 'src' });
@@ -6625,7 +6625,7 @@ async function testBrowserJavaScriptProjectRunnerStdin(): Promise<void> {
     files: [
       { path: 'src/helper.js', contents: 'exports.value = 47;\n' },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand(
@@ -6672,7 +6672,7 @@ async function testBrowserJavaScriptProjectRunnerLiveIoEvents(): Promise<void> {
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
   const watchEvents: RuntimeWorkspaceEvent[] = [];
   const commandEvents: RuntimeCommandEvent[] = [];
@@ -6841,7 +6841,7 @@ async function testBrowserJavaScriptProjectRunnerModuleGlobals(): Promise<void> 
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand('node src/index.js');
@@ -6926,7 +6926,7 @@ async function testBrowserJavaScriptProjectRunnerEsmImports(): Promise<void> {
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
 
   const result = await workspace.runCommand('node src/index.mjs alpha beta');
@@ -7050,7 +7050,7 @@ async function testBrowserJavaScriptProjectRunnerDuplicateBasenameImports(): Pro
         ].join('\n'),
       },
     ],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
 
   const cjsA = await workspace.runCommand('node index.js', { cwd: 'src/a' });
@@ -8560,7 +8560,7 @@ async function testLiveStdinAcrossProjectRunners(): Promise<void> {
         '',
       ].join('\n'),
     }],
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
   });
   const browserNodeResult = await runCommandWithLiveInput(browserNodeWorkspace, 'node ask.js', 'browser-node> ', 'browser-node\n');
   assertCondition(browserNodeResult.exitCode === 0, `browser Node live stdin should succeed: ${browserNodeResult.stderr}`);
@@ -9157,7 +9157,7 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
 async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   const dynamicEvalDisabledWorkspace = await createBrowserProjectWorkspace({
     files: [{ path: 'index.js', contents: 'console.log("node")\n' }],
-    nodeProject: { allowDynamicEval: false, allowMainThreadExecution: true },
+    nodeProject: { allowDynamicEval: false, allowMainThreadExecution: true, trustedMainThreadExecution: true },
     pythonWorkerClient: {
       async executeProjectPython() {
         throw new Error('unexpected Python runner call');
@@ -9196,7 +9196,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
 
   const nodeTimeoutWorkspace = await createBrowserProjectWorkspace({
     files: [],
-    nodeProject: { allowMainThreadExecution: true },
+    nodeProject: { allowMainThreadExecution: true, trustedMainThreadExecution: true },
     nodeProjectTimeoutMs: 5,
     pythonWorkerClient: {
       async executeProjectPython() {
@@ -9444,7 +9444,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     ],
     directories: ['empty/child'],
     pythonProjectTimeoutMs: 11,
-    nodeProject: { allowMainThreadExecution: true },
+    nodeProject: { allowMainThreadExecution: true, trustedMainThreadExecution: true },
     javaProjectTimeoutMs: 12,
     csharpProjectTimeoutMs: 13,
     cppProjectTimeoutMs: 14,
@@ -9762,7 +9762,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     skills: [
       { path: 'browser/guide.md', contents: 'browser skill\n' },
     ],
-    nodeProject: { allowMainThreadExecution: true },
+    nodeProject: { allowMainThreadExecution: true, trustedMainThreadExecution: true },
     pythonWorkerClient: {
       async executeProjectPython(request) {
         pythonRequests.push(request);

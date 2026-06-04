@@ -197,29 +197,62 @@ async function withProtocolTestWorker(run: (workerUrl: string) => Promise<void>)
   }
 }
 
-async function testBrowserJavaScriptHardenedModeRequiresWorker(): Promise<void> {
+async function testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn(): Promise<void> {
   const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
   delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
-  try {
-    const runner = createBrowserJavaScriptProjectRunner({ hardened: true, timeoutMs: 1000 });
-    const result = await runner({
-      code: 'console.log("should-not-run");',
-      source: 'inline',
-      args: [],
+  const request = {
+    code: 'console.log("trusted-main-thread");',
+    source: 'inline' as const,
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
       cwd: '/workspace',
-      env: {},
-      project: {
-        cwd: '/workspace',
-        workspaceRoot: '/workspace',
-        files: [],
-      },
-    });
-
-    assertCondition(result.exitCode === 1, `hardened browser JS without Worker should fail closed: ${JSON.stringify(result)}`);
-    assertCondition(result.stdout === '', `hardened browser JS should not execute same-realm code: ${JSON.stringify(result)}`);
+      workspaceRoot: '/workspace',
+      files: [],
+    },
+  };
+  try {
+    const defaultResult = await createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 })(request);
+    assertCondition(defaultResult.exitCode === 1, `browser JS without Worker should fail closed: ${JSON.stringify(defaultResult)}`);
+    assertCondition(defaultResult.stdout === '', `browser JS default fallback should not execute same-realm code: ${JSON.stringify(defaultResult)}`);
     assertCondition(
-      result.stderr.includes('requires a Worker-backed runner'),
-      `hardened browser JS should explain the missing Worker-backed runner: ${JSON.stringify(result)}`
+      defaultResult.stderr.includes('allowMainThreadExecution and trustedMainThreadExecution'),
+      `browser JS default fallback should require both main-thread trust flags: ${JSON.stringify(defaultResult)}`
+    );
+
+    const allowOnlyResult = await createBrowserJavaScriptProjectRunner({
+      allowMainThreadExecution: true,
+      timeoutMs: 1000,
+    })(request);
+    assertCondition(allowOnlyResult.exitCode === 1, `allowMainThreadExecution alone should fail closed: ${JSON.stringify(allowOnlyResult)}`);
+    assertCondition(allowOnlyResult.stdout === '', `allowMainThreadExecution alone should not execute same-realm code: ${JSON.stringify(allowOnlyResult)}`);
+    assertCondition(
+      allowOnlyResult.stderr.includes('trustedMainThreadExecution'),
+      `allowMainThreadExecution alone should require trustedMainThreadExecution: ${JSON.stringify(allowOnlyResult)}`
+    );
+
+    const hardenedResult = await createBrowserJavaScriptProjectRunner({
+      allowMainThreadExecution: true,
+      trustedMainThreadExecution: true,
+      hardened: true,
+      timeoutMs: 1000,
+    })(request);
+    assertCondition(hardenedResult.exitCode === 1, `hardened browser JS should still require a Worker: ${JSON.stringify(hardenedResult)}`);
+    assertCondition(hardenedResult.stdout === '', `hardened browser JS should not execute same-realm code: ${JSON.stringify(hardenedResult)}`);
+    assertCondition(
+      hardenedResult.stderr.includes('allowMainThreadExecution and trustedMainThreadExecution'),
+      `hardened browser JS should explain the missing Worker-backed runner: ${JSON.stringify(hardenedResult)}`
+    );
+
+    const trustedResult = await createBrowserJavaScriptProjectRunner({
+      allowMainThreadExecution: true,
+      trustedMainThreadExecution: true,
+      timeoutMs: 1000,
+    })(request);
+    assertCondition(
+      trustedResult.exitCode === 0 && trustedResult.stdout === 'trusted-main-thread\n',
+      `explicitly trusted main-thread browser JS should still work for same-realm tests: ${JSON.stringify(trustedResult)}`
     );
   } finally {
     if (previousWorker === undefined) {
@@ -479,9 +512,38 @@ async function testBrowserJavaScriptWorkerRejectsUserSpoofedResults(): Promise<v
   });
 }
 
+async function testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn(): Promise<void> {
+  await withProtocolTestWorker(async (workerUrl) => {
+    const runner = createBrowserJavaScriptProjectRunner({
+      workerUrl,
+      workerIsolation: 'shared',
+      timeoutMs: 1000,
+    });
+    const result = await runner({
+      code: 'console.log("should-not-run");',
+      source: 'inline',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        cwd: '/workspace',
+        workspaceRoot: '/workspace',
+        files: [],
+      },
+    });
+
+    assertCondition(result.exitCode === 1, `untrusted shared browser JS worker should fail closed: ${JSON.stringify(result)}`);
+    assertCondition(result.stdout === '', `untrusted shared browser JS worker should not execute project code: ${JSON.stringify(result)}`);
+    assertCondition(
+      result.stderr.includes('trustedReusableWorker'),
+      `shared browser JS workers should require explicit trustedReusableWorker opt-in: ${JSON.stringify(result)}`
+    );
+  });
+}
+
 async function testBrowserJavaScriptReadonlyHardlinksAreRejected(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 }),
     projectSession: {
       id: 'hardening-session',
       projectId: 'hardening',
@@ -530,7 +592,7 @@ async function testBrowserJavaScriptReadonlyHardlinksAreRejected(): Promise<void
 }
 
 async function testBrowserJavaScriptHiddenFilesAreNotMounted(): Promise<void> {
-  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
   const result = await runner({
     code: '',
     source: 'file',
@@ -585,7 +647,7 @@ async function testBrowserJavaScriptHiddenFilesAreNotMounted(): Promise<void> {
 }
 
 async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<void> {
-  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
   const operations = [
     'writeFileSync("readonly.txt","x")',
     'appendFileSync("readonly.txt","x")',
@@ -649,7 +711,7 @@ async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<voi
 }
 
 async function testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamespace(): Promise<void> {
-  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
   const result = await runner({
     code: [
       'try { console.log("typescript:" + require("typescript").version); }',
@@ -685,7 +747,7 @@ async function testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamesp
 }
 
 async function testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics(): Promise<void> {
-  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
   const result = await runner({
     code: [
       'const fs = require("node:fs");',
@@ -719,7 +781,7 @@ async function testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics(): Pro
 }
 
 async function testBrowserJavaScriptCpRejectsFileToRootDirectory(): Promise<void> {
-  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
   const result = await runner({
     code: [
       'const fs = require("node:fs");',
@@ -751,7 +813,7 @@ async function testBrowserJavaScriptCpRejectsFileToRootDirectory(): Promise<void
 }
 
 async function testBrowserJavaScriptSyntaxErrorsHideRunnerInternals(): Promise<void> {
-  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
   const result = await runner({
     code: 'const broken = ;\n',
     source: 'inline',
@@ -2261,7 +2323,7 @@ async function testTraceKernelFinalDiffDirectoryDeletesRejectStaleDescendants():
 async function testTraceKernelProjectCommandStepsAreBounded(): Promise<void> {
   const message = await rejectedMessage(async () => {
     const workspace = await createRuntimeWorkspace({
-      nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+      nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 }),
       projectSession: {
         id: 'step-limit-session',
         projectSlug: 'step-limit',
@@ -2286,7 +2348,7 @@ async function testTraceKernelProjectCommandStepsAreBounded(): Promise<void> {
 
 async function testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 }),
     packageManager: true,
     files: [
       {
@@ -2332,7 +2394,7 @@ async function testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks(): Promise<voi
 
 async function testTraceKernelDeviceOutputAccumulationIsBounded(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 }),
     files: [
       {
         path: 'writer.js',
@@ -2582,7 +2644,7 @@ async function testTraceKernelHttpRejectsInvalidResponseStatus(): Promise<void> 
 
 async function testBrowserJavaScriptHttpAbortPropagatesToKernel(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 }),
     files: [
       {
         path: 'fetch-abort.js',
@@ -2628,7 +2690,7 @@ async function testBrowserJavaScriptHttpAbortPropagatesToKernel(): Promise<void>
 
 async function testBrowserJavaScriptHttpTimeoutPropagatesToKernel(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 }),
     files: [
       {
         path: 'http-timeout.js',
@@ -2669,7 +2731,7 @@ async function testBrowserJavaScriptHttpTimeoutPropagatesToKernel(): Promise<voi
 
 async function testBrowserJavaScriptHttpDestroyCompletesActiveRequest(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 }),
     files: [
       {
         path: 'http-destroy.js',
@@ -2710,7 +2772,7 @@ async function testBrowserJavaScriptHttpDestroyCompletesActiveRequest(): Promise
 
 async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
-    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 }),
     files: [
       {
         path: 'global-fetch.js',
@@ -2749,10 +2811,11 @@ async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> 
 
 async function main(): Promise<void> {
   await testBrowserAsyncLocalStorageSingleFlightContexts();
-  await testBrowserJavaScriptHardenedModeRequiresWorker();
+  await testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn();
   await testBrowserTypeScriptDomCompilerScriptPolicy();
   await testIndexedDbKernelStorageEncryptsSnapshots();
   await testBrowserJavaScriptWorkerRejectsUserSpoofedResults();
+  await testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn();
   await testBrowserJavaScriptReadonlyHardlinksAreRejected();
   await testBrowserJavaScriptHiddenFilesAreNotMounted();
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
