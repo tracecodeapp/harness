@@ -107,6 +107,8 @@ const JAVA_HTTP_SYNC_CLOSED = 3;
 const PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
 const PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
 const PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
+const JAVA_MAX_DIAGNOSTIC_CHARS = 64 * 1024;
+const JAVA_MAX_DIAGNOSTIC_PATH_CHARS = 512;
 const javaHttpServers = new Map();
 let nextJavaHttpServerId = 1;
 
@@ -4014,11 +4016,25 @@ function truncateJavaWorkerDiagnostic(value, maxLength = 6000) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}\n... <truncated ${text.length - maxLength} chars>` : text;
 }
 
+function truncateJavaProjectDiagnostic(value) {
+  return truncateJavaWorkerDiagnostic(value, JAVA_MAX_DIAGNOSTIC_CHARS);
+}
+
+function boundedJavaDiagnosticPath(value, fallback = '.') {
+  const normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!normalized) return fallback;
+  return normalized.length > JAVA_MAX_DIAGNOSTIC_PATH_CHARS
+    ? `${normalized.slice(0, JAVA_MAX_DIAGNOSTIC_PATH_CHARS)}...`
+    : normalized;
+}
+
 function javaReportFailureMessage(report, fallback = 'Java execution failed') {
   const parts = [];
   const compilerStdout = typeof report?.compilerStdout === 'string' ? report.compilerStdout.trim() : '';
   const compilerStderr = typeof report?.compilerStderr === 'string' ? report.compilerStderr.trim() : '';
-  const runtimeError = typeof report?.runtimeError === 'string' ? sanitizeJavaRuntimeStderr(report.runtimeError).trim() : '';
+  const runtimeError = typeof report?.runtimeError === 'string'
+    ? truncateJavaProjectDiagnostic(sanitizeJavaRuntimeStderr(report.runtimeError)).trim()
+    : '';
   if (compilerStdout) parts.push(`compilerStdout:\n${truncateJavaWorkerDiagnostic(compilerStdout)}`);
   if (compilerStderr) parts.push(`compilerStderr:\n${truncateJavaWorkerDiagnostic(compilerStderr)}`);
   if (runtimeError && !compilerStdout.includes(runtimeError) && !compilerStderr.includes(runtimeError)) {
@@ -4040,13 +4056,13 @@ function javaReportFailureMessage(report, fallback = 'Java execution failed') {
 
 function javaNormalizeProjectCompilerOutput(output, sourceRoot, projectRoot = '') {
   const root = String(sourceRoot ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
-  if (!root) return output;
-  const targetRoot = String(projectRoot || '').replace(/\\/g, '/').replace(/\/+$/, '');
-  const replacementRoot = targetRoot || '.';
+  if (!root) return truncateJavaProjectDiagnostic(output);
+  const diagnostic = truncateJavaProjectDiagnostic(output);
+  const replacementRoot = boundedJavaDiagnosticPath(projectRoot, '.');
   const escapedRoot = escapeRegExp(root);
-  return String(output ?? '')
+  return truncateJavaProjectDiagnostic(diagnostic
     .replace(new RegExp(`${escapedRoot}/`, 'g'), `${replacementRoot}/`)
-    .replace(new RegExp(escapedRoot, 'g'), replacementRoot);
+    .replace(new RegExp(escapedRoot, 'g'), replacementRoot));
 }
 
 function javaProjectFailureStderr(report, sourceRoot, projectRoot) {
@@ -4060,9 +4076,9 @@ function javaProjectFailureStderr(report, sourceRoot, projectRoot) {
     if (!runtimeError || runtimeError === 'Java compilation failed' || compilerOutput.includes(runtimeError)) {
       return compilerOutput;
     }
-    return `${compilerOutput}\n${runtimeError}`;
+    return truncateJavaProjectDiagnostic(`${compilerOutput}\n${runtimeError}`);
   }
-  return runtimeError || 'Java execution failed';
+  return truncateJavaProjectDiagnostic(runtimeError || 'Java execution failed');
 }
 
 function parseJavaReportOutput(output) {

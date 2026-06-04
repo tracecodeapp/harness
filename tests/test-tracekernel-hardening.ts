@@ -8,6 +8,7 @@ import { delimiter, join } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 import { assertRuntimeFinalDiffBudget } from '../packages/harness-core/src/runtime-project';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
@@ -22,6 +23,10 @@ function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function nativeJavaTraceEvent(event: Record<string, unknown>): string {
+  return `trace:${JSON.stringify(event)}`;
 }
 
 async function rejectedMessage(run: () => Promise<unknown>): Promise<string> {
@@ -734,6 +739,90 @@ public class JavaHelperStateSmoke {
   }
 }
 
+async function testJavaWorkerDiagnosticsAreBounded(): Promise<void> {
+  const source = (await readFile(join(dirname(testDirectory), 'workers', 'java', 'java-worker.js'), 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
+    ''
+  );
+  const context = vm.createContext({
+    console,
+    self: {
+      postMessage: () => {},
+      location: { href: 'http://localhost/workers/java/java-worker.js', origin: 'http://localhost', search: '' },
+    },
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    SharedArrayBuffer,
+    Int32Array,
+    Atomics,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+    performance: { now: () => 0 },
+    queueMicrotask: (callback: () => void) => callback(),
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
+  vm.runInContext(source, context, { filename: 'java-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      const sourceRoot = '/files/java-worker/source-root';
+      const projectRoot = '/workspace/' + 'r'.repeat(200000);
+      const diagnosticLine = sourceRoot + '/Main.java:1: error: boom';
+      const compilerStdout = Array.from({ length: 4096 }, () => diagnosticLine).join('\\n');
+      const runtimeError = 'runtime:' + 'x'.repeat(200000);
+      const stderr = javaProjectFailureStderr({ compilerStdout, compilerStderr: '', runtimeError }, sourceRoot, projectRoot);
+      return {
+        length: stderr.length,
+        hasHugePath: stderr.includes('r'.repeat(4096)),
+        hasTruncation: stderr.includes('<truncated'),
+      };
+    })()`,
+    context
+  ) as { length: number; hasHugePath: boolean; hasTruncation: boolean };
+
+  assertCondition(result.length <= 66000, `Java project diagnostics should be capped: ${JSON.stringify(result)}`);
+  assertCondition(!result.hasHugePath, `Java project diagnostics should cap replacement paths: ${JSON.stringify(result)}`);
+  assertCondition(result.hasTruncation, `Java project diagnostics should include truncation marker: ${JSON.stringify(result)}`);
+}
+
+function testJavaTraceHeaderExpansionIsBounded(): void {
+  const sourceText = [
+    'class Solution {',
+    '  void run() {',
+    '    for (int i = 0; i < 10; i++) {',
+    '      work();',
+    '    }',
+    '  }',
+    '}',
+  ].join('\n');
+  const rawEvents: string[] = [
+    nativeJavaTraceEvent({ kind: 'line', line: 1, function: 'run' }),
+  ];
+  for (let index = 0; index < 5000; index += 1) {
+    rawEvents.push(nativeJavaTraceEvent({
+      kind: 'snapshot',
+      line: 2,
+      target: { variable: `v${index}` },
+      value: index,
+    }));
+  }
+  rawEvents.push(nativeJavaTraceEvent({ kind: 'line', line: 4, function: 'run' }));
+
+  const trace = javaTraceHooksEventsToRuntimeTrace(rawEvents, sourceText, { runId: 'java:bounded-header' });
+  const headerEvents = trace.events.filter((event) => event.line === 3);
+
+  assertCondition(
+    trace.events.length <= rawEvents.length + 2048,
+    `Java header expansion should cap synthetic event growth: raw=${rawEvents.length} normalized=${trace.events.length}`
+  );
+  assertCondition(
+    headerEvents.length <= 2048,
+    `Java header expansion should cap synthetic header events: ${headerEvents.length}`
+  );
+}
+
 async function testCppWorkerProjectEventBudgets(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
@@ -1161,6 +1250,8 @@ async function main(): Promise<void> {
   await testCSharpWorkerProjectEventBudgets();
   await testJavaWorkerProjectEventBudgets();
   testJavaHelperRunScopeAndCacheManifest();
+  await testJavaWorkerDiagnosticsAreBounded();
+  testJavaTraceHeaderExpansionIsBounded();
   await testCppWorkerProjectEventBudgets();
   testRuntimeFinalDiffBudgets();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
