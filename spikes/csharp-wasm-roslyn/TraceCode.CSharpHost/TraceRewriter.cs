@@ -4177,9 +4177,29 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     private static string CreateRangePathExpression(string receiverExpression, RangeExpressionSyntax rangeExpression)
     {
-        string start = rangeExpression.LeftOperand?.ToString() ?? "0";
-        string end = rangeExpression.RightOperand?.ToString() ?? $"{receiverExpression}.Length";
+        string start = CreateRangeBoundaryPathExpression(receiverExpression, rangeExpression.LeftOperand, "0");
+        string end = CreateRangeBoundaryPathExpression(receiverExpression, rangeExpression.RightOperand, $"{receiverExpression}.Length");
         return $"new object?[] {{ {start}, {end} }}";
+    }
+
+    private static string CreateRangeBoundaryPathExpression(
+        string receiverExpression,
+        ExpressionSyntax? boundaryExpression,
+        string fallbackExpression)
+    {
+        if (boundaryExpression is null)
+        {
+            return fallbackExpression;
+        }
+
+        string boundary = boundaryExpression.ToString().Trim();
+        if (boundary.StartsWith("^", StringComparison.Ordinal))
+        {
+            string fromEnd = boundary[1..].Trim();
+            return $"({receiverExpression}.Length - ({fromEnd}))";
+        }
+
+        return boundary;
     }
 
     private static string CreateRangeIndexSourcesExpression(RangeExpressionSyntax rangeExpression)

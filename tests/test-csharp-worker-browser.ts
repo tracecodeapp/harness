@@ -3631,6 +3631,61 @@ async function main(): Promise<void> {
       `C# worker traced collection factory assignment case should return [4,5,7], received ${JSON.stringify(collectionFactoryAssignment.output)}`
     );
 
+    const tracedArrayRangeSyntax = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int UseRanges(int[] nums) {',
+        '    int[] all = nums[..];',
+        '    int[] tail = nums[1..];',
+        '    int[] middle = nums[1..^1];',
+        '    int[] last = nums[^1..];',
+        '    int[] leading = nums[..^1];',
+        '    return all.Length * 10000 + tail[0] * 1000 + middle.Length * 100 + last[0] * 10 + leading.Length;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UseRanges',
+      { nums: [2, 3, 5, 7] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedArrayRangeSyntax.success,
+      `C# worker traced array range syntax case should compile: ${tracedArrayRangeSyntax.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedArrayRangeSyntax.output === 43273,
+      `C# worker traced array ranges should preserve output, received ${JSON.stringify(tracedArrayRangeSyntax.output)}`
+    );
+    assertCondition(
+      tracedArrayRangeSyntax.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 5
+        && event.target?.variable === 'nums'
+        && JSON.stringify(event.target.path) === JSON.stringify([1, 3])
+      ) === true,
+      `C# worker traced nums[1..^1] should emit concrete slice bounds, received ${JSON.stringify(tracedArrayRangeSyntax.events)}`
+    );
+    assertCondition(
+      tracedArrayRangeSyntax.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 6
+        && event.target?.variable === 'nums'
+        && JSON.stringify(event.target.path) === JSON.stringify([3, 4])
+      ) === true,
+      `C# worker traced nums[^1..] should emit concrete from-end slice bounds, received ${JSON.stringify(tracedArrayRangeSyntax.events)}`
+    );
+    assertCondition(
+      tracedArrayRangeSyntax.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'nums'
+        && JSON.stringify(event.target.path) === JSON.stringify([0, 3])
+      ) === true,
+      `C# worker traced nums[..^1] should emit concrete leading slice bounds, received ${JSON.stringify(tracedArrayRangeSyntax.events)}`
+    );
+
     const tracedExplicitCollections = await runWorkerCase(
       page,
       [
