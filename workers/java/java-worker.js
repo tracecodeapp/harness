@@ -4573,6 +4573,7 @@ public class ${exportsClassName} {
     java.util.Properties previousProperties = new java.util.Properties();
     java.io.ByteArrayOutputStream stdoutBytes = new java.io.ByteArrayOutputStream();
     java.io.ByteArrayOutputStream stderrBytes = new java.io.ByteArrayOutputStream();
+    int tracecodeProjectRunToken = 0;
     int exitCode = 0;
     try {
       for (String key : propertyKeys) {
@@ -4582,7 +4583,7 @@ public class ${exportsClassName} {
       for (int index = 0; index < propertyKeys.length; index += 1) {
         System.setProperty(propertyKeys[index], propertyValues[index]);
       }
-      ProjectEvents.setProjectEventBridgeEnabled(true);
+      tracecodeProjectRunToken = ProjectEvents.beginProjectRun();
       ProjectEvents.setProjectWorkspaceRoot(tracecodeWorkspaceRoot);
       ProjectEvents.setProjectVirtualWorkspaceRoot(${virtualWorkspaceRootSource}, ${workspaceAliasSource});
       ProjectEvents.setKernelDevices(${kernelDeviceManifestSource});
@@ -4604,7 +4605,7 @@ ${invocation}
       System.setIn(previousIn);
       ProjectEvents.setProjectWorkspaceRoot(null);
       ProjectEvents.clearKernelDevices();
-      ProjectEvents.setProjectEventBridgeEnabled(false);
+      ProjectEvents.endProjectRun(tracecodeProjectRunToken);
       for (String key : propertyKeys) {
         if (previousProperties.containsKey(key)) {
           System.setProperty(key, previousProperties.getProperty(key));

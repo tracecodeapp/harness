@@ -80,8 +80,14 @@ import javax.net.ssl.SSLSession;
 import java.util.stream.Stream;
 
 public final class ProjectEvents {
-  private static final ThreadLocal<Boolean> PROJECT_EVENT_BRIDGE_ENABLED =
-      ThreadLocal.withInitial(() -> Boolean.FALSE);
+  private static final InheritableThreadLocal<Boolean> PROJECT_EVENT_BRIDGE_ENABLED =
+      new InheritableThreadLocal<Boolean>() {
+        @Override
+        protected Boolean initialValue() {
+          return Boolean.FALSE;
+        }
+      };
+  private static final InheritableThreadLocal<Integer> PROJECT_RUN_TOKEN = new InheritableThreadLocal<>();
   private static final ThreadLocal<Path> PROJECT_WORKSPACE_ROOT = new ThreadLocal<>();
   private static final ThreadLocal<String> PROJECT_VIRTUAL_WORKSPACE_ROOT = new ThreadLocal<>();
   private static final ThreadLocal<String> PROJECT_WORKSPACE_ALIAS = new ThreadLocal<>();
@@ -101,8 +107,15 @@ public final class ProjectEvents {
   private static final int PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
   private static final int PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
   private static final long PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4L * 1024L * 1024L;
-  private static final ThreadLocal<ProjectEventBudget> PROJECT_EVENT_BUDGET =
-      ThreadLocal.withInitial(ProjectEventBudget::new);
+  private static final InheritableThreadLocal<ProjectEventBudget> PROJECT_EVENT_BUDGET =
+      new InheritableThreadLocal<ProjectEventBudget>() {
+        @Override
+        protected ProjectEventBudget initialValue() {
+          return new ProjectEventBudget();
+        }
+      };
+  private static int NEXT_PROJECT_RUN_TOKEN = 0;
+  private static volatile int ACTIVE_PROJECT_RUN_TOKEN = 0;
 
   private ProjectEvents() {}
 
@@ -146,12 +159,60 @@ public final class ProjectEvents {
   }
 
   public static void setProjectEventBridgeEnabled(boolean enabled) {
-    PROJECT_EVENT_BRIDGE_ENABLED.set(enabled);
     if (enabled) {
-      PROJECT_EVENT_BUDGET.set(new ProjectEventBudget());
+      beginProjectRun();
     } else {
-      PROJECT_EVENT_BUDGET.remove();
+      Integer token = PROJECT_RUN_TOKEN.get();
+      if (token == null) {
+        disableProjectRunForCurrentThread();
+      } else {
+        endProjectRun(token.intValue());
+      }
     }
+  }
+
+  public static int beginProjectRun() {
+    int token;
+    synchronized (ProjectEvents.class) {
+      token = NEXT_PROJECT_RUN_TOKEN + 1;
+      if (token <= 0) token = 1;
+      NEXT_PROJECT_RUN_TOKEN = token;
+      ACTIVE_PROJECT_RUN_TOKEN = token;
+    }
+    PROJECT_RUN_TOKEN.set(token);
+    PROJECT_EVENT_BRIDGE_ENABLED.set(Boolean.TRUE);
+    PROJECT_EVENT_BUDGET.set(new ProjectEventBudget());
+    return token;
+  }
+
+  public static void endProjectRun(int token) {
+    synchronized (ProjectEvents.class) {
+      if (ACTIVE_PROJECT_RUN_TOKEN == token) {
+        ACTIVE_PROJECT_RUN_TOKEN = 0;
+      }
+    }
+    disableProjectRunForCurrentThread();
+  }
+
+  private static void disableProjectRunForCurrentThread() {
+    PROJECT_EVENT_BRIDGE_ENABLED.set(Boolean.FALSE);
+    PROJECT_RUN_TOKEN.remove();
+    PROJECT_EVENT_BUDGET.remove();
+  }
+
+  private static int currentProjectRunToken() {
+    Integer token = PROJECT_RUN_TOKEN.get();
+    return token == null ? 0 : token.intValue();
+  }
+
+  private static boolean projectRunActiveForCurrentThread() {
+    return projectRunTokenActive(currentProjectRunToken());
+  }
+
+  private static boolean projectRunTokenActive(int token) {
+    return token != 0 &&
+        token == ACTIVE_PROJECT_RUN_TOKEN &&
+        Boolean.TRUE.equals(PROJECT_EVENT_BRIDGE_ENABLED.get());
   }
 
   public static void setProjectWorkspaceRoot(Path root) {
@@ -2996,7 +3057,7 @@ public final class ProjectEvents {
   }
 
   private static void emitOutput(String stream, String data, String sourceDevice, String outputDevice) {
-    if (!PROJECT_EVENT_BRIDGE_ENABLED.get() || data.isEmpty()) return;
+    if (!projectRunActiveForCurrentThread() || data.isEmpty()) return;
     try {
       emitOutputNative(
           stream,
@@ -3407,7 +3468,7 @@ public final class ProjectEvents {
   }
 
   private static int inputAvailable(String device) {
-    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return 0;
+    if (!projectRunActiveForCurrentThread()) return 0;
     try {
       return inputAvailableNative(device == null ? "/dev/stdin" : device);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
@@ -3416,7 +3477,7 @@ public final class ProjectEvents {
   }
 
   private static int readHostInputByte(String device) {
-    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return -1;
+    if (!projectRunActiveForCurrentThread()) return -1;
     try {
       return readInputNative(device == null ? "/dev/stdin" : device);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
@@ -3425,7 +3486,7 @@ public final class ProjectEvents {
   }
 
   private static int readHostInputAvailableByte(String device) {
-    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return -1;
+    if (!projectRunActiveForCurrentThread()) return -1;
     try {
       return readInputAvailableNative(device == null ? "/dev/stdin" : device);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
@@ -3528,7 +3589,7 @@ public final class ProjectEvents {
     private int liveFileChangeCount = 0;
     private long liveFileChangeBytes = 0;
 
-    byte[] captureOutput(String stream, byte[] bytes, int offset, int length) {
+    synchronized byte[] captureOutput(String stream, byte[] bytes, int offset, int length) {
       if (bytes == null || length <= 0) return new byte[0];
       boolean stderr = "stderr".equals(stream);
       if (stderr ? stderrTruncated : stdoutTruncated) return new byte[0];
@@ -3563,7 +3624,7 @@ public final class ProjectEvents {
       return output;
     }
 
-    boolean reserveLiveFileChange(String relativePath, long contentsBytes) {
+    synchronized boolean reserveLiveFileChange(String relativePath, long contentsBytes) {
       liveFileChangeCount += 1;
       long safeContentsBytes = Math.max(0, contentsBytes);
       long eventBytes = utf8ByteLength(relativePath) + safeContentsBytes;
@@ -3962,7 +4023,7 @@ public final class ProjectEvents {
   }
 
   private static void emitFileSnapshot(Path path) {
-    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;
+    if (!projectRunActiveForCurrentThread()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
     try {
@@ -3984,7 +4045,7 @@ public final class ProjectEvents {
   }
 
   private static void emitFileDelete(Path path) {
-    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;
+    if (!projectRunActiveForCurrentThread()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
     if (!reserveLiveFileChange(relativePath, 0)) return;
@@ -3996,7 +4057,7 @@ public final class ProjectEvents {
   }
 
   private static void emitDirectoryCreate(Path path) {
-    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;
+    if (!projectRunActiveForCurrentThread()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
     if (!reserveLiveFileChange(relativePath, 0)) return;
@@ -4008,7 +4069,7 @@ public final class ProjectEvents {
   }
 
   private static void emitDirectoryDelete(Path path) {
-    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;
+    if (!projectRunActiveForCurrentThread()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
     if (!reserveLiveFileChange(relativePath, 0)) return;
@@ -4052,14 +4113,17 @@ public final class ProjectEvents {
     private final ByteArrayOutputStream capture;
     private final String stream;
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
+    private final int runToken;
 
     StreamingProjectOutputStream(ByteArrayOutputStream capture, String stream) {
       this.capture = capture;
       this.stream = stream;
+      this.runToken = currentProjectRunToken();
     }
 
     @Override
     public void write(int value) throws IOException {
+      if (!projectRunTokenActive(runToken)) return;
       byte[] bytes = new byte[] { (byte) value };
       byte[] outputBytes = budgetProjectOutputBytes(stream, bytes, 0, 1);
       if (outputBytes.length == 0) return;
@@ -4075,6 +4139,7 @@ public final class ProjectEvents {
 
     @Override
     public void write(byte[] bytes, int offset, int length) throws IOException {
+      if (!projectRunTokenActive(runToken)) return;
       byte[] outputBytes = budgetProjectOutputBytes(stream, bytes, offset, length);
       if (outputBytes.length == 0) return;
       capture.write(outputBytes, 0, outputBytes.length);
@@ -4089,6 +4154,7 @@ public final class ProjectEvents {
 
     @Override
     public void flush() throws IOException {
+      if (!projectRunTokenActive(runToken)) return;
       if (pending.size() == 0) return;
       emitOutput(stream, pending.toString(StandardCharsets.UTF_8.name()));
       pending.reset();

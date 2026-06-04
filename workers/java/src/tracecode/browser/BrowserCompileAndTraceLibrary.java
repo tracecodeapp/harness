@@ -25,7 +25,7 @@ import javax.tools.ToolProvider;
 import tracecode.user.TraceHooks;
 
 public final class BrowserCompileAndTraceLibrary {
-  private static final String RUN_CACHE_VERSION = "tracecode-java-run-v1";
+  private static final String RUN_CACHE_VERSION = "tracecode-java-run-v2";
 
   private BrowserCompileAndTraceLibrary() {}
 
@@ -94,7 +94,7 @@ public final class BrowserCompileAndTraceLibrary {
           compilerStdoutWriter,
           compilerStderrWriter);
       if (compiled) {
-        Files.writeString(cacheKeyPath, cacheKey, StandardCharsets.UTF_8);
+        writeCompileCacheMetadata(classesPath, cacheKeyPath, cacheKey);
       }
     }
     long compileEnd = System.nanoTime();
@@ -107,9 +107,11 @@ public final class BrowserCompileAndTraceLibrary {
     String runtimeError = null;
     List<String> events = new ArrayList<>();
     boolean success = compiled;
+    boolean traceLimitExceeded = false;
+    int droppedEventCount = 0;
 
     if (compiled) {
-      TraceHooks.reset(maxStoredEvents);
+      int traceRunToken = TraceHooks.beginRun(maxStoredEvents);
       try (URLClassLoader loader = new URLClassLoader(
           new URL[] { classesPath.toUri().toURL() },
           BrowserCompileAndTraceLibrary.class.getClassLoader())) {
@@ -136,6 +138,9 @@ public final class BrowserCompileAndTraceLibrary {
         success = false;
       } finally {
         events = TraceHooks.drainEvents();
+        traceLimitExceeded = TraceHooks.traceLimitExceeded();
+        droppedEventCount = TraceHooks.droppedEventCount();
+        TraceHooks.endRun(traceRunToken);
       }
     } else {
       runtimeError = null;
@@ -153,8 +158,8 @@ public final class BrowserCompileAndTraceLibrary {
         runStart == 0 ? 0 : millisBetween(runStart, runEnd),
         compileCacheHit,
         compilerProfile,
-        TraceHooks.traceLimitExceeded(),
-        TraceHooks.droppedEventCount());
+        traceLimitExceeded,
+        droppedEventCount);
   }
 
   public static String compileAndRun(
@@ -194,7 +199,7 @@ public final class BrowserCompileAndTraceLibrary {
           compilerStdoutWriter,
           compilerStderrWriter);
       if (compiled) {
-        Files.writeString(cacheKeyPath, cacheKey, StandardCharsets.UTF_8);
+        writeCompileCacheMetadata(classesPath, cacheKeyPath, cacheKey);
       }
     }
     long compileEnd = System.nanoTime();
@@ -217,6 +222,7 @@ public final class BrowserCompileAndTraceLibrary {
     long classLoadEnd = classLoadStart;
     long runStart = 0;
     long runEnd = 0;
+    int traceRunToken = TraceHooks.beginRun();
     try (URLClassLoader loader = new URLClassLoader(
         new URL[] { classesPath.toUri().toURL() },
         BrowserCompileAndTraceLibrary.class.getClassLoader())) {
@@ -270,6 +276,8 @@ public final class BrowserCompileAndTraceLibrary {
           runStart == 0 ? 0 : millisBetween(runStart, runEnd),
           compileCacheHit,
           compilerProfile);
+    } finally {
+      TraceHooks.endRun(traceRunToken);
     }
   }
 
@@ -313,7 +321,7 @@ public final class BrowserCompileAndTraceLibrary {
           compilerStdoutWriter,
           compilerStderrWriter);
       if (compiled) {
-        Files.writeString(cacheKeyPath, cacheKey, StandardCharsets.UTF_8);
+        writeCompileCacheMetadata(classesPath, cacheKeyPath, cacheKey);
       }
     }
     long compileEnd = System.nanoTime();
@@ -429,7 +437,7 @@ public final class BrowserCompileAndTraceLibrary {
           compilerStdoutWriter,
           compilerStderrWriter);
       if (compiled) {
-        Files.writeString(cacheKeyPath, cacheKey, StandardCharsets.UTF_8);
+        writeCompileCacheMetadata(classesPath, cacheKeyPath, cacheKey);
       }
     }
     long compileEnd = System.nanoTime();
@@ -700,7 +708,7 @@ public final class BrowserCompileAndTraceLibrary {
           compilerStdoutWriter,
           compilerStderrWriter);
       if (compiled) {
-        Files.writeString(cacheKeyPath, cacheKey, StandardCharsets.UTF_8);
+        writeCompileCacheMetadata(classesPath, cacheKeyPath, cacheKey);
       }
     }
     long compileEnd = System.nanoTime();
@@ -975,7 +983,42 @@ public final class BrowserCompileAndTraceLibrary {
       Path classFile = classesDir.resolve(entryClass.replace('.', '/') + ".class");
       if (!Files.exists(classFile)) return false;
     }
-    return cacheKey.equals(Files.readString(cacheKeyPath, StandardCharsets.UTF_8));
+    if (!cacheKey.equals(Files.readString(cacheKeyPath, StandardCharsets.UTF_8))) return false;
+    Path manifestPath = cacheManifestPath(cacheKeyPath);
+    return Files.exists(manifestPath) &&
+        Files.readString(manifestPath, StandardCharsets.UTF_8).equals(compiledOutputManifest(classesDir));
+  }
+
+  private static void writeCompileCacheMetadata(Path classesDir, Path cacheKeyPath, String cacheKey) throws IOException {
+    Files.writeString(cacheKeyPath, cacheKey, StandardCharsets.UTF_8);
+    Files.writeString(cacheManifestPath(cacheKeyPath), compiledOutputManifest(classesDir), StandardCharsets.UTF_8);
+  }
+
+  private static Path cacheManifestPath(Path cacheKeyPath) {
+    return cacheKeyPath.resolveSibling(cacheKeyPath.getFileName().toString() + ".manifest");
+  }
+
+  private static String compiledOutputManifest(Path classesDir) throws IOException {
+    MessageDigest digest = newSha256Digest();
+    updateDigest(digest, RUN_CACHE_VERSION);
+    if (!Files.exists(classesDir)) return hexDigest(digest.digest());
+
+    List<Path> files;
+    try (Stream<Path> stream = Files.walk(classesDir)) {
+      files = stream
+          .filter(Files::isRegularFile)
+          .filter(path -> !path.getFileName().toString().startsWith(".tracecode-"))
+          .sorted()
+          .collect(Collectors.toList());
+    }
+    for (Path file : files) {
+      byte[] bytes = Files.readAllBytes(file);
+      updateDigest(digest, classesDir.relativize(file).toString().replace('\\', '/'));
+      updateDigest(digest, Integer.toString(bytes.length));
+      digest.update((byte) 1);
+      digest.update(bytes);
+    }
+    return hexDigest(digest.digest());
   }
 
   private static void resetDirectory(Path dir) throws IOException {
@@ -1006,19 +1049,13 @@ public final class BrowserCompileAndTraceLibrary {
       String entryClass,
       String compilerDebugArg
   ) throws Exception {
-    MessageDigest digest = MessageDigest.getInstance("SHA-256");
+    MessageDigest digest = newSha256Digest();
     updateDigest(digest, RUN_CACHE_VERSION);
     updateDigest(digest, source);
     updateDigest(digest, compileClasspath == null ? "" : compileClasspath);
     updateDigest(digest, entryClass == null ? "" : entryClass);
     updateDigest(digest, compilerDebugArg == null ? "" : compilerDebugArg);
-    byte[] bytes = digest.digest();
-    StringBuilder out = new StringBuilder(bytes.length * 2);
-    for (byte value : bytes) {
-      out.append(Character.forDigit((value >> 4) & 0xf, 16));
-      out.append(Character.forDigit(value & 0xf, 16));
-    }
-    return out.toString();
+    return hexDigest(digest.digest());
   }
 
   private static String hashSources(
@@ -1027,7 +1064,7 @@ public final class BrowserCompileAndTraceLibrary {
       String entryClass,
       String compilerDebugArg
   ) throws Exception {
-    MessageDigest digest = MessageDigest.getInstance("SHA-256");
+    MessageDigest digest = newSha256Digest();
     updateDigest(digest, RUN_CACHE_VERSION);
     for (String sourcePath : sourcePaths) {
       updateDigest(digest, sourcePath);
@@ -1036,7 +1073,18 @@ public final class BrowserCompileAndTraceLibrary {
     updateDigest(digest, compileClasspath == null ? "" : compileClasspath);
     updateDigest(digest, entryClass == null ? "" : entryClass);
     updateDigest(digest, compilerDebugArg == null ? "" : compilerDebugArg);
-    byte[] bytes = digest.digest();
+    return hexDigest(digest.digest());
+  }
+
+  private static MessageDigest newSha256Digest() throws IOException {
+    try {
+      return MessageDigest.getInstance("SHA-256");
+    } catch (java.security.NoSuchAlgorithmException error) {
+      throw new IOException("SHA-256 digest is unavailable", error);
+    }
+  }
+
+  private static String hexDigest(byte[] bytes) {
     StringBuilder out = new StringBuilder(bytes.length * 2);
     for (byte value : bytes) {
       out.append(Character.forDigit((value >> 4) & 0xf, 16));
@@ -1338,6 +1386,7 @@ public final class BrowserCompileAndTraceLibrary {
     long runStart = 0;
     long runEnd = 0;
     String previousUserDir = System.getProperty("user.dir");
+    int traceRunToken = TraceHooks.beginRun();
     try (URLClassLoader loader = new URLClassLoader(
         classpathUrls(classesPath, runtimeClasspath),
         BrowserCompileAndTraceLibrary.class.getClassLoader())) {
@@ -1384,6 +1433,7 @@ public final class BrowserCompileAndTraceLibrary {
       if (workingDirectory != null && previousUserDir != null) {
         System.setProperty("user.dir", previousUserDir);
       }
+      TraceHooks.endRun(traceRunToken);
     }
   }
 

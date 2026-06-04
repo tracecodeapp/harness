@@ -1,7 +1,10 @@
 #!/usr/bin/env npx tsx
 
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
@@ -603,6 +606,134 @@ async function testJavaWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `Java worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
+function testJavaHelperRunScopeAndCacheManifest(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-helper-hardening-'));
+  try {
+    const sourcePath = join(tmpRoot, 'JavaHelperStateSmoke.java');
+    const classesPath = join(tmpRoot, 'classes');
+    const helperJar = join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar');
+    writeFileSync(
+      sourcePath,
+      `import tracecode.browser.BrowserCompileAndTraceLibrary;
+import tracecode.browser.ProjectEvents;
+import tracecode.user.TraceHooks;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+public class JavaHelperStateSmoke {
+  public static void main(String[] args) throws Exception {
+    runTraceHooksStaleThread();
+    runProjectEventsStaleStream();
+    runCompileCacheManifest(args[0]);
+  }
+
+  private static void runTraceHooksStaleThread() throws Exception {
+    int firstToken = TraceHooks.beginRun(10);
+    CountDownLatch staleAttempted = new CountDownLatch(1);
+    Thread stale = new Thread(() -> {
+      try {
+        Thread.sleep(100);
+        TraceHooks.emit("trace:{\\\\\\"kind\\\\\\":\\\\\\"line\\\\\\",\\\\\\"line\\\\\\":99}");
+      } catch (Exception error) {
+        throw new RuntimeException(error);
+      } finally {
+        staleAttempted.countDown();
+      }
+    });
+    stale.start();
+    TraceHooks.emit("trace:{\\\\\\"kind\\\\\\":\\\\\\"line\\\\\\",\\\\\\"line\\\\\\":1}");
+    int secondToken = TraceHooks.beginRun(10);
+    TraceHooks.emit("trace:{\\\\\\"kind\\\\\\":\\\\\\"line\\\\\\",\\\\\\"line\\\\\\":2}");
+    if (!staleAttempted.await(2, TimeUnit.SECONDS)) {
+      throw new IllegalStateException("stale TraceHooks thread did not run");
+    }
+    String events = String.join("\\\\n", TraceHooks.drainEvents());
+    TraceHooks.endRun(secondToken);
+    TraceHooks.endRun(firstToken);
+    if (!events.contains("\\\\\\"line\\\\\\":2") || events.contains("\\\\\\"line\\\\\\":1") || events.contains("\\\\\\"line\\\\\\":99")) {
+      throw new IllegalStateException("TraceHooks stale run isolation failed: " + events);
+    }
+    System.out.println("trace-hooks-ok");
+  }
+
+  private static void runProjectEventsStaleStream() throws Exception {
+    ByteArrayOutputStream capture = new ByteArrayOutputStream();
+    int firstToken = ProjectEvents.beginProjectRun();
+    OutputStream firstStream = ProjectEvents.streamingOutput(capture, "stdout");
+    CountDownLatch staleAttempted = new CountDownLatch(1);
+    Thread stale = new Thread(() -> {
+      try {
+        Thread.sleep(100);
+        firstStream.write("stale\\\\n".getBytes(StandardCharsets.UTF_8));
+        firstStream.flush();
+      } catch (Exception error) {
+        throw new RuntimeException(error);
+      } finally {
+        staleAttempted.countDown();
+      }
+    });
+    stale.start();
+    firstStream.write("current\\\\n".getBytes(StandardCharsets.UTF_8));
+    firstStream.flush();
+    int secondToken = ProjectEvents.beginProjectRun();
+    if (!staleAttempted.await(2, TimeUnit.SECONDS)) {
+      throw new IllegalStateException("stale ProjectEvents thread did not run");
+    }
+    OutputStream secondStream = ProjectEvents.streamingOutput(capture, "stdout");
+    secondStream.write("next\\\\n".getBytes(StandardCharsets.UTF_8));
+    secondStream.flush();
+    ProjectEvents.endProjectRun(secondToken);
+    ProjectEvents.endProjectRun(firstToken);
+    String captured = capture.toString(StandardCharsets.UTF_8.name());
+    if (!captured.contains("current\\\\n") || !captured.contains("next\\\\n") || captured.contains("stale")) {
+      throw new IllegalStateException("ProjectEvents stale stream isolation failed: " + captured);
+    }
+    System.out.println("project-events-ok");
+  }
+
+  private static void runCompileCacheManifest(String helperJar) throws Exception {
+    Path root = Files.createTempDirectory("tracecode-java-cache-smoke-");
+    Path source = root.resolve("Main.java");
+    Path classes = root.resolve("classes");
+    Files.writeString(
+        source,
+        "import tracecode.user.TraceHooks; public class Main { public static String run() { return TraceHooks.serializeOutputResult(new String(new char[]{'o','k'})); } }\\n",
+        StandardCharsets.UTF_8);
+    String first = BrowserCompileAndTraceLibrary.compileAndRun(source.toString(), classes.toString(), "Main", helperJar, "none");
+    Files.writeString(classes.resolve("Poison.class"), "not-a-class", StandardCharsets.UTF_8);
+    String second = BrowserCompileAndTraceLibrary.compileAndRun(source.toString(), classes.toString(), "Main", helperJar, "none");
+    String third = BrowserCompileAndTraceLibrary.compileAndRun(source.toString(), classes.toString(), "Main", helperJar, "none");
+    if (!first.contains("\\\"compileCacheHit\\\":false") ||
+        !second.contains("\\\"compileCacheHit\\\":false") ||
+        !third.contains("\\\"compileCacheHit\\\":true")) {
+      throw new IllegalStateException("Java compile cache manifest isolation failed: " + first + "\\n" + second + "\\n" + third);
+    }
+    System.out.println("compile-cache-ok");
+  }
+}
+`,
+      'utf8'
+    );
+    mkdirSync(classesPath);
+    execFileSync('javac', ['-cp', helperJar, '-d', classesPath, sourcePath], { cwd: process.cwd(), stdio: 'pipe' });
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, helperJar].join(delimiter), 'JavaHelperStateSmoke', helperJar],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    assertCondition(output.includes('trace-hooks-ok'), `TraceHooks run-scope smoke should pass: ${output}`);
+    assertCondition(output.includes('project-events-ok'), `ProjectEvents run-scope smoke should pass: ${output}`);
+    assertCondition(output.includes('compile-cache-ok'), `Java compile cache manifest smoke should pass: ${output}`);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 async function testCppWorkerProjectEventBudgets(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
@@ -1029,6 +1160,7 @@ async function main(): Promise<void> {
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();
   await testJavaWorkerProjectEventBudgets();
+  testJavaHelperRunScopeAndCacheManifest();
   await testCppWorkerProjectEventBudgets();
   testRuntimeFinalDiffBudgets();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();

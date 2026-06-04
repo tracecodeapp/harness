@@ -8,31 +8,40 @@ public final class TraceHooks {
   private static final int MAX_SERIALIZE_DEPTH = 48;
   private static final int MAX_SERIALIZED_ITEMS = 64;
   private static final int MAX_OBJECT_FIELDS = 32;
+  private static final Object STATE_LOCK = new Object();
   private static final List<String> EVENTS = new ArrayList<>();
   private static final ThreadLocal<java.util.List<TraceFrame>> CALL_STACK = ThreadLocal.withInitial(java.util.ArrayList::new);
   private static final ThreadLocal<String> LAST_INDEX_SOURCE = new ThreadLocal<>();
+  private static final InheritableThreadLocal<Integer> RUN_TOKEN = new InheritableThreadLocal<>();
   private static final java.util.IdentityHashMap<Object, String> TRACE_REFERENCE_IDS = new java.util.IdentityHashMap<>();
   private static int maxEvents = DEFAULT_MAX_EVENTS;
   private static boolean traceLimitExceeded = false;
   private static int droppedEventCount = 0;
   private static int nextTraceReferenceId = 0;
+  private static int nextRunToken = 0;
+  private static volatile int activeRunToken = 0;
 
   private TraceHooks() {}
 
   public static void emit(String event) {
-    if (traceLimitExceeded) {
-      droppedEventCount += 1;
-      return;
-    }
+    if (!runActiveForCurrentThread()) return;
     if (event == null || !event.startsWith("trace:")) {
       throw new IllegalArgumentException("TraceHooks.emit only accepts native trace: runtime events");
     }
-    if (EVENTS.size() >= maxEvents) {
-      traceLimitExceeded = true;
-      droppedEventCount += 1;
-      return;
+    String sanitizedEvent = sanitizeJsonNonFiniteNumbers(withCallStack(event));
+    synchronized (STATE_LOCK) {
+      if (!runActiveForCurrentThread()) return;
+      if (traceLimitExceeded) {
+        droppedEventCount += 1;
+        return;
+      }
+      if (EVENTS.size() >= maxEvents) {
+        traceLimitExceeded = true;
+        droppedEventCount += 1;
+        return;
+      }
+      EVENTS.add(sanitizedEvent);
     }
-    EVENTS.add(sanitizeJsonNonFiniteNumbers(withCallStack(event)));
   }
 
   public static void reset() {
@@ -40,6 +49,49 @@ public final class TraceHooks {
   }
 
   public static void reset(int nextMaxEvents) {
+    Integer currentToken = RUN_TOKEN.get();
+    if (currentToken != null) {
+      synchronized (STATE_LOCK) {
+        if (currentToken.intValue() == activeRunToken && activeRunToken != 0) {
+          resetStateLocked(nextMaxEvents);
+        } else {
+          RUN_TOKEN.remove();
+        }
+      }
+      return;
+    }
+    beginRun(nextMaxEvents);
+  }
+
+  public static int beginRun() {
+    return beginRun(DEFAULT_MAX_EVENTS);
+  }
+
+  public static int beginRun(int nextMaxEvents) {
+    int token;
+    synchronized (STATE_LOCK) {
+      token = nextRunToken + 1;
+      if (token <= 0) token = 1;
+      nextRunToken = token;
+      activeRunToken = token;
+      resetStateLocked(nextMaxEvents);
+    }
+    RUN_TOKEN.set(token);
+    return token;
+  }
+
+  public static void endRun(int runToken) {
+    synchronized (STATE_LOCK) {
+      if (activeRunToken == runToken) {
+        activeRunToken = 0;
+      }
+    }
+    CALL_STACK.remove();
+    LAST_INDEX_SOURCE.remove();
+    RUN_TOKEN.remove();
+  }
+
+  private static void resetStateLocked(int nextMaxEvents) {
     EVENTS.clear();
     CALL_STACK.get().clear();
     LAST_INDEX_SOURCE.remove();
@@ -50,18 +102,29 @@ public final class TraceHooks {
     nextTraceReferenceId = 0;
   }
 
+  private static boolean runActiveForCurrentThread() {
+    Integer token = RUN_TOKEN.get();
+    return token != null && token.intValue() == activeRunToken && activeRunToken != 0;
+  }
+
   public static List<String> drainEvents() {
-    List<String> copy = new ArrayList<>(EVENTS);
-    EVENTS.clear();
-    return copy;
+    synchronized (STATE_LOCK) {
+      List<String> copy = new ArrayList<>(EVENTS);
+      EVENTS.clear();
+      return copy;
+    }
   }
 
   public static boolean traceLimitExceeded() {
-    return traceLimitExceeded;
+    synchronized (STATE_LOCK) {
+      return traceLimitExceeded;
+    }
   }
 
   public static int droppedEventCount() {
-    return droppedEventCount;
+    synchronized (STATE_LOCK) {
+      return droppedEventCount;
+    }
   }
 
   public static String serializeResult(Object value) {
@@ -536,11 +599,13 @@ public final class TraceHooks {
   }
 
   private static String stableTraceReferenceId(Object value, String typeName) {
-    String existing = TRACE_REFERENCE_IDS.get(value);
-    if (existing != null) return existing;
-    String id = typeName + ":" + (++nextTraceReferenceId);
-    TRACE_REFERENCE_IDS.put(value, id);
-    return id;
+    synchronized (STATE_LOCK) {
+      String existing = TRACE_REFERENCE_IDS.get(value);
+      if (existing != null) return existing;
+      String id = typeName + ":" + (++nextTraceReferenceId);
+      TRACE_REFERENCE_IDS.put(value, id);
+      return id;
+    }
   }
 
   private static String sanitizeJsonNonFiniteNumbers(String event) {
