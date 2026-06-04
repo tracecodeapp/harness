@@ -1719,6 +1719,10 @@ async function testSharedKernelPolicyCachesDeviceManifests(): Promise<void> {
       source.includes('new Set(deviceEntries.keys())'),
     'shared kernel policy should reuse normalized device entries during /dev classification'
   );
+  assertCondition(
+    source.includes('normalized === path || normalized === root || normalized.startsWith(`${root}/`)'),
+    'shared kernel policy should treat kernel virtual manifest ancestor roots as read-only'
+  );
 }
 
 function testRuntimeFinalDiffBudgets(): void {

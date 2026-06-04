@@ -138,7 +138,7 @@ function isRuntimeKernelReadOnlyPath(value, readOnlyPaths) {
   for (const path of normalizedSet(readOnlyPaths)) {
     const slash = path.indexOf('/', 1);
     const root = slash < 0 ? path : path.slice(0, slash);
-    if (normalized === path || normalized.startsWith(`${root}/`)) return true;
+    if (normalized === path || normalized === root || normalized.startsWith(`${root}/`)) return true;
   }
   return false;
 }
