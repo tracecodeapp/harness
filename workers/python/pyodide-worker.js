@@ -973,6 +973,7 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     const target = kernelDeviceOutputTarget(path);
     if (!target) return false;
     const data = projectOutputText(value);
+    if (target.outputDevice === '/dev/null') return true;
     if (data) {
       emitProjectEvent({
         type: 'output',
@@ -2212,15 +2213,20 @@ def _install_tracekernel_asgi_modules():
             _headers.append((_header_name, _header_value))
         return _headers
 
+    def _tracekernel_http_validate_component(_value, _label):
+        _text = str(_value)
+        if any(_char in _text for _char in "\\r\\n\\x00"):
+            raise ValueError("Invalid TraceKernel HTTP " + str(_label))
+        return _text
+
     def _tracekernel_http_server_request_bytes(_request):
-        _method = str((_request or {}).get("method") or "GET").upper()
+        _method = _tracekernel_http_validate_component((_request or {}).get("method") or "GET", "method").upper()
         _parsed = urllib.parse.urlsplit(str((_request or {}).get("url") or "http://localhost/"))
         _path = str((_request or {}).get("path") or ((_parsed.path or "/") + (("?" + _parsed.query) if _parsed.query else "")))
-        if any(_char in _method for _char in "\\r\\n\\x00") or any(_char in _path for _char in "\\r\\n\\x00"):
-            raise ValueError("Invalid TraceKernel HTTP request line")
+        _path = _tracekernel_http_validate_component(_path, "path")
         _headers = _tracekernel_http_header_pairs(_request)
         _body = _http_bytes_from_message(_request)
-        _host = _parsed.netloc or "localhost"
+        _host = _tracekernel_http_validate_component(_parsed.netloc or "localhost", "host")
         _lines = [f"{_method} {_path or '/'} HTTP/1.1", f"Host: {_host}"]
         for _name, _value in _headers:
             if _name.lower() in ("host", "content-length"):
@@ -3157,18 +3163,36 @@ for _device_path in _kernel_devices:
         _current += "/" + _part
         _device_directories.add(_current)
 
+def _canonical_virtual_namespace_path(_value):
+    if not isinstance(_value, (str, bytes, os.PathLike)):
+        return None
+    _text = os.fspath(_value).replace("\\\\", "/")
+    if not _text.startswith("/"):
+        try:
+            _text = os.path.join(os.getcwd(), _text).replace("\\\\", "/")
+        except Exception:
+            _text = "/" + _text
+    _parts = []
+    for _part in _text.split("/"):
+        if not _part or _part == ".":
+            continue
+        if _part == "..":
+            if _parts:
+                _parts.pop()
+            continue
+        _parts.append(_part)
+    return "/" + "/".join(_parts)
+
 def _normalize_device_path(_value):
-    if isinstance(_value, (str, bytes, os.PathLike)):
-        _original = os.fspath(_value).replace("\\\\", "/").rstrip("/")
-        if _original in _kernel_devices:
-            return _original
+    _original = _canonical_virtual_namespace_path(_value)
+    if _original in _kernel_devices:
+        return _original
     return None
 
 def _normalize_device_namespace_path(_value):
-    if isinstance(_value, (str, bytes, os.PathLike)):
-        _original = os.fspath(_value).replace("\\\\", "/").rstrip("/") or "/"
-        if _original == "/dev" or _original.startswith("/dev/"):
-            return _original
+    _original = _canonical_virtual_namespace_path(_value)
+    if _original == "/dev" or (isinstance(_original, str) and _original.startswith("/dev/")):
+        return _original
     return None
 
 def _device_entry_kind(_path):
@@ -3210,10 +3234,9 @@ def _device_stat(_path):
     return os.stat_result((_mode, 0, 0, 2 if _kind == "directory" else 1, 0, 0, 0, 0, 0, 0))
 
 def _normalize_proc_path(_value):
-    if isinstance(_value, (str, bytes, os.PathLike)):
-        _original = os.fspath(_value).replace("\\\\", "/").rstrip("/") or "/"
-        if _original == "/proc" or _original.startswith("/proc/"):
-            return _original
+    _original = _canonical_virtual_namespace_path(_value)
+    if _original == "/proc" or (isinstance(_original, str) and _original.startswith("/proc/")):
+        return _original
     return None
 
 def _decode_kernel_file_text(_file):
@@ -3751,6 +3774,8 @@ def _install_virtual_workspace_paths():
             if not _output_device:
                 raise OSError("Kernel device is not writable: " + _device)
             _bytes = bytes(_data)
+            if _output_device == "/dev/null":
+                return len(_bytes)
             _target = _stderr if _output_device == "/dev/stderr" else _stdout
             _target.write(_bytes.decode("utf-8", "replace"), _device, _output_device)
             return len(_bytes)

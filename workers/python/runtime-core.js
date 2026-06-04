@@ -820,12 +820,7 @@ def __tracecode_make_callsite_frame_id(frame, line_number):
     return str(function_name) + ':' + str(line_number)
 
 def _tracecode_user_call(line_number, function_name, func, *args, **kwargs):
-    _tracecode_previous_tracer = sys.gettrace()
-    sys.settrace(None)
-    try:
-        _TracecodeTraceHooks.flush_callsite_line(sys._getframe(1), line_number)
-    finally:
-        sys.settrace(_tracecode_previous_tracer)
+    _TracecodeTraceHooks.flush_callsite_line(sys._getframe(1), line_number)
     return func(*args, **kwargs)
 
 def __tracecode_normalize_index_sources(index_sources, path_length):
@@ -2693,19 +2688,10 @@ def _tracer(frame, event, arg):
     if event == 'line':
         if frame.f_code.co_filename == 'solution.py' and frame.f_lineno in _tracecode_collapsed_literal_lines:
             return _tracer
-        previous_step = _TracecodeTraceHooks._resolve_previous_step(frame)
-        if (
-            isinstance(previous_step, _builtins.dict)
-            and previous_step.get('event') == 'line'
-            and previous_step.get('line') == frame.f_lineno
-            and not previous_step.get('__runtime_flushed')
-            and not _pending_accesses.get(_tracecode_builtin_id(frame))
-        ):
-            return _tracer
-        _TracecodeTraceHooks.flush_completed_line(frame)
         _total_line_events += 1
-        
-        # Check total line events
+
+        # Check total line events before duplicate-line suppression so
+        # tight no-op loops cannot bypass the in-runtime guard.
         if _total_line_events >= _max_line_events:
             if not _trace_limit_exceeded:
                 _trace_limit_exceeded = True
@@ -2722,7 +2708,7 @@ def _tracer(frame, event, arg):
                 })
                 sys.settrace(None)
                 raise _InfiniteLoopDetected(f"Exceeded {_max_line_events} line events")
-        
+
         # Simple per-line counter (catches any line hit too many times)
         line_key = (func_name, frame.f_lineno)
         _line_hit_count[line_key] = _line_hit_count.get(line_key, 0) + 1
@@ -2745,6 +2731,17 @@ def _tracer(frame, event, arg):
                 })
                 sys.settrace(None)
                 raise _InfiniteLoopDetected(f"Line {frame.f_lineno} executed {_max_single_line_hits} times")
+
+        previous_step = _TracecodeTraceHooks._resolve_previous_step(frame)
+        if (
+            isinstance(previous_step, _builtins.dict)
+            and previous_step.get('event') == 'line'
+            and previous_step.get('line') == frame.f_lineno
+            and not previous_step.get('__runtime_flushed')
+            and not _pending_accesses.get(_tracecode_builtin_id(frame))
+        ):
+            return _tracer
+        _TracecodeTraceHooks.flush_completed_line(frame)
     
     # Hard limit on recorded trace steps
     if (not _MINIMAL_TRACE) and len(_trace_data) >= _max_trace_steps:
@@ -3092,15 +3089,15 @@ def _tracecode_resolve_entry_callable(_function_name, _execution_style):
     return None
 
 def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
+    import inspect as _tracecode_inspect
+    _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
+    if _callable is None:
+        raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
+    _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
     _tracecode_previous_tracer = sys.gettrace()
     sys.settrace(None)
     _fallback_kwargs = None
     try:
-        import inspect as _tracecode_inspect
-        _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
-        if _callable is None:
-            raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
-        _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
         try:
             _signature = _tracecode_inspect.signature(_callable)
         except Exception:
@@ -3949,15 +3946,15 @@ def _tracecode_resolve_entry_callable(_function_name, _execution_style):
     return None
 
 def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
+    import inspect as _tracecode_inspect
+    _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
+    if _callable is None:
+        raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
+    _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
     _tracecode_previous_tracer = sys.gettrace()
     sys.settrace(None)
     _fallback_kwargs = None
     try:
-        import inspect as _tracecode_inspect
-        _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
-        if _callable is None:
-            raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
-        _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
         try:
             _signature = _tracecode_inspect.signature(_callable)
         except Exception:
@@ -4197,15 +4194,15 @@ def _tracecode_resolve_entry_callable(_function_name, _execution_style):
     return None
 
 def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
+    import inspect as _tracecode_inspect
+    _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
+    if _callable is None:
+        raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
+    _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
     _tracecode_previous_tracer = sys.gettrace()
     sys.settrace(None)
     _fallback_kwargs = None
     try:
-        import inspect as _tracecode_inspect
-        _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
-        if _callable is None:
-            raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
-        _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
         try:
             _signature = _tracecode_inspect.signature(_callable)
         except Exception:
