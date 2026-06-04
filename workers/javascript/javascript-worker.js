@@ -916,10 +916,11 @@ function buildTreeNodeFromLevelOrder(values) {
   if (firstValue === null || firstValue === undefined) return null;
   const root = { val: firstValue, value: firstValue, left: null, right: null };
   const queue = [root];
+  let queueIndex = 0;
   let index = 1;
 
-  while (queue.length > 0 && index < values.length) {
-    const node = queue.shift();
+  while (queueIndex < queue.length && index < values.length) {
+    const node = queue[queueIndex++];
     if (!node) break;
 
     const leftValue = values[index++];
@@ -940,7 +941,7 @@ function buildTreeNodeFromLevelOrder(values) {
   return root;
 }
 
-function materializeTreeInput(value) {
+function materializeTreeInput(value, materialized = new WeakMap()) {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     return buildTreeNodeFromLevelOrder(value);
@@ -949,16 +950,21 @@ function materializeTreeInput(value) {
     return value;
   }
   if (isLikelyTreeNodeValue(value) || value.__type__ === 'TreeNode') {
+    const existingMaterialized = materialized.get(value);
+    if (existingMaterialized) return existingMaterialized;
     const nodeValue = value;
     const node = {
       val: nodeValue.val ?? nodeValue.value ?? null,
       value: nodeValue.val ?? nodeValue.value ?? null,
-      left: materializeTreeInput(nodeValue.left ?? null),
-      right: materializeTreeInput(nodeValue.right ?? null),
+      left: null,
+      right: null,
     };
+    materialized.set(value, node);
+    node.left = materializeTreeInput(nodeValue.left ?? null, materialized);
+    node.right = materializeTreeInput(nodeValue.right ?? null, materialized);
     for (const [key, nested] of Object.entries(value)) {
       if (key === '__id__' || key === '__type__' || key === '__class__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
-      node[key] = materializeTreeInput(nested);
+      node[key] = materializeTreeInput(nested, materialized);
     }
     return node;
   }

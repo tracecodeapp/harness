@@ -950,10 +950,11 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
     right: null,
   };
   const queue: Record<string, unknown>[] = [root];
+  let queueIndex = 0;
   let index = 1;
 
-  while (queue.length > 0 && index < values.length) {
-    const node = queue.shift();
+  while (queueIndex < queue.length && index < values.length) {
+    const node = queue[queueIndex++];
     if (!node) break;
 
     const leftValue = values[index++];
@@ -985,7 +986,10 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
   return root;
 }
 
-function materializeTreeInput(value: unknown): unknown {
+function materializeTreeInput(
+  value: unknown,
+  materialized: WeakMap<object, Record<string, unknown>> = new WeakMap()
+): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     return buildTreeNodeFromLevelOrder(value);
@@ -995,29 +999,39 @@ function materializeTreeInput(value: unknown): unknown {
   }
   const record = value as Record<string, unknown>;
   if (isLikelyTreeNodeValue(record)) {
+    const existingMaterialized = materialized.get(record);
+    if (existingMaterialized) return existingMaterialized;
     const node: Record<string, unknown> = {
       val: record.val ?? record.value ?? null,
       value: record.val ?? record.value ?? null,
-      left: materializeTreeInput(record.left ?? null),
-      right: materializeTreeInput(record.right ?? null),
+      left: null,
+      right: null,
     };
+    materialized.set(record, node);
+    node.left = materializeTreeInput(record.left ?? null, materialized);
+    node.right = materializeTreeInput(record.right ?? null, materialized);
     for (const [key, nested] of Object.entries(record)) {
       if (key === '__id__' || key === '__type__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
-      node[key] = materializeTreeInput(nested);
+      node[key] = materializeTreeInput(nested, materialized);
     }
     return node;
   }
   const taggedRecord = value as Record<string, unknown> & { __type__?: unknown };
   if (taggedRecord.__type__ === 'TreeNode') {
+    const existingMaterialized = materialized.get(taggedRecord);
+    if (existingMaterialized) return existingMaterialized;
     const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
       value: taggedRecord.val ?? taggedRecord.value ?? null,
-      left: materializeTreeInput(taggedRecord.left ?? null),
-      right: materializeTreeInput(taggedRecord.right ?? null),
+      left: null,
+      right: null,
     };
+    materialized.set(taggedRecord, node);
+    node.left = materializeTreeInput(taggedRecord.left ?? null, materialized);
+    node.right = materializeTreeInput(taggedRecord.right ?? null, materialized);
     for (const [key, nested] of Object.entries(taggedRecord)) {
       if (key === '__id__' || key === '__type__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
-      node[key] = materializeTreeInput(nested);
+      node[key] = materializeTreeInput(nested, materialized);
     }
     return node;
   }

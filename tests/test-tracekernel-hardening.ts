@@ -515,6 +515,61 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
   );
 }
 
+async function testJavaScriptInputHydrationIsBounded(): Promise<void> {
+  const sources = [
+    ['worker', await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8')],
+    [
+      'package executor',
+      await readFile(join(dirname(testDirectory), 'packages', 'harness-javascript', 'src', 'javascript-executor.ts'), 'utf8'),
+    ],
+  ] as const;
+
+  for (const [label, source] of sources) {
+    assertCondition(
+      !source.includes('const node = queue.shift()'),
+      `${label} tree level-order hydration should use a cursor queue instead of Array.shift`
+    );
+  }
+
+  const context = vm.createContext({
+    console,
+    self: {
+      location: { search: '' },
+      onmessage: null,
+      postMessage: () => {},
+    },
+    performance: { now: () => 0 },
+    setTimeout,
+    clearTimeout,
+    queueMicrotask,
+    TextEncoder,
+    TextDecoder,
+    importScripts: (...urls: string[]) => {
+      throw new Error(`Unexpected importScripts in input hydration test: ${urls.join(',')}`);
+    },
+  });
+  vm.runInContext(sources[0][1], context, { filename: 'javascript-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      const node = { __type__: 'TreeNode', val: 1 };
+      node.left = node;
+      node.extra = node;
+      const materialized = materializeTreeInput(node);
+      return {
+        val: materialized.val,
+        leftCycles: materialized.left === materialized,
+        extraCycles: materialized.extra === materialized,
+      };
+    })()`,
+    context
+  ) as { val: number; leftCycles: boolean; extraCycles: boolean };
+
+  assertCondition(
+    result.val === 1 && result.leftCycles && result.extraCycles,
+    `JavaScript tree input hydration should preserve cycles without recursive overflow: ${JSON.stringify(result)}`
+  );
+}
+
 async function testNativeProjectRunnersRejectVirtualPathTraversal(): Promise<void> {
   const projectRoot = '/home/obi/weather-api';
   const project = {
@@ -1517,6 +1572,7 @@ async function main(): Promise<void> {
   await testJavaScriptTraceSerializationIsBounded();
   await testJavaScriptInputMaterializerAvoidsTypeNameEval();
   await testJavaScriptDestructuredIterableTracingDoesNotExhaustValues();
+  await testJavaScriptInputHydrationIsBounded();
   await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();
