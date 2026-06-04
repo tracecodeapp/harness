@@ -6,6 +6,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
+import { assertRuntimeFinalDiffBudget } from '../packages/harness-core/src/runtime-project';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
 import { createNativeCppProjectRunner } from '../packages/harness-cpp/src/project-node';
@@ -666,6 +667,42 @@ async function testCppWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `C++ worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
+function testRuntimeFinalDiffBudgets(): void {
+  let countError = '';
+  try {
+    assertRuntimeFinalDiffBudget(Array.from({ length: 4097 }, (_, index) => ({
+      path: `generated/${index}.txt`,
+      contents: 'x',
+    })));
+  } catch (error) {
+    countError = error instanceof Error ? error.message : String(error);
+  }
+
+  let sizeError = '';
+  try {
+    assertRuntimeFinalDiffBudget([
+      { path: 'huge.txt', contents: 'x'.repeat(16 * 1024 * 1024 + 1) },
+    ]);
+  } catch (error) {
+    sizeError = error instanceof Error ? error.message : String(error);
+  }
+
+  let totalError = '';
+  try {
+    assertRuntimeFinalDiffBudget([
+      { path: 'one.txt', contents: 'x'.repeat(11 * 1024 * 1024) },
+      { path: 'two.txt', contents: 'x'.repeat(11 * 1024 * 1024) },
+      { path: 'three.txt', contents: 'x'.repeat(11 * 1024 * 1024) },
+    ]);
+  } catch (error) {
+    totalError = error instanceof Error ? error.message : String(error);
+  }
+
+  assertCondition(countError.includes('final-diff file-change count limit'), `final-diff count budget should reject large arrays: ${countError}`);
+  assertCondition(sizeError.includes('final-diff file-change size limit'), `final-diff per-file budget should reject large files: ${sizeError}`);
+  assertCondition(totalError.includes('final-diff byte limit'), `final-diff total budget should reject large aggregate payloads: ${totalError}`);
+}
+
 async function testTraceKernelHttpTimeoutSignalsCooperativeHandlers(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
   let sideEffectsAfterTimeout = 0;
@@ -993,6 +1030,7 @@ async function main(): Promise<void> {
   await testCSharpWorkerProjectEventBudgets();
   await testJavaWorkerProjectEventBudgets();
   await testCppWorkerProjectEventBudgets();
+  testRuntimeFinalDiffBudgets();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
   await testTraceKernelHttpDiagnosticsAreRedacted();
   await testTraceKernelHttpListenerLimit();

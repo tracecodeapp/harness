@@ -834,6 +834,9 @@ export function filterRuntimeCommandResultFiles(
 const RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
 const RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
 const RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
+const RUNTIME_PROJECT_MAX_FINAL_DIFF_CHANGES = 4096;
+const RUNTIME_PROJECT_MAX_FINAL_DIFF_FILE_BYTES = 16 * 1024 * 1024;
+const RUNTIME_PROJECT_MAX_FINAL_DIFF_BYTES = 32 * 1024 * 1024;
 const runtimeProjectTextEncoder = new TextEncoder();
 
 function runtimeProjectUtf8Bytes(value: string): number {
@@ -862,6 +865,25 @@ function runtimeFileChangeByteSize(change: RuntimeFileChange): number {
       : runtimeProjectUtf8Bytes(file.contents);
   }
   return size;
+}
+
+export function assertRuntimeFinalDiffBudget(changes: readonly RuntimeFileChange[] | undefined): void {
+  if (!changes?.length) return;
+  if (changes.length > RUNTIME_PROJECT_MAX_FINAL_DIFF_CHANGES) {
+    throw Object.assign(new Error('EMSGSIZE: TraceKernel final-diff file-change count limit exceeded'), { code: 'EMSGSIZE' });
+  }
+
+  let totalBytes = 0;
+  for (const change of changes) {
+    const size = runtimeFileChangeByteSize(change);
+    if (size > RUNTIME_PROJECT_MAX_FINAL_DIFF_FILE_BYTES) {
+      throw Object.assign(new Error('EMSGSIZE: TraceKernel final-diff file-change size limit exceeded'), { code: 'EMSGSIZE' });
+    }
+    totalBytes += size;
+    if (totalBytes > RUNTIME_PROJECT_MAX_FINAL_DIFF_BYTES) {
+      throw Object.assign(new Error('EMSGSIZE: TraceKernel final-diff byte limit exceeded'), { code: 'EMSGSIZE' });
+    }
+  }
 }
 
 function runtimeErrorMessage(error: unknown): string {
@@ -1058,6 +1080,7 @@ export async function applyRuntimeCommandResultFiles(
   result: RuntimeCommandResult,
   applyFileChange: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>
 ): Promise<RuntimeCommandResult> {
+  assertRuntimeFinalDiffBudget(result.files);
   for (const file of result.files ?? []) {
     await applyFileChange(file, 'final-diff');
   }

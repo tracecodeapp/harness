@@ -6,6 +6,7 @@ import {
 } from 'just-bash/browser';
 import {
   applyRuntimeCommandResultFiles,
+  assertRuntimeFinalDiffBudget,
   canCreateRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
@@ -2142,6 +2143,7 @@ async function applyCommandResultFiles(
   onFileChange?: RuntimeFileChangeObserver
 ): Promise<RuntimeCommandResult> {
   try {
+    assertRuntimeFinalDiffBudget(result.files);
     if (ctx.fs instanceof KernelObservedFileSystem && result.files?.length) {
       const committed = await ctx.fs.applyFinalDiffTransaction(result.files, (file) =>
         prepareFinalDiffChange(workspaceRoot, file)
