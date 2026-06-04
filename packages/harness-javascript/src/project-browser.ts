@@ -119,15 +119,49 @@ export interface BrowserJavaScriptProjectRunnerOptions {
 
 export interface BrowserTypeScriptProjectRunnerOptions {
   allowDomCompilerScript?: boolean;
+  allowExternalDomCompilerScript?: boolean;
   compiler?: TypeScriptProjectCompiler;
   compilerUrl?: string;
 }
 
 const browserTypeScriptCompilerPromises = new Map<string, Promise<TypeScriptProjectCompiler>>();
+const DEFAULT_BROWSER_TYPESCRIPT_COMPILER_URL = 'workers/vendor/typescript.js';
+const DOM_TYPESCRIPT_COMPILER_SCRIPT_PROTOCOLS = new Set(['http:', 'https:', 'file:']);
+
+function resolveBrowserTypeScriptCompilerScriptUrl(
+  compilerUrl: string,
+  options: Pick<BrowserTypeScriptProjectRunnerOptions, 'allowExternalDomCompilerScript'>
+): string {
+  const documentBase = document.baseURI || globalThis.location?.href;
+  if (!documentBase) {
+    throw new Error('TypeScript compiler DOM script loading requires a document base URL.');
+  }
+
+  let pageUrl: URL;
+  let scriptUrl: URL;
+  try {
+    pageUrl = new URL(documentBase);
+    scriptUrl = new URL(compilerUrl, pageUrl);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid TypeScript compiler script URL: ${message}`);
+  }
+
+  if (!DOM_TYPESCRIPT_COMPILER_SCRIPT_PROTOCOLS.has(scriptUrl.protocol)) {
+    throw new Error(`TypeScript compiler DOM script URL must use http, https, or file: ${scriptUrl.protocol}`);
+  }
+  const sameDocumentScriptScope = pageUrl.protocol === 'file:' || scriptUrl.protocol === 'file:'
+    ? pageUrl.protocol === scriptUrl.protocol && scriptUrl.href.startsWith(new URL('.', pageUrl).href)
+    : scriptUrl.origin === pageUrl.origin;
+  if (!sameDocumentScriptScope && options.allowExternalDomCompilerScript !== true) {
+    throw new Error('External TypeScript compiler DOM script URLs require allowExternalDomCompilerScript.');
+  }
+  return scriptUrl.href;
+}
 
 async function loadBrowserTypeScriptCompiler(
-  compilerUrl = 'workers/vendor/typescript.js',
-  options: Pick<BrowserTypeScriptProjectRunnerOptions, 'allowDomCompilerScript'> = {}
+  compilerUrl = DEFAULT_BROWSER_TYPESCRIPT_COMPILER_URL,
+  options: Pick<BrowserTypeScriptProjectRunnerOptions, 'allowDomCompilerScript' | 'allowExternalDomCompilerScript'> = {}
 ): Promise<TypeScriptProjectCompiler> {
   const globalRecord = globalThis as typeof globalThis & { ts?: TypeScriptProjectCompiler };
   if (globalRecord.ts) return globalRecord.ts;
@@ -140,25 +174,26 @@ async function loadBrowserTypeScriptCompiler(
   if (options.allowDomCompilerScript !== true) {
     throw new Error('TypeScript project compile in the browser requires a trusted compiler object or a worker-backed compiler.');
   }
-  let compilerPromise = browserTypeScriptCompilerPromises.get(compilerUrl);
+  const trustedCompilerUrl = resolveBrowserTypeScriptCompilerScriptUrl(compilerUrl, options);
+  let compilerPromise = browserTypeScriptCompilerPromises.get(trustedCompilerUrl);
   if (!compilerPromise) {
     compilerPromise = new Promise<TypeScriptProjectCompiler>((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = compilerUrl;
+      script.src = trustedCompilerUrl;
       script.async = true;
       script.onload = () => {
         if (globalRecord.ts) {
           resolve(globalRecord.ts);
         } else {
-          reject(new Error(`TypeScript compiler did not initialize from ${compilerUrl}`));
+          reject(new Error(`TypeScript compiler did not initialize from ${trustedCompilerUrl}`));
         }
       };
       script.onerror = () => {
-        reject(new Error(`Failed to load TypeScript compiler from ${compilerUrl}`));
+        reject(new Error(`Failed to load TypeScript compiler from ${trustedCompilerUrl}`));
       };
       document.head.appendChild(script);
     });
-    browserTypeScriptCompilerPromises.set(compilerUrl, compilerPromise);
+    browserTypeScriptCompilerPromises.set(trustedCompilerUrl, compilerPromise);
   }
   return compilerPromise;
 }
@@ -170,6 +205,7 @@ export function createBrowserTypeScriptProjectRunner(
     ...(options.compiler ? { compiler: options.compiler } : {}),
     loadCompiler: () => loadBrowserTypeScriptCompiler(options.compilerUrl, {
       allowDomCompilerScript: options.allowDomCompilerScript,
+      allowExternalDomCompilerScript: options.allowExternalDomCompilerScript,
     }),
   });
 }

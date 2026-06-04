@@ -12,7 +12,10 @@ import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../packages/harness-project/src/async-hooks-browser-shim';
 import { assertRuntimeFinalDiffBudget } from '../packages/harness-core/src/runtime-project';
-import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
+import {
+  createBrowserJavaScriptProjectRunner,
+  createBrowserTypeScriptProjectRunner,
+} from '../packages/harness-javascript/src/project-browser';
 import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
 import { createNativeCppProjectRunner } from '../packages/harness-cpp/src/project-node';
 import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
@@ -46,6 +49,22 @@ async function rejectedMessage(run: () => Promise<unknown>): Promise<string> {
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+function setTestGlobalProperty(name: string, value: unknown): () => void {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+  Object.defineProperty(globalThis, name, {
+    configurable: true,
+    writable: true,
+    value,
+  });
+  return () => {
+    if (descriptor) {
+      Object.defineProperty(globalThis, name, descriptor);
+    } else {
+      delete (globalThis as unknown as Record<string, unknown>)[name];
+    }
+  };
 }
 
 async function testBrowserAsyncLocalStorageSingleFlightContexts(): Promise<void> {
@@ -207,6 +226,129 @@ async function testBrowserJavaScriptHardenedModeRequiresWorker(): Promise<void> 
     } else {
       (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
     }
+  }
+}
+
+async function testBrowserTypeScriptDomCompilerScriptPolicy(): Promise<void> {
+  const appendedScripts: Array<{
+    src: string;
+    async: boolean;
+    onload: (() => void) | null;
+    onerror: (() => void) | null;
+  }> = [];
+  const testDocument = {
+    baseURI: 'https://tracecode.example/app/index.html',
+    createElement(tagName: string) {
+      assertCondition(tagName === 'script', `TypeScript compiler loader should only create script elements: ${tagName}`);
+      return {
+        src: '',
+        async: false,
+        onload: null,
+        onerror: null,
+      };
+    },
+    head: {
+      appendChild(script: (typeof appendedScripts)[number]) {
+        appendedScripts.push(script);
+        script.onerror?.();
+        return script;
+      },
+    },
+  };
+  const restoreDocument = setTestGlobalProperty('document', testDocument);
+  const restoreLocation = setTestGlobalProperty('location', { href: 'https://tracecode.example/app/index.html' });
+  const restoreTs = setTestGlobalProperty('ts', undefined);
+  const request = () => ({
+    code: '',
+    source: 'file' as const,
+    scriptPath: 'index.ts',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+      files: [],
+    },
+  });
+
+  try {
+    const defaultMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
+      compilerUrl: '/workers/vendor/typescript.js',
+    })(request()));
+    assertCondition(
+      defaultMessage.includes('requires a trusted compiler object or a worker-backed compiler'),
+      `DOM TypeScript compiler script loading should remain disabled by default: ${defaultMessage}`
+    );
+    assertCondition(appendedScripts.length === 0, 'Disabled DOM TypeScript compiler loading should not append scripts');
+
+    const remoteMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
+      allowDomCompilerScript: true,
+      compilerUrl: 'https://cdn.example.com/typescript.js',
+    })(request()));
+    assertCondition(
+      remoteMessage.includes('External TypeScript compiler DOM script URLs require allowExternalDomCompilerScript'),
+      `Remote DOM TypeScript compiler scripts should require a second explicit opt-in: ${remoteMessage}`
+    );
+    assertCondition(appendedScripts.length === 0, 'Rejected remote TypeScript compiler URLs should not append scripts');
+
+    const dataUrlMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
+      allowDomCompilerScript: true,
+      allowExternalDomCompilerScript: true,
+      compilerUrl: 'data:text/javascript,globalThis.ts={}',
+    })(request()));
+    assertCondition(
+      dataUrlMessage.includes('must use http, https, or file'),
+      `DOM TypeScript compiler script URLs should reject inline schemes: ${dataUrlMessage}`
+    );
+    assertCondition(appendedScripts.length === 0, 'Rejected inline TypeScript compiler URLs should not append scripts');
+
+    testDocument.baseURI = 'file:///Users/example/app/index.html';
+    const externalFileMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
+      allowDomCompilerScript: true,
+      compilerUrl: 'file:///Users/example/typescript.js',
+    })(request()));
+    assertCondition(
+      externalFileMessage.includes('External TypeScript compiler DOM script URLs require allowExternalDomCompilerScript'),
+      `File TypeScript compiler scripts outside the document base should require explicit trust: ${externalFileMessage}`
+    );
+    assertCondition(appendedScripts.length === 0, 'Rejected external file TypeScript compiler URLs should not append scripts');
+    testDocument.baseURI = 'https://tracecode.example/app/index.html';
+
+    const sameOriginMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
+      allowDomCompilerScript: true,
+      compilerUrl: '/workers/vendor/typescript.js',
+    })(request()));
+    assertCondition(
+      sameOriginMessage.includes('Failed to load TypeScript compiler from https://tracecode.example/workers/vendor/typescript.js'),
+      `Same-origin TypeScript compiler script should be allowed through to the DOM loader: ${sameOriginMessage}`
+    );
+    assertCondition(
+      appendedScripts.length === 1 &&
+        appendedScripts[0]?.src === 'https://tracecode.example/workers/vendor/typescript.js' &&
+        appendedScripts[0]?.async === true,
+      `Same-origin TypeScript compiler script should be normalized and appended: ${JSON.stringify(appendedScripts)}`
+    );
+
+    const trustedRemoteMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
+      allowDomCompilerScript: true,
+      allowExternalDomCompilerScript: true,
+      compilerUrl: 'https://cdn.example.com/typescript.js',
+    })(request()));
+    assertCondition(
+      trustedRemoteMessage.includes('Failed to load TypeScript compiler from https://cdn.example.com/typescript.js'),
+      `Explicitly trusted remote TypeScript compiler script should be allowed through to the DOM loader: ${trustedRemoteMessage}`
+    );
+    assertCondition(
+      appendedScripts.length === 2 &&
+        appendedScripts[1]?.src === 'https://cdn.example.com/typescript.js' &&
+        appendedScripts[1]?.async === true,
+      `Trusted remote TypeScript compiler script should be normalized and appended: ${JSON.stringify(appendedScripts)}`
+    );
+  } finally {
+    restoreTs();
+    restoreLocation();
+    restoreDocument();
   }
 }
 
@@ -2387,6 +2529,7 @@ async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> 
 async function main(): Promise<void> {
   await testBrowserAsyncLocalStorageSingleFlightContexts();
   await testBrowserJavaScriptHardenedModeRequiresWorker();
+  await testBrowserTypeScriptDomCompilerScriptPolicy();
   await testBrowserJavaScriptWorkerRejectsUserSpoofedResults();
   await testBrowserJavaScriptReadonlyHardlinksAreRejected();
   await testBrowserJavaScriptHiddenFilesAreNotMounted();
