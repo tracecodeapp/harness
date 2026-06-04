@@ -1767,6 +1767,36 @@ async function testTraceKernelTraversalSkipsSymlinkCycles(): Promise<void> {
   }
 }
 
+async function testTraceKernelFinalDiffDirectoryDeletesRequireExplicitDescendants(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'runner.js', contents: 'console.log("runner")\n' },
+      { path: 'tree/kept.txt', contents: 'kept\n' },
+    ],
+    nodeRunner: async () => ({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      files: [{ path: 'tree', directory: true, deleted: true }],
+    }),
+  });
+  try {
+    const result = await workspace.runCommand('node runner.js');
+    assertCondition(
+      result.exitCode === 116 &&
+        result.error?.code === 'ESTALE' &&
+        result.stderr.includes('omitted descendant'),
+      `directory final-diff tombstone should reject omitted descendants: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      await workspace.readFile('tree/kept.txt') === 'kept\n',
+      'rejected directory final-diff tombstone should not delete descendants'
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
 async function testTraceKernelProjectCommandStepsAreBounded(): Promise<void> {
   const message = await rejectedMessage(async () => {
     const workspace = await createRuntimeWorkspace({
@@ -2289,6 +2319,7 @@ async function main(): Promise<void> {
   await testSharedKernelPolicyCachesDeviceManifests();
   testRuntimeFinalDiffBudgets();
   await testTraceKernelTraversalSkipsSymlinkCycles();
+  await testTraceKernelFinalDiffDirectoryDeletesRequireExplicitDescendants();
   await testTraceKernelProjectCommandStepsAreBounded();
   await testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks();
   await testTraceKernelDeviceOutputAccumulationIsBounded();

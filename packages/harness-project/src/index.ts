@@ -2465,6 +2465,7 @@ class KernelObservedFileSystem implements IFileSystem {
             this.assertCommandMutationFresh([change.absolutePath], change.kind);
             await this.validateFinalDiffPreparedChange(change);
           }
+          await this.validateFinalDiffDirectoryDeletes(prepared);
           const rollback = await this.snapshotRollbackState(prepared.map((change) => change.absolutePath));
           const committed: RuntimeFileChange[] = [];
           try {
@@ -2553,6 +2554,48 @@ class KernelObservedFileSystem implements IFileSystem {
       }
       throw error;
     }
+  }
+
+  private async validateFinalDiffDirectoryDeletes(changes: readonly RuntimeFinalDiffPreparedChange[]): Promise<void> {
+    const deletedPaths = new Set(
+      changes
+        .filter((change) => isRuntimeDirectoryChange(change.change) ? change.change.deleted === true : (change.change as RuntimeFileDeletion).deleted === true)
+        .map((change) => normalizeFsLockPath(change.absolutePath))
+    );
+    for (const change of changes) {
+      if (!isRuntimeDirectoryChange(change.change) || change.change.deleted !== true) continue;
+      await this.assertFinalDiffDirectoryDeleteIsExplicit(change.absolutePath, deletedPaths);
+    }
+  }
+
+  private async assertFinalDiffDirectoryDeleteIsExplicit(path: string, deletedPaths: ReadonlySet<string>): Promise<void> {
+    const normalizedPath = normalizeFsLockPath(path);
+    const stat = await this.base.lstat(normalizedPath).catch(() => null);
+    if (!stat || (stat as { isSymbolicLink?: boolean }).isSymbolicLink || !stat.isDirectory) return;
+    for (const entry of await this.base.readdir(normalizedPath)) {
+      const childPath = normalizeFsLockPath(`${normalizedPath}/${entry}`);
+      const childStat = await this.base.lstat(childPath).catch(() => null);
+      if (!childStat) continue;
+      if (childStat.isDirectory && !(childStat as { isSymbolicLink?: boolean }).isSymbolicLink) {
+        await this.assertFinalDiffDirectoryDeleteIsExplicit(childPath, deletedPaths);
+      }
+      if (!deletedPaths.has(childPath)) {
+        this.throwFinalDiffDirectoryDeleteConflict(childPath);
+      }
+    }
+  }
+
+  private throwFinalDiffDirectoryDeleteConflict(path: string): never {
+    const displayPath = isWithinWorkspace(this.workspaceRoot(), path) ? toProjectPath(this.workspaceRoot(), path) : path;
+    throw Object.assign(
+      new Error(`ESTALE: final-diff directory delete omitted descendant '${displayPath}'`),
+      {
+        code: 'ESTALE',
+        errno: 116,
+        syscall: 'write',
+        path: displayPath,
+      }
+    );
   }
 
   private async snapshotRollbackState(paths: readonly string[]): Promise<RuntimeFileSystemRollbackState> {
