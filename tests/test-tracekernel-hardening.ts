@@ -1381,6 +1381,21 @@ async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
   );
 }
 
+async function testSharedKernelPolicyCachesDeviceManifests(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy.js'), 'utf8');
+  assertCondition(
+    source.includes('const normalizedDeviceInfoCache = new WeakMap()') &&
+      source.includes('const normalizedKnownDeviceCache = new WeakMap()'),
+    'shared kernel policy should cache normalized device manifests by object identity'
+  );
+  assertCondition(
+    source.includes('runtimeKernelDeviceEntryKind(devices, value, entries = normalizedDeviceInfos(devices))') &&
+      source.includes('runtimeKernelDeviceDirEntries(devices, path, entries)') &&
+      source.includes('new Set(deviceEntries.keys())'),
+    'shared kernel policy should reuse normalized device entries during /dev classification'
+  );
+}
+
 function testRuntimeFinalDiffBudgets(): void {
   let countError = '';
   try {
@@ -1861,6 +1876,7 @@ async function main(): Promise<void> {
   await testJavaWorkerTraceHeaderExpansionIsBounded();
   await testCppWorkerProjectEventBudgets();
   await testCppInheritedStdioRespectsKernelDevices();
+  await testSharedKernelPolicyCachesDeviceManifests();
   testRuntimeFinalDiffBudgets();
   await testTraceKernelProjectCommandStepsAreBounded();
   await testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks();
