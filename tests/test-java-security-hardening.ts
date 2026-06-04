@@ -209,9 +209,122 @@ function assertJavaLexicalScannersAreCached(): void {
   console.log('PASS: Java lexical scanners avoid quadratic prefix rescans');
 }
 
+function assertJavaCompileCachePathsArePerExecution(): void {
+  const workerSource = readFileSync(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
+
+  assertCondition(
+    /async function runJavaCodeRequest\(payload, requestId\)[\s\S]*isolateJavaCompileId\(buildJavaCompileId\(normalizedPayload, 'execute'\), requestId\)/.test(workerSource),
+    'Java execute-code should derive class output paths from a per-execution compile id'
+  );
+  assertCondition(
+    /async function runJavaCodeBatchRequest\(payload, requestId\)[\s\S]*isolateJavaCompileId\(buildJavaBatchCompileId\(normalizedPayload, inputBatch\), requestId\)/.test(workerSource),
+    'Java execute-code-batch should derive class output paths from a per-execution compile id'
+  );
+  assertCondition(
+    /async function runJavaProjectRequest\(payload, requestId\)[\s\S]*const compileId = isolateJavaCompileId\(stableHash\(\{[\s\S]*?\}\), requestId\);/.test(workerSource),
+    'Java project execution should derive class output paths from a per-execution compile id'
+  );
+
+  let randomWord = 0x12345678;
+  const context = vm.createContext({
+    console,
+    self: {
+      postMessage: () => {},
+      location: { href: 'http://localhost/workers/java/java-worker.js', origin: 'http://localhost', search: '' },
+    },
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    Uint32Array,
+    SharedArrayBuffer,
+    Int32Array,
+    Atomics,
+    crypto: {
+      getRandomValues(values: Uint32Array): Uint32Array {
+        for (let index = 0; index < values.length; index += 1) {
+          randomWord = (Math.imul(randomWord, 1664525) + 1013904223) >>> 0;
+          values[index] = randomWord;
+        }
+        return values;
+      },
+    },
+    performance: { now: () => 17 },
+    queueMicrotask: (callback: () => void) => callback(),
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+  });
+  vm.runInContext(workerSource, context, { filename: 'java-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      const payload = normalizeJavaExecutionPayload({
+        code: 'class Solution { int add(int a, int b) { return a + b; } }',
+        functionName: 'add',
+        executionStyle: 'function',
+        inputs: { a: 1, b: 2 }
+      });
+      const stableExecuteId = buildJavaCompileId(payload, 'execute');
+      const firstExecuteId = isolateJavaCompileId(stableExecuteId, 'request-one');
+      const secondExecuteId = isolateJavaCompileId(stableExecuteId, 'request-two');
+      const firstDynamicPath = dynamicInputEntriesForPayload(payload, firstExecuteId)[0].path;
+      const secondDynamicPath = dynamicInputEntriesForPayload(payload, secondExecuteId)[0].path;
+      const projectStableId = stableHash({
+        compileMode: 'project',
+        request: {
+          files: [['Main.java', 'class Main { public static void main(String[] args) {} }']],
+          source: 'run',
+          scriptPath: 'Main',
+          args: [],
+          classpath: ''
+        }
+      });
+      const firstProjectId = isolateJavaCompileId(projectStableId, 'project-one');
+      const secondProjectId = isolateJavaCompileId(projectStableId, 'project-two');
+      return {
+        stableExecuteId,
+        firstExecuteId,
+        secondExecuteId,
+        firstExecuteClassesDir: '/files/java-worker/' + firstExecuteId + '/classes',
+        secondExecuteClassesDir: '/files/java-worker/' + secondExecuteId + '/classes',
+        firstExecutePackage: buildPackageName(firstExecuteId),
+        secondExecutePackage: buildPackageName(secondExecuteId),
+        firstDynamicPath,
+        secondDynamicPath,
+        firstProjectId,
+        secondProjectId
+      };
+    })()`,
+    context
+  ) as {
+    stableExecuteId: string;
+    firstExecuteId: string;
+    secondExecuteId: string;
+    firstExecuteClassesDir: string;
+    secondExecuteClassesDir: string;
+    firstExecutePackage: string;
+    secondExecutePackage: string;
+    firstDynamicPath: string;
+    secondDynamicPath: string;
+    firstProjectId: string;
+    secondProjectId: string;
+  };
+
+  assertCondition(result.firstExecuteId !== result.stableExecuteId, 'Java execution id should not expose the stable compile cache seed directly');
+  assertCondition(result.firstExecuteId !== result.secondExecuteId, 'Identical Java executions should receive distinct compile ids');
+  assertCondition(result.firstExecuteClassesDir !== result.secondExecuteClassesDir, 'Identical Java executions should not reuse writable class directories');
+  assertCondition(result.firstExecutePackage !== result.secondExecutePackage, 'Identical Java executions should not reuse generated package names');
+  assertCondition(result.firstDynamicPath !== result.secondDynamicPath, 'Identical Java executions should not reuse dynamic input file paths');
+  assertCondition(result.firstProjectId !== result.secondProjectId, 'Identical Java project executions should receive distinct compile ids');
+
+  console.log('PASS: Java compile cache output paths are isolated per execution');
+}
+
 function main(): void {
   assertJavaDeleteOnCloseLiveDeleteContract();
   assertJavaLexicalScannersAreCached();
+  assertJavaCompileCachePathsArePerExecution();
 }
 
 main();

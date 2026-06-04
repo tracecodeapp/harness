@@ -116,6 +116,7 @@ let initLoadTimeMs = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let runWarmupPromise = null;
 let activeJavaProjectIo = null;
+let javaCompileIsolationCounter = 0;
 const activeProtocolTokens = new Map();
 const STDIN_PIPE_HEADER_INTS = 3;
 const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
@@ -3289,6 +3290,34 @@ function buildJavaBatchCompileId(payload, inputBatch) {
   });
 }
 
+function javaWorkerRandomHex(words = 2) {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      const values = new Uint32Array(Math.max(1, words));
+      crypto.getRandomValues(values);
+      return Array.from(values, (value) => value.toString(16).padStart(8, '0')).join('');
+    }
+  } catch {
+    // Fall back below. The fallback still stays inside the JS worker and is not exposed to user Java code.
+  }
+  return stableHash({
+    fallbackRandom: typeof Math !== 'undefined' && typeof Math.random === 'function' ? Math.random() : '',
+    now: typeof Date !== 'undefined' && typeof Date.now === 'function' ? Date.now() : '',
+    perf: typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : '',
+    counter: javaCompileIsolationCounter,
+  });
+}
+
+function isolateJavaCompileId(stableCompileId, requestId = '') {
+  javaCompileIsolationCounter += 1;
+  return stableHash({
+    stableCompileId,
+    requestId: String(requestId ?? ''),
+    counter: javaCompileIsolationCounter,
+    nonce: javaWorkerRandomHex(),
+  });
+}
+
 async function writeDynamicInputFiles(dynamicInputs) {
   for (const input of dynamicInputs) {
     await self.cheerpOSAddStringFile(input.path, JSON.stringify(input.value));
@@ -5351,7 +5380,7 @@ async function runJavaTraceRequest(payload, requestId) {
   const rewriteStart = performance.now();
   const normalizedPayload = normalizeJavaExecutionPayload(payload);
 
-  const compileId = buildJavaCompileId(normalizedPayload, 'trace');
+  const compileId = isolateJavaCompileId(buildJavaCompileId(normalizedPayload, 'trace'), requestId);
   const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, compileId);
 
   let rewrittenSource;
@@ -5498,10 +5527,10 @@ async function runJavaTraceRequest(payload, requestId) {
   };
 }
 
-async function runJavaCodeRequest(payload) {
+async function runJavaCodeRequest(payload, requestId) {
   const totalStart = performance.now();
   const normalizedPayload = normalizeJavaExecutionPayload(payload);
-  const compileId = buildJavaCompileId(normalizedPayload, 'execute');
+  const compileId = isolateJavaCompileId(buildJavaCompileId(normalizedPayload, 'execute'), requestId);
   const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, compileId);
   const exportsClassName = buildExportsClassName(compileId);
   const packageName = buildPackageName(compileId);
@@ -5597,7 +5626,7 @@ async function runJavaProjectRequest(payload, requestId) {
     };
   }
   const explicitClasspath = payload.source === 'run' && typeof javaProjectEffectiveClasspath(payload) === 'string';
-  const compileId = stableHash({
+  const compileId = isolateJavaCompileId(stableHash({
     compileMode: 'project',
     request: {
       files: explicitClasspath
@@ -5611,7 +5640,7 @@ async function runJavaProjectRequest(payload, requestId) {
       args: Array.isArray(payload.args) ? payload.args : [],
       classpath: javaProjectEffectiveClasspath(payload) ?? '',
     },
-  });
+  }), requestId);
 
   let runnableSource;
   try {
@@ -5769,7 +5798,7 @@ async function runJavaProjectRequest(payload, requestId) {
   return result;
 }
 
-async function runJavaCodeBatchRequest(payload) {
+async function runJavaCodeBatchRequest(payload, requestId) {
   const totalStart = performance.now();
   const inputBatch = Array.isArray(payload.inputBatch)
     ? payload.inputBatch.map((inputs) => inputs && typeof inputs === 'object' ? inputs : {})
@@ -5782,7 +5811,7 @@ async function runJavaCodeBatchRequest(payload) {
     ...payload,
     inputs: inputBatch[0] ?? {},
   });
-  const compileId = buildJavaBatchCompileId(normalizedPayload, inputBatch);
+  const compileId = isolateJavaCompileId(buildJavaBatchCompileId(normalizedPayload, inputBatch), requestId);
   const dynamicInputBatch = inputBatch.map((inputs, index) =>
     dynamicInputEntriesForPayload(
       { ...normalizedPayload, inputs },
@@ -6004,10 +6033,10 @@ self.onmessage = (event) => {
         const result = message.type === 'execute-with-tracing'
           ? await runJavaTraceRequest(message.payload, message.id)
           : message.type === 'execute-code-batch'
-            ? await runJavaCodeBatchRequest(message.payload)
+            ? await runJavaCodeBatchRequest(message.payload, message.id)
             : message.type === 'execute-project-java'
               ? await runJavaProjectRequest(message.payload, message.id)
-              : await runJavaCodeRequest(message.payload);
+              : await runJavaCodeRequest(message.payload, message.id);
         postMessageResponse({
           id: message.id,
           type: message.type,
