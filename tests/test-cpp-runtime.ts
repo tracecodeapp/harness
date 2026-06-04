@@ -755,6 +755,47 @@ const nullSafeUnknownPointerFieldReadTracing = await sandbox.__tracecodeCppTest.
 if (!nullSafeUnknownPointerFieldReadTracing.success || nullSafeUnknownPointerFieldReadTracing.output !== 0) {
   throw new Error('C++ null-safe unknown pointer field read tracing failed: ' + JSON.stringify(nullSafeUnknownPointerFieldReadTracing));
 }
+const nullSafeUnknownPointerFieldReadEvents = nullSafeUnknownPointerFieldReadTracing.trace.events;
+if (nullSafeUnknownPointerFieldReadEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 9 &&
+  event.target?.variable === 'node' &&
+  event.target.path?.[0] === 'val'
+)) {
+  throw new Error('C++ null-safe unknown pointer field read should not emit a read for the null branch, received ' + JSON.stringify(nullSafeUnknownPointerFieldReadEvents));
+}
+
+const guardedUnknownPointerFieldReadTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct Box {',
+    '  int val;',
+    '  Box(int value) : val(value) {}',
+    '};',
+    'class Solution {',
+    'public:',
+    '  int guardedRead() {',
+    '    Box* node = new Box(5);',
+    '    return node ? node->val : 0;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'guardedRead',
+  inputs: {},
+  options: {},
+});
+if (!guardedUnknownPointerFieldReadTracing.success || guardedUnknownPointerFieldReadTracing.output !== 5) {
+  throw new Error('C++ guarded unknown pointer field read tracing failed: ' + JSON.stringify(guardedUnknownPointerFieldReadTracing));
+}
+const guardedUnknownPointerFieldReadEvents = guardedUnknownPointerFieldReadTracing.trace.events;
+if (!guardedUnknownPointerFieldReadEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 9 &&
+  event.target?.variable === 'node' &&
+  event.target.path?.[0] === 'val' &&
+  event.value === 5
+)) {
+  throw new Error('C++ guarded unknown pointer field read should emit the non-null branch read, received ' + JSON.stringify(guardedUnknownPointerFieldReadEvents));
+}
 
 const nestedPointerFieldAssignmentTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
@@ -3314,6 +3355,36 @@ if (!indexedElementAliasSideEffectEvents.some((event) =>
   throw new Error('C++ side-effecting indexed alias should retain original index provenance, received ' + JSON.stringify(indexedElementAliasSideEffectEvents));
 }
 
+const typedIndexedElementAliasSideEffectTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int typedAliasSideEffect(vector<vector<int>>& grid) {',
+    '    int i = 0;',
+    '    const vector<int>& row = grid[i++];',
+    '    int first = row[0];',
+    '    return first * 10 + i;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'typedAliasSideEffect',
+  inputs: { grid: [[7], [9]] },
+  options: {},
+});
+if (!typedIndexedElementAliasSideEffectTrace.success || typedIndexedElementAliasSideEffectTrace.output !== 71) {
+  throw new Error('C++ typed indexed element alias tracing should single-evaluate side-effecting outer index, received ' + JSON.stringify(typedIndexedElementAliasSideEffectTrace));
+}
+const typedIndexedElementAliasSideEffectEvents = typedIndexedElementAliasSideEffectTrace.trace.events;
+if (!typedIndexedElementAliasSideEffectEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 6 &&
+  event.target?.variable === 'grid' &&
+  JSON.stringify(event.target.path) === JSON.stringify([0, 0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['i', null])
+)) {
+  throw new Error('C++ typed indexed alias should retain original index provenance, received ' + JSON.stringify(typedIndexedElementAliasSideEffectEvents));
+}
+
 const indexedRangeForTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -4202,6 +4273,62 @@ if (!nestedVectorFieldEvents.some((event) =>
   JSON.stringify(event.args) === JSON.stringify([7])
 )) {
   throw new Error('C++ unqualified nested vector field push_back should emit indexed mutation, received ' + JSON.stringify(nestedVectorFieldEvents));
+}
+
+const opsClassNestedVectorFieldSideEffectTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Grid {',
+    '  vector<vector<int>> graph;',
+    '  int cursor;',
+    'public:',
+    '  Grid() {',
+    '    graph = vector<vector<int>>(2);',
+    '    cursor = 0;',
+    '  }',
+    '  void addBare(int value) {',
+    '    graph[cursor++].push_back(value);',
+    '  }',
+    '  void addThis(int value) {',
+    '    this->graph[cursor++].push_back(value);',
+    '  }',
+    '  int score() {',
+    '    return graph[0][0] * 100 + graph[1][0] * 10 + cursor;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'Grid',
+  inputs: {
+    operations: ['Grid', 'addBare', 'addThis', 'score'],
+    arguments: [[], [7], [3], []],
+  },
+  executionStyle: 'ops-class',
+  options: {},
+});
+if (!opsClassNestedVectorFieldSideEffectTrace.success || JSON.stringify(opsClassNestedVectorFieldSideEffectTrace.output) !== JSON.stringify([null, null, null, 732])) {
+  throw new Error('C++ nested vector field mutation tracing should single-evaluate side-effecting indexes, received ' + JSON.stringify(opsClassNestedVectorFieldSideEffectTrace));
+}
+const nestedVectorFieldSideEffectEvents = opsClassNestedVectorFieldSideEffectTrace.trace.events;
+if (!nestedVectorFieldSideEffectEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 10 &&
+  event.target?.variable === 'this' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['graph', 0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'cursor']) &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify([7])
+)) {
+  throw new Error('C++ bare nested vector field mutation should retain side-effecting index provenance, received ' + JSON.stringify(nestedVectorFieldSideEffectEvents));
+}
+if (!nestedVectorFieldSideEffectEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 13 &&
+  event.target?.variable === 'this' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['graph', 1]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'cursor']) &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify([3])
+)) {
+  throw new Error('C++ this-> nested vector field mutation should retain side-effecting index provenance, received ' + JSON.stringify(nestedVectorFieldSideEffectEvents));
 }
 
 const opsClassAdapterFieldTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

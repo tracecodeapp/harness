@@ -3983,12 +3983,18 @@ function shouldGuardNullCheckedPointerFieldRead(strippedExpression, objectName, 
   const before = strippedExpression.slice(0, accessStart);
   const escapedName = escapeRegExp(objectName);
   const nullValue = String.raw`(?:nullptr|NULL|0)`;
+  const guardedReadPrefix = String.raw`(?:[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?\s*\(\s*)*`;
+  const pointerCondition = String.raw`\(?\s*\b${escapedName}\s*\)?`;
+  const nullComparison = String.raw`(?:\(?\s*\b${escapedName}\s*(?:!=|==)\s*${nullValue}\s*\)?|\(?\s*${nullValue}\s*(?:!=|==)\s*\b${escapedName}\s*\)?)`;
   return (
     new RegExp(String.raw`\b${escapedName}\s*(?:\?|\&\&)\s*$`).test(before) ||
+    new RegExp(String.raw`${pointerCondition}\s*(?:\?|\&\&)\s*${guardedReadPrefix}$`).test(before) ||
     new RegExp(String.raw`\b${escapedName}\s*(?:!=|==)\s*${nullValue}\s*(?:\?|\&\&)\s*$`).test(before) ||
     new RegExp(String.raw`${nullValue}\s*(?:!=|==)\s*\b${escapedName}\s*(?:\?|\&\&)\s*$`).test(before) ||
+    new RegExp(String.raw`${nullComparison}\s*(?:\?|\&\&)\s*${guardedReadPrefix}$`).test(before) ||
     new RegExp(String.raw`\b${escapedName}\s*(?:!=|==)\s*${nullValue}\s*\?[^:]*:\s*$`).test(before) ||
-    new RegExp(String.raw`${nullValue}\s*(?:!=|==)\s*\b${escapedName}\s*\?[^:]*:\s*$`).test(before)
+    new RegExp(String.raw`${nullValue}\s*(?:!=|==)\s*\b${escapedName}\s*\?[^:]*:\s*$`).test(before) ||
+    new RegExp(String.raw`${nullComparison}\s*\?[^:]*:\s*${guardedReadPrefix}$`).test(before)
   );
 }
 
@@ -5057,23 +5063,42 @@ function updateStringPointerAliasesForLine(line, pointerAliases, variables, alia
   }
 }
 
-function detectIndexedElementAlias(line, variables, aliases = new Map(), scopeDepth = 0, lineNumber = 0) {
-  const match = line.match(/^\s*(?:const\s+)?auto\s*&\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*\[([^\]]+)\]\s*;\s*$/);
+function parseIndexedElementAliasDeclaration(line) {
+  const match = line.match(/^(\s*)(.*?)\s*=\s*([A-Za-z_]\w*)\s*\[([^\]]+)\](\s*;\s*)$/);
   if (!match) return null;
-  const [, aliasName, sourceName, outerIndex] = match;
+  const [, indent, leftHandSide, sourceName, outerIndex, suffix] = match;
+  const aliasMatch = leftHandSide.match(/^(.*?)([A-Za-z_]\w*)\s*$/);
+  if (!aliasMatch) return null;
+  const [, declarationPrefix, aliasName] = aliasMatch;
+  if (!declarationPrefix.includes('&')) return null;
+  const trimmedOuterIndex = outerIndex.trim();
+  if (!trimmedOuterIndex) return null;
+  return {
+    indent,
+    declarationPrefix,
+    aliasName,
+    sourceName,
+    outerIndex: trimmedOuterIndex,
+    suffix,
+  };
+}
+
+function detectIndexedElementAlias(line, variables, aliases = new Map(), scopeDepth = 0, lineNumber = 0) {
+  const declaration = parseIndexedElementAliasDeclaration(line);
+  if (!declaration) return null;
+  const { aliasName, sourceName, outerIndex } = declaration;
   const sourceVariable = variables?.get(sourceName);
   if (!sourceVariable) return null;
   const elementType = vectorElementCppType(sourceVariable.type || '', aliases);
+  if (elementType && isStringCppType(elementType, aliases)) return null;
   if (!elementType || !isIndexReadInstrumentableCppType(elementType, aliases)) return null;
-  const trimmedOuterIndex = outerIndex.trim();
-  if (!trimmedOuterIndex) return null;
   const indexVariableName = `__tracecode_alias_index_${lineNumber || 'local'}_${aliasName}`;
   return {
     name: aliasName,
     sourceName,
-    originalOuterIndex: trimmedOuterIndex,
+    originalOuterIndex: outerIndex,
     outerIndex: indexVariableName,
-    outerSource: cppIndexSourceForExpression(trimmedOuterIndex),
+    outerSource: cppIndexSourceForExpression(outerIndex),
     indexVariableName,
     scopeDepth,
   };
@@ -5081,13 +5106,13 @@ function detectIndexedElementAlias(line, variables, aliases = new Map(), scopeDe
 
 function rewriteIndexedElementAliasDeclaration(line, alias) {
   if (!alias?.indexVariableName || !alias?.originalOuterIndex) return line;
-  const match = line.match(/^(\s*)((?:const\s+)?auto\s*&\s+)([A-Za-z_]\w*)(\s*=\s*)([A-Za-z_]\w*)(\s*)\[([^\]]+)\](\s*;\s*)$/);
-  if (!match) return line;
-  const [, indent, declarationPrefix, aliasName, assignment, sourceName, beforeBracket, , suffix] = match;
+  const declaration = parseIndexedElementAliasDeclaration(line);
+  if (!declaration) return line;
+  const { indent, declarationPrefix, aliasName, sourceName, suffix } = declaration;
   if (aliasName !== alias.name || sourceName !== alias.sourceName) return line;
   return [
     `${indent}const auto ${alias.indexVariableName} = ${alias.originalOuterIndex};`,
-    `${indent}${declarationPrefix}${aliasName}${assignment}${sourceName}${beforeBracket}[${alias.indexVariableName}]${suffix.trimEnd()}`,
+    `${indent}${declarationPrefix}${aliasName} = ${sourceName}[${alias.indexVariableName}]${suffix.trimEnd()}`,
   ].join('\n');
 }
 
