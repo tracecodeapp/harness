@@ -2453,11 +2453,16 @@ def _install_tracekernel_asgi_modules():
                     break
             _headers = {name.decode("latin1").lower(): value.decode("latin1") for name, value in scope.get("headers", [])}
             _query_params = urllib.parse.parse_qs((scope.get("query_string") or b"").decode("utf-8"), keep_blank_values=True)
+            _signature = inspect.signature(_route["func"])
+            _reserved_query_names = {
+                _name
+                for _name, _param in _signature.parameters.items()
+                if isinstance(_param.default, _TraceKernelParam) or _name == "request" or _param.annotation is Request
+            }
             _kwargs = dict(_path_params)
             for _name, _values in _query_params.items():
-                if _values:
+                if _values and _name in _signature.parameters and _name not in _reserved_query_names:
                     _kwargs.setdefault(_name, _values[-1])
-            _signature = inspect.signature(_route["func"])
             _request_obj = Request({
                 **scope,
                 "path_params": _path_params,
@@ -2480,7 +2485,7 @@ def _install_tracekernel_asgi_modules():
                     elif _default.default is not inspect.Parameter.empty:
                         _kwargs.setdefault(_name, _default.default)
                 elif _name == "request" or _param.annotation is Request:
-                    _kwargs.setdefault(_name, _request_obj)
+                    _kwargs[_name] = _request_obj
             _body_value = None
             _has_body_value = False
             if _method in ("POST", "PUT", "PATCH"):

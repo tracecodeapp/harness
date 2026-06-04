@@ -211,6 +211,8 @@ async function testPythonRuntimeClientNormalizesTraceResponse(): Promise<void> {
 async function testPythonProjectBridgeHardeningHooksArePresent(): Promise<void> {
   const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
   assertCondition(source.includes('_tracekernel_http_validate_component'), 'Python HTTPServer shim should validate request-line and host components');
+  assertCondition(source.includes('_reserved_query_names'), 'Python ASGI shim should reserve explicit and injected parameter names before copying query params');
+  assertCondition(source.includes('_kwargs[_name] = _request_obj'), 'Python ASGI shim should let Request injection overwrite query parameters');
   assertCondition(source.includes("target.outputDevice === '/dev/null'"), 'Python provider FS device writes should discard /dev/null');
   assertCondition(source.includes('_output_device == "/dev/null"'), 'Python os.write should discard /dev/null');
   assertCondition(source.includes('def _canonical_virtual_namespace_path'), 'Python /dev and /proc policy should canonicalize namespace paths');
