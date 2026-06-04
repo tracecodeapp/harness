@@ -1,7 +1,6 @@
 <!doctype html>
 <script type="module">
 let nextId = 0;
-let compilerWorker = null;
 const pendingCompiles = new Map();
 const frameToken = new URLSearchParams(location.search).get('tracecodeFrameToken') || '';
 const allowedParentOrigin = location.origin;
@@ -13,61 +12,76 @@ function encodeError(error) {
 function rejectPendingCompiles(error) {
   for (const [, request] of pendingCompiles) {
     clearTimeout(request.timeoutId);
+    request.worker.onmessage = null;
+    request.worker.onerror = null;
+    request.worker.onmessageerror = null;
+    request.worker.terminate();
     request.reject(error);
   }
   pendingCompiles.clear();
 }
 
-function resetCompilerWorker(error = null) {
-  if (compilerWorker) {
-    compilerWorker.onmessage = null;
-    compilerWorker.onerror = null;
-    compilerWorker.onmessageerror = null;
-    compilerWorker.terminate();
-  }
-  compilerWorker = null;
-  if (error) rejectPendingCompiles(error);
+function finishCompile(id) {
+  const request = pendingCompiles.get(id);
+  if (!request) return null;
+  pendingCompiles.delete(id);
+  clearTimeout(request.timeoutId);
+  request.worker.onmessage = null;
+  request.worker.onerror = null;
+  request.worker.onmessageerror = null;
+  request.worker.terminate();
+  return request;
 }
 
-function getCompilerWorker() {
-  if (compilerWorker) return compilerWorker;
-  compilerWorker = new Worker('cpp-compiler-worker.js', { type: 'module' });
-  compilerWorker.onmessage = (event) => {
+function createCompilerWorker(id) {
+  const worker = new Worker('cpp-compiler-worker.js', { type: 'module' });
+  worker.onmessage = (event) => {
     const data = event.data || {};
     if (data.type === 'worker-ready') return;
     const request = pendingCompiles.get(data.id);
     if (!request) return;
     if (data.protocolToken !== request.protocolToken) return;
-    pendingCompiles.delete(data.id);
-    clearTimeout(request.timeoutId);
+    finishCompile(data.id);
     if (data.type !== 'compile-result') {
       request.reject(new Error(`Unexpected C++ compiler worker response: ${data.type}`));
       return;
     }
     request.resolve(data.payload);
   };
-  compilerWorker.onerror = (event) => {
-    resetCompilerWorker(new Error(event.message || 'C++ compiler worker error'));
+  worker.onerror = (event) => {
+    const request = finishCompile(id);
+    request?.reject(new Error(event.message || 'C++ compiler worker error'));
   };
-  compilerWorker.onmessageerror = () => {
-    resetCompilerWorker(new Error('C++ compiler worker response failed to deserialize'));
+  worker.onmessageerror = () => {
+    const request = finishCompile(id);
+    request?.reject(new Error('C++ compiler worker response failed to deserialize'));
   };
-  return compilerWorker;
+  return worker;
 }
 
 function compile(payload) {
   return new Promise((resolve, reject) => {
-    const worker = getCompilerWorker();
     const id = String(++nextId);
     const protocolToken = `frame-compiler-${id}-${Date.now()}-${Math.random()}`;
+    let worker;
+    try {
+      worker = createCompilerWorker(id);
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
     const timeoutId = setTimeout(() => {
-      pendingCompiles.delete(id);
-      reject(new Error('C++ compiler worker request timed out'));
+      const request = finishCompile(id);
+      request?.reject(new Error('C++ compiler worker request timed out'));
     }, 120000);
-    pendingCompiles.set(id, { protocolToken, resolve, reject, timeoutId });
+    pendingCompiles.set(id, { protocolToken, resolve, reject, timeoutId, worker });
     worker.postMessage({ id, type: 'compile', payload, protocolToken });
   });
 }
+
+addEventListener('pagehide', () => {
+  rejectPendingCompiles(new Error('C++ compiler frame was closed'));
+});
 
 addEventListener('message', async (event) => {
   if (event.data?.type !== 'compile') return;

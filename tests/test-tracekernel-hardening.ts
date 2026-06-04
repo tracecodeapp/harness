@@ -1741,6 +1741,113 @@ async function testCppWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `C++ worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
+async function testCppCompilerWorkersAreDisposable(): Promise<void> {
+  const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
+    ''
+  );
+  const workers: Array<{
+    url: string;
+    terminated: boolean;
+    onmessage: ((event: { data: unknown }) => void) | null;
+    onerror: ((event: { message?: string }) => void) | null;
+    onmessageerror: (() => void) | null;
+    postMessage(message: unknown): void;
+    terminate(): void;
+  }> = [];
+  class DisposableCompilerWorker {
+    url: string;
+    terminated = false;
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    onerror: ((event: { message?: string }) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+
+    constructor(url: string) {
+      this.url = url;
+      workers.push(this);
+    }
+
+    postMessage(message: { id?: string; protocolToken?: string }): void {
+      Promise.resolve().then(() => {
+        this.onmessage?.({
+          data: {
+            id: message.id,
+            protocolToken: message.protocolToken,
+            type: 'compile-result',
+            payload: { success: true, stdout: '', stderr: '', programBuffer: new ArrayBuffer(0) },
+          },
+        });
+      });
+    }
+
+    terminate(): void {
+      this.terminated = true;
+    }
+  }
+  const context = vm.createContext({
+    console,
+    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
+    location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+    postMessage: () => {},
+    Worker: DisposableCompilerWorker,
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    ArrayBuffer,
+    WebAssembly,
+    BigInt,
+    Map,
+    Set,
+    Promise,
+    JSON,
+    Math,
+    Date,
+    performance: { now: () => 0 },
+    setTimeout,
+    clearTimeout,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+  });
+  vm.runInContext(source, context, { filename: 'cpp-worker.js' });
+  const result = await vm.runInContext(
+    `(() => {
+      configuredAssets = { compilerWorkerUrl: 'http://localhost/workers/cpp/cpp-compiler-worker.js' };
+      return Promise.all([
+        runCompilerWorkerPayload({ project: { files: [] }, args: [] }),
+        runCompilerWorkerPayload({ project: { files: [] }, args: [] }),
+      ]).then(() => ({
+        activeCompilerWorkers: activeCompilerWorkers.size,
+        pendingCompilerWorkerRequests: pendingCompilerWorkerRequests.size,
+      }));
+    })()`,
+    context
+  ) as { activeCompilerWorkers: number; pendingCompilerWorkerRequests: number };
+
+  assertCondition(workers.length === 2, `C++ worker should create one compiler worker per compile: ${workers.length}`);
+  assertCondition(workers.every((worker) => worker.terminated), 'C++ compiler workers should terminate after their compile result');
+  assertCondition(
+    result.activeCompilerWorkers === 0 && result.pendingCompilerWorkerRequests === 0,
+    `C++ compiler worker bookkeeping should be drained after each compile: ${JSON.stringify(result)}`
+  );
+
+  const frameSource = await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-compiler-frame.html'), 'utf8');
+  assertCondition(
+    !frameSource.includes('let compilerWorker = null') &&
+      frameSource.includes('function createCompilerWorker(id)') &&
+      frameSource.includes('request.worker.terminate()'),
+    'C++ compiler frame should use disposable compiler workers rather than a persistent worker singleton'
+  );
+
+  const clientSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-browser', 'src', 'cpp-worker-client.ts'), 'utf8');
+  assertCondition(
+    clientSource.includes(`pending.resolve(response.payload ?? { success: false, error: 'C++ compiler frame returned an empty response.' });
+        this.clearCompilerFrames();`) &&
+      clientSource.includes("this.clearCompilerFrames(new Error('C++ compiler frame request timed out.'));"),
+    'C++ browser client should dispose compiler frames after compile completion and timeout'
+  );
+}
+
 async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
@@ -2555,6 +2662,7 @@ async function main(): Promise<void> {
   testJavaTraceHeaderExpansionIsBounded();
   await testJavaWorkerTraceHeaderExpansionIsBounded();
   await testCppWorkerProjectEventBudgets();
+  await testCppCompilerWorkersAreDisposable();
   await testCppInheritedStdioRespectsKernelDevices();
   await testCppTraceIdsDoNotExposePointers();
   await testCppInferredNumericLiteralsRejectNonFiniteValues();

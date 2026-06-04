@@ -140,7 +140,7 @@ let programCacheLimit = DEFAULT_CPP_PROGRAM_CACHE_LIMIT;
 let usePrecompiledHeader = false;
 let externalCompileRequestId = 0;
 const pendingExternalCompiles = new Map();
-let compilerWorker = null;
+const activeCompilerWorkers = new Set();
 let compilerWorkerRequestId = 0;
 const pendingCompilerWorkerRequests = new Map();
 
@@ -7376,68 +7376,88 @@ async function runTool(module, fs, args) {
 function rejectPendingCompilerWorkerRequests(error) {
   for (const [, request] of pendingCompilerWorkerRequests) {
     clearTimeout(request.timeoutId);
+    request.worker.onmessage = null;
+    request.worker.onerror = null;
+    request.worker.onmessageerror = null;
+    request.worker.terminate();
+    activeCompilerWorkers.delete(request.worker);
     request.reject(error);
   }
   pendingCompilerWorkerRequests.clear();
 }
 
-function resetCompilerWorker(error = null) {
-  if (compilerWorker) {
-    compilerWorker.onmessage = null;
-    compilerWorker.onerror = null;
-    compilerWorker.onmessageerror = null;
-    compilerWorker.terminate();
+function resetCompilerWorker(error = new Error('C++ compiler worker was reset.')) {
+  rejectPendingCompilerWorkerRequests(error);
+  for (const worker of activeCompilerWorkers) {
+    worker.onmessage = null;
+    worker.onerror = null;
+    worker.onmessageerror = null;
+    worker.terminate();
   }
-  compilerWorker = null;
-  if (error) rejectPendingCompilerWorkerRequests(error);
+  activeCompilerWorkers.clear();
 }
 
-function getPersistentCompilerWorker() {
+function finishCompilerWorkerRequest(id) {
+  const request = pendingCompilerWorkerRequests.get(id);
+  if (!request) return null;
+  pendingCompilerWorkerRequests.delete(id);
+  clearTimeout(request.timeoutId);
+  request.worker.onmessage = null;
+  request.worker.onerror = null;
+  request.worker.onmessageerror = null;
+  request.worker.terminate();
+  activeCompilerWorkers.delete(request.worker);
+  return request;
+}
+
+function createCompilerWorker(id) {
   const workerUrl = getCompilerWorkerUrl();
   if (!workerUrl) {
     throw new Error('Missing C++ compiler worker URL.');
   }
-  if (compilerWorker) return compilerWorker;
 
-  compilerWorker = new Worker(workerUrl, { type: 'module' });
-  compilerWorker.onmessage = (event) => {
+  const worker = new Worker(workerUrl, { type: 'module' });
+  activeCompilerWorkers.add(worker);
+  worker.onmessage = (event) => {
     const message = event.data || {};
     if (message.type === 'worker-ready') return;
     const request = pendingCompilerWorkerRequests.get(message.id);
     if (!request) return;
     if (message.protocolToken !== request.protocolToken) return;
-    pendingCompilerWorkerRequests.delete(message.id);
-    clearTimeout(request.timeoutId);
+    finishCompilerWorkerRequest(message.id);
     if (message.type !== 'compile-result') {
       request.reject(new Error(`Unexpected C++ compiler worker response: ${message.type}`));
       return;
     }
     request.resolve(message.payload || {});
   };
-  compilerWorker.onerror = (event) => {
-    resetCompilerWorker(new Error(event.message || 'C++ compiler worker error'));
+  worker.onerror = (event) => {
+    const request = finishCompilerWorkerRequest(id);
+    request?.reject(new Error(event.message || 'C++ compiler worker error'));
   };
-  compilerWorker.onmessageerror = () => {
-    resetCompilerWorker(new Error('C++ compiler worker message failed to deserialize'));
+  worker.onmessageerror = () => {
+    const request = finishCompilerWorkerRequest(id);
+    request?.reject(new Error('C++ compiler worker message failed to deserialize'));
   };
-  return compilerWorker;
+  return worker;
 }
 
 function runCompilerWorker(driverSource) {
   return new Promise((resolve, reject) => {
+    const id = `compile-${++compilerWorkerRequestId}`;
+    const protocolToken = `${id}-${Date.now()}-${Math.random()}`;
     let worker;
     try {
-      worker = getPersistentCompilerWorker();
+      worker = createCompilerWorker(id);
     } catch (error) {
       reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
-    const id = `compile-${++compilerWorkerRequestId}`;
-    const protocolToken = `${id}-${Date.now()}-${Math.random()}`;
     const timeoutId = setTimeout(() => {
-      resetCompilerWorker(new Error('C++ compiler worker request timed out.'));
+      const request = finishCompilerWorkerRequest(id);
+      request?.reject(new Error('C++ compiler worker request timed out.'));
     }, 120_000);
-    pendingCompilerWorkerRequests.set(id, { protocolToken, resolve, reject, timeoutId });
+    pendingCompilerWorkerRequests.set(id, { protocolToken, resolve, reject, timeoutId, worker });
     worker.postMessage({
       id,
       type: 'compile',
@@ -7455,19 +7475,20 @@ function runCompilerWorker(driverSource) {
 
 function runCompilerWorkerPayload(payload) {
   return new Promise((resolve, reject) => {
+    const id = `compile-${++compilerWorkerRequestId}`;
+    const protocolToken = `${id}-${Date.now()}-${Math.random()}`;
     let worker;
     try {
-      worker = getPersistentCompilerWorker();
+      worker = createCompilerWorker(id);
     } catch (error) {
       reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
-    const id = `compile-${++compilerWorkerRequestId}`;
-    const protocolToken = `${id}-${Date.now()}-${Math.random()}`;
     const timeoutId = setTimeout(() => {
-      resetCompilerWorker(new Error('C++ compiler worker request timed out.'));
+      const request = finishCompilerWorkerRequest(id);
+      request?.reject(new Error('C++ compiler worker request timed out.'));
     }, 120_000);
-    pendingCompilerWorkerRequests.set(id, { protocolToken, resolve, reject, timeoutId });
+    pendingCompilerWorkerRequests.set(id, { protocolToken, resolve, reject, timeoutId, worker });
     worker.postMessage({
       id,
       type: 'compile',

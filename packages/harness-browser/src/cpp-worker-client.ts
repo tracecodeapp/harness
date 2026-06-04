@@ -784,6 +784,7 @@ export class CppWorkerClient {
         globalThis.clearTimeout(pending.timeoutId);
         const response = event.data as { payload?: Record<string, unknown> };
         pending.resolve(response.payload ?? { success: false, error: 'C++ compiler frame returned an empty response.' });
+        this.clearCompilerFrames();
       };
       this.compilerFrameMessageHandler = onMessage;
 
@@ -824,6 +825,7 @@ export class CppWorkerClient {
       const timeoutId = globalThis.setTimeout(() => {
         this.pendingCompilerFrameRequests.delete(requestId);
         resolve({ success: false, error: 'C++ compiler frame request timed out.' });
+        this.clearCompilerFrames(new Error('C++ compiler frame request timed out.'));
       }, this.initTimeoutMs);
       this.pendingCompilerFrameRequests.set(requestId, { protocolToken, resolve, timeoutId });
       frameWindow.postMessage(
