@@ -1931,18 +1931,31 @@ function resolveWorkspaceContextPath(
   return absolutePath;
 }
 
+function runtimeFileSystemEntryKey(path: string, stat: unknown): string {
+  const entry = stat as { dev?: unknown; ino?: unknown };
+  if (typeof entry.dev === 'number' && typeof entry.ino === 'number') return `${entry.dev}:${entry.ino}`;
+  if (typeof entry.ino === 'number') return `ino:${entry.ino}`;
+  return `path:${path}`;
+}
+
+function runtimeFileSystemEntryIsSymlink(stat: unknown): boolean {
+  return (stat as { isSymbolicLink?: unknown }).isSymbolicLink === true;
+}
+
 async function collectSnapshotFiles(
   fs: CommandContext['fs'],
   cwd: string,
   absolutePath: string,
   files: RuntimeFile[],
-  directories: string[]
+  directories: string[],
+  seenDirectories = new Set<string>()
 ): Promise<void> {
   if (!isWithinWorkspace(cwd, absolutePath)) {
     throw new Error(`Refusing to snapshot path outside workspace: ${absolutePath}`);
   }
 
-  const stat = await fs.stat(absolutePath);
+  const stat = await fs.lstat(absolutePath);
+  if (runtimeFileSystemEntryIsSymlink(stat)) return;
   if (stat.isFile) {
     const bytes = await fs.readFileBuffer(absolutePath);
     const text = decodeUtf8(bytes);
@@ -1955,11 +1968,14 @@ async function collectSnapshotFiles(
   }
 
   if (!stat.isDirectory) return;
+  const directoryKey = runtimeFileSystemEntryKey(absolutePath, stat);
+  if (seenDirectories.has(directoryKey)) return;
+  seenDirectories.add(directoryKey);
   const directoryPath = toProjectDirectoryPath(cwd, absolutePath);
   if (directoryPath !== null) directories.push(directoryPath);
 
   for (const entry of await fs.readdir(absolutePath)) {
-    await collectSnapshotFiles(fs, cwd, `${absolutePath}/${entry}`, files, directories);
+    await collectSnapshotFiles(fs, cwd, `${absolutePath}/${entry}`, files, directories, seenDirectories);
   }
 }
 
@@ -8195,6 +8211,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     let stderr = '';
     let exitCode = 0;
     const multipleTargets = options.positional.length > 1;
+    const visitedRecursiveDirectories = new Set<string>();
 
     const statPath = async (path: string): Promise<RuntimeLsStat> => ctx.fs.stat(path) as Promise<RuntimeLsStat>;
     const lstatPath = async (path: string): Promise<RuntimeLsStat> => ctx.fs.lstat(path) as Promise<RuntimeLsStat>;
@@ -8219,6 +8236,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
 
     const renderDirectory = async (input: string, absolutePath: string, includeHeader: boolean, recursive: boolean): Promise<void> => {
+      const directoryStat = await lstatPath(absolutePath);
+      if (runtimeFileSystemEntryIsSymlink(directoryStat)) {
+        stdout += await renderEntry(absolutePath, input);
+        return;
+      }
+      if (recursive) {
+        const directoryKey = runtimeFileSystemEntryKey(absolutePath, directoryStat);
+        if (visitedRecursiveDirectories.has(directoryKey)) return;
+        visitedRecursiveDirectories.add(directoryKey);
+      }
       if (includeHeader) stdout += `${input}:\n`;
       let names = await ctx.fs.readdir(absolutePath);
       if (!options.showAll && !options.showAlmostAll) names = names.filter((name) => !name.startsWith('.'));
@@ -8234,7 +8261,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
               ? `/${name}`
               : `${absolutePath}/${name}`;
         try {
-          entries.push({ name, path: childPath, stat: await statPath(childPath) });
+          entries.push({ name, path: childPath, stat: await lstatPath(childPath) });
         } catch {
           // Match ls' best-effort behavior when an entry disappears during listing.
         }
@@ -8264,7 +8291,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       const absolutePath = ctx.fs.resolvePath(ctx.cwd, input);
       try {
         const stat = await statPath(absolutePath);
-        if (options.directoryOnly || !stat.isDirectory) {
+        const lstat = await lstatPath(absolutePath);
+        if (options.directoryOnly || !stat.isDirectory || runtimeFileSystemEntryIsSymlink(lstat)) {
           stdout += await renderEntry(absolutePath, input);
           continue;
         }

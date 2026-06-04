@@ -1737,6 +1737,36 @@ function testRuntimeFinalDiffBudgets(): void {
   assertCondition(totalError.includes('final-diff byte limit'), `final-diff total budget should reject large aggregate payloads: ${totalError}`);
 }
 
+async function testTraceKernelTraversalSkipsSymlinkCycles(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'loop/value.txt', contents: 'value\n' }],
+    directories: ['loop/empty'],
+  });
+  try {
+    const privateFs = (workspace as unknown as {
+      bash: { fs: { symlink(target: string, linkPath: string): Promise<void> } };
+    }).bash.fs;
+    await privateFs.symlink('/workspace/loop', '/workspace/loop/self');
+
+    const snapshot = await workspace.snapshot();
+    assertCondition(
+      snapshot.files.some((file) => file.path === 'loop/value.txt') &&
+        !snapshot.files.some((file) => file.path.startsWith('loop/self/')) &&
+        !snapshot.directories?.some((directory) => directory.startsWith('loop/self')),
+      `workspace snapshots should not follow symlink cycles: ${JSON.stringify(snapshot)}`
+    );
+
+    const result = await workspace.runCommand('ls -RF loop');
+    assertCondition(result.exitCode === 0, `recursive ls symlink-cycle test should finish: ${JSON.stringify(result)}`);
+    assertCondition(
+      result.stdout.includes('self@') && !result.stdout.includes('loop/self:'),
+      `recursive ls should list symlinks without traversing them: ${result.stdout}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
 async function testTraceKernelProjectCommandStepsAreBounded(): Promise<void> {
   const message = await rejectedMessage(async () => {
     const workspace = await createRuntimeWorkspace({
@@ -2258,6 +2288,7 @@ async function main(): Promise<void> {
   await testBulkTraceWritesAreBudgetedBeforeLoops();
   await testSharedKernelPolicyCachesDeviceManifests();
   testRuntimeFinalDiffBudgets();
+  await testTraceKernelTraversalSkipsSymlinkCycles();
   await testTraceKernelProjectCommandStepsAreBounded();
   await testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks();
   await testTraceKernelDeviceOutputAccumulationIsBounded();
