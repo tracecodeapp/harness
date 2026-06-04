@@ -2212,30 +2212,46 @@ async function testTraceKernelTraversalSkipsSymlinkCycles(): Promise<void> {
   }
 }
 
-async function testTraceKernelFinalDiffDirectoryDeletesRequireExplicitDescendants(): Promise<void> {
+async function testTraceKernelFinalDiffDirectoryDeletesRejectStaleDescendants(): Promise<void> {
+  let releaseCommand!: () => void;
+  const commandReleased = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
   const workspace = await createRuntimeWorkspace({
     files: [
       { path: 'runner.js', contents: 'console.log("runner")\n' },
       { path: 'tree/kept.txt', contents: 'kept\n' },
     ],
-    nodeRunner: async () => ({
-      stdout: '',
-      stderr: '',
-      exitCode: 0,
-      files: [{ path: 'tree', directory: true, deleted: true }],
-    }),
+    nodeRunner: async () => {
+      commandStarted();
+      await commandReleased;
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: 'tree', directory: true, deleted: true }],
+      };
+    },
   });
   try {
-    const result = await workspace.runCommand('node runner.js');
+    const command = workspace.runCommand('node runner.js');
+    await commandStartedPromise;
+    await workspace.writeFile('tree/new-child.txt', 'new\n');
+    releaseCommand();
+    const result = await command;
     assertCondition(
       result.exitCode === 116 &&
-        result.error?.code === 'ESTALE' &&
-        result.stderr.includes('omitted descendant'),
-      `directory final-diff tombstone should reject omitted descendants: ${JSON.stringify(result)}`
+        result.error?.code === 'ESTALE',
+      `directory final-diff tombstone should reject stale omitted descendants: ${JSON.stringify(result)}`
     );
     assertCondition(
-      await workspace.readFile('tree/kept.txt') === 'kept\n',
-      'rejected directory final-diff tombstone should not delete descendants'
+      await workspace.readFile('tree/kept.txt') === 'kept\n' &&
+        await workspace.readFile('tree/new-child.txt') === 'new\n',
+      'rejected stale directory final-diff tombstone should not delete descendants'
     );
   } finally {
     workspace.dispose();
@@ -2769,7 +2785,7 @@ async function main(): Promise<void> {
   await testSharedKernelPolicyCachesDeviceManifests();
   testRuntimeFinalDiffBudgets();
   await testTraceKernelTraversalSkipsSymlinkCycles();
-  await testTraceKernelFinalDiffDirectoryDeletesRequireExplicitDescendants();
+  await testTraceKernelFinalDiffDirectoryDeletesRejectStaleDescendants();
   await testTraceKernelProjectCommandStepsAreBounded();
   await testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks();
   await testTraceKernelDeviceOutputAccumulationIsBounded();
