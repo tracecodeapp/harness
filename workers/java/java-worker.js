@@ -46,9 +46,23 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
   });
 }
 
+function javaWorkerHref() {
+  if (typeof self !== 'undefined' && typeof self.location?.href === 'string') {
+    return self.location.href;
+  }
+  return 'http://localhost/workers/java/java-worker.js';
+}
+
 function assertTrustedJavaAsset(name, url) {
-  const parsed = new URL(url, self.location.href);
-  if (parsed.origin === self.location.origin) return parsed.href;
+  if (typeof URL !== 'function') {
+    const value = String(url ?? '');
+    if (value === CHEERPJ_LOADER_URL || value.startsWith('/app/workers/vendor/')) return value;
+    throw new Error(`${name} must be served from the Java worker origin or the pinned CheerpJ runtime CDN.`);
+  }
+  const workerHref = javaWorkerHref();
+  const workerOrigin = new URL(workerHref).origin;
+  const parsed = new URL(url, workerHref);
+  if (parsed.origin === workerOrigin) return parsed.href;
 
   const expectedCheerpJLoaderPath = `/${CHEERPJ_LOADER_VERSION}/loader.js`;
   if (parsed.origin === 'https://cjrtnc.leaningtech.com' && parsed.pathname === expectedCheerpJLoaderPath) {
@@ -58,7 +72,10 @@ function assertTrustedJavaAsset(name, url) {
   throw new Error(`${name} must be served from the Java worker origin or the pinned CheerpJ runtime CDN.`);
 }
 
-function javaSharedKernelPolicyUrl(workerHref = self.location.href) {
+function javaSharedKernelPolicyUrl(workerHref = javaWorkerHref()) {
+  if (typeof URL !== 'function') {
+    return 'http://localhost/workers/shared/runtime-kernel-policy-classic.js';
+  }
   const workerUrl = new URL(workerHref);
   const relativePolicyPath = workerUrl.pathname.endsWith('/java/java-worker.js')
     ? '../shared/runtime-kernel-policy-classic.js'
@@ -2167,28 +2184,66 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function isInsideJavaStringLiteral(line, offset) {
+const JAVA_WORKER_LEXICAL_STATE_CACHE_LIMIT = 4096;
+const javaWorkerLexicalStateCache = new Map();
+
+function cachedJavaWorkerLineLexicalState(line) {
+  const source = String(line ?? '');
+  const cached = javaWorkerLexicalStateCache.get(source);
+  if (cached) return cached;
+  if (javaWorkerLexicalStateCache.size >= JAVA_WORKER_LEXICAL_STATE_CACHE_LIMIT) {
+    javaWorkerLexicalStateCache.clear();
+  }
+  const state = buildJavaWorkerLineLexicalState(source);
+  javaWorkerLexicalStateCache.set(source, state);
+  return state;
+}
+
+function buildJavaWorkerLineLexicalState(line) {
+  const insideString = new Uint8Array(line.length + 1);
   let quote = null;
   let escaped = false;
-  for (let index = 0; index < offset; index += 1) {
+
+  const storeState = (offset) => {
+    insideString[offset] = quote !== null ? 1 : 0;
+  };
+
+  let index = 0;
+  storeState(0);
+  while (index < line.length) {
     const ch = line[index];
     const next = line[index + 1] ?? '';
     if (escaped) {
       escaped = false;
+      index += 1;
+      storeState(index);
       continue;
     }
     if (quote) {
       if (ch === '\\') {
         escaped = true;
+        index += 1;
+        storeState(index);
         continue;
       }
       if (ch === quote) quote = null;
+      index += 1;
+      storeState(index);
       continue;
     }
-    if (ch === '/' && next === '/') return false;
+    if (ch === '/' && next === '/') break;
     if (ch === '"' || ch === "'") quote = ch;
+    index += 1;
+    storeState(index);
   }
-  return quote !== null;
+
+  return { insideString };
+}
+
+function isInsideJavaStringLiteral(line, offset) {
+  const state = cachedJavaWorkerLineLexicalState(line);
+  const safeOffset = Math.max(0, Math.min(state.insideString.length - 1, Number(offset) || 0));
+  return state.insideString[safeOffset] === 1;
 }
 
 function parseNativeTraceLine(line) {

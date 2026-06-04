@@ -513,7 +513,7 @@ public final class ProjectEvents {
     assertWritableProjectPath(path);
     Path runtime = runtimePath(path);
     Path result = Files.writeString(runtime, contents, options);
-    emitFileSnapshot(path);
+    emitPostWritePathChange(path, optionDeletesOnClose(options));
     return result;
   }
 
@@ -527,7 +527,7 @@ public final class ProjectEvents {
     assertWritableProjectPath(path);
     Path runtime = runtimePath(path);
     Path result = Files.writeString(runtime, contents, charset, options);
-    emitFileSnapshot(path);
+    emitPostWritePathChange(path, optionDeletesOnClose(options));
     return result;
   }
 
@@ -540,7 +540,7 @@ public final class ProjectEvents {
     assertWritableProjectPath(path);
     Path runtime = runtimePath(path);
     Path result = Files.write(runtime, bytes, options);
-    emitFileSnapshot(path);
+    emitPostWritePathChange(path, optionDeletesOnClose(options));
     return result;
   }
 
@@ -556,7 +556,7 @@ public final class ProjectEvents {
     assertWritableProjectPath(path);
     Path runtime = runtimePath(path);
     Path result = Files.write(runtime, lines, options);
-    emitFileSnapshot(path);
+    emitPostWritePathChange(path, optionDeletesOnClose(options));
     return result;
   }
 
@@ -576,7 +576,7 @@ public final class ProjectEvents {
     assertWritableProjectPath(path);
     Path runtime = runtimePath(path);
     Path result = Files.write(runtime, lines, charset, options);
-    emitFileSnapshot(path);
+    emitPostWritePathChange(path, optionDeletesOnClose(options));
     return result;
   }
 
@@ -748,7 +748,7 @@ public final class ProjectEvents {
     Path runtime = runtimePath(path);
     boolean existed = Files.exists(runtime);
     OutputStream stream = Files.newOutputStream(runtime, options);
-    return new ProjectOutputStream(stream, runtime, outputOpenSnapshotRequired(existed, options));
+    return new ProjectOutputStream(stream, runtime, outputOpenSnapshotRequired(existed, options), optionDeletesOnClose(options));
   }
 
   public static BufferedWriter newBufferedWriter(Path path, OpenOption... options) throws IOException {
@@ -760,7 +760,7 @@ public final class ProjectEvents {
     Path runtime = runtimePath(path);
     boolean existed = Files.exists(runtime);
     BufferedWriter writer = Files.newBufferedWriter(runtime, options);
-    return new ProjectBufferedWriter(writer, runtime, outputOpenSnapshotRequired(existed, options));
+    return new ProjectBufferedWriter(writer, runtime, outputOpenSnapshotRequired(existed, options), optionDeletesOnClose(options));
   }
 
   public static BufferedWriter newBufferedWriter(Path path, Charset charset, OpenOption... options) throws IOException {
@@ -772,7 +772,7 @@ public final class ProjectEvents {
     Path runtime = runtimePath(path);
     boolean existed = Files.exists(runtime);
     BufferedWriter writer = Files.newBufferedWriter(runtime, charset, options);
-    return new ProjectBufferedWriter(writer, runtime, outputOpenSnapshotRequired(existed, options));
+    return new ProjectBufferedWriter(writer, runtime, outputOpenSnapshotRequired(existed, options), optionDeletesOnClose(options));
   }
 
   public static SeekableByteChannel newByteChannel(Path path, OpenOption... options) throws IOException {
@@ -785,7 +785,7 @@ public final class ProjectEvents {
     Path runtime = runtimePath(path);
     boolean existed = Files.exists(runtime);
     SeekableByteChannel channel = Files.newByteChannel(runtime, options);
-    return new ProjectSeekableByteChannel(channel, runtime, writable, byteChannelOpenSnapshotRequired(existed, options));
+    return new ProjectSeekableByteChannel(channel, runtime, writable, byteChannelOpenSnapshotRequired(existed, options), optionDeletesOnClose(options));
   }
 
   public static SeekableByteChannel newByteChannel(
@@ -803,7 +803,7 @@ public final class ProjectEvents {
     Path runtime = runtimePath(path);
     boolean existed = Files.exists(runtime);
     SeekableByteChannel channel = Files.newByteChannel(runtime, options, attrs);
-    return new ProjectSeekableByteChannel(channel, runtime, writable, byteChannelOpenSnapshotRequired(existed, optionArray));
+    return new ProjectSeekableByteChannel(channel, runtime, writable, byteChannelOpenSnapshotRequired(existed, optionArray), optionDeletesOnClose(optionArray));
   }
 
   public static final class ProjectFileWriter extends FileWriter {
@@ -1553,10 +1553,12 @@ public final class ProjectEvents {
   private static final class ProjectOutputStream extends OutputStream {
     private final OutputStream delegate;
     private final Path path;
+    private final boolean deleteOnClose;
 
-    ProjectOutputStream(OutputStream delegate, Path path, boolean emitInitialSnapshot) {
+    ProjectOutputStream(OutputStream delegate, Path path, boolean emitInitialSnapshot, boolean deleteOnClose) {
       this.delegate = delegate;
       this.path = path;
+      this.deleteOnClose = deleteOnClose;
       if (emitInitialSnapshot) emitFileSnapshot(path);
     }
 
@@ -1587,7 +1589,7 @@ public final class ProjectEvents {
     @Override
     public void close() throws IOException {
       delegate.close();
-      emitFileSnapshot(path);
+      emitPostWritePathChange(path, deleteOnClose);
     }
   }
 
@@ -1595,11 +1597,19 @@ public final class ProjectEvents {
     private final SeekableByteChannel delegate;
     private final Path path;
     private final boolean writable;
+    private final boolean deleteOnClose;
 
-    ProjectSeekableByteChannel(SeekableByteChannel delegate, Path path, boolean writable, boolean emitInitialSnapshot) {
+    ProjectSeekableByteChannel(
+        SeekableByteChannel delegate,
+        Path path,
+        boolean writable,
+        boolean emitInitialSnapshot,
+        boolean deleteOnClose
+    ) {
       this.delegate = delegate;
       this.path = path;
       this.writable = writable;
+      this.deleteOnClose = deleteOnClose;
       if (emitInitialSnapshot) emitFileSnapshot(path);
     }
 
@@ -1646,16 +1656,18 @@ public final class ProjectEvents {
     @Override
     public void close() throws IOException {
       delegate.close();
-      if (writable) emitFileSnapshot(path);
+      if (writable || deleteOnClose) emitPostWritePathChange(path, deleteOnClose);
     }
   }
 
   private static final class ProjectBufferedWriter extends BufferedWriter {
     private final Path path;
+    private final boolean deleteOnClose;
 
-    ProjectBufferedWriter(Writer delegate, Path path, boolean emitInitialSnapshot) {
+    ProjectBufferedWriter(Writer delegate, Path path, boolean emitInitialSnapshot, boolean deleteOnClose) {
       super(delegate);
       this.path = path;
+      this.deleteOnClose = deleteOnClose;
       if (emitInitialSnapshot) emitFileSnapshot(path);
     }
 
@@ -1711,7 +1723,7 @@ public final class ProjectEvents {
     @Override
     public void close() throws IOException {
       super.close();
-      emitFileSnapshot(path);
+      emitPostWritePathChange(path, deleteOnClose);
     }
   }
 
@@ -3907,12 +3919,29 @@ public final class ProjectEvents {
           option == StandardOpenOption.APPEND ||
           option == StandardOpenOption.CREATE ||
           option == StandardOpenOption.CREATE_NEW ||
-          option == StandardOpenOption.TRUNCATE_EXISTING
+          option == StandardOpenOption.TRUNCATE_EXISTING ||
+          option == StandardOpenOption.DELETE_ON_CLOSE
       ) {
         return true;
       }
     }
     return false;
+  }
+
+  private static boolean optionDeletesOnClose(OpenOption... options) {
+    if (options == null) return false;
+    for (OpenOption option : options) {
+      if (option == StandardOpenOption.DELETE_ON_CLOSE) return true;
+    }
+    return false;
+  }
+
+  private static void emitPostWritePathChange(Path path, boolean deleteOnClose) {
+    if (deleteOnClose && !Files.exists(path)) {
+      emitFileDelete(path);
+      return;
+    }
+    emitFileSnapshot(path);
   }
 
   private static boolean outputOpenSnapshotRequired(boolean existed, OpenOption... options) {
@@ -3988,7 +4017,7 @@ public final class ProjectEvents {
     KernelDevice device = writableKernelDevice(path);
     if (device != null) return new KernelDeviceOutputStream(device);
     assertWritableProjectPath(path);
-    return new ProjectOutputStream(new FileOutputStream(path.toFile()), path, true);
+    return new ProjectOutputStream(new FileOutputStream(path.toFile()), path, true, false);
   }
 
   private static Writer printWriterOutput(Path path, Charset charset) throws IOException {

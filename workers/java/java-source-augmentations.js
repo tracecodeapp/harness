@@ -1,72 +1,128 @@
 (function initTraceCodeJavaSourceAugmentations(root) {
+  const JAVA_LEXICAL_STATE_CACHE_LIMIT = 4096;
+  const javaLexicalStateCache = new Map();
+
   function escapeRegExp(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  function isInsideJavaStringLiteral(line, offset) {
-    let quote = null;
-    let escaped = false;
-    for (let index = 0; index < offset; index += 1) {
-      const ch = line[index];
-      const next = line[index + 1] ?? '';
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (quote) {
-        if (ch === '\\') {
-          escaped = true;
-          continue;
-        }
-        if (ch === quote) quote = null;
-        continue;
-      }
-      if (ch === '/' && next === '/') return false;
-      if (ch === '"' || ch === "'") quote = ch;
+  function cachedJavaLineLexicalState(line) {
+    const source = String(line ?? '');
+    const cached = javaLexicalStateCache.get(source);
+    if (cached) return cached;
+    if (javaLexicalStateCache.size >= JAVA_LEXICAL_STATE_CACHE_LIMIT) {
+      javaLexicalStateCache.clear();
     }
-    return quote !== null;
+    const state = buildJavaLineLexicalState(source);
+    javaLexicalStateCache.set(source, state);
+    return state;
   }
 
-  function isInsideJavaComment(line, offset) {
+  function buildJavaLineLexicalState(line) {
+    const insideString = new Uint8Array(line.length + 1);
+    const insideComment = new Uint8Array(line.length + 1);
     let quote = null;
     let escaped = false;
     let blockDepth = 0;
-    for (let index = 0; index < offset; index += 1) {
+    let inLineComment = false;
+
+    const storeState = (offset) => {
+      insideString[offset] = quote !== null ? 1 : 0;
+      insideComment[offset] = inLineComment || blockDepth > 0 ? 1 : 0;
+    };
+
+    let index = 0;
+    storeState(0);
+    while (index < line.length) {
       const ch = line[index];
       const next = line[index + 1] ?? '';
-      if (escaped) {
-        escaped = false;
+
+      if (inLineComment) {
+        index += 1;
+        storeState(index);
         continue;
       }
+
+      if (escaped) {
+        escaped = false;
+        index += 1;
+        storeState(index);
+        continue;
+      }
+
       if (quote) {
         if (ch === '\\') {
           escaped = true;
+          index += 1;
+          storeState(index);
           continue;
         }
         if (ch === quote) quote = null;
+        index += 1;
+        storeState(index);
         continue;
       }
+
       if (blockDepth > 0) {
         if (ch === '/' && next === '*') {
           blockDepth += 1;
           index += 1;
+          storeState(index);
+          index += 1;
+          storeState(index);
           continue;
         }
         if (ch === '*' && next === '/') {
+          index += 1;
+          storeState(index);
           blockDepth -= 1;
           index += 1;
+          storeState(index);
+          continue;
         }
+        index += 1;
+        storeState(index);
         continue;
       }
-      if (ch === '/' && next === '/') return true;
+
+      if (ch === '/' && next === '/') {
+        inLineComment = true;
+        index += 1;
+        storeState(index);
+        continue;
+      }
+
       if (ch === '/' && next === '*') {
         blockDepth += 1;
         index += 1;
+        storeState(index);
         continue;
       }
-      if (ch === '"' || ch === "'") quote = ch;
+
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        index += 1;
+        storeState(index);
+        continue;
+      }
+
+      index += 1;
+      storeState(index);
     }
-    return blockDepth > 0;
+
+    return { insideString, insideComment };
+  }
+
+  function isInsideJavaStringLiteral(line, offset) {
+    const state = cachedJavaLineLexicalState(line);
+    const safeOffset = Math.max(0, Math.min(state.insideString.length - 1, Number(offset) || 0));
+    return state.insideString[safeOffset] === 1;
+  }
+
+  function isInsideJavaComment(line, offset) {
+    const state = cachedJavaLineLexicalState(line);
+    const safeOffset = Math.max(0, Math.min(state.insideComment.length - 1, Number(offset) || 0));
+    return state.insideComment[safeOffset] === 1;
   }
 
   function parseNativeTraceLine(line) {

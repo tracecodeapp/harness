@@ -30,9 +30,13 @@ function isNativeJavaTraceEvent(event: string): boolean {
 }
 
 function stripInlineComments(line: string, inBlockComment: boolean): { text: string; inBlockComment: boolean } {
-  let result = '';
+  const pieces: string[] = [];
   let index = 0;
+  let segmentStart = 0;
   let inBlock = inBlockComment;
+  let quote: string | null = null;
+  let escaped = false;
+
   while (index < line.length) {
     const current = line[index];
     const next = index + 1 < line.length ? line[index + 1] : '';
@@ -41,24 +45,49 @@ function stripInlineComments(line: string, inBlockComment: boolean): { text: str
       if (current === '*' && next === '/') {
         inBlock = false;
         index += 2;
+        segmentStart = index;
         continue;
       }
       index += 1;
       continue;
     }
 
-    if (current === '/' && next === '*') {
-      inBlock = true;
-      index += 2;
+    if (escaped) {
+      escaped = false;
+      index += 1;
       continue;
     }
 
-    if (current === '/' && next === '/') break;
-    result += current;
+    if (quote) {
+      if (current === '\\') {
+        escaped = true;
+        index += 1;
+        continue;
+      }
+      if (current === quote) quote = null;
+      index += 1;
+      continue;
+    }
+
+    if (current === '/' && next === '*') {
+      if (segmentStart < index) pieces.push(line.slice(segmentStart, index));
+      inBlock = true;
+      index += 2;
+      segmentStart = index;
+      continue;
+    }
+
+    if (current === '/' && next === '/') {
+      if (segmentStart < index) pieces.push(line.slice(segmentStart, index));
+      return { text: pieces.join(''), inBlockComment: false };
+    }
+
+    if (current === '"' || current === "'") quote = current;
     index += 1;
   }
 
-  return { text: result, inBlockComment: inBlock };
+  if (!inBlock && segmentStart < line.length) pieces.push(line.slice(segmentStart));
+  return { text: pieces.join(''), inBlockComment: inBlock };
 }
 
 function isMethodDeclarationLine(line: string): boolean {
