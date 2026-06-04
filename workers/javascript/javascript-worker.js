@@ -383,9 +383,19 @@ function getCustomClassName(value) {
 const RUNTIME_VALUE_MAX_DEPTH = 48;
 const RUNTIME_VALUE_MAX_ITEMS = 64;
 const RUNTIME_VALUE_MAX_OBJECT_FIELDS = 32;
-const TRACE_SERIALIZATION_LIMITS = { maxItems: RUNTIME_VALUE_MAX_ITEMS, maxFields: RUNTIME_VALUE_MAX_OBJECT_FIELDS };
-const OUTPUT_SERIALIZATION_LIMITS = { maxItems: Number.POSITIVE_INFINITY, maxFields: Number.POSITIVE_INFINITY };
+const RUNTIME_VALUE_MAX_NODES = 4096;
+const TRACE_SERIALIZATION_LIMITS = {
+  maxItems: RUNTIME_VALUE_MAX_ITEMS,
+  maxFields: RUNTIME_VALUE_MAX_OBJECT_FIELDS,
+  maxNodes: RUNTIME_VALUE_MAX_NODES,
+};
+const OUTPUT_SERIALIZATION_LIMITS = {
+  maxItems: Number.POSITIVE_INFINITY,
+  maxFields: Number.POSITIVE_INFINITY,
+  maxNodes: Number.POSITIVE_INFINITY,
+};
 let activeSerializationLimits = TRACE_SERIALIZATION_LIMITS;
+let activeSerializationBudget = null;
 
 function truncationMarker(total, emitted) {
   return { __truncated__: true, remaining: Math.max(0, total - emitted) };
@@ -424,6 +434,9 @@ function serializeValue(
   if (value === null || value === undefined) return value;
 
   const valueType = typeof value;
+  if (valueType === 'object' && !reserveSerializedNode()) {
+    return { __truncated__: true, reason: 'max serialized nodes' };
+  }
   if (valueType === 'number') {
     if (Number.isNaN(value)) return 'NaN';
     if (value === Infinity) return 'Infinity';
@@ -440,12 +453,16 @@ function serializeValue(
     return '<function>';
   }
   if (Array.isArray(value)) {
+    if (seen.has(value)) return '<cycle>';
+    seen.add(value);
     const limited = limitedEntries(value, activeSerializationLimits.maxItems);
     const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
     if (limited.remaining > 0) result.push(truncationMarker(value.length, limited.values.length));
     return result;
   }
   if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) {
+    if (seen.has(value)) return '<cycle>';
+    seen.add(value);
     const viewValues = value instanceof DataView
       ? Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
       : Array.from(value);
@@ -455,6 +472,8 @@ function serializeValue(
     return result;
   }
   if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+    if (seen.has(value)) return '<cycle>';
+    seen.add(value);
     const bytes = Array.from(new Uint8Array(value));
     const limited = limitedEntries(bytes, activeSerializationLimits.maxItems);
     const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
@@ -462,6 +481,8 @@ function serializeValue(
     return result;
   }
   if (value instanceof Set) {
+    if (seen.has(value)) return '<cycle>';
+    seen.add(value);
     const items = [...value];
     const limited = limitedEntries(items, activeSerializationLimits.maxItems);
     const result = {
@@ -475,6 +496,8 @@ function serializeValue(
     return result;
   }
   if (value instanceof Map) {
+    if (seen.has(value)) return '<cycle>';
+    seen.add(value);
     const entries = [...value.entries()];
     const limited = limitedEntries(entries, activeSerializationLimits.maxItems);
     const result = {
@@ -600,7 +623,6 @@ function serializeValue(
       out.__truncated__ = true;
       out.remaining = fields.length - activeSerializationLimits.maxFields;
     }
-    seen.delete(value);
     return out;
   }
 
@@ -609,12 +631,22 @@ function serializeValue(
 
 function withSerializationLimits(limits, serialize) {
   const previous = activeSerializationLimits;
+  const previousBudget = activeSerializationBudget;
   activeSerializationLimits = limits;
+  activeSerializationBudget = { nodes: 0, maxNodes: limits.maxNodes ?? Number.POSITIVE_INFINITY };
   try {
     return serialize();
   } finally {
     activeSerializationLimits = previous;
+    activeSerializationBudget = previousBudget;
   }
+}
+
+function reserveSerializedNode() {
+  if (!activeSerializationBudget) return true;
+  if (activeSerializationBudget.nodes >= activeSerializationBudget.maxNodes) return false;
+  activeSerializationBudget.nodes += 1;
+  return true;
 }
 
 function serializeOutputValue(value) {
@@ -622,6 +654,10 @@ function serializeOutputValue(value) {
 }
 
 function serializeTopLevelValue(value, nodeRefState) {
+  return withSerializationLimits(TRACE_SERIALIZATION_LIMITS, () => serializeTopLevelValueWithinBudget(value, nodeRefState));
+}
+
+function serializeTopLevelValueWithinBudget(value, nodeRefState) {
   if (value === null || value === undefined) return value;
   if (typeof value !== 'object' || Array.isArray(value)) {
     return serializeValue(value, 0, new WeakSet(), nodeRefState);
@@ -1609,7 +1645,7 @@ function createTraceRecorder(options = {}) {
 
   function serializeTraceValue(value) {
     try {
-      return serializeValue(value, 0, new WeakSet(), stableNodeRefState);
+      return serializeTopLevelValue(value, stableNodeRefState);
     } catch {
       return '<unserializable>';
     }
@@ -2514,9 +2550,10 @@ function createSyntheticTrace(payload, codeResult) {
     typeof functionName === 'string' && functionName.length > 0 ? functionName : '<module>';
 
   const normalizedInputs = normalizeInputs(inputs);
+  const traceNodeRefState = { ids: new Map(), nextId: 1 };
   const inputSnapshot = {};
   for (const [key, value] of Object.entries(normalizedInputs)) {
-    inputSnapshot[key] = serializeValue(value);
+    inputSnapshot[key] = serializeTopLevelValue(value, traceNodeRefState);
   }
 
   const callFrame = {
@@ -6516,7 +6553,7 @@ async function executeWithTracing(payload) {
 
     const serializedInputs = {};
     for (const [key, value] of Object.entries(materializedInputs)) {
-      serializedInputs[key] = serializeValue(value);
+      serializedInputs[key] = serializeTopLevelValue(value, { ids: new Map(), nextId: 1 });
     }
 
     let output;
@@ -6559,7 +6596,7 @@ async function executeWithTracing(payload) {
       }
     }
 
-    const serializedTraceOutput = serializeValue(output);
+    const serializedTraceOutput = serializeTopLevelValue(output, { ids: new Map(), nextId: 1 });
     const serializedOutput = serializeOutputValue(output);
     if (!hasNamedFunction) {
       traceRecorder.popToFunction(traceFunctionName);

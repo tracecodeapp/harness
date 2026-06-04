@@ -352,6 +352,57 @@ async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<voi
   );
 }
 
+async function testJavaScriptTraceSerializationIsBounded(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8');
+  const postedMessages: unknown[] = [];
+  const workerScope = {
+    location: { search: '' },
+    onmessage: null as ((event: MessageEvent) => void) | null,
+    postMessage: (message: unknown) => {
+      postedMessages.push(message);
+    },
+  };
+  const context = vm.createContext({
+    console,
+    self: workerScope,
+    postMessage: workerScope.postMessage,
+    performance: { now: () => 0 },
+    queueMicrotask,
+    setTimeout,
+    clearTimeout,
+    TextDecoder,
+    TextEncoder,
+  });
+  vm.runInContext(source, context, { filename: 'javascript-worker.js' });
+
+  const result = vm.runInContext(
+    `(() => {
+      const shared = { leaf: { value: 1 } };
+      const aliasSerialized = serializeTopLevelValue(
+        { first: shared, second: shared },
+        { ids: new Map(), nextId: 1 }
+      );
+      const broad = Array.from({ length: 64 }, (_, row) =>
+        Array.from({ length: 64 }, (_, column) => ({ row, column }))
+      );
+      const broadSerialized = serializeTopLevelValue(broad, { ids: new Map(), nextId: 1 });
+      const broadText = JSON.stringify(broadSerialized);
+      return {
+        aliasFirstValue: aliasSerialized.first.leaf.value,
+        aliasSecond: aliasSerialized.second,
+        broadLength: broadText.length,
+        broadHasBudgetMarker: broadText.includes('max serialized nodes'),
+      };
+    })()`,
+    context
+  ) as { aliasFirstValue: number; aliasSecond: unknown; broadLength: number; broadHasBudgetMarker: boolean };
+
+  assertCondition(result.aliasFirstValue === 1, `JS serializer should still materialize the first alias: ${JSON.stringify(result)}`);
+  assertCondition(result.aliasSecond === '<cycle>', `JS serializer should not duplicate shared object aliases: ${JSON.stringify(result)}`);
+  assertCondition(result.broadHasBudgetMarker, `JS serializer should emit the max-node budget marker: ${JSON.stringify(result)}`);
+  assertCondition(result.broadLength < 250_000, `JS serializer should keep broad graphs bounded: ${JSON.stringify(result)}`);
+}
+
 async function testNativeProjectRunnersRejectVirtualPathTraversal(): Promise<void> {
   const projectRoot = '/home/obi/weather-api';
   const project = {
@@ -1245,6 +1296,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptReadonlyHardlinksAreRejected();
   await testBrowserJavaScriptHiddenFilesAreNotMounted();
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
+  await testJavaScriptTraceSerializationIsBounded();
   await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();
