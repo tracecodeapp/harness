@@ -17,10 +17,6 @@ const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
 const SCRIPT_METHOD_NAME = '__tracecodeScript';
 const DYNAMIC_INPUT_PREFIX = '/str/tracecode-java-input';
-const SHARED_KERNEL_POLICY_PATHS = [
-  '../shared/runtime-kernel-policy-classic.js',
-  './shared/runtime-kernel-policy-classic.js',
-];
 const JAVA_DEFAULT_IMPORTS = [
   'import java.util.*;',
   'import java.io.*;',
@@ -62,19 +58,32 @@ function assertTrustedJavaAsset(name, url) {
   throw new Error(`${name} must be served from the Java worker origin or the pinned CheerpJ runtime CDN.`);
 }
 
+function javaSharedKernelPolicyUrl(workerHref = self.location.href) {
+  const workerUrl = new URL(workerHref);
+  const relativePolicyPath = workerUrl.pathname.endsWith('/java/java-worker.js')
+    ? '../shared/runtime-kernel-policy-classic.js'
+    : './shared/runtime-kernel-policy-classic.js';
+  const policyUrl = new URL(relativePolicyPath, workerUrl.href);
+  if (
+    policyUrl.origin !== workerUrl.origin ||
+    !policyUrl.pathname.endsWith('/workers/shared/runtime-kernel-policy-classic.js')
+  ) {
+    throw new Error('Java shared runtime kernel policy path must resolve inside the worker shared asset directory.');
+  }
+  return policyUrl.href;
+}
+
 if (typeof self.importScripts === 'function') {
-  for (const scriptPath of SHARED_KERNEL_POLICY_PATHS) {
-    try {
-      self.importScripts(scriptPath);
-      emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
-      break;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      emitRuntimeDiagnostic('warn', 'shared-kernel-policy-load-failed', 'Failed to load shared runtime kernel policy.', {
-        scriptPath,
-        message,
-      });
-    }
+  const scriptPath = javaSharedKernelPolicyUrl();
+  try {
+    self.importScripts(scriptPath);
+    emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    emitRuntimeDiagnostic('warn', 'shared-kernel-policy-load-failed', 'Failed to load shared runtime kernel policy.', {
+      scriptPath,
+      message,
+    });
   }
   self.importScripts('java-source-augmentations.js');
 }

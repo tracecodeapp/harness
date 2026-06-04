@@ -866,10 +866,28 @@ async function testJavaWorkerCheerpJLoaderPolicyPinsCdn(): Promise<void> {
           rejected.push(error instanceof Error ? error.message : String(error));
         }
       }
-      return { accepted, rejected };
+      let rejectedPolicy = '';
+      try {
+        javaSharedKernelPolicyUrl('http://localhost/assets/java-worker.js');
+      } catch (error) {
+        rejectedPolicy = error instanceof Error ? error.message : String(error);
+      }
+      return {
+        accepted,
+        rejected,
+        sourceTreePolicy: javaSharedKernelPolicyUrl('http://localhost/workers/java/java-worker.js'),
+        distributedPolicy: javaSharedKernelPolicyUrl('http://localhost/workers/java-worker.js'),
+        rejectedPolicy,
+      };
     })()`,
     context
-  ) as { accepted: string; rejected: string[] };
+  ) as {
+    accepted: string;
+    rejected: string[];
+    sourceTreePolicy: string;
+    distributedPolicy: string;
+    rejectedPolicy: string;
+  };
 
   assertCondition(
     result.accepted === 'https://cjrtnc.leaningtech.com/4.2/loader.js',
@@ -878,6 +896,12 @@ async function testJavaWorkerCheerpJLoaderPolicyPinsCdn(): Promise<void> {
   assertCondition(
     result.rejected.length === 2 && result.rejected.every((message) => message.includes('pinned CheerpJ runtime CDN')),
     `CheerpJ loader policy should reject unpinned hosted URLs: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.sourceTreePolicy === 'http://localhost/workers/shared/runtime-kernel-policy-classic.js' &&
+      result.distributedPolicy === 'http://localhost/workers/shared/runtime-kernel-policy-classic.js' &&
+      result.rejectedPolicy.includes('worker shared asset directory'),
+    `Java shared policy import should resolve only inside the worker shared asset directory: ${JSON.stringify(result)}`
   );
 }
 
