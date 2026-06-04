@@ -491,7 +491,7 @@ function isReadableOpenFlags(flags) {
 }
 
 function projectFsRoots(request = activeProjectIo?.request) {
-  const roots = ['/workspace', CSHARP_PROJECT_WORKSPACE_ROOT];
+  const roots = ['/workspace'];
   const project = request?.project;
   if (typeof project?.cwd === 'string' && project.cwd) roots.push(project.cwd);
   if (typeof project?.workspaceRoot === 'string' && project.workspaceRoot) roots.push(project.workspaceRoot);
@@ -581,6 +581,41 @@ function mapProjectRuntimePathList(value, request) {
     .split(/([:;])/)
     .map((entry) => entry === ':' || entry === ';' ? entry : mapProjectRuntimePath(entry, request))
     .join('');
+}
+
+function sanitizeCSharpProjectInternalPaths(value) {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  return value.split(CSHARP_PROJECT_WORKSPACE_ROOT).join('/workspace');
+}
+
+function stripCSharpUnhandledExceptionStack(value) {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  const marker = 'Unhandled exception.';
+  const markerIndex = value.indexOf(marker);
+  if (markerIndex < 0) return value;
+  const prefix = value.slice(0, markerIndex);
+  const unhandled = value.slice(markerIndex).replace(/\r\n?/g, '\n');
+  const lines = unhandled.split('\n');
+  const sanitized = [];
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('at ') || /^--- End of .* stack trace ---$/.test(trimmed)) continue;
+    sanitized.push(line.replace(/^(\s*)--->\s+/, '$1'));
+  }
+  return `${prefix}${sanitized.join('\n').replace(/\n{3,}/g, '\n\n')}`;
+}
+
+function sanitizeCSharpProjectStderr(value) {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  return sanitizeCSharpProjectInternalPaths(stripCSharpUnhandledExceptionStack(value));
+}
+
+function sanitizeCSharpProjectResult(result) {
+  if (!result || typeof result !== 'object') return result;
+  if (typeof result.stderr === 'string') {
+    result.stderr = sanitizeCSharpProjectStderr(result.stderr);
+  }
+  return result;
 }
 
 function ensureRuntimeDirectory(fs, path) {
@@ -1767,6 +1802,7 @@ async function handleMessage(message) {
         result.stdout = activeProjectIo.eventStdout.join('');
         result.stderr = activeProjectIo.eventStderr.join('');
       }
+      sanitizeCSharpProjectResult(result);
       emitMissingProjectResultOutput(result);
       applyProjectResultOutputBudget(result, activeProjectIo);
     } finally {

@@ -2760,12 +2760,25 @@ public sealed class ProjectFileStream : System.IO.FileStream
     private static string FormatProjectUnhandledException(Exception error)
     {
         Exception exception = error.GetBaseException();
-        string text = exception.ToString();
-        if (string.IsNullOrWhiteSpace(text))
+        string typeName = exception.GetType().FullName ?? exception.GetType().Name;
+        string message = SanitizeProjectErrorText(exception.Message);
+        if (string.IsNullOrWhiteSpace(message))
         {
-            text = exception.Message;
+            return $"Unhandled exception. {typeName}\n";
         }
-        return "Unhandled exception. " + text.TrimEnd() + "\n";
+        return $"Unhandled exception. {typeName}: {message.TrimEnd()}\n";
+    }
+
+    private static string SanitizeProjectErrorText(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+        return text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace(ProjectWorkspaceRoot, "/workspace", StringComparison.Ordinal);
     }
 
     private static void InvokeProjectEntryPoint(Assembly assembly, string[] args)

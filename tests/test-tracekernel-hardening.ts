@@ -674,7 +674,14 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
         deviceTraversal: normalizeRawKernelDevicePath('/dev/../workspace/stdout'),
         escapedLivePath: normalizeProjectFsPath('/workspace/src/../../escape.txt', request),
         normalizedLivePath: normalizeProjectFsPath('/workspace/src/../safe.txt', request),
+        staleInternalLivePath: normalizeProjectFsPath('/tmp/tracecode-csharp-project/stale-secret.txt', request),
         mutationError,
+        sanitizedUnhandledStderr: sanitizeCSharpProjectStderr([
+          'before\\n',
+          'Unhandled exception. System.InvalidOperationException: boom\\n',
+          '   at TraceCode.CSharpHost.CompilerHost.InvokeProjectEntryPoint() in /tmp/tracecode-csharp-project/CompilerHost.cs:line 2776\\n',
+          '   at Program.Main() in /tmp/tracecode-csharp-project/Program.cs:line 3\\n',
+        ].join('')),
         sourceTreePolicy: csharpSharedKernelPolicyUrl('http://localhost/workers/csharp/csharp-worker.js'),
         distributedPolicy: csharpSharedKernelPolicyUrl('http://localhost/workers/csharp-worker.js'),
       };
@@ -685,7 +692,9 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
     deviceTraversal: string | null;
     escapedLivePath: string | null;
     normalizedLivePath: string | null;
+    staleInternalLivePath: string | null;
     mutationError: string;
+    sanitizedUnhandledStderr: string;
     sourceTreePolicy: string;
     distributedPolicy: string;
   };
@@ -694,7 +703,14 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
   assertCondition(result.deviceTraversal === null, `C# device manifest traversal should be rejected: ${JSON.stringify(result)}`);
   assertCondition(result.escapedLivePath === null, `C# live event traversal path should not be emitted: ${JSON.stringify(result)}`);
   assertCondition(result.normalizedLivePath === 'safe.txt', `C# live event path should normalize in-workspace dot segments: ${JSON.stringify(result)}`);
+  assertCondition(result.staleInternalLivePath === null, `C# worker should not expose stale internal project paths as live events: ${JSON.stringify(result)}`);
   assertCondition(result.mutationError === 'EACCES', `C# workspace escape mutation should be rejected: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.sanitizedUnhandledStderr.includes('Unhandled exception. System.InvalidOperationException: boom') &&
+      !result.sanitizedUnhandledStderr.includes('/tmp/tracecode-csharp-project') &&
+      !result.sanitizedUnhandledStderr.includes('\n   at '),
+    `C# project stderr should redact host stack traces and internal paths: ${JSON.stringify(result)}`
+  );
   assertCondition(
     result.sourceTreePolicy === 'http://localhost/workers/shared/runtime-kernel-policy.js' &&
       result.distributedPolicy === 'http://localhost/workers/shared/runtime-kernel-policy.js',
