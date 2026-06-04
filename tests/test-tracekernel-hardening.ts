@@ -463,6 +463,32 @@ async function testBrowserJavaScriptCpRejectsFileToRootDirectory(): Promise<void
   );
 }
 
+async function testBrowserJavaScriptSyntaxErrorsHideRunnerInternals(): Promise<void> {
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const result = await runner({
+    code: 'const broken = ;\n',
+    source: 'inline',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+      files: [],
+    },
+  });
+
+  assertCondition(result.exitCode === 1, `syntax error should fail: ${JSON.stringify(result)}`);
+  assertCondition(result.stderr.includes('SyntaxError'), `syntax error should be reported: ${JSON.stringify(result)}`);
+  assertCondition(
+    !result.stderr.includes('runBrowserJavaScriptProjectRequest') &&
+      !result.stderr.includes('project-browser.ts') &&
+      !result.stderr.includes('executeEntrypoint') &&
+      !result.stderr.includes('executeModule'),
+    `browser JS syntax errors should not expose runner internals: ${JSON.stringify(result.stderr)}`
+  );
+}
+
 async function testJavaScriptTraceSerializationIsBounded(): Promise<void> {
   const source = await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8');
   const postedMessages: unknown[] = [];
@@ -512,6 +538,10 @@ async function testJavaScriptTraceSerializationIsBounded(): Promise<void> {
   assertCondition(result.aliasSecond === '<cycle>', `JS serializer should not duplicate shared object aliases: ${JSON.stringify(result)}`);
   assertCondition(result.broadHasBudgetMarker, `JS serializer should emit the max-node budget marker: ${JSON.stringify(result)}`);
   assertCondition(result.broadLength < 250_000, `JS serializer should keep broad graphs bounded: ${JSON.stringify(result)}`);
+  assertCondition(
+    source.includes('const stableNodeRefState = { ids: new WeakMap(), nextId: 1 };'),
+    'JS trace recorder should not retain traced node objects with a strong Map'
+  );
 }
 
 async function testJavaScriptInputMaterializerAvoidsTypeNameEval(): Promise<void> {
@@ -1981,6 +2011,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamespace();
   await testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics();
   await testBrowserJavaScriptCpRejectsFileToRootDirectory();
+  await testBrowserJavaScriptSyntaxErrorsHideRunnerInternals();
   await testJavaScriptTraceSerializationIsBounded();
   await testJavaScriptInputMaterializerAvoidsTypeNameEval();
   await testJavaScriptDestructuredIterableTracingDoesNotExhaustValues();

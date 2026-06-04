@@ -472,7 +472,7 @@ function serializeValue(
   value,
   depth = 0,
   seen = new WeakSet(),
-  nodeRefState = { ids: new Map(), nextId: 1 },
+  nodeRefState = { ids: new WeakMap(), nextId: 1 },
   forcedNodeType = null,
   materializeExistingNode = false
 ) {
@@ -1609,7 +1609,7 @@ function createTraceRecorder(options = {}) {
   const deferredAccessesByFrame = new Map();
   const runtimeTraceAccessStatsByVariable = new Map();
   const lineHitCount = new Map();
-  const stableNodeRefState = { ids: new Map(), nextId: 1 };
+  const stableNodeRefState = { ids: new WeakMap(), nextId: 1 };
   const maxTraceSteps = getNumericOption(options.maxTraceSteps, 4000);
   const maxStoredEvents = getNumericOption(options.maxStoredEvents, maxTraceSteps);
   const effectiveMaxTraceSteps = Math.min(maxTraceSteps, maxStoredEvents);
@@ -2602,7 +2602,7 @@ function createSyntheticTrace(payload, codeResult) {
     typeof functionName === 'string' && functionName.length > 0 ? functionName : '<module>';
 
   const normalizedInputs = normalizeInputs(inputs);
-  const traceNodeRefState = { ids: new Map(), nextId: 1 };
+  const traceNodeRefState = { ids: new WeakMap(), nextId: 1 };
   const inputSnapshot = {};
   for (const [key, value] of Object.entries(normalizedInputs)) {
     inputSnapshot[key] = serializeTopLevelValue(value, traceNodeRefState);
@@ -6630,7 +6630,7 @@ async function executeWithTracing(payload) {
 
     const serializedInputs = {};
     for (const [key, value] of Object.entries(materializedInputs)) {
-      serializedInputs[key] = serializeTopLevelValue(value, { ids: new Map(), nextId: 1 });
+      serializedInputs[key] = serializeTopLevelValue(value, { ids: new WeakMap(), nextId: 1 });
     }
 
     let output;
@@ -6673,7 +6673,7 @@ async function executeWithTracing(payload) {
       }
     }
 
-    const serializedTraceOutput = serializeTopLevelValue(output, { ids: new Map(), nextId: 1 });
+    const serializedTraceOutput = serializeTopLevelValue(output, { ids: new WeakMap(), nextId: 1 });
     const serializedOutput = serializeOutputValue(output);
     if (!hasNamedFunction) {
       traceRecorder.popToFunction(traceFunctionName);

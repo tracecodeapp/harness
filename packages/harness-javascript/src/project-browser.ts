@@ -6597,30 +6597,30 @@ export async function runBrowserJavaScriptProjectRequest(
       const executableCode = isEsmModule(modules, normalizedPath)
         ? transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot))
         : code;
-      const fn = new Function(
-        'require',
-        '__import',
-        'module',
-        'exports',
-        'console',
-        'process',
-        'Buffer',
-        '__filename',
-        '__dirname',
-        'setTimeout',
-        'clearTimeout',
-        'setInterval',
-        'clearInterval',
-        'setImmediate',
-        'clearImmediate',
-        'queueMicrotask',
-        'fetch',
-        'Headers',
-        'Request',
-        'Response',
-        executableCode
-      );
       try {
+        const fn = new Function(
+          'require',
+          '__import',
+          'module',
+          'exports',
+          'console',
+          'process',
+          'Buffer',
+          '__filename',
+          '__dirname',
+          'setTimeout',
+          'clearTimeout',
+          'setInterval',
+          'clearInterval',
+          'setImmediate',
+          'clearImmediate',
+          'queueMicrotask',
+          'fetch',
+          'Headers',
+          'Request',
+          'Response',
+          executableCode
+        );
         fn.call(
           isEsmModule(modules, normalizedPath) ? undefined : module.exports,
           localRequire,
@@ -6680,30 +6680,30 @@ export async function runBrowserJavaScriptProjectRequest(
       module.require = localRequire;
       const localImport = (specifier: string) => importModule(specifier, normalizedPath);
       const executableCode = transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot));
-      const fn = new AsyncFunction(
-        'require',
-        '__import',
-        'module',
-        'exports',
-        'console',
-        'process',
-        'Buffer',
-        '__filename',
-        '__dirname',
-        'setTimeout',
-        'clearTimeout',
-        'setInterval',
-        'clearInterval',
-        'setImmediate',
-        'clearImmediate',
-        'queueMicrotask',
-        'fetch',
-        'Headers',
-        'Request',
-        'Response',
-        executableCode
-      );
       try {
+        const fn = new AsyncFunction(
+          'require',
+          '__import',
+          'module',
+          'exports',
+          'console',
+          'process',
+          'Buffer',
+          '__filename',
+          '__dirname',
+          'setTimeout',
+          'clearTimeout',
+          'setInterval',
+          'clearInterval',
+          'setImmediate',
+          'clearImmediate',
+          'queueMicrotask',
+          'fetch',
+          'Headers',
+          'Request',
+          'Response',
+          executableCode
+        );
         await fn.call(
           undefined,
           localRequire,
@@ -6758,30 +6758,30 @@ export async function runBrowserJavaScriptProjectRequest(
         const evalCode = request.options?.inputType === 'module'
           ? transformStaticEsmToCommonJs(request.code, workspaceFileUrl('[eval]', workspaceRoot))
           : request.code;
-        const fn = new AsyncFunction(
-          'require',
-          '__import',
-          'module',
-          'exports',
-          'console',
-          'process',
-          'Buffer',
-          '__filename',
-          '__dirname',
-          'setTimeout',
-          'clearTimeout',
-          'setInterval',
-          'clearInterval',
-          'setImmediate',
-          'clearImmediate',
-          'queueMicrotask',
-          'fetch',
-          'Headers',
-          'Request',
-          'Response',
-          transformDynamicImports(evalCode)
-        );
         try {
+          const fn = new AsyncFunction(
+            'require',
+            '__import',
+            'module',
+            'exports',
+            'console',
+            'process',
+            'Buffer',
+            '__filename',
+            '__dirname',
+            'setTimeout',
+            'clearTimeout',
+            'setInterval',
+            'clearInterval',
+            'setImmediate',
+            'clearImmediate',
+            'queueMicrotask',
+            'fetch',
+            'Headers',
+            'Request',
+            'Response',
+            transformDynamicImports(evalCode)
+          );
           await fn.call(
             module.exports,
             requireFromRoot,
