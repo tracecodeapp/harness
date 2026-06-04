@@ -3316,8 +3316,13 @@ export async function runBrowserJavaScriptProjectRequest(
         .map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), file.contents])
     );
     const virtualTextFiles = new Map<string, string>();
+    const virtualTypeScriptPackagePaths = [
+      'node_modules/typescript/package.json',
+      'node_modules/typescript/index.js',
+    ];
     const hasTypeScriptPackage = Array.from(modules.keys()).some((path) => path.startsWith('node_modules/typescript/'));
-    if (!hasTypeScriptPackage && projectDeclaresDependency(modules, 'typescript')) {
+    const canExposeVirtualTypeScriptPackage = virtualTypeScriptPackagePaths.every((path) => !isHiddenProjectPath(path));
+    if (!hasTypeScriptPackage && canExposeVirtualTypeScriptPackage && projectDeclaresDependency(modules, 'typescript')) {
       const version = getLanguageRuntimeInfo('typescript').compiler?.version ?? '5.9.3';
       virtualTextFiles.set('node_modules/typescript/package.json', JSON.stringify({
         name: 'typescript',
@@ -4232,14 +4237,7 @@ export async function runBrowserJavaScriptProjectRequest(
         const bytes = bytesFromFsWriteValue(value, writeEncoding ?? encoding);
         if (optionFd !== null) {
           if (hasExplicitWriteStart) {
-            const entry = fileDescriptor(optionFd);
-            const previousAppend = entry.append;
-            entry.append = false;
-            try {
-              writeDescriptorBytes(entry, bytes, writeOffset);
-            } finally {
-              entry.append = previousAppend;
-            }
+            writeDescriptorBytes(fileDescriptor(optionFd), bytes, writeOffset);
             writeOffset += bytes.byteLength;
           } else {
             writeDescriptorFileBytes(optionFd, bytes, flags.includes('a'));
@@ -4664,7 +4662,7 @@ export async function runBrowserJavaScriptProjectRequest(
       next.set(bytes, start);
       entry.bytes = next;
       if (entry.path && fileStore.has(entry.path)) setFileBytes(entry.path, next);
-      if (position === undefined || position === null) entry.offset = start + bytes.byteLength;
+      if (entry.append || position === undefined || position === null) entry.offset = start + bytes.byteLength;
     };
     const writeDescriptorFileBytes = (fd: number, bytes: Uint8Array, append = false): void => {
       const entry = fileDescriptor(fd);
@@ -4745,17 +4743,28 @@ export async function runBrowserJavaScriptProjectRequest(
         });
       }
 
+      const sourceBytes = fileStore.get(normalizedSource);
+      if (sourceBytes) {
+        if (directoryStore.has(normalizedDestination)) {
+          throw Object.assign(new Error(`Cannot overwrite directory ${destination} with non-directory ${source}`), {
+            code: 'ERR_FS_CP_NON_DIR_TO_DIR',
+          });
+        }
+        if (fileStore.has(normalizedDestination) && options.force === false) {
+          if (options.errorOnExist) {
+            throw Object.assign(new Error(`EEXIST: file already exists, cp '${destination}'`), { code: 'EEXIST' });
+          }
+          return;
+        }
+        setFileBytes(normalizedDestination, new Uint8Array(sourceBytes));
+        return;
+      }
+
       const destinationExists = fileStore.has(normalizedDestination) || directoryStore.has(normalizedDestination);
       if (destinationExists && options.force === false) {
         if (options.errorOnExist) {
           throw Object.assign(new Error(`EEXIST: file already exists, cp '${destination}'`), { code: 'EEXIST' });
         }
-        return;
-      }
-
-      const sourceBytes = fileStore.get(normalizedSource);
-      if (sourceBytes) {
-        setFileBytes(normalizedDestination, new Uint8Array(sourceBytes));
         return;
       }
 

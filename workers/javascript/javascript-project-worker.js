@@ -130,6 +130,8 @@ function filterRuntimeCommandResultFiles(result, shouldFilter) {
 var RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
 var RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
 var RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
+var RUNTIME_PROJECT_MAX_FINAL_DIFF_FILE_BYTES = 16 * 1024 * 1024;
+var RUNTIME_PROJECT_MAX_FINAL_DIFF_BYTES = 32 * 1024 * 1024;
 var runtimeProjectTextEncoder = new TextEncoder();
 function runtimeProjectUtf8Bytes(value) {
   return runtimeProjectTextEncoder.encode(value).byteLength;
@@ -4935,6 +4937,7 @@ function createHttpApi(kernelHttp, signal) {
     let destroyed = false;
     let timeoutMs;
     let timeoutCallback;
+    let activeAbortClientRequest;
     let requestOptions;
     try {
       requestOptions = normalizeHttpClientRequest(args);
@@ -5000,6 +5003,7 @@ function createHttpApi(kernelHttp, signal) {
         const finishClientRequest = () => {
           if (!active) return;
           active = false;
+          activeAbortClientRequest = void 0;
           if (timeoutHandle !== void 0) globalThis.clearTimeout(timeoutHandle);
           if (requestAbortListener) requestOptions.signal?.removeEventListener?.("abort", requestAbortListener);
           activeClientAborters.delete(abortClientRequest);
@@ -5019,6 +5023,7 @@ function createHttpApi(kernelHttp, signal) {
           events.emit("close");
           finishClientRequest();
         };
+        activeAbortClientRequest = abortClientRequest;
         activeClientAborters.add(abortClientRequest);
         if (requestOptions.signal) {
           requestAbortListener = () => abortClientRequest(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
@@ -5062,6 +5067,10 @@ function createHttpApi(kernelHttp, signal) {
         events.emit("abort");
       },
       destroy: (error) => {
+        if (activeAbortClientRequest) {
+          activeAbortClientRequest(error);
+          return clientRequest;
+        }
         if (destroyed) return clientRequest;
         destroyed = true;
         clientRequest.destroyed = true;
@@ -5770,8 +5779,13 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     visibleProjectFiles.filter((file) => file.encoding !== "base64").map((file) => [assertSafeWorkspaceFilePath(file.path, "", workspacePathContext), file.contents])
   );
   const virtualTextFiles = /* @__PURE__ */ new Map();
+  const virtualTypeScriptPackagePaths = [
+    "node_modules/typescript/package.json",
+    "node_modules/typescript/index.js"
+  ];
   const hasTypeScriptPackage = Array.from(modules.keys()).some((path) => path.startsWith("node_modules/typescript/"));
-  if (!hasTypeScriptPackage && projectDeclaresDependency(modules, "typescript")) {
+  const canExposeVirtualTypeScriptPackage = virtualTypeScriptPackagePaths.every((path) => !isHiddenProjectPath(path));
+  if (!hasTypeScriptPackage && canExposeVirtualTypeScriptPackage && projectDeclaresDependency(modules, "typescript")) {
     const version = getLanguageRuntimeInfo("typescript").compiler?.version ?? "5.9.3";
     virtualTextFiles.set("node_modules/typescript/package.json", JSON.stringify({
       name: "typescript",
@@ -6563,14 +6577,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       const bytes = bytesFromFsWriteValue(value, writeEncoding ?? encoding);
       if (optionFd !== null) {
         if (hasExplicitWriteStart) {
-          const entry = fileDescriptor(optionFd);
-          const previousAppend = entry.append;
-          entry.append = false;
-          try {
-            writeDescriptorBytes(entry, bytes, writeOffset);
-          } finally {
-            entry.append = previousAppend;
-          }
+          writeDescriptorBytes(fileDescriptor(optionFd), bytes, writeOffset);
           writeOffset += bytes.byteLength;
         } else {
           writeDescriptorFileBytes(optionFd, bytes, flags.includes("a"));
@@ -6967,7 +6974,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     next.set(bytes, start);
     entry.bytes = next;
     if (entry.path && fileStore.has(entry.path)) setFileBytes(entry.path, next);
-    if (position === void 0 || position === null) entry.offset = start + bytes.byteLength;
+    if (entry.append || position === void 0 || position === null) entry.offset = start + bytes.byteLength;
   };
   const writeDescriptorFileBytes = (fd2, bytes, append = false) => {
     const entry = fileDescriptor(fd2);
@@ -7042,16 +7049,27 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         code: "ERR_FS_CP_EINVAL"
       });
     }
+    const sourceBytes = fileStore.get(normalizedSource);
+    if (sourceBytes) {
+      if (directoryStore.has(normalizedDestination)) {
+        throw Object.assign(new Error(`Cannot overwrite directory ${destination} with non-directory ${source}`), {
+          code: "ERR_FS_CP_NON_DIR_TO_DIR"
+        });
+      }
+      if (fileStore.has(normalizedDestination) && options2.force === false) {
+        if (options2.errorOnExist) {
+          throw Object.assign(new Error(`EEXIST: file already exists, cp '${destination}'`), { code: "EEXIST" });
+        }
+        return;
+      }
+      setFileBytes(normalizedDestination, new Uint8Array(sourceBytes));
+      return;
+    }
     const destinationExists = fileStore.has(normalizedDestination) || directoryStore.has(normalizedDestination);
     if (destinationExists && options2.force === false) {
       if (options2.errorOnExist) {
         throw Object.assign(new Error(`EEXIST: file already exists, cp '${destination}'`), { code: "EEXIST" });
       }
-      return;
-    }
-    const sourceBytes = fileStore.get(normalizedSource);
-    if (sourceBytes) {
-      setFileBytes(normalizedDestination, new Uint8Array(sourceBytes));
       return;
     }
     const sourcePrefix = normalizedSource ? `${normalizedSource}/` : "";

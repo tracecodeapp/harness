@@ -361,6 +361,108 @@ async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<voi
   );
 }
 
+async function testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamespace(): Promise<void> {
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const result = await runner({
+    code: [
+      'try { console.log("typescript:" + require("typescript").version); }',
+      'catch (error) { console.log("typescript:missing"); }',
+      '',
+    ].join('\n'),
+    source: 'inline',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+      files: [
+        {
+          path: 'package.json',
+          contents: JSON.stringify({ dependencies: { typescript: '^5.9.0' } }),
+        },
+      ],
+      hiddenFiles: ['node_modules/typescript'],
+    },
+  });
+
+  assertCondition(result.exitCode === 0, `hidden TypeScript package test should complete: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stdout === 'typescript:missing\n',
+    `browser JS should not inject virtual TypeScript under a hidden namespace: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    !result.files?.some((file) => file.path.startsWith('node_modules/typescript')),
+    `hidden virtual TypeScript package should not leak through final diffs: ${JSON.stringify(result.files)}`
+  );
+}
+
+async function testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics(): Promise<void> {
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const result = await runner({
+    code: [
+      'const fs = require("node:fs");',
+      'fs.writeFileSync("append.txt", "abcdef");',
+      'const fd = fs.openSync("append.txt", "a+");',
+      'await new Promise((resolve, reject) => {',
+      '  const stream = fs.createWriteStream(null, { fd, start: 2 });',
+      '  stream.on("error", reject);',
+      '  stream.on("finish", resolve);',
+      '  stream.end("XY");',
+      '});',
+      'console.log(fs.readFileSync("append.txt", "utf8"));',
+      '',
+    ].join('\n'),
+    source: 'inline',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+      files: [],
+    },
+  });
+
+  assertCondition(result.exitCode === 0, `fd append stream test should complete: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stdout === 'abcdefXY\n',
+    `fd-backed createWriteStream should append despite explicit start on append fds: ${JSON.stringify(result)}`
+  );
+}
+
+async function testBrowserJavaScriptCpRejectsFileToRootDirectory(): Promise<void> {
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 });
+  const result = await runner({
+    code: [
+      'const fs = require("node:fs");',
+      'try { fs.cpSync("source.txt", "."); console.log("cp:ok"); }',
+      'catch (error) { console.log("cp:" + error.code); }',
+      'console.log("root=" + fs.readdirSync(".").join(","));',
+      '',
+    ].join('\n'),
+    source: 'inline',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+      files: [{ path: 'source.txt', contents: 'source\n' }],
+    },
+  });
+
+  assertCondition(result.exitCode === 0, `cp root rejection test should complete: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stdout === 'cp:ERR_FS_CP_NON_DIR_TO_DIR\nroot=source.txt\n',
+    `browser JS should reject file copies to the workspace root directory: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    !result.files?.some((file) => file.path === ''),
+    `browser JS should not emit empty-path file changes: ${JSON.stringify(result.files)}`
+  );
+}
+
 async function testJavaScriptTraceSerializationIsBounded(): Promise<void> {
   const source = await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8');
   const postedMessages: unknown[] = [];
@@ -1876,6 +1978,9 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptReadonlyHardlinksAreRejected();
   await testBrowserJavaScriptHiddenFilesAreNotMounted();
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
+  await testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamespace();
+  await testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics();
+  await testBrowserJavaScriptCpRejectsFileToRootDirectory();
   await testJavaScriptTraceSerializationIsBounded();
   await testJavaScriptInputMaterializerAvoidsTypeNameEval();
   await testJavaScriptDestructuredIterableTracingDoesNotExhaustValues();
