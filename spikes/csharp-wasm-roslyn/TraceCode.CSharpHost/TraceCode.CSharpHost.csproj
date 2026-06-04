@@ -23,6 +23,7 @@
     <ItemGroup>
       <TraceCodeCompilerReference Include="$(TargetDir)*.dll" />
       <TraceCodeCompilerReference Remove="$(TargetDir)System.Net*.dll" />
+      <TraceCodeCompilerReference Remove="$(TargetDir)System.Reflection.Emit*.dll" />
       <TraceCodeCompilerReference Remove="$(TargetDir)System.Runtime.InteropServices.JavaScript.dll" />
       <WasmFilesToIncludeInFileSystem
         Include="@(TraceCodeCompilerReference)"

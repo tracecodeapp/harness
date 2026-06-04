@@ -29,6 +29,22 @@ public static partial class CompilerHost
     private const int ProjectMaxOutputStreamBytes = 1024 * 1024;
     private const int ProjectMaxLiveFileChanges = 1024;
     private const long ProjectMaxLiveFileChangeBytes = 4L * 1024 * 1024;
+    private static readonly string[] DeniedUserApiText =
+    {
+        "System.Net",
+        "System.Reflection.Emit",
+        "System.Runtime.InteropServices.JavaScript",
+        "AssemblyLoadContext",
+    };
+    private static readonly string[] DeniedUserReflectionInvocations =
+    {
+        "Assembly.Load",
+        "System.Reflection.Assembly.Load",
+        "Type.GetType",
+        "System.Type.GetType",
+        "AppDomain.CurrentDomain.GetAssemblies",
+        "AssemblyLoadContext",
+    };
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp14);
     private static readonly Lazy<MetadataReference[]> CachedReferences = new(() => ResolveReferences().ToArray());
     private static string currentInputsJson = "{}";
@@ -932,6 +948,7 @@ public static partial class CompilerHost
             ParseOptions,
             path: UserCodePath
         );
+        ValidateUserSourcePolicy(originalUserTree);
         SyntaxTree executableUserTree = IsScriptExecutionRequest(request)
             ? CreateScriptUserTree(originalUserTree)
             : originalUserTree;
@@ -995,6 +1012,7 @@ public static partial class CompilerHost
                 projectParseOptions,
                 path: path
             );
+            ValidateUserSourcePolicy(projectTree);
             syntaxTrees.Add(RewriteProjectSyntaxTree(projectTree));
         }
 
@@ -1016,6 +1034,86 @@ public static partial class CompilerHost
             references: CachedReferences.Value.Concat(ResolveProjectMetadataReferences(request)),
             options: options
         );
+    }
+
+    private static void ValidateUserSourcePolicy(SyntaxTree tree)
+    {
+        SyntaxNode root = tree.GetRoot();
+        foreach (SyntaxNode node in root.DescendantNodesAndSelf())
+        {
+            string? deniedApi = DeniedUserApiForNode(node);
+            if (deniedApi is not null)
+            {
+                throw new InvalidOperationException($"C# user code references denied browser runtime API: {deniedApi}.");
+            }
+        }
+    }
+
+    private static string? DeniedUserApiForNode(SyntaxNode node)
+    {
+        if (node is UsingDirectiveSyntax usingDirective)
+        {
+            return DeniedUserApiSymbol(usingDirective.Name?.ToString());
+        }
+
+        if (node is QualifiedNameSyntax qualifiedName)
+        {
+            return DeniedUserApiSymbol(qualifiedName.ToString());
+        }
+
+        if (node is AliasQualifiedNameSyntax aliasQualifiedName)
+        {
+            return DeniedUserApiSymbol(aliasQualifiedName.ToString());
+        }
+
+        if (node is MemberAccessExpressionSyntax memberAccess)
+        {
+            return DeniedUserApiSymbol(memberAccess.ToString());
+        }
+
+        if (node is ObjectCreationExpressionSyntax objectCreation)
+        {
+            return DeniedUserApiSymbol(objectCreation.Type.ToString());
+        }
+
+        if (node is InvocationExpressionSyntax invocation)
+        {
+            string expression = NormalizeCSharpSymbolText(invocation.Expression.ToString());
+            foreach (string deniedInvocation in DeniedUserReflectionInvocations)
+            {
+                if (string.Equals(expression, deniedInvocation, StringComparison.Ordinal))
+                {
+                    return deniedInvocation;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? DeniedUserApiSymbol(string? symbolText)
+    {
+        string symbol = NormalizeCSharpSymbolText(symbolText ?? string.Empty);
+        if (symbol.StartsWith("global::", StringComparison.Ordinal))
+        {
+            symbol = symbol["global::".Length..];
+        }
+
+        foreach (string deniedApi in DeniedUserApiText)
+        {
+            if (string.Equals(symbol, deniedApi, StringComparison.Ordinal) ||
+                symbol.StartsWith(deniedApi + ".", StringComparison.Ordinal))
+            {
+                return deniedApi;
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeCSharpSymbolText(string value)
+    {
+        return Regex.Replace(value, "\\s+", string.Empty);
     }
 
     private static OutputKind ResolveProjectOutputKind(CSharpProjectCommandRequest request)
@@ -1199,11 +1297,16 @@ public static partial class CompilerHost
     {
         foreach (ProjectHintPathAssembly referenceAssembly in ResolveProjectHintPathAssemblies(request))
         {
+            if (!IsAllowedUserAssemblyName(referenceAssembly.Name) ||
+                !IsAllowedUserMetadataReference(referenceAssembly.FileName))
+            {
+                continue;
+            }
             yield return MetadataReference.CreateFromImage(referenceAssembly.Bytes);
         }
     }
 
-    private sealed record ProjectHintPathAssembly(string Name, byte[] Bytes);
+    private sealed record ProjectHintPathAssembly(string Name, string FileName, byte[] Bytes);
 
     private static IEnumerable<ProjectHintPathAssembly> ResolveProjectHintPathAssemblies(CSharpProjectCommandRequest request)
     {
@@ -1249,6 +1352,11 @@ public static partial class CompilerHost
             if (filesByPath.TryGetValue(referencePath, out CSharpProjectFile? referenceFile))
             {
                 byte[] referenceBytes = DecodeProjectFileBytes(referenceFile);
+                string fileName = Path.GetFileName(referencePath);
+                if (!IsAllowedUserMetadataReference(fileName))
+                {
+                    continue;
+                }
                 string name = Path.GetFileNameWithoutExtension(referencePath);
                 try
                 {
@@ -1257,7 +1365,11 @@ public static partial class CompilerHost
                 catch
                 {
                 }
-                yield return new ProjectHintPathAssembly(name, referenceBytes);
+                if (!IsAllowedUserAssemblyName(name))
+                {
+                    continue;
+                }
+                yield return new ProjectHintPathAssembly(name, fileName, referenceBytes);
             }
         }
     }
@@ -5621,9 +5733,18 @@ public class TreeNode
             return false;
         }
 
-        return !fileName.StartsWith("System.Net.", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(fileName, "System.Net.Http.dll", StringComparison.OrdinalIgnoreCase)
+        string assemblyName = Path.GetFileNameWithoutExtension(fileName);
+        return IsAllowedUserAssemblyName(assemblyName)
             && !string.Equals(fileName, "System.Runtime.InteropServices.JavaScript.dll", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAllowedUserAssemblyName(string assemblyName)
+    {
+        return !string.Equals(assemblyName, "System.Net", StringComparison.OrdinalIgnoreCase)
+            && !assemblyName.StartsWith("System.Net.", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(assemblyName, "System.Reflection.Emit", StringComparison.OrdinalIgnoreCase)
+            && !assemblyName.StartsWith("System.Reflection.Emit.", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(assemblyName, "System.Runtime.InteropServices.JavaScript", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AddVfsReferences(ISet<string> referencePaths)

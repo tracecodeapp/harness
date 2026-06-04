@@ -1,7 +1,7 @@
 export const config = /*json-start*/{
   "mainAssemblyName": "TraceCode.CSharpHost.dll",
   "resources": {
-    "hash": "sha256-9Vy9nj6vs7/zziW0w+t3Z53mvGtQebiFjsDHzmInfxU=",
+    "hash": "sha256-i4qRgHFxXlTNQQlXyA0i+LzJ8Pw40MEundrBN+AyI40=",
     "jsModuleNative": [
       {
         "name": "dotnet.native.js"
@@ -15,31 +15,31 @@ export const config = /*json-start*/{
     "wasmNative": [
       {
         "name": "dotnet.native.wasm",
-        "hash": "sha256-UsrAmGHQSRbaQw90E+dTaGoMiFzKMxf0Sh3rOcCLcog="
+        "hash": "sha256-Yo0aS7GX1dq4ygB6fJryu8liVwN1OArSljuJvcmpuzo="
       }
     ],
     "coreAssembly": [
       {
-        "virtualPath": "System.Runtime.InteropServices.JavaScript.wasm",
-        "name": "System.Runtime.InteropServices.JavaScript.wasm",
-        "hash": "sha256-j+w+UKu0Gc9+OxdEZzcvU5335iO6FGXzOGZ8YBoLLSw="
-      },
-      {
         "virtualPath": "System.Private.CoreLib.wasm",
         "name": "System.Private.CoreLib.wasm",
         "hash": "sha256-NqJOEEPGc1ryQiRONyZ5eX+uGHNRrvYkzRwUU18qe54="
+      },
+      {
+        "virtualPath": "System.Runtime.InteropServices.JavaScript.wasm",
+        "name": "System.Runtime.InteropServices.JavaScript.wasm",
+        "hash": "sha256-j+w+UKu0Gc9+OxdEZzcvU5335iO6FGXzOGZ8YBoLLSw="
       }
     ],
     "assembly": [
       {
-        "virtualPath": "Microsoft.CodeAnalysis.wasm",
-        "name": "Microsoft.CodeAnalysis.wasm",
-        "hash": "sha256-uV2wwX+2lH4AkcFaRVanAi+Zy21KnZnA2liYPLLJ8dA="
-      },
-      {
         "virtualPath": "Microsoft.CodeAnalysis.CSharp.wasm",
         "name": "Microsoft.CodeAnalysis.CSharp.wasm",
         "hash": "sha256-46hP9SEAmaXLp7Ar/9vf0x9LEH63B6hGIgBhKLJOGb0="
+      },
+      {
+        "virtualPath": "Microsoft.CodeAnalysis.wasm",
+        "name": "Microsoft.CodeAnalysis.wasm",
+        "hash": "sha256-uV2wwX+2lH4AkcFaRVanAi+Zy21KnZnA2liYPLLJ8dA="
       },
       {
         "virtualPath": "Microsoft.CSharp.wasm",
@@ -67,6 +67,16 @@ export const config = /*json-start*/{
         "hash": "sha256-in9vy9BpwMVcZOY+GAqjnIghXNrMqqToeJX82sIDNX8="
       },
       {
+        "virtualPath": "mscorlib.wasm",
+        "name": "mscorlib.wasm",
+        "hash": "sha256-QZ5/Y+ezLvH8iwfmMJj2N3vLM7s/xDh5yEqepvTPRPE="
+      },
+      {
+        "virtualPath": "netstandard.wasm",
+        "name": "netstandard.wasm",
+        "hash": "sha256-SvqyxvD4F1LMOk45HiQ1ZMYR07zYGfKMaw2p6taAiHs="
+      },
+      {
         "virtualPath": "System.AppContext.wasm",
         "name": "System.AppContext.wasm",
         "hash": "sha256-9PLIWHk1UT2n5bCtKqQD2Kr4wi+MMk1IRov7++9W0yY="
@@ -80,6 +90,11 @@ export const config = /*json-start*/{
         "virtualPath": "System.Collections.Concurrent.wasm",
         "name": "System.Collections.Concurrent.wasm",
         "hash": "sha256-2yjk6zyiUDyBeEsYTCzWj+KzCvfjf9nDjLmWzFb2bzE="
+      },
+      {
+        "virtualPath": "System.Collections.wasm",
+        "name": "System.Collections.wasm",
+        "hash": "sha256-cMnpjKzbg15om+Y8X+6Pq6sgiA0pCIBlIybYjjF8Tlc="
       },
       {
         "virtualPath": "System.Collections.Immutable.wasm",
@@ -97,11 +112,6 @@ export const config = /*json-start*/{
         "hash": "sha256-LtBto3yGuqrp+Njt5yMiYoYto+nQtCo2y2YJVHqRzYY="
       },
       {
-        "virtualPath": "System.Collections.wasm",
-        "name": "System.Collections.wasm",
-        "hash": "sha256-cMnpjKzbg15om+Y8X+6Pq6sgiA0pCIBlIybYjjF8Tlc="
-      },
-      {
         "virtualPath": "System.ComponentModel.Annotations.wasm",
         "name": "System.ComponentModel.Annotations.wasm",
         "hash": "sha256-acHAVccifVgjkzz/UXYMgcSSsLkC6rdIK18AboJX5Gk="
@@ -110,6 +120,11 @@ export const config = /*json-start*/{
         "virtualPath": "System.ComponentModel.DataAnnotations.wasm",
         "name": "System.ComponentModel.DataAnnotations.wasm",
         "hash": "sha256-WEPC4lqNOekCmORY7bolwYmMA2nW8F10MOIZPETe3xM="
+      },
+      {
+        "virtualPath": "System.ComponentModel.wasm",
+        "name": "System.ComponentModel.wasm",
+        "hash": "sha256-bukh+rqDxJMLEAsACjqQ3LmQOjvikpU4DstHs9hkbjw="
       },
       {
         "virtualPath": "System.ComponentModel.EventBasedAsync.wasm",
@@ -125,11 +140,6 @@ export const config = /*json-start*/{
         "virtualPath": "System.ComponentModel.TypeConverter.wasm",
         "name": "System.ComponentModel.TypeConverter.wasm",
         "hash": "sha256-20WJOsSAZZ6hm5RQNS2YidWYx8jV8eovZeDFRHUBBlc="
-      },
-      {
-        "virtualPath": "System.ComponentModel.wasm",
-        "name": "System.ComponentModel.wasm",
-        "hash": "sha256-bukh+rqDxJMLEAsACjqQ3LmQOjvikpU4DstHs9hkbjw="
       },
       {
         "virtualPath": "System.Configuration.wasm",
@@ -212,14 +222,19 @@ export const config = /*json-start*/{
         "hash": "sha256-I23cLcuhiEVt3ymNZwhTSPwSv076X22E01DY2qwIyVo="
       },
       {
-        "virtualPath": "System.Drawing.Primitives.wasm",
-        "name": "System.Drawing.Primitives.wasm",
-        "hash": "sha256-K9ffth8eud/WyY0cSq6Em1MUxTU/+pLit+AjrAFP4Ng="
+        "virtualPath": "System.wasm",
+        "name": "System.wasm",
+        "hash": "sha256-DKbQ1XCUoVlDqDBwtLDzebj3HHSaXnZrJeofFxJ/uyE="
       },
       {
         "virtualPath": "System.Drawing.wasm",
         "name": "System.Drawing.wasm",
         "hash": "sha256-CjtQI8/oyRM3JCLfF6JKR6ql2fMR/2SZlIRgxVDeZ+0="
+      },
+      {
+        "virtualPath": "System.Drawing.Primitives.wasm",
+        "name": "System.Drawing.Primitives.wasm",
+        "hash": "sha256-K9ffth8eud/WyY0cSq6Em1MUxTU/+pLit+AjrAFP4Ng="
       },
       {
         "virtualPath": "System.Dynamic.Runtime.wasm",
@@ -242,19 +257,24 @@ export const config = /*json-start*/{
         "hash": "sha256-6Mwurt7Z/qM2RAm1+NkjIUj5mn5BR45i4UJcCya63/Q="
       },
       {
-        "virtualPath": "System.Globalization.Extensions.wasm",
-        "name": "System.Globalization.Extensions.wasm",
-        "hash": "sha256-Elz5NVivQTkKqHIJNreeVbtXs/2KKCUtNFIQuq//uLk="
-      },
-      {
         "virtualPath": "System.Globalization.wasm",
         "name": "System.Globalization.wasm",
         "hash": "sha256-mJEIPBuuXNX7EMVYlNFf/bkgXZ4YyNKcDScsIwY9goU="
       },
       {
+        "virtualPath": "System.Globalization.Extensions.wasm",
+        "name": "System.Globalization.Extensions.wasm",
+        "hash": "sha256-Elz5NVivQTkKqHIJNreeVbtXs/2KKCUtNFIQuq//uLk="
+      },
+      {
         "virtualPath": "System.IO.Compression.Brotli.wasm",
         "name": "System.IO.Compression.Brotli.wasm",
         "hash": "sha256-1YqB96PKOgkYkalUR3wQlu3uogdQeWH5xXEGCQNO4JY="
+      },
+      {
+        "virtualPath": "System.IO.Compression.wasm",
+        "name": "System.IO.Compression.wasm",
+        "hash": "sha256-v7ExXK3+fRhJriLrbgJ2Q/cNQtr/mXv13NM5Kjr6T1k="
       },
       {
         "virtualPath": "System.IO.Compression.FileSystem.wasm",
@@ -267,14 +287,19 @@ export const config = /*json-start*/{
         "hash": "sha256-txldHQvXq5/AojGKBcj/np3Rd4hnjTP76a8Kk+HEdz4="
       },
       {
-        "virtualPath": "System.IO.Compression.wasm",
-        "name": "System.IO.Compression.wasm",
-        "hash": "sha256-v7ExXK3+fRhJriLrbgJ2Q/cNQtr/mXv13NM5Kjr6T1k="
+        "virtualPath": "System.IO.wasm",
+        "name": "System.IO.wasm",
+        "hash": "sha256-2J0+n3XQkmWVcjhUnygaQUkAWGsFrCGc4q8NwvBbqXI="
       },
       {
         "virtualPath": "System.IO.FileSystem.AccessControl.wasm",
         "name": "System.IO.FileSystem.AccessControl.wasm",
         "hash": "sha256-jCSXPSlhZWCMEYHmLF1W7N456nSgDlUnEsT9fE5EE9Q="
+      },
+      {
+        "virtualPath": "System.IO.FileSystem.wasm",
+        "name": "System.IO.FileSystem.wasm",
+        "hash": "sha256-TqQkSx+sVMYnvMmbKq69N1yKO5pwXIIe/bkMhUgtHVk="
       },
       {
         "virtualPath": "System.IO.FileSystem.DriveInfo.wasm",
@@ -290,11 +315,6 @@ export const config = /*json-start*/{
         "virtualPath": "System.IO.FileSystem.Watcher.wasm",
         "name": "System.IO.FileSystem.Watcher.wasm",
         "hash": "sha256-F17LlxWY1e1NnAHYhcVL9f5AE5Yh82YzUW8sYwuFs2w="
-      },
-      {
-        "virtualPath": "System.IO.FileSystem.wasm",
-        "name": "System.IO.FileSystem.wasm",
-        "hash": "sha256-TqQkSx+sVMYnvMmbKq69N1yKO5pwXIIe/bkMhUgtHVk="
       },
       {
         "virtualPath": "System.IO.IsolatedStorage.wasm",
@@ -327,14 +347,14 @@ export const config = /*json-start*/{
         "hash": "sha256-tQYcNV5Kya71rWM2tbP+UCYvmwwbj5J10lSBXMChNmw="
       },
       {
-        "virtualPath": "System.IO.wasm",
-        "name": "System.IO.wasm",
-        "hash": "sha256-2J0+n3XQkmWVcjhUnygaQUkAWGsFrCGc4q8NwvBbqXI="
-      },
-      {
         "virtualPath": "System.Linq.AsyncEnumerable.wasm",
         "name": "System.Linq.AsyncEnumerable.wasm",
         "hash": "sha256-460+wCtndATCs2lJFV80KBzZLZkyZbVPpQUZ8SXTW3U="
+      },
+      {
+        "virtualPath": "System.Linq.wasm",
+        "name": "System.Linq.wasm",
+        "hash": "sha256-IwCw5ws0vXDTYk/VhCGNLytATpyNtOw07Gowc6MWQqs="
       },
       {
         "virtualPath": "System.Linq.Expressions.wasm",
@@ -352,124 +372,19 @@ export const config = /*json-start*/{
         "hash": "sha256-GKuL165Je6MAMPm82Xj2tGnUdoDWeqPpEQllj2IeM04="
       },
       {
-        "virtualPath": "System.Linq.wasm",
-        "name": "System.Linq.wasm",
-        "hash": "sha256-IwCw5ws0vXDTYk/VhCGNLytATpyNtOw07Gowc6MWQqs="
-      },
-      {
         "virtualPath": "System.Memory.wasm",
         "name": "System.Memory.wasm",
         "hash": "sha256-5VnLBsQ2uFhmAyGuKGIltXN/VNAG8iQuzS2hPYpnX2Y="
       },
       {
-        "virtualPath": "System.Net.Http.Json.wasm",
-        "name": "System.Net.Http.Json.wasm",
-        "hash": "sha256-syZ9OpqQElS3kprFS7ez+sweXRTTyMDwMxJR3w1YSFo="
-      },
-      {
-        "virtualPath": "System.Net.Http.wasm",
-        "name": "System.Net.Http.wasm",
-        "hash": "sha256-z01TQ7bJ7v70en+RgIE0OYdjKFomCXQTy9ArvMj2/wo="
-      },
-      {
-        "virtualPath": "System.Net.HttpListener.wasm",
-        "name": "System.Net.HttpListener.wasm",
-        "hash": "sha256-SpEOjh/Ac0APXxcoBHAMA41Iy7J+y9urLlYz34kRLpk="
-      },
-      {
-        "virtualPath": "System.Net.Mail.wasm",
-        "name": "System.Net.Mail.wasm",
-        "hash": "sha256-hGu5RH44Zx+KTFb2P7BhnD+korzXXOEa2xAYn1ruqR8="
-      },
-      {
-        "virtualPath": "System.Net.NameResolution.wasm",
-        "name": "System.Net.NameResolution.wasm",
-        "hash": "sha256-vnV7ogVECYzqn6DNevp7umiR3GGpqtTuhCfozuSFn0I="
-      },
-      {
-        "virtualPath": "System.Net.NetworkInformation.wasm",
-        "name": "System.Net.NetworkInformation.wasm",
-        "hash": "sha256-FR4qRWgc9Pne0NZW+GI+IIQKRQkiJOkShLqu/KvOnf0="
-      },
-      {
-        "virtualPath": "System.Net.Ping.wasm",
-        "name": "System.Net.Ping.wasm",
-        "hash": "sha256-UW2rIqrtKRzousZW2F5nBCaBBwvDX3PW6QyR+ovnBGg="
-      },
-      {
-        "virtualPath": "System.Net.Primitives.wasm",
-        "name": "System.Net.Primitives.wasm",
-        "hash": "sha256-T6A4jMSZ9r3DZ6mSyYFovM2dSQMkCeHXZK/M20FYf1o="
-      },
-      {
-        "virtualPath": "System.Net.Quic.wasm",
-        "name": "System.Net.Quic.wasm",
-        "hash": "sha256-gyc07ScBj9jCRpw2XXk6F0hxZ/9i5Ey1ZdiuWV1Gaw0="
-      },
-      {
-        "virtualPath": "System.Net.Requests.wasm",
-        "name": "System.Net.Requests.wasm",
-        "hash": "sha256-cgiRx3WwyCsvJcTLyXUVhxpSRtBUaghD2v7UqCZzB1A="
-      },
-      {
-        "virtualPath": "System.Net.Security.wasm",
-        "name": "System.Net.Security.wasm",
-        "hash": "sha256-BgjBIUJ6DDb/99Dx9CXebxnh9n+7qI3FpBXyqssGZgE="
-      },
-      {
-        "virtualPath": "System.Net.ServerSentEvents.wasm",
-        "name": "System.Net.ServerSentEvents.wasm",
-        "hash": "sha256-jUUcOnECTcVnuN1q8RlBgsk74CATFIjYm9/jVb5Pmes="
-      },
-      {
-        "virtualPath": "System.Net.ServicePoint.wasm",
-        "name": "System.Net.ServicePoint.wasm",
-        "hash": "sha256-vOFqT0Wd42jdsUKqT50aGm6vf1Bb+MOkmMRRXXWSb3o="
-      },
-      {
-        "virtualPath": "System.Net.Sockets.wasm",
-        "name": "System.Net.Sockets.wasm",
-        "hash": "sha256-wOAhxrXlPK+18C4vWHxJD16y6Wm/XE8wK/fEv85Tz3o="
-      },
-      {
-        "virtualPath": "System.Net.WebClient.wasm",
-        "name": "System.Net.WebClient.wasm",
-        "hash": "sha256-Hs5shsIqWQgN888mvNfOAVSeEwXFmcS2MidGSfnIKYU="
-      },
-      {
-        "virtualPath": "System.Net.WebHeaderCollection.wasm",
-        "name": "System.Net.WebHeaderCollection.wasm",
-        "hash": "sha256-GnbZuP+fILW8x81c+z5BuPA7vXj+sZ2K6N/OHyriWd8="
-      },
-      {
-        "virtualPath": "System.Net.WebProxy.wasm",
-        "name": "System.Net.WebProxy.wasm",
-        "hash": "sha256-pr48EhQZyKsR4Yww7EyLAux5YatHR3TOaZqcjo4bRvE="
-      },
-      {
-        "virtualPath": "System.Net.WebSockets.Client.wasm",
-        "name": "System.Net.WebSockets.Client.wasm",
-        "hash": "sha256-ZTVAReHozcyokPiMDZm3JTcLet4FEjLSFaHXAXlcJxA="
-      },
-      {
-        "virtualPath": "System.Net.WebSockets.wasm",
-        "name": "System.Net.WebSockets.wasm",
-        "hash": "sha256-EatXDAg7M1/oNrXVRxADRX1umYaD0Ihv2d9oOfR1jHs="
-      },
-      {
-        "virtualPath": "System.Net.wasm",
-        "name": "System.Net.wasm",
-        "hash": "sha256-7wxmC7eXxO4EieYuLrSQYZziHcxo/xKIJQOmiceIxfs="
+        "virtualPath": "System.Numerics.wasm",
+        "name": "System.Numerics.wasm",
+        "hash": "sha256-NFt8YebdKg/ke5VXqbgfQIdJh1zLaPQUbVowAI623Xs="
       },
       {
         "virtualPath": "System.Numerics.Vectors.wasm",
         "name": "System.Numerics.Vectors.wasm",
         "hash": "sha256-tpcjjFLFgRY7xo1kiy8ejkhw0qxi77w3APs6mlWtLqk="
-      },
-      {
-        "virtualPath": "System.Numerics.wasm",
-        "name": "System.Numerics.wasm",
-        "hash": "sha256-NFt8YebdKg/ke5VXqbgfQIdJh1zLaPQUbVowAI623Xs="
       },
       {
         "virtualPath": "System.ObjectModel.wasm",
@@ -487,19 +402,29 @@ export const config = /*json-start*/{
         "hash": "sha256-2YW3+Ct/XDlJA/KLt1IfaSX2UekWGcLeUi4JyL/gYGA="
       },
       {
-        "virtualPath": "System.Private.Xml.Linq.wasm",
-        "name": "System.Private.Xml.Linq.wasm",
-        "hash": "sha256-PaoT/f5PzENctAnsr8UG1Y0rDc0kAtp4n+xu4DuZwEI="
-      },
-      {
         "virtualPath": "System.Private.Xml.wasm",
         "name": "System.Private.Xml.wasm",
         "hash": "sha256-freYMpeef6fU1YwB5Jglh1z2VW39fnR4ASw0GGeZN6M="
       },
       {
+        "virtualPath": "System.Private.Xml.Linq.wasm",
+        "name": "System.Private.Xml.Linq.wasm",
+        "hash": "sha256-PaoT/f5PzENctAnsr8UG1Y0rDc0kAtp4n+xu4DuZwEI="
+      },
+      {
         "virtualPath": "System.Reflection.DispatchProxy.wasm",
         "name": "System.Reflection.DispatchProxy.wasm",
         "hash": "sha256-fAE93ivkuWSanEyhGTCzaRKbRHjJDHJAn/b9febuou4="
+      },
+      {
+        "virtualPath": "System.Reflection.wasm",
+        "name": "System.Reflection.wasm",
+        "hash": "sha256-GFbjPmfUkKwpDwoSo9ocRkSh+/Lze35e0T+yPmWEyx8="
+      },
+      {
+        "virtualPath": "System.Reflection.Emit.wasm",
+        "name": "System.Reflection.Emit.wasm",
+        "hash": "sha256-hkAJZB6/FqE4iC1hL8PsW29/Z7wM+UdzCzXwAIoITKU="
       },
       {
         "virtualPath": "System.Reflection.Emit.ILGeneration.wasm",
@@ -510,11 +435,6 @@ export const config = /*json-start*/{
         "virtualPath": "System.Reflection.Emit.Lightweight.wasm",
         "name": "System.Reflection.Emit.Lightweight.wasm",
         "hash": "sha256-sV6u/TxyELC+pefCtqUuOiMjWavK9Wv7zFj7SvXFtMc="
-      },
-      {
-        "virtualPath": "System.Reflection.Emit.wasm",
-        "name": "System.Reflection.Emit.wasm",
-        "hash": "sha256-hkAJZB6/FqE4iC1hL8PsW29/Z7wM+UdzCzXwAIoITKU="
       },
       {
         "virtualPath": "System.Reflection.Extensions.wasm",
@@ -535,11 +455,6 @@ export const config = /*json-start*/{
         "virtualPath": "System.Reflection.TypeExtensions.wasm",
         "name": "System.Reflection.TypeExtensions.wasm",
         "hash": "sha256-/ct9T1oknQ3TDYfyiiDL+9M6nTOyN8KPXJ8VpjFi7Hs="
-      },
-      {
-        "virtualPath": "System.Reflection.wasm",
-        "name": "System.Reflection.wasm",
-        "hash": "sha256-GFbjPmfUkKwpDwoSo9ocRkSh+/Lze35e0T+yPmWEyx8="
       },
       {
         "virtualPath": "System.Resources.Reader.wasm",
@@ -567,6 +482,11 @@ export const config = /*json-start*/{
         "hash": "sha256-ffeGQ9X3EiKFBY9545TUOrXv2lRNMavkaV6tjRibnWk="
       },
       {
+        "virtualPath": "System.Runtime.wasm",
+        "name": "System.Runtime.wasm",
+        "hash": "sha256-601Jnf7DZ40RKeHmKkvIGdzLOUsFL4Sq8e+gfq7EJNA="
+      },
+      {
         "virtualPath": "System.Runtime.Extensions.wasm",
         "name": "System.Runtime.Extensions.wasm",
         "hash": "sha256-nEqy3SDjwxJIx1/rXq9mergvJSepcbYmzebg0MkQ8tI="
@@ -577,14 +497,14 @@ export const config = /*json-start*/{
         "hash": "sha256-WhhJZvBneqWPPYoKMR8ha72pZoAcs5+yOtQIuGSiID8="
       },
       {
-        "virtualPath": "System.Runtime.InteropServices.RuntimeInformation.wasm",
-        "name": "System.Runtime.InteropServices.RuntimeInformation.wasm",
-        "hash": "sha256-+tM4fUk6FgdYImRDUDvdxjS/CUY/KCGp3XDgydp7Jrg="
-      },
-      {
         "virtualPath": "System.Runtime.InteropServices.wasm",
         "name": "System.Runtime.InteropServices.wasm",
         "hash": "sha256-E7bKIok3I980HYP5oLgMfjp0yBUe1L0TZoijyIyU7sU="
+      },
+      {
+        "virtualPath": "System.Runtime.InteropServices.RuntimeInformation.wasm",
+        "name": "System.Runtime.InteropServices.RuntimeInformation.wasm",
+        "hash": "sha256-+tM4fUk6FgdYImRDUDvdxjS/CUY/KCGp3XDgydp7Jrg="
       },
       {
         "virtualPath": "System.Runtime.Intrinsics.wasm",
@@ -600,6 +520,11 @@ export const config = /*json-start*/{
         "virtualPath": "System.Runtime.Numerics.wasm",
         "name": "System.Runtime.Numerics.wasm",
         "hash": "sha256-A9B/M7AgOfeb0ct087rT54CcYNmsbVX1ovJAndAUFeQ="
+      },
+      {
+        "virtualPath": "System.Runtime.Serialization.wasm",
+        "name": "System.Runtime.Serialization.wasm",
+        "hash": "sha256-FTH8XiASRvFRvRKOFcoGFbrQ42aHN4k1zaiHsukWCeg="
       },
       {
         "virtualPath": "System.Runtime.Serialization.Formatters.wasm",
@@ -620,16 +545,6 @@ export const config = /*json-start*/{
         "virtualPath": "System.Runtime.Serialization.Xml.wasm",
         "name": "System.Runtime.Serialization.Xml.wasm",
         "hash": "sha256-KikViZm9CG9Vk2kIgv7TCzq0GXJZqJTDktf2vzS6NpY="
-      },
-      {
-        "virtualPath": "System.Runtime.Serialization.wasm",
-        "name": "System.Runtime.Serialization.wasm",
-        "hash": "sha256-FTH8XiASRvFRvRKOFcoGFbrQ42aHN4k1zaiHsukWCeg="
-      },
-      {
-        "virtualPath": "System.Runtime.wasm",
-        "name": "System.Runtime.wasm",
-        "hash": "sha256-601Jnf7DZ40RKeHmKkvIGdzLOUsFL4Sq8e+gfq7EJNA="
       },
       {
         "virtualPath": "System.Security.AccessControl.wasm",
@@ -657,6 +572,11 @@ export const config = /*json-start*/{
         "hash": "sha256-TkPFLo0OiEDjC7H9E2H8wlPHxZnEKSIl8XGCvovrp+w="
       },
       {
+        "virtualPath": "System.Security.Cryptography.wasm",
+        "name": "System.Security.Cryptography.wasm",
+        "hash": "sha256-2na9RztTgjHAh6E1RpP7PHlgqyH5qhQjdYSlDHe0/v8="
+      },
+      {
         "virtualPath": "System.Security.Cryptography.Encoding.wasm",
         "name": "System.Security.Cryptography.Encoding.wasm",
         "hash": "sha256-JKweSKt1M01rh4E2jHLBWuBm2p+iFp8sGFDiarq13OE="
@@ -677,14 +597,9 @@ export const config = /*json-start*/{
         "hash": "sha256-uDO0TrlPdRJH1Rige/hapBrPyjPP3VJAfEGkKM83c4c="
       },
       {
-        "virtualPath": "System.Security.Cryptography.wasm",
-        "name": "System.Security.Cryptography.wasm",
-        "hash": "sha256-2na9RztTgjHAh6E1RpP7PHlgqyH5qhQjdYSlDHe0/v8="
-      },
-      {
-        "virtualPath": "System.Security.Principal.Windows.wasm",
-        "name": "System.Security.Principal.Windows.wasm",
-        "hash": "sha256-ZON5ZhKMPOqX9XA5c9enHhkH5wns3NBrp31X2GOiB8g="
+        "virtualPath": "System.Security.wasm",
+        "name": "System.Security.wasm",
+        "hash": "sha256-DLmaXOUnj8gmVPzOl8yHlQVaBrlrDkb5L+rqN/e9GFs="
       },
       {
         "virtualPath": "System.Security.Principal.wasm",
@@ -692,14 +607,14 @@ export const config = /*json-start*/{
         "hash": "sha256-k/Bopmf7AxV/rJPB6zJ1U2bq4p4QbX2v1TYZ7ebbPYQ="
       },
       {
+        "virtualPath": "System.Security.Principal.Windows.wasm",
+        "name": "System.Security.Principal.Windows.wasm",
+        "hash": "sha256-ZON5ZhKMPOqX9XA5c9enHhkH5wns3NBrp31X2GOiB8g="
+      },
+      {
         "virtualPath": "System.Security.SecureString.wasm",
         "name": "System.Security.SecureString.wasm",
         "hash": "sha256-QEqW6+0GDJAeAm1J/tL8f+jhjQDA0Go01q7DaBxeuxU="
-      },
-      {
-        "virtualPath": "System.Security.wasm",
-        "name": "System.Security.wasm",
-        "hash": "sha256-DLmaXOUnj8gmVPzOl8yHlQVaBrlrDkb5L+rqN/e9GFs="
       },
       {
         "virtualPath": "System.ServiceModel.Web.wasm",
@@ -717,14 +632,14 @@ export const config = /*json-start*/{
         "hash": "sha256-bKfFdtAfGy6c3aMrNCbobEz7dEuFMoLkf6k0QM4Bf1o="
       },
       {
-        "virtualPath": "System.Text.Encoding.Extensions.wasm",
-        "name": "System.Text.Encoding.Extensions.wasm",
-        "hash": "sha256-9rMn6NPjMiBzmGh8/h/Bz45K4koS97O1vZ7Z0QUtZZE="
-      },
-      {
         "virtualPath": "System.Text.Encoding.wasm",
         "name": "System.Text.Encoding.wasm",
         "hash": "sha256-MfOpQrXkc2OrR+whoH8eAuDmtGoB69B0llh5AOlh2Pg="
+      },
+      {
+        "virtualPath": "System.Text.Encoding.Extensions.wasm",
+        "name": "System.Text.Encoding.Extensions.wasm",
+        "hash": "sha256-9rMn6NPjMiBzmGh8/h/Bz45K4koS97O1vZ7Z0QUtZZE="
       },
       {
         "virtualPath": "System.Text.Encodings.Web.wasm",
@@ -752,6 +667,11 @@ export const config = /*json-start*/{
         "hash": "sha256-VWvw17EgRCgCqxr/5GP/7gMaGz6BiD7plcJzEhRi9HM="
       },
       {
+        "virtualPath": "System.Threading.wasm",
+        "name": "System.Threading.wasm",
+        "hash": "sha256-z/omVAVC0GL2bp0b01MADAClMOFzwJJ5H3eiRi8d1nM="
+      },
+      {
         "virtualPath": "System.Threading.Overlapped.wasm",
         "name": "System.Threading.Overlapped.wasm",
         "hash": "sha256-K4mb+zcfBo1RdZw9hVnMlmn+V25Z9wCRuZ9t0E6gzPI="
@@ -762,6 +682,11 @@ export const config = /*json-start*/{
         "hash": "sha256-WUpWT0kUUaiAtahsdlMpiv3C3tFVncRE+KdEfHWl5Xk="
       },
       {
+        "virtualPath": "System.Threading.Tasks.wasm",
+        "name": "System.Threading.Tasks.wasm",
+        "hash": "sha256-/+bVv9uy1YnJqmEs7/k/MHW+MdvugaOvuSZiXrZcLFU="
+      },
+      {
         "virtualPath": "System.Threading.Tasks.Extensions.wasm",
         "name": "System.Threading.Tasks.Extensions.wasm",
         "hash": "sha256-aXIoETHOA/noVMD/XhGHAl3JDeyWBL9HBeC1P6Oie3I="
@@ -770,11 +695,6 @@ export const config = /*json-start*/{
         "virtualPath": "System.Threading.Tasks.Parallel.wasm",
         "name": "System.Threading.Tasks.Parallel.wasm",
         "hash": "sha256-grDZAlJNpdditU+aDQzAtjYyHtNj2BId+pSAzESSEl4="
-      },
-      {
-        "virtualPath": "System.Threading.Tasks.wasm",
-        "name": "System.Threading.Tasks.wasm",
-        "hash": "sha256-/+bVv9uy1YnJqmEs7/k/MHW+MdvugaOvuSZiXrZcLFU="
       },
       {
         "virtualPath": "System.Threading.Thread.wasm",
@@ -792,9 +712,9 @@ export const config = /*json-start*/{
         "hash": "sha256-NOGaCVdktjeU4GNBRctFphvR2eaIvcFOusevjMbEzC4="
       },
       {
-        "virtualPath": "System.Threading.wasm",
-        "name": "System.Threading.wasm",
-        "hash": "sha256-z/omVAVC0GL2bp0b01MADAClMOFzwJJ5H3eiRi8d1nM="
+        "virtualPath": "System.Transactions.wasm",
+        "name": "System.Transactions.wasm",
+        "hash": "sha256-ZVDuJFhcLs2jfcIA/w8nv9EhZkBJit3oVr+BR4BHbNA="
       },
       {
         "virtualPath": "System.Transactions.Local.wasm",
@@ -802,19 +722,9 @@ export const config = /*json-start*/{
         "hash": "sha256-7hMdJQvHwUoKSb/sWRyZXydXUfq88NRbpuiuBT/5K64="
       },
       {
-        "virtualPath": "System.Transactions.wasm",
-        "name": "System.Transactions.wasm",
-        "hash": "sha256-ZVDuJFhcLs2jfcIA/w8nv9EhZkBJit3oVr+BR4BHbNA="
-      },
-      {
         "virtualPath": "System.ValueTuple.wasm",
         "name": "System.ValueTuple.wasm",
         "hash": "sha256-c75CdCuK+BJBsdOPgohc65I6jIm3deFlS43lIotMimk="
-      },
-      {
-        "virtualPath": "System.Web.HttpUtility.wasm",
-        "name": "System.Web.HttpUtility.wasm",
-        "hash": "sha256-jMxEWiikPGKAPdYUrf0Grj+8YCC8xG/WAMtbOP4i7DI="
       },
       {
         "virtualPath": "System.Web.wasm",
@@ -822,9 +732,19 @@ export const config = /*json-start*/{
         "hash": "sha256-5Z30bO02sZNciGoFtCslbZ1Vi96Oe7dlaESKKsqcRVE="
       },
       {
+        "virtualPath": "System.Web.HttpUtility.wasm",
+        "name": "System.Web.HttpUtility.wasm",
+        "hash": "sha256-jMxEWiikPGKAPdYUrf0Grj+8YCC8xG/WAMtbOP4i7DI="
+      },
+      {
         "virtualPath": "System.Windows.wasm",
         "name": "System.Windows.wasm",
         "hash": "sha256-MK4uPQz5EVSwxiUXIdP91BnfN5ojacqiI5GA86yRqdI="
+      },
+      {
+        "virtualPath": "System.Xml.wasm",
+        "name": "System.Xml.wasm",
+        "hash": "sha256-DoroG7ocOSqjp5a0dFSQ2CBexP5UL6dYLbgEblFYMRw="
       },
       {
         "virtualPath": "System.Xml.Linq.wasm",
@@ -847,16 +767,6 @@ export const config = /*json-start*/{
         "hash": "sha256-HcNqaSyulOmhCG7YnOxxRTQuR0fW6uDkhmhEMw2r7o8="
       },
       {
-        "virtualPath": "System.Xml.XPath.XDocument.wasm",
-        "name": "System.Xml.XPath.XDocument.wasm",
-        "hash": "sha256-dVaYRI14iA8Dxkphyl7xskC8c7e37Il91eANt8NE83A="
-      },
-      {
-        "virtualPath": "System.Xml.XPath.wasm",
-        "name": "System.Xml.XPath.wasm",
-        "hash": "sha256-bkIp85FjNUVd7Wb4w8TNkm8vQZoT+dsl4GCwLC6hjVE="
-      },
-      {
         "virtualPath": "System.Xml.XmlDocument.wasm",
         "name": "System.Xml.XmlDocument.wasm",
         "hash": "sha256-jV9J/Iu4smJpxqdL9JO2DeMV89EokbdfhXEBpDikuHE="
@@ -867,191 +777,181 @@ export const config = /*json-start*/{
         "hash": "sha256-SNWvbN9fZZMmIEcPCb0mvPSQdT88ZaeRi9BEDoMQPN4="
       },
       {
-        "virtualPath": "System.Xml.wasm",
-        "name": "System.Xml.wasm",
-        "hash": "sha256-DoroG7ocOSqjp5a0dFSQ2CBexP5UL6dYLbgEblFYMRw="
+        "virtualPath": "System.Xml.XPath.wasm",
+        "name": "System.Xml.XPath.wasm",
+        "hash": "sha256-bkIp85FjNUVd7Wb4w8TNkm8vQZoT+dsl4GCwLC6hjVE="
       },
       {
-        "virtualPath": "System.wasm",
-        "name": "System.wasm",
-        "hash": "sha256-DKbQ1XCUoVlDqDBwtLDzebj3HHSaXnZrJeofFxJ/uyE="
+        "virtualPath": "System.Xml.XPath.XDocument.wasm",
+        "name": "System.Xml.XPath.XDocument.wasm",
+        "hash": "sha256-dVaYRI14iA8Dxkphyl7xskC8c7e37Il91eANt8NE83A="
+      },
+      {
+        "virtualPath": "TraceCode.CSharpHost.wasm",
+        "name": "TraceCode.CSharpHost.wasm",
+        "hash": "sha256-Z0UMMgg54K5Dm7dAjN7YJqbRmCah2IOoMMLvyR1ZeIc="
       },
       {
         "virtualPath": "WindowsBase.wasm",
         "name": "WindowsBase.wasm",
         "hash": "sha256-g4P8jeQxySC/JceIpYQYuU6Hv+Vlw6QG8VspPBa8fU4="
-      },
-      {
-        "virtualPath": "mscorlib.wasm",
-        "name": "mscorlib.wasm",
-        "hash": "sha256-QZ5/Y+ezLvH8iwfmMJj2N3vLM7s/xDh5yEqepvTPRPE="
-      },
-      {
-        "virtualPath": "netstandard.wasm",
-        "name": "netstandard.wasm",
-        "hash": "sha256-SvqyxvD4F1LMOk45HiQ1ZMYR07zYGfKMaw2p6taAiHs="
-      },
-      {
-        "virtualPath": "TraceCode.CSharpHost.wasm",
-        "name": "TraceCode.CSharpHost.wasm",
-        "hash": "sha256-YTKsgouvD11EhQGCmsuvq2QxvM7DDLvYti7sNDZNMgk="
       }
     ],
     "satelliteResources": {
       "cs": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-MJetx8mkLp5GnMRO6UKQWemsfYhf+kFtpW7okeRQDRQ="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-wVFZb5F66mGW8s0kAzaYf2ipUTp10/gnov3lFEc6nWs="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-MJetx8mkLp5GnMRO6UKQWemsfYhf+kFtpW7okeRQDRQ="
         }
       ],
       "de": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-AH6v4mqfZ3t5m6Eiu1sP/W5uyqYZbYE3oS9PciDNviQ="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-Dvd9ZLuH/JZHMk7OjvxukvOLUAUz/zTLYI6k3tkMjd4="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-AH6v4mqfZ3t5m6Eiu1sP/W5uyqYZbYE3oS9PciDNviQ="
         }
       ],
       "es": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-f3m6U69548/Odno7ikZuS8mk94YhwgAUNbIBWErdsS4="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-DN7W0NqXUgnhL+KipbRVLNRt91OiPmLfwXMs9wHO1BA="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-f3m6U69548/Odno7ikZuS8mk94YhwgAUNbIBWErdsS4="
         }
       ],
       "fr": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-JWzb/iB+OUckL2IM2o+1HeCSCE+kSiG8TXUk64QV61c="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-rqWY4OmAzBBBn0bC971hecc5BvI8YbkaG8CTmChAbBc="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-JWzb/iB+OUckL2IM2o+1HeCSCE+kSiG8TXUk64QV61c="
         }
       ],
       "it": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-TTpaZ9dPic3j6iIobZ4XQDA2iy1P3nxysWWyI6v6YFA="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-cn7IW62cH4Z/BpJYSLQSUaqHiu7mBjdiK5zPaXZyZIc="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-TTpaZ9dPic3j6iIobZ4XQDA2iy1P3nxysWWyI6v6YFA="
         }
       ],
       "ja": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-DvarVg3ioz1ZRnZSorLVm5iR5+aXJdDhWEPo9zwfYpU="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-8u8PIEnqWXsmRGAyDyDdtt1xjyPcLR2DhopxAmJHv+Q="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-DvarVg3ioz1ZRnZSorLVm5iR5+aXJdDhWEPo9zwfYpU="
         }
       ],
       "ko": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-51NQ6dgKCgv1tdTP1rnpKNlNfYxTm3VGpGH3d/KL2eQ="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-2g5Osjjknj11C6kgOjNmpnZzuzJH0P1K/rDj7EKPO/w="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-51NQ6dgKCgv1tdTP1rnpKNlNfYxTm3VGpGH3d/KL2eQ="
         }
       ],
       "pl": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-8W+fPvkUYoGfdeVgS10UmU5Uhd/fgoOKZTMzj3Wv/fM="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-jogz17upY8LApZrAVgo40nVzMOt/QzIOMK3ZGDMDPvk="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-8W+fPvkUYoGfdeVgS10UmU5Uhd/fgoOKZTMzj3Wv/fM="
         }
       ],
       "pt-BR": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-fb/aJqQI8NjEurD+h8gGpNnYPRQ0hfEUDNSQQCd/L+8="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-ynOG/4oYq8l+erF+fm0Zp2pSQNObN48s8Fa88sy7p7I="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-fb/aJqQI8NjEurD+h8gGpNnYPRQ0hfEUDNSQQCd/L+8="
         }
       ],
       "ru": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-B/7inj38HVz42r4DOupQhFrTdVdotts+m+N44EEodfg="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-s19+gtgKKS43fSO/pp+bpOQQJofHpQ8dLqdYY63YRew="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-B/7inj38HVz42r4DOupQhFrTdVdotts+m+N44EEodfg="
         }
       ],
       "tr": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-g6fO0gN2HuYsW1VxgT3ayEGKmhnjWb3ZRxNpMvftdEA="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-lF2UXJZnZZNL7pvvyQtyTCpWKPErjS3sAe7y9rxSPY0="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-g6fO0gN2HuYsW1VxgT3ayEGKmhnjWb3ZRxNpMvftdEA="
         }
       ],
       "zh-Hans": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-ETBr46IZRMj+2tNs8gr2E0hLfDpakRTOMJ7/+FLfs+E="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-C6//DFRPKgz2+Nvk9459ExzItMPjU8HD0r0eIbCUmV8="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-ETBr46IZRMj+2tNs8gr2E0hLfDpakRTOMJ7/+FLfs+E="
         }
       ],
       "zh-Hant": [
         {
-          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
-          "name": "Microsoft.CodeAnalysis.resources.wasm",
-          "hash": "sha256-8DEJNRQ/nVyviJOVoJxkG3CNFuqhRity7XNmkTEE/Ag="
-        },
-        {
           "virtualPath": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "name": "Microsoft.CodeAnalysis.CSharp.resources.wasm",
           "hash": "sha256-eL1TwPeiHI2voq2KJ4zJ2FBEPoA6+NpwZ39cdNY7xKA="
+        },
+        {
+          "virtualPath": "Microsoft.CodeAnalysis.resources.wasm",
+          "name": "Microsoft.CodeAnalysis.resources.wasm",
+          "hash": "sha256-8DEJNRQ/nVyviJOVoJxkG3CNFuqhRity7XNmkTEE/Ag="
         }
       ]
     },
@@ -1452,378 +1352,363 @@ export const config = /*json-start*/{
         "hash": "sha256-zJ9qeTK5OsP4hUJFeB7kMBYVOFeumAXOFKcImJGMkmc="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Reflection.Emit.dll",
-        "name": "supportFiles/79_System.Reflection.Emit.dll",
-        "hash": "sha256-xgzv2VtR7Qn4gSgyHrTOR75kOD7P4WpfhALtso9Cxv8="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Reflection.Emit.ILGeneration.dll",
-        "name": "supportFiles/80_System.Reflection.Emit.ILGeneration.dll",
-        "hash": "sha256-i7sJ7rGETJRaA8EmRcOhccA8i3/2EwCX11ufkskuLQM="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Reflection.Emit.Lightweight.dll",
-        "name": "supportFiles/81_System.Reflection.Emit.Lightweight.dll",
-        "hash": "sha256-r1XOwM19T/QzTzZVOLg2IuG8AET4P/AX5pgIBx0OHxY="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Reflection.Extensions.dll",
-        "name": "supportFiles/82_System.Reflection.Extensions.dll",
+        "name": "supportFiles/79_System.Reflection.Extensions.dll",
         "hash": "sha256-Ml88eKkY92R3kfjqvHGcy0wKEJpMjC1eoEoAHSE4hAk="
       },
       {
         "virtualPath": "/tracecode-refs/System.Reflection.Metadata.dll",
-        "name": "supportFiles/83_System.Reflection.Metadata.dll",
+        "name": "supportFiles/80_System.Reflection.Metadata.dll",
         "hash": "sha256-V6yhvaZrwESktCvin94C6ygO2mJ9vGtNuh7eOq9qI3o="
       },
       {
         "virtualPath": "/tracecode-refs/System.Reflection.Primitives.dll",
-        "name": "supportFiles/84_System.Reflection.Primitives.dll",
+        "name": "supportFiles/81_System.Reflection.Primitives.dll",
         "hash": "sha256-G16/3No9Zcq0B7VtbxI3b+vfLtK4zfmOqsIMR0HM8mU="
       },
       {
         "virtualPath": "/tracecode-refs/System.Reflection.TypeExtensions.dll",
-        "name": "supportFiles/85_System.Reflection.TypeExtensions.dll",
+        "name": "supportFiles/82_System.Reflection.TypeExtensions.dll",
         "hash": "sha256-MkMnHj434z4yn4T5Q+R3S97c/MIDNjX0hPKQj0siM38="
       },
       {
         "virtualPath": "/tracecode-refs/System.Resources.Reader.dll",
-        "name": "supportFiles/86_System.Resources.Reader.dll",
+        "name": "supportFiles/83_System.Resources.Reader.dll",
         "hash": "sha256-Pt88goXHe47Zs2uN8En7BGYpONENfISVXml4Ah9vMWg="
       },
       {
         "virtualPath": "/tracecode-refs/System.Resources.ResourceManager.dll",
-        "name": "supportFiles/87_System.Resources.ResourceManager.dll",
+        "name": "supportFiles/84_System.Resources.ResourceManager.dll",
         "hash": "sha256-lB7o6iGPIcm3gL7ScSQer+wlGD8h00CX8FVWJVYmPzQ="
       },
       {
         "virtualPath": "/tracecode-refs/System.Resources.Writer.dll",
-        "name": "supportFiles/88_System.Resources.Writer.dll",
+        "name": "supportFiles/85_System.Resources.Writer.dll",
         "hash": "sha256-BWWfnXpNAdjPeBVVTK4IPqWPa1FmyCrKErPQYa5mdoM="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.CompilerServices.Unsafe.dll",
-        "name": "supportFiles/89_System.Runtime.CompilerServices.Unsafe.dll",
+        "name": "supportFiles/86_System.Runtime.CompilerServices.Unsafe.dll",
         "hash": "sha256-5SkSSEYM6pvIXxhVV2DpmKX43u9WxUlUWOLFpRdTrmA="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.CompilerServices.VisualC.dll",
-        "name": "supportFiles/90_System.Runtime.CompilerServices.VisualC.dll",
+        "name": "supportFiles/87_System.Runtime.CompilerServices.VisualC.dll",
         "hash": "sha256-o/8M+/1rH7q0k4PdxSoBZ9777Rza9pY4xdijZxsFE3k="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.dll",
-        "name": "supportFiles/91_System.Runtime.dll",
+        "name": "supportFiles/88_System.Runtime.dll",
         "hash": "sha256-pKGJ7zKnKWRo45RnW/hqgQy5/yRWTvTACIHLl91TZqg="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Extensions.dll",
-        "name": "supportFiles/92_System.Runtime.Extensions.dll",
+        "name": "supportFiles/89_System.Runtime.Extensions.dll",
         "hash": "sha256-m5su/e9/cA9Vl7VpNI88myZfJNckRdSis6fooD+g6u8="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Handles.dll",
-        "name": "supportFiles/93_System.Runtime.Handles.dll",
+        "name": "supportFiles/90_System.Runtime.Handles.dll",
         "hash": "sha256-yf97y5eGvARdC+yhKc1WHWyVZQ/gVRdowLNC+zyXakg="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.InteropServices.dll",
-        "name": "supportFiles/94_System.Runtime.InteropServices.dll",
+        "name": "supportFiles/91_System.Runtime.InteropServices.dll",
         "hash": "sha256-spX/9APDmJgaXJv0azTwTGjI15oaPh3CeSt1Uu1oUD0="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.InteropServices.RuntimeInformation.dll",
-        "name": "supportFiles/95_System.Runtime.InteropServices.RuntimeInformation.dll",
+        "name": "supportFiles/92_System.Runtime.InteropServices.RuntimeInformation.dll",
         "hash": "sha256-5xB6j95iTii9d31v7l5pNu7iXNj3KKEh9Pr+jRRMDOg="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Intrinsics.dll",
-        "name": "supportFiles/96_System.Runtime.Intrinsics.dll",
+        "name": "supportFiles/93_System.Runtime.Intrinsics.dll",
         "hash": "sha256-4JhjCZWbZRO3yIKyq3kcPUZZd8iZB6gPw26/Ylht0TI="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Loader.dll",
-        "name": "supportFiles/97_System.Runtime.Loader.dll",
+        "name": "supportFiles/94_System.Runtime.Loader.dll",
         "hash": "sha256-3fyy85BenjX1N43hRmly+SpumJYrdsMClFCB29j4JgU="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Numerics.dll",
-        "name": "supportFiles/98_System.Runtime.Numerics.dll",
+        "name": "supportFiles/95_System.Runtime.Numerics.dll",
         "hash": "sha256-Zj5ciOUCt+ChUs+Sqq+hkou4t7L8Pv8BONfsfz4QXr0="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Serialization.dll",
-        "name": "supportFiles/99_System.Runtime.Serialization.dll",
+        "name": "supportFiles/96_System.Runtime.Serialization.dll",
         "hash": "sha256-JKaa1Nl3bhpFHvyW4+qlSBIXG4dmnUBn79WGSpCgeeQ="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Serialization.Formatters.dll",
-        "name": "supportFiles/100_System.Runtime.Serialization.Formatters.dll",
+        "name": "supportFiles/97_System.Runtime.Serialization.Formatters.dll",
         "hash": "sha256-wJtGteWvSQBU9Xo2Aamb8Uyo1di0ui3TuS4n/wT7Vp8="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Serialization.Json.dll",
-        "name": "supportFiles/101_System.Runtime.Serialization.Json.dll",
+        "name": "supportFiles/98_System.Runtime.Serialization.Json.dll",
         "hash": "sha256-0K4esfoR5Pos6lc47rqVag3RNgF8i9608tV+Yv3ng6o="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Serialization.Primitives.dll",
-        "name": "supportFiles/102_System.Runtime.Serialization.Primitives.dll",
+        "name": "supportFiles/99_System.Runtime.Serialization.Primitives.dll",
         "hash": "sha256-nNltr9vNyvtQlUVXeBL4RBoWjiloEnR2icUjRFfk9BI="
       },
       {
         "virtualPath": "/tracecode-refs/System.Runtime.Serialization.Xml.dll",
-        "name": "supportFiles/103_System.Runtime.Serialization.Xml.dll",
+        "name": "supportFiles/100_System.Runtime.Serialization.Xml.dll",
         "hash": "sha256-BPzwVr/oHqBfQwgolfUnwqTFEGE86oEDrpkIytJeJCc="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.AccessControl.dll",
-        "name": "supportFiles/104_System.Security.AccessControl.dll",
+        "name": "supportFiles/101_System.Security.AccessControl.dll",
         "hash": "sha256-/2X8xwvXtGL7bbdr0wHVtGhmVCXbTqJtKD1oOW5Yir8="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Claims.dll",
-        "name": "supportFiles/105_System.Security.Claims.dll",
+        "name": "supportFiles/102_System.Security.Claims.dll",
         "hash": "sha256-NmngBTIQAR8Hfj5emfX2AWeSXeMpK7Sz0VZs7Bu43Nk="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Cryptography.Algorithms.dll",
-        "name": "supportFiles/106_System.Security.Cryptography.Algorithms.dll",
+        "name": "supportFiles/103_System.Security.Cryptography.Algorithms.dll",
         "hash": "sha256-Gw4pjV1mP5KlCj4p8EJSHlWAq6rQ6OiJRzboyXng2lA="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Cryptography.Cng.dll",
-        "name": "supportFiles/107_System.Security.Cryptography.Cng.dll",
+        "name": "supportFiles/104_System.Security.Cryptography.Cng.dll",
         "hash": "sha256-TPDbudMxOOlr/b8dV9tgW4zAL6WObZNosb3aC3p9jTE="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Cryptography.Csp.dll",
-        "name": "supportFiles/108_System.Security.Cryptography.Csp.dll",
+        "name": "supportFiles/105_System.Security.Cryptography.Csp.dll",
         "hash": "sha256-WNKJjKyhHf/DXhwEupuFNZp8DGNeOJFThagqjnn6lCA="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Cryptography.dll",
-        "name": "supportFiles/109_System.Security.Cryptography.dll",
+        "name": "supportFiles/106_System.Security.Cryptography.dll",
         "hash": "sha256-xbumrqyEE1rFXm92M3E71Ki/+0g1heka+lCE5UxpUVU="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Cryptography.Encoding.dll",
-        "name": "supportFiles/110_System.Security.Cryptography.Encoding.dll",
+        "name": "supportFiles/107_System.Security.Cryptography.Encoding.dll",
         "hash": "sha256-EMk4DYkJvhj8uAL/efHLuOePNk4awYJHn9m3/w2lKLc="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Cryptography.OpenSsl.dll",
-        "name": "supportFiles/111_System.Security.Cryptography.OpenSsl.dll",
+        "name": "supportFiles/108_System.Security.Cryptography.OpenSsl.dll",
         "hash": "sha256-bmJnRnHS2+ldp+SSdsGExfA/75aSA/SkIdCNSb4GjSA="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Cryptography.Primitives.dll",
-        "name": "supportFiles/112_System.Security.Cryptography.Primitives.dll",
+        "name": "supportFiles/109_System.Security.Cryptography.Primitives.dll",
         "hash": "sha256-PADS5NbY0hs/OsrzdHYu4wt8zVRe5LUOcQDbVK5bScM="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Cryptography.X509Certificates.dll",
-        "name": "supportFiles/113_System.Security.Cryptography.X509Certificates.dll",
+        "name": "supportFiles/110_System.Security.Cryptography.X509Certificates.dll",
         "hash": "sha256-rS5EfNUaqztj1M5HhTaktiJKogzvuvJbqUAVXBRiANo="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.dll",
-        "name": "supportFiles/114_System.Security.dll",
+        "name": "supportFiles/111_System.Security.dll",
         "hash": "sha256-DQZN+DBVstaLoT5y+FFwM3wwYhh7rZmC39deY+dcSr0="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Principal.dll",
-        "name": "supportFiles/115_System.Security.Principal.dll",
+        "name": "supportFiles/112_System.Security.Principal.dll",
         "hash": "sha256-hregpiKO5qvzxPzQS735Uq2c4iIAOtSDrrqZLPQ5lHQ="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.Principal.Windows.dll",
-        "name": "supportFiles/116_System.Security.Principal.Windows.dll",
+        "name": "supportFiles/113_System.Security.Principal.Windows.dll",
         "hash": "sha256-iLtdJL4kys0OYIG9YyOeHNXEzLnRsAJ+vcLc10zleQQ="
       },
       {
         "virtualPath": "/tracecode-refs/System.Security.SecureString.dll",
-        "name": "supportFiles/117_System.Security.SecureString.dll",
+        "name": "supportFiles/114_System.Security.SecureString.dll",
         "hash": "sha256-lF5I+v6qRD9rBzrYwxsjawaItNim8oMaX2a9G/J3Peo="
       },
       {
         "virtualPath": "/tracecode-refs/System.ServiceModel.Web.dll",
-        "name": "supportFiles/118_System.ServiceModel.Web.dll",
+        "name": "supportFiles/115_System.ServiceModel.Web.dll",
         "hash": "sha256-JbYKP2ECoixnAfT1l+cqudb70NiLr6klkFif988agYQ="
       },
       {
         "virtualPath": "/tracecode-refs/System.ServiceProcess.dll",
-        "name": "supportFiles/119_System.ServiceProcess.dll",
+        "name": "supportFiles/116_System.ServiceProcess.dll",
         "hash": "sha256-i2u43PeIwYo8U/X6dheHSP1Kwh5YaYnzRJxdKU+DpTM="
       },
       {
         "virtualPath": "/tracecode-refs/System.Text.Encoding.CodePages.dll",
-        "name": "supportFiles/120_System.Text.Encoding.CodePages.dll",
+        "name": "supportFiles/117_System.Text.Encoding.CodePages.dll",
         "hash": "sha256-Ff+WP45akeDGxNa0VZ4cexceCbJtr64o+ovhgGC9G3o="
       },
       {
         "virtualPath": "/tracecode-refs/System.Text.Encoding.dll",
-        "name": "supportFiles/121_System.Text.Encoding.dll",
+        "name": "supportFiles/118_System.Text.Encoding.dll",
         "hash": "sha256-z+VOYdh2CMN0gVoha+bN4LCZySIvMypwA2gaNh7o0I4="
       },
       {
         "virtualPath": "/tracecode-refs/System.Text.Encoding.Extensions.dll",
-        "name": "supportFiles/122_System.Text.Encoding.Extensions.dll",
+        "name": "supportFiles/119_System.Text.Encoding.Extensions.dll",
         "hash": "sha256-PIqpcRrEUYIcdR4YcQZlp8K9bc3jwo9xzQnvKnQL93s="
       },
       {
         "virtualPath": "/tracecode-refs/System.Text.Encodings.Web.dll",
-        "name": "supportFiles/123_System.Text.Encodings.Web.dll",
+        "name": "supportFiles/120_System.Text.Encodings.Web.dll",
         "hash": "sha256-ahH1MMSdxG0z1m+wg8rrJ6fwkOP35jPvnNPxyrsFHP0="
       },
       {
         "virtualPath": "/tracecode-refs/System.Text.Json.dll",
-        "name": "supportFiles/124_System.Text.Json.dll",
+        "name": "supportFiles/121_System.Text.Json.dll",
         "hash": "sha256-lz3Y5f5KpGgZlEH761a7uJQRGIKxABaO4RdlgJ2dRew="
       },
       {
         "virtualPath": "/tracecode-refs/System.Text.RegularExpressions.dll",
-        "name": "supportFiles/125_System.Text.RegularExpressions.dll",
+        "name": "supportFiles/122_System.Text.RegularExpressions.dll",
         "hash": "sha256-HTyeD+cxcptypA401ctM2uejl3VivQ3s5M8o8iKljSk="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.AccessControl.dll",
-        "name": "supportFiles/126_System.Threading.AccessControl.dll",
+        "name": "supportFiles/123_System.Threading.AccessControl.dll",
         "hash": "sha256-5+43Bo85aWh6c6yqhMt5Ca6s2QNA6qIuN0ktgq0MPuE="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.Channels.dll",
-        "name": "supportFiles/127_System.Threading.Channels.dll",
+        "name": "supportFiles/124_System.Threading.Channels.dll",
         "hash": "sha256-b4KJyRtBa8z8hAbpYGa8w2ALjQJ2bZYYcoTRrJoO8sY="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.dll",
-        "name": "supportFiles/128_System.Threading.dll",
+        "name": "supportFiles/125_System.Threading.dll",
         "hash": "sha256-pRBa3tGLKGWZBmQO5T7f1uESvXuWKzPSmNvFaszf1SI="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.Overlapped.dll",
-        "name": "supportFiles/129_System.Threading.Overlapped.dll",
+        "name": "supportFiles/126_System.Threading.Overlapped.dll",
         "hash": "sha256-sjK4/AorueEXUBEQ0aDd1FExNW6pzy76lCthLdrSBc8="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.Tasks.Dataflow.dll",
-        "name": "supportFiles/130_System.Threading.Tasks.Dataflow.dll",
+        "name": "supportFiles/127_System.Threading.Tasks.Dataflow.dll",
         "hash": "sha256-EdfvIdN3TfJ3HBAO3dpzvJ+r+ixTCtdf0otliAUcyaM="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.Tasks.dll",
-        "name": "supportFiles/131_System.Threading.Tasks.dll",
+        "name": "supportFiles/128_System.Threading.Tasks.dll",
         "hash": "sha256-yCca4Mr91utP3LYorHsHiy1q1rTjkWZkeswB5H2/I3g="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.Tasks.Extensions.dll",
-        "name": "supportFiles/132_System.Threading.Tasks.Extensions.dll",
+        "name": "supportFiles/129_System.Threading.Tasks.Extensions.dll",
         "hash": "sha256-9qZTZPXXzJO85faRIk/Z5NbrxDsWiJD6zejTTLLAsa4="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.Tasks.Parallel.dll",
-        "name": "supportFiles/133_System.Threading.Tasks.Parallel.dll",
+        "name": "supportFiles/130_System.Threading.Tasks.Parallel.dll",
         "hash": "sha256-HqJ8KuIuolifXZiWzLnjuFVnflNNSt909bo3HLywCSE="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.Thread.dll",
-        "name": "supportFiles/134_System.Threading.Thread.dll",
+        "name": "supportFiles/131_System.Threading.Thread.dll",
         "hash": "sha256-/O5zUHZ1M+GpbOvW2gN4nwP2wd/AqHSnmzV0UZQu01c="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.ThreadPool.dll",
-        "name": "supportFiles/135_System.Threading.ThreadPool.dll",
+        "name": "supportFiles/132_System.Threading.ThreadPool.dll",
         "hash": "sha256-0fZi2i4zGGIofVMEm9lg2r+fmFQEhdsURogdzRmrGEc="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.Timer.dll",
-        "name": "supportFiles/136_System.Threading.Timer.dll",
+        "name": "supportFiles/133_System.Threading.Timer.dll",
         "hash": "sha256-6ob5By5yRbp7yolDt7OS1qigeeSe5UaFuZzd5ZVfs/8="
       },
       {
         "virtualPath": "/tracecode-refs/System.Transactions.dll",
-        "name": "supportFiles/137_System.Transactions.dll",
+        "name": "supportFiles/134_System.Transactions.dll",
         "hash": "sha256-myNOdmEzaE4pVXCVlAg1WUDCA0tVqLPfE7LqZjKDAzM="
       },
       {
         "virtualPath": "/tracecode-refs/System.Transactions.Local.dll",
-        "name": "supportFiles/138_System.Transactions.Local.dll",
+        "name": "supportFiles/135_System.Transactions.Local.dll",
         "hash": "sha256-dBmNgC9XBvkuNaMTos+8Ldq7OmiZKU3a7bvDZPgK2Tw="
       },
       {
         "virtualPath": "/tracecode-refs/System.ValueTuple.dll",
-        "name": "supportFiles/139_System.ValueTuple.dll",
+        "name": "supportFiles/136_System.ValueTuple.dll",
         "hash": "sha256-yv1ZY6kL2f53GXD1E+8H8wZ2LVXrdXcRkeXC6do8eqk="
       },
       {
         "virtualPath": "/tracecode-refs/System.Web.dll",
-        "name": "supportFiles/140_System.Web.dll",
+        "name": "supportFiles/137_System.Web.dll",
         "hash": "sha256-weKwzDqP31g537PLUr8M925hHv1Te6X1mC7GOLeKFmE="
       },
       {
         "virtualPath": "/tracecode-refs/System.Web.HttpUtility.dll",
-        "name": "supportFiles/141_System.Web.HttpUtility.dll",
+        "name": "supportFiles/138_System.Web.HttpUtility.dll",
         "hash": "sha256-IPnIw2QvPwEATzQlhG9p7YpjBVhCfV7DTxbD7RRwutU="
       },
       {
         "virtualPath": "/tracecode-refs/System.Windows.dll",
-        "name": "supportFiles/142_System.Windows.dll",
+        "name": "supportFiles/139_System.Windows.dll",
         "hash": "sha256-Yu1jzbtcG4wABEGzFF/x31m2MqISQpDakonIn6ZKq60="
       },
       {
         "virtualPath": "/tracecode-refs/System.Xml.dll",
-        "name": "supportFiles/143_System.Xml.dll",
+        "name": "supportFiles/140_System.Xml.dll",
         "hash": "sha256-msp6FNAH6vH1QsnftdBk4HqIQ7SIjxMxxHeSck2CRlU="
       },
       {
         "virtualPath": "/tracecode-refs/System.Xml.Linq.dll",
-        "name": "supportFiles/144_System.Xml.Linq.dll",
+        "name": "supportFiles/141_System.Xml.Linq.dll",
         "hash": "sha256-2gTSFCmO6yW0Tobp9KrthAL7HgS6cVe2MUMyhOHC/Fo="
       },
       {
         "virtualPath": "/tracecode-refs/System.Xml.ReaderWriter.dll",
-        "name": "supportFiles/145_System.Xml.ReaderWriter.dll",
+        "name": "supportFiles/142_System.Xml.ReaderWriter.dll",
         "hash": "sha256-8DrXzXUCcOh89UmlKQMSW46kNdXXfi6XK1tt8q2KMMc="
       },
       {
         "virtualPath": "/tracecode-refs/System.Xml.Serialization.dll",
-        "name": "supportFiles/146_System.Xml.Serialization.dll",
+        "name": "supportFiles/143_System.Xml.Serialization.dll",
         "hash": "sha256-bUPi0HKMPUTkScF3nDjX0M7eNHLFDERwJoOHcLzsn28="
       },
       {
         "virtualPath": "/tracecode-refs/System.Xml.XDocument.dll",
-        "name": "supportFiles/147_System.Xml.XDocument.dll",
+        "name": "supportFiles/144_System.Xml.XDocument.dll",
         "hash": "sha256-DUYzGGnl9unuc7jtNWZFNA6Q1aeqM18E+q1YzLECkdI="
       },
       {
         "virtualPath": "/tracecode-refs/System.Xml.XmlDocument.dll",
-        "name": "supportFiles/148_System.Xml.XmlDocument.dll",
+        "name": "supportFiles/145_System.Xml.XmlDocument.dll",
         "hash": "sha256-am28xONXrS0UgRDAzPasNIrY8u7svHYUBQLSVevo1tM="
       },
       {
         "virtualPath": "/tracecode-refs/System.Xml.XmlSerializer.dll",
-        "name": "supportFiles/149_System.Xml.XmlSerializer.dll",
+        "name": "supportFiles/146_System.Xml.XmlSerializer.dll",
         "hash": "sha256-1FPq93aKAvbRaRdfghu65d7pr9oa88zMaQdpfHH0ZJs="
       },
       {
         "virtualPath": "/tracecode-refs/System.Xml.XPath.dll",
-        "name": "supportFiles/150_System.Xml.XPath.dll",
+        "name": "supportFiles/147_System.Xml.XPath.dll",
         "hash": "sha256-13KQMHx0OMH7tPu7uiOlCJPcVlNFgQ7kNrWObhAR4Kw="
       },
       {
         "virtualPath": "/tracecode-refs/System.Xml.XPath.XDocument.dll",
-        "name": "supportFiles/151_System.Xml.XPath.XDocument.dll",
+        "name": "supportFiles/148_System.Xml.XPath.XDocument.dll",
         "hash": "sha256-f1fgSwp2nl6rGUljbUz8FxTDvKgnEWmSl0SMhc1w6LU="
       },
       {
         "virtualPath": "/tracecode-refs/TraceCode.CSharpHost.dll",
-        "name": "supportFiles/152_TraceCode.CSharpHost.dll",
-        "hash": "sha256-Vime5wUT2jX8q/ghoA+rM+6C+stuzXA9HPMe8azwOOc="
+        "name": "supportFiles/149_TraceCode.CSharpHost.dll",
+        "hash": "sha256-jnAaQlMd7K1yoXThReZBhOaj4QVVSmFtiF7tIbKniMc="
       },
       {
         "virtualPath": "/tracecode-refs/WindowsBase.dll",
-        "name": "supportFiles/153_WindowsBase.dll",
+        "name": "supportFiles/150_WindowsBase.dll",
         "hash": "sha256-1VI5RHLbHTqhGO9oxKq6JpzCRk8DN2uQaJMoYitwMn4="
       }
     ]

@@ -103,6 +103,8 @@ if [[ -f "$tmp_vendor/_framework/dotnet.native.js" ]]; then
   perl -pi -e 's/[ \t]+$//' "$tmp_vendor/_framework/dotnet.native.js"
 fi
 
+pnpm exec tsx "$ROOT_DIR/scripts/prune-csharp-wasm-runtime-assets.ts" "$tmp_vendor"
+
 rm -rf "$VENDOR_DIR"
 mv "$tmp_vendor" "$VENDOR_DIR"
 

@@ -2641,6 +2641,42 @@ async function main(): Promise<void> {
       `C# worker output property timeout should propagate timeout exceptions, received ${JSON.stringify(outputPropertyTimeout)}`
     );
 
+    const networkApiDenied = await runWorkerCase(
+      page,
+      [
+        'using System.Net.Http;',
+        'public class Solution {',
+        '  public int UseNetwork() { return typeof(HttpClient).Name.Length; }',
+        '}',
+      ].join('\n'),
+      'UseNetwork',
+      {},
+      assetBaseUrl
+    );
+    assertCondition(!networkApiDenied.success, 'C# worker should reject browser network APIs before user code runs');
+    assertCondition(
+      networkApiDenied.error?.includes('denied browser runtime API: System.Net') === true,
+      `C# worker should identify denied System.Net API use, received ${JSON.stringify(networkApiDenied)}`
+    );
+
+    const reflectionLoadDenied = await runWorkerCase(
+      page,
+      [
+        'using System.Reflection;',
+        'public class Solution {',
+        '  public int LoadNetworkAssembly() { return Assembly.Load("System.Net.Http").GetName().Name!.Length; }',
+        '}',
+      ].join('\n'),
+      'LoadNetworkAssembly',
+      {},
+      assetBaseUrl
+    );
+    assertCondition(!reflectionLoadDenied.success, 'C# worker should reject reflection-based assembly loading before user code runs');
+    assertCondition(
+      reflectionLoadDenied.error?.includes('denied browser runtime API: Assembly.Load') === true,
+      `C# worker should identify denied Assembly.Load API use, received ${JSON.stringify(reflectionLoadDenied)}`
+    );
+
     const runtimeError = await runWorkerCase(
       page,
       [

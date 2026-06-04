@@ -2,7 +2,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { dirname } from 'node:path';
@@ -1341,6 +1341,72 @@ async function testCSharpInputHydrationConstructorsAreBounded(): Promise<void> {
       source.includes('RecordConstructorParameterCount(parameters.Length') &&
       source.includes('IsSafeInputConstructorParameter'),
     'C# input hydration should budget and filter reflected constructor parameters'
+  );
+}
+
+async function listFilesRecursive(root: string): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listFilesRecursive(path));
+    } else {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
+function isDeniedCSharpBrowserRuntimeAsset(path: string): boolean {
+  const fileName = path.split('/').at(-1) ?? path;
+  const normalized = fileName.replace(/^[0-9]+_/, '');
+  return /^System\.Net(?:\.|$)/i.test(normalized) ||
+    /^System\.Reflection\.Emit(?:\.|$).*\.dll$/i.test(normalized) ||
+    /^System\.Runtime\.InteropServices\.JavaScript\.dll$/i.test(normalized);
+}
+
+async function testCSharpBrowserRuntimeNetworkAssembliesAreDenied(): Promise<void> {
+  const root = dirname(testDirectory);
+  const frameworkRoots = [
+    join(root, 'workers', 'vendor', 'csharp', '_framework'),
+    join(root, 'packages', 'harness-csharp', 'workers', 'vendor', 'csharp', '_framework'),
+  ];
+  for (const frameworkRoot of frameworkRoots) {
+    const files = await listFilesRecursive(frameworkRoot);
+    const deniedFiles = files.filter(isDeniedCSharpBrowserRuntimeAsset);
+    assertCondition(
+      deniedFiles.length === 0,
+      `C# browser runtime should not ship denied network/reflection/user-reference assets: ${JSON.stringify(deniedFiles)}`
+    );
+
+    const bootManifest = await readFile(join(frameworkRoot, 'dotnet.boot.js'), 'utf8');
+    assertCondition(
+      !/"(?:name|virtualPath)":\s*"[^"]*System\.Net(?:\.|")/i.test(bootManifest) &&
+        !/"(?:name|virtualPath)":\s*"\/tracecode-refs\/System\.Reflection\.Emit(?:\.|")/i.test(bootManifest) &&
+        !bootManifest.includes('/tracecode-refs/System.Runtime.InteropServices.JavaScript.dll'),
+      `C# browser runtime boot manifest should not reference denied assemblies under ${frameworkRoot}`
+    );
+  }
+
+  const hostSource = await readFile(join(root, 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
+  assertCondition(
+    hostSource.includes('ValidateUserSourcePolicy(originalUserTree)') &&
+      hostSource.includes('ValidateUserSourcePolicy(projectTree)') &&
+      hostSource.includes('IsAllowedUserAssemblyName'),
+    'C# compiler host should enforce denied browser runtime APIs before compiling user code and project references'
+  );
+  const projectFile = await readFile(join(root, 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'TraceCode.CSharpHost.csproj'), 'utf8');
+  assertCondition(
+    projectFile.includes('Remove="$(TargetDir)System.Net*.dll"') &&
+      projectFile.includes('Remove="$(TargetDir)System.Reflection.Emit*.dll"') &&
+      projectFile.includes('Remove="$(TargetDir)System.Runtime.InteropServices.JavaScript.dll"'),
+    'C# browser runtime publish should keep denied assemblies out of compiler reference VFS'
+  );
+  const updateScript = await readFile(join(root, 'scripts', 'update-csharp-wasm-runtime.sh'), 'utf8');
+  assertCondition(
+    updateScript.includes('prune-csharp-wasm-runtime-assets.ts'),
+    'C# runtime update script should prune denied assemblies after publish'
   );
 }
 
@@ -2832,6 +2898,7 @@ async function main(): Promise<void> {
   await testCSharpWorkerProjectEventBudgets();
   await testCSharpWorkerInputPreflightBudgets();
   await testCSharpInputHydrationConstructorsAreBounded();
+  await testCSharpBrowserRuntimeNetworkAssembliesAreDenied();
   await testJavaWorkerProjectEventBudgets();
   await testJavaWorkerCheerpJLoaderPolicyPinsCdn();
   await testJavaQueueAugmentationRequiresNativeBlockShape();
