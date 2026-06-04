@@ -3414,6 +3414,8 @@ namespace TraceCode.Internal
         private const int MaxInputCollectionItems = 200_000;
         private const int MaxInputObjectProperties = 50_000;
         private const int MaxInputHydrationNodes = 750_000;
+        private const int MaxInputConstructorCandidates = 32;
+        private const int MaxInputConstructorParameters = 32;
 """ + GenerateRuntimeSourceTail();
     }
 
@@ -3847,11 +3849,25 @@ public class TreeNode
 
         private static object CreateStructuredObject(JsonElement value, Type targetType, IDictionary<string, object> refs, InputHydrationBudget budget, int depth)
         {
+            ConstructorInfo? parameterless = targetType.GetConstructor(Type.EmptyTypes);
+            if (parameterless is not null)
+            {
+                return parameterless.Invoke(null);
+            }
+
+            int constructorIndex = 0;
             foreach (ConstructorInfo constructor in targetType
                 .GetConstructors(BindingFlags.Public | BindingFlags.Instance)
                 .OrderByDescending(candidate => candidate.GetParameters().Length))
             {
+                budget.RecordConstructorCandidate(constructorIndex++, targetType.FullName ?? targetType.Name);
                 ParameterInfo[] parameters = constructor.GetParameters();
+                budget.RecordConstructorParameterCount(parameters.Length, targetType.FullName ?? targetType.Name);
+                if (!parameters.All(IsSafeInputConstructorParameter))
+                {
+                    continue;
+                }
+
                 if (!parameters.All(parameter => TryGetProperty(value, parameter.Name ?? string.Empty, out _) || parameter.HasDefaultValue))
                 {
                     continue;
@@ -3865,18 +3881,23 @@ public class TreeNode
                 return constructor.Invoke(args);
             }
 
-            ConstructorInfo? parameterless = targetType.GetConstructor(Type.EmptyTypes);
-            if (parameterless is not null)
-            {
-                return parameterless.Invoke(null);
-            }
-
             if (targetType.IsValueType)
             {
                 return Activator.CreateInstance(targetType)!;
             }
 
             throw new InvalidOperationException($"Cannot hydrate input object of type {targetType.FullName}.");
+        }
+
+        private static bool IsSafeInputConstructorParameter(ParameterInfo parameter)
+        {
+            Type parameterType = parameter.ParameterType;
+            return !parameter.IsOut
+                && !parameterType.IsByRef
+                && !parameterType.IsPointer
+                && parameterType != typeof(IntPtr)
+                && parameterType != typeof(UIntPtr)
+                && !typeof(Delegate).IsAssignableFrom(parameterType);
         }
 
         private static object[][] ReadObjectMatrix(JsonElement value, InputHydrationBudget budget, int depth)
@@ -4150,6 +4171,22 @@ public class TreeNode
                 if (index >= MaxInputObjectProperties)
                 {
                     throw new InvalidOperationException($"{label} exceeds maximum property count of {MaxInputObjectProperties}.");
+                }
+            }
+
+            public void RecordConstructorCandidate(int index, string label)
+            {
+                if (index >= MaxInputConstructorCandidates)
+                {
+                    throw new InvalidOperationException($"{label} exceeds maximum constructor candidate count of {MaxInputConstructorCandidates}.");
+                }
+            }
+
+            public void RecordConstructorParameterCount(int count, string label)
+            {
+                if (count > MaxInputConstructorParameters)
+                {
+                    throw new InvalidOperationException($"{label} constructor exceeds maximum parameter count of {MaxInputConstructorParameters}.");
                 }
             }
         }

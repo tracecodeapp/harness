@@ -973,6 +973,26 @@ async function testCSharpWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `C# worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
+async function testCSharpInputHydrationConstructorsAreBounded(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
+  assertCondition(
+    source.includes('MaxInputConstructorCandidates = 32') &&
+      source.includes('MaxInputConstructorParameters = 32'),
+    'C# input hydration should cap reflected constructor scans'
+  );
+  assertCondition(
+    source.includes('ConstructorInfo? parameterless = targetType.GetConstructor(Type.EmptyTypes);') &&
+      source.indexOf('ConstructorInfo? parameterless = targetType.GetConstructor(Type.EmptyTypes);') < source.indexOf('foreach (ConstructorInfo constructor in targetType'),
+    'C# input hydration should prefer parameterless construction before invoking matching constructors'
+  );
+  assertCondition(
+    source.includes('RecordConstructorCandidate(constructorIndex++') &&
+      source.includes('RecordConstructorParameterCount(parameters.Length') &&
+      source.includes('IsSafeInputConstructorParameter'),
+    'C# input hydration should budget and filter reflected constructor parameters'
+  );
+}
+
 async function testJavaWorkerProjectEventBudgets(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'java', 'java-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
@@ -2304,6 +2324,7 @@ async function main(): Promise<void> {
   await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();
+  await testCSharpInputHydrationConstructorsAreBounded();
   await testJavaWorkerProjectEventBudgets();
   await testJavaWorkerCheerpJLoaderPolicyPinsCdn();
   await testJavaQueueAugmentationRequiresNativeBlockShape();
