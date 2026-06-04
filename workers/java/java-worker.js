@@ -1,4 +1,5 @@
 const CHEERPJ_LOADER_VERSION = '4.2';
+// CheerpJ licensing requires loading their hosted runtime; keep this URL versioned and origin-pinned.
 const CHEERPJ_LOADER_URL = `https://cjrtnc.leaningtech.com/${CHEERPJ_LOADER_VERSION}/loader.js`;
 const HELPER_JAR_PATH = '/app/workers/vendor/java-browser-helper.jar';
 const JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
@@ -109,6 +110,8 @@ const PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
 const PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
 const JAVA_MAX_DIAGNOSTIC_CHARS = 64 * 1024;
 const JAVA_MAX_DIAGNOSTIC_PATH_CHARS = 512;
+const JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS = 2048;
+const JAVA_MAX_LOOP_HEADER_SNAPSHOT_CACHE = 2048;
 const javaHttpServers = new Map();
 let nextJavaHttpServerId = 1;
 
@@ -3834,6 +3837,35 @@ function expandLoopHeaderTraceEvents(events, sourceText) {
 
   const expanded = [];
   const latestSnapshotByVariable = new Map();
+  let syntheticHeaderEventCount = 0;
+  let sameLineHeaderSnapshotCache = null;
+  const pushSyntheticHeaderEvent = (event) => {
+    if (syntheticHeaderEventCount >= JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS) return false;
+    expanded.push(event);
+    syntheticHeaderEventCount += 1;
+    return true;
+  };
+  const sameLineHeaderSnapshots = (startIndex, line, headerInfo) => {
+    if (
+      sameLineHeaderSnapshotCache &&
+      sameLineHeaderSnapshotCache.line === line &&
+      startIndex < sameLineHeaderSnapshotCache.end
+    ) {
+      return sameLineHeaderSnapshotCache.snapshots;
+    }
+
+    const snapshots = [];
+    let end = startIndex + 1;
+    for (; end < events.length; end += 1) {
+      if (parseTraceLineNumber(events[end]) !== line) break;
+      const variable = parseNativeSnapshotVariable(events[end]);
+      if (!variable || !headerInfo.headerVariables.has(variable)) continue;
+      snapshots.push(events[end]);
+      if (snapshots.length >= JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS) break;
+    }
+    sameLineHeaderSnapshotCache = { line, end, snapshots };
+    return snapshots;
+  };
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
     const line = parseTraceLineNumber(event);
@@ -3849,25 +3881,30 @@ function expandLoopHeaderTraceEvents(events, sourceText) {
     const headerLine = headerInfo?.line;
     const previousLine = expanded.length > 0 ? parseTraceLineNumber(expanded[expanded.length - 1]) : null;
     if (headerLine !== undefined && isBareTraceLineEvent(event) && previousLine !== headerLine) {
-      expanded.push(buildBareTraceLineEvent(headerLine, event));
+      pushSyntheticHeaderEvent(buildBareTraceLineEvent(headerLine, event));
       for (const [variable, snapshotEvent] of latestSnapshotByVariable) {
+        if (syntheticHeaderEventCount >= JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS) break;
         if (headerInfo.excludedVariables.has(variable)) continue;
         const clonedSnapshot = cloneNativeSnapshotEventAtLine(snapshotEvent, headerLine);
-        if (clonedSnapshot) expanded.push(clonedSnapshot);
+        if (clonedSnapshot) pushSyntheticHeaderEvent(clonedSnapshot);
       }
     }
-    if (headerLine !== undefined && isBareTraceLineEvent(event)) {
-      for (let lookahead = index + 1; lookahead < events.length; lookahead += 1) {
-        if (parseTraceLineNumber(events[lookahead]) !== line) break;
-        const variable = parseNativeSnapshotVariable(events[lookahead]);
-        if (!variable || !headerInfo.headerVariables.has(variable)) continue;
-        const clonedSnapshot = cloneNativeSnapshotEventAtLine(events[lookahead], headerLine);
-        if (clonedSnapshot) expanded.push(clonedSnapshot);
+    if (
+      headerLine !== undefined &&
+      isBareTraceLineEvent(event) &&
+      syntheticHeaderEventCount < JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS
+    ) {
+      for (const snapshotEvent of sameLineHeaderSnapshots(index, line, headerInfo)) {
+        if (syntheticHeaderEventCount >= JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS) break;
+        const clonedSnapshot = cloneNativeSnapshotEventAtLine(snapshotEvent, headerLine);
+        if (clonedSnapshot) pushSyntheticHeaderEvent(clonedSnapshot);
       }
     }
     expanded.push(event);
     if (snapshotVariable) {
-      latestSnapshotByVariable.set(snapshotVariable, event);
+      if (latestSnapshotByVariable.has(snapshotVariable) || latestSnapshotByVariable.size < JAVA_MAX_LOOP_HEADER_SNAPSHOT_CACHE) {
+        latestSnapshotByVariable.set(snapshotVariable, event);
+      }
     }
   }
   return expanded;

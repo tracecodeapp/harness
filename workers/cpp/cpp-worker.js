@@ -902,12 +902,11 @@ class WasiProcess {
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
     this.kernelDevices = wasiKernelDevices(options);
-    this.stdioDevices = standaloneKernelDevices();
     this.filestatSizeOffset = options.filestatSizeOffset || 32;
     this.fds = new Map([
-      [0, this.stdioEntryForDevice('/dev/stdin', this.stdioDevices)],
-      [1, this.stdioEntryForDevice('/dev/stdout', this.stdioDevices)],
-      [2, this.stdioEntryForDevice('/dev/stderr', this.stdioDevices)],
+      [0, this.stdioEntryForDevice('/dev/stdin')],
+      [1, this.stdioEntryForDevice('/dev/stdout')],
+      [2, this.stdioEntryForDevice('/dev/stderr')],
       [3, { kind: 'dir', path: this.cwd, offset: 0, readable: true, writable: false, preopen: '/' }],
     ]);
     this.nextFd = 4;

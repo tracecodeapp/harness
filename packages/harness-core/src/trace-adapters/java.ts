@@ -210,11 +210,41 @@ function expandJavaLoopHeaderTraceEvents(
   const latestSnapshotByVariable = new Map<string, RuntimeTraceEvent>();
   let lastLineEventLine: number | null = null;
   let syntheticHeaderEventCount = 0;
+  let sameLineHeaderSnapshotCache: {
+    line: number;
+    end: number;
+    snapshots: RuntimeTraceEvent[];
+  } | null = null;
   const pushSyntheticHeaderEvent = (event: RuntimeTraceEvent): boolean => {
     if (syntheticHeaderEventCount >= JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS) return false;
     expanded.push(event);
     syntheticHeaderEventCount += 1;
     return true;
+  };
+  const sameLineHeaderSnapshots = (
+    startIndex: number,
+    line: number,
+    headerInfo: JavaLoopHeaderInfo
+  ): RuntimeTraceEvent[] => {
+    if (
+      sameLineHeaderSnapshotCache &&
+      sameLineHeaderSnapshotCache.line === line &&
+      startIndex < sameLineHeaderSnapshotCache.end
+    ) {
+      return sameLineHeaderSnapshotCache.snapshots;
+    }
+
+    const snapshots: RuntimeTraceEvent[] = [];
+    let end = startIndex + 1;
+    for (; end < events.length; end += 1) {
+      if (eventLine(events[end]!) !== line) break;
+      const variable = eventSnapshotVariable(events[end]!);
+      if (!variable || !headerInfo.headerVariables.has(variable)) continue;
+      snapshots.push(events[end]!);
+      if (snapshots.length >= JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS) break;
+    }
+    sameLineHeaderSnapshotCache = { line, end, snapshots };
+    return snapshots;
   };
 
   for (let index = 0; index < events.length; index += 1) {
@@ -242,13 +272,16 @@ function expandJavaLoopHeaderTraceEvents(
       lastLineEventLine = headerLine;
     }
 
-    if (headerInfo && typeof headerLine === 'number' && event.kind === 'line') {
-      for (let lookahead = index + 1; lookahead < events.length; lookahead += 1) {
+    if (
+      headerInfo &&
+      line !== null &&
+      typeof headerLine === 'number' &&
+      event.kind === 'line' &&
+      syntheticHeaderEventCount < JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS
+    ) {
+      for (const snapshotEvent of sameLineHeaderSnapshots(index, line, headerInfo)) {
         if (syntheticHeaderEventCount >= JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS) break;
-        if (eventLine(events[lookahead]) !== line) break;
-        const variable = eventSnapshotVariable(events[lookahead]);
-        if (!variable || !headerInfo.headerVariables.has(variable)) continue;
-        pushSyntheticHeaderEvent(cloneRuntimeEventAtLine(events[lookahead], headerLine));
+        pushSyntheticHeaderEvent(cloneRuntimeEventAtLine(snapshotEvent, headerLine));
       }
     }
 

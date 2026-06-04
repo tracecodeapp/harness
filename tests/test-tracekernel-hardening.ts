@@ -829,6 +829,100 @@ async function testJavaWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `Java worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
+async function testJavaWorkerCheerpJLoaderPolicyPinsCdn(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'workers', 'java', 'java-worker.js'), 'utf8');
+  const context = vm.createContext({
+    console,
+    self: {
+      postMessage: () => {},
+      location: { href: 'http://localhost/workers/java/java-worker.js', origin: 'http://localhost', search: '' },
+    },
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    SharedArrayBuffer,
+    Int32Array,
+    Atomics,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+    performance: { now: () => 0 },
+    queueMicrotask: (callback: () => void) => callback(),
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
+  vm.runInContext(source, context, { filename: 'java-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      const rejected = [];
+      const accepted = assertTrustedJavaAsset('CheerpJ loader', 'https://cjrtnc.leaningtech.com/4.2/loader.js');
+      for (const url of [
+        'https://cjrtnc.leaningtech.com/4.3/loader.js',
+        'https://example.com/4.2/loader.js',
+      ]) {
+        try {
+          assertTrustedJavaAsset('CheerpJ loader', url);
+        } catch (error) {
+          rejected.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      return { accepted, rejected };
+    })()`,
+    context
+  ) as { accepted: string; rejected: string[] };
+
+  assertCondition(
+    result.accepted === 'https://cjrtnc.leaningtech.com/4.2/loader.js',
+    `CheerpJ loader policy should accept only the pinned hosted loader: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.rejected.length === 2 && result.rejected.every((message) => message.includes('pinned CheerpJ runtime CDN')),
+    `CheerpJ loader policy should reject unpinned hosted URLs: ${JSON.stringify(result)}`
+  );
+}
+
+async function testJavaQueueAugmentationRequiresNativeBlockShape(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'workers', 'java', 'java-source-augmentations.js'), 'utf8');
+  const context = vm.createContext({ self: {} });
+  vm.runInContext(source, context, { filename: 'java-source-augmentations.js' });
+  const augmentations = (context.self as {
+    TraceCodeJavaSourceAugmentations?: {
+      augmentJavaCollectionOperations: (source: string, sourceText?: string) => string;
+    };
+  }).TraceCodeJavaSourceAugmentations;
+  assertCondition(Boolean(augmentations), 'Java source augmentations should load in a VM context');
+
+  const spoofedUserHookSource = augmentations!.augmentJavaCollectionOperations(`import java.util.*;
+
+class Solution {
+  boolean solve() {
+    Deque<Integer> q = new ArrayDeque<>();
+    q.offerLast(1); TraceHooks.emitMutatingCallAtLine(6, "q", "offerLast", 1);
+    return q.size() == 1;
+  }
+}`, '');
+  assertCondition(
+    spoofedUserHookSource.includes('TraceHooks.offerDequeLastAtLine(6, "q", q, 1)'),
+    `Java queue augmentation should not let user hook calls suppress wrapping: ${spoofedUserHookSource}`
+  );
+
+  const nativeBlockSource = augmentations!.augmentJavaCollectionOperations(`import java.util.*;
+
+class Solution {
+  boolean solve() {
+    Deque<Integer> q = new ArrayDeque<>();
+    int i = 5;
+    { q.offerLast(i); TraceHooks.emitMutatingCallAtLine(6, "q", "offerLast", i); TraceHooks.emitIndexedWriteAtLine(6, "q", new Object[] { ((java.util.Collection) q).size() - 1 }, i, null); TraceHooks.emitRuntimeSnapshotAtLine(6, "q", q); }
+    return true;
+  }
+}`, '');
+  assertCondition(
+    !nativeBlockSource.includes('TraceHooks.offerDequeLastAtLine') &&
+      nativeBlockSource.includes('q.offerLast(i); TraceHooks.emitMutatingCallAtLine'),
+    `Java queue augmentation should still skip native generated mutation blocks: ${nativeBlockSource}`
+  );
+}
+
 function testJavaHelperRunScopeAndCacheManifest(): void {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-helper-hardening-'));
   try {
@@ -1041,6 +1135,74 @@ function testJavaTraceHeaderExpansionIsBounded(): void {
   );
 }
 
+async function testJavaWorkerTraceHeaderExpansionIsBounded(): Promise<void> {
+  const source = (await readFile(join(dirname(testDirectory), 'workers', 'java', 'java-worker.js'), 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
+    ''
+  );
+  const context = vm.createContext({
+    console,
+    self: {
+      postMessage: () => {},
+      location: { href: 'http://localhost/workers/java/java-worker.js', origin: 'http://localhost', search: '' },
+    },
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    SharedArrayBuffer,
+    Int32Array,
+    Atomics,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+    performance: { now: () => 0 },
+    queueMicrotask: (callback: () => void) => callback(),
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
+  vm.runInContext(source, context, { filename: 'java-worker.js' });
+  const sourceText = [
+    'class Solution {',
+    '  void run() {',
+    '    for (int i = 0; i < 10; i++) {',
+    '      i = i + 1;',
+    '    }',
+    '  }',
+    '}',
+  ].join('\n');
+  const rawEvents: string[] = [];
+  for (let index = 0; index < 3000; index += 1) {
+    rawEvents.push(nativeJavaTraceEvent({ kind: 'line', line: 4, function: 'run' }));
+    rawEvents.push(nativeJavaTraceEvent({
+      kind: 'snapshot',
+      line: 4,
+      target: { variable: 'i' },
+      value: index,
+    }));
+  }
+  Object.assign(context, { workerLoopSourceText: sourceText, workerLoopEvents: rawEvents });
+  const result = vm.runInContext(
+    `(() => {
+      const expanded = expandLoopHeaderTraceEvents(workerLoopEvents, workerLoopSourceText);
+      return {
+        raw: workerLoopEvents.length,
+        expanded: expanded.length,
+        headerEvents: expanded.filter((event) => parseTraceLineNumber(event) === 3).length,
+      };
+    })()`,
+    context
+  ) as { raw: number; expanded: number; headerEvents: number };
+
+  assertCondition(
+    result.expanded <= result.raw + 2048,
+    `Java worker header expansion should cap synthetic event growth: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.headerEvents <= 2048,
+    `Java worker header expansion should cap synthetic header events: ${JSON.stringify(result)}`
+  );
+}
+
 async function testCppWorkerProjectEventBudgets(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
@@ -1103,6 +1265,77 @@ async function testCppWorkerProjectEventBudgets(): Promise<void> {
   );
   assertCondition(outputEvents.length === 1, `C++ worker should drop stdout chunks after truncation: ${JSON.stringify(projectEvents)}`);
   assertCondition(fileChangeEvents.length === 0, `C++ worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
+}
+
+async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
+  const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
+    ''
+  );
+  const context = vm.createContext({
+    console,
+    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
+    location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+    postMessage: () => {},
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    WebAssembly,
+    BigInt,
+    Map,
+    Set,
+    Promise,
+    JSON,
+    Math,
+    Date,
+    performance: { now: () => 0 },
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+  });
+  vm.runInContext(source, context, { filename: 'cpp-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      const restrictedDevices = new Map([
+        ['/dev/stdin', { path: '/dev/stdin', readable: false, writable: false, inputDevice: '', outputDevice: '' }],
+        ['/dev/stdout', { path: '/dev/stdout', readable: false, writable: false, inputDevice: '', outputDevice: '' }],
+        ['/dev/stderr', { path: '/dev/stderr', readable: false, writable: false, inputDevice: '', outputDevice: '' }],
+      ]);
+      const restricted = new WasiProcess({ args: [], fs: new InMemoryFileSystem(), kernelDevices: restrictedDevices });
+      const standalone = new WasiProcess({ args: [], fs: new InMemoryFileSystem() });
+      return {
+        restrictedStdin: restricted.fds.get(0),
+        restrictedStdout: restricted.fds.get(1),
+        restrictedStderr: restricted.fds.get(2),
+        standaloneStdin: standalone.fds.get(0),
+        standaloneStdout: standalone.fds.get(1),
+      };
+    })()`,
+    context
+  ) as {
+    restrictedStdin: { readable: boolean; inputDevice: string };
+    restrictedStdout: { writable: boolean; outputDevice: string };
+    restrictedStderr: { writable: boolean; outputDevice: string };
+    standaloneStdin: { readable: boolean; inputDevice: string };
+    standaloneStdout: { writable: boolean; outputDevice: string };
+  };
+
+  assertCondition(
+    !result.restrictedStdin.readable &&
+      !result.restrictedStdin.inputDevice &&
+      !result.restrictedStdout.writable &&
+      !result.restrictedStdout.outputDevice &&
+      !result.restrictedStderr.writable &&
+      !result.restrictedStderr.outputDevice,
+    `C++ inherited stdio fds should respect restrictive project device manifests: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.standaloneStdin.readable &&
+      result.standaloneStdin.inputDevice === '/dev/stdin' &&
+      result.standaloneStdout.writable &&
+      result.standaloneStdout.outputDevice === '/dev/stdout',
+    `C++ standalone inherited stdio fds should keep default devices: ${JSON.stringify(result)}`
+  );
 }
 
 function testRuntimeFinalDiffBudgets(): void {
@@ -1577,10 +1810,14 @@ async function main(): Promise<void> {
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();
   await testJavaWorkerProjectEventBudgets();
+  await testJavaWorkerCheerpJLoaderPolicyPinsCdn();
+  await testJavaQueueAugmentationRequiresNativeBlockShape();
   testJavaHelperRunScopeAndCacheManifest();
   await testJavaWorkerDiagnosticsAreBounded();
   testJavaTraceHeaderExpansionIsBounded();
+  await testJavaWorkerTraceHeaderExpansionIsBounded();
   await testCppWorkerProjectEventBudgets();
+  await testCppInheritedStdioRespectsKernelDevices();
   testRuntimeFinalDiffBudgets();
   await testTraceKernelProjectCommandStepsAreBounded();
   await testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks();

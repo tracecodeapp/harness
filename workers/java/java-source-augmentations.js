@@ -791,20 +791,37 @@
     return output + source.slice(cursor);
   }
 
+  function findJavaSourceMatchIndex(source, pattern, startIndex = 0) {
+    pattern.lastIndex = startIndex;
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+      if (!isInsideJavaStringLiteral(source, match.index) && !isInsideJavaComment(source, match.index)) {
+        return match.index;
+      }
+    }
+    return -1;
+  }
+
   function hasNativeMutatingHookForReceiver(source, receiverName, methodName) {
+    const trimmed = source.trim();
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false;
     const receiver = escapeRegExp(receiverName);
     const method = escapeRegExp(methodName);
+    const callIndex = findJavaSourceMatchIndex(source, new RegExp(`\\b${receiver}\\.${method}\\(`, 'g'));
+    if (callIndex < 0) return false;
     const hookPatterns = [
       new RegExp(`TraceHooks\\.emitMutatingCallAtLine\\(\\s*\\d+\\s*,\\s*"${receiver}"\\s*,\\s*"${method}"(?:\\s*[,\\)])`, 'g'),
       new RegExp(`TraceHooks\\.emitNoArgMutatingCallAtLine\\(\\s*\\d+\\s*,\\s*"${receiver}"\\s*,\\s*"${method}"(?:\\s*[,\\)])`, 'g'),
     ];
+    const snapshotPattern = new RegExp(
+      `TraceHooks\\.emitRuntimeSnapshotAtLine\\(\\s*\\d+\\s*,\\s*"${receiver}"\\s*,\\s*${receiver}\\s*\\)`,
+      'g'
+    );
     for (const pattern of hookPatterns) {
-      let match;
-      while ((match = pattern.exec(source)) !== null) {
-        if (!isInsideJavaStringLiteral(source, match.index) && !isInsideJavaComment(source, match.index)) {
-          return true;
-        }
-      }
+      const hookIndex = findJavaSourceMatchIndex(source, pattern, callIndex + 1);
+      if (hookIndex < 0) continue;
+      const snapshotIndex = findJavaSourceMatchIndex(source, snapshotPattern, hookIndex + 1);
+      if (snapshotIndex > hookIndex) return true;
     }
     return false;
   }
