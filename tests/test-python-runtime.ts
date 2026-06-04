@@ -2190,6 +2190,73 @@ print(json.dumps({
   console.log('PASS: Python runtime records nested attribute reads and writes');
 }
 
+async function assertUntraceableNestedMutationIndexDoesNotEmitRootRead(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class Key:
+    pass
+
+def solve():
+    key = Key()
+    data = {key: []}
+    data[key].append(3)
+    return len(data[key])
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
+  assertCondition(parsed.result === 1, 'Python untraceable nested mutation fixture should execute successfully');
+
+  const mutationLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'data[key].append(3)') - 1;
+  const mutationStep = findTraceStep(parsed.trace, mutationLine);
+  const rootReadAccess = (mutationStep.accesses ?? []).find(
+    (access) =>
+      access.variable === 'data' &&
+      access.kind === 'indexed-read' &&
+      (!Array.isArray(access.indices) || access.indices.length === 0)
+  );
+  assertCondition(
+    !rootReadAccess,
+    `Python invalid nested mutation index should not emit a fake data root read, received ${JSON.stringify(mutationStep.accesses)}`
+  );
+  assertCondition(
+    !parsed.runtimeTrace.events.some(
+      (event) =>
+        event.kind === 'read' &&
+        event.line === mutationLine &&
+        event.target?.variable === 'data' &&
+        (!Array.isArray(event.target.path) || event.target.path.length === 0)
+    ),
+    `Python runtime trace should not convert invalid nested mutation index into a root read, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python invalid nested mutation indexes do not emit root reads');
+}
+
 async function assertTraceCaptureLimitPreservesOutput(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `def sum_to(n):
@@ -3232,6 +3299,7 @@ async function main(): Promise<void> {
   await assertObjectFieldSubscriptReadCarriesValue();
   await assertAttributeReadCarriesPreMutationValue();
   await assertNestedAttributeReadsAndWritesAreRecorded();
+  await assertUntraceableNestedMutationIndexDoesNotEmitRootRead();
   await assertTraceCaptureLimitPreservesOutput();
   await assertDefaultStoredRuntimeEventBudgetAllowsScriptReturns();
   await assertRuntimeValueSerializationCap();

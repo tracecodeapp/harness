@@ -1251,6 +1251,8 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
     result = getattr(target, method_name)(*args, **kwargs)
     normalized = __tracecode_normalize_indices(effective_indices)
     if method_name in _TRACE_MUTATING_METHODS:
+        if normalized is None:
+            return result
         __tracecode_record_access(
             sys._getframe(1),
             __tracecode_make_access_event(var_name, 'indexed-read', normalized, index_sources=index_sources),
@@ -1301,26 +1303,30 @@ def _tracecode_heapq_mutation(var_name, container, indices, target, method_name,
     frame = sys._getframe(1)
     effective_indices = list(indices or [])
     normalized = __tracecode_normalize_indices(effective_indices)
+    invalid_nested_path = len(effective_indices) > 0 and normalized is None
     try:
         snapshot_budget = __tracecode_pending_access_budget(frame, reserve=2)
         before_values = list(target[:snapshot_budget]) if isinstance(target, _builtins.list) and snapshot_budget > 0 else None
     except Exception:
         before_values = None
-    __tracecode_record_access(
-        sys._getframe(1),
-        __tracecode_make_access_event(
-            var_name,
-            'indexed-read',
-            normalized,
-            value=_serialize(target),
-        ),
-    )
+    if not invalid_nested_path:
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(
+                var_name,
+                'indexed-read',
+                normalized,
+                value=_serialize(target),
+            ),
+        )
     if method_name == 'heappush':
         result = __tracecode_heapq.heappush(target, *args, **kwargs)
     elif method_name == 'heappop':
         result = __tracecode_heapq.heappop(target, *args, **kwargs)
     else:
         result = getattr(__tracecode_heapq, method_name)(target, *args, **kwargs)
+    if invalid_nested_path:
+        return result
     if normalized:
         __tracecode_record_access(
             sys._getframe(1),
