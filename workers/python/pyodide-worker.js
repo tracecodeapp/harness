@@ -2660,8 +2660,40 @@ def _project_relative_path_from_absolute(_absolute_path):
         return None
     return os.path.relpath(_absolute, _root).replace(os.sep, "/")
 
+def _project_realpath_within_root(_absolute_path):
+    try:
+        _real_root = os.path.realpath(_root)
+        _real_path = os.path.realpath(_absolute_path)
+    except Exception:
+        return False
+    return _real_path == _real_root or _real_path.startswith(_real_root + os.sep)
+
+def _project_snapshot_absolute_path(_absolute_path):
+    try:
+        _absolute = os.path.abspath(os.fspath(_absolute_path))
+    except Exception:
+        return None
+    if _absolute != _root and not _absolute.startswith(_root + os.sep):
+        return None
+    try:
+        if os.path.islink(_absolute):
+            return None
+    except Exception:
+        return None
+    if not _project_realpath_within_root(_absolute):
+        return None
+    return _absolute
+
+def _project_snapshot_directory_key(_absolute_path):
+    try:
+        _stat = os.lstat(_absolute_path)
+        return (_stat.st_dev, _stat.st_ino)
+    except Exception:
+        return ("path", os.path.abspath(os.fspath(_absolute_path)))
+
 def _runtime_file_change_for_absolute(_absolute_path):
-    _relative_path = _project_relative_path_from_absolute(_absolute_path)
+    _absolute_path = _project_snapshot_absolute_path(_absolute_path)
+    _relative_path = _project_relative_path_from_absolute(_absolute_path) if _absolute_path else None
     if not _relative_path or not os.path.isfile(_absolute_path):
         return None
     if not _project_file_size_within_live_budget(_absolute_path, _relative_path):
@@ -2690,6 +2722,8 @@ def _emit_file_delete_for_absolute(_absolute_path):
         _emit_project_event({"type": "file-change", "phase": "live", "change": {"path": _relative_path, "deleted": True}})
 
 def _emit_directory_change_for_absolute(_absolute_path, _deleted=False):
+    if not _deleted and _project_snapshot_absolute_path(_absolute_path) is None:
+        return
     _relative_path = _project_relative_path_from_absolute(_absolute_path)
     if _relative_path:
         _change = {"path": _relative_path, "directory": True}
@@ -2698,16 +2732,32 @@ def _emit_directory_change_for_absolute(_absolute_path, _deleted=False):
         _emit_project_event({"type": "file-change", "phase": "live", "change": _change})
 
 def _emit_path_snapshot_for_absolute(_absolute_path):
+    _absolute_path = _project_snapshot_absolute_path(_absolute_path)
+    if _absolute_path is None:
+        return
     if os.path.isfile(_absolute_path):
         _emit_file_change_for_absolute(_absolute_path)
         return
     if not os.path.isdir(_absolute_path):
         return
-    _emit_directory_change_for_absolute(_absolute_path)
-    for _dirpath, _dirnames, _filenames in os.walk(_absolute_path):
-        _dirnames.sort()
+    _seen_dirs = set()
+    for _dirpath, _dirnames, _filenames in os.walk(_absolute_path, followlinks=False):
+        _dirpath = _project_snapshot_absolute_path(_dirpath)
+        if _dirpath is None or not os.path.isdir(_dirpath):
+            _dirnames[:] = []
+            continue
+        _directory_key = _project_snapshot_directory_key(_dirpath)
+        if _directory_key in _seen_dirs:
+            _dirnames[:] = []
+            continue
+        _seen_dirs.add(_directory_key)
+        _emit_directory_change_for_absolute(_dirpath)
+        _safe_dirnames = []
         for _dirname in _dirnames:
-            _emit_directory_change_for_absolute(os.path.join(_dirpath, _dirname))
+            _child_path = os.path.join(_dirpath, _dirname)
+            if _project_snapshot_absolute_path(_child_path) is not None and os.path.isdir(_child_path):
+                _safe_dirnames.append(_dirname)
+        _dirnames[:] = sorted(_safe_dirnames)
         for _filename in sorted(_filenames):
             _emit_file_change_for_absolute(os.path.join(_dirpath, _filename))
 
@@ -3083,10 +3133,28 @@ def _project_pythonpath_entries():
 def _project_files_after_execution():
     _files = []
     _seen_paths = set()
-    for _dirpath, _dirnames, _filenames in os.walk(_root):
-        _dirnames.sort()
+    _seen_dirs = set()
+    for _dirpath, _dirnames, _filenames in os.walk(_root, followlinks=False):
+        _dirpath = _project_snapshot_absolute_path(_dirpath)
+        if _dirpath is None or not os.path.isdir(_dirpath):
+            _dirnames[:] = []
+            continue
+        _directory_key = _project_snapshot_directory_key(_dirpath)
+        if _directory_key in _seen_dirs:
+            _dirnames[:] = []
+            continue
+        _seen_dirs.add(_directory_key)
+        _safe_dirnames = []
+        for _dirname in _dirnames:
+            _child_path = os.path.join(_dirpath, _dirname)
+            if _project_snapshot_absolute_path(_child_path) is not None and os.path.isdir(_child_path):
+                _safe_dirnames.append(_dirname)
+        _dirnames[:] = sorted(_safe_dirnames)
         for _filename in sorted(_filenames):
             _absolute_path = os.path.join(_dirpath, _filename)
+            _absolute_path = _project_snapshot_absolute_path(_absolute_path)
+            if _absolute_path is None or not os.path.isfile(_absolute_path):
+                continue
             _relative_path = os.path.relpath(_absolute_path, _root).replace(os.sep, "/")
             _seen_paths.add(_relative_path)
             with open(_absolute_path, "rb") as _handle:

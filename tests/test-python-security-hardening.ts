@@ -256,6 +256,17 @@ async function testPythonProjectBridgeHardeningHooksArePresent(): Promise<void> 
   assertCondition(source.includes("target.outputDevice === '/dev/null'"), 'Python provider FS device writes should discard /dev/null');
   assertCondition(source.includes('_output_device == "/dev/null"'), 'Python os.write should discard /dev/null');
   assertCondition(source.includes('def _canonical_virtual_namespace_path'), 'Python /dev and /proc policy should canonicalize namespace paths');
+  assertCondition(source.includes('def _project_snapshot_absolute_path'), 'Python project snapshots should normalize through a dedicated snapshot path gate');
+  assertCondition(source.includes('os.path.islink(_absolute)'), 'Python project snapshots should skip symlink entries');
+  assertCondition(
+    source.includes('os.path.realpath(_root)') && source.includes('os.path.realpath(_absolute_path)'),
+    'Python project snapshots should require realpaths to stay inside the project root'
+  );
+  assertCondition(
+    source.includes('os.walk(_absolute_path, followlinks=False)') && source.includes('os.walk(_root, followlinks=False)'),
+    'Python project snapshots should disable symlink-following directory walks'
+  );
+  assertCondition(source.includes('_project_snapshot_directory_key'), 'Python project snapshots should track visited directories while walking');
   console.log('PASS: Python project bridge hardening hooks are present');
 }
 
