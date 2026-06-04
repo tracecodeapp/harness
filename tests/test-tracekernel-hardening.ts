@@ -973,6 +973,55 @@ async function testCSharpWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `C# worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
+async function testCSharpWorkerInputPreflightBudgets(): Promise<void> {
+  const source = csharpWorkerVmSource(await readFile(join(dirname(testDirectory), 'workers', 'csharp', 'csharp-worker.js'), 'utf8'));
+  const context = vm.createContext({
+    console,
+    self: {
+      addEventListener: () => {},
+      postMessage: () => {},
+      close: () => {},
+      location: { search: '' },
+    },
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    SharedArrayBuffer,
+    Int32Array,
+    Atomics,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+    performance: { now: () => 0 },
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
+  vm.runInContext(source, context, { filename: 'csharp-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      const root = { __type__: 'Node', val: 0, children: [] };
+      let cursor = root;
+      for (let depth = 0; depth < 80; depth++) {
+        const child = { __type__: 'Node', val: depth + 1, children: [] };
+        cursor.children = [child];
+        cursor = child;
+      }
+      try {
+        validateCSharpInputsForJson({ root });
+        return '';
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    })()`,
+    context
+  ) as string;
+
+  assertCondition(
+    result.includes('maximum depth'),
+    `C# worker should reject deep structured inputs before host JSON serialization: ${result}`
+  );
+}
+
 async function testCSharpInputHydrationConstructorsAreBounded(): Promise<void> {
   const source = await readFile(join(dirname(testDirectory), 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
   assertCondition(
@@ -2353,6 +2402,7 @@ async function main(): Promise<void> {
   await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();
+  await testCSharpWorkerInputPreflightBudgets();
   await testCSharpInputHydrationConstructorsAreBounded();
   await testJavaWorkerProjectEventBudgets();
   await testJavaWorkerCheerpJLoaderPolicyPinsCdn();

@@ -1,0 +1,86 @@
+{
+  "id": "indexed-read-and-scalar-update-contract",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "s": "abcde",
+    "nums": [10, 20, 30, 40]
+  },
+  "anchors": {
+    "readString": {
+      "python": "ch = s[right]",
+      "javascript": "const ch = s[right];",
+      "typescript": "const ch = s[right];",
+      "java": "char ch = s.charAt(right);",
+      "csharp": "char ch = s[right];",
+      "cpp": "char ch = s[right];"
+    },
+    "readArray": {
+      "python": "picked = nums[right]",
+      "javascript": "const picked = nums[right];",
+      "typescript": "const picked = nums[right];",
+      "java": "int picked = nums[right];",
+      "csharp": "int picked = nums[right];",
+      "cpp": "int picked = nums[right];"
+    },
+    "updateBest": {
+      "python": "best = max(best, right - left + 1)",
+      "javascript": "best = Math.max(best, right - left + 1);",
+      "typescript": "best = Math.max(best, right - left + 1);",
+      "java": "best = Math.max(best, right - left + 1);",
+      "csharp": "best = Math.Max(best, right - left + 1);",
+      "cpp": "best = max(best, right - left + 1);"
+    }
+  },
+  "expect": {
+    "readString": {
+      "eventKinds": ["line", "read", "snapshot", "write"],
+      "variableSnapshots": ["best", "ch", "left", "nums", "right", "s"],
+      "accessTargets": [
+        { "kind": "read", "variable": "s", "pathDepth": 1 },
+        { "kind": "write", "variable": "ch" }
+      ]
+    },
+    "readArray": {
+      "eventKinds": ["line", "read", "snapshot", "write"],
+      "variableSnapshots": ["best", "ch", "left", "nums", "picked", "right", "s"],
+      "accessTargets": [
+        { "kind": "read", "variable": "nums", "pathDepth": 1 },
+        { "kind": "write", "variable": "picked" }
+      ]
+    },
+    "updateBest": {
+      "eventKinds": ["line", "snapshot", "write"],
+      "variableSnapshots": ["best", "ch", "left", "nums", "picked", "right", "s"],
+      "accessTargets": [
+        { "kind": "write", "variable": "best" }
+      ]
+    }
+  },
+  "rejectEventAssertions": {
+    "readString": [
+      { "kind": "read", "variable": "s", "pathDepth": 0 }
+    ],
+    "readArray": [
+      { "kind": "read", "variable": "nums", "pathDepth": 0 }
+    ]
+  },
+  "expectEventCounts": {
+    "readString": [
+      { "kind": "line", "count": 1 },
+      { "kind": "read", "variable": "s", "pathDepth": 1, "count": 1 },
+      { "kind": "read", "variable": "s", "pathDepth": 0, "count": 0 },
+      { "kind": "write", "variable": "ch", "count": 1 }
+    ],
+    "readArray": [
+      { "kind": "line", "count": 1 },
+      { "kind": "read", "variable": "nums", "pathDepth": 1, "count": 1 },
+      { "kind": "read", "variable": "nums", "pathDepth": 0, "count": 0 },
+      { "kind": "write", "variable": "picked", "count": 1 }
+    ],
+    "updateBest": [
+      { "kind": "line", "count": 1 },
+      { "kind": "write", "variable": "best", "count": 1 }
+    ]
+  }
+}

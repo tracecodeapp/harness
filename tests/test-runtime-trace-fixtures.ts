@@ -120,6 +120,8 @@ interface FixtureCase {
   expectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
   rejectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
   rejectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
+  expectEventCounts?: Record<string, RuntimeTraceEventCountAssertion[]>;
+  expectEventCountsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventCountAssertion[]>>>;
   expectEventOrder?: Record<string, RuntimeTraceEventOrderAssertion[]>;
   expectEventOrderByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventOrderAssertion[]>>>;
   expectOpaqueRefs?: boolean;
@@ -157,6 +159,10 @@ interface RuntimeTraceEventAssertion {
   method?: string;
   args?: unknown[];
   value?: unknown;
+}
+
+interface RuntimeTraceEventCountAssertion extends RuntimeTraceEventAssertion {
+  count: number;
 }
 
 interface RuntimeTraceEventOrderAssertion {
@@ -978,6 +984,7 @@ async function createCppWorkerHarness() {
     Date,
     performance,
     Uint8Array,
+    URL,
     BigInt,
     Map,
     Set,
@@ -992,6 +999,10 @@ async function createCppWorkerHarness() {
     postMessage: () => {},
     fetch: readAsset,
     crypto: globalThis.crypto,
+    location: {
+      href: pathToFileURL(join(process.cwd(), 'workers', 'cpp', 'cpp-worker.js')).href,
+      origin: 'null',
+    },
     __tracecodeCppCompilerBundle: compilerBundle,
   };
   sandbox.globalThis = sandbox;
@@ -1190,8 +1201,11 @@ function eventMatchesAssertion(event: RuntimeTrace['events'][number], assertion:
     }
   }
   if (assertion.pathDepth !== undefined) {
-    if (!('target' in event) || !('path' in event.target) || !Array.isArray(event.target.path)) return false;
-    if (event.target.path.length !== assertion.pathDepth) return false;
+    if (!('target' in event)) return false;
+    const pathDepth = 'path' in event.target && Array.isArray(event.target.path)
+      ? event.target.path.length
+      : 0;
+    if (pathDepth !== assertion.pathDepth) return false;
   }
   if (assertion.path !== undefined) {
     if (!('target' in event) || !('path' in event.target) || !Array.isArray(event.target.path)) return false;
@@ -1263,6 +1277,30 @@ function assertRoleRejectedEventAssertions(
       assertCondition(
         !roleEvents.some((event) => eventMatchesAssertion(event, assertion)),
         `${label}: rejected event assertion matched for role "${role}".\nRejected: ${stableStringify(assertion)}\nEvents: ${stableStringify(roleEvents)}`
+      );
+    }
+  }
+}
+
+function assertRoleEventCounts(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>,
+  assertionsByRole: Record<string, RuntimeTraceEventCountAssertion[]>,
+  label: string
+): void {
+  for (const [role, assertions] of Object.entries(assertionsByRole)) {
+    const line = roleLines[role];
+    assertCondition(
+      typeof line === 'number' && line > 0,
+      `${label}: event count assertion role "${role}" does not have a resolved anchor line`
+    );
+    const roleEvents = trace.events.filter((event) => event.line === line);
+    for (const assertion of assertions) {
+      const { count, ...eventAssertion } = assertion;
+      const actualCount = roleEvents.filter((event) => eventMatchesAssertion(event, eventAssertion)).length;
+      assertCondition(
+        actualCount === count,
+        `${label}: event count assertion failed for role "${role}".\nExpected count: ${count}\nReceived count: ${actualCount}\nAssertion: ${stableStringify(eventAssertion)}\nEvents: ${stableStringify(roleEvents)}`
       );
     }
   }
@@ -1670,6 +1708,18 @@ async function runFixture(
         trace,
         roleLines,
         rejectedEventAssertions,
+        `${fixture.id}:${language}`
+      );
+    }
+    const expectedEventCounts = {
+      ...(fixture.expectEventCounts ?? {}),
+      ...(fixture.expectEventCountsByLanguage?.[language] ?? {}),
+    };
+    if (Object.keys(expectedEventCounts).length > 0) {
+      assertRoleEventCounts(
+        trace,
+        roleLines,
+        expectedEventCounts,
         `${fixture.id}:${language}`
       );
     }

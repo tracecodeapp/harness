@@ -1552,7 +1552,8 @@ public static partial class CompilerHost
 
     private static SyntaxTree RewriteProjectSyntaxTree(SyntaxTree tree)
     {
-        SyntaxNode rewrittenRoot = new ProjectConsoleRewriter().Visit(tree.GetRoot()) ?? tree.GetRoot();
+        SyntaxNode root = tree.GetRoot();
+        SyntaxNode rewrittenRoot = new ProjectConsoleRewriter(root).Visit(root) ?? root;
         return CSharpSyntaxTree.Create(
             (CSharpSyntaxNode)rewrittenRoot,
             ParseOptions,
@@ -1563,6 +1564,19 @@ public static partial class CompilerHost
 
     private sealed class ProjectConsoleRewriter : CSharpSyntaxRewriter
     {
+        private readonly HashSet<string> fileAliases;
+        private readonly HashSet<string> directoryAliases;
+        private readonly HashSet<string> streamWriterAliases;
+        private readonly HashSet<string> fileStreamAliases;
+
+        public ProjectConsoleRewriter(SyntaxNode root)
+        {
+            fileAliases = CollectTypeAliases(root, "File", "System.IO.File", "global::System.IO.File");
+            directoryAliases = CollectTypeAliases(root, "Directory", "System.IO.Directory", "global::System.IO.Directory");
+            streamWriterAliases = CollectTypeAliases(root, "StreamWriter", "System.IO.StreamWriter", "global::System.IO.StreamWriter");
+            fileStreamAliases = CollectTypeAliases(root, "FileStream", "System.IO.FileStream", "global::System.IO.FileStream");
+        }
+
         public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
         {
             if (node.Expression is MemberAccessExpressionSyntax memberAccess
@@ -1617,36 +1631,61 @@ public static partial class CompilerHost
             return base.VisitObjectCreationExpression(node);
         }
 
-        private static bool IsProjectStreamWriterType(TypeSyntax type)
+        private bool IsProjectStreamWriterType(TypeSyntax type)
         {
             string text = type.ToString();
-            return string.Equals(text, "StreamWriter", StringComparison.Ordinal)
+            return MatchesAliasOrName(type, streamWriterAliases)
+                || string.Equals(text, "StreamWriter", StringComparison.Ordinal)
                 || string.Equals(text, "System.IO.StreamWriter", StringComparison.Ordinal)
                 || string.Equals(text, "global::System.IO.StreamWriter", StringComparison.Ordinal);
         }
 
-        private static bool IsProjectFileStreamType(TypeSyntax type)
+        private bool IsProjectFileStreamType(TypeSyntax type)
         {
             string text = type.ToString();
-            return string.Equals(text, "FileStream", StringComparison.Ordinal)
+            return MatchesAliasOrName(type, fileStreamAliases)
+                || string.Equals(text, "FileStream", StringComparison.Ordinal)
                 || string.Equals(text, "System.IO.FileStream", StringComparison.Ordinal)
                 || string.Equals(text, "global::System.IO.FileStream", StringComparison.Ordinal);
         }
 
-        private static bool IsProjectFileApi(ExpressionSyntax expression)
+        private bool IsProjectFileApi(ExpressionSyntax expression)
         {
             string text = expression.ToString();
-            return string.Equals(text, "File", StringComparison.Ordinal)
+            return MatchesAliasOrName(expression, fileAliases)
+                || string.Equals(text, "File", StringComparison.Ordinal)
                 || string.Equals(text, "System.IO.File", StringComparison.Ordinal)
                 || string.Equals(text, "global::System.IO.File", StringComparison.Ordinal);
         }
 
-        private static bool IsProjectDirectoryApi(ExpressionSyntax expression)
+        private bool IsProjectDirectoryApi(ExpressionSyntax expression)
         {
             string text = expression.ToString();
-            return string.Equals(text, "Directory", StringComparison.Ordinal)
+            return MatchesAliasOrName(expression, directoryAliases)
+                || string.Equals(text, "Directory", StringComparison.Ordinal)
                 || string.Equals(text, "System.IO.Directory", StringComparison.Ordinal)
                 || string.Equals(text, "global::System.IO.Directory", StringComparison.Ordinal);
+        }
+
+        private static HashSet<string> CollectTypeAliases(SyntaxNode root, params string[] typeNames)
+        {
+            HashSet<string> aliases = new(StringComparer.Ordinal);
+            HashSet<string> targets = new(typeNames, StringComparer.Ordinal);
+            foreach (UsingDirectiveSyntax directive in root.DescendantNodes().OfType<UsingDirectiveSyntax>())
+            {
+                string? alias = directive.Alias?.Name.Identifier.ValueText;
+                string? name = directive.Name?.ToString();
+                if (!string.IsNullOrWhiteSpace(alias) && name is not null && targets.Contains(name))
+                {
+                    aliases.Add(alias);
+                }
+            }
+            return aliases;
+        }
+
+        private static bool MatchesAliasOrName(SyntaxNode node, HashSet<string> aliases)
+        {
+            return node is IdentifierNameSyntax identifier && aliases.Contains(identifier.Identifier.ValueText);
         }
 
         private static bool IsProjectFileMutationMethod(string method)

@@ -819,30 +819,36 @@ print(json.dumps({
     )),
     `Python tuple for-loop should bind the produced source element, received ${JSON.stringify(loopStep.accesses)}`
   );
-  assertCondition(
-    (loopStep.accesses ?? []).some((access) => (
-      access.variable === 'edges' &&
-      access.kind === 'cell-read' &&
-      JSON.stringify(access.indices) === JSON.stringify([0, 2]) &&
-      JSON.stringify(access.indexSources) === JSON.stringify([null, null]) &&
-      JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'w' }) &&
-      access.value === 5
-    )),
-    `Python tuple for-loop should bind destructured components to concrete source cells, received ${JSON.stringify(loopStep.accesses)}`
-  );
-  assertCondition(
-    parsed.runtimeTrace.events.some((event) => (
-      event.kind === 'read' &&
-      event.line === tracingPayload.userCodeStartLine + userLineNumber(source, 'for u, v, w in edges:') - 1 &&
-      event.target?.variable === 'edges' &&
-      JSON.stringify(event.target.path) === JSON.stringify([0, 2]) &&
-      JSON.stringify(event.target.indexSources) === JSON.stringify([null, null]) &&
-      event.binding?.kind === 'iteration' &&
-      event.binding.variable === 'w' &&
-      event.value === 5
-    )),
-    `Python V4 runtime trace should emit destructured tuple iteration cell provenance, received ${JSON.stringify(parsed.runtimeTrace.events)}`
-  );
+  for (const [bindingVariable, expectedPath, expectedValue] of [
+    ['u', [0, 0], 0],
+    ['v', [0, 1], 1],
+    ['w', [0, 2], 5],
+  ] as Array<[string, number[], number]>) {
+    assertCondition(
+      (loopStep.accesses ?? []).some((access) => (
+        access.variable === 'edges' &&
+        access.kind === 'cell-read' &&
+        JSON.stringify(access.indices) === JSON.stringify(expectedPath) &&
+        JSON.stringify(access.indexSources) === JSON.stringify([null, null]) &&
+        JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: bindingVariable }) &&
+        access.value === expectedValue
+      )),
+      `Python tuple for-loop should bind ${bindingVariable} to its concrete source cell, received ${JSON.stringify(loopStep.accesses)}`
+    );
+    assertCondition(
+      parsed.runtimeTrace.events.some((event) => (
+        event.kind === 'read' &&
+        event.line === tracingPayload.userCodeStartLine + userLineNumber(source, 'for u, v, w in edges:') - 1 &&
+        event.target?.variable === 'edges' &&
+        JSON.stringify(event.target.path) === JSON.stringify(expectedPath) &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify([null, null]) &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === bindingVariable &&
+        event.value === expectedValue
+      )),
+      `Python V4 runtime trace should emit ${bindingVariable} destructured tuple cell provenance, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+    );
+  }
 
   console.log('PASS: Python runtime records tuple for-loop binding provenance');
 }

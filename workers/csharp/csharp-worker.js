@@ -36,6 +36,10 @@ const STDIN_PIPE_CLOSED_INDEX = 2;
 const PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
 const PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
 const PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
+const CSHARP_MAX_INPUT_DEPTH = 128;
+const CSHARP_MAX_INPUT_COLLECTION_ITEMS = 200_000;
+const CSHARP_MAX_INPUT_OBJECT_PROPERTIES = 50_000;
+const CSHARP_MAX_INPUT_TRAVERSAL_NODES = 750_000;
 const CSHARP_WARMUP_REQUEST = Object.freeze({
   source: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
   functionName: 'Add',
@@ -122,6 +126,65 @@ function projectFileChangeByteSize(change) {
       : projectUtf8Bytes(change.contents);
   }
   return size;
+}
+
+function enterCSharpInputNode(budget, depth) {
+  if (depth > CSHARP_MAX_INPUT_DEPTH) {
+    throw new Error(`C# input exceeds maximum depth of ${CSHARP_MAX_INPUT_DEPTH}.`);
+  }
+  budget.nodes += 1;
+  if (budget.nodes > CSHARP_MAX_INPUT_TRAVERSAL_NODES) {
+    throw new Error(`C# input exceeds maximum JSON value count of ${CSHARP_MAX_INPUT_TRAVERSAL_NODES}.`);
+  }
+}
+
+function recordCSharpInputCollectionItem(index, label) {
+  if (index >= CSHARP_MAX_INPUT_COLLECTION_ITEMS) {
+    throw new Error(`${label} exceeds maximum item count of ${CSHARP_MAX_INPUT_COLLECTION_ITEMS}.`);
+  }
+}
+
+function recordCSharpInputObjectProperty(index, label) {
+  if (index >= CSHARP_MAX_INPUT_OBJECT_PROPERTIES) {
+    throw new Error(`${label} exceeds maximum property count of ${CSHARP_MAX_INPUT_OBJECT_PROPERTIES}.`);
+  }
+}
+
+function validateCSharpInputElement(value, budget, depth) {
+  enterCSharpInputNode(budget, depth);
+  if (value === null || typeof value !== 'object') return;
+  if (budget.references.has(value)) {
+    throw new Error('C# input contains a circular reference.');
+  }
+
+  budget.references.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) {
+        recordCSharpInputCollectionItem(index, 'C# input array');
+        validateCSharpInputElement(value[index], budget, depth + 1);
+      }
+      return;
+    }
+
+    const keys = Object.keys(value);
+    for (let index = 0; index < keys.length; index++) {
+      recordCSharpInputObjectProperty(index, 'C# input object');
+      validateCSharpInputElement(value[keys[index]], budget, depth + 1);
+    }
+  } finally {
+    budget.references.delete(value);
+  }
+}
+
+function validateCSharpInputsForJson(inputs) {
+  const root = inputs && typeof inputs === 'object' ? inputs : {};
+  const budget = { nodes: 0, references: new WeakSet() };
+  const keys = Object.keys(root);
+  for (let index = 0; index < keys.length; index++) {
+    recordCSharpInputObjectProperty(index, 'C# inputs');
+    validateCSharpInputElement(root[keys[index]], budget, 0);
+  }
 }
 
 function applyProjectEventBudget(context, payload) {
@@ -1732,9 +1795,6 @@ async function handleMessage(message) {
     message.type === 'execute-with-tracing'
   ) {
     const startedAt = now();
-    const runtimeStartedAt = now();
-    const runtimeResult = await loadRuntime(message.payload?.assetBaseUrl);
-    const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
     const request = {
       source: message.payload?.code ?? '',
       functionName: message.payload?.functionName ?? '',
@@ -1749,6 +1809,19 @@ async function handleMessage(message) {
       maxPathDepth: message.payload?.maxPathDepth,
       minimalTrace: message.payload?.minimalTrace,
     };
+    try {
+      validateCSharpInputsForJson(request.inputs);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        consoleOutput: [],
+        timings: { totalMs: elapsedMs(startedAt) },
+      };
+    }
+    const runtimeStartedAt = now();
+    const runtimeResult = await loadRuntime(message.payload?.assetBaseUrl);
+    const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
     const hostCallStartedAt = now();
     const result = normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request);
     const hostCallMs = elapsedMs(hostCallStartedAt);

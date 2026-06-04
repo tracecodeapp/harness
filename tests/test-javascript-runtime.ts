@@ -2217,6 +2217,28 @@ function smallest(nums: number[]): number {
       graphConstructionBindingReads
     )}`
   );
+  for (const [bindingVariable, expectedPath, expectedValue] of [
+    ['course', [0, 0], 0],
+    ['prereq', [0, 1], 1],
+  ] as Array<[string, Array<string | number>, number]>) {
+    const slotBindingRead = traceAccessEvents(executeTypeScriptGraphConstructionState).find(
+      (event) =>
+        event.kind === 'read' &&
+        event.line === 5 &&
+        event.target?.variable === 'prerequisites' &&
+        JSON.stringify(event.target.path) === JSON.stringify(expectedPath) &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify([null, null]) &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === bindingVariable &&
+        event.value === expectedValue
+    );
+    assertCondition(
+      Boolean(slotBindingRead),
+      `TypeScript destructured graph construction should emit ${bindingVariable} source-cell binding, received ${JSON.stringify(
+        executeTypeScriptGraphConstructionState.trace?.events
+      )}`
+    );
+  }
   console.log('PASS: execute-with-tracing typescript mutating-call post-line state contract');
 
   for (const language of ['javascript', 'typescript'] as const) {

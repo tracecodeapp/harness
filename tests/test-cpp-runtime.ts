@@ -2622,6 +2622,23 @@ if (!auditStructuredVectorRangeEvents.some((event) =>
 )) {
   throw new Error('C++ structured vector range-for should emit source element binding provenance, received ' + JSON.stringify(auditStructuredVectorRangeEvents));
 }
+for (const [bindingVariable, expectedPath, expectedValue] of [
+  ['u', [0, 0], 1],
+  ['v', [0, 1], 2],
+  ['w', [0, 2], 3],
+]) {
+  if (!auditStructuredVectorRangeEvents.some((event) =>
+    event.kind === 'read' &&
+    event.line === 7 &&
+    event.target?.variable === 'edges' &&
+    JSON.stringify(event.target.path) === JSON.stringify(expectedPath) &&
+    event.binding?.kind === 'iteration' &&
+    event.binding?.variable === bindingVariable &&
+    event.value === expectedValue
+  )) {
+    throw new Error('C++ structured vector range-for should emit ' + bindingVariable + ' source-cell binding provenance, received ' + JSON.stringify(auditStructuredVectorRangeEvents));
+  }
+}
 
 const auditStringPointerIndexedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [

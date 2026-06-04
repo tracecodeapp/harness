@@ -1195,7 +1195,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             yield return writeStatement;
         }
-        foreach (StatementSyntax readStatement in CreateScalarExpressionReadStatements(executableStatement, line))
+        foreach (StatementSyntax readStatement in CreateScalarExpressionReadStatements(statement, line))
         {
             yield return readStatement;
         }
@@ -1576,7 +1576,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string receiverName = receiver.Identifier.ValueText;
-        if (collectionVariables.Contains(receiverName)
+        if (!IsTraceableValueRoot(receiverName)
+            || collectionVariables.Contains(receiverName)
             || collectionParameterVariables.Contains(receiverName)
             || stringBuilderScopes.Any(scope => scope.Contains(receiverName)))
         {
@@ -3019,6 +3020,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && identifier.Ancestors().OfType<ArgumentSyntax>().Any(argument =>
                 argument.Ancestors().OfType<InvocationExpressionSyntax>().Any())
             && !identifier.Ancestors().Any(ancestor => ancestor is TypeOfExpressionSyntax)
+            && !IsInsideTraceCodeInstrumentationCall(identifier)
             && !IsInsideUserAnonymousFunction(identifier);
     }
 
@@ -3634,6 +3636,21 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             invocation.Expression is MemberAccessExpressionSyntax memberAccess
             && string.Equals(memberAccess.Name.Identifier.ValueText, "WithSourceLine", StringComparison.Ordinal)
         );
+    }
+
+    private static bool IsInsideTraceCodeInstrumentationCall(SyntaxNode node)
+    {
+        return node.Ancestors().OfType<InvocationExpressionSyntax>().Any(invocation =>
+            invocation.Expression is MemberAccessExpressionSyntax memberAccess
+            && IsTraceCodeInstrumentationMemberAccess(memberAccess)
+        );
+    }
+
+    private static bool IsTraceCodeInstrumentationMemberAccess(MemberAccessExpressionSyntax memberAccess)
+    {
+        string receiver = memberAccess.Expression.ToString();
+        return string.Equals(receiver, "TraceCode.Internal.TraceCodeTrace", StringComparison.Ordinal)
+            || string.Equals(receiver, "TraceCode.CSharpHost.RuntimeTraceSink", StringComparison.Ordinal);
     }
 
     private static bool IsInsideAnonymousFunction(SyntaxNode node)

@@ -120,8 +120,10 @@ const TRACE_KERNEL_DEVICES: NonNullable<CSharpProjectWorkerRequest['project']['k
   { path: '/dev/tee', readable: false, writable: true, outputDevice: '/dev/capture' },
   { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
 ];
+const CSHARP_BROWSER_PROGRESS = process.env.TRACECODE_CSHARP_BROWSER_PROGRESS === '1';
 
 let cachedDotnetCommand: string | undefined;
+let csharpWorkerCaseCounter = 0;
 
 function resolveDotnetCommand(): string {
   if (cachedDotnetCommand) return cachedDotnetCommand;
@@ -149,6 +151,23 @@ function resolveDotnetCommand(): string {
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+async function withProgress<T>(label: string, action: () => Promise<T>): Promise<T> {
+  if (!CSHARP_BROWSER_PROGRESS) {
+    return action();
+  }
+  const index = ++csharpWorkerCaseCounter;
+  const started = Date.now();
+  console.log(`RUN: C# browser ${index} ${label}`);
+  try {
+    const result = await action();
+    console.log(`PASS: C# browser ${index} ${label} (${Date.now() - started}ms)`);
+    return result;
+  } catch (error) {
+    console.log(`FAIL: C# browser ${index} ${label} (${Date.now() - started}ms)`);
+    throw error;
   }
 }
 
@@ -372,11 +391,16 @@ async function runWorkerCase(
     maxTraceSteps?: number;
     executionStyle?: 'function' | 'solution-method' | 'ops-class';
     messageType?: 'execute-code' | 'execute-code-interview' | 'execute-with-tracing';
+    pageBuiltInputs?: { kind: 'deep-node-chain'; depth: number };
   } = {}
 ): Promise<CSharpWorkerResponse> {
-  return page.evaluate(
-    async ({ code, functionName, inputs, assetBaseUrl, trace, options, workerRequestTimeoutMs }) => {
+  return withProgress(`${options.messageType ?? (trace ? 'execute-with-tracing' : 'execute-code')} ${functionName || '<script>'}`, () =>
+    page.evaluate(
+    async ({ code, functionName, inputs, assetBaseUrl, trace, options, workerRequestTimeoutMs, debugProgress }) => {
       const harnessKey = '__tracecodeCSharpWorkerHarness';
+      const logProgress = (message) => {
+        if (debugProgress) console.log(message);
+      };
       async function createHarness() {
         const worker = new Worker('/workers/csharp/csharp-worker.js', { type: 'module' });
         let nextId = 0;
@@ -394,6 +418,9 @@ async function runWorkerCase(
 
         worker.addEventListener('message', (event) => {
           const id = event.data?.id;
+          logProgress(
+            `worker message type=${event.data?.type ?? '<none>'} id=${id ?? '<none>'} token=${event.data?.protocolToken ?? '<none>'}`
+          );
           if (!id || !pending.has(id)) return;
           const { resolve, reject, timeoutId, protocolToken } = pending.get(id);
           if (event.data?.protocolToken !== protocolToken) return;
@@ -418,7 +445,9 @@ async function runWorkerCase(
               terminate(new Error(`C# worker request timed out: ${type}`));
             }, workerRequestTimeoutMs);
             pending.set(id, { resolve, reject, timeoutId, protocolToken });
+            logProgress(`before post type=${type} id=${id} token=${protocolToken}`);
             worker.postMessage({ id, type, payload, protocolToken });
+            logProgress(`after post type=${type} id=${id} token=${protocolToken}`);
           });
         }
 
@@ -434,18 +463,41 @@ async function runWorkerCase(
       }
 
       const { messageType, ...requestOptions } = options;
+      function buildInputsInPage() {
+        if (requestOptions.pageBuiltInputs?.kind !== 'deep-node-chain') return inputs;
+        const root = { __type__: 'Node', val: 0, children: [] };
+        let cursor = root;
+        for (let depth = 0; depth < requestOptions.pageBuiltInputs.depth; depth++) {
+          const child = { __type__: 'Node', val: depth + 1, children: [] };
+          cursor.children = [child];
+          cursor = child;
+        }
+        return { root };
+      }
+
       const result = await harness.send(messageType ?? (trace ? 'execute-with-tracing' : 'execute-code'), {
         code,
         functionName,
-        inputs,
+        inputs: buildInputsInPage(),
         executionStyle: requestOptions.executionStyle ?? 'solution-method',
         assetBaseUrl,
         ...requestOptions,
+        pageBuiltInputs: undefined,
       });
       return result;
     },
-    { code, functionName, inputs, assetBaseUrl, trace, options, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
-  ) as Promise<CSharpWorkerResponse>;
+    {
+      code,
+      functionName,
+      inputs,
+      assetBaseUrl,
+      trace,
+      options,
+      workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS,
+      debugProgress: CSHARP_BROWSER_PROGRESS,
+    }
+  ) as Promise<CSharpWorkerResponse>
+  );
 }
 
 async function runProjectWorkerCase(
@@ -454,8 +506,9 @@ async function runProjectWorkerCase(
   assetBaseUrl: string
 ): Promise<CSharpProjectWorkerResponse> {
   const serializableRequest = serializeProjectWorkerRequest(request);
-  return page.evaluate(
-    async ({ request, assetBaseUrl, workerRequestTimeoutMs }) => {
+  return withProgress(`execute-project-csharp ${request.source} ${request.scriptPath}`, () =>
+    page.evaluate(
+      async ({ request, assetBaseUrl, workerRequestTimeoutMs }) => {
       function requestWithBrowserStdinPipe(request) {
         const bytes = Array.isArray(request.stdinPipeBytes) ? request.stdinPipeBytes : undefined;
         if (!bytes) return request;
@@ -523,9 +576,10 @@ async function runProjectWorkerCase(
       } finally {
         terminate();
       }
-    },
-    { request: serializableRequest, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
-  ) as Promise<CSharpProjectWorkerResponse>;
+      },
+      { request: serializableRequest, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
+    ) as Promise<CSharpProjectWorkerResponse>
+  );
 }
 
 async function runProjectWorkerSequenceCase(
@@ -534,8 +588,9 @@ async function runProjectWorkerSequenceCase(
   assetBaseUrl: string
 ): Promise<CSharpProjectWorkerResponse[]> {
   const serializableRequests = requests.map(serializeProjectWorkerRequest);
-  return page.evaluate(
-    async ({ requests, assetBaseUrl, workerRequestTimeoutMs }) => {
+  return withProgress(`execute-project-csharp sequence ${requests.length}`, () =>
+    page.evaluate(
+      async ({ requests, assetBaseUrl, workerRequestTimeoutMs }) => {
       function requestWithBrowserStdinPipe(request) {
         const bytes = Array.isArray(request.stdinPipeBytes) ? request.stdinPipeBytes : undefined;
         if (!bytes) return request;
@@ -607,9 +662,10 @@ async function runProjectWorkerSequenceCase(
       } finally {
         terminate();
       }
-    },
-    { requests: serializableRequests, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
-  ) as Promise<CSharpProjectWorkerResponse[]>;
+      },
+      { requests: serializableRequests, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
+    ) as Promise<CSharpProjectWorkerResponse[]>
+  );
 }
 
 function fixture(name: string): string {
@@ -635,6 +691,10 @@ async function main(): Promise<void> {
   try {
     browser = await chromium.launch();
     const page = await browser.newPage();
+    if (CSHARP_BROWSER_PROGRESS) {
+      page.on('console', (message) => console.log(`PAGE: ${message.text()}`));
+      page.on('pageerror', (error) => console.log(`PAGEERROR: ${error.message}`));
+    }
     await page.goto(`${server.origin}/spikes/csharp-wasm-roslyn/browser-worker/blank.html`);
     await page.evaluate('globalThis.__name = (fn) => fn');
 
@@ -1444,6 +1504,17 @@ async function main(): Promise<void> {
         && event.binding?.kind === 'iteration'
         && event.binding.variable === 'u') === true,
       `C# tuple foreach should emit destructured u binding reads, received ${JSON.stringify(tupleWeightedEdgesForeach.events)}`
+    );
+    assertCondition(
+      tupleWeightedEdgesForeach.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'edges'
+        && JSON.stringify(event.target.path) === JSON.stringify([0, 1])
+        && event.value === 1
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'v') === true,
+      `C# tuple foreach should emit destructured v binding reads, received ${JSON.stringify(tupleWeightedEdgesForeach.events)}`
     );
     assertCondition(
       tupleWeightedEdgesForeach.events?.some((event) =>
@@ -3225,14 +3296,6 @@ async function main(): Promise<void> {
       `C# worker nested Node input case should return 4, received ${JSON.stringify(nestedNodeInput.output)}`
     );
 
-    type DeepNodeInput = { __type__: string; val: number; children: DeepNodeInput[] };
-    const tooDeepNodeInput: DeepNodeInput = { __type__: 'Node', val: 0, children: [] };
-    let deepNodeCursor = tooDeepNodeInput;
-    for (let depth = 0; depth < 80; depth++) {
-      const child: DeepNodeInput = { __type__: 'Node', val: depth + 1, children: [] };
-      deepNodeCursor.children = [child];
-      deepNodeCursor = child;
-    }
     const rejectedDeepNodeInput = await runWorkerCase(
       page,
       [
@@ -3256,8 +3319,10 @@ async function main(): Promise<void> {
         '}',
       ].join('\n'),
       'SumNode',
-      { root: tooDeepNodeInput },
-      assetBaseUrl
+      {},
+      assetBaseUrl,
+      false,
+      { pageBuiltInputs: { kind: 'deep-node-chain', depth: 80 } }
     );
     assertCondition(
       !rejectedDeepNodeInput.success,
@@ -5754,9 +5819,8 @@ async function main(): Promise<void> {
     assertCondition(projectRuntimeError.exitCode === 1, `C# project worker runtime exception should fail: ${JSON.stringify(projectRuntimeError)}`);
     assertCondition(projectRuntimeError.stdout === 'before\n', `C# project worker should preserve stdout before runtime exception: ${JSON.stringify(projectRuntimeError)}`);
     assertCondition(
-      projectRuntimeError.stderr.includes('Unhandled exception. System.InvalidOperationException: boom-csharp-project') &&
-        projectRuntimeError.stderr.includes('at Program.Main()'),
-      `C# project worker should surface runtime exception stack traces, received ${JSON.stringify(projectRuntimeError.stderr)}`
+      projectRuntimeError.stderr === 'Unhandled exception. System.InvalidOperationException: boom-csharp-project\n',
+      `C# project worker should surface sanitized runtime exceptions without stack traces, received ${JSON.stringify(projectRuntimeError.stderr)}`
     );
 
     const canonicalProjectRun = await runProjectWorkerCase(

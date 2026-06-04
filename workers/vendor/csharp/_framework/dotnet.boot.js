@@ -1,7 +1,7 @@
 export const config = /*json-start*/{
   "mainAssemblyName": "TraceCode.CSharpHost.dll",
   "resources": {
-    "hash": "sha256-04UiA8hrawBs5mDNByg9um4xPSuTmUHqFUqbXYUj3fk=",
+    "hash": "sha256-9Vy9nj6vs7/zziW0w+t3Z53mvGtQebiFjsDHzmInfxU=",
     "jsModuleNative": [
       {
         "name": "dotnet.native.js"
@@ -15,7 +15,7 @@ export const config = /*json-start*/{
     "wasmNative": [
       {
         "name": "dotnet.native.wasm",
-        "hash": "sha256-rMfZT7597d8ody/0oJttdSJ4p+mq/t0rFVmVgzK5vAU="
+        "hash": "sha256-UsrAmGHQSRbaQw90E+dTaGoMiFzKMxf0Sh3rOcCLcog="
       }
     ],
     "coreAssembly": [
@@ -894,24 +894,7 @@ export const config = /*json-start*/{
       {
         "virtualPath": "TraceCode.CSharpHost.wasm",
         "name": "TraceCode.CSharpHost.wasm",
-        "hash": "sha256-jdDHbENoWaOiJ6TuUCxdRhUoPhtQPu+v8tJ+GN8LojA="
-      }
-    ],
-    "pdb": [
-      {
-        "virtualPath": "Microsoft.CodeAnalysis.pdb",
-        "name": "Microsoft.CodeAnalysis.pdb",
-        "hash": "sha256-h0SrXXfUifPcstJ9u+NSU4E+H96S+sKzaFGQG01C1r4="
-      },
-      {
-        "virtualPath": "Microsoft.CodeAnalysis.CSharp.pdb",
-        "name": "Microsoft.CodeAnalysis.CSharp.pdb",
-        "hash": "sha256-rGINrPXkoKcEtqi04SPCUEj7dDyGZIoOyiyCQKtahcw="
-      },
-      {
-        "virtualPath": "TraceCode.CSharpHost.pdb",
-        "name": "TraceCode.CSharpHost.pdb",
-        "hash": "sha256-XemXyB8dNV8gfO5GQllKH5FB+q456jPrvj4tyRUaGfE="
+        "hash": "sha256-YTKsgouvD11EhQGCmsuvq2QxvM7DDLvYti7sNDZNMgk="
       }
     ],
     "satelliteResources": {
@@ -1836,7 +1819,7 @@ export const config = /*json-start*/{
       {
         "virtualPath": "/tracecode-refs/TraceCode.CSharpHost.dll",
         "name": "supportFiles/152_TraceCode.CSharpHost.dll",
-        "hash": "sha256-oSfeoxByMe4oLiI184faRX+z0Mlo8IIHfVBo85jnbTk="
+        "hash": "sha256-Vime5wUT2jX8q/ghoA+rM+6C+stuzXA9HPMe8azwOOc="
       },
       {
         "virtualPath": "/tracecode-refs/WindowsBase.dll",
@@ -1845,7 +1828,7 @@ export const config = /*json-start*/{
       }
     ]
   },
-  "debugLevel": -1,
+  "debugLevel": 0,
   "globalizationMode": "invariant",
   "runtimeConfig": {
     "runtimeOptions": {

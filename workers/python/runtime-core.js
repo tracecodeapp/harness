@@ -1332,7 +1332,8 @@ def _tracecode_heapq_mutation(var_name, container, indices, target, method_name,
             __tracecode_make_access_event(var_name, 'mutating-call', method_name=method_name, args=__tracecode_serialize_call_args(args, kwargs)),
         )
     try:
-        after_values = list(target[:len(before_values)]) if before_values is not None else None
+        after_limit = max(len(before_values), min(len(target), __tracecode_pending_access_budget(frame))) if before_values is not None else 0
+        after_values = list(target[:after_limit]) if before_values is not None else None
         if after_values is not None:
             path_prefix = list(normalized or [])
             source_prefix = [None for _ in path_prefix]
@@ -2695,6 +2696,9 @@ def _looks_like_indexed_adjacency_list(value):
 def _tracer(frame, event, arg):
     global _trace_limit_exceeded, _timeout_reason, _total_line_events, _line_hit_count, _infinite_loop_line
     func_name = frame.f_code.co_name
+
+    if frame.f_code.co_filename != 'solution.py':
+        return _tracer
 
     if func_name in _internal_funcs:
         return _tracer
