@@ -72,6 +72,100 @@ const INTERVIEW_GUARD_DEFAULTS = Object.freeze({
   maxMemoryBytes: 96 * 1024 * 1024, // 96 MB
   memoryCheckEvery: 200,
 });
+const PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
+const PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
+const PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
+
+function projectUtf8Bytes(value) {
+  let bytes = 0;
+  for (const char of String(value ?? '')) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+function projectTruncateUtf8(value, maxBytes) {
+  if (maxBytes <= 0) return '';
+  let bytes = 0;
+  let output = '';
+  for (const char of String(value ?? '')) {
+    const nextBytes = projectUtf8Bytes(char);
+    if (bytes + nextBytes > maxBytes) break;
+    bytes += nextBytes;
+    output += char;
+  }
+  return output;
+}
+
+function projectFileChangeByteSize(change) {
+  if (!change || typeof change !== 'object') return 0;
+  let size = projectUtf8Bytes(change.path ?? '');
+  if (typeof change.contents === 'string') {
+    size += change.encoding === 'base64'
+      ? Math.ceil(change.contents.length * 3 / 4)
+      : projectUtf8Bytes(change.contents);
+  }
+  return size;
+}
+
+function createProjectEventBudget() {
+  const outputBytes = { stdout: 0, stderr: 0 };
+  const truncatedOutputStreams = new Set();
+  let liveFileChangeCount = 0;
+  let liveFileChangeBytes = 0;
+  let warnedLiveFileBudget = false;
+
+  return {
+    apply(event) {
+      if (!event || typeof event !== 'object') return event;
+
+      if (
+        event.type === 'output' &&
+        (event.stream === 'stdout' || event.stream === 'stderr') &&
+        typeof event.data === 'string'
+      ) {
+        if (truncatedOutputStreams.has(event.stream)) return null;
+        const used = outputBytes[event.stream];
+        const remaining = PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+        const bytes = projectUtf8Bytes(event.data);
+        if (bytes <= remaining) {
+          outputBytes[event.stream] = used + bytes;
+          return event;
+        }
+
+        truncatedOutputStreams.add(event.stream);
+        const marker = `\n[tracekernel: ${event.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+        const data = `${projectTruncateUtf8(event.data, Math.max(0, remaining))}${marker}`;
+        outputBytes[event.stream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + projectUtf8Bytes(marker);
+        return data ? { ...event, data } : null;
+      }
+
+      if (event.type === 'file-change' && (event.phase ?? 'live') === 'live') {
+        liveFileChangeCount += 1;
+        const size = projectFileChangeByteSize(event.change);
+        const overBudget =
+          liveFileChangeCount > PROJECT_MAX_LIVE_FILE_CHANGES ||
+          size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES ||
+          liveFileChangeBytes + size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES;
+        if (overBudget) {
+          if (!warnedLiveFileBudget) {
+            warnedLiveFileBudget = true;
+            emitRuntimeDiagnostic('warn', 'project-event-budget', 'Dropped oversized Python live file-change event.', {
+              count: liveFileChangeCount,
+              bytes: liveFileChangeBytes,
+              eventBytes: size,
+            });
+          }
+          return null;
+        }
+        liveFileChangeBytes += size;
+      }
+
+      return event;
+    },
+  };
+}
 
 async function ensurePythonLibraryPackages(runtime) {
   if (!runtime || typeof runtime.loadPackage !== 'function') return;
@@ -904,8 +998,13 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     const relative = relativePath(path);
     if (!relative || typeof fs.readFile !== 'function') return null;
     try {
+      const stat = typeof fs.stat === 'function' ? fs.stat(path) : null;
+      if (stat && typeof stat.size === 'number' && stat.size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) {
+        return null;
+      }
       const rawContents = fs.readFile(path, { encoding: 'binary' });
       const contents = rawContents instanceof Uint8Array ? rawContents : new Uint8Array(rawContents);
+      if (contents.byteLength > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) return null;
       if (textDecoder) {
         try {
           return { path: relative, contents: textDecoder.decode(contents) };
@@ -1526,13 +1625,16 @@ async function executeProjectPython(request, messageId, protocolToken) {
   const requestJson = JSON.stringify(request ?? {});
   const httpBridge = new TraceKernelHttpBridge(messageId, protocolToken);
   activeProjectHttpBridges.set(messageId, httpBridge);
+  const projectEventBudget = createProjectEventBudget();
   const projectOutputEvents = [];
   self.__tracecodeProjectEvent = (event) => {
     const payload = typeof event === 'string' ? JSON.parse(event) : event;
-    if (payload?.type === 'output' && (payload.stream === 'stdout' || payload.stream === 'stderr')) {
-      projectOutputEvents.push(payload);
+    const budgetedPayload = projectEventBudget.apply(payload);
+    if (!budgetedPayload) return;
+    if (budgetedPayload?.type === 'output' && (budgetedPayload.stream === 'stdout' || budgetedPayload.stream === 'stderr')) {
+      projectOutputEvents.push(budgetedPayload);
     }
-    self.postMessage({ id: messageId, type: 'project-event', payload, protocolToken });
+    self.postMessage({ id: messageId, type: 'project-event', payload: budgetedPayload, protocolToken });
   };
   self.__tracecodeRuntimeKernelOpenTarget = (payload) => {
     const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
@@ -1609,6 +1711,59 @@ _workspace_alias = _normalize_virtual_root(_workspace_alias_value) if _workspace
 shutil.rmtree(_root, ignore_errors=True)
 os.makedirs(_root, exist_ok=True)
 _original_file_bytes = {}
+_PROJECT_MAX_OUTPUT_STREAM_BYTES = ${PROJECT_MAX_OUTPUT_STREAM_BYTES}
+_PROJECT_MAX_LIVE_FILE_CHANGES = ${PROJECT_MAX_LIVE_FILE_CHANGES}
+_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = ${PROJECT_MAX_LIVE_FILE_CHANGE_BYTES}
+_project_live_file_change_count = 0
+_project_live_file_change_bytes = 0
+
+def _project_utf8_len(_value):
+    return len(str(_value).encode("utf-8", "replace"))
+
+def _project_truncate_utf8(_value, _max_bytes):
+    if _max_bytes <= 0:
+        return ""
+    _out = []
+    _used = 0
+    for _char in str(_value):
+        _next = len(_char.encode("utf-8", "replace"))
+        if _used + _next > _max_bytes:
+            break
+        _used += _next
+        _out.append(_char)
+    return "".join(_out)
+
+def _project_file_change_byte_size(_change):
+    if not isinstance(_change, dict):
+        return 0
+    _size = _project_utf8_len(_change.get("path", ""))
+    _contents = _change.get("contents")
+    if isinstance(_contents, str):
+        if _change.get("encoding") == "base64":
+            _size += int((len(_contents) * 3 + 3) / 4)
+        else:
+            _size += _project_utf8_len(_contents)
+    return _size
+
+def _project_live_file_change_allowed(_change):
+    global _project_live_file_change_count, _project_live_file_change_bytes
+    _project_live_file_change_count += 1
+    _size = _project_file_change_byte_size(_change)
+    if _project_live_file_change_count > _PROJECT_MAX_LIVE_FILE_CHANGES:
+        return False
+    if _size > _PROJECT_MAX_LIVE_FILE_CHANGE_BYTES:
+        return False
+    if _project_live_file_change_bytes + _size > _PROJECT_MAX_LIVE_FILE_CHANGE_BYTES:
+        return False
+    _project_live_file_change_bytes += _size
+    return True
+
+def _project_file_size_within_live_budget(_absolute_path, _relative_path):
+    try:
+        _size = os.path.getsize(_absolute_path)
+    except OSError:
+        return True
+    return _size + _project_utf8_len(_relative_path) <= _PROJECT_MAX_LIVE_FILE_CHANGE_BYTES
 
 for _directory in _request.get("project", {}).get("directories", []):
     _relative_directory = str(_directory).replace("\\\\", "/")
@@ -1682,6 +1837,13 @@ def _read_project_input(_device="/dev/stdin", _size=-1):
 
 def _emit_project_event(_event):
     try:
+        if (
+            isinstance(_event, dict)
+            and _event.get("type") == "file-change"
+            and _event.get("phase", "live") == "live"
+            and not _project_live_file_change_allowed(_event.get("change", {}))
+        ):
+            return
         _js_self.__tracecodeProjectEvent(json.dumps(_event))
     except Exception:
         pass
@@ -2479,8 +2641,12 @@ def _runtime_file_change_for_absolute(_absolute_path):
     _relative_path = _project_relative_path_from_absolute(_absolute_path)
     if not _relative_path or not os.path.isfile(_absolute_path):
         return None
+    if not _project_file_size_within_live_budget(_absolute_path, _relative_path):
+        return None
     with _project_original_open(_absolute_path, "rb") as _handle:
         _contents = _handle.read()
+    if len(_contents) + _project_utf8_len(_relative_path) > _PROJECT_MAX_LIVE_FILE_CHANGE_BYTES:
+        return None
     try:
         return {"path": _relative_path, "contents": _contents.decode("utf-8")}
     except UnicodeDecodeError:
@@ -2549,25 +2715,43 @@ class _TraceProjectStream(io.StringIO):
         super().__init__()
         self._stream = _stream
         self._binary_buffer = _TraceProjectBinaryBuffer(self)
+        self._bytes_written = 0
+        self._truncated = False
 
     @property
     def buffer(self):
         return self._binary_buffer
 
+    def _budget_text(self, _text):
+        if self._truncated:
+            return ""
+        _bytes = _project_utf8_len(_text)
+        _remaining = _PROJECT_MAX_OUTPUT_STREAM_BYTES - self._bytes_written
+        if _bytes <= _remaining:
+            self._bytes_written += _bytes
+            return _text
+        self._truncated = True
+        _marker = f"\\n[tracekernel: {self._stream} output truncated after {_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\\n"
+        _out = _project_truncate_utf8(_text, max(0, _remaining)) + _marker
+        self._bytes_written = _PROJECT_MAX_OUTPUT_STREAM_BYTES + _project_utf8_len(_marker)
+        return _out
+
     def write(self, _value, _source_device=None, _output_device=None):
         _text = str(_value)
+        _budgeted_text = self._budget_text(_text)
         _device = str(_output_device or ("/dev/stderr" if self._stream == "stderr" else "/dev/stdout"))
-        if _text:
+        if _budgeted_text:
             _event = {
                 "type": "output",
                 "stream": self._stream,
                 "device": _device,
-                "data": _text,
+                "data": _budgeted_text,
             }
             if _source_device and _source_device != _device:
                 _event["sourceDevice"] = _source_device
             _emit_project_event(_event)
-        return super().write(_text)
+            super().write(_budgeted_text)
+        return len(_text)
 
     def writelines(self, _lines):
         _text = "".join(str(_line) for _line in _lines)

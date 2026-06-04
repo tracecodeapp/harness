@@ -456,6 +456,82 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
   assertCondition(result.mutationError === 'EACCES', `C# workspace escape mutation should be rejected: ${JSON.stringify(result)}`);
 }
 
+async function testCSharpWorkerProjectEventBudgets(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'workers', 'csharp', 'csharp-worker.js'), 'utf8');
+  const posted: Array<{ type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } }> = [];
+  const context = vm.createContext({
+    console,
+    self: {
+      addEventListener: () => {},
+      postMessage: (message: unknown) => {
+        posted.push(message as { type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } });
+      },
+      close: () => {},
+      location: { search: '' },
+    },
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    SharedArrayBuffer,
+    Int32Array,
+    Atomics,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+    performance: { now: () => 0 },
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
+  vm.runInContext(source, context, { filename: 'csharp-worker.js' });
+  const result = vm.runInContext(
+    `(() => {
+      activeProjectIo = {
+        messageId: 'budget-test',
+        protocolToken: 'token',
+        eventStdout: [],
+        eventStderr: [],
+        outputBytes: { stdout: 0, stderr: 0 },
+        truncatedOutputStreams: new Set(),
+        liveFileChangeCount: 0,
+        liveFileChangeBytes: 0,
+        warnedLiveFileBudget: false,
+      };
+      emitProjectEvent({
+        type: 'output',
+        stream: 'stdout',
+        device: '/dev/stdout',
+        data: 'x'.repeat(1024 * 1024 + 16),
+      });
+      emitProjectEvent({
+        type: 'output',
+        stream: 'stdout',
+        device: '/dev/stdout',
+        data: 'late',
+      });
+      emitProjectEvent({
+        type: 'file-change',
+        phase: 'live',
+        change: { path: 'huge.txt', contents: 'x'.repeat(4 * 1024 * 1024 + 1) },
+      });
+      const stdout = activeProjectIo.eventStdout.join('');
+      const truncated = activeProjectIo.truncatedOutputStreams.has('stdout');
+      activeProjectIo = null;
+      return { stdout, truncated };
+    })()`,
+    context
+  ) as { stdout: string; truncated: boolean };
+  const projectEvents = posted.filter((message) => message.type === 'project-event');
+  const outputEvents = projectEvents.filter((message) => message.payload?.type === 'output');
+  const fileChangeEvents = projectEvents.filter((message) => message.payload?.type === 'file-change');
+
+  assertCondition(result.truncated, `C# worker should mark oversized stdout as truncated: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stdout.includes('output truncated after 1048576 bytes'),
+    `C# worker should keep a capped stdout buffer with marker: ${JSON.stringify(result)}`
+  );
+  assertCondition(outputEvents.length === 1, `C# worker should drop stdout chunks after truncation: ${JSON.stringify(projectEvents)}`);
+  assertCondition(fileChangeEvents.length === 0, `C# worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
+}
+
 async function testTraceKernelHttpTimeoutSignalsCooperativeHandlers(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
   let sideEffectsAfterTimeout = 0;
@@ -780,6 +856,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
   await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
+  await testCSharpWorkerProjectEventBudgets();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
   await testTraceKernelHttpDiagnosticsAreRedacted();
   await testTraceKernelHttpListenerLimit();

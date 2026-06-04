@@ -266,6 +266,79 @@ async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
   console.log('PASS: Pyodide project FS live events reject traversal paths');
 }
 
+async function assertPyodideProjectEventsApplyResourceBudgets(): Promise<void> {
+  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const events: Array<{ type?: string; stream?: string; data?: string; change?: { path?: string } }> = [];
+  const fakeFs = createFakePyodideFs();
+  const selfObject = {
+    __tracecodeProjectEvent: (event: { type?: string; stream?: string; data?: string; change?: { path?: string } }) => {
+      events.push(event);
+    },
+    postMessage: () => {},
+  };
+  const context = vm.createContext({
+    console,
+    self: selfObject,
+    TextDecoder,
+    Uint8Array,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+  });
+  vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
+
+  const budgetResult = vm.runInContext(
+    `(() => {
+      const budget = createProjectEventBudget();
+      const output = budget.apply({
+        type: 'output',
+        stream: 'stdout',
+        device: '/dev/stdout',
+        data: 'x'.repeat(1024 * 1024 + 16),
+      });
+      const afterTruncate = budget.apply({
+        type: 'output',
+        stream: 'stdout',
+        device: '/dev/stdout',
+        data: 'late',
+      });
+      const fileBudget = createProjectEventBudget();
+      const oversizedFile = fileBudget.apply({
+        type: 'file-change',
+        phase: 'live',
+        change: { path: 'huge.txt', contents: 'x'.repeat(4 * 1024 * 1024 + 1) },
+      });
+      return {
+        outputData: output && output.data,
+        afterTruncate,
+        oversizedFile,
+      };
+    })()`,
+    context
+  ) as { outputData?: string; afterTruncate: unknown; oversizedFile: unknown };
+
+  assertCondition(
+    typeof budgetResult.outputData === 'string' &&
+      budgetResult.outputData.includes('output truncated after 1048576 bytes'),
+    `Pyodide project output budget should emit a truncation marker: ${JSON.stringify(budgetResult)}`
+  );
+  assertCondition(budgetResult.afterTruncate === null, 'Pyodide project output budget should drop later chunks after truncation');
+  assertCondition(budgetResult.oversizedFile === null, 'Pyodide project event budget should drop oversized live file changes');
+
+  (context as { __fakeFs?: FakePyodideFs }).__fakeFs = fakeFs;
+  vm.runInContext(
+    'pyodide = { FS: __fakeFs }; self.__cleanupProjectFs = installPyodideProjectFsMutationEvents("/workspace", []);',
+    context
+  );
+  events.length = 0;
+  fakeFs.createDataFile('/workspace', 'huge-live.txt', new Uint8Array(4 * 1024 * 1024 + 1));
+  vm.runInContext('self.__cleanupProjectFs();', context);
+
+  assertCondition(
+    !events.some((event) => event.type === 'file-change' && event.change?.path === 'huge-live.txt'),
+    `Pyodide provider FS hook should not emit oversized live file-change payloads: ${JSON.stringify(events)}`
+  );
+  console.log('PASS: Pyodide project event budgets cap output and live file changes');
+}
+
 async function runPythonScript(script: string): Promise<string> {
   const tempDir = await mkdtemp(join(tmpdir(), 'tracecode-python-runtime-'));
   const scriptPath = join(tempDir, 'trace.py');
@@ -3129,6 +3202,7 @@ class Solution:
 
 async function main(): Promise<void> {
   await assertPyodideProjectFsEventsRejectTraversal();
+  await assertPyodideProjectEventsApplyResourceBudgets();
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
   await assertIndexSourceProvenanceIsRecorded();

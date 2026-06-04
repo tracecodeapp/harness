@@ -28,11 +28,17 @@ public static partial class CompilerHost
     private const int MaxInputCollectionItems = 200_000;
     private const int MaxInputObjectProperties = 50_000;
     private const int MaxInputTraversalNodes = 750_000;
+    private const int ProjectMaxOutputStreamBytes = 1024 * 1024;
+    private const int ProjectMaxLiveFileChanges = 1024;
+    private const long ProjectMaxLiveFileChangeBytes = 4L * 1024 * 1024;
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp14);
     private static readonly Lazy<MetadataReference[]> CachedReferences = new(() => ResolveReferences().ToArray());
     private static readonly Dictionary<string, byte[]> CompilationCache = new(StringComparer.Ordinal);
     private static readonly Queue<string> CompilationCacheOrder = new();
     private static string currentInputsJson = "{}";
+    private static int projectLiveFileChangeCount;
+    private static long projectLiveFileChangeBytes;
+    private static bool projectLiveFileChangeBudgetWarningEmitted;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -191,6 +197,7 @@ public static partial class CompilerHost
                 });
             }
 
+            ResetProjectLiveEventBudgets();
             PrepareProjectWorkspace(request, out Dictionary<string, byte[]> beforeSnapshot);
             string cwd = ResolveProjectPath(request.Cwd);
             Directory.CreateDirectory(cwd);
@@ -2269,6 +2276,10 @@ public sealed class ProjectFileStream : System.IO.FileStream
     {
         foreach (CSharpProjectFileChange change in changes)
         {
+            if (!ShouldEmitProjectFileChange(change, phase))
+            {
+                continue;
+            }
             EmitProjectEvent(new
             {
                 type = "file-change",
@@ -2276,6 +2287,70 @@ public sealed class ProjectFileStream : System.IO.FileStream
                 change,
             });
         }
+    }
+
+    private static void ResetProjectLiveEventBudgets()
+    {
+        projectLiveFileChangeCount = 0;
+        projectLiveFileChangeBytes = 0;
+        projectLiveFileChangeBudgetWarningEmitted = false;
+    }
+
+    private static bool ShouldEmitProjectFileChange(CSharpProjectFileChange change, string phase)
+    {
+        if (!string.Equals(phase, "live", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        projectLiveFileChangeCount++;
+        long size = ProjectFileChangeByteSize(change);
+        bool overBudget = projectLiveFileChangeCount > ProjectMaxLiveFileChanges
+            || size > ProjectMaxLiveFileChangeBytes
+            || projectLiveFileChangeBytes + size > ProjectMaxLiveFileChangeBytes;
+        if (overBudget)
+        {
+            EmitProjectLiveBudgetWarning();
+            return false;
+        }
+
+        projectLiveFileChangeBytes += size;
+        return true;
+    }
+
+    private static long ProjectFileChangeByteSize(CSharpProjectFileChange change)
+    {
+        long size = Encoding.UTF8.GetByteCount(change.Path ?? string.Empty);
+        if (change.Contents is not null)
+        {
+            size += string.Equals(change.Encoding, "base64", StringComparison.OrdinalIgnoreCase)
+                ? (long)Math.Ceiling(change.Contents.Length * 3d / 4d)
+                : Encoding.UTF8.GetByteCount(change.Contents);
+        }
+        return size;
+    }
+
+    private static bool LiveFileSnapshotWithinBudget(string relativePath, string absolutePath)
+    {
+        try
+        {
+            long size = new FileInfo(absolutePath).Length + Encoding.UTF8.GetByteCount(relativePath);
+            return size <= ProjectMaxLiveFileChangeBytes;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private static void EmitProjectLiveBudgetWarning()
+    {
+        if (projectLiveFileChangeBudgetWarningEmitted)
+        {
+            return;
+        }
+        projectLiveFileChangeBudgetWarningEmitted = true;
+        EmitProjectOutput("stderr", "EMSGSIZE: TraceKernel live file-change budget exceeded\n");
     }
 
     public static void EmitLiveProjectFileSnapshot(string path)
@@ -2291,6 +2366,11 @@ public sealed class ProjectFileStream : System.IO.FileStream
             string absolutePath = Path.GetFullPath(path);
             if (!File.Exists(absolutePath))
             {
+                return;
+            }
+            if (!LiveFileSnapshotWithinBudget(relativePath, absolutePath))
+            {
+                EmitProjectLiveBudgetWarning();
                 return;
             }
             EmitProjectFileChanges(new[] { EncodeProjectFileChange(relativePath, File.ReadAllBytes(absolutePath)) }, "live");
@@ -2314,6 +2394,11 @@ public sealed class ProjectFileStream : System.IO.FileStream
             string absolutePath = Path.GetFullPath(path);
             if (File.Exists(absolutePath))
             {
+                if (!LiveFileSnapshotWithinBudget(relativePath, absolutePath))
+                {
+                    EmitProjectLiveBudgetWarning();
+                    return;
+                }
                 EmitProjectFileChanges(new[] { EncodeProjectFileChange(relativePath, File.ReadAllBytes(absolutePath)) }, "live");
                 return;
             }
@@ -2336,6 +2421,11 @@ public sealed class ProjectFileStream : System.IO.FileStream
                 string? nestedRelativePath = ProjectRelativePathForRuntimePath(filePath);
                 if (nestedRelativePath is not null)
                 {
+                    if (!LiveFileSnapshotWithinBudget(nestedRelativePath, filePath))
+                    {
+                        EmitProjectLiveBudgetWarning();
+                        continue;
+                    }
                     EmitProjectFileChanges(new[] { EncodeProjectFileChange(nestedRelativePath, File.ReadAllBytes(filePath)) }, "live");
                 }
             }
@@ -2478,6 +2568,29 @@ public sealed class ProjectFileStream : System.IO.FileStream
         });
     }
 
+    private static string TruncateUtf8(string value, int maxBytes)
+    {
+        if (maxBytes <= 0)
+        {
+            return string.Empty;
+        }
+
+        int used = 0;
+        StringBuilder output = new();
+        foreach (char ch in value)
+        {
+            string next = ch.ToString();
+            int nextBytes = Encoding.UTF8.GetByteCount(next);
+            if (used + nextBytes > maxBytes)
+            {
+                break;
+            }
+            used += nextBytes;
+            output.Append(ch);
+        }
+        return output.ToString();
+    }
+
     private static void EmitProjectEvent(object payload)
     {
         try
@@ -2494,6 +2607,8 @@ public sealed class ProjectFileStream : System.IO.FileStream
     {
         private readonly string stream;
         private readonly StringBuilder buffer = new();
+        private int bytesWritten;
+        private bool truncated;
 
         public StreamingProjectTextWriter(string stream)
         {
@@ -2504,8 +2619,7 @@ public sealed class ProjectFileStream : System.IO.FileStream
 
         public override void Write(char value)
         {
-            buffer.Append(value);
-            EmitProjectOutput(stream, value.ToString());
+            Write(value.ToString());
         }
 
         public override void Write(string? value)
@@ -2515,8 +2629,14 @@ public sealed class ProjectFileStream : System.IO.FileStream
                 return;
             }
 
-            buffer.Append(value);
-            EmitProjectOutput(stream, value);
+            string budgetedValue = BudgetText(value);
+            if (budgetedValue.Length == 0)
+            {
+                return;
+            }
+
+            buffer.Append(budgetedValue);
+            EmitProjectOutput(stream, budgetedValue);
         }
 
         public override void Write(char[] buffer, int index, int count)
@@ -2528,6 +2648,28 @@ public sealed class ProjectFileStream : System.IO.FileStream
         public override string ToString()
         {
             return buffer.ToString();
+        }
+
+        private string BudgetText(string value)
+        {
+            if (truncated)
+            {
+                return string.Empty;
+            }
+
+            int bytes = Encoding.UTF8.GetByteCount(value);
+            int remaining = ProjectMaxOutputStreamBytes - bytesWritten;
+            if (bytes <= remaining)
+            {
+                bytesWritten += bytes;
+                return value;
+            }
+
+            truncated = true;
+            string marker = $"\n[tracekernel: {stream} output truncated after {ProjectMaxOutputStreamBytes} bytes]\n";
+            string output = TruncateUtf8(value, Math.Max(0, remaining)) + marker;
+            bytesWritten = ProjectMaxOutputStreamBytes + Encoding.UTF8.GetByteCount(marker);
+            return output;
         }
     }
 

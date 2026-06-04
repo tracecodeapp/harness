@@ -32,6 +32,9 @@ const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_EL
 const STDIN_PIPE_READ_INDEX = 0;
 const STDIN_PIPE_WRITE_INDEX = 1;
 const STDIN_PIPE_CLOSED_INDEX = 2;
+const PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
+const PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
+const PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
 const CSHARP_WARMUP_REQUEST = Object.freeze({
   source: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
   functionName: 'Add',
@@ -90,6 +93,82 @@ function encodeUtf8(value) {
 
 function decodeUtf8(value, options) {
   return new TextDecoder('utf-8', options).decode(value);
+}
+
+function projectUtf8Bytes(value) {
+  return encodeUtf8(String(value ?? '')).byteLength;
+}
+
+function projectTruncateUtf8(value, maxBytes) {
+  if (maxBytes <= 0) return '';
+  let bytes = 0;
+  let output = '';
+  for (const char of String(value ?? '')) {
+    const nextBytes = projectUtf8Bytes(char);
+    if (bytes + nextBytes > maxBytes) break;
+    bytes += nextBytes;
+    output += char;
+  }
+  return output;
+}
+
+function projectFileChangeByteSize(change) {
+  if (!change || typeof change !== 'object') return 0;
+  let size = projectUtf8Bytes(change.path ?? '');
+  if (typeof change.contents === 'string') {
+    size += change.encoding === 'base64'
+      ? Math.ceil(change.contents.length * 3 / 4)
+      : projectUtf8Bytes(change.contents);
+  }
+  return size;
+}
+
+function applyProjectEventBudget(context, payload) {
+  if (!context || !payload || typeof payload !== 'object') return payload;
+
+  if (
+    payload.type === 'output' &&
+    (payload.stream === 'stdout' || payload.stream === 'stderr') &&
+    typeof payload.data === 'string'
+  ) {
+    if (context.truncatedOutputStreams.has(payload.stream)) return null;
+    const used = context.outputBytes[payload.stream] ?? 0;
+    const remaining = PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+    const bytes = projectUtf8Bytes(payload.data);
+    if (bytes <= remaining) {
+      context.outputBytes[payload.stream] = used + bytes;
+      return payload;
+    }
+
+    context.truncatedOutputStreams.add(payload.stream);
+    const marker = `\n[tracekernel: ${payload.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+    const data = `${projectTruncateUtf8(payload.data, Math.max(0, remaining))}${marker}`;
+    context.outputBytes[payload.stream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + projectUtf8Bytes(marker);
+    return data ? { ...payload, data } : null;
+  }
+
+  if (payload.type === 'file-change' && (payload.phase ?? 'live') === 'live') {
+    context.liveFileChangeCount += 1;
+    const size = projectFileChangeByteSize(payload.change);
+    const overBudget =
+      context.liveFileChangeCount > PROJECT_MAX_LIVE_FILE_CHANGES ||
+      size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES ||
+      context.liveFileChangeBytes + size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES;
+    if (overBudget) {
+      if (!context.warnedLiveFileBudget) {
+        context.warnedLiveFileBudget = true;
+        emitRuntimeDiagnostic('warn', 'project-event-budget', 'Dropped oversized C# live file-change event.', {
+          count: context.liveFileChangeCount,
+          bytes: context.liveFileChangeBytes,
+          eventBytes: size,
+        });
+      }
+      return null;
+    }
+    context.liveFileChangeBytes += size;
+  }
+
+  return payload;
 }
 
 function encodeBase64(bytes) {
@@ -745,14 +824,16 @@ function throwKernelVirtualMutationError(path, operation) {
 
 function emitProjectEvent(payload) {
   if (!activeProjectIo?.messageId) return;
-  if (payload?.type === 'output' && typeof payload.data === 'string') {
-    const outputBuffer = payload.stream === 'stderr' ? activeProjectIo.eventStderr : activeProjectIo.eventStdout;
-    outputBuffer.push(payload.data);
+  const budgetedPayload = applyProjectEventBudget(activeProjectIo, payload);
+  if (!budgetedPayload) return;
+  if (budgetedPayload?.type === 'output' && typeof budgetedPayload.data === 'string') {
+    const outputBuffer = budgetedPayload.stream === 'stderr' ? activeProjectIo.eventStderr : activeProjectIo.eventStdout;
+    outputBuffer.push(budgetedPayload.data);
   }
   self.postMessage({
     id: activeProjectIo.messageId,
     type: 'project-event',
-    payload,
+    payload: budgetedPayload,
     protocolToken: activeProjectIo.protocolToken,
   });
 }
@@ -807,11 +888,21 @@ function emitMissingProjectResultOutput(result) {
   if (context.request?.source !== 'compile') return;
   const stdout = typeof result.stdout === 'string' ? result.stdout : '';
   const stderr = typeof result.stderr === 'string' ? result.stderr : '';
-  if (stdout && context.eventStdout.join('') !== stdout) {
+  if (stdout && !context.truncatedOutputStreams.has('stdout') && context.eventStdout.join('') !== stdout) {
     emitProjectOutput('stdout', stdout);
   }
-  if (stderr && context.eventStderr.join('') !== stderr) {
+  if (stderr && !context.truncatedOutputStreams.has('stderr') && context.eventStderr.join('') !== stderr) {
     emitProjectOutput('stderr', stderr);
+  }
+}
+
+function applyProjectResultOutputBudget(result, context) {
+  if (!result || !context) return;
+  if (context.truncatedOutputStreams.has('stdout')) {
+    result.stdout = context.eventStdout.join('');
+  }
+  if (context.truncatedOutputStreams.has('stderr')) {
+    result.stderr = context.eventStderr.join('');
   }
 }
 
@@ -1620,6 +1711,11 @@ async function handleMessage(message) {
       stderrBytes: [],
       eventStdout: [],
       eventStderr: [],
+      outputBytes: { stdout: 0, stderr: 0 },
+      truncatedOutputStreams: new Set(),
+      liveFileChangeCount: 0,
+      liveFileChangeBytes: 0,
+      warnedLiveFileBudget: false,
       directDeviceOutput: false,
       stdoutDevice: '/dev/stdout',
       stderrDevice: '/dev/stderr',
@@ -1638,6 +1734,7 @@ async function handleMessage(message) {
         result.stderr = activeProjectIo.eventStderr.join('');
       }
       emitMissingProjectResultOutput(result);
+      applyProjectResultOutputBudget(result, activeProjectIo);
     } finally {
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
