@@ -1181,7 +1181,7 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
         if (
             len(args) >= 1 and
             method_name in {'pop', 'remove', 'discard'} and
-            isinstance(container, (_builtins.dict, set))
+            isinstance(container, (_builtins.dict, _builtins.set))
         ):
             normalized = __tracecode_normalize_indices([args[0]])
             if normalized is not None:

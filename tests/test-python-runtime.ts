@@ -3042,6 +3042,60 @@ print(json.dumps({
   console.log('PASS: Python trace helpers ignore user TraceHooks shadowing');
 }
 
+async function assertPythonMutatingCallIgnoresShadowedSetBuiltin(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def solve():
+    global set
+    set = "shadowed"
+    data = {"x": 7}
+    return data.pop("x")
+`;
+
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    {},
+    'function',
+    { maxTraceSteps: 1000, maxLineEvents: 10000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'traceFailed': _trace_failed,
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    traceFailed: boolean;
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
+  assertCondition(
+    parsed.result === 7 && parsed.traceFailed === false,
+    `Python mutating-call tracing should ignore shadowed set builtin, got ${JSON.stringify(parsed)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => event.kind === 'mutate' && event.method === 'pop' && event.target?.variable === 'data'),
+    `Python mutating-call tracing should still record dict pop after set shadowing, got ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python mutating-call tracing ignores shadowed set builtin');
+}
+
 async function assertPythonRuntimeSurvivesShadowedSetAcrossRuns(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const deps = {
@@ -3311,6 +3365,7 @@ async function main(): Promise<void> {
   await assertRecursiveCallActivationRuntimeEventsAreRecorded();
   await assertBuiltinSumRecordsConsumedCollectionReads();
   await assertPythonTraceHelpersIgnoreUserShadowing();
+  await assertPythonMutatingCallIgnoresShadowedSetBuiltin();
   await assertPythonRuntimeSurvivesShadowedSetAcrossRuns();
   await assertBuiltinSumTraceRecordingIsBounded();
   await assertFunctionStyleFallsBackToSolutionMethod();
