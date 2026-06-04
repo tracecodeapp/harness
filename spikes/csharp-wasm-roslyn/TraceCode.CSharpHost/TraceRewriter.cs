@@ -325,9 +325,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     public override SyntaxNode? VisitParenthesizedLambdaExpression(ParenthesizedLambdaExpressionSyntax node)
     {
-        if (!emitTraceEvents || IsExpressionTreeLambda(node))
+        if (IsExpressionTreeLambda(node))
         {
             return node;
+        }
+
+        if (!emitTraceEvents)
+        {
+            return base.VisitParenthesizedLambdaExpression(node);
         }
 
         string functionName = GetAnonymousFunctionName(node);
@@ -361,9 +366,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     public override SyntaxNode? VisitSimpleLambdaExpression(SimpleLambdaExpressionSyntax node)
     {
-        if (!emitTraceEvents || IsExpressionTreeLambda(node))
+        if (IsExpressionTreeLambda(node))
         {
             return node;
+        }
+
+        if (!emitTraceEvents)
+        {
+            return base.VisitSimpleLambdaExpression(node);
         }
 
         string functionName = GetAnonymousFunctionName(node);
@@ -399,7 +409,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         if (!emitTraceEvents)
         {
-            return node;
+            return base.VisitAnonymousMethodExpression(node);
         }
 
         string functionName = GetAnonymousFunctionName(node);

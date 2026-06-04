@@ -685,7 +685,7 @@ async function main(): Promise<void> {
       cachedAdd.consoleOutput?.includes('adding 5 and 6') === true,
       'C# cached Add execution should read the new runtime inputs'
     );
-    assertCondition(cachedAdd.timings?.compileCacheHit === true, 'C# repeated Add execution with new inputs should hit the compile cache');
+    assertCondition(cachedAdd.timings?.compileCacheHit === false, 'C# repeated Add execution should not retain a cross-run compile cache');
 
     const scriptStyle = await runWorkerCase(
       page,

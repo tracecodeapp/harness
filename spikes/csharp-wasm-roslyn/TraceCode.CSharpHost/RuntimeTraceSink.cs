@@ -86,6 +86,8 @@ public static class RuntimeTraceSink
 
     public static void Line(int line, string? function)
     {
+        CheckTimeout();
+
         if (traceLimitExceeded)
         {
             return;
@@ -108,6 +110,8 @@ public static class RuntimeTraceSink
 
     public static void Call(string function, int line)
     {
+        CheckTimeout();
+
         if (traceLimitExceeded)
         {
             return;
@@ -128,6 +132,8 @@ public static class RuntimeTraceSink
 
     public static void Call(string function, int line, IReadOnlyList<object?> args)
     {
+        CheckTimeout();
+
         if (traceLimitExceeded)
         {
             return;
@@ -150,6 +156,8 @@ public static class RuntimeTraceSink
 
     public static void Call(string function, int line, IReadOnlyDictionary<string, object?> args)
     {
+        CheckTimeout();
+
         if (traceLimitExceeded)
         {
             return;

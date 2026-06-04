@@ -4,7 +4,6 @@ using System.Reflection;
 using System.Runtime.Loader;
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -20,7 +19,6 @@ namespace TraceCode.CSharpHost;
 
 public static partial class CompilerHost
 {
-    private const int CompilationCacheLimit = 32;
     private const string UserCodePath = "solution.cs";
     private const string ProjectWorkspaceRoot = "/tmp/tracecode-csharp-project";
     private const string ScriptRunnerClassName = "__TraceCodeScriptRunner";
@@ -33,8 +31,6 @@ public static partial class CompilerHost
     private const long ProjectMaxLiveFileChangeBytes = 4L * 1024 * 1024;
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp14);
     private static readonly Lazy<MetadataReference[]> CachedReferences = new(() => ResolveReferences().ToArray());
-    private static readonly Dictionary<string, byte[]> CompilationCache = new(StringComparer.Ordinal);
-    private static readonly Queue<string> CompilationCacheOrder = new();
     private static string currentInputsJson = "{}";
     private static int projectLiveFileChangeCount;
     private static long projectLiveFileChangeBytes;
@@ -75,42 +71,32 @@ public static partial class CompilerHost
             request.Inputs ??= new Dictionary<string, JsonElement>(StringComparer.Ordinal);
             ValidateExecutionInputs(request.Inputs);
 
-            string compileCacheKey = BuildCompilationCacheKey(request);
-            if (!CompilationCache.TryGetValue(compileCacheKey, out byte[]? peBytes))
-            {
-                timings["compileCacheHit"] = false;
-                double compileStartedAt = stopwatch.Elapsed.TotalMilliseconds;
-                CSharpCompilation compilation = CreateCompilation(request);
-                using MemoryStream peStream = new();
-                var emitResult = compilation.Emit(peStream);
-                timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
+            timings["compileCacheHit"] = false;
+            double compileStartedAt = stopwatch.Elapsed.TotalMilliseconds;
+            CSharpCompilation compilation = CreateCompilation(request);
+            using MemoryStream peStream = new();
+            var emitResult = compilation.Emit(peStream);
+            timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
 
-                if (!emitResult.Success)
+            if (!emitResult.Success)
+            {
+                var diagnostics = emitResult.Diagnostics
+                    .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+                    .Select(CSharpDiagnostic.FromRoslyn)
+                    .ToList();
+                return Serialize(new CSharpExecuteResponse
                 {
-                    var diagnostics = emitResult.Diagnostics
-                        .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
-                        .Select(CSharpDiagnostic.FromRoslyn)
-                        .ToList();
-                    return Serialize(new CSharpExecuteResponse
-                    {
-                        Success = false,
-                        Error = diagnostics.FirstOrDefault()?.Message ?? "C# compilation failed.",
-                        Diagnostics = diagnostics,
-                        ConsoleOutput = SplitConsoleOutput(capturedOut),
-                        Events = SnapshotTraceEvents(capturedOut),
-                        ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
-                        Timings = WithTotalTiming(timings, stopwatch),
-                    });
-                }
+                    Success = false,
+                    Error = diagnostics.FirstOrDefault()?.Message ?? "C# compilation failed.",
+                    Diagnostics = diagnostics,
+                    ConsoleOutput = SplitConsoleOutput(capturedOut),
+                    Events = SnapshotTraceEvents(capturedOut),
+                    ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+                    Timings = WithTotalTiming(timings, stopwatch),
+                });
+            }
 
-                peBytes = peStream.ToArray();
-                StoreCompilationCacheEntry(compileCacheKey, peBytes);
-            }
-            else
-            {
-                timings["compileCacheHit"] = true;
-                timings["compileMs"] = 0d;
-            }
+            byte[] peBytes = peStream.ToArray();
 
             Assembly userAssembly = Assembly.Load(peBytes);
             currentInputsJson = JsonSerializer.Serialize(request.Inputs, JsonOptions);
@@ -2801,45 +2787,9 @@ public sealed class ProjectFileStream : System.IO.FileStream
             && string.IsNullOrWhiteSpace(request.FunctionName);
     }
 
-    private static string BuildCompilationCacheKey(CSharpExecuteRequest request)
-    {
-        return JsonSerializer.Serialize(new
-        {
-            SourceHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request.Source ?? string.Empty))),
-            request.FunctionName,
-            request.ExecutionStyle,
-            request.Trace,
-            InputShape = BuildInputShape(request.Inputs),
-        }, JsonOptions);
-    }
-
     public static string GetCurrentInputsJson()
     {
         return currentInputsJson;
-    }
-
-    private static object BuildInputShape(JsonElement value)
-    {
-        return value.ValueKind switch
-        {
-            JsonValueKind.Object => value
-                .EnumerateObject()
-                .OrderBy(property => property.Name, StringComparer.Ordinal)
-                .ToDictionary(property => property.Name, property => BuildInputShape(property.Value), StringComparer.Ordinal),
-            JsonValueKind.Array => new
-            {
-                kind = "array",
-                elements = value.EnumerateArray().Select(BuildInputShape).Distinct().OrderBy(item => JsonSerializer.Serialize(item, JsonOptions)).ToArray(),
-            },
-            _ => value.ValueKind.ToString(),
-        };
-    }
-
-    private static object BuildInputShape(IReadOnlyDictionary<string, JsonElement> inputs)
-    {
-        return inputs
-            .OrderBy(entry => entry.Key, StringComparer.Ordinal)
-            .ToDictionary(entry => entry.Key, entry => BuildInputShape(entry.Value), StringComparer.Ordinal);
     }
 
     private static void ValidateExecutionInputs(IReadOnlyDictionary<string, JsonElement> inputs)
@@ -2913,23 +2863,6 @@ public sealed class ProjectFileStream : System.IO.FileStream
             {
                 throw new InvalidOperationException($"{label} exceeds maximum property count of {MaxInputObjectProperties}.");
             }
-        }
-    }
-
-    private static void StoreCompilationCacheEntry(string cacheKey, byte[] peBytes)
-    {
-        if (CompilationCache.ContainsKey(cacheKey))
-        {
-            return;
-        }
-
-        CompilationCache[cacheKey] = peBytes;
-        CompilationCacheOrder.Enqueue(cacheKey);
-
-        while (CompilationCacheOrder.Count > CompilationCacheLimit)
-        {
-            string expiredKey = CompilationCacheOrder.Dequeue();
-            CompilationCache.Remove(expiredKey);
         }
     }
 
@@ -3602,6 +3535,8 @@ public class TreeNode
                 return objectValueDictionary;
             }
 
+            RejectUnsafeFrameworkObjectInput(value, targetType);
+
             if (ShouldUseStructuredObjectReader(value, targetType))
             {
                 return ReadStructuredValue(value, targetType, new Dictionary<string, object>(StringComparer.Ordinal), budget, 0);
@@ -3643,6 +3578,8 @@ public class TreeNode
                 return (T?)objectValueDictionary;
             }
 
+            RejectUnsafeFrameworkObjectInput(value, typeof(T));
+
             if (ShouldUseStructuredObjectReader(value, typeof(T)))
             {
                 return (T?)ReadStructuredValue(value, typeof(T), new Dictionary<string, object>(StringComparer.Ordinal), budget, 0);
@@ -3672,6 +3609,32 @@ public class TreeNode
 
             return value.ValueKind == JsonValueKind.Object
                 || value.ValueKind == JsonValueKind.Array && IsSupportedStructuredSequenceType(effectiveType);
+        }
+
+        private static void RejectUnsafeFrameworkObjectInput(JsonElement value, Type targetType)
+        {
+            Type effectiveType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+            if (value.ValueKind != JsonValueKind.Object
+                || effectiveType == typeof(object)
+                || effectiveType == typeof(JsonElement)
+                || IsSupportedDictionaryType(effectiveType)
+                || !IsFrameworkInputHydrationType(effectiveType))
+            {
+                return;
+            }
+
+            throw new InvalidOperationException($"C# input hydration does not support object-shaped JSON for framework type {effectiveType.FullName}.");
+        }
+
+        private static bool IsFrameworkInputHydrationType(Type targetType)
+        {
+            if (targetType.IsArray)
+            {
+                return false;
+            }
+
+            string? ns = targetType.Namespace;
+            return ns is not null && ns.StartsWith("System", StringComparison.Ordinal);
         }
 
         private static bool IsSupportedStructuredSequenceType(Type targetType)
@@ -3723,6 +3686,8 @@ public class TreeNode
 
                 return JsonSerializer.Deserialize(value.GetRawText(), effectiveType, JsonOptions);
             }
+
+            RejectUnsafeFrameworkObjectInput(value, effectiveType);
 
             if (effectiveType.IsArray)
             {
@@ -5608,6 +5573,8 @@ public class TreeNode
 
     private static object? NormalizeOutputValue(object? value, int depth, OutputReferenceTracker references)
     {
+        RuntimeTraceSink.CheckTimeout();
+
         if (value is null
             || value is string
             || value is bool
@@ -5657,6 +5624,7 @@ public class TreeNode
             var result = new Dictionary<string, object?>();
             foreach (System.Collections.DictionaryEntry entry in dictionary)
             {
+                RuntimeTraceSink.CheckTimeout();
                 result[NormalizeOutputKey(entry.Key)] = NormalizeOutputValue(entry.Value, depth + 1, references);
             }
 
@@ -5685,6 +5653,7 @@ public class TreeNode
             var result = new List<object?>();
             foreach (object? item in enumerable)
             {
+                RuntimeTraceSink.CheckTimeout();
                 result.Add(NormalizeOutputValue(item, depth + 1, references));
             }
 
@@ -5713,6 +5682,7 @@ public class TreeNode
         int upper = array.GetUpperBound(dimension);
         for (int index = lower; index <= upper; index++)
         {
+            RuntimeTraceSink.CheckTimeout();
             indices[dimension] = index;
             values.Add(dimension == array.Rank - 1
                 ? NormalizeOutputValue(array.GetValue(indices), depth + 1, references)
@@ -5746,6 +5716,7 @@ public class TreeNode
     {
         foreach (FieldInfo field in OrderOutputMembers(type.GetFields(BindingFlags.Public | BindingFlags.Instance)))
         {
+            RuntimeTraceSink.CheckTimeout();
             result[field.Name] = NormalizeOutputValue(field.GetValue(value), depth + 1, references);
         }
     }
@@ -5760,6 +5731,7 @@ public class TreeNode
     {
         foreach (PropertyInfo property in OrderOutputMembers(type.GetProperties(BindingFlags.Public | BindingFlags.Instance)))
         {
+            RuntimeTraceSink.CheckTimeout();
             if (result.ContainsKey(property.Name)
                 || !property.CanRead
                 || property.GetIndexParameters().Length > 0
