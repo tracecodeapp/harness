@@ -5494,7 +5494,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   ].join(' '), { onEvent: (event) => fdStreamEvents.push(event) });
   assertCondition(fdStreamResult.exitCode === 0, `browser node fd stream workflow should succeed: ${fdStreamResult.stderr}`);
   assertCondition(
-    fdStreamResult.stdout === 'fd-one\nfd-two\nEBADF:EBADF\nabXYZf\nabXYef\n',
+    fdStreamResult.stdout === 'fd-one\nfd-two\nEBADF:EBADF\nabXYZf\nabcdefXY\n',
     `browser node fd streams should read/write descriptor-backed files and auto-close: ${fdStreamResult.stdout}`
   );
   assertCondition(await workspace.readFile('fd-streamed.txt') === 'fd-one\nfd-two\n', 'browser node fd createWriteStream should persist through kernel FS');
@@ -5515,7 +5515,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
         event.type === 'file-change' &&
         event.phase === 'live' &&
         event.change.path === 'fd-stream-append-start.txt' &&
-        event.change.contents === 'abXYef'
+        event.change.contents === 'abcdefXY'
       ),
     `browser node fd createWriteStream should emit live file-change events: ${JSON.stringify(fdStreamEvents)}`
   );
@@ -9808,7 +9808,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     assertCondition((await workspace.readDir('/workspace/src')).join(',') === 'alias.txt', 'browser workspace should list alias directories');
 
     const procInfo = JSON.parse(await workspace.readFile('/proc/kernel/info')) as typeof workspace.kernel.info;
-    assertCondition(procInfo.workspace.root === '/home/ada/weather-api', 'browser workspace /proc should expose canonical workspace root');
+    assertCondition(procInfo.workspace.root === '/workspace', 'browser workspace public /proc should expose virtual workspace root');
     assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self,tracekernel', 'browser workspace /proc should list virtual namespaces');
     assertCondition((await workspace.readDir('/proc/kernel')).join(',') === 'info,version', 'browser workspace /proc/kernel should list info and version');
     assertCondition(
@@ -9846,7 +9846,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       `browser Python request should use canonical cwd and expose environment/kernel metadata: ${python.stdout}`
     );
     assertCondition(await workspace.readFile('python-browser.txt') === 'python-browser\n', 'browser Python final diff should persist through kernel FS');
-    assertCondition(pythonRequests[0]?.project.kernel?.user.username === 'ada', 'browser Python request should include kernel identity');
+    assertCondition(pythonRequests[0]?.project.kernel?.user.username === 'user', 'browser Python request should include public kernel identity');
 
     const nodeEvents: RuntimeCommandEvent[] = [];
     const node = await workspace.runCommand('node /home/ada/weather-api/index.js', {
@@ -9866,7 +9866,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         '/home/ada/weather-api/index.js',
         '/home/ada/weather-api/lib/value.js',
         '42',
-        'ada:tracevm-browser:/home/ada/weather-api',
+        'user:tracevm:/workspace',
         'tracekernel 0.7.0-beta6',
         'browser skill',
         'browser',
@@ -9880,7 +9880,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         'true:false',
         'EACCES',
         'true',
-        '/home/ada/weather-api',
+        '/workspace',
         'true',
         'EROFS',
         'EROFS',
@@ -9923,7 +9923,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     );
     assertCondition(javaRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser Java request should include workspaceRoot');
     assertCondition(javaRequests[0]?.project.workspaceAlias === '/workspace', 'browser Java request should include workspaceAlias');
-    assertCondition(javaRequests[0]?.project.kernel?.host.hostname === 'tracevm-browser', 'browser Java request should include kernel host identity');
+    assertCondition(javaRequests[0]?.project.kernel?.host.hostname === 'tracevm', 'browser Java request should include public kernel host identity');
 
     const csharp = await workspace.runCommand('dotnet run', { cwd: '/workspace', env: { MODE: 'browser-csharp' } });
     assertCondition(csharp.exitCode === 0, `browser C# project command should succeed with alias cwd: ${csharp.stderr}`);
@@ -9933,7 +9933,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     );
     assertCondition(csharpRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C# request should include workspaceRoot');
     assertCondition(csharpRequests[0]?.project.workspaceAlias === '/workspace', 'browser C# request should include workspaceAlias');
-    assertCondition(csharpRequests[0]?.project.kernel?.host.hostname === 'tracevm-browser', 'browser C# request should include kernel host identity');
+    assertCondition(csharpRequests[0]?.project.kernel?.host.hostname === 'tracevm', 'browser C# request should include public kernel host identity');
 
     const cpp = await workspace.runCommand('clang++ /home/ada/weather-api/main.cpp -o /workspace/out/app', {
       cwd: '/workspace',
@@ -9946,7 +9946,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     );
     assertCondition(cppRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C++ request should include workspaceRoot');
     assertCondition(cppRequests[0]?.project.workspaceAlias === '/workspace', 'browser C++ request should include workspaceAlias');
-    assertCondition(cppRequests[0]?.project.kernel?.host.hostname === 'tracevm-browser', 'browser C++ request should include kernel host identity');
+    assertCondition(cppRequests[0]?.project.kernel?.host.hostname === 'tracevm', 'browser C++ request should include public kernel host identity');
 
     assertCondition(
       pythonRequests[0]?.project.files.some((file) => file.path === 'src/alias.txt') === true,
@@ -12390,7 +12390,7 @@ async function testTraceKernelInfoConfig(): Promise<void> {
     `snapshot should expose kernel device inventory: ${JSON.stringify(snapshot.kernelDevices)}`
   );
   assertCondition(
-    snapshot.kernelFiles?.some((file) => file.path === '/proc/kernel/info' && JSON.parse(file.contents).workspace.root === '/home/obi/weather-api') === true &&
+    snapshot.kernelFiles?.some((file) => file.path === '/proc/kernel/info' && JSON.parse(file.contents).workspace.root === '/workspace') === true &&
       snapshot.kernelFiles?.some((file) => file.path === '/proc/self/mountinfo' && file.contents.includes('tracekernel:workspace')) === true,
     `snapshot should expose kernel proc files: ${JSON.stringify(snapshot.kernelFiles)}`
   );
@@ -12434,7 +12434,7 @@ async function testConfiguredKernelNativePythonAndNodeRunners(): Promise<void> {
   const snapshot = await workspace.snapshot();
   assertCondition(snapshot.workspaceRoot === '/home/obi/weather-api', `snapshot should expose canonical workspace root: ${JSON.stringify(snapshot)}`);
   assertCondition(snapshot.workspaceAlias === '/workspace', `snapshot should expose workspace alias: ${JSON.stringify(snapshot)}`);
-  assertCondition(snapshot.kernel?.workspaceRoot === '/home/obi/weather-api', `snapshot should expose kernel info for runner handoff: ${JSON.stringify(snapshot.kernel)}`);
+  assertCondition(snapshot.kernel?.workspaceRoot === '/workspace', `snapshot should expose public kernel info for runner handoff: ${JSON.stringify(snapshot.kernel)}`);
   assertCondition(
     snapshot.kernelDevices?.some((device) => device.path === '/dev/tty') === true &&
       snapshot.kernelFiles?.some((file) => file.path === '/proc/kernel/version') === true,

@@ -1000,6 +1000,34 @@ export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {
   return `${JSON.stringify(info, null, 2)}\n`;
 }
 
+export function publicRuntimeKernelInfo(info: RuntimeKernelInfo): RuntimeKernelInfo {
+  const workspaceRoot = '/workspace';
+  const home = '/home/user';
+  const workspaceName = 'workspace';
+  return {
+    name: info.name,
+    version: info.version,
+    user: {
+      id: 'user',
+      username: 'user',
+      home,
+    },
+    host: {
+      hostname: 'tracevm',
+      osName: 'tracecode',
+    },
+    workspace: {
+      id: workspaceName,
+      name: workspaceName,
+      root: workspaceRoot,
+      startedAt: '1970-01-01T00:00:00.000Z',
+    },
+    home,
+    cwd: workspaceRoot,
+    workspaceRoot,
+  };
+}
+
 export function runtimeMountInfoField(value: string): string {
   return value.replace(/\\/g, '\\134').replace(/ /g, '\\040').replace(/\t/g, '\\011').replace(/\n/g, '\\012');
 }
@@ -1064,6 +1092,10 @@ export function runtimeKernelVirtualFiles(info: RuntimeKernelInfo): RuntimeFile[
   ];
 }
 
+export function publicRuntimeKernelVirtualFiles(info: RuntimeKernelInfo): RuntimeFile[] {
+  return runtimeKernelVirtualFiles(publicRuntimeKernelInfo(info));
+}
+
 export function readRuntimeProcFile(path: string, info: RuntimeKernelInfo): string {
   if (path === '/proc/kernel/info') return runtimeProcInfoJson(info);
   if (path === '/proc/kernel/version') return runtimeProcKernelVersion(info);
@@ -1072,6 +1104,10 @@ export function readRuntimeProcFile(path: string, info: RuntimeKernelInfo): stri
     throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), { code: 'EISDIR' });
   }
   throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+}
+
+export function readPublicRuntimeProcFile(path: string, info: RuntimeKernelInfo): string {
+  return readRuntimeProcFile(path, publicRuntimeKernelInfo(info));
 }
 
 export function runtimeProcStat(path: string, info: RuntimeKernelInfo): RuntimeKernelVirtualStat | null {

@@ -1686,6 +1686,73 @@ async function testTraceKernelDeviceOutputAccumulationIsBounded(): Promise<void>
   }
 }
 
+async function testTraceKernelPublicProcInfoIsRedacted(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    kernel: {
+      user: { id: 'auth-user-123', username: 'obi', home: '/home/obi' },
+      host: { hostname: 'private-host', osName: 'darwin' },
+      workspace: {
+        id: 'private-workspace-id',
+        name: 'weather-api',
+        root: '/home/obi/weather-api',
+        startedAt: '2026-06-03T05:00:00.000Z',
+      },
+      workspaceAlias: '/workspace',
+    },
+  });
+
+  try {
+    const privileged = JSON.parse(await workspace.kernel.readFile('/proc/kernel/info')) as {
+      user: { username: string };
+      workspaceRoot: string;
+    };
+    assertCondition(privileged.user.username === 'obi', 'privileged kernel reads should retain configured user metadata');
+    assertCondition(privileged.workspaceRoot === '/home/obi/weather-api', 'privileged kernel reads should retain canonical workspace root');
+
+    const publicInfoText = await workspace.readFile('/proc/kernel/info');
+    const publicInfo = JSON.parse(publicInfoText) as {
+      user: { username: string };
+      host: { hostname: string };
+      workspace: { id: string; root: string };
+      workspaceRoot: string;
+    };
+    assertCondition(
+      publicInfo.user.username === 'user' &&
+        publicInfo.host.hostname === 'tracevm' &&
+        publicInfo.workspace.id === 'workspace' &&
+        publicInfo.workspace.root === '/workspace' &&
+        publicInfo.workspaceRoot === '/workspace',
+      `public /proc info should be redacted: ${publicInfoText}`
+    );
+    assertCondition(
+      !publicInfoText.includes('obi') &&
+        !publicInfoText.includes('private-host') &&
+        !publicInfoText.includes('/home/obi/weather-api'),
+      `public /proc info should not expose configured identity: ${publicInfoText}`
+    );
+
+    const shellResult = await workspace.runCommand('cat /proc/kernel/info');
+    assertCondition(shellResult.exitCode === 0, `shell /proc read should succeed: ${JSON.stringify(shellResult)}`);
+    assertCondition(
+      shellResult.stdout.includes('"workspaceRoot": "/workspace"') &&
+        !shellResult.stdout.includes('/home/obi/weather-api'),
+      `shell /proc read should use public kernel identity: ${shellResult.stdout}`
+    );
+
+    const snapshot = await workspace.snapshot();
+    const snapshotProcInfo = snapshot.kernelFiles?.find((file) => file.path === '/proc/kernel/info');
+    assertCondition(snapshot.kernel?.workspaceRoot === '/workspace', `snapshot kernel info should be public: ${JSON.stringify(snapshot.kernel)}`);
+    assertCondition(
+      snapshotProcInfo !== undefined &&
+        JSON.parse(snapshotProcInfo.contents).workspaceRoot === '/workspace' &&
+        !snapshotProcInfo.contents.includes('/home/obi/weather-api'),
+      `snapshot proc files should be public: ${JSON.stringify(snapshotProcInfo)}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
 async function testTraceKernelHttpTimeoutSignalsCooperativeHandlers(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
   let sideEffectsAfterTimeout = 0;
@@ -2033,6 +2100,7 @@ async function main(): Promise<void> {
   await testTraceKernelProjectCommandStepsAreBounded();
   await testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks();
   await testTraceKernelDeviceOutputAccumulationIsBounded();
+  await testTraceKernelPublicProcInfoIsRedacted();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
   await testTraceKernelHttpDiagnosticsAreRedacted();
   await testTraceKernelHttpListenerLimit();

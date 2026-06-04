@@ -88,7 +88,7 @@ import {
   runtimeKernelWriteErrorCode,
   runtimeKernelWriteFsErrorMessage,
   runtimeKernelWriteTarget,
-  readRuntimeProcFile as readProcFile,
+  readPublicRuntimeProcFile as readPublicProcFile,
   runtimeProcDirEntries as procDirEntries,
   type RuntimeKernelDirectoryEntry,
   type RuntimeKernelVirtualStat,
@@ -730,7 +730,7 @@ function browserProcEntryKind(snapshot: BrowserProcSnapshot | undefined, path: u
 
 function browserProcFileContents(snapshot: BrowserProcSnapshot | undefined, path: string, info: RuntimeKernelInfo): string {
   const contents = snapshot?.files.get(path);
-  return contents !== undefined ? contents : readProcFile(path, info);
+  return contents !== undefined ? contents : readPublicProcFile(path, info);
 }
 
 function workspaceRelativeFromAbsolutePath(rawPath: string, workspace: WorkspacePathContext): string | null {

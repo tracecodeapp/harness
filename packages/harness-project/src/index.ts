@@ -61,6 +61,9 @@ import {
   runtimeKernelVirtualPaths,
   runtimeKernelWriteErrorMessage,
   runtimeKernelWriteTarget,
+  publicRuntimeKernelInfo,
+  publicRuntimeKernelVirtualFiles,
+  readPublicRuntimeProcFile,
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
@@ -1973,14 +1976,18 @@ async function collectKernelProcSnapshotFiles(
 
 async function snapshotRuntimeKernelVirtualFiles(
   fs: CommandContext['fs'],
-  info: RuntimeKernelInfo
+  info: RuntimeKernelInfo,
+  options: { publicView?: boolean } = {}
 ): Promise<RuntimeFile[]> {
   const files: RuntimeFile[] = [];
   await collectKernelProcSnapshotFiles(fs, '/proc', files);
   await collectKernelProcSnapshotFiles(fs, TRACEKERNEL_SKILLS_ROOT, files);
-  if (files.length === 0) return runtimeKernelVirtualFiles(info);
-  const byPath = new Map(runtimeKernelVirtualFiles(info).map((file) => [file.path, file]));
-  for (const file of files) byPath.set(file.path, file);
+  const virtualFiles = options.publicView === false
+    ? runtimeKernelVirtualFiles(info)
+    : publicRuntimeKernelVirtualFiles(info);
+  if (files.length === 0) return virtualFiles;
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  for (const file of virtualFiles) byPath.set(file.path, file);
   return [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
@@ -1997,12 +2004,13 @@ async function snapshotCommandContext(
   await collectSnapshotFiles(ctx.fs, workspaceRoot, workspaceRoot, files, directories);
   files.sort((left, right) => left.path.localeCompare(right.path));
   directories.sort((left, right) => left.localeCompare(right));
+  const publicKernel = kernel ? publicRuntimeKernelInfo(kernel) : undefined;
   const kernelFiles = kernel ? await snapshotRuntimeKernelVirtualFiles(ctx.fs, kernel) : undefined;
   return {
     cwd: workspaceRoot,
     workspaceRoot,
     ...(workspaceAlias ? { workspaceAlias } : {}),
-    ...(kernel ? { kernel } : {}),
+    ...(publicKernel ? { kernel: publicKernel } : {}),
     ...(kernel ? { kernelDevices: runtimeKernelVirtualDevices() } : {}),
     ...(kernelFiles ? { kernelFiles } : {}),
     files,
@@ -3092,7 +3100,7 @@ class KernelObservedFileSystem implements IFileSystem {
     sourceTarget: ReturnType<typeof runtimeKernelFileReadTarget> = kernelFileReadTarget(path)
   ): Promise<FileContent> {
     if (sourceTarget.kind === 'device-file') return this.readDeviceFile(sourceTarget.path);
-    if (sourceTarget.kind === 'proc-file') return readRuntimeProcFile(sourceTarget.path, this.kernelInfo());
+    if (sourceTarget.kind === 'proc-file') return readPublicRuntimeProcFile(sourceTarget.path, this.kernelInfo());
     if (sourceTarget.kind === 'error') throwKernelFileReadTargetError(path, sourceTarget);
     return this.base.readFileBuffer(this.mapPath(path));
   }
@@ -3380,7 +3388,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   private readProcFile(path: string, options?: FsReadFileOptions): string {
-    const content = readRuntimeProcFile(path, this.kernelInfo());
+    const content = readPublicRuntimeProcFile(path, this.kernelInfo());
     if (options === 'base64' || (typeof options === 'object' && options?.encoding === 'base64')) {
       return base64FromBytes(new TextEncoder().encode(content));
     }
@@ -8696,7 +8704,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private readProcFile(path: string, encoding?: RuntimeFileEncoding): string | null {
+  private readProcFile(path: string, encoding?: RuntimeFileEncoding, options: { publicView?: boolean } = {}): string | null {
     const procPath = normalizeProcPath(path);
     if (procPath === null) return null;
     if (encoding === 'base64') {
@@ -8705,7 +8713,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     try {
       const dynamicFile = this.readDynamicProcFile(procPath);
       if (dynamicFile !== null) return dynamicFile;
-      return readRuntimeProcFile(procPath, this.kernelInfo);
+      return options.publicView === false
+        ? readRuntimeProcFile(procPath, this.kernelInfo)
+        : readPublicRuntimeProcFile(procPath, this.kernelInfo);
     } catch (error) {
       if ((error as { code?: unknown }).code === 'ENOENT') throw new Error(`Kernel proc path not found: ${path}`);
       throw error;
@@ -8912,19 +8922,21 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     });
   }
 
-  async readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string> {
+  async readFile(path: string, encoding?: RuntimeFileEncoding, options: { publicProc?: boolean } = {}): Promise<string> {
     this.assertNotDestroyed();
     const dynamicVirtualFile = this.readDynamicVirtualFile(path);
     if (dynamicVirtualFile !== null) {
       if (encoding === 'base64') throw new Error(`Kernel virtual path does not support base64 reads: ${path}`);
       return dynamicVirtualFile;
     }
-    const procFile = this.readProcFile(path, encoding);
+    const procFile = this.readProcFile(path, encoding, { publicView: options.publicProc !== false });
     if (procFile !== null) return procFile;
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'proc-file') {
       if (encoding === 'base64') throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
-      return readRuntimeProcFile(readTarget.path, this.kernelInfo);
+      return options.publicProc === false
+        ? readRuntimeProcFile(readTarget.path, this.kernelInfo)
+        : readPublicRuntimeProcFile(readTarget.path, this.kernelInfo);
     }
     if (readTarget.kind === 'proc-directory') throw new Error(`Kernel proc path is a directory: ${path}`);
     if (readTarget.kind === 'device-file') {
@@ -9109,7 +9121,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const dynamicSourceFile = this.readDynamicVirtualFile(sourcePath);
     if (dynamicSourceFile !== null) return new TextEncoder().encode(dynamicSourceFile);
     if (sourceTarget.kind === 'device-file') return new TextEncoder().encode(this.readDevice(sourceTarget.path));
-    if (sourceTarget.kind === 'proc-file') return new TextEncoder().encode(readRuntimeProcFile(sourceTarget.path, this.kernelInfo));
+    if (sourceTarget.kind === 'proc-file') return new TextEncoder().encode(readPublicRuntimeProcFile(sourceTarget.path, this.kernelInfo));
     if (sourceTarget.kind === 'error') {
       throw new Error(
         sourceTarget.reason === 'is-directory'
@@ -9667,11 +9679,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     files.sort((left, right) => left.path.localeCompare(right.path));
     directories.sort((left, right) => left.localeCompare(right));
     const kernelFiles = await snapshotRuntimeKernelVirtualFiles(this.bash.fs, this.kernelInfo);
+    const publicKernel = publicRuntimeKernelInfo(this.kernelInfo);
     const snapshot: RuntimeProjectSnapshot = {
       cwd: this.cwd,
       workspaceRoot: this.cwd,
       ...(this.kernelInfo.workspaceAlias ? { workspaceAlias: this.kernelInfo.workspaceAlias } : {}),
-      kernel: this.kernelInfo,
+      kernel: publicKernel,
       kernelDevices: runtimeKernelVirtualDevices(),
       kernelFiles,
       files,
@@ -9735,7 +9748,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private createKernel(): RuntimeWorkspaceKernel {
     return {
       info: this.kernelInfo,
-      readFile: (path, _actor, encoding) => this.readFile(path, encoding),
+      readFile: (path, _actor, encoding) => this.readFile(path, encoding, { publicProc: false }),
       writeFile: (path, contents, actor = PRINCIPAL_ACTOR, encoding) => this.writeFileAs(path, contents, actor, encoding, 'live'),
       writeSkillFiles: (files, actor = SYSTEM_ACTOR) => this.writeSkillFilesAs(files, actor),
       deleteFile: (path, actor = PRINCIPAL_ACTOR) => this.deleteFileAs(path, actor, 'live'),

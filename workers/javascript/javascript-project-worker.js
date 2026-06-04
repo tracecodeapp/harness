@@ -1170,6 +1170,33 @@ function runtimeProcInfoJson(info) {
   return `${JSON.stringify(info, null, 2)}
 `;
 }
+function publicRuntimeKernelInfo(info) {
+  const workspaceRoot = "/workspace";
+  const home = "/home/user";
+  const workspaceName = "workspace";
+  return {
+    name: info.name,
+    version: info.version,
+    user: {
+      id: "user",
+      username: "user",
+      home
+    },
+    host: {
+      hostname: "tracevm",
+      osName: "tracecode"
+    },
+    workspace: {
+      id: workspaceName,
+      name: workspaceName,
+      root: workspaceRoot,
+      startedAt: "1970-01-01T00:00:00.000Z"
+    },
+    home,
+    cwd: workspaceRoot,
+    workspaceRoot
+  };
+}
 function runtimeMountInfoField(value) {
   return value.replace(/\\/g, "\\134").replace(/ /g, "\\040").replace(/\t/g, "\\011").replace(/\n/g, "\\012");
 }
@@ -1221,6 +1248,9 @@ function readRuntimeProcFile(path, info) {
     throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), { code: "EISDIR" });
   }
   throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" });
+}
+function readPublicRuntimeProcFile(path, info) {
+  return readRuntimeProcFile(path, publicRuntimeKernelInfo(info));
 }
 function runtimeProcStat(path, info) {
   const kind = runtimeProcEntryKind(path);
@@ -3982,7 +4012,7 @@ function browserProcEntryKind(snapshot, path) {
 }
 function browserProcFileContents(snapshot, path, info) {
   const contents = snapshot?.files.get(path);
-  return contents !== void 0 ? contents : readRuntimeProcFile(path, info);
+  return contents !== void 0 ? contents : readPublicRuntimeProcFile(path, info);
 }
 function workspaceRelativeFromAbsolutePath(rawPath, workspace) {
   const raw = normalizeAbsoluteWorkspaceRoot(rawPath);
