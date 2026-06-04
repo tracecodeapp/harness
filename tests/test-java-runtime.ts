@@ -148,12 +148,17 @@ function assertNativeJavaRewriterCompiles(source: string, entryName = 'solve'): 
 
 function executeNativeJavaRewrittenExpression(source: string, expression: string, entryName = 'solve'): string {
   const rewritten = rewriteWithNativeJavaRewriter(source, entryName);
+  return executeJavaSourceExpression(rewritten, expression);
+}
+
+function executeJavaSourceExpression(source: string, expression: string): string {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-rewriter-execute-'));
   try {
-    const sourcePath = join(tmpRoot, 'Exports.java');
+    const publicClassName = source.match(/\bpublic\s+(?:final\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)/)?.[1] ?? 'Exports';
+    const sourcePath = join(tmpRoot, `${publicClassName}.java`);
     const mainPath = join(tmpRoot, 'Main.java');
     const classesPath = join(tmpRoot, 'classes');
-    writeFileSync(sourcePath, rewritten, 'utf8');
+    writeFileSync(sourcePath, source, 'utf8');
     writeFileSync(
       mainPath,
       `package tracecode.user;
@@ -247,6 +252,12 @@ function augmentRewrittenJavaForTest(source: string, entryName: string): string 
   rewritten = augmentations.augmentJavaCollectionOperations(rewritten, source);
   rewritten = augmentations.augmentJavaLocalSnapshots?.(rewritten) ?? rewritten;
   return rewritten;
+}
+
+function executeAugmentedJavaCollectionOperationsExpression(source: string, expression: string): string {
+  const augmentations = loadSourceAugmentationsForTest();
+  const augmented = augmentations.augmentJavaCollectionOperations(source, source);
+  return executeJavaSourceExpression(augmented, expression);
 }
 
 function testJavaRuntimeValueSerializationLimit(): void {
@@ -2278,6 +2289,42 @@ class Solution {
   assertCondition(
     indexedSetMutationSource.includes('((java.util.Set)((java.util.List)groups).get(0))'),
     'Java rewriter should cast indexed List<Set<...>> mutation targets to Set, not List'
+  );
+
+  const augmentedNestedListMutationSideEffectOutput = executeAugmentedJavaCollectionOperationsExpression(`package tracecode.user;
+import java.util.*;
+
+public class Solution {
+  int index = 0;
+  int value = 7;
+  public int solve() {
+    List<List<Integer>> graph = new ArrayList<>();
+    graph.add(new ArrayList<>());
+    graph.get(index++).add(value++);
+    return graph.get(0).get(0) * 100 + index * 10 + value;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    augmentedNestedListMutationSideEffectOutput === '718',
+    `Java source augmentation should not re-evaluate nested list mutation index/value expressions, received ${augmentedNestedListMutationSideEffectOutput}`
+  );
+
+  const augmentedNestedMapMutationSideEffectOutput = executeAugmentedJavaCollectionOperationsExpression(`package tracecode.user;
+import java.util.*;
+
+public class Solution {
+  int key = 0;
+  int value = 7;
+  public int solve() {
+    Map<Integer, Collection<Integer>> graph = new HashMap<>();
+    graph.put(0, new ArrayList<>());
+    graph.get(key++).add(value++);
+    return ((List<Integer>) graph.get(0)).get(0) * 100 + key * 10 + value;
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    augmentedNestedMapMutationSideEffectOutput === '718',
+    `Java source augmentation should not re-evaluate nested map mutation key/value expressions, received ${augmentedNestedMapMutationSideEffectOutput}`
   );
 
   const cloneGraphWindowSource = assertNativeJavaRewriterCompiles(`import java.util.*;
@@ -6728,10 +6775,12 @@ class Solution {
     assertCondition(graphExecute.success === true, 'Java graph adjacency execution should succeed');
     const graphSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.emitCallAtLine(4, "buildGraph"');
     const graphHasAugmentedIndexedAppend =
-      graphSource.includes('TraceHooks.readObjectListAtLine(7, "graph", graph, 0, null)') &&
-      graphSource.includes('__tracecodeTarget.add(1);') &&
-      graphSource.includes('TraceHooks.emitMutatingCallAtLine(7, "graph", 0, "add", null, 1);') &&
-      graphSource.includes('TraceHooks.emitIndexedWriteAtLine(7, "graph", new Object[] { 0, __tracecodeTarget.size() - 1 }, 1, null, null);');
+      /var __tracecodeIndex7_\d+ = 0;/.test(graphSource) &&
+      /var __tracecodeValue7_\d+ = 1;/.test(graphSource) &&
+      graphSource.includes('TraceHooks.readObjectListAtLine(7, "graph", graph, __tracecodeIndex7_') &&
+      graphSource.includes('__tracecodeTarget.add(__tracecodeValue7_') &&
+      graphSource.includes('TraceHooks.emitMutatingCallAtLine(7, "graph", __tracecodeIndex7_') &&
+      graphSource.includes('TraceHooks.emitIndexedWriteAtLine(7, "graph", new Object[] { __tracecodeIndex7_');
     const graphHasNativeIndexedAppend =
       graphSource.includes('var __tracecodeIndexedTarget7 =') &&
       graphSource.includes('__tracecodeIndexedTarget7.add(1);') &&

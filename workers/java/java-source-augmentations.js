@@ -999,6 +999,7 @@
   function augmentJavaCollectionOperations(source, sourceText) {
     const lines = source.split('\n');
     const methodStack = [];
+    let mutationTempCounter = 0;
     let generatedExportsClassDepth = null;
     const resolveOriginalLine = buildOriginalLineResolver(sourceText);
     const methodStartPattern =
@@ -1078,7 +1079,10 @@
           nextLine = nextLine.replace(indexedAddPattern, (_match, indexSource, valueSource) => {
             const indexExpression = String(indexSource).trim();
             const value = String(valueSource).trim();
-            return `{ java.util.List __tracecodeTarget = TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexExpression}, ${indexSourceArgument(indexExpression)}); __tracecodeTarget.add(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexExpression}, "add", ${indexSourceArgument(indexExpression)}, ${value}); TraceHooks.emitIndexedWriteAtLine(${lineNumber}, "${name}", new Object[] { ${indexExpression}, __tracecodeTarget.size() - 1 }, ${value}, ${indexSourceArgument(indexExpression)}, null); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
+            const tempSuffix = `${lineNumber}_${mutationTempCounter++}`;
+            const indexTemp = `__tracecodeIndex${tempSuffix}`;
+            const valueTemp = `__tracecodeValue${tempSuffix}`;
+            return `{ var ${indexTemp} = ${indexExpression}; var ${valueTemp} = ${value}; java.util.List __tracecodeTarget = TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexTemp}, ${indexSourceArgument(indexExpression)}); __tracecodeTarget.add(${valueTemp}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexTemp}, "add", ${indexSourceArgument(indexExpression)}, ${valueTemp}); TraceHooks.emitIndexedWriteAtLine(${lineNumber}, "${name}", new Object[] { ${indexTemp}, __tracecodeTarget.size() - 1 }, ${valueTemp}, ${indexSourceArgument(indexExpression)}, null); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
           });
 
           const listGetPattern = new RegExp(`\\b${escapeRegExp(name)}\\.get\\(([^()\\n;]+)\\)`, 'g');
@@ -1097,8 +1101,11 @@
             const keyExpression = String(keySource).trim();
             const method = String(methodSource).trim();
             const value = String(valueSource).trim();
-            const target = `((java.util.Collection) (${name}).get(${keyExpression}))`;
-            return `{ TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + TraceHooks.serializeResult(${keyExpression}) + "]${escapedIndexSourcesTargetSegment(keyExpression)}},\\"value\\":null}"); java.util.Collection __tracecodeTarget = ${target}; __tracecodeTarget.${method}(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyExpression}, "${method}", ${indexSourceArgument(keyExpression)}, ${value}); if (__tracecodeTarget instanceof java.util.List) TraceHooks.emitIndexedWriteAtLine(${lineNumber}, "${name}", new Object[] { ${keyExpression}, ((java.util.List) __tracecodeTarget).size() - 1 }, ${value}, ${indexSourceArgument(keyExpression)}, null); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
+            const tempSuffix = `${lineNumber}_${mutationTempCounter++}`;
+            const keyTemp = `__tracecodeKey${tempSuffix}`;
+            const valueTemp = `__tracecodeValue${tempSuffix}`;
+            const target = `((java.util.Collection) (${name}).get(${keyTemp}))`;
+            return `{ var ${keyTemp} = ${keyExpression}; var ${valueTemp} = ${value}; TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + TraceHooks.serializeResult(${keyTemp}) + "]${escapedIndexSourcesTargetSegment(keyExpression)}},\\"value\\":null}"); java.util.Collection __tracecodeTarget = ${target}; __tracecodeTarget.${method}(${valueTemp}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyTemp}, "${method}", ${indexSourceArgument(keyExpression)}, ${valueTemp}); if (__tracecodeTarget instanceof java.util.List) TraceHooks.emitIndexedWriteAtLine(${lineNumber}, "${name}", new Object[] { ${keyTemp}, ((java.util.List) __tracecodeTarget).size() - 1 }, ${valueTemp}, ${indexSourceArgument(keyExpression)}, null); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
           });
           nextLine = replaceJavaReceiverCall(nextLine, name, 'containsKey', (key) =>
             `TraceHooks.containsMapKeyAtLine(${lineNumber}, "${name}", ${name}, ${key}, ${indexSourceArgument(key)})`
