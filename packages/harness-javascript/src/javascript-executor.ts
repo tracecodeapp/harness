@@ -788,12 +788,9 @@ const TYPESCRIPT_BUILTIN_TYPE_NAMES = new Set([
 const CUSTOM_OBJECT_MATERIALIZER_SOURCE = `
 function __tracecodeResolveConstructor(__typeName) {
   if (typeof __typeName !== 'string' || __typeName.length === 0) return undefined;
-  if (!/^[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*$/.test(__typeName)) return undefined;
-  try {
-    return eval(__typeName);
-  } catch (_err) {
-    return undefined;
-  }
+  return Object.prototype.hasOwnProperty.call(__tracecodeConstructorRegistry, __typeName)
+    ? __tracecodeConstructorRegistry[__typeName]
+    : undefined;
 }
 
 function __tracecodeMaterializeCustomObject(value, __targetTypeName, __seen) {
@@ -892,6 +889,55 @@ function __tracecodeRestArgs(value) {
   return Array.isArray(value) ? value : [value];
 }
 `;
+
+function collectTrustedConstructorNames(kind: InputMaterializerKind | null, out: Set<string>): void {
+  if (!kind || kind === 'tree' || kind === 'list') return;
+  if (kind.kind === 'custom') {
+    out.add(kind.typeName);
+    return;
+  }
+  if (kind.kind === 'array') {
+    collectTrustedConstructorNames(kind.element, out);
+    return;
+  }
+  collectTrustedConstructorNames(kind.value, out);
+}
+
+function trustedConstructorExpression(typeName: string): string {
+  const parts = typeName.split('.');
+  const [root, ...properties] = parts;
+  const lines = [`let __value = ${root};`];
+  for (const property of properties) {
+    lines.push(`__value = __value == null ? undefined : __value[${JSON.stringify(property)}];`);
+  }
+  return `(() => {
+  try {
+    ${lines.join('\n    ')}
+    return typeof __value === 'function' ? __value : undefined;
+  } catch (_err) {
+    return undefined;
+  }
+})()`;
+}
+
+function buildTrustedConstructorRegistrySource(materializers: Array<InputMaterializerKind | null>): string {
+  const names = new Set<string>();
+  for (const kind of materializers) {
+    collectTrustedConstructorNames(kind, names);
+  }
+
+  const lines = ['const __tracecodeConstructorRegistry = Object.create(null);'];
+  for (const typeName of [...names].sort()) {
+    if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(typeName)) continue;
+    lines.push(`{
+  const __ctor = ${trustedConstructorExpression(typeName)};
+  if (typeof __ctor === 'function') {
+    __tracecodeConstructorRegistry[${JSON.stringify(typeName)}] = __ctor;
+  }
+}`);
+  }
+  return lines.join('\n');
+}
 
 function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown> | null {
   if (!Array.isArray(values) || values.length === 0) return null;
@@ -1308,6 +1354,7 @@ function buildRunner(
   argumentMaterializers: Array<InputMaterializerKind | null> = [],
   sourceCode = code
 ): DynamicRunner {
+  const constructorRegistrySource = buildTrustedConstructorRegistrySource(argumentMaterializers);
   const materializedArgExpressions = argNames.map((name, index) => {
     const materialized = `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`;
     return name.endsWith('__tracecodeRest') ? `...__tracecodeRestArgs(${materialized})` : materialized;
@@ -1320,6 +1367,7 @@ function buildRunner(
       '__tracecode_global',
       `"use strict";
 ${javascriptRuntimeSandboxedCode(code, sourceCode)}
+${constructorRegistrySource}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
@@ -1342,6 +1390,7 @@ return __target(${materializedArgExpressions.join(', ')});`
       '__tracecode_global',
       `"use strict";
 ${javascriptRuntimeSandboxedCode(code, sourceCode)}
+${constructorRegistrySource}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
@@ -1373,6 +1422,7 @@ throw new Error('Method "Solution.' + __functionName + '" not found');`
       '__tracecode_global',
       `"use strict";
 ${javascriptRuntimeSandboxedCode(code, sourceCode)}
+${constructorRegistrySource}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
   throw new Error('ops-class execution requires inputs.operations and inputs.arguments (or ops/args)');

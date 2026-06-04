@@ -403,6 +403,27 @@ async function testJavaScriptTraceSerializationIsBounded(): Promise<void> {
   assertCondition(result.broadLength < 250_000, `JS serializer should keep broad graphs bounded: ${JSON.stringify(result)}`);
 }
 
+async function testJavaScriptInputMaterializerAvoidsTypeNameEval(): Promise<void> {
+  const sources = [
+    ['worker', await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8')],
+    [
+      'package executor',
+      await readFile(join(dirname(testDirectory), 'packages', 'harness-javascript', 'src', 'javascript-executor.ts'), 'utf8'),
+    ],
+  ] as const;
+
+  for (const [label, source] of sources) {
+    assertCondition(
+      !source.includes('return eval(__typeName)'),
+      `${label} input materializer must not eval serialized __type__/__class names`
+    );
+    assertCondition(
+      source.includes('__tracecodeConstructorRegistry'),
+      `${label} input materializer should resolve constructors through the trusted registry`
+    );
+  }
+}
+
 async function testNativeProjectRunnersRejectVirtualPathTraversal(): Promise<void> {
   const projectRoot = '/home/obi/weather-api';
   const project = {
@@ -1297,6 +1318,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptHiddenFilesAreNotMounted();
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
   await testJavaScriptTraceSerializationIsBounded();
+  await testJavaScriptInputMaterializerAvoidsTypeNameEval();
   await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();
