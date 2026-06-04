@@ -424,6 +424,97 @@ async function testJavaScriptInputMaterializerAvoidsTypeNameEval(): Promise<void
   }
 }
 
+async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8');
+  const pending = new Map<string, { token: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  let ready = false;
+  const workerScope = {
+    location: { search: '' },
+    onmessage: null as ((event: { data: unknown }) => void) | null,
+    postMessage: (message: unknown) => {
+      const record = message as { id?: string; type?: string; payload?: unknown; protocolToken?: string };
+      if (record.type === 'worker-ready') {
+        ready = true;
+        return;
+      }
+      if (!record.id) return;
+      const entry = pending.get(record.id);
+      if (!entry || record.protocolToken !== entry.token) return;
+      pending.delete(record.id);
+      if (record.type === 'error') {
+        entry.reject(new Error(String((record.payload as { error?: unknown } | undefined)?.error ?? 'worker error')));
+        return;
+      }
+      entry.resolve(record.payload);
+    },
+  };
+  const context = vm.createContext({
+    console,
+    self: workerScope,
+    performance: { now: () => Date.now() },
+    setTimeout,
+    clearTimeout,
+    queueMicrotask,
+    TextEncoder,
+    TextDecoder,
+    importScripts: (...urls: string[]) => {
+      throw new Error(`Unexpected importScripts in destructured iterable test: ${urls.join(',')}`);
+    },
+  });
+  vm.runInContext(source, context, { filename: 'javascript-worker.js' });
+  assertCondition(ready, 'JavaScript worker should emit ready before destructured iterable test');
+  assertCondition(typeof workerScope.onmessage === 'function', 'JavaScript worker should register onmessage');
+
+  const id = 'destructured-iterable';
+  const token = 'destructured-iterable-token';
+  const response = new Promise<{ success?: boolean; output?: unknown; error?: string }>((resolve, reject) => {
+    pending.set(id, { token, resolve: resolve as (value: unknown) => void, reject });
+  });
+  workerScope.onmessage?.({
+    data: {
+      id,
+      protocolToken: token,
+      type: 'execute-with-tracing',
+      payload: {
+        code: [
+          'function solve() {',
+          '  let pulls = 0;',
+          '  function makePair() {',
+          '    const iterator = {',
+          '      next() {',
+          '        pulls += 1;',
+          '        if (pulls === 1) return { value: 2, done: false };',
+          '        if (pulls === 2) return { value: 3, done: false };',
+          '        return { done: true };',
+          '      },',
+          '      return() { return { done: true }; },',
+          '      [Symbol.iterator]() { return this; },',
+          '    };',
+          '    return iterator;',
+          '  }',
+          '  let total = 0;',
+          '  for (const [a, b] of [makePair()]) {',
+          '    total = a * 10 + b;',
+          '  }',
+          '  return { total, pulls };',
+          '}',
+        ].join('\n'),
+        functionName: 'solve',
+        inputs: {},
+        executionStyle: 'function',
+        language: 'javascript',
+      },
+    },
+  });
+
+  const result = await response;
+  assertCondition(result.success === true, `destructured iterable trace should execute: ${result.error ?? 'unknown error'}`);
+  assertCondition(
+    JSON.stringify(result.output) === JSON.stringify({ total: 23, pulls: 2 }),
+    `destructured iterable tracing should not pre-consume yielded iterables: ${JSON.stringify(result.output)}`
+  );
+}
+
 async function testNativeProjectRunnersRejectVirtualPathTraversal(): Promise<void> {
   const projectRoot = '/home/obi/weather-api';
   const project = {
@@ -1425,6 +1516,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
   await testJavaScriptTraceSerializationIsBounded();
   await testJavaScriptInputMaterializerAvoidsTypeNameEval();
+  await testJavaScriptDestructuredIterableTracingDoesNotExhaustValues();
   await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();

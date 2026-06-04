@@ -5511,11 +5511,28 @@ function __traceSplitBindingNames(__bindingName) {
     .filter((__name) => __name.length > 0);
 }
 
+function __traceDestructuredBindingSlotValue(__value, __slot) {
+  if (Array.isArray(__value) || typeof __value === 'string') {
+    return { hasValue: true, value: __value[__slot] };
+  }
+  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(__value) && !(typeof DataView !== 'undefined' && __value instanceof DataView)) {
+    return { hasValue: true, value: __value[__slot] };
+  }
+  if (__value && typeof __value === 'object') {
+    const __descriptor = Object.getOwnPropertyDescriptor(__value, String(__slot));
+    if (__descriptor && Object.prototype.hasOwnProperty.call(__descriptor, 'value')) {
+      return { hasValue: true, value: __descriptor.value };
+    }
+  }
+  return { hasValue: false, value: undefined };
+}
+
 function __traceRecordDestructuredIterationBindings(__varName, __basePath, __baseSources, __iterationIndex, __value, __bindingName, __location) {
   const __bindingNames = __traceSplitBindingNames(__bindingName);
   if (__bindingNames.length === 0) return;
-  const __values = Array.isArray(__value) ? __value : Array.from(__value ?? []);
   for (let __slot = 0; __slot < __bindingNames.length; __slot += 1) {
+    const __slotValue = __traceDestructuredBindingSlotValue(__value, __slot);
+    if (!__slotValue.hasValue) continue;
     const __path = [...__basePath, __iterationIndex, __slot];
     const __normalized = __traceNormalizeIndices(__path);
     if (!__normalized) continue;
@@ -5531,7 +5548,7 @@ function __traceRecordDestructuredIterationBindings(__varName, __basePath, __bas
       kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
       indices: __normalized,
       pathDepth: __normalized.length,
-      value: __values[__slot],
+      value: __slotValue.value,
       ...(Array.isArray(__iterationSources) ? { indexSources: __iterationSources } : {}),
       binding: { kind: 'iteration', variable: __bindingNames[__slot] },
       ...__traceNormalizeSourceLocation(__location),
