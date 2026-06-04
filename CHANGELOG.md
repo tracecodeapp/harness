@@ -4,6 +4,84 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.9.0] - 2026-06-04
+
+### Added
+
+- Added project-mode TraceKernel workspaces for browser and native execution, including virtual filesystem roots, `/proc` and `/dev` surfaces, command events, live and final file mutations, stdin/stdout/stderr routing, terminal sessions, readonly files, protected skills roots, and project examples.
+- Added `@tracecode/harness-project` and project exports from the umbrella, browser, and native package surfaces.
+- Added TraceKernel HTTP simulation for project workspaces, including in-kernel listeners, request dispatch, fetch/curl support, body helpers, request/listener diagnostics, Java project HTTP support, Python HTTP shims, and packaged HTTP smoke coverage.
+- Added `@tracecode/harness-native` and `@tracecode/harness/native` for trusted host-native batch inference across Python, JavaScript, TypeScript, Java, C#, and C++.
+- Added native queue APIs for multi-worker mixed-language job batches, plus compile-once/batch execution paths for high-volume corpus mining.
+- Added C++ conformance fixture import tooling and expanded runtime parity/conformance coverage across JavaScript/TypeScript, Python, Java, C#, and C++.
+- Added configurable V4 trace path depth and expanded fixtures for keyed/indexed provenance, recursive access, nested mutation, heap/queue/set/map behavior, stdout frames, and post-line state behavior.
+
+### Changed
+
+- Standardized V4 call, frame, stdout, provenance, keyed-removal, collection-mutation, and trace-budget behavior across supported runtimes.
+- Improved browser JavaScript/TypeScript runtime support with a larger Node-like filesystem, stream, descriptor, stdio, watch, metadata, and TypeScript project-library surface.
+- Routed Java, C#, C++, Python, and JavaScript/TypeScript project runners through shared TraceKernel policy for workspace roots, virtual devices, manifests, diagnostics, and file mutation handling.
+- Split and trimmed CI stages for runtime trace, C# browser, C++ smoke, and package-surface validation.
+
+### Fixed
+
+- Fixed V4 trace correctness gaps across collection mutation, indexed reads/writes, nested mutations, iteration bindings, recursive calls, stdout frames, lambda/call activations, map/set/key provenance, and post-line state behavior.
+- Fixed Java trace rewriting around nested/indexed mutations, enhanced-for receivers, dangling else handling, compact control blocks, `PriorityQueue`, `List.remove`, object-key map reads, array writes, and side-effecting expression replay.
+- Fixed C# tracing around tuple/index provenance, from-end ranges, nested set mutations, constructor/input hydration bounds, partial stdout, private-field snapshots, and side-effecting collection keys.
+- Fixed C++ tracing around aliasing, pointer reads, map/set keyed collections, `priority_queue`, nested vectors, scalar writes, lambda/script tracing, numeric literal inference, and compiler worker lifecycle.
+- Fixed Python tracing around assignment writes, `heapq`, helper shadowing, cyclic input literals, project snapshots, invalid nested mutation paths, and set-name shadowing.
+- Fixed JavaScript/TypeScript tracing around async conditions, destructuring, private fields, nested write evaluation order, property reads, set/map provenance, and trace serialization limits.
+
+### Security
+
+- Hardened browser/project runtime boundaries, worker isolation, compiler/runtime asset loading, virtual path mapping, workspace traversal, final-diff application, project event streams, and public TraceKernel proc identity.
+- Added encrypted browser IndexedDB kernel storage and trusted IndexedDB options for examples.
+- Gated browser JavaScript trusted execution modes and documented isolation boundaries.
+- Pruned the C# browser network runtime surface and locked down compiler/runtime assets.
+- Removed JavaScript input materializer type evaluation and bounded resource use across JavaScript input hydration, Java diagnostics/trace expansion, C# hydration, async contexts, and bulk trace budgets.
+- Updated vulnerable npm dependencies, including `lodash` to `4.18.1` and a `postcss` override to `8.5.10`.
+
+### Notes
+
+- Native harness is not a sandbox and should only run trusted code. The browser runner remains the default path for normal product usage.
+- Java and C# native code clients support host-native run/batch execution, but native host-side trace instrumentation is still reported as unsupported.
+
+## [0.8.0] - 2026-05-21
+
+### Added
+
+- Added the V4 harness execution contract as the public runtime trace contract for browser harness consumers.
+- Added native V4 runtime trace emission across JavaScript/TypeScript, Python, Java, C#, and C++.
+- Added browser-local C# and C++ runtime support.
+- Added language-split packages for core, browser, Python, JavaScript/TypeScript, Java, C#, and C++ harness consumers.
+- Added generated runtime language metadata covering language versions, compiler/runtime details, standards, default imports, and bundled libraries.
+- Added default runtime library support across supported runtimes, including JavaScript/TypeScript bundled libraries.
+- Added explicit browser warmup APIs for heavyweight runtimes.
+- Added language-filtered asset syncing through `tracecode-harness sync-assets --languages ...`.
+- Added third-party runtime notices for bundled browser runtimes and toolchains.
+- Added expanded runtime parity fixtures and contract gates for cross-language V4 trace behavior.
+
+### Changed
+
+- Changed the public trace result surface to V4 runtime traces.
+- Reframed harness traces as low-level runtime facts rather than visualizer-specific payloads.
+- Standardized runtime traces on post-line state, where line events describe facts visible after the source line executes.
+- Standardized trace events around calls, lines, returns, snapshots, reads, writes, mutations, stdout, exceptions, timeouts, and trace-budget behavior.
+- Standardized collection mutation and access provenance reporting across supported runtimes.
+- Updated Java runtime tracing to emit native V4 traces by default.
+- Updated browser runtime initialization so C#, C++, Java, Python, and TypeScript can be warmed intentionally before first execution.
+
+### Fixed
+
+- Improved Java rewrite-failure handling so parser failures surface as user-facing syntax or compiler diagnostics.
+- Improved JavaScript/TypeScript non-trace execution so plain JavaScript runs no longer load the TypeScript compiler just to recover argument order.
+- Improved Python serialization for script results and callable values.
+
+### Notes
+
+- `0.8.0` supersedes the unpublished `0.7.0-beta` line.
+- This is a contract-establishing release for V4 runtime traces. Consumers upgrading from `0.6.6` should expect trace contract changes.
+
 ## [0.7.0-beta4] - 2026-05-10
 
 ### Changed
