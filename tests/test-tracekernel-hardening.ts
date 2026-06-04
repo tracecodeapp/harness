@@ -1529,6 +1529,16 @@ async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
   );
 }
 
+async function testCppTraceIdsDoNotExposePointers(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'tracecode_runtime.hpp'), 'utf8');
+  assertCondition(!source.includes('reinterpret_cast<std::uintptr_t>'), 'C++ trace IDs must not derive from raw pointer addresses');
+  assertCondition(!source.includes('"ptr-"'), 'C++ trace IDs must not include pointer-address prefixes');
+  assertCondition(
+    source.includes('const std::string id = tracecode_ref_id(node);') && source.includes('reset_tracecode_object_ref_ids();'),
+    'C++ trace IDs should use opaque sequential ref ids'
+  );
+}
+
 async function testSharedKernelPolicyCachesDeviceManifests(): Promise<void> {
   const source = await readFile(join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy.js'), 'utf8');
   assertCondition(
@@ -2095,6 +2105,7 @@ async function main(): Promise<void> {
   await testJavaWorkerTraceHeaderExpansionIsBounded();
   await testCppWorkerProjectEventBudgets();
   await testCppInheritedStdioRespectsKernelDevices();
+  await testCppTraceIdsDoNotExposePointers();
   await testSharedKernelPolicyCachesDeviceManifests();
   testRuntimeFinalDiffBudgets();
   await testTraceKernelProjectCommandStepsAreBounded();

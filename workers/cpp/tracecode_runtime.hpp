@@ -4,7 +4,6 @@
 #include <array>
 #include <cctype>
 #include <cmath>
-#include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 #include <deque>
@@ -838,14 +837,22 @@ to_json(T value) {
   return std::to_string(value);
 }
 
-inline std::string tracecode_ref_id(std::unordered_map<const void*, std::string>& refs) {
-  return std::string("ref-") + std::to_string(refs.size());
+inline std::unordered_map<const void*, std::string>& tracecode_object_ref_ids() {
+  static std::unordered_map<const void*, std::string> value;
+  return value;
 }
 
-inline std::string tracecode_pointer_ref_id(const void* ptr) {
-  std::ostringstream stream;
-  stream << "ptr-" << reinterpret_cast<std::uintptr_t>(ptr);
-  return stream.str();
+inline void reset_tracecode_object_ref_ids() {
+  tracecode_object_ref_ids().clear();
+}
+
+inline std::string tracecode_ref_id(const void* ptr) {
+  auto& ids = tracecode_object_ref_ids();
+  const auto found = ids.find(ptr);
+  if (found != ids.end()) return found->second;
+  const std::string id = std::string("ref-") + std::to_string(ids.size());
+  ids[ptr] = id;
+  return id;
 }
 
 inline std::string to_json_tree_node(TreeNode* node, std::unordered_map<const void*, std::string>& refs) {
@@ -854,7 +861,7 @@ inline std::string to_json_tree_node(TreeNode* node, std::unordered_map<const vo
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_pointer_ref_id(node);
+  const std::string id = tracecode_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"TreeNode\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -887,7 +894,7 @@ auto to_json_tree_like_node(Node* node, std::unordered_map<const void*, std::str
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_pointer_ref_id(node);
+  const std::string id = tracecode_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"TreeNode\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -919,7 +926,7 @@ auto to_json_quad_like_node(Node* node, std::unordered_map<const void*, std::str
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_pointer_ref_id(node);
+  const std::string id = tracecode_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"Node\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -944,7 +951,7 @@ auto to_json_nary_like_node(Node* node, std::unordered_map<const void*, std::str
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_pointer_ref_id(node);
+  const std::string id = tracecode_ref_id(node);
   refs[node] = id;
   std::string children_json = "[";
   bool first = true;
@@ -1019,7 +1026,7 @@ std::string to_json_trie_like_node(Node* node, std::unordered_map<const void*, s
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_pointer_ref_id(node);
+  const std::string id = tracecode_ref_id(node);
   refs[node] = id;
   std::string json = std::string("{\"__type__\":\"TrieNode\",\"__id__\":") + to_json(id) +
     ",\"children\":" + to_json_trie_children(node->children, refs);
@@ -1051,7 +1058,7 @@ inline std::string to_json_list_node(ListNode* node, std::unordered_map<const vo
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_pointer_ref_id(node);
+  const std::string id = tracecode_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"ListNode\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -1083,7 +1090,7 @@ auto to_json_list_like_node(Node* node, std::unordered_map<const void*, std::str
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_pointer_ref_id(node);
+  const std::string id = tracecode_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"ListNode\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -6748,6 +6755,7 @@ inline void configure_trace_budget(
   trace_budget_timeout_reason().clear();
   dropped_trace_event_count() = 0;
   trace_line_hit_counts().clear();
+  reset_tracecode_object_ref_ids();
   hard_stop_on_trace_budget() = hard_stop;
   trace_event_budget() = max_events > 0 ? max_events : 10000;
   trace_line_event_budget() = max_line_events > 0 ? max_line_events : 0;
