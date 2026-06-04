@@ -995,6 +995,112 @@ function testRuntimeFinalDiffBudgets(): void {
   assertCondition(totalError.includes('final-diff byte limit'), `final-diff total budget should reject large aggregate payloads: ${totalError}`);
 }
 
+async function testTraceKernelProjectCommandStepsAreBounded(): Promise<void> {
+  const message = await rejectedMessage(async () => {
+    const workspace = await createRuntimeWorkspace({
+      nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+      projectSession: {
+        id: 'step-limit-session',
+        projectSlug: 'step-limit',
+        language: 'javascript',
+        entrypoint: 'index.js',
+        files: [{ path: 'index.js', contents: 'console.log("ok");\n' }],
+        commands: {
+          flood: {
+            steps: Array.from({ length: 65 }, (_, index) => `printf "${index}\\n"`),
+          },
+        },
+      },
+    });
+    workspace.dispose();
+  });
+
+  assertCondition(
+    message.includes('must include at most 64 steps'),
+    `TraceKernel project commands should reject oversized step lists: ${message}`
+  );
+}
+
+async function testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    packageManager: true,
+    files: [
+      {
+        path: 'package.json',
+        contents: JSON.stringify({
+          name: 'ignore-scripts-app',
+          version: '1.0.0',
+          scripts: {
+            prebuild: 'node scripts/pre.js',
+            build: 'node scripts/build.js',
+            postbuild: 'node scripts/post.js',
+          },
+        }, null, 2),
+      },
+      { path: 'scripts/pre.js', contents: 'console.log("pre");\n' },
+      { path: 'scripts/build.js', contents: 'console.log("build");\n' },
+      { path: 'scripts/post.js', contents: 'console.log("post");\n' },
+    ],
+  });
+
+  try {
+    const normal = await workspace.runCommand('npm run build');
+    assertCondition(
+      normal.exitCode === 0 &&
+        normal.stdout.includes('\npre\n') &&
+        normal.stdout.includes('\nbuild\n') &&
+        normal.stdout.includes('\npost\n'),
+      `npm run should execute lifecycle hooks without --ignore-scripts: ${JSON.stringify(normal)}`
+    );
+
+    const ignored = await workspace.runCommand('npm run build --ignore-scripts');
+    assertCondition(
+      ignored.exitCode === 0 &&
+        ignored.stdout.includes('\nbuild\n') &&
+        !ignored.stdout.includes('\npre\n') &&
+        !ignored.stdout.includes('\npost\n'),
+      `npm run --ignore-scripts should skip lifecycle hooks while running the target script: ${JSON.stringify(ignored)}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
+async function testTraceKernelDeviceOutputAccumulationIsBounded(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, timeoutMs: 1000 }),
+    files: [
+      {
+        path: 'writer.js',
+        contents: [
+          'const fs = require("node:fs");',
+          'fs.writeFileSync("/dev/stdout", "x".repeat(1024 * 1024 + 16));',
+          'fs.writeFileSync("/dev/stdout", "after-truncation-sentinel");',
+        ].join('\n'),
+      },
+    ],
+  });
+
+  try {
+    const result = await workspace.runCommand('node writer.js');
+    assertCondition(result.exitCode === 0, `device output cap command should complete: ${JSON.stringify(result)}`);
+    assertCondition(
+      result.stdout.includes('stdout output truncated after 1048576 bytes'),
+      `TraceKernel should mark oversized device stdout as truncated: ${JSON.stringify({
+        length: result.stdout.length,
+        tail: result.stdout.slice(-120),
+      })}`
+    );
+    assertCondition(
+      !result.stdout.includes('after-truncation-sentinel'),
+      'TraceKernel should drop device stdout chunks after the stream budget is exhausted'
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
 async function testTraceKernelHttpTimeoutSignalsCooperativeHandlers(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
   let sideEffectsAfterTimeout = 0;
@@ -1328,6 +1434,9 @@ async function main(): Promise<void> {
   testJavaTraceHeaderExpansionIsBounded();
   await testCppWorkerProjectEventBudgets();
   testRuntimeFinalDiffBudgets();
+  await testTraceKernelProjectCommandStepsAreBounded();
+  await testTraceKernelNpmIgnoreScriptsSkipsLifecycleHooks();
+  await testTraceKernelDeviceOutputAccumulationIsBounded();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
   await testTraceKernelHttpDiagnosticsAreRedacted();
   await testTraceKernelHttpListenerLimit();
