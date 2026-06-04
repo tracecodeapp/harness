@@ -25,6 +25,15 @@ function assertCondition(condition: boolean, message: string): void {
   }
 }
 
+function csharpWorkerVmSource(source: string): string {
+  const replaced = source.replace(
+    'const sharedKernelPolicyReady = loadSharedKernelPolicy();',
+    'self.TraceRuntimeKernelPolicy = Object.freeze({});\nconst sharedKernelPolicyReady = Promise.resolve();'
+  );
+  assertCondition(replaced !== source, 'C# worker VM source should stub shared policy startup loading');
+  return replaced;
+}
+
 function nativeJavaTraceEvent(event: Record<string, unknown>): string {
   return `trace:${JSON.stringify(event)}`;
 }
@@ -628,7 +637,7 @@ async function testNativeProjectRunnersRejectVirtualPathTraversal(): Promise<voi
 }
 
 async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<void> {
-  const source = await readFile(join(dirname(testDirectory), 'workers', 'csharp', 'csharp-worker.js'), 'utf8');
+  const source = csharpWorkerVmSource(await readFile(join(dirname(testDirectory), 'workers', 'csharp', 'csharp-worker.js'), 'utf8'));
   const context = vm.createContext({
     console,
     self: {
@@ -637,6 +646,7 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
       close: () => {},
       location: { search: '' },
     },
+    URL,
     TextEncoder,
     TextDecoder,
     Uint8Array,
@@ -665,6 +675,8 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
         escapedLivePath: normalizeProjectFsPath('/workspace/src/../../escape.txt', request),
         normalizedLivePath: normalizeProjectFsPath('/workspace/src/../safe.txt', request),
         mutationError,
+        sourceTreePolicy: csharpSharedKernelPolicyUrl('http://localhost/workers/csharp/csharp-worker.js'),
+        distributedPolicy: csharpSharedKernelPolicyUrl('http://localhost/workers/csharp-worker.js'),
       };
     })()`,
     context
@@ -674,6 +686,8 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
     escapedLivePath: string | null;
     normalizedLivePath: string | null;
     mutationError: string;
+    sourceTreePolicy: string;
+    distributedPolicy: string;
   };
 
   assertCondition(result.kernelTraversal === null, `C# kernel manifest traversal should be rejected: ${JSON.stringify(result)}`);
@@ -681,10 +695,15 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
   assertCondition(result.escapedLivePath === null, `C# live event traversal path should not be emitted: ${JSON.stringify(result)}`);
   assertCondition(result.normalizedLivePath === 'safe.txt', `C# live event path should normalize in-workspace dot segments: ${JSON.stringify(result)}`);
   assertCondition(result.mutationError === 'EACCES', `C# workspace escape mutation should be rejected: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.sourceTreePolicy === 'http://localhost/workers/shared/runtime-kernel-policy.js' &&
+      result.distributedPolicy === 'http://localhost/workers/shared/runtime-kernel-policy.js',
+    `C# shared policy import should resolve inside the worker shared asset directory: ${JSON.stringify(result)}`
+  );
 }
 
 async function testCSharpWorkerProjectEventBudgets(): Promise<void> {
-  const source = await readFile(join(dirname(testDirectory), 'workers', 'csharp', 'csharp-worker.js'), 'utf8');
+  const source = csharpWorkerVmSource(await readFile(join(dirname(testDirectory), 'workers', 'csharp', 'csharp-worker.js'), 'utf8'));
   const posted: Array<{ type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } }> = [];
   const context = vm.createContext({
     console,

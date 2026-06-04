@@ -16,6 +16,7 @@ const SHARED_KERNEL_POLICY_PATHS = [
   '../shared/runtime-kernel-policy-classic.js',
   './shared/runtime-kernel-policy-classic.js',
 ];
+
 const WORKER_DEBUG = (() => {
   try {
     return typeof self !== 'undefined' && typeof self.location?.search === 'string' && self.location.search.includes('dev=');
@@ -199,11 +200,42 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
   });
 }
 
-if (typeof importScripts === 'function') {
+function installSharedKernelPolicy(policy, scriptPath) {
+  if (typeof self === 'undefined' || self.TraceRuntimeKernelPolicy) return;
+  Object.defineProperty(self, 'TraceRuntimeKernelPolicy', {
+    value: Object.freeze({ ...policy }),
+    configurable: true,
+  });
+  emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
+}
+
+function csharpSharedKernelPolicyUrl(workerHref = self.location.href) {
+  const workerUrl = new URL(workerHref, self.location.href);
+  const scriptPath = workerUrl.pathname.endsWith('/csharp/csharp-worker.js')
+    ? '../shared/runtime-kernel-policy.js'
+    : './shared/runtime-kernel-policy.js';
+  const policyUrl = new URL(scriptPath, workerUrl);
+  if (policyUrl.origin !== workerUrl.origin || !policyUrl.pathname.endsWith('/shared/runtime-kernel-policy.js')) {
+    throw new Error(`C# shared kernel policy must resolve inside the worker shared asset directory: ${policyUrl.href}`);
+  }
+  return policyUrl.href;
+}
+
+async function loadSharedKernelPolicy() {
+  if (typeof self !== 'undefined' && self.TraceRuntimeKernelPolicy) return;
+  if (typeof importScripts !== 'function') {
+    const scriptPath = csharpSharedKernelPolicyUrl();
+    const policy = await import(scriptPath);
+    installSharedKernelPolicy(policy, scriptPath);
+    return;
+  }
+
   for (const scriptPath of SHARED_KERNEL_POLICY_PATHS) {
     try {
       importScripts(scriptPath);
-      emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
+      if (self.TraceRuntimeKernelPolicy) {
+        emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
+      }
       break;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -214,6 +246,8 @@ if (typeof importScripts === 'function') {
     }
   }
 }
+
+const sharedKernelPolicyReady = loadSharedKernelPolicy();
 
 function now() {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -1776,6 +1810,7 @@ self.addEventListener('message', (event) => {
   queue = queue
     .catch(() => {})
     .then(async () => {
+      await sharedKernelPolicyReady;
       const result = await handleMessage({ id, type, payload, protocolToken });
       self.postMessage({ id, type, payload: result, protocolToken });
     })
@@ -1798,5 +1833,18 @@ self.addEventListener('message', (event) => {
     });
 });
 
-emitRuntimeDiagnostic('info', 'worker-ready', 'C# worker is ready.');
-self.postMessage({ type: 'worker-ready' });
+sharedKernelPolicyReady
+  .then(() => {
+    emitRuntimeDiagnostic('info', 'worker-ready', 'C# worker is ready.');
+    self.postMessage({ type: 'worker-ready' });
+  })
+  .catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    emitRuntimeDiagnostic('error', 'shared-kernel-policy-load-failed', 'Failed to load shared runtime kernel policy.', {
+      message,
+    });
+    self.postMessage({
+      type: 'worker-error',
+      payload: { error: message },
+    });
+  });

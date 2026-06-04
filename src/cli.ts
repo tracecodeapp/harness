@@ -70,6 +70,11 @@ const ASSET_COPY_PLAN = [
     languages: ['csharp'],
   },
   {
+    source: ['workers', 'shared', 'runtime-kernel-policy.js'],
+    target: ['shared', 'runtime-kernel-policy.js'],
+    languages: ['csharp'],
+  },
+  {
     source: ['workers', 'cpp', 'cpp-worker.js'],
     target: ['cpp-worker.js'],
     languages: ['cpp'],
