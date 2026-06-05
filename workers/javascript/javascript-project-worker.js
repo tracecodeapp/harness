@@ -3615,7 +3615,7 @@ function unzipSync(data, opts) {
 // packages/harness-javascript/package.json
 var package_default = {
   name: "@tracecode/harness-javascript",
-  version: "0.9.0",
+  version: "0.9.2",
   description: "JavaScript and TypeScript runtime helpers and browser worker assets for TraceCode harness.",
   license: "AGPL-3.0-only",
   homepage: "https://tracecode.app",

@@ -4131,7 +4131,10 @@ function normalizeJavaExecutionPayload(payload) {
   }
 }
 
-function javaReportConsoleOutput(report) {
+function javaReportConsoleOutput(report, options = {}) {
+  if (report?.success === true && options.includeSuccessfulDiagnostics === false) {
+    return [];
+  }
   return [report.compilerStdout, report.compilerStderr].filter(
     (entry) => typeof entry === 'string' && entry.trim().length > 0
   );
@@ -5476,7 +5479,7 @@ async function runJavaTraceRequest(payload, requestId) {
     throw makeWorkerStageError('trace report parse', error);
   }
   const totalEnd = performance.now();
-  const consoleOutput = javaReportConsoleOutput(report);
+  const consoleOutput = javaReportConsoleOutput(report, { includeSuccessfulDiagnostics: false });
 
   if (report.success !== true) {
     return {
@@ -5586,7 +5589,7 @@ async function runJavaCodeRequest(payload, requestId) {
   }
 
   const totalEnd = performance.now();
-  const consoleOutput = javaReportConsoleOutput(report);
+  const consoleOutput = javaReportConsoleOutput(report, { includeSuccessfulDiagnostics: false });
   const timings = {
     hostCallMs: libraryCallEnd - libraryCallStart,
     totalMs: totalEnd - totalStart,
@@ -5875,7 +5878,7 @@ async function runJavaCodeBatchRequest(payload, requestId) {
   }
 
   const totalEnd = performance.now();
-  const consoleOutput = javaReportConsoleOutput(report);
+  const consoleOutput = javaReportConsoleOutput(report, { includeSuccessfulDiagnostics: false });
   const compileMs = report.compileTimeMs ?? 0;
   const compileCacheHit = report.compileCacheHit ?? false;
   const rawResults = Array.isArray(report.results) ? report.results : [];

@@ -2802,7 +2802,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               });
             },
             compileAndRun: async (
-              _sourcePath: string,
+              sourcePath: string,
               _classesDir: string,
               mainClassName: string,
               _compileClasspath: string,
@@ -2821,11 +2821,15 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   compilerDebugProfile: compilerProfile,
                 });
               }
+              const source = stringFiles.findLast((file) => file.path === sourcePath)?.source ?? '';
+              const compilerStderr = source.includes('compileNoteRegression')
+                ? 'Note: /str/Exportsr1ppj91wlge3a.java uses unchecked or unsafe operations.\nNote: Recompile with -Xlint:unchecked for details.\n'
+                : '';
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify([0, 1]),
                 compilerStdout: '',
-                compilerStderr: '',
+                compilerStderr,
                 compileTimeMs: 1,
                 classLoadTimeMs: 1,
                 runTimeMs: 1,
@@ -3901,6 +3905,7 @@ async function main(): Promise<void> {
       success: boolean;
       events?: string[];
       sourceText?: string;
+      consoleOutput?: string[];
     }>('execute-code', {
       code: `class Solution {
   int add(int a, int b) {
@@ -3916,6 +3921,10 @@ async function main(): Promise<void> {
     assertCondition(plainExecute.events === undefined, 'Java execute-code should not return trace events');
     assertCondition(plainExecute.sourceText === undefined, 'Java execute-code should not return trace source text');
     assertCondition(
+      Array.isArray(plainExecute.consoleOutput) && plainExecute.consoleOutput.length === 0,
+      `Java execute-code should not surface successful compiler diagnostics as console output: ${JSON.stringify(plainExecute.consoleOutput)}`
+    );
+    assertCondition(
       harness.rewriteCalls.length === rewriteCallCountBeforePlainExecute,
       'Java execute-code should not call the trace rewriter'
     );
@@ -3927,6 +3936,28 @@ async function main(): Promise<void> {
       'Java execute-code should compile an uninstrumented runnable source'
     );
     console.log('PASS: java execute-code uses dedicated non-trace worker path');
+
+    const uncheckedNoteExecute = await harness.sendMessage<{
+      success: boolean;
+      consoleOutput?: string[];
+    }>('execute-code', {
+      code: `class Solution {
+  int compileNoteRegression() {
+    java.util.List values = new java.util.ArrayList();
+    values.add(1);
+    return values.size();
+  }
+}`,
+      functionName: 'compileNoteRegression',
+      inputs: {},
+      executionStyle: 'function',
+    });
+    assertCondition(uncheckedNoteExecute.success === true, 'Java execute-code with compiler note should succeed');
+    assertCondition(
+      Array.isArray(uncheckedNoteExecute.consoleOutput) && uncheckedNoteExecute.consoleOutput.length === 0,
+      `Successful Java compiler notes should stay out of console output: ${JSON.stringify(uncheckedNoteExecute.consoleOutput)}`
+    );
+    console.log('PASS: java execute-code suppresses successful compiler notes from console output');
 
     const defaultImportExecute = await harness.sendMessage<{ success: boolean }>('execute-code', {
       code: `class Solution {

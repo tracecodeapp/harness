@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.9.2] - 2026-06-05
+
+### Fixed
+
+- Suppressed successful Java compiler diagnostics from single-file browser run, trace, and batch console output so benign `javac` notes such as unchecked/raw-type warnings no longer appear as user stdout.
+- Preserved Java compiler diagnostics for failed compiles and project-mode terminal commands.
+
 ## [0.9.1] - 2026-06-05
 
 ### Fixed
