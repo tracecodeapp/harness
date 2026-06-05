@@ -22,6 +22,7 @@ export interface JavaWorkerClientOptions {
   workerUrl: string;
   debug?: boolean;
   workerIdleTimeoutMs?: number;
+  externalCompilerUrl?: string;
 }
 
 interface PendingMessage {
@@ -54,6 +55,7 @@ function createExecutionAbortError(): Error {
 
 interface WorkerMessage {
   id?: MessageId;
+  requestId?: string;
   type: string;
   payload?: unknown;
   protocolToken?: string;
@@ -252,6 +254,7 @@ export class JavaWorkerClient {
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
+  private activeExternalCompileControllers = new Set<AbortController>();
   private readonly debug: boolean;
 
   constructor(private readonly options: JavaWorkerClientOptions) {
@@ -304,6 +307,20 @@ export class JavaWorkerClient {
           message: 'Java worker closed after idle timeout.',
         }, { enabled: this.debug });
         this.terminateAndReset(new Error('Java worker closed after idle timeout'));
+        return;
+      }
+
+      if (type === 'java-compile-request') {
+        if (!this.hasPendingProtocolToken(protocolToken)) return;
+        this.handleJavaCompileRequest(event.data).catch((error) => {
+          if (!event.data.requestId) return;
+          this.worker?.postMessage({
+            type: 'java-compile-response',
+            requestId: event.data.requestId,
+            protocolToken: event.data.protocolToken,
+            payload: { success: false, error: error instanceof Error ? error.message : String(error) },
+          });
+        });
         return;
       }
 
@@ -626,6 +643,97 @@ export class JavaWorkerClient {
       });
   }
 
+  private hasPendingProtocolToken(protocolToken: unknown): protocolToken is string {
+    return typeof protocolToken === 'string' &&
+      Array.from(this.pendingMessages.values()).some((pending) => pending.protocolToken === protocolToken);
+  }
+
+  private async handleJavaCompileRequest(message: WorkerMessage): Promise<void> {
+    if (!message.requestId) return;
+    const worker = this.worker;
+    if (!worker) return;
+
+    const result = await this.compileJavaWithExternalUrl(message.payload);
+    worker.postMessage({
+      type: 'java-compile-response',
+      requestId: message.requestId,
+      protocolToken: message.protocolToken,
+      payload: result,
+    });
+  }
+
+  private async compileJavaWithExternalUrl(payload: unknown): Promise<Record<string, unknown>> {
+    if (!this.options.externalCompilerUrl) {
+      return { success: false, error: 'Java external compiler URL is not configured.' };
+    }
+
+    const controller = new AbortController();
+    this.activeExternalCompileControllers.add(controller);
+    let response: Response;
+    try {
+      response = await fetch(this.options.externalCompilerUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+        },
+        body: JSON.stringify(payload ?? {}),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      this.activeExternalCompileControllers.delete(controller);
+    }
+
+    const headerNumber = (name: string): number | undefined => {
+      const value = response.headers.get(name);
+      if (!value) return undefined;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+    const headerBoolean = (name: string): boolean | undefined => {
+      const value = response.headers.get(name);
+      if (value === null) return undefined;
+      return value === 'true';
+    };
+
+    let body: Record<string, unknown> = {};
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      try {
+        body = (await response.json()) as Record<string, unknown>;
+      } catch {
+        body = {};
+      }
+    } else {
+      const text = await response.text();
+      body = text ? { error: text } : {};
+    }
+
+    if (response.ok) {
+      return {
+        ...body,
+        success: body.success !== false,
+        compileMs: typeof body.compileMs === 'number' ? body.compileMs : headerNumber('x-tracecode-compile-ms'),
+        compileCacheHit: typeof body.compileCacheHit === 'boolean'
+          ? body.compileCacheHit
+          : headerBoolean('x-tracecode-compile-cache-hit'),
+      };
+    }
+
+    return {
+      success: false,
+      error: typeof body.error === 'string' ? body.error : `Java external compiler failed with HTTP ${response.status}.`,
+      stdout: typeof body.stdout === 'string' ? body.stdout : '',
+      stderr: typeof body.stderr === 'string' ? body.stderr : '',
+      compileMs: typeof body.compileMs === 'number' ? body.compileMs : headerNumber('x-tracecode-compile-ms'),
+      compileCacheHit: typeof body.compileCacheHit === 'boolean'
+        ? body.compileCacheHit
+        : headerBoolean('x-tracecode-compile-cache-hit'),
+    };
+  }
+
   private dispatchJavaHttpServerRequest(bridge: JavaHttpServerBridge, request: RuntimeKernelHttpRequest): Promise<RuntimeKernelHttpResponse> {
     const buffer = bridge.requestBuffer;
     const header = new Int32Array(buffer, 0, 2);
@@ -776,6 +884,10 @@ export class JavaWorkerClient {
       pending.reject(reason);
     }
     this.pendingMessages.clear();
+    for (const controller of this.activeExternalCompileControllers) {
+      controller.abort();
+    }
+    this.activeExternalCompileControllers.clear();
   }
 
   async init(): Promise<InitResult> {
@@ -823,10 +935,11 @@ export class JavaWorkerClient {
     }
   }
 
-  private workerOptionsPayload(): { idleTimeoutMs?: number } {
-    return this.options.workerIdleTimeoutMs === undefined
-      ? {}
-      : { idleTimeoutMs: this.options.workerIdleTimeoutMs };
+  private workerOptionsPayload(): { idleTimeoutMs?: number; externalCompilerEnabled?: boolean } {
+    return {
+      ...(this.options.workerIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
+      ...(this.options.externalCompilerUrl ? { externalCompilerEnabled: true } : {}),
+    };
   }
 
   async warmup(): Promise<WarmupResult> {
@@ -859,7 +972,7 @@ export class JavaWorkerClient {
       () =>
         this.sendMessage<JavaWorkerRawTraceResult>(
           'execute-with-tracing',
-          { code, functionName, inputs, options, executionStyle },
+          { code, functionName, inputs, options, executionStyle, ...this.workerOptionsPayload() },
           TRACING_TIMEOUT_MS + 5_000
         ),
       TRACING_TIMEOUT_MS
@@ -898,7 +1011,7 @@ export class JavaWorkerClient {
       () =>
         this.sendMessage<CodeExecutionBatchResult>(
           'execute-code-batch',
-          { code, functionName, inputBatch, options, executionStyle },
+          { code, functionName, inputBatch, options, executionStyle, ...this.workerOptionsPayload() },
           EXECUTION_TIMEOUT_MS + 5_000
         ),
       EXECUTION_TIMEOUT_MS
@@ -918,7 +1031,7 @@ export class JavaWorkerClient {
       () =>
         this.sendMessage<JavaWorkerCodeResult>(
           type,
-          { code, functionName, inputs, options, executionStyle },
+          { code, functionName, inputs, options, executionStyle, ...this.workerOptionsPayload() },
           EXECUTION_TIMEOUT_MS + 5_000
         ),
       EXECUTION_TIMEOUT_MS

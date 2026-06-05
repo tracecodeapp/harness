@@ -11,6 +11,7 @@ import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/
 
 interface WorkerMessage {
   id?: string;
+  requestId?: string;
   type: string;
   payload?: unknown;
   protocolToken?: string;
@@ -2583,6 +2584,13 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
     workspaceRoot?: string;
     workspaceCwd?: string;
   }> = [];
+  const externalCompileRequests: unknown[] = [];
+  const externalCompiledRunCalls: Array<{
+    classManifest: string;
+    mainClassName: string;
+    runtimeClasspath: string;
+    compilerProfile: string;
+  }> = [];
   const runLibraryClasspaths: string[] = [];
   const httpDispatches: Array<{ request: Record<string, unknown>; timeoutMs?: number }> = [];
   let cheerpjInitOptions: { natives?: Record<string, (...args: unknown[]) => unknown> } | undefined;
@@ -2599,6 +2607,33 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
   } = {
     postMessage: (message: WorkerMessage) => {
       if (message.type === 'worker-ready') {
+        return;
+      }
+      if (message.type === 'java-compile-request') {
+        externalCompileRequests.push(message.payload);
+        setTimeout(() => {
+          selfObject.onmessage?.({
+            data: {
+              type: 'java-compile-response',
+              requestId: message.requestId,
+              protocolToken: message.protocolToken,
+              payload: {
+                success: true,
+                classes: [
+                  {
+                    path: 'tracecode/external/Exports.class',
+                    contents: Buffer.from('compiled-class-bytes', 'utf8').toString('base64'),
+                    encoding: 'base64',
+                  },
+                ],
+                stdout: 'native javac ok',
+                stderr: '',
+                compileMs: 7,
+                compileCacheHit: false,
+              },
+            },
+          });
+        }, 0);
         return;
       }
       const id = message.id;
@@ -2834,6 +2869,30 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 classLoadTimeMs: 1,
                 runTimeMs: 1,
                 compileCacheHit: true,
+                compilerDebugProfile: compilerProfile,
+              });
+            },
+            runCompiledClassManifest: async (
+              classManifest: string,
+              _classesDir: string,
+              mainClassName: string,
+              runtimeClasspath: string,
+              compilerProfile: string,
+              compileTimeMs: string,
+              compilerStdout: string,
+              compilerStderr: string,
+              compileCacheHit: string
+            ) => {
+              externalCompiledRunCalls.push({ classManifest, mainClassName, runtimeClasspath, compilerProfile });
+              return JSON.stringify({
+                success: true,
+                output: JSON.stringify(42),
+                compilerStdout,
+                compilerStderr,
+                compileTimeMs: Number(compileTimeMs),
+                classLoadTimeMs: 2,
+                runTimeMs: 3,
+                compileCacheHit: compileCacheHit === 'true',
                 compilerDebugProfile: compilerProfile,
               });
             },
@@ -3849,7 +3908,18 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
     onmessage?.({ data: { type: 'terminate' } });
   }
 
-  return { httpDispatches, projectClassCompileCalls, projectCompileCalls, rewriteCalls, runLibraryClasspaths, sendMessage, stringFiles, terminate };
+  return {
+    externalCompileRequests,
+    externalCompiledRunCalls,
+    httpDispatches,
+    projectClassCompileCalls,
+    projectCompileCalls,
+    rewriteCalls,
+    runLibraryClasspaths,
+    sendMessage,
+    stringFiles,
+    terminate,
+  };
 }
 
 async function main(): Promise<void> {
@@ -3936,6 +4006,58 @@ async function main(): Promise<void> {
       'Java execute-code should compile an uninstrumented runnable source'
     );
     console.log('PASS: java execute-code uses dedicated non-trace worker path');
+
+    const externalRequestCountBeforeExecute = harness.externalCompileRequests.length;
+    const externalRunCountBeforeExecute = harness.externalCompiledRunCalls.length;
+    const externalCompileExecute = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      consoleOutput?: string[];
+      timings?: { compileMs?: number; classLoadMs?: number; runMs?: number; compileCacheHit?: boolean };
+    }>('execute-code', {
+      code: `class Solution {
+  int add(int a, int b) {
+    return a + b;
+  }
+}`,
+      functionName: 'add',
+      inputs: { a: 19, b: 23 },
+      executionStyle: 'function',
+      externalCompilerEnabled: true,
+    });
+    assertCondition(externalCompileExecute.success === true, 'Java external-compile execute-code should succeed');
+    assertCondition(externalCompileExecute.output === 42, `Java external-compile execute should run compiled artifact output: ${JSON.stringify(externalCompileExecute)}`);
+    assertCondition(
+      harness.externalCompileRequests.length === externalRequestCountBeforeExecute + 1,
+      'Java worker should send one external compile request when externalCompilerEnabled is true'
+    );
+    assertCondition(
+      harness.externalCompiledRunCalls.length === externalRunCountBeforeExecute + 1,
+      'Java worker should execute external class artifacts through runCompiledClassManifest'
+    );
+    const externalCompileRequest = harness.externalCompileRequests.at(-1) as { source?: string; entryClasses?: string[]; mode?: string } | undefined;
+    assertCondition(
+      externalCompileRequest?.mode === 'execute' &&
+        typeof externalCompileRequest.source === 'string' &&
+        externalCompileRequest.source.includes('solution.add(a, b)') &&
+        Array.isArray(externalCompileRequest.entryClasses) &&
+        externalCompileRequest.entryClasses.length === 1,
+      `Java external compile request should carry generated source and entry class: ${JSON.stringify(externalCompileRequest)}`
+    );
+    const externalRunCall = harness.externalCompiledRunCalls.at(-1);
+    assertCondition(
+      externalRunCall?.classManifest.includes('tracecode/external/Exports.class') &&
+        externalRunCall.runtimeClasspath.endsWith('java-browser-helper.jar'),
+      `Java external compiled run should install returned class manifest with helper classpath: ${JSON.stringify(externalRunCall)}`
+    );
+    assertCondition(
+      externalCompileExecute.timings?.compileMs === 7 &&
+        externalCompileExecute.timings.classLoadMs === 2 &&
+        externalCompileExecute.timings.runMs === 3 &&
+        externalCompileExecute.timings.compileCacheHit === false,
+      `Java external compile timings should be preserved: ${JSON.stringify(externalCompileExecute.timings)}`
+    );
+    console.log('PASS: java worker executes external compiler class artifacts in-browser');
 
     const uncheckedNoteExecute = await harness.sendMessage<{
       success: boolean;

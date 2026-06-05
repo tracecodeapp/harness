@@ -118,6 +118,7 @@ let runWarmupPromise = null;
 let activeJavaProjectIo = null;
 let javaCompileIsolationCounter = 0;
 const activeProtocolTokens = new Map();
+const pendingExternalJavaCompiles = new Map();
 const STDIN_PIPE_HEADER_INTS = 3;
 const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
 const STDIN_PIPE_READ_INDEX = 0;
@@ -4140,6 +4141,101 @@ function javaReportConsoleOutput(report, options = {}) {
   );
 }
 
+function externalJavaCompilerEnabled(payload) {
+  return payload?.externalCompilerEnabled === true;
+}
+
+function externalJavaCompilerAvailable(payload, compileLibraryClass, methodName) {
+  return externalJavaCompilerEnabled(payload) && typeof compileLibraryClass?.[methodName] === 'function';
+}
+
+function normalizeExternalJavaCompileResult(value) {
+  const result = value && typeof value === 'object' ? value : {};
+  return {
+    success: result.success === true,
+    error: typeof result.error === 'string' ? result.error : '',
+    stdout: typeof result.stdout === 'string'
+      ? result.stdout
+      : typeof result.compilerStdout === 'string'
+        ? result.compilerStdout
+        : '',
+    stderr: typeof result.stderr === 'string'
+      ? result.stderr
+      : typeof result.compilerStderr === 'string'
+        ? result.compilerStderr
+        : '',
+    compileMs: Number.isFinite(Number(result.compileMs))
+      ? Math.max(0, Math.round(Number(result.compileMs)))
+      : Number.isFinite(Number(result.compileTimeMs))
+        ? Math.max(0, Math.round(Number(result.compileTimeMs)))
+        : 0,
+    compileCacheHit: result.compileCacheHit === true,
+    classes: Array.isArray(result.classes)
+      ? result.classes
+      : Array.isArray(result.classFiles)
+        ? result.classFiles
+        : Array.isArray(result.files)
+          ? result.files
+          : [],
+  };
+}
+
+function externalJavaClassManifest(result) {
+  const lines = [];
+  for (const entry of result.classes) {
+    if (!entry || typeof entry !== 'object') continue;
+    const path = typeof entry.path === 'string' ? entry.path : '';
+    const contents = typeof entry.bytesBase64 === 'string'
+      ? entry.bytesBase64
+      : typeof entry.contents === 'string' && (entry.encoding === 'base64' || entry.encoding === undefined)
+        ? entry.contents
+        : '';
+    if (!path || !contents) continue;
+    lines.push(`${path}\t${contents}`);
+  }
+  if (lines.length === 0) {
+    throw new Error('Java external compiler did not return any class files.');
+  }
+  return lines.join('\n');
+}
+
+function externalJavaCompileFailureReport(result, fallback = 'Java external compilation failed') {
+  const message = result.error || result.stderr || result.stdout || fallback;
+  return {
+    success: false,
+    compilerStdout: result.stdout,
+    compilerStderr: result.stderr || message,
+    compileTimeMs: result.compileMs,
+    classLoadTimeMs: 0,
+    runTimeMs: 0,
+    compileCacheHit: result.compileCacheHit,
+    runtimeError: null,
+  };
+}
+
+async function compileJavaOutsideBrowser(payload, commandId) {
+  const protocolToken = activeProtocolTokens.get(commandId);
+  if (!protocolToken) {
+    throw new Error('Java external compile requires an active command token.');
+  }
+  const requestId = `java-compile-${stableHash({ commandId, payload, nonce: javaWorkerRandomHex(1) })}`;
+  const startedAt = performance.now();
+  const result = await new Promise((resolve, reject) => {
+    pendingExternalJavaCompiles.set(requestId, { resolve, reject, protocolToken });
+    self.postMessage({
+      type: 'java-compile-request',
+      requestId,
+      protocolToken,
+      payload,
+    });
+  });
+  const normalized = normalizeExternalJavaCompileResult(result);
+  if (!Number.isFinite(normalized.compileMs) || normalized.compileMs <= 0) {
+    normalized.compileMs = Math.max(0, Math.round(performance.now() - startedAt));
+  }
+  return normalized;
+}
+
 function truncateJavaWorkerDiagnostic(value, maxLength = 6000) {
   const text = typeof value === 'string'
     ? value
@@ -5459,14 +5555,48 @@ async function runJavaTraceRequest(payload, requestId) {
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    reportText = await compileLibraryClass.compileAndTrace(
-      sourcePath,
-      classesDir,
-      `${packageName}.${exportsClassName}`,
-      HELPER_JAR_PATH,
-      DEFAULT_COMPILER_DEBUG_PROFILE,
-      String(resolveMaxStoredEvents(payload.options))
-    );
+    if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'traceCompiledClassManifest')) {
+      const externalCompile = await compileJavaOutsideBrowser({
+        schema: 'tracecode.java.external-compile.v1',
+        mode: 'trace',
+        source: rewrittenSource,
+        sourcePath,
+        entryClasses: [`${packageName}.${exportsClassName}`],
+        compileClasspath: HELPER_JAR_PATH,
+        compilerProfile: DEFAULT_COMPILER_DEBUG_PROFILE,
+      }, requestId);
+      if (externalCompile.success !== true) {
+        reportText = JSON.stringify({
+          ...externalJavaCompileFailureReport(externalCompile),
+          events: [],
+          traceLimitExceeded: false,
+          droppedEventCount: 0,
+          compilerDebugProfile: DEFAULT_COMPILER_DEBUG_PROFILE,
+        });
+      } else {
+        reportText = await compileLibraryClass.traceCompiledClassManifest(
+          externalJavaClassManifest(externalCompile),
+          classesDir,
+          `${packageName}.${exportsClassName}`,
+          HELPER_JAR_PATH,
+          DEFAULT_COMPILER_DEBUG_PROFILE,
+          String(externalCompile.compileMs),
+          externalCompile.stdout,
+          externalCompile.stderr,
+          String(externalCompile.compileCacheHit),
+          String(resolveMaxStoredEvents(payload.options))
+        );
+      }
+    } else {
+      reportText = await compileLibraryClass.compileAndTrace(
+        sourcePath,
+        classesDir,
+        `${packageName}.${exportsClassName}`,
+        HELPER_JAR_PATH,
+        DEFAULT_COMPILER_DEBUG_PROFILE,
+        String(resolveMaxStoredEvents(payload.options))
+      );
+    }
   } catch (error) {
     throw makeWorkerStageError('compile and trace', error);
   }
@@ -5569,13 +5699,43 @@ async function runJavaCodeRequest(payload, requestId) {
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    reportText = await compileLibraryClass.compileAndRun(
-      sourcePath,
-      classesDir,
-      `${packageName}.${exportsClassName}`,
-      HELPER_JAR_PATH,
-      DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
-    );
+    if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifest')) {
+      const externalCompile = await compileJavaOutsideBrowser({
+        schema: 'tracecode.java.external-compile.v1',
+        mode: 'execute',
+        source: runnableSource,
+        sourcePath,
+        entryClasses: [`${packageName}.${exportsClassName}`],
+        compileClasspath: HELPER_JAR_PATH,
+        compilerProfile: DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE,
+      }, requestId);
+      if (externalCompile.success !== true) {
+        reportText = JSON.stringify({
+          ...externalJavaCompileFailureReport(externalCompile),
+          compilerDebugProfile: DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE,
+        });
+      } else {
+        reportText = await compileLibraryClass.runCompiledClassManifest(
+          externalJavaClassManifest(externalCompile),
+          classesDir,
+          `${packageName}.${exportsClassName}`,
+          HELPER_JAR_PATH,
+          DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE,
+          String(externalCompile.compileMs),
+          externalCompile.stdout,
+          externalCompile.stderr,
+          String(externalCompile.compileCacheHit)
+        );
+      }
+    } else {
+      reportText = await compileLibraryClass.compileAndRun(
+        sourcePath,
+        classesDir,
+        `${packageName}.${exportsClassName}`,
+        HELPER_JAR_PATH,
+        DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+      );
+    }
   } catch (error) {
     throw makeWorkerStageError('compile and run', error);
   }
@@ -5858,13 +6018,44 @@ async function runJavaCodeBatchRequest(payload, requestId) {
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    reportText = await compileLibraryClass.compileAndRunBatch(
-      sourcePath,
-      classesDir,
-      entryClasses.join('\n'),
-      HELPER_JAR_PATH,
-      DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
-    );
+    if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifestBatch')) {
+      const externalCompile = await compileJavaOutsideBrowser({
+        schema: 'tracecode.java.external-compile.v1',
+        mode: 'execute-batch',
+        source: runnableSource,
+        sourcePath,
+        entryClasses,
+        compileClasspath: HELPER_JAR_PATH,
+        compilerProfile: DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE,
+      }, requestId);
+      if (externalCompile.success !== true) {
+        reportText = JSON.stringify({
+          ...externalJavaCompileFailureReport(externalCompile),
+          results: [],
+          compilerDebugProfile: DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE,
+        });
+      } else {
+        reportText = await compileLibraryClass.runCompiledClassManifestBatch(
+          externalJavaClassManifest(externalCompile),
+          classesDir,
+          entryClasses.join('\n'),
+          HELPER_JAR_PATH,
+          DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE,
+          String(externalCompile.compileMs),
+          externalCompile.stdout,
+          externalCompile.stderr,
+          String(externalCompile.compileCacheHit)
+        );
+      }
+    } else {
+      reportText = await compileLibraryClass.compileAndRunBatch(
+        sourcePath,
+        classesDir,
+        entryClasses.join('\n'),
+        HELPER_JAR_PATH,
+        DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+      );
+    }
   } catch (error) {
     throw makeWorkerStageError('compile and run batch', error);
   }
@@ -5941,7 +6132,24 @@ self.onmessage = (event) => {
   idleGeneration += 1;
 
   if (message.type === 'terminate') {
+    for (const [, pending] of pendingExternalJavaCompiles) {
+      pending.reject(new Error('Java worker terminated during external compile.'));
+    }
+    pendingExternalJavaCompiles.clear();
     self.close();
+    return;
+  }
+
+  if (message.type === 'java-compile-response') {
+    const pending = pendingExternalJavaCompiles.get(message.requestId);
+    if (!pending) return;
+    if (message.protocolToken !== pending.protocolToken) return;
+    pendingExternalJavaCompiles.delete(message.requestId);
+    if (message.payload?.success === false && typeof message.payload?.error === 'string' && !message.payload?.classes) {
+      pending.resolve(message.payload);
+      return;
+    }
+    pending.resolve(message.payload);
     return;
   }
 

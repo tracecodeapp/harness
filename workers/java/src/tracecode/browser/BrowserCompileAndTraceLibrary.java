@@ -281,6 +281,113 @@ public final class BrowserCompileAndTraceLibrary {
     }
   }
 
+  public static String runCompiledClassManifest(
+      String classManifest,
+      String classesDir,
+      String entryClass,
+      String runtimeClasspath,
+      String compilerProfile,
+      String compileTimeMs,
+      String compilerStdout,
+      String compilerStderr,
+      String compileCacheHit
+  ) throws Exception {
+    Path classesPath = Paths.get(classesDir);
+    writeCompiledClassManifest(classManifest, classesPath);
+    InvocationReport result = runEntryClass(classesPath, entryClass, classpathPaths(runtimeClasspath));
+    return buildRunReportJson(
+        result.success,
+        result.output,
+        compilerStdout,
+        compilerStderr,
+        result.runtimeError,
+        parseLongOrZero(compileTimeMs),
+        result.classLoadTimeMs,
+        result.runTimeMs,
+        parseBoolean(compileCacheHit),
+        compilerProfile);
+  }
+
+  public static String traceCompiledClassManifest(
+      String classManifest,
+      String classesDir,
+      String entryClass,
+      String runtimeClasspath,
+      String compilerProfile,
+      String compileTimeMs,
+      String compilerStdout,
+      String compilerStderr,
+      String compileCacheHit,
+      String maxStoredEvents
+  ) throws Exception {
+    int parsedMaxEvents;
+    try {
+      parsedMaxEvents = Integer.parseInt(maxStoredEvents);
+    } catch (Exception ignored) {
+      parsedMaxEvents = 50000;
+    }
+    Path classesPath = Paths.get(classesDir);
+    writeCompiledClassManifest(classManifest, classesPath);
+    TraceInvocationReport result = traceEntryClass(
+        classesPath,
+        entryClass,
+        classpathPaths(runtimeClasspath),
+        parsedMaxEvents);
+    return buildTraceReportJson(
+        result.success,
+        result.output,
+        result.events,
+        compilerStdout,
+        compilerStderr,
+        result.runtimeError,
+        parseLongOrZero(compileTimeMs),
+        result.classLoadTimeMs,
+        result.runTimeMs,
+        parseBoolean(compileCacheHit),
+        compilerProfile,
+        result.traceLimitExceeded,
+        result.droppedEventCount);
+  }
+
+  public static String runCompiledClassManifestBatch(
+      String classManifest,
+      String classesDir,
+      String entryClasses,
+      String runtimeClasspath,
+      String compilerProfile,
+      String compileTimeMs,
+      String compilerStdout,
+      String compilerStderr,
+      String compileCacheHit
+  ) throws Exception {
+    List<String> entries = splitEntryClasses(entryClasses);
+    if (entries.isEmpty()) {
+      throw new IllegalArgumentException("runCompiledClassManifestBatch requires at least one entry class");
+    }
+
+    Path classesPath = Paths.get(classesDir);
+    writeCompiledClassManifest(classManifest, classesPath);
+
+    List<String> resultJson = new ArrayList<>();
+    boolean success = true;
+    List<Path> runtimeClasspathPaths = classpathPaths(runtimeClasspath);
+    for (String entry : entries) {
+      InvocationReport result = runEntryClass(classesPath, entry, runtimeClasspathPaths);
+      if (!result.success) success = false;
+      resultJson.add(buildInvocationReportJson(result));
+    }
+
+    return buildRunBatchReportJson(
+        success,
+        resultJson,
+        compilerStdout,
+        compilerStderr,
+        null,
+        parseLongOrZero(compileTimeMs),
+        parseBoolean(compileCacheHit),
+        compilerProfile);
+  }
+
   public static String compileAndRunProject(
       String sourcePaths,
       String classesDir,
@@ -875,6 +982,39 @@ public final class BrowserCompileAndTraceLibrary {
     }
   }
 
+  private static void writeCompiledClassManifest(String classManifest, Path classesPath) throws IOException {
+    resetDirectory(classesPath);
+    Files.createDirectories(classesPath);
+    if (classManifest == null || classManifest.isEmpty()) {
+      throw new IOException("Compiled Java class manifest is empty");
+    }
+
+    int count = 0;
+    for (String line : classManifest.split("\\n")) {
+      if (line.isEmpty()) continue;
+      int separator = line.indexOf('\t');
+      if (separator <= 0) {
+        throw new IOException("Invalid compiled Java class manifest entry");
+      }
+
+      String relativePath = line.substring(0, separator);
+      if (!relativePath.endsWith(".class")) {
+        throw new IOException("Compiled Java artifact is not a class file: " + relativePath);
+      }
+      if (relativePath.startsWith(".tracecode-") || relativePath.contains("/.tracecode-")) {
+        throw new IOException("Compiled Java artifact path is reserved: " + relativePath);
+      }
+      Path target = safeProjectSourcePath(classesPath, relativePath);
+      Files.createDirectories(target.getParent());
+      Files.write(target, Base64.getDecoder().decode(line.substring(separator + 1)));
+      count += 1;
+    }
+
+    if (count == 0) {
+      throw new IOException("Compiled Java class manifest did not contain class files");
+    }
+  }
+
   private static List<ProjectManifestEntry> parseProjectManifest(String manifest) throws IOException {
     List<ProjectManifestEntry> entries = new ArrayList<>();
     if (manifest == null || manifest.isEmpty()) {
@@ -1106,6 +1246,18 @@ public final class BrowserCompileAndTraceLibrary {
 
   private static long millisBetween(long start, long end) {
     return Math.max(0, (end - start) / 1_000_000L);
+  }
+
+  private static long parseLongOrZero(String value) {
+    try {
+      return Math.max(0, Long.parseLong(String.valueOf(value)));
+    } catch (Exception ignored) {
+      return 0;
+    }
+  }
+
+  private static boolean parseBoolean(String value) {
+    return "true".equalsIgnoreCase(String.valueOf(value));
   }
 
   private static String buildRunReportJson(
@@ -1437,6 +1589,66 @@ public final class BrowserCompileAndTraceLibrary {
     }
   }
 
+  private static TraceInvocationReport traceEntryClass(
+      Path classesPath,
+      String entryClass,
+      List<Path> runtimeClasspath,
+      int maxStoredEvents
+  ) {
+    long classLoadStart = System.nanoTime();
+    long classLoadEnd = classLoadStart;
+    long runStart = 0;
+    long runEnd = 0;
+    Object output = null;
+    String runtimeError = null;
+    List<String> events = new ArrayList<>();
+    boolean success = true;
+    boolean traceLimitExceeded = false;
+    int droppedEventCount = 0;
+
+    int traceRunToken = TraceHooks.beginRun(maxStoredEvents);
+    try (URLClassLoader loader = new URLClassLoader(
+        classpathUrls(classesPath, runtimeClasspath),
+        BrowserCompileAndTraceLibrary.class.getClassLoader())) {
+      Class<?> entry = Class.forName(entryClass, true, loader);
+      Method run = entry.getMethod("run");
+      run.setAccessible(true);
+      classLoadEnd = System.nanoTime();
+      runStart = System.nanoTime();
+      output = run.invoke(null);
+      runEnd = System.nanoTime();
+    } catch (InvocationTargetException error) {
+      Throwable cause = error.getCause() == null ? error : error.getCause();
+      runEnd = System.nanoTime();
+      runtimeError = stackTrace(cause);
+      success = false;
+    } catch (Throwable error) {
+      long end = System.nanoTime();
+      if (runStart == 0) {
+        classLoadEnd = end;
+      } else {
+        runEnd = end;
+      }
+      runtimeError = stackTrace(error);
+      success = false;
+    } finally {
+      events = TraceHooks.drainEvents();
+      traceLimitExceeded = TraceHooks.traceLimitExceeded();
+      droppedEventCount = TraceHooks.droppedEventCount();
+      TraceHooks.endRun(traceRunToken);
+    }
+
+    return new TraceInvocationReport(
+        success,
+        output == null ? null : String.valueOf(output),
+        runtimeError,
+        events,
+        millisBetween(classLoadStart, classLoadEnd),
+        runStart == 0 ? 0 : millisBetween(runStart, runEnd),
+        traceLimitExceeded,
+        droppedEventCount);
+  }
+
   private static URL[] classpathUrls(Path classesPath, List<Path> runtimeClasspath) throws IOException {
     List<URL> urls = new ArrayList<>();
     urls.add(classesPath.toUri().toURL());
@@ -1499,6 +1711,37 @@ public final class BrowserCompileAndTraceLibrary {
       this.runtimeError = runtimeError;
       this.classLoadTimeMs = classLoadTimeMs;
       this.runTimeMs = runTimeMs;
+    }
+  }
+
+  private static final class TraceInvocationReport {
+    final boolean success;
+    final String output;
+    final String runtimeError;
+    final List<String> events;
+    final long classLoadTimeMs;
+    final long runTimeMs;
+    final boolean traceLimitExceeded;
+    final int droppedEventCount;
+
+    TraceInvocationReport(
+        boolean success,
+        String output,
+        String runtimeError,
+        List<String> events,
+        long classLoadTimeMs,
+        long runTimeMs,
+        boolean traceLimitExceeded,
+        int droppedEventCount
+    ) {
+      this.success = success;
+      this.output = output;
+      this.runtimeError = runtimeError;
+      this.events = events;
+      this.classLoadTimeMs = classLoadTimeMs;
+      this.runTimeMs = runTimeMs;
+      this.traceLimitExceeded = traceLimitExceeded;
+      this.droppedEventCount = droppedEventCount;
     }
   }
 

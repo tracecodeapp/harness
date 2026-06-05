@@ -38,6 +38,7 @@ export interface CreateBrowserHarnessOptions {
   debug?: boolean;
   java?: {
     workerIdleTimeoutMs?: number;
+    externalCompilerUrl?: string;
   };
   csharp?: {
     workerIdleTimeoutMs?: number;
@@ -93,6 +94,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
       workerUrl: this.assets.javaWorker,
       debug: options.debug,
       workerIdleTimeoutMs: options.java?.workerIdleTimeoutMs,
+      externalCompilerUrl: options.java?.externalCompilerUrl,
     });
     this.csharpWorkerClient = new CSharpWorkerClient({
       workerUrl: this.assets.csharpWorker,
