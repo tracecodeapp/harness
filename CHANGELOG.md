@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.9.3] - 2026-06-05
+
+### Changed
+
+- Added true browser batch execution for JavaScript, TypeScript, Python, C#, and C++ so multi-case runs prepare or compile once and execute the full input batch in one worker call.
+- Kept JavaScript, TypeScript, and Python batch cases isolated with fresh globals and freshly materialized mutable inputs, including linked-list/object inputs that user code can mutate.
+- Added compile-once browser batch drivers for C# and C++ named-function, solution-method, and ops-class execution paths.
+
+### Fixed
+
+- Fixed Python browser batch handling for default imports, script-mode inputs, and custom class materialization.
+- Added regression coverage for batch global isolation, mutable input isolation, C# browser batch execution, and C++ compile-once batch behavior.
+
 ## [0.9.2] - 2026-06-05
 
 ### Fixed
