@@ -4776,6 +4776,65 @@ result = identity(42);`,
   );
   console.log('PASS: execute-code ops-class style');
 
+  const typeScriptBatchIsolation = await harness.sendMessage<{
+    success: boolean;
+    results?: Array<{ success: boolean; output?: unknown; error?: string }>;
+    error?: string;
+  }>('execute-code-batch', {
+    code: `let seen: number[] = [];
+function solve(x: number): number {
+  seen.push(x);
+  return seen.length;
+}`,
+    functionName: 'solve',
+    inputBatch: [{ x: 1 }, { x: 2 }],
+    executionStyle: 'function',
+    language: 'typescript',
+  });
+  assertCondition(
+    typeScriptBatchIsolation.success === true,
+    `TypeScript execute-code-batch should succeed: ${JSON.stringify(typeScriptBatchIsolation)}`
+  );
+  assertCondition(
+    JSON.stringify(typeScriptBatchIsolation.results?.map((result) => result.output)) === JSON.stringify([1, 1]),
+    `TypeScript execute-code-batch should isolate user globals per case: ${JSON.stringify(typeScriptBatchIsolation)}`
+  );
+
+  const sharedHead = { __type__: 'ListNode', val: 1, next: { __type__: 'ListNode', val: 2, next: null } };
+  const javaScriptBatchMutationIsolation = await harness.sendMessage<{
+    success: boolean;
+    results?: Array<{ success: boolean; output?: unknown; error?: string }>;
+    error?: string;
+  }>('execute-code-batch', {
+    code: `function reverseList(head) {
+  let prev = null;
+  let cur = head;
+  while (cur) {
+    const next = cur.next;
+    cur.next = prev;
+    prev = cur;
+    cur = next;
+  }
+  return prev;
+}`,
+    functionName: 'reverseList',
+    inputBatch: [{ head: sharedHead }, { head: sharedHead }],
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    javaScriptBatchMutationIsolation.success === true,
+    `JavaScript execute-code-batch mutable case should succeed: ${JSON.stringify(javaScriptBatchMutationIsolation)}`
+  );
+  assertCondition(
+    JSON.stringify(javaScriptBatchMutationIsolation.results?.map((result) => result.output)) === JSON.stringify([
+      { __type__: 'ListNode', __id__: 'ref-1', val: 2, next: { __type__: 'ListNode', __id__: 'ref-2', val: 1, next: null } },
+      { __type__: 'ListNode', __id__: 'ref-1', val: 2, next: { __type__: 'ListNode', __id__: 'ref-2', val: 1, next: null } },
+    ]),
+    `JavaScript execute-code-batch should isolate mutable linked-list inputs per case: ${JSON.stringify(javaScriptBatchMutationIsolation)}`
+  );
+  console.log('PASS: execute-code-batch isolates JS/TS globals and mutable inputs');
+
   const interviewResult = await harness.sendMessage<{
     success: boolean;
     error?: string;

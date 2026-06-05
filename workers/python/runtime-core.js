@@ -4339,10 +4339,341 @@ json.dumps({
   }
 }
 
+async function executeCodeBatch(deps, code, functionName, inputBatch, executionStyle = 'function') {
+  const startedAt = deps.performanceNow();
+  const userCodeLineCount = code.split('\n').length;
+  const cases = Array.isArray(inputBatch)
+    ? inputBatch.map((inputs) => (inputs && typeof inputs === 'object' && !Array.isArray(inputs) ? inputs : {}))
+    : [];
+
+  if (cases.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'Python batch execution requires a non-empty inputBatch array.',
+      consoleOutput: [],
+      timings: { totalMs: deps.performanceNow() - startedAt },
+    };
+  }
+
+  try {
+    await deps.loadPyodideInstance();
+
+    const functionNameLiteral = deps.toPythonLiteral(functionName);
+    const executionStyleLiteral = deps.toPythonLiteral(executionStyle);
+    const batchCode = `
+import copy as _copy
+import json
+import math
+import sys
+import builtins as _builtins
+${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
+${PYTHON_DEFAULT_IMPORT_PRELUDE}
+pow = _builtins.pow
+
+${deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET}
+${deps.PYTHON_CONVERSION_HELPERS_SNIPPET}
+
+_USER_CODE = ${JSON.stringify(code)}
+_FUNCTION_NAME = ${functionNameLiteral}
+_EXECUTION_STYLE = ${executionStyleLiteral}
+_INPUT_BATCH = ${deps.toPythonLiteral(cases)}
+_USER_CODE_OBJECT = compile(_USER_CODE, "solution.py", "exec")
+_INPLACE_RESULT_NAMES = ('nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid')
+
+def _tracecode_materialize_custom_input(obj, _env):
+    if isinstance(obj, _builtins.list):
+        return [_tracecode_materialize_custom_input(item, _env) for item in obj]
+    if isinstance(obj, _builtins.tuple):
+        return tuple(_tracecode_materialize_custom_input(item, _env) for item in obj)
+    if isinstance(obj, _builtins.dict):
+        if obj.get('__type__') == 'TreeNode' or 'left' in obj or 'right' in obj:
+            return _dict_to_tree(obj)
+        if obj.get('__type__') == 'ListNode' or 'next' in obj:
+            return _dict_to_list(obj)
+        _type_name = obj.get('__type__') if isinstance(obj.get('__type__'), _builtins.str) else obj.get('__class__')
+        _fields = {key: _tracecode_materialize_custom_input(value, _env) for key, value in obj.items() if key not in ('__type__', '__class__', '__id__')}
+        if isinstance(_type_name, _builtins.str):
+            _fields = {'__type__': _type_name, **_fields}
+        _constructor_fields = {key: value for key, value in _fields.items() if key not in ('__type__', '__class__')}
+        _cls = _env.get(_type_name) if isinstance(_type_name, _builtins.str) else None
+        if isinstance(_cls, _builtins.type):
+            try:
+                return _cls(**_constructor_fields)
+            except Exception:
+                pass
+            try:
+                return _cls(*_builtins.list(_constructor_fields.values()))
+            except Exception:
+                pass
+            try:
+                _instance = _cls.__new__(_cls)
+                for _key, _value in _constructor_fields.items():
+                    setattr(_instance, _key, _value)
+                return _instance
+            except Exception:
+                pass
+        return _fields
+    return obj
+
+def _tracecode_hydrate_for_annotation(_obj, _annotation, _env):
+    try:
+        import typing as _tracecode_typing
+        import collections.abc as _tracecode_collections_abc
+    except Exception:
+        return _obj
+    if _annotation is None:
+        return _obj
+    if isinstance(_annotation, _builtins.str):
+        _annotation = _env.get(_annotation, _annotation)
+    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
+        return _obj
+    _origin = _tracecode_typing.get_origin(_annotation)
+    _args = _tracecode_typing.get_args(_annotation)
+    if _origin is _tracecode_typing.Union:
+        _non_none = [_arg for _arg in _args if _arg is not type(None)]
+        return _tracecode_hydrate_for_annotation(_obj, _non_none[0], _env) if len(_non_none) == 1 else _obj
+    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
+        _item_annotation = _args[0] if _args else None
+        if isinstance(_obj, _builtins.list):
+            _items = [_tracecode_hydrate_for_annotation(_item, _item_annotation, _env) for _item in _obj]
+            if _origin is _builtins.tuple:
+                return tuple(_items)
+            if _origin is _builtins.set:
+                return _builtins.set(_items)
+            if _origin is _builtins.frozenset:
+                return _builtins.frozenset(_items)
+            return _items
+        return _obj
+    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
+        _key_annotation = _args[0] if len(_args) > 0 else None
+        _value_annotation = _args[1] if len(_args) > 1 else None
+        return {
+            _tracecode_hydrate_for_annotation(_key, _key_annotation, _env): _tracecode_hydrate_for_annotation(_value, _value_annotation, _env)
+            for _key, _value in _obj.items()
+        }
+    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
+        if _annotation.__name__ in ('TreeNode', 'ListNode'):
+            return _obj
+        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
+        try:
+            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), _env, _env)
+        except Exception:
+            _ctor_hints = {}
+        _hydrated_fields = {
+            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key), _env)
+            for key, value in _fields.items()
+        }
+        try:
+            return _annotation(**_hydrated_fields)
+        except Exception:
+            pass
+        try:
+            return _annotation(*_builtins.list(_hydrated_fields.values()))
+        except Exception:
+            pass
+        try:
+            _instance = _annotation.__new__(_annotation)
+            for _key, _value in _hydrated_fields.items():
+                setattr(_instance, _key, _value)
+            return _instance
+        except Exception:
+            return _obj
+    return _obj
+
+def _tracecode_resolve_target_callable(_env):
+    if _EXECUTION_STYLE == 'solution-method' and 'Solution' in _env and hasattr(_env['Solution'], _FUNCTION_NAME):
+        return getattr(_env['Solution'], _FUNCTION_NAME)
+    if _FUNCTION_NAME in _env and callable(_env[_FUNCTION_NAME]):
+        return _env[_FUNCTION_NAME]
+    if 'Solution' in _env and hasattr(_env['Solution'], _FUNCTION_NAME):
+        return getattr(_env['Solution'], _FUNCTION_NAME)
+    return None
+
+def _tracecode_hydrate_annotated_inputs(_env, _input_names):
+    try:
+        import typing as _tracecode_typing
+        _callable = _tracecode_resolve_target_callable(_env)
+        if _callable is None:
+            return
+        try:
+            _annotations = _tracecode_typing.get_type_hints(_callable, _env, _env)
+        except Exception:
+            _annotations = getattr(_callable, '__annotations__', {}) or {}
+        for _name in _input_names:
+            if _name in _env and _name in _annotations:
+                _env[_name] = _tracecode_hydrate_for_annotation(_env[_name], _annotations[_name], _env)
+    except Exception:
+        return
+
+def _tracecode_resolve_entry_callable(_env):
+    if _EXECUTION_STYLE == 'solution-method' and 'Solution' in _env and hasattr(_env['Solution'], _FUNCTION_NAME):
+        return getattr(_env['Solution'](), _FUNCTION_NAME)
+    if _FUNCTION_NAME in _env and callable(_env[_FUNCTION_NAME]):
+        return _env[_FUNCTION_NAME]
+    if 'Solution' in _env and hasattr(_env['Solution'], _FUNCTION_NAME):
+        return getattr(_env['Solution'](), _FUNCTION_NAME)
+    return None
+
+def _tracecode_invoke_entry(_env, _input_names):
+    import inspect as _tracecode_inspect
+    _callable = _tracecode_resolve_entry_callable(_env)
+    if _callable is None:
+        raise NameError(f"Implement {_FUNCTION_NAME}(...) or Solution.{_FUNCTION_NAME}(...)")
+    _values = {_name: _env[_name] for _name in _input_names if _name in _env}
+    try:
+        _signature = _tracecode_inspect.signature(_callable)
+    except Exception:
+        return _callable(**_values)
+    _args = []
+    _kwargs = {}
+    _has_varargs = any(
+        _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
+        for _parameter in _signature.parameters.values()
+    )
+    for _parameter in _signature.parameters.values():
+        if _parameter.name in ('self', 'cls'):
+            continue
+        _kind = _parameter.kind
+        if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
+            if _parameter.name in _values:
+                _raw = _values[_parameter.name]
+                if isinstance(_raw, (_builtins.list, _builtins.tuple)):
+                    _args.extend(_raw)
+                else:
+                    _args.append(_raw)
+            continue
+        if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
+            if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
+                _kwargs.update(_values[_parameter.name])
+            continue
+        if _parameter.name not in _values:
+            continue
+        if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
+            _args.append(_values[_parameter.name])
+        elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
+            _args.append(_values[_parameter.name])
+        else:
+            _kwargs[_parameter.name] = _values[_parameter.name]
+    return _callable(*_args, **_kwargs)
+
+def _tracecode_run_ops_class(_env):
+    _ops = _env.get('operations', _env.get('ops'))
+    _args = _env.get('arguments', _env.get('args'))
+    if _ops is None or _args is None:
+        raise ValueError("ops-class execution requires inputs.operations and inputs.arguments (or ops/args)")
+    if len(_ops) != len(_args):
+        raise ValueError("operations and arguments must have the same length")
+    _cls = _env[_FUNCTION_NAME]
+    _instance = None
+    _out = []
+    for _i, _op in enumerate(_ops):
+        _call_args = _args[_i] if _i < len(_args) else []
+        if _call_args is None:
+            _call_args = []
+        if not isinstance(_call_args, (_builtins.list, _builtins.tuple)):
+            _call_args = [_call_args]
+        if _i == 0:
+            _instance = _cls(*_call_args)
+            _out.append(None)
+        else:
+            if not hasattr(_instance, _op):
+                raise AttributeError(f"Required method '{_op}' is not implemented on {_cls.__name__}")
+            _method = getattr(_instance, _op)
+            _out.append(_method(*_call_args))
+    return _out
+
+_TRACE_CODE_CASE_BASE_NAMES = tuple(
+    name for name in globals()
+    if name not in ('_USER_CODE', '_FUNCTION_NAME', '_EXECUTION_STYLE', '_INPUT_BATCH', '_USER_CODE_OBJECT')
+)
+
+def _tracecode_base_env():
+    _env = {name: globals()[name] for name in _TRACE_CODE_CASE_BASE_NAMES if name in globals()}
+    _env['__builtins__'] = _builtins
+    _env['__name__'] = '__main__'
+    _env['print'] = None
+    return _env
+
+def _tracecode_run_case(_raw_inputs):
+    _console_output = []
+    def _custom_print(*args, **kwargs):
+        _console_output.append(" ".join(str(arg) for arg in args))
+    _env = _tracecode_base_env()
+    _env['print'] = _custom_print
+    try:
+        _raw_input_items = _raw_inputs.items() if isinstance(_raw_inputs, _builtins.dict) else []
+        if not isinstance(_FUNCTION_NAME, _builtins.str) or not _FUNCTION_NAME:
+            _inputs = {
+                str(_key): _tracecode_materialize_custom_input(_copy.deepcopy(_value), _env)
+                for _key, _value in _raw_input_items
+            }
+            _env.update(_inputs)
+            exec(_USER_CODE_OBJECT, _env)
+        else:
+            exec(_USER_CODE_OBJECT, _env)
+            _inputs = {
+                str(_key): _tracecode_materialize_custom_input(_copy.deepcopy(_value), _env)
+                for _key, _value in _raw_input_items
+            }
+            _env.update(_inputs)
+        _input_names = list(_inputs.keys())
+        _tracecode_hydrate_annotated_inputs(_env, _input_names)
+        if not isinstance(_FUNCTION_NAME, _builtins.str) or not _FUNCTION_NAME:
+            _result = _env.get('result')
+        elif _EXECUTION_STYLE == 'ops-class':
+            _result = _tracecode_run_ops_class(_env)
+        else:
+            _result = _tracecode_invoke_entry(_env, _input_names)
+            if _result is None:
+                for _name in _INPLACE_RESULT_NAMES:
+                    if _name in _env:
+                        _result = _env[_name]
+                        break
+        return {'success': True, 'output': _serialize(_result), 'consoleOutput': _console_output}
+    except Exception as _error:
+        return {'success': False, 'output': None, 'error': str(_error), 'consoleOutput': _console_output}
+
+_results = [_tracecode_run_case(_case) for _case in _INPUT_BATCH]
+json.dumps({
+    'success': all(_result.get('success') is True for _result in _results),
+    'results': _results,
+    'consoleOutput': [line for _result in _results for line in _result.get('consoleOutput', [])],
+})
+`;
+
+    const resultJson = await deps.getPyodide().runPythonAsync(batchCode);
+    const parsed = JSON.parse(resultJson);
+    return {
+      success: parsed.success === true,
+      results: Array.isArray(parsed.results) ? parsed.results : [],
+      consoleOutput: Array.isArray(parsed.consoleOutput) ? parsed.consoleOutput : [],
+      timings: { totalMs: deps.performanceNow() - startedAt },
+    };
+  } catch (error) {
+    const rawError = error instanceof Error ? error.message : String(error);
+    const { message, line } = parsePythonError(rawError, 1, userCodeLineCount);
+    return {
+      success: false,
+      results: cases.map(() => ({
+        success: false,
+        output: null,
+        error: message,
+        errorLine: line,
+        consoleOutput: [],
+      })),
+      error: message,
+      consoleOutput: [],
+      timings: { totalMs: deps.performanceNow() - startedAt },
+    };
+  }
+}
+
   globalScope.__TRACECODE_PYODIDE_RUNTIME__ = {
     generateTracingCode,
     parsePythonError,
     executeWithTracing,
     executeCode,
+    executeCodeBatch,
   };
 })(typeof self !== 'undefined' ? self : globalThis);

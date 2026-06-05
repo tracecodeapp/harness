@@ -68,7 +68,7 @@ const script = new vm.Script(
     'const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;\n' +
     'const isRuntimeProcPath = isRuntimeKernelProcPath;\n' +
     workerSource +
-    '\nglobalThis.__tracecodeCppTest = { handleInit, handleWarmup, handleCompileRun, handleExecuteWithTracing, handleExecuteCodeInterview, state: () => ({ hasToolchainPromise: Boolean(toolchainPromise), hasWarmupPromise: Boolean(warmupPromise), programCacheSize: programCache.size }) };',
+    '\nglobalThis.__tracecodeCppTest = { handleInit, handleWarmup, handleCompileRun, handleCompileRunBatch, handleExecuteWithTracing, handleExecuteCodeInterview, state: () => ({ hasToolchainPromise: Boolean(toolchainPromise), hasWarmupPromise: Boolean(warmupPromise), programCacheSize: programCache.size }) };',
   {
     importModuleDynamically(specifier) {
       return import(specifier);
@@ -127,7 +127,7 @@ const wrapCppTestMethod = (method) => {
   };
 };
 
-for (const method of ['handleCompileRun', 'handleExecuteWithTracing', 'handleExecuteCodeInterview']) {
+for (const method of ['handleCompileRun', 'handleCompileRunBatch', 'handleExecuteWithTracing', 'handleExecuteCodeInterview']) {
   wrapCppTestMethod(method);
 }
 
@@ -433,6 +433,97 @@ for (const testCase of cases) {
       );
     }
   }
+}
+
+const batchCacheSizeBefore = sandbox.__tracecodeCppTest.state().programCacheSize;
+const mutableVectorBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch({
+  name: 'batch mutable vector isolation',
+  code: [
+    'class Solution {',
+    'public:',
+    '  vector<int> consume(vector<int>& nums) {',
+    '    int first = nums.empty() ? -1 : nums[0];',
+    '    if (!nums.empty()) nums[0] = 99;',
+    '    nums.push_back(100);',
+    '    return {first, (int)nums.size(), nums[0]};',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'consume',
+  inputBatch: [
+    { nums: [1, 2] },
+    { nums: [1, 2] },
+    { nums: [5] },
+  ],
+});
+if (!mutableVectorBatch.success) {
+  throw new Error('C++ true batch mutable vector case failed: ' + JSON.stringify(mutableVectorBatch));
+}
+if (
+  JSON.stringify(mutableVectorBatch.results?.map((result) => result.output)) !==
+  JSON.stringify([[1, 3, 99], [1, 3, 99], [5, 2, 99]])
+) {
+  throw new Error('C++ true batch should hydrate independent vector inputs, received ' + JSON.stringify(mutableVectorBatch));
+}
+if (sandbox.__tracecodeCppTest.state().programCacheSize !== batchCacheSizeBefore + 1) {
+  throw new Error('C++ true batch should compile one batch driver, cache before/after ' + JSON.stringify({
+    before: batchCacheSizeBefore,
+    after: sandbox.__tracecodeCppTest.state().programCacheSize,
+  }));
+}
+if (mutableVectorBatch.timings?.batchMode !== 'compile-once' || mutableVectorBatch.timings?.batchCaseCount !== 3) {
+  throw new Error('C++ true batch should report compile-once batch timings, received ' + JSON.stringify(mutableVectorBatch.timings));
+}
+
+const mutableListBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch({
+  name: 'batch mutable ListNode isolation',
+  code: [
+    'class Solution {',
+    'public:',
+    '  int cutSecond(ListNode* head) {',
+    '    if (!head || !head->next) return -1;',
+    '    int second = head->next->val;',
+    '    head->next = nullptr;',
+    '    return second + (head->next ? 100 : 0);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'cutSecond',
+  inputBatch: [
+    { head: [1, 2, 3] },
+    { head: [1, 2, 3] },
+  ],
+});
+if (!mutableListBatch.success || JSON.stringify(mutableListBatch.results?.map((result) => result.output)) !== JSON.stringify([2, 2])) {
+  throw new Error('C++ true batch should hydrate independent ListNode inputs, received ' + JSON.stringify(mutableListBatch));
+}
+
+const opsClassBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch({
+  name: 'batch ops-class compile once',
+  code: [
+    'class Counter {',
+    '  int value;',
+    'public:',
+    '  Counter(int start) : value(start) {}',
+    '  int add(int delta) { value += delta; return value; }',
+    '};',
+  ].join('\n'),
+  functionName: 'Counter',
+  executionStyle: 'ops-class',
+  inputBatch: [
+    { operations: ['Counter', 'add', 'add'], arguments: [[0], [1], [2]] },
+    { operations: ['Counter', 'add', 'add'], arguments: [[4], [1], [3]] },
+  ],
+});
+if (
+  !opsClassBatch.success ||
+  JSON.stringify(opsClassBatch.results?.map((result) => result.output)) !==
+    JSON.stringify([[null, 1, 3], [null, 5, 8]])
+) {
+  throw new Error('C++ true batch ops-class failed: ' + JSON.stringify(opsClassBatch));
+}
+if (opsClassBatch.timings?.batchMode !== 'compile-once' || opsClassBatch.timings?.batchCaseCount !== 2) {
+  throw new Error('C++ ops-class batch should report compile-once timings, received ' + JSON.stringify(opsClassBatch.timings));
 }
 
 const nestedCustomMapTracingResult = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

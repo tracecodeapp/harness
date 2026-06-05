@@ -40,6 +40,19 @@ interface CSharpWorkerResponse {
   };
 }
 
+interface CSharpWorkerBatchResponse {
+  success: boolean;
+  results: CSharpWorkerResponse[];
+  error?: string;
+  consoleOutput?: string[];
+  timings?: {
+    compileMs?: number;
+    runMs?: number;
+    totalMs?: number;
+    hostCallMs?: number;
+  };
+}
+
 interface CSharpProjectWorkerResponse {
   stdout: string;
   stderr: string;
@@ -500,6 +513,82 @@ async function runWorkerCase(
   );
 }
 
+async function runWorkerBatchCase(
+  page: Page,
+  code: string,
+  functionName: string,
+  inputBatch: Record<string, unknown>[],
+  assetBaseUrl: string,
+  options: {
+    timeoutMs?: number;
+    executionStyle?: 'function' | 'solution-method' | 'ops-class';
+  } = {}
+): Promise<CSharpWorkerBatchResponse> {
+  return withProgress(`execute-code-batch ${functionName || '<script>'}`, () =>
+    page.evaluate(
+      async ({ code, functionName, inputBatch, assetBaseUrl, options, workerRequestTimeoutMs }) => {
+        const worker = new Worker('/workers/csharp/csharp-worker.js', { type: 'module' });
+        let nextId = 0;
+        const pending = new Map();
+
+        function terminate(error = new Error('C# worker terminated')) {
+          worker.terminate();
+          for (const { reject, timeoutId } of pending.values()) {
+            clearTimeout(timeoutId);
+            reject(error);
+          }
+          pending.clear();
+        }
+
+        worker.addEventListener('message', (event) => {
+          const id = event.data?.id;
+          if (!id || !pending.has(id)) return;
+          const { resolve, reject, timeoutId, protocolToken } = pending.get(id);
+          if (event.data?.protocolToken !== protocolToken) return;
+          pending.delete(id);
+          clearTimeout(timeoutId);
+          if (event.data.type === 'error') {
+            reject(new Error(event.data.payload?.error ?? 'C# worker error'));
+            return;
+          }
+          resolve(event.data.payload);
+        });
+
+        worker.addEventListener('error', (event) => {
+          terminate(new Error(event.message || 'C# worker failed'));
+        });
+
+        function send(type, payload) {
+          const id = String(++nextId);
+          const protocolToken = 'csharp-test-token-' + id;
+          return new Promise((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+              terminate(new Error(`C# worker request timed out: ${type}`));
+            }, workerRequestTimeoutMs);
+            pending.set(id, { resolve, reject, timeoutId, protocolToken });
+            worker.postMessage({ id, type, payload, protocolToken });
+          });
+        }
+
+        try {
+          await send('init', { assetBaseUrl });
+          return await send('execute-code-batch', {
+            code,
+            functionName,
+            inputBatch,
+            executionStyle: options.executionStyle ?? 'solution-method',
+            assetBaseUrl,
+            ...options,
+          });
+        } finally {
+          terminate();
+        }
+      },
+      { code, functionName, inputBatch, assetBaseUrl, options, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
+    ) as Promise<CSharpWorkerBatchResponse>
+  );
+}
+
 async function runProjectWorkerCase(
   page: Page,
   request: CSharpProjectWorkerRequest,
@@ -770,6 +859,29 @@ async function main(): Promise<void> {
     assertCondition(
       scriptStyle.consoleOutput?.includes('script count 3') === true,
       `C# worker script-style case should capture stdout, received ${JSON.stringify(scriptStyle.consoleOutput)}`
+    );
+
+    const scriptStyleBatch = await runWorkerBatchCase(
+      page,
+      [
+        'var value = TraceCode.Internal.TraceCodeJsonInput.Read<int>("value", 0);',
+        'var result = value * 2;',
+        'Console.WriteLine($"script batch value {value}");',
+      ].join('\n'),
+      '',
+      [{ value: 3 }, { value: 5 }],
+      assetBaseUrl,
+      { executionStyle: 'function' }
+    );
+    assertCondition(scriptStyleBatch.success, `C# worker script-style batch should succeed: ${scriptStyleBatch.error ?? 'unknown error'}`);
+    assertCondition(
+      JSON.stringify(scriptStyleBatch.results.map((entry) => entry.output)) === JSON.stringify([6, 10]),
+      `C# worker script-style batch should return per-case outputs, received ${JSON.stringify(scriptStyleBatch.results)}`
+    );
+    assertCondition(
+      scriptStyleBatch.consoleOutput?.includes('script batch value 3') &&
+        scriptStyleBatch.consoleOutput?.includes('script batch value 5'),
+      `C# worker script-style batch should capture per-case stdout, received ${JSON.stringify(scriptStyleBatch.consoleOutput)}`
     );
 
     const tracedScriptStyle = await runWorkerCase(
@@ -4513,6 +4625,37 @@ async function main(): Promise<void> {
     );
     assertCondition(listNodeInput.success, `C# worker ListNode input case should succeed: ${listNodeInput.error ?? 'unknown error'}`);
     assertCondition(listNodeInput.output === 20, `C# worker ListNode input case should return 20, received ${JSON.stringify(listNodeInput.output)}`);
+
+    const sharedListInput = { head: [1, 2, 3] };
+    const listNodeBatch = await runWorkerBatchCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int Consume(ListNode head) {',
+        '    int sum = 0;',
+        '    for (ListNode cursor = head; cursor != null; cursor = cursor.next) {',
+        '      sum += cursor.val;',
+        '      cursor.val = 0;',
+        '    }',
+        '    System.Console.WriteLine("sum " + sum);',
+        '    return sum;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Consume',
+      [sharedListInput, sharedListInput, { head: [4, 5] }],
+      assetBaseUrl
+    );
+    assertCondition(listNodeBatch.success, `C# worker ListNode batch should succeed: ${listNodeBatch.error ?? 'unknown error'}`);
+    assertCondition(
+      JSON.stringify(listNodeBatch.results.map((entry) => entry.output)) === JSON.stringify([6, 6, 9]),
+      `C# worker ListNode batch should materialize independent mutable inputs, received ${JSON.stringify(listNodeBatch.results)}`
+    );
+    assertCondition(
+      listNodeBatch.consoleOutput?.filter((line) => line === 'sum 6').length === 2 &&
+        listNodeBatch.consoleOutput?.includes('sum 9'),
+      `C# worker ListNode batch should preserve per-case stdout, received ${JSON.stringify(listNodeBatch.consoleOutput)}`
+    );
 
     const requiredConstructorListNodeInput = await runWorkerCase(
       page,

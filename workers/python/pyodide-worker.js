@@ -4350,30 +4350,13 @@ json.dumps({
 }
 
 async function executeCodeBatch(code, functionName, inputBatch, executionStyle = 'function') {
-  const startedAt = performance.now();
-  const cases = Array.isArray(inputBatch)
-    ? inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
-    : [];
-  if (cases.length === 0) {
-    return {
-      success: false,
-      results: [],
-      error: 'Python batch execution requires a non-empty inputBatch array.',
-      consoleOutput: [],
-      timings: { totalMs: performance.now() - startedAt },
-    };
-  }
-
-  const results = [];
-  for (const inputs of cases) {
-    results.push(await executeCode(code, functionName, inputs, executionStyle));
-  }
-  return {
-    success: results.every((result) => result.success === true),
-    results,
-    consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
-    timings: { totalMs: performance.now() - startedAt },
-  };
+  return loadPyodideRuntimeCore().executeCodeBatch(
+    buildRuntimeDeps(),
+    code,
+    functionName,
+    inputBatch,
+    executionStyle
+  );
 }
 
 async function processMessage(data) {

@@ -6868,6 +6868,214 @@ ${traceReturn}
 `;
 }
 
+function buildBatchDriverSource(userCode, functionName, inputBatch, options = {}) {
+  userCode = normalizeCppUserSource(userCode, options);
+  const firstInputs = Array.isArray(inputBatch) && inputBatch.length > 0 && inputBatch[0] && typeof inputBatch[0] === 'object'
+    ? inputBatch[0]
+    : {};
+  const aliases = collectCppTypeAliases(userCode);
+  const signature = parseMethodSignature(userCode, functionName, {
+    parameterCount: Object.keys(firstInputs || {}).length,
+    inputNames: Object.keys(firstInputs || {}),
+  });
+  const typeContext = sourceDeclaresSolutionClass(userCode)
+    ? buildCppDriverTypeContext(userCode, 'Solution', signature, aliases)
+    : buildCppDriverTypeContext(userCode, functionName, signature, aliases);
+  const driverSignature = qualifyCppSignatureForDriver(signature, typeContext, aliases);
+  const usesSolutionClass = options.executionStyle !== 'function' || sourceDeclaresSolutionClass(userCode);
+  const declarations = [];
+  const argumentNames = [];
+
+  driverSignature.parameters.forEach((parameter, index) => {
+    const localName = `__tc_arg_${index}`;
+    const type = materializedCppType(parameter.type, aliases);
+    declarations.push(`    ${type} ${localName} = tracecode::read_json_input<${type}>(__tc_case, ${cppStringLiteral(parameter.name)}, ${index});`);
+    argumentNames.push(localName);
+  });
+
+  const returnsNull = isNullCppReturnType(driverSignature.returnType, aliases);
+  const returnsVoid = normalizeCppType(localCppType(driverSignature.returnType), aliases) === 'void';
+  const noStoredResult = returnsVoid || returnsNull;
+  const voidOutputParameter = returnsVoid && driverSignature.parameters.length > 0 && isSnapshotSerializableCppType(driverSignature.parameters[0].type, aliases)
+    ? driverSignature.parameters[0]
+    : null;
+  const resultJsonExpression = noStoredResult
+    ? returnsNull
+      ? '"null"'
+      : voidOutputParameter
+      ? cppJsonExpressionForValue('__tc_arg_0', voidOutputParameter.type, userCode)
+      : '"null"'
+    : cppJsonExpressionForValue('__tc_result', driverSignature.returnType, userCode);
+  const callExpression = `${usesSolutionClass ? `solution.${functionName}` : functionName}(${argumentNames.join(', ')})`;
+  const invokeAndStore = noStoredResult ? `    ${callExpression};` : `    auto __tc_result = ${callExpression};`;
+
+return `${buildGeneratedIncludes(userCode, driverSignature)}
+using namespace std;
+${buildTracecodeFallbackAliases(userCode)}
+
+#line 1 "${CPP_USER_SOURCE_FILE}"
+${userCode}
+${buildCppJsonObjectAdapters(typeContext, aliases)}
+
+#line 1 "TraceCodeDriver.cpp"
+int main() {
+  tracecode::JsonValue __tc_cases = tracecode::parse_json(tracecode::read_stdin_all());
+  if (__tc_cases.kind != tracecode::JsonValue::Kind::Array) {
+    std::fputs("C++ batch input must be a JSON array.\\n", stderr);
+    return 1;
+  }
+  std::string __tc_results = "[";
+  for (std::size_t __tc_case_index = 0; __tc_case_index < __tc_cases.array_values.size(); ++__tc_case_index) {
+    const tracecode::JsonValue& __tc_case = __tc_cases.array_values[__tc_case_index];
+    if (__tc_case_index > 0) __tc_results += ",";
+${usesSolutionClass ? '    Solution solution;\n' : ''}${declarations.join('\n')}
+${invokeAndStore}
+    __tc_results += ${resultJsonExpression};
+  }
+  __tc_results += "]";
+  tracecode::write_result_json_raw(__tc_results);
+  return 0;
+}
+`;
+}
+
+function buildOpsClassBatchDriverSource(userCode, className, inputBatch, options = {}) {
+  userCode = normalizeCppUserSource(userCode, options);
+  const firstInputs = Array.isArray(inputBatch) && inputBatch.length > 0 && inputBatch[0] && typeof inputBatch[0] === 'object'
+    ? inputBatch[0]
+    : {};
+  const aliases = collectCppTypeAliases(userCode);
+  const typeContext = buildCppDriverTypeContext(userCode, className, null, aliases);
+  const { operations, argumentsList } = getOpsClassInputs(firstInputs || {});
+  let firstOperationIndex = 1;
+  let constructorArgumentIndex = 0;
+  if (operations[0] === '__init__') {
+    firstOperationIndex = 1;
+    constructorArgumentIndex = 0;
+  } else if (operations[0] === className) {
+    firstOperationIndex = 1;
+    constructorArgumentIndex = 0;
+  } else if (operations.length > 0) {
+    firstOperationIndex = 0;
+    constructorArgumentIndex = -1;
+  } else {
+    throw new Error(`C++ ops-class inputs must start with constructor operation "${className}".`);
+  }
+
+  const lines = [];
+  const constructorArgs = constructorArgumentIndex >= 0 ? normalizeOpsArguments(argumentsList[constructorArgumentIndex]) : [];
+  const constructorSignature = qualifyCppSignatureForDriver(
+    parseConstructorSignature(userCode, className, aliases, {
+      parameterCount: constructorArgs.length,
+    }),
+    typeContext,
+    aliases
+  );
+  if (constructorArgs.length !== constructorSignature.parameters.length) {
+    throw new Error(`C++ ops-class constructor "${className}" expected ${constructorSignature.parameters.length} args, received ${constructorArgs.length}.`);
+  }
+  const constructorArgNames = constructorArgs.map((_value, index) => {
+    const localName = `__tc_ctor_arg_${index}`;
+    const type = materializedCppType(constructorSignature.parameters[index].type, aliases);
+    lines.push(`    ${type} ${localName} = tracecode::json_to<${type}>(__tc_ops_arg_at(__tc_ops_item_at(*__tc_arguments, ${constructorArgumentIndex}), ${index}));`);
+    return localName;
+  });
+  lines.push(constructorArgs.length === 0
+    ? `    ${className} __tc_instance;`
+    : `    ${className} __tc_instance(${constructorArgNames.join(', ')});`);
+  lines.push('    std::vector<std::string> __tc_case_outputs;');
+  if (constructorArgumentIndex >= 0) {
+    lines.push('    __tc_case_outputs.push_back("null");');
+  }
+
+  for (let index = firstOperationIndex; index < operations.length; index += 1) {
+    const operation = operations[index];
+    if (typeof operation !== 'string' || !operation.trim()) {
+      throw new Error(`C++ ops-class operation at index ${index} must be a method name.`);
+    }
+    const signatureOperation = resolveCppObjectMethodMacro(userCode, operation);
+    const signature = qualifyCppSignatureForDriver(parseMethodSignature(userCode, signatureOperation), typeContext, aliases);
+    const args = normalizeOpsArguments(argumentsList[index]);
+    if (args.length !== signature.parameters.length) {
+      throw new Error(`C++ ops-class method "${operation}" expected ${signature.parameters.length} args, received ${args.length}.`);
+    }
+    const argNames = [];
+    signature.parameters.forEach((parameter, argIndex) => {
+      const localName = `__tc_op_${index}_arg_${argIndex}`;
+      const type = materializedCppType(parameter.type, aliases);
+      lines.push(`    ${type} ${localName} = tracecode::json_to<${type}>(__tc_ops_arg_at(__tc_ops_item_at(*__tc_arguments, ${index}), ${argIndex}));`);
+      argNames.push(localName);
+    });
+    if (normalizeCppType(signature.returnType, aliases) === 'void' || isNullCppReturnType(signature.returnType, aliases)) {
+      lines.push(`    __tc_instance.${signatureOperation}(${argNames.join(', ')});`);
+      lines.push('    __tc_case_outputs.push_back("null");');
+    } else {
+      lines.push(`    auto __tc_op_${index}_result = __tc_instance.${signatureOperation}(${argNames.join(', ')});`);
+      lines.push(`    __tc_case_outputs.push_back(${cppJsonExpressionForValue(`__tc_op_${index}_result`, signature.returnType, userCode)});`);
+    }
+  }
+  const operationChecks = operations.map((operation, index) => `    if (__tc_operations && __tc_operations->kind == tracecode::JsonValue::Kind::Array && __tc_operations->array_values.size() > ${index} && __tc_operations->array_values[${index}].kind == tracecode::JsonValue::Kind::String && __tc_operations->array_values[${index}].string_value != ${cppStringLiteral(String(operation))}) {
+      std::fputs("C++ ops-class case operation name differs from the first case.\\n", stderr);
+      return 1;
+    }`);
+
+return `${buildGeneratedIncludes(userCode, { parameters: [] })}
+using namespace std;
+${buildTracecodeFallbackAliases(userCode)}
+
+#line 1 "${CPP_USER_SOURCE_FILE}"
+${userCode}
+${buildCppJsonObjectAdapters(typeContext, aliases)}
+
+#line 1 "TraceCodeDriver.cpp"
+int main() {
+  tracecode::JsonValue __tc_cases = tracecode::parse_json(tracecode::read_stdin_all());
+  if (__tc_cases.kind != tracecode::JsonValue::Kind::Array) {
+    std::fputs("C++ ops-class batch input must be a JSON array.\\n", stderr);
+    return 1;
+  }
+  const tracecode::JsonValue __tc_null_value;
+  auto __tc_ops_item_at = [&__tc_null_value](const tracecode::JsonValue& values, std::size_t index) -> const tracecode::JsonValue& {
+    if (values.kind == tracecode::JsonValue::Kind::Array && index < values.array_values.size()) return values.array_values[index];
+    return __tc_null_value;
+  };
+  auto __tc_ops_arg_at = [&__tc_ops_item_at](const tracecode::JsonValue& values, std::size_t index) -> const tracecode::JsonValue& {
+    if (values.kind == tracecode::JsonValue::Kind::Array) return __tc_ops_item_at(values, index);
+    return values;
+  };
+  std::string __tc_results = "[";
+  for (std::size_t __tc_case_index = 0; __tc_case_index < __tc_cases.array_values.size(); ++__tc_case_index) {
+    const tracecode::JsonValue& __tc_case = __tc_cases.array_values[__tc_case_index];
+    const tracecode::JsonValue* __tc_operations = tracecode::object_get(__tc_case, "operations");
+    if (!__tc_operations) __tc_operations = tracecode::object_get(__tc_case, "ops");
+    const tracecode::JsonValue* __tc_arguments = tracecode::object_get(__tc_case, "arguments");
+    if (!__tc_arguments) __tc_arguments = tracecode::object_get(__tc_case, "args");
+    if (!__tc_arguments || __tc_arguments->kind != tracecode::JsonValue::Kind::Array) {
+      std::fputs("C++ ops-class case must include arguments or args array.\\n", stderr);
+      return 1;
+    }
+    if (__tc_operations && __tc_operations->kind == tracecode::JsonValue::Kind::Array && __tc_operations->array_values.size() != ${operations.length}) {
+      std::fputs("C++ ops-class case operations length differs from the first case.\\n", stderr);
+      return 1;
+    }
+${operationChecks.join('\n')}
+    if (__tc_case_index > 0) __tc_results += ",";
+${lines.join('\n')}
+    std::string __tc_case_json = "[";
+    for (std::size_t __tc_i = 0; __tc_i < __tc_case_outputs.size(); ++__tc_i) {
+      if (__tc_i > 0) __tc_case_json += ",";
+      __tc_case_json += __tc_case_outputs[__tc_i];
+    }
+    __tc_case_json += "]";
+    __tc_results += __tc_case_json;
+  }
+  __tc_results += "]";
+  tracecode::write_result_json_raw(__tc_results);
+  return 0;
+}
+`;
+}
+
 function scriptLineCount(source) {
   return String(source || '').split(/\r?\n/).length;
 }
@@ -8231,7 +8439,9 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
   }
   const fs = toolchain.baseFs.clone();
   const resourceDir = findClangResourceDir(fs);
-  const scriptRequest = isScriptExecutionRequest(functionName, options);
+  const preparedDriverSource = typeof options.preparedDriverSource === 'string' ? options.preparedDriverSource : null;
+  const stdinText = typeof options.stdinText === 'string' ? options.stdinText : JSON.stringify(inputs || {});
+  const scriptRequest = !preparedDriverSource && isScriptExecutionRequest(functionName, options);
   const signature = scriptRequest
     ? { line: 1 }
     : options.executionStyle === 'ops-class'
@@ -8240,15 +8450,18 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
         parameterCount: Object.keys(inputs || {}).length,
         inputNames: Object.keys(inputs || {}),
       });
-  const driverStartedAt = now();
-  emitRequestProgress('driver-build:start', { tracing: Boolean(options.tracing) });
-  const driverSource = scriptRequest
-    ? buildScriptDriverSource(source, options)
-    : options.executionStyle === 'ops-class'
-    ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
-    : buildDriverSource(source, functionName, inputs || {}, options);
-  timings.driverBuildMs = elapsedMs(driverStartedAt);
-  emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing) });
+  let driverSource = preparedDriverSource;
+  if (!driverSource) {
+    const driverStartedAt = now();
+    emitRequestProgress('driver-build:start', { tracing: Boolean(options.tracing) });
+    driverSource = scriptRequest
+      ? buildScriptDriverSource(source, options)
+      : options.executionStyle === 'ops-class'
+      ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
+      : buildDriverSource(source, functionName, inputs || {}, options);
+    timings.driverBuildMs = elapsedMs(driverStartedAt);
+    emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing) });
+  }
 
   fs.addDirectory('/tmp');
   fs.addFile('/tmp/TraceCodeDriver.cpp', driverSource);
@@ -8351,7 +8564,7 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
     const runStartedAt = now();
     emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing) });
     const program = await runWasi(programModule, ['program.wasm'], fs, {
-      stdinBytes: staticStdinBytesFromText(JSON.stringify(inputs || {})),
+      stdinBytes: staticStdinBytesFromText(stdinText),
     });
     timings.runMs = elapsedMs(runStartedAt);
     emitRequestProgress('program-run:complete', { tracing: Boolean(options.tracing), runMs: timings.runMs, exitCode: program.exitCode });
@@ -8428,7 +8641,9 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
   const timings = {
     ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
   };
-  const scriptRequest = isScriptExecutionRequest(functionName, options);
+  const preparedDriverSource = typeof options.preparedDriverSource === 'string' ? options.preparedDriverSource : null;
+  const stdinText = typeof options.stdinText === 'string' ? options.stdinText : JSON.stringify(inputs || {});
+  const scriptRequest = !preparedDriverSource && isScriptExecutionRequest(functionName, options);
   const signature = scriptRequest
     ? { line: 1 }
     : options.executionStyle === 'ops-class'
@@ -8437,19 +8652,26 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
         parameterCount: Object.keys(inputs || {}).length,
         inputNames: Object.keys(inputs || {}),
       });
-  const driverStartedAt = now();
-  emitRequestProgress('driver-build:start', { tracing: Boolean(options.tracing), compiler: 'external' });
-  const rawDriverSource = scriptRequest
-    ? buildScriptDriverSource(source, options)
-    : options.executionStyle === 'ops-class'
-    ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
-    : buildDriverSource(source, functionName, inputs || {}, options);
-  const driverSource = rawDriverSource.replace(
+  let driverSource = preparedDriverSource;
+  if (!driverSource) {
+    const driverStartedAt = now();
+    emitRequestProgress('driver-build:start', { tracing: Boolean(options.tracing), compiler: 'external' });
+    const rawDriverSource = scriptRequest
+      ? buildScriptDriverSource(source, options)
+      : options.executionStyle === 'ops-class'
+      ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
+      : buildDriverSource(source, functionName, inputs || {}, options);
+    driverSource = rawDriverSource.replace(
+      '#include "/tracecode_runtime.hpp"',
+      '#include "tracecode_runtime.hpp"'
+    );
+    timings.driverBuildMs = elapsedMs(driverStartedAt);
+    emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing), compiler: 'external' });
+  }
+  driverSource = driverSource.replace(
     '#include "/tracecode_runtime.hpp"',
     '#include "tracecode_runtime.hpp"'
   );
-  timings.driverBuildMs = elapsedMs(driverStartedAt);
-  emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing), compiler: 'external' });
 
   const cacheKey = getProgramCacheKey('yowasp-worker', driverSource);
   let programModule = getCachedProgramModule(cacheKey);
@@ -8516,7 +8738,7 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     const runStartedAt = now();
     emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing), compiler: 'external' });
     const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
-      stdinBytes: staticStdinBytesFromText(JSON.stringify(inputs || {})),
+      stdinBytes: staticStdinBytesFromText(stdinText),
     });
     timings.runMs = elapsedMs(runStartedAt);
     emitRequestProgress('program-run:complete', {
@@ -8598,7 +8820,9 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
   const timings = {
     ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
   };
-  const scriptRequest = isScriptExecutionRequest(functionName, options);
+  const preparedDriverSource = typeof options.preparedDriverSource === 'string' ? options.preparedDriverSource : null;
+  const stdinText = typeof options.stdinText === 'string' ? options.stdinText : JSON.stringify(inputs || {});
+  const scriptRequest = !preparedDriverSource && isScriptExecutionRequest(functionName, options);
   const signature = scriptRequest
     ? { line: 1 }
     : options.executionStyle === 'ops-class'
@@ -8607,19 +8831,26 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
         parameterCount: Object.keys(inputs || {}).length,
         inputNames: Object.keys(inputs || {}),
       });
-  const driverStartedAt = now();
-  emitRequestProgress('driver-build:start', { tracing: Boolean(options.tracing), compiler: 'yowasp' });
-  const rawDriverSource = scriptRequest
-    ? buildScriptDriverSource(source, options)
-    : options.executionStyle === 'ops-class'
-    ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
-    : buildDriverSource(source, functionName, inputs || {}, options);
-  const driverSource = rawDriverSource.replace(
+  let driverSource = preparedDriverSource;
+  if (!driverSource) {
+    const driverStartedAt = now();
+    emitRequestProgress('driver-build:start', { tracing: Boolean(options.tracing), compiler: 'yowasp' });
+    const rawDriverSource = scriptRequest
+      ? buildScriptDriverSource(source, options)
+      : options.executionStyle === 'ops-class'
+      ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
+      : buildDriverSource(source, functionName, inputs || {}, options);
+    driverSource = rawDriverSource.replace(
+      '#include "/tracecode_runtime.hpp"',
+      '#include "tracecode_runtime.hpp"'
+    );
+    timings.driverBuildMs = elapsedMs(driverStartedAt);
+    emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing), compiler: 'yowasp' });
+  }
+  driverSource = driverSource.replace(
     '#include "/tracecode_runtime.hpp"',
     '#include "tracecode_runtime.hpp"'
   );
-  timings.driverBuildMs = elapsedMs(driverStartedAt);
-  emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing), compiler: 'yowasp' });
   const stdoutChunks = [];
   const stderrChunks = [];
   const collect = (chunks) => (bytes) => {
@@ -8694,7 +8925,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
     const runStartedAt = now();
     emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing), compiler: 'yowasp' });
     const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
-      stdinBytes: staticStdinBytesFromText(JSON.stringify(inputs || {})),
+      stdinBytes: staticStdinBytesFromText(stdinText),
     });
     timings.runMs = elapsedMs(runStartedAt);
     emitRequestProgress('program-run:complete', {
@@ -8885,28 +9116,121 @@ async function handleCompileRun(payload) {
 
 async function handleCompileRunBatch(payload) {
   const startedAt = now();
+  const source = payload && typeof payload.code === 'string' ? payload.code : '';
+  const functionName = payload && typeof payload.functionName === 'string' ? payload.functionName : '';
+  const executionStyle = payload?.executionStyle || 'solution-method';
   const inputBatch = Array.isArray(payload?.inputBatch)
     ? payload.inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
     : [];
+  const baseTimings = () => ({ totalMs: elapsedMs(startedAt) });
+  const failedBatchResult = (message) => ({
+    success: false,
+    results: [],
+    error: message,
+    consoleOutput: [],
+    timings: baseTimings(),
+  });
+
+  if (!source.trim()) {
+    return failedBatchResult('C++ source is empty.');
+  }
+
   if (inputBatch.length === 0) {
+    return failedBatchResult('C++ batch execution requires a non-empty inputBatch array.');
+  }
+
+  if (!functionName.trim() && executionStyle !== 'function') {
+    return failedBatchResult('C++ named execution requires a function name.');
+  }
+
+  if (!functionName.trim() && executionStyle === 'function') {
+    // Script-style C++ has no stable per-case input contract today, so keep its
+    // existing per-case behavior instead of pretending it is compile-once batch.
+    const results = [];
+    for (const inputs of inputBatch) {
+      results.push(await handleCompileRun({ ...payload, inputs }));
+    }
     return {
-      success: false,
-      results: [],
-      error: 'C++ batch execution requires a non-empty inputBatch array.',
-      consoleOutput: [],
-      timings: { totalMs: elapsedMs(startedAt) },
+      success: results.every((result) => result.success === true),
+      results,
+      consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+      timings: { ...baseTimings(), batchMode: 'per-case-fallback', batchFallbackReason: 'script-without-function-name' },
     };
   }
 
+  let driverSource;
+  const driverBuildStartedAt = now();
+  try {
+    driverSource = executionStyle === 'ops-class'
+      ? buildOpsClassBatchDriverSource(source, functionName, inputBatch, { executionStyle })
+      : buildBatchDriverSource(source, functionName, inputBatch, { executionStyle });
+  } catch (error) {
+    return {
+      success: false,
+      results: inputBatch.map(() => ({
+        success: false,
+        output: null,
+        error: error instanceof Error ? error.message : String(error),
+        consoleOutput: [],
+        timings: baseTimings(),
+      })),
+      error: error instanceof Error ? error.message : String(error),
+      consoleOutput: [],
+      timings: baseTimings(),
+    };
+  }
+
+  const firstInputs = inputBatch[0] || {};
+  const batchResult = await compileAndRun(source, functionName, firstInputs, {
+    executionStyle,
+    preparedDriverSource: driverSource,
+    stdinText: JSON.stringify(inputBatch),
+    timings: {
+      driverBuildMs: elapsedMs(driverBuildStartedAt),
+      batchMode: 'compile-once',
+      batchCaseCount: inputBatch.length,
+    },
+  });
+  const batchTimings = {
+    ...(batchResult.timings && typeof batchResult.timings === 'object' ? batchResult.timings : {}),
+    totalMs: elapsedMs(startedAt),
+  };
+  const consoleOutput = batchResult.consoleOutput ?? [];
+  const outputs = Array.isArray(batchResult.output) ? batchResult.output : [];
+  const success = batchResult.success === true && outputs.length === inputBatch.length;
+  const runtimeError = batchResult.error ||
+    (outputs.length !== inputBatch.length
+      ? `C++ batch returned ${outputs.length} result(s) for ${inputBatch.length} case(s).`
+      : 'C++ batch execution failed.');
   const results = [];
-  for (const inputs of inputBatch) {
-    results.push(await handleCompileRun({ ...payload, inputs }));
+  for (let index = 0; index < inputBatch.length; index += 1) {
+    const caseTimings = index === 0
+      ? batchTimings
+      : {
+          compileMs: 0,
+          linkMs: 0,
+          wasmCompileMs: 0,
+          runMs: 0,
+          totalMs: 0,
+          compileCacheHit: batchTimings.compileCacheHit,
+          batchMode: 'compile-once',
+        };
+    results.push({
+      success,
+      output: success ? outputs[index] : null,
+      ...(success ? {} : { error: runtimeError }),
+      consoleOutput,
+      ...(batchResult.timeoutReason ? { timeoutReason: batchResult.timeoutReason } : {}),
+      ...(batchResult.diagnosticStage ? { diagnosticStage: batchResult.diagnosticStage } : {}),
+      timings: caseTimings,
+    });
   }
   return {
-    success: results.every((result) => result.success === true),
+    success,
     results,
-    consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
-    timings: { totalMs: elapsedMs(startedAt) },
+    consoleOutput,
+    ...(success ? {} : { error: runtimeError }),
+    timings: batchTimings,
   };
 }
 

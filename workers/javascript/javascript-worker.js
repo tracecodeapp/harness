@@ -6481,9 +6481,6 @@ async function executeCode(payload) {
   const consoleOutput = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
   const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
-  const normalizedInputs = normalizeInputs(inputs);
-  const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
-  const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
 
   try {
     if (typeof code !== 'string') {
@@ -6494,6 +6491,9 @@ async function executeCode(payload) {
     }
 
     const executableCode = await prepareExecutableCode(code, language);
+    const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+    const normalizedInputs = normalizeInputs(inputs);
+    const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
     const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
     let output;
 
@@ -6539,6 +6539,19 @@ async function executeCode(payload) {
   }
 }
 
+function batchSignatureSampleInput(inputBatch) {
+  const sample = {};
+  for (const inputs of inputBatch) {
+    if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) continue;
+    for (const key of Object.keys(inputs)) {
+      if (!Object.prototype.hasOwnProperty.call(sample, key)) {
+        sample[key] = inputs[key];
+      }
+    }
+  }
+  return sample;
+}
+
 async function executeCodeBatch(payload) {
   const startedAt = performanceNow();
   const inputBatch = Array.isArray(payload?.inputBatch)
@@ -6554,10 +6567,97 @@ async function executeCodeBatch(payload) {
     };
   }
 
+  const {
+    code,
+    functionName,
+    executionStyle = 'function',
+    language = 'javascript',
+  } = payload ?? {};
+
   const results = [];
-  for (const inputs of inputBatch) {
-    results.push(await executeCode({ ...payload, inputs }));
+  try {
+    if (typeof code !== 'string') {
+      throw new Error('`code` must be a string');
+    }
+    if (language !== 'javascript' && language !== 'typescript') {
+      throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
+    }
+
+    const executableCode = await prepareExecutableCode(code, language);
+    const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+    const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
+    let runner;
+    let inputArguments = [];
+    let argNames = [];
+    let argumentMaterializers = [];
+
+    if (hasNamedFunction) {
+      if (executionStyle === 'ops-class') {
+        runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code);
+      } else {
+        const sampleInputs = applyInputMaterializers(normalizeInputs(batchSignatureSampleInput(inputBatch)), materializers);
+        inputArguments = await resolveOrderedInputArguments(code, functionName, sampleInputs, executionStyle, language);
+        argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
+        argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
+        runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code);
+      }
+    } else {
+      if (executionStyle !== 'function') {
+        throw new Error('Script-mode execution only supports executionStyle="function".');
+      }
+      runner = buildScriptExecutionRunner(executableCode, code);
+    }
+
+    for (const inputs of inputBatch) {
+      const consoleOutput = [];
+      const consoleProxy = createConsoleProxy(consoleOutput);
+      const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
+      try {
+        const materializedInputs = applyInputMaterializers(normalizeInputs(inputs), materializers);
+        let output;
+        if (hasNamedFunction) {
+          if (executionStyle === 'ops-class') {
+            const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
+            output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList, runtimeGlobal));
+          } else {
+            const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
+            output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues, runtimeGlobal));
+          }
+        } else {
+          const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
+          output = await Promise.resolve(runner(consoleProxy, scriptStdin, runtimeGlobal));
+          if (scriptStdin !== undefined && output === null) {
+            output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
+          }
+        }
+        results.push({
+          success: true,
+          output: serializeOutputValue(output),
+          consoleOutput,
+        });
+      } catch (error) {
+        results.push({
+          success: false,
+          output: null,
+          error: formatRuntimeErrorMessage(error),
+          errorLine: extractUserErrorLine(error),
+          consoleOutput,
+        });
+      }
+    }
+  } catch (error) {
+    const message = formatRuntimeErrorMessage(error);
+    for (let index = 0; index < inputBatch.length; index += 1) {
+      results.push({
+        success: false,
+        output: null,
+        error: message,
+        errorLine: extractUserErrorLine(error),
+        consoleOutput: [],
+      });
+    }
   }
+
   return {
     success: results.every((result) => result.success === true),
     results,

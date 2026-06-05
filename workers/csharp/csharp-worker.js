@@ -1750,6 +1750,587 @@ function normalizeCSharpResult(result, options = {}) {
   };
 }
 
+function csharpStringLiteral(value) {
+  return JSON.stringify(String(value ?? ''));
+}
+
+function csharpIdentifier(value) {
+  const text = String(value ?? '');
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(text) ? text : null;
+}
+
+function splitCSharpLeadingUsingSource(code) {
+  const lines = String(code ?? '').split(/\r?\n/);
+  const prelude = [];
+  let index = 0;
+  for (; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const trimmed = line.trim();
+    if (
+      trimmed === '' ||
+      trimmed.startsWith('//') ||
+      /^using\s+/.test(trimmed) && trimmed.endsWith(';') ||
+      /^extern\s+alias\s+/.test(trimmed) && trimmed.endsWith(';')
+    ) {
+      prelude.push(line);
+      continue;
+    }
+    break;
+  }
+  return {
+    prelude: prelude.join('\n'),
+    body: lines.slice(index).join('\n'),
+  };
+}
+
+function indentCSharpSource(code, spaces = 4) {
+  const prefix = ' '.repeat(spaces);
+  return String(code ?? '')
+    .split(/\r?\n/)
+    .map((line) => (line.trim() ? `${prefix}${line}` : line))
+    .join('\n');
+}
+
+function buildCSharpBatchScriptSource(payload) {
+  const code = String(payload?.code ?? '');
+  const executionStyle = payload?.executionStyle ?? 'solution-method';
+  const functionName = String(payload?.functionName ?? '');
+  const functionNameLiteral = csharpStringLiteral(functionName);
+
+  if (executionStyle === 'ops-class') {
+    const className = csharpIdentifier(functionName);
+    if (!className) {
+      throw new Error('C# ops-class batch execution requires a simple class name.');
+    }
+    return `${code}
+
+object? result;
+{
+    var __tracecodeBatchCases = TraceCode.Internal.TraceCodeJsonInput.Read<System.Text.Json.JsonElement[]>("__tracecodeBatchInputs", 0) ?? System.Array.Empty<System.Text.Json.JsonElement>();
+    var __tracecodeBatchResults = new System.Collections.Generic.List<object?>();
+
+    foreach (var __tracecodeBatchCase in __tracecodeBatchCases)
+    {
+        var __tracecodeBatchClock = System.Diagnostics.Stopwatch.StartNew();
+        var __tracecodeOriginalOut = System.Console.Out;
+        using var __tracecodeCaseOut = new System.IO.StringWriter();
+        try
+        {
+            System.Console.SetOut(__tracecodeCaseOut);
+            object? __tracecodeOutput = __TraceCodeRunOpsCase(__tracecodeBatchCase);
+            __tracecodeBatchClock.Stop();
+            __tracecodeBatchResults.Add(new System.Collections.Generic.Dictionary<string, object?>
+            {
+                ["success"] = true,
+                ["output"] = __tracecodeOutput,
+                ["consoleOutput"] = __TraceCodeSplitConsole(__tracecodeCaseOut.ToString()),
+                ["timings"] = new System.Collections.Generic.Dictionary<string, object?> { ["runMs"] = __tracecodeBatchClock.Elapsed.TotalMilliseconds },
+            });
+        }
+        catch (System.Exception __tracecodeError)
+        {
+            __tracecodeBatchClock.Stop();
+            __tracecodeBatchResults.Add(new System.Collections.Generic.Dictionary<string, object?>
+            {
+                ["success"] = false,
+                ["error"] = __tracecodeError.GetBaseException().Message,
+                ["output"] = null,
+                ["consoleOutput"] = __TraceCodeSplitConsole(__tracecodeCaseOut.ToString()),
+                ["timings"] = new System.Collections.Generic.Dictionary<string, object?> { ["runMs"] = __tracecodeBatchClock.Elapsed.TotalMilliseconds },
+            });
+        }
+        finally
+        {
+            System.Console.SetOut(__tracecodeOriginalOut);
+        }
+    }
+
+    result = __tracecodeBatchResults;
+}
+
+object? __TraceCodeRunOpsCase(System.Text.Json.JsonElement __tracecodeRawCase)
+{
+    string[] __tracecodeOperations = __TraceCodeReadCaseValue<string[]>(__tracecodeRawCase, "operations", 0) ?? System.Array.Empty<string>();
+    System.Text.Json.JsonElement[][] __tracecodeArguments = __TraceCodeReadCaseValue<System.Text.Json.JsonElement[][]>(__tracecodeRawCase, "arguments", 1) ?? System.Array.Empty<System.Text.Json.JsonElement[]>();
+    if (__tracecodeOperations.Length != __tracecodeArguments.Length)
+    {
+        throw new System.InvalidOperationException("operations and arguments must have the same length");
+    }
+
+    System.Type __tracecodeTargetType = typeof(${className});
+    object? __tracecodeInstance = null;
+    var __tracecodeOutput = new System.Collections.Generic.List<object?>();
+    for (int __tracecodeIndex = 0; __tracecodeIndex < __tracecodeOperations.Length; __tracecodeIndex++)
+    {
+        string __tracecodeOperation = __tracecodeOperations[__tracecodeIndex];
+        System.Text.Json.JsonElement[] __tracecodeRawArgs = __tracecodeIndex < __tracecodeArguments.Length ? __tracecodeArguments[__tracecodeIndex] : System.Array.Empty<System.Text.Json.JsonElement>();
+        if (__tracecodeInstance is null && (__tracecodeIndex == 0
+            || string.Equals(__tracecodeOperation, ${csharpStringLiteral(className)}, System.StringComparison.OrdinalIgnoreCase)
+            || string.Equals(__tracecodeOperation, "__init__", System.StringComparison.OrdinalIgnoreCase)))
+        {
+            var __tracecodeConstructor = __tracecodeTargetType
+                .GetConstructors(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                .FirstOrDefault(__tracecodeCandidate => __tracecodeCandidate.GetParameters().Length == __tracecodeRawArgs.Length)
+                ?? throw new System.InvalidOperationException($"No constructor with {__tracecodeRawArgs.Length} arguments.");
+            __tracecodeInstance = __tracecodeConstructor.Invoke(__TraceCodeConvertArgs(__tracecodeRawArgs, __tracecodeConstructor.GetParameters()));
+            __tracecodeOutput.Add(null);
+            continue;
+        }
+
+        if (__tracecodeInstance is null)
+        {
+            throw new System.InvalidOperationException("Ops-class operation invoked before constructor.");
+        }
+
+        var __tracecodeMethod = __tracecodeTargetType
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .FirstOrDefault(__tracecodeCandidate =>
+                string.Equals(__tracecodeCandidate.Name, __tracecodeOperation, System.StringComparison.OrdinalIgnoreCase)
+                && __tracecodeCandidate.GetParameters().Length == __tracecodeRawArgs.Length)
+            ?? throw new System.InvalidOperationException($"No method {__tracecodeOperation} with {__tracecodeRawArgs.Length} arguments.");
+        object?[] __tracecodeArgs = __TraceCodeConvertArgs(__tracecodeRawArgs, __tracecodeMethod.GetParameters());
+        object? __tracecodeResult = __tracecodeMethod.Invoke(__tracecodeInstance, __tracecodeArgs);
+        __tracecodeOutput.Add(__tracecodeMethod.ReturnType == typeof(void) ? null : __tracecodeResult);
+    }
+    return __tracecodeOutput;
+}
+
+object?[] __TraceCodeConvertArgs(System.Text.Json.JsonElement[] __tracecodeRawArgs, System.Reflection.ParameterInfo[] __tracecodeParameters)
+{
+    object?[] __tracecodeConverted = new object?[__tracecodeParameters.Length];
+    for (int __tracecodeIndex = 0; __tracecodeIndex < __tracecodeParameters.Length; __tracecodeIndex++)
+    {
+        System.Type __tracecodeTargetType = __tracecodeParameters[__tracecodeIndex].ParameterType;
+        if (__tracecodeTargetType.IsByRef)
+        {
+            __tracecodeTargetType = __tracecodeTargetType.GetElementType() ?? typeof(object);
+        }
+        __tracecodeConverted[__tracecodeIndex] = TraceCode.Internal.TraceCodeJsonInput.Convert(__tracecodeRawArgs[__tracecodeIndex], __tracecodeTargetType);
+    }
+    return __tracecodeConverted;
+}
+
+T? __TraceCodeReadCaseValue<T>(System.Text.Json.JsonElement __tracecodeRawCase, string __tracecodeName, int __tracecodeIndex)
+{
+    if (__TraceCodeTryGetCaseValue(__tracecodeRawCase, __tracecodeName, __tracecodeIndex, out var __tracecodeValue))
+    {
+        return (T?)TraceCode.Internal.TraceCodeJsonInput.Convert(__tracecodeValue, typeof(T));
+    }
+    return default;
+}
+
+bool __TraceCodeTryGetCaseValue(System.Text.Json.JsonElement __tracecodeRawCase, string __tracecodeName, int __tracecodeIndex, out System.Text.Json.JsonElement __tracecodeValue)
+{
+    if (__tracecodeRawCase.ValueKind == System.Text.Json.JsonValueKind.Object)
+    {
+        if (__tracecodeRawCase.TryGetProperty(__tracecodeName, out __tracecodeValue))
+        {
+            return true;
+        }
+        int __tracecodePropertyIndex = 0;
+        foreach (var __tracecodeProperty in __tracecodeRawCase.EnumerateObject())
+        {
+            if (__tracecodePropertyIndex == __tracecodeIndex)
+            {
+                __tracecodeValue = __tracecodeProperty.Value;
+                return true;
+            }
+            __tracecodePropertyIndex++;
+        }
+    }
+    __tracecodeValue = default;
+    return false;
+}
+
+string[] __TraceCodeSplitConsole(string __tracecodeText) =>
+    __tracecodeText.Replace("\\r\\n", "\\n", System.StringComparison.Ordinal).Split('\\n', System.StringSplitOptions.RemoveEmptyEntries);
+`;
+  }
+
+  if (executionStyle === 'function' && functionName.trim() === '') {
+    const scriptSource = splitCSharpLeadingUsingSource(code);
+    return `${scriptSource.prelude}
+
+object? __TraceCodeUserScriptRun()
+{
+${indentCSharpSource(scriptSource.body)}
+    return result;
+}
+
+object? result;
+{
+    var __tracecodeBatchCases = TraceCode.Internal.TraceCodeJsonInput.Read<System.Text.Json.JsonElement[]>("__tracecodeBatchInputs", 0) ?? System.Array.Empty<System.Text.Json.JsonElement>();
+    var __tracecodeBatchResults = new System.Collections.Generic.List<object?>();
+
+    foreach (var __tracecodeBatchCase in __tracecodeBatchCases)
+    {
+        var __tracecodeBatchClock = System.Diagnostics.Stopwatch.StartNew();
+        var __tracecodeOriginalOut = System.Console.Out;
+        using var __tracecodeCaseOut = new System.IO.StringWriter();
+        try
+        {
+            System.Console.SetOut(__tracecodeCaseOut);
+            __TraceCodeSetCurrentInputsJson(__tracecodeBatchCase.GetRawText());
+            object? __tracecodeOutput = __TraceCodeUserScriptRun();
+            __tracecodeBatchClock.Stop();
+            __tracecodeBatchResults.Add(new System.Collections.Generic.Dictionary<string, object?>
+            {
+                ["success"] = true,
+                ["output"] = __tracecodeOutput,
+                ["consoleOutput"] = __TraceCodeSplitConsole(__tracecodeCaseOut.ToString()),
+                ["timings"] = new System.Collections.Generic.Dictionary<string, object?> { ["runMs"] = __tracecodeBatchClock.Elapsed.TotalMilliseconds },
+            });
+        }
+        catch (System.Exception __tracecodeError)
+        {
+            __tracecodeBatchClock.Stop();
+            __tracecodeBatchResults.Add(new System.Collections.Generic.Dictionary<string, object?>
+            {
+                ["success"] = false,
+                ["error"] = __tracecodeError.GetBaseException().Message,
+                ["output"] = null,
+                ["consoleOutput"] = __TraceCodeSplitConsole(__tracecodeCaseOut.ToString()),
+                ["timings"] = new System.Collections.Generic.Dictionary<string, object?> { ["runMs"] = __tracecodeBatchClock.Elapsed.TotalMilliseconds },
+            });
+        }
+        finally
+        {
+            System.Console.SetOut(__tracecodeOriginalOut);
+        }
+    }
+
+    result = __tracecodeBatchResults;
+}
+
+void __TraceCodeSetCurrentInputsJson(string __tracecodeInputsJson)
+{
+    var __tracecodeField = typeof(TraceCode.CSharpHost.CompilerHost).GetField(
+        "currentInputsJson",
+        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+    __tracecodeField?.SetValue(null, __tracecodeInputsJson);
+}
+
+string[] __TraceCodeSplitConsole(string __tracecodeText) =>
+    __tracecodeText.Replace("\\r\\n", "\\n", System.StringComparison.Ordinal).Split('\\n', System.StringSplitOptions.RemoveEmptyEntries);
+`;
+  }
+
+  return `${code}
+
+object? result;
+{
+    var __tracecodeBatchCases = TraceCode.Internal.TraceCodeJsonInput.Read<System.Text.Json.JsonElement[]>("__tracecodeBatchInputs", 0) ?? System.Array.Empty<System.Text.Json.JsonElement>();
+    var __tracecodeBatchResults = new System.Collections.Generic.List<object?>();
+
+    foreach (var __tracecodeBatchCase in __tracecodeBatchCases)
+    {
+        var __tracecodeBatchClock = System.Diagnostics.Stopwatch.StartNew();
+        var __tracecodeOriginalOut = System.Console.Out;
+        using var __tracecodeCaseOut = new System.IO.StringWriter();
+        try
+        {
+            System.Console.SetOut(__tracecodeCaseOut);
+            object? __tracecodeOutput = __TraceCodeRunSolutionCase(__tracecodeBatchCase);
+            __tracecodeBatchClock.Stop();
+            __tracecodeBatchResults.Add(new System.Collections.Generic.Dictionary<string, object?>
+            {
+                ["success"] = true,
+                ["output"] = __tracecodeOutput,
+                ["consoleOutput"] = __TraceCodeSplitConsole(__tracecodeCaseOut.ToString()),
+                ["timings"] = new System.Collections.Generic.Dictionary<string, object?> { ["runMs"] = __tracecodeBatchClock.Elapsed.TotalMilliseconds },
+            });
+        }
+        catch (System.Exception __tracecodeError)
+        {
+            __tracecodeBatchClock.Stop();
+            __tracecodeBatchResults.Add(new System.Collections.Generic.Dictionary<string, object?>
+            {
+                ["success"] = false,
+                ["error"] = __tracecodeError.GetBaseException().Message,
+                ["output"] = null,
+                ["consoleOutput"] = __TraceCodeSplitConsole(__tracecodeCaseOut.ToString()),
+                ["timings"] = new System.Collections.Generic.Dictionary<string, object?> { ["runMs"] = __tracecodeBatchClock.Elapsed.TotalMilliseconds },
+            });
+        }
+        finally
+        {
+            System.Console.SetOut(__tracecodeOriginalOut);
+        }
+    }
+
+    result = __tracecodeBatchResults;
+}
+
+object? __TraceCodeRunSolutionCase(System.Text.Json.JsonElement __tracecodeRawCase)
+{
+    var __tracecodeMethod = __TraceCodeSelectSolutionMethod(__tracecodeRawCase);
+    var __tracecodeParameters = __tracecodeMethod.GetParameters();
+    object?[] __tracecodeArgs = new object?[__tracecodeParameters.Length];
+    for (int __tracecodeIndex = 0; __tracecodeIndex < __tracecodeParameters.Length; __tracecodeIndex++)
+    {
+        var __tracecodeParameter = __tracecodeParameters[__tracecodeIndex];
+        System.Type __tracecodeTargetType = __TraceCodeParameterType(__tracecodeParameter);
+        if (__tracecodeParameter.IsOut)
+        {
+            __tracecodeArgs[__tracecodeIndex] = __TraceCodeDefaultValue(__tracecodeTargetType);
+            continue;
+        }
+        if (__TraceCodeTryGetCaseValue(__tracecodeRawCase, __tracecodeParameter.Name ?? string.Empty, __tracecodeIndex, out var __tracecodeValue))
+        {
+            __tracecodeArgs[__tracecodeIndex] = TraceCode.Internal.TraceCodeJsonInput.Convert(__tracecodeValue, __tracecodeTargetType);
+            continue;
+        }
+        if (__tracecodeParameter.HasDefaultValue)
+        {
+            __tracecodeArgs[__tracecodeIndex] = __tracecodeParameter.DefaultValue;
+            continue;
+        }
+        throw new System.InvalidOperationException($"Missing input value for parameter \\"{__tracecodeParameter.Name}\\".");
+    }
+
+    object? __tracecodeInstance = __tracecodeMethod.IsStatic ? null : System.Activator.CreateInstance(__tracecodeMethod.DeclaringType!);
+    object? __tracecodeOutput = __tracecodeMethod.Invoke(__tracecodeInstance, __tracecodeArgs);
+    if (__tracecodeMethod.ReturnType == typeof(void))
+    {
+        return __TraceCodeShouldReturnFirstVoidArgument(__tracecodeParameters) ? __tracecodeArgs[0] : null;
+    }
+    return __tracecodeOutput;
+}
+
+System.Reflection.MethodInfo __TraceCodeSelectSolutionMethod(System.Text.Json.JsonElement __tracecodeRawCase)
+{
+    var __tracecodeMethods = typeof(Solution)
+        .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance)
+        .Where(__tracecodeMethod => string.Equals(__tracecodeMethod.Name, ${functionNameLiteral}, System.StringComparison.Ordinal))
+        .ToArray();
+    if (__tracecodeMethods.Length == 0)
+    {
+        __tracecodeMethods = typeof(Solution)
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance)
+            .Where(__tracecodeMethod => string.Equals(__tracecodeMethod.Name, ${functionNameLiteral}, System.StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+    }
+    if (__tracecodeMethods.Length == 0)
+    {
+        throw new System.InvalidOperationException($"Expected public method Solution.${functionName}.");
+    }
+
+    var __tracecodeCompatible = __tracecodeMethods
+        .Select(__tracecodeMethod => new { Method = __tracecodeMethod, Score = __TraceCodeScoreMethod(__tracecodeMethod, __tracecodeRawCase) })
+        .Where(__tracecodeCandidate => __tracecodeCandidate.Score > int.MinValue)
+        .OrderByDescending(__tracecodeCandidate => __tracecodeCandidate.Method.IsPublic)
+        .ThenByDescending(__tracecodeCandidate => __tracecodeCandidate.Score)
+        .Select(__tracecodeCandidate => __tracecodeCandidate.Method)
+        .FirstOrDefault();
+    return __tracecodeCompatible ?? __tracecodeMethods.FirstOrDefault(__tracecodeMethod => __tracecodeMethod.IsPublic) ?? __tracecodeMethods[0];
+}
+
+int __TraceCodeScoreMethod(System.Reflection.MethodInfo __tracecodeMethod, System.Text.Json.JsonElement __tracecodeRawCase)
+{
+    int __tracecodeScore = 0;
+    var __tracecodeParameters = __tracecodeMethod.GetParameters();
+    for (int __tracecodeIndex = 0; __tracecodeIndex < __tracecodeParameters.Length; __tracecodeIndex++)
+    {
+        var __tracecodeParameter = __tracecodeParameters[__tracecodeIndex];
+        if (__tracecodeParameter.IsOut)
+        {
+            __tracecodeScore += 1;
+            continue;
+        }
+        if (!__TraceCodeTryGetCaseValue(__tracecodeRawCase, __tracecodeParameter.Name ?? string.Empty, __tracecodeIndex, out var __tracecodeValue))
+        {
+            if (__tracecodeParameter.HasDefaultValue)
+            {
+                continue;
+            }
+            return int.MinValue;
+        }
+        try
+        {
+            _ = TraceCode.Internal.TraceCodeJsonInput.Convert(__tracecodeValue, __TraceCodeParameterType(__tracecodeParameter));
+            __tracecodeScore += 4;
+        }
+        catch
+        {
+            return int.MinValue;
+        }
+    }
+    return __tracecodeScore;
+}
+
+System.Type __TraceCodeParameterType(System.Reflection.ParameterInfo __tracecodeParameter)
+{
+    System.Type __tracecodeType = __tracecodeParameter.ParameterType;
+    return __tracecodeType.IsByRef ? __tracecodeType.GetElementType() ?? typeof(object) : __tracecodeType;
+}
+
+object? __TraceCodeDefaultValue(System.Type __tracecodeType) =>
+    __tracecodeType.IsValueType && System.Nullable.GetUnderlyingType(__tracecodeType) is null
+        ? System.Activator.CreateInstance(__tracecodeType)
+        : null;
+
+bool __TraceCodeShouldReturnFirstVoidArgument(System.Reflection.ParameterInfo[] __tracecodeParameters)
+{
+    if (__tracecodeParameters.Length == 0)
+    {
+        return false;
+    }
+    var __tracecodeType = __TraceCodeParameterType(__tracecodeParameters[0]);
+    return __tracecodeParameters[0].ParameterType.IsByRef
+        || __tracecodeType.IsArray
+        || (!__tracecodeType.IsPrimitive
+            && __tracecodeType != typeof(string)
+            && __tracecodeType != typeof(decimal)
+            && __tracecodeType != typeof(System.DateTime));
+}
+
+bool __TraceCodeTryGetCaseValue(System.Text.Json.JsonElement __tracecodeRawCase, string __tracecodeName, int __tracecodeIndex, out System.Text.Json.JsonElement __tracecodeValue)
+{
+    if (__tracecodeRawCase.ValueKind == System.Text.Json.JsonValueKind.Object)
+    {
+        if (__tracecodeRawCase.TryGetProperty(__tracecodeName, out __tracecodeValue))
+        {
+            return true;
+        }
+        int __tracecodePropertyIndex = 0;
+        foreach (var __tracecodeProperty in __tracecodeRawCase.EnumerateObject())
+        {
+            if (__tracecodePropertyIndex == __tracecodeIndex)
+            {
+                __tracecodeValue = __tracecodeProperty.Value;
+                return true;
+            }
+            __tracecodePropertyIndex++;
+        }
+    }
+    __tracecodeValue = default;
+    return false;
+}
+
+string[] __TraceCodeSplitConsole(string __tracecodeText) =>
+    __tracecodeText.Replace("\\r\\n", "\\n", System.StringComparison.Ordinal).Split('\\n', System.StringSplitOptions.RemoveEmptyEntries);
+`;
+}
+
+function normalizeCSharpBatchEntry(entry, timings = {}) {
+  const source = entry && typeof entry === 'object' ? entry : {};
+  const success = source.success === true;
+  return {
+    success,
+    output: success ? (source.output ?? null) : null,
+    ...(success ? {} : { error: source.error ?? 'C# batch item failed without runtime diagnostics' }),
+    consoleOutput: Array.isArray(source.consoleOutput) ? source.consoleOutput : [],
+    timings: {
+      ...(source.timings && typeof source.timings === 'object' ? source.timings : {}),
+      ...timings,
+    },
+  };
+}
+
+async function executeCSharpCodeBatch(message) {
+  const startedAt = now();
+  const inputBatch = Array.isArray(message.payload?.inputBatch)
+    ? message.payload.inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
+    : [];
+  if (inputBatch.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'C# batch execution requires a non-empty inputBatch array.',
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+
+  try {
+    for (const inputs of inputBatch) {
+      validateCSharpInputsForJson(inputs);
+    }
+  } catch (error) {
+    return {
+      success: false,
+      results: [],
+      error: error instanceof Error ? error.message : String(error),
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+
+  let source;
+  try {
+    source = buildCSharpBatchScriptSource(message.payload);
+  } catch (error) {
+    return {
+      success: false,
+      results: [],
+      error: error instanceof Error ? error.message : String(error),
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+
+  const request = {
+    source,
+    functionName: '',
+    inputs: { __tracecodeBatchInputs: inputBatch },
+    executionStyle: 'function',
+    trace: false,
+    timeoutMs: message.payload?.timeoutMs,
+    maxTraceSteps: message.payload?.maxTraceSteps,
+    maxLineEvents: message.payload?.maxLineEvents,
+    maxSingleLineHits: message.payload?.maxSingleLineHits,
+    maxStoredEvents: message.payload?.maxStoredEvents,
+    maxPathDepth: message.payload?.maxPathDepth,
+    minimalTrace: message.payload?.minimalTrace,
+  };
+
+  const runtimeStartedAt = now();
+  const runtimeResult = await loadRuntime(message.payload?.assetBaseUrl);
+  const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
+  const hostCallStartedAt = now();
+  const result = normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request);
+  const hostCallMs = elapsedMs(hostCallStartedAt);
+  const timings = {
+    ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
+    initMs,
+    hostCallMs,
+    totalMs: elapsedMs(startedAt),
+  };
+
+  if (result?.success !== true || !Array.isArray(result.output)) {
+    const failure = {
+      success: false,
+      output: null,
+      error: result?.error ?? 'C# batch execution did not return a result array.',
+      consoleOutput: result?.consoleOutput ?? [],
+      timings,
+    };
+    return {
+      success: false,
+      results: inputBatch.map(() => failure),
+      error: failure.error,
+      consoleOutput: result?.consoleOutput ?? [],
+      executionTimeMs: result?.executionTimeMs,
+      timings,
+    };
+  }
+
+  const results = result.output.map((entry, index) =>
+    normalizeCSharpBatchEntry(entry, index === 0 ? { compileMs: timings.compileMs, hostCallMs, totalMs: timings.totalMs } : { compileMs: 0, hostCallMs: 0 })
+  );
+  const consoleOutput = results.flatMap((entry) => entry.consoleOutput ?? []);
+  return {
+    success: results.length === inputBatch.length && results.every((entry) => entry.success === true),
+    results,
+    consoleOutput,
+    executionTimeMs: result.executionTimeMs,
+    timings: {
+      ...timings,
+      runMs: results.reduce((sum, entry) => sum + (entry.timings?.runMs ?? 0), 0),
+    },
+  };
+}
+
 async function handleMessage(message) {
   if (message.type === 'init') {
     return handleInit(message.payload?.assetBaseUrl);
@@ -1760,33 +2341,7 @@ async function handleMessage(message) {
   }
 
   if (message.type === 'execute-code-batch') {
-    const startedAt = now();
-    const inputBatch = Array.isArray(message.payload?.inputBatch)
-      ? message.payload.inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
-      : [];
-    if (inputBatch.length === 0) {
-      return {
-        success: false,
-        results: [],
-        error: 'C# batch execution requires a non-empty inputBatch array.',
-        consoleOutput: [],
-        timings: { totalMs: elapsedMs(startedAt) },
-      };
-    }
-
-    const results = [];
-    for (const inputs of inputBatch) {
-      results.push(await handleMessage({
-        type: 'execute-code',
-        payload: { ...message.payload, inputs },
-      }));
-    }
-    return {
-      success: results.every((result) => result.success === true),
-      results,
-      consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
-      timings: { totalMs: elapsedMs(startedAt) },
-    };
+    return executeCSharpCodeBatch(message);
   }
 
   if (
