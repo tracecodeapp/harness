@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.9.1] - 2026-06-05
+
+### Fixed
+
+- Fixed Java browser trace rewriting to emit typed `(String) null` index-source placeholders for generated indexed-write hooks, removing `javac` varargs warnings from instrumented user-code compiler diagnostics.
+- Rebuilt the Java browser helper and rewriter JARs with the warning-free indexed-write instrumentation.
+
 ## [0.9.0] - 2026-06-04
 
 ### Added

@@ -530,7 +530,7 @@ public final class JavaRewriteLibrary {
       if ("add".equals(method) && rawArgs.size() == 1) {
         writeEvent = " if (" + target + " instanceof java.util.List) TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
             ", new Object[] { " + quote(field) + ", " + index + ", ((java.util.List) " + target + ").size() - 1 }, " +
-            rewrittenArgs.callArgs + ", null, " + indexSourceArgument(rawIndex) + ", null);";
+            rewrittenArgs.callArgs + ", (String) null, " + indexSourceArgument(rawIndex) + ", (String) null);";
       }
       String snapshotEvent = "this".equals(name) && frame.isField(field)
           ? "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(field) + ", " + field + ");"
@@ -559,10 +559,10 @@ public final class JavaRewriteLibrary {
             "addLast".equals(method) || "offerLast".equals(method)) {
           writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
               ", new Object[] { 0, " + quote(field) + ", ((java.util.Collection) " + temp + ").size() - 1 }, " +
-              rewrittenArgs.callArgs + ", null, null, null);";
+              rewrittenArgs.callArgs + ", (String) null, (String) null, (String) null);";
         } else if ("addFirst".equals(method) || "offerFirst".equals(method)) {
           writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
-              ", new Object[] { 0, " + quote(field) + ", 0 }, " + rewrittenArgs.callArgs + ", null, null, null);";
+              ", new Object[] { 0, " + quote(field) + ", 0 }, " + rewrittenArgs.callArgs + ", (String) null, (String) null, (String) null);";
         }
       }
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
@@ -607,10 +607,10 @@ public final class JavaRewriteLibrary {
       if (("add".equals(method) || "push".equals(method) || "addLast".equals(method) || "offerLast".equals(method)) && splitTopLevel(rawArgs).size() == 1) {
         writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
             ", new Object[] { " + quote(field) + ", ((java.util.Collection) " + target + ").size() - 1 }, " +
-            rewrittenArgs.callArgs + ", null, null);";
+            rewrittenArgs.callArgs + ", (String) null, (String) null);";
       } else if (("addFirst".equals(method) || "offerFirst".equals(method)) && splitTopLevel(rawArgs).size() == 1) {
         writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
-            ", new Object[] { " + quote(field) + ", 0 }, " + rewrittenArgs.callArgs + ", null, null);";
+            ", new Object[] { " + quote(field) + ", 0 }, " + rewrittenArgs.callArgs + ", (String) null, (String) null);";
       }
       String snapshotEvent = "this".equals(name) && frame.isField(field)
           ? "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(field) + ", " + field + ");"
@@ -681,7 +681,7 @@ public final class JavaRewriteLibrary {
       if ("add".equals(method) && rawArgs.size() == 1) {
         writeEvent = " if (" + temp + " instanceof java.util.List) TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
             ", new Object[] { " + index + ", ((java.util.List) " + temp + ").size() - 1 }, " +
-            rewrittenArgs.callArgs + ", " + indexSourceArgument(rawIndex) + ", null);";
+            rewrittenArgs.callArgs + ", " + indexSourceArgument(rawIndex) + ", (String) null);";
       }
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
       return indent + "{ " + indexExpression.prefix + "var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
@@ -795,7 +795,7 @@ public final class JavaRewriteLibrary {
       if (("add".equals(method) || "push".equals(method)) && splitTopLevel(arrayIndexedMutatingCall.group(5).trim()).size() == 1) {
         writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
             ", new Object[] { " + index + ", ((java.util.Collection) " + target + ").size() - 1 }, " +
-            rewrittenArgs.callArgs + ", " + indexSourceArgument(rawIndex) + ", null);";
+            rewrittenArgs.callArgs + ", " + indexSourceArgument(rawIndex) + ", (String) null);";
       }
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
       return indent + "{ " + indexExpression.prefix + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
@@ -1943,7 +1943,7 @@ public final class JavaRewriteLibrary {
     boolean frontAppend = ("addFirst".equals(method) || "offerFirst".equals(method)) && isDequeType(receiverType);
     if (!backAppend && !frontAppend) return "";
     String index = frontAppend ? "0" : "((" + (normalizedType.contains("List<") ? "java.util.List" : "java.util.Collection") + ") " + name + ").size() - 1";
-    return " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) + ", new Object[] { " + index + " }, " + callArgs + ", null);";
+    return " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) + ", new Object[] { " + index + " }, " + callArgs + ", (String) null);";
   }
   private static int braceDelta(String line) {
     int delta = 0;

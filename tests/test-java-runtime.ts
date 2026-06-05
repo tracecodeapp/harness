@@ -2376,7 +2376,7 @@ class Solution {
   boolean solve() {
     Deque<Integer> q = new ArrayDeque<>();
     int i = 5;
-    { q.offerLast(i); TraceHooks.emitMutatingCallAtLine(6, "q", "offerLast", i); TraceHooks.emitIndexedWriteAtLine(6, "q", new Object[] { ((java.util.Collection) q).size() - 1 }, i, null); TraceHooks.emitRuntimeSnapshotAtLine(6, "q", q); }
+    { q.offerLast(i); TraceHooks.emitMutatingCallAtLine(6, "q", "offerLast", i); TraceHooks.emitIndexedWriteAtLine(6, "q", new Object[] { ((java.util.Collection) q).size() - 1 }, i, (String) null); TraceHooks.emitRuntimeSnapshotAtLine(6, "q", q); }
     return true;
   }
 }`, '');
@@ -6785,7 +6785,7 @@ class Solution {
       graphSource.includes('var __tracecodeIndexedTarget7 =') &&
       graphSource.includes('__tracecodeIndexedTarget7.add(1);') &&
       graphSource.includes('\\"kind\\":\\"mutate\\",\\"line\\":7') &&
-      graphSource.includes('TraceHooks.emitIndexedWriteAtLine(7, "graph", new Object[] { 0, ((java.util.List) __tracecodeIndexedTarget7).size() - 1 }, 1, null, null);');
+      graphSource.includes('TraceHooks.emitIndexedWriteAtLine(7, "graph", new Object[] { 0, ((java.util.List) __tracecodeIndexedTarget7).size() - 1 }, 1, (String) null, (String) null);');
     assertCondition(
       (graphHasAugmentedIndexedAppend || graphHasNativeIndexedAppend) &&
         !graphSource.includes('emit' + 'Graph' + 'AdjacencyStateAtLine'),
