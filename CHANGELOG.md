@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.9.4] - 2026-06-06
+
+### Added
+
+- Added an optional `AbortSignal` to the browser runtime `execute` request contract for code, trace, interview, and batch execution.
+- Threaded abort signals through JavaScript, TypeScript, Python, Java, C#, and C++ browser runtime clients so consumers can cancel in-flight code execution through the standard runtime request surface.
+
+### Notes
+
+- Browser runtime cancellation remains runtime-dependent: CPU-bound compiled runtime work may still require worker termination to stop immediately, which can discard warm compiler/runtime state.
+
 ## [0.9.3] - 2026-06-05
 
 ### Changed

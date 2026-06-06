@@ -207,13 +207,35 @@ export class JavaScriptWorkerClient {
     });
   }
 
-  private async executeWithTimeout<T>(executor: () => Promise<T>, timeoutMs: number): Promise<T> {
+  private async executeWithTimeout<T>(
+    executor: () => Promise<T>,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<T> {
+    if (signal?.aborted) {
+      const abortError = new Error('Execution aborted');
+      this.terminateAndReset(abortError);
+      throw abortError;
+    }
     return new Promise<T>((resolve, reject) => {
       let settled = false;
+      const cleanup = () => {
+        globalThis.clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        const abortError = new Error('Execution aborted');
+        this.terminateAndReset(abortError);
+        reject(abortError);
+      };
 
       const timeoutId = globalThis.setTimeout(() => {
         if (settled) return;
         settled = true;
+        cleanup();
         this.terminateAndReset();
         reject(
           new Error(
@@ -226,15 +248,16 @@ export class JavaScriptWorkerClient {
         .then((result) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timeoutId);
+          cleanup();
           resolve(result);
         })
         .catch((error) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timeoutId);
+          cleanup();
           reject(error);
         });
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 
@@ -330,7 +353,8 @@ export class JavaScriptWorkerClient {
       minimalTrace?: boolean;
     },
     executionStyle: JavaScriptExecutionStyle = 'function',
-    language: JavaScriptWorkerLanguage = 'javascript'
+    language: JavaScriptWorkerLanguage = 'javascript',
+    signal?: AbortSignal
   ): Promise<ExecutionResult> {
     return this.runIsolatedExecution(() =>
       this.executeWithTimeout(
@@ -347,7 +371,8 @@ export class JavaScriptWorkerClient {
             },
             TRACING_TIMEOUT_MS + 2000
           ),
-        TRACING_TIMEOUT_MS
+        TRACING_TIMEOUT_MS,
+        signal
       )
     );
   }
@@ -357,7 +382,8 @@ export class JavaScriptWorkerClient {
     functionName: string,
     inputs: Record<string, unknown>,
     executionStyle: JavaScriptExecutionStyle = 'function',
-    language: JavaScriptWorkerLanguage = 'javascript'
+    language: JavaScriptWorkerLanguage = 'javascript',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     return this.runIsolatedExecution(() =>
       this.executeWithTimeout(
@@ -373,7 +399,8 @@ export class JavaScriptWorkerClient {
             },
             EXECUTION_TIMEOUT_MS + 2000
           ),
-        EXECUTION_TIMEOUT_MS
+        EXECUTION_TIMEOUT_MS,
+        signal
       )
     );
   }
@@ -383,7 +410,8 @@ export class JavaScriptWorkerClient {
     functionName: string,
     inputBatch: Record<string, unknown>[],
     executionStyle: JavaScriptExecutionStyle = 'function',
-    language: JavaScriptWorkerLanguage = 'javascript'
+    language: JavaScriptWorkerLanguage = 'javascript',
+    signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
     return this.runIsolatedExecution(() =>
       this.executeWithTimeout(
@@ -399,7 +427,8 @@ export class JavaScriptWorkerClient {
             },
             EXECUTION_TIMEOUT_MS + 2000
           ),
-        EXECUTION_TIMEOUT_MS
+        EXECUTION_TIMEOUT_MS,
+        signal
       )
     );
   }
@@ -409,7 +438,8 @@ export class JavaScriptWorkerClient {
     functionName: string,
     inputs: Record<string, unknown>,
     executionStyle: JavaScriptExecutionStyle = 'function',
-    language: JavaScriptWorkerLanguage = 'javascript'
+    language: JavaScriptWorkerLanguage = 'javascript',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     return this.runIsolatedExecution(async () => {
       const result = await this.executeWithTimeout(
@@ -425,7 +455,8 @@ export class JavaScriptWorkerClient {
             },
             INTERVIEW_MODE_TIMEOUT_MS + 2000
           ),
-        INTERVIEW_MODE_TIMEOUT_MS
+        INTERVIEW_MODE_TIMEOUT_MS,
+        signal
       );
 
       if (!result.success && result.error) {

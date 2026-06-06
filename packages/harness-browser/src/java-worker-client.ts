@@ -965,7 +965,8 @@ export class JavaWorkerClient {
     functionName: string,
     inputs: Record<string, unknown>,
     options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle
+    executionStyle: JavaExecutionStyle,
+    signal?: AbortSignal
   ): Promise<JavaWorkerTraceResult> {
     await this.init();
     const result = await this.executeWithTimeout(
@@ -975,7 +976,8 @@ export class JavaWorkerClient {
           { code, functionName, inputs, options, executionStyle, ...this.workerOptionsPayload() },
           TRACING_TIMEOUT_MS + 5_000
         ),
-      TRACING_TIMEOUT_MS
+      TRACING_TIMEOUT_MS,
+      signal
     );
     return {
       ...result,
@@ -994,9 +996,10 @@ export class JavaWorkerClient {
     functionName: string,
     inputs: Record<string, unknown>,
     options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle
+    executionStyle: JavaExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    return this.executeCodeMessage('execute-code', code, functionName, inputs, options, executionStyle);
+    return this.executeCodeMessage('execute-code', code, functionName, inputs, options, executionStyle, signal);
   }
 
   async executeCodeBatch(
@@ -1004,7 +1007,8 @@ export class JavaWorkerClient {
     functionName: string,
     inputBatch: Record<string, unknown>[],
     options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle
+    executionStyle: JavaExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
     await this.init();
     return this.executeWithTimeout(
@@ -1014,7 +1018,8 @@ export class JavaWorkerClient {
           { code, functionName, inputBatch, options, executionStyle, ...this.workerOptionsPayload() },
           EXECUTION_TIMEOUT_MS + 5_000
         ),
-      EXECUTION_TIMEOUT_MS
+      EXECUTION_TIMEOUT_MS,
+      signal
     );
   }
 
@@ -1024,7 +1029,8 @@ export class JavaWorkerClient {
     functionName: string,
     inputs: Record<string, unknown>,
     options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle
+    executionStyle: JavaExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     await this.init();
     const result = await this.executeWithTimeout(
@@ -1034,7 +1040,8 @@ export class JavaWorkerClient {
           { code, functionName, inputs, options, executionStyle, ...this.workerOptionsPayload() },
           EXECUTION_TIMEOUT_MS + 5_000
         ),
-      EXECUTION_TIMEOUT_MS
+      EXECUTION_TIMEOUT_MS,
+      signal
     );
     if (!result.success) {
       return {
@@ -1059,9 +1066,10 @@ export class JavaWorkerClient {
     functionName: string,
     inputs: Record<string, unknown>,
     options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle
+    executionStyle: JavaExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    return this.executeCodeMessage('execute-code-interview', code, functionName, inputs, options, executionStyle);
+    return this.executeCodeMessage('execute-code-interview', code, functionName, inputs, options, executionStyle, signal);
   }
 
   async executeProjectJava(

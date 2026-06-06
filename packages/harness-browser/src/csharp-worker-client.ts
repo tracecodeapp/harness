@@ -460,7 +460,8 @@ export class CSharpWorkerClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: CSharpExecutionStyle
+    executionStyle: CSharpExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     await this.init();
     const result = await this.executeWithTimeout(
@@ -478,7 +479,8 @@ export class CSharpWorkerClient {
           },
           this.executionTimeoutMs + 5_000
         ),
-      this.executionTimeoutMs
+      this.executionTimeoutMs,
+      signal
     );
 
     if (!result.success) {
@@ -505,7 +507,8 @@ export class CSharpWorkerClient {
     code: string,
     functionName: string,
     inputBatch: Record<string, unknown>[],
-    executionStyle: CSharpExecutionStyle
+    executionStyle: CSharpExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
     await this.init();
     const result = await this.executeWithTimeout(
@@ -523,7 +526,8 @@ export class CSharpWorkerClient {
           },
           this.executionTimeoutMs + 5_000
         ),
-      this.executionTimeoutMs
+      this.executionTimeoutMs,
+      signal
     );
 
     return {
@@ -539,7 +543,8 @@ export class CSharpWorkerClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: CSharpExecutionStyle
+    executionStyle: CSharpExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     await this.init();
     let result: CSharpWorkerExecuteResult;
@@ -559,7 +564,8 @@ export class CSharpWorkerClient {
             },
             this.interviewTimeoutMs + 5_000
           ),
-        this.interviewTimeoutMs
+        this.interviewTimeoutMs,
+        signal
       );
     } catch {
       return {
@@ -610,7 +616,8 @@ export class CSharpWorkerClient {
     functionName: string,
     inputs: Record<string, unknown>,
     options: TraceExecutionOptions | undefined,
-    executionStyle: CSharpExecutionStyle
+    executionStyle: CSharpExecutionStyle,
+    signal?: AbortSignal
   ): Promise<ExecutionResult> {
     await this.init();
     let result: CSharpWorkerExecuteResult;
@@ -637,7 +644,8 @@ export class CSharpWorkerClient {
             },
             tracingTimeoutMs + 5_000
           ),
-        tracingTimeoutMs
+        tracingTimeoutMs,
+        signal
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

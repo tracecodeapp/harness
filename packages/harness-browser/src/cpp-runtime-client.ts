@@ -48,7 +48,8 @@ class CppRuntimeClient implements RuntimeClient {
         codeRequest.code,
         codeRequest.functionName ?? '',
         codeRequest.cases.map((testCase) => testCase.inputs),
-        executionStyle as CppExecutionStyle
+        executionStyle as CppExecutionStyle,
+        codeRequest.signal
       );
       return batchCodeResultToExecuteResult(codeRequest, result);
     }
@@ -66,7 +67,8 @@ class CppRuntimeClient implements RuntimeClient {
     functionName: string | null,
     inputs: Record<string, unknown>,
     options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
+    executionStyle: RuntimeExecutionStyle = 'solution-method',
+    signal?: AbortSignal
   ): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
       request: 'trace',
@@ -78,7 +80,8 @@ class CppRuntimeClient implements RuntimeClient {
       functionName ?? '',
       inputs,
       options,
-      executionStyle as CppExecutionStyle
+      executionStyle as CppExecutionStyle,
+      signal
     );
   }
 
@@ -86,7 +89,8 @@ class CppRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
+    executionStyle: RuntimeExecutionStyle = 'solution-method',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
       request: 'execute',
@@ -97,7 +101,8 @@ class CppRuntimeClient implements RuntimeClient {
       code,
       functionName,
       inputs,
-      executionStyle as CppExecutionStyle
+      executionStyle as CppExecutionStyle,
+      signal
     );
   }
 
@@ -105,7 +110,8 @@ class CppRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
+    executionStyle: RuntimeExecutionStyle = 'solution-method',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
       request: 'interview',
@@ -116,7 +122,8 @@ class CppRuntimeClient implements RuntimeClient {
       code,
       functionName,
       inputs,
-      executionStyle as CppExecutionStyle
+      executionStyle as CppExecutionStyle,
+      signal
     );
   }
 }

@@ -150,6 +150,7 @@ export interface RuntimeExecuteCodeRequest {
   trace?: boolean;
   interview?: boolean;
   traceOptions?: TraceExecutionOptions;
+  signal?: AbortSignal;
 }
 
 export interface RuntimeExecuteCaseResult {

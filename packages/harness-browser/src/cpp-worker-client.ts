@@ -845,7 +845,8 @@ export class CppWorkerClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: CppExecutionStyle
+    executionStyle: CppExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     await this.init();
     try {
@@ -857,7 +858,8 @@ export class CppWorkerClient {
             this.executionTimeoutMs + 5_000
           ),
         this.executionTimeoutMs,
-        'compile-run'
+        'compile-run',
+        signal
       );
     } catch (error) {
       if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
@@ -869,7 +871,8 @@ export class CppWorkerClient {
     code: string,
     functionName: string,
     inputBatch: Record<string, unknown>[],
-    executionStyle: CppExecutionStyle
+    executionStyle: CppExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
     await this.init();
     try {
@@ -881,7 +884,8 @@ export class CppWorkerClient {
             this.executionTimeoutMs + 5_000
           ),
         this.executionTimeoutMs,
-        'compile-run'
+        'compile-run',
+        signal
       );
     } catch (error) {
       if (!this.isClientTimeout(error)) throw error;
@@ -901,7 +905,8 @@ export class CppWorkerClient {
     functionName: string,
     inputs: Record<string, unknown>,
     options: TraceExecutionOptions | undefined,
-    executionStyle: CppExecutionStyle
+    executionStyle: CppExecutionStyle,
+    signal?: AbortSignal
   ): Promise<ExecutionResult> {
     await this.init();
     try {
@@ -913,7 +918,8 @@ export class CppWorkerClient {
             this.tracingTimeoutMs + 5_000
           ),
         this.tracingTimeoutMs,
-        'trace'
+        'trace',
+        signal
       );
     } catch (error) {
       if (this.isClientTimeout(error)) return this.timeoutTraceResult(error);
@@ -925,7 +931,8 @@ export class CppWorkerClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: CppExecutionStyle
+    executionStyle: CppExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     await this.init();
     try {
@@ -937,7 +944,8 @@ export class CppWorkerClient {
             this.interviewTimeoutMs + 5_000
           ),
         this.interviewTimeoutMs,
-        'interview'
+        'interview',
+        signal
       );
     } catch {
       return {

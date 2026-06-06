@@ -17,20 +17,23 @@ type RuntimeExecuteHandlers = {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle?: RuntimeExecutionStyle
+    executionStyle?: RuntimeExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult>;
   executeWithTracing(
     code: string,
     functionName: string | null,
     inputs: Record<string, unknown>,
     options?: TraceExecutionOptions,
-    executionStyle?: RuntimeExecutionStyle
+    executionStyle?: RuntimeExecutionStyle,
+    signal?: AbortSignal
   ): Promise<ExecutionResult>;
   executeCodeInterviewMode(
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle?: RuntimeExecutionStyle
+    executionStyle?: RuntimeExecutionStyle,
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult>;
 };
 
@@ -145,7 +148,8 @@ export async function executeRuntimeRequest(
         codeRequest.functionName ?? null,
         testCase.inputs,
         codeRequest.traceOptions,
-        executionStyle
+        executionStyle,
+        codeRequest.signal
       );
       cases.push(traceResultToExecuteCase(testCase, result));
     } else if (codeRequest.interview) {
@@ -153,7 +157,8 @@ export async function executeRuntimeRequest(
         codeRequest.code,
         functionName,
         testCase.inputs,
-        executionStyle
+        executionStyle,
+        codeRequest.signal
       );
       cases.push(codeResultToExecuteCase(testCase, result));
     } else {
@@ -161,7 +166,8 @@ export async function executeRuntimeRequest(
         codeRequest.code,
         functionName,
         testCase.inputs,
-        executionStyle
+        executionStyle,
+        codeRequest.signal
       );
       cases.push(codeResultToExecuteCase(testCase, result));
     }

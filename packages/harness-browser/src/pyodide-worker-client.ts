@@ -670,7 +670,8 @@ export class PythonWorkerClient {
       maxStoredEvents?: number;
       minimalTrace?: boolean;
     },
-    executionStyle: ExecutionStyle = 'function'
+    executionStyle: ExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<ExecutionResult> {
     // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
     await this.init();
@@ -685,7 +686,8 @@ export class PythonWorkerClient {
           executionStyle,
           options,
         }, TRACING_TIMEOUT_MS + 5000), // Message timeout slightly longer than execution timeout
-        TRACING_TIMEOUT_MS
+        TRACING_TIMEOUT_MS,
+        signal
       );
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -718,7 +720,8 @@ export class PythonWorkerClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: ExecutionStyle = 'function'
+    executionStyle: ExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
     await this.init();
@@ -730,7 +733,8 @@ export class PythonWorkerClient {
         inputs,
         executionStyle,
       }, EXECUTION_TIMEOUT_MS + 5000),
-      EXECUTION_TIMEOUT_MS
+      EXECUTION_TIMEOUT_MS,
+      signal
     );
   }
 
@@ -738,7 +742,8 @@ export class PythonWorkerClient {
     code: string,
     functionName: string,
     inputBatch: Record<string, unknown>[],
-    executionStyle: ExecutionStyle = 'function'
+    executionStyle: ExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
     await this.init();
 
@@ -749,7 +754,8 @@ export class PythonWorkerClient {
         inputBatch,
         executionStyle,
       }, EXECUTION_TIMEOUT_MS + 5000),
-      EXECUTION_TIMEOUT_MS
+      EXECUTION_TIMEOUT_MS,
+      signal
     );
   }
 
@@ -761,7 +767,8 @@ export class PythonWorkerClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: ExecutionStyle = 'function'
+    executionStyle: ExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
     await this.init();
@@ -774,7 +781,8 @@ export class PythonWorkerClient {
           inputs,
           executionStyle,
         }, INTERVIEW_MODE_TIMEOUT_MS + 2000),
-        INTERVIEW_MODE_TIMEOUT_MS
+        INTERVIEW_MODE_TIMEOUT_MS,
+        signal
       );
       
       // Sanitize error messages in interview mode - don't reveal line numbers for timeouts

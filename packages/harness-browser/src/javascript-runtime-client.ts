@@ -65,7 +65,8 @@ class JavaScriptRuntimeClient implements RuntimeClient {
         codeRequest.functionName ?? '',
         codeRequest.cases.map((testCase) => testCase.inputs),
         executionStyle as JavaScriptExecutionStyle,
-        this.runtimeLanguage
+        this.runtimeLanguage,
+        codeRequest.signal
       );
       return batchCodeResultToExecuteResult(codeRequest, result);
     }
@@ -83,7 +84,8 @@ class JavaScriptRuntimeClient implements RuntimeClient {
     functionName: string | null,
     inputs: Record<string, unknown>,
     options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'function'
+    executionStyle: RuntimeExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
       request: 'trace',
@@ -96,7 +98,8 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       inputs,
       options,
       executionStyle as JavaScriptExecutionStyle,
-      this.runtimeLanguage
+      this.runtimeLanguage,
+      signal
     );
   }
 
@@ -104,7 +107,8 @@ class JavaScriptRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
+    executionStyle: RuntimeExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
       request: 'execute',
@@ -116,7 +120,8 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       functionName,
       inputs,
       executionStyle as JavaScriptExecutionStyle,
-      this.runtimeLanguage
+      this.runtimeLanguage,
+      signal
     );
   }
 
@@ -124,7 +129,8 @@ class JavaScriptRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
+    executionStyle: RuntimeExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
       request: 'interview',
@@ -136,7 +142,8 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       functionName,
       inputs,
       executionStyle as JavaScriptExecutionStyle,
-      this.runtimeLanguage
+      this.runtimeLanguage,
+      signal
     );
   }
 }

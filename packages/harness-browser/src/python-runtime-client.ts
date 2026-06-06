@@ -355,7 +355,8 @@ class PythonRuntimeClient implements RuntimeClient {
         codeRequest.code,
         codeRequest.functionName ?? '',
         codeRequest.cases.map((testCase) => testCase.inputs),
-        executionStyle as ExecutionStyle
+        executionStyle as ExecutionStyle,
+        codeRequest.signal
       );
       return batchCodeResultToExecuteResult(codeRequest, result);
     }
@@ -373,7 +374,8 @@ class PythonRuntimeClient implements RuntimeClient {
     functionName: string | null,
     inputs: Record<string, unknown>,
     options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'function'
+    executionStyle: RuntimeExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
       request: 'trace',
@@ -385,7 +387,8 @@ class PythonRuntimeClient implements RuntimeClient {
       functionName,
       inputs,
       options,
-      executionStyle as ExecutionStyle
+      executionStyle as ExecutionStyle,
+      signal
     );
     return normalizePythonExecutionResult(result);
   }
@@ -394,7 +397,8 @@ class PythonRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
+    executionStyle: RuntimeExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
       request: 'execute',
@@ -405,7 +409,8 @@ class PythonRuntimeClient implements RuntimeClient {
       code,
       functionName,
       inputs,
-      executionStyle as ExecutionStyle
+      executionStyle as ExecutionStyle,
+      signal
     );
   }
 
@@ -413,7 +418,8 @@ class PythonRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
+    executionStyle: RuntimeExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
       request: 'interview',
@@ -424,7 +430,8 @@ class PythonRuntimeClient implements RuntimeClient {
       code,
       functionName,
       inputs,
-      executionStyle as ExecutionStyle
+      executionStyle as ExecutionStyle,
+      signal
     );
   }
 }

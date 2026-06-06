@@ -52,7 +52,8 @@ class JavaRuntimeClient implements RuntimeClient {
         codeRequest.functionName ?? '',
         codeRequest.cases.map((testCase) => testCase.inputs),
         undefined,
-        executionStyle as JavaExecutionStyle
+        executionStyle as JavaExecutionStyle,
+        codeRequest.signal
       );
       return batchCodeResultToExecuteResult(codeRequest, batchResult);
     }
@@ -70,7 +71,8 @@ class JavaRuntimeClient implements RuntimeClient {
     functionName: string | null,
     inputs: Record<string, unknown>,
     options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'function'
+    executionStyle: RuntimeExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
       request: 'trace',
@@ -83,7 +85,8 @@ class JavaRuntimeClient implements RuntimeClient {
       functionName ?? '',
       inputs,
       options,
-      executionStyle as JavaExecutionStyle
+      executionStyle as JavaExecutionStyle,
+      signal
     );
 
     if (!rawResult.success) {
@@ -124,7 +127,8 @@ class JavaRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
+    executionStyle: RuntimeExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
       request: 'execute',
@@ -136,7 +140,8 @@ class JavaRuntimeClient implements RuntimeClient {
       functionName,
       inputs,
       undefined,
-      executionStyle as JavaExecutionStyle
+      executionStyle as JavaExecutionStyle,
+      signal
     );
   }
 
@@ -144,7 +149,8 @@ class JavaRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
+    executionStyle: RuntimeExecutionStyle = 'function',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
       request: 'interview',
@@ -156,7 +162,8 @@ class JavaRuntimeClient implements RuntimeClient {
       functionName,
       inputs,
       undefined,
-      executionStyle as JavaExecutionStyle
+      executionStyle as JavaExecutionStyle,
+      signal
     );
   }
 }

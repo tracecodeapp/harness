@@ -48,7 +48,8 @@ class CSharpRuntimeClient implements RuntimeClient {
         codeRequest.code,
         codeRequest.functionName ?? '',
         codeRequest.cases.map((testCase) => testCase.inputs),
-        executionStyle as CSharpExecutionStyle
+        executionStyle as CSharpExecutionStyle,
+        codeRequest.signal
       );
       return batchCodeResultToExecuteResult(codeRequest, result);
     }
@@ -66,7 +67,8 @@ class CSharpRuntimeClient implements RuntimeClient {
     functionName: string | null,
     inputs: Record<string, unknown>,
     options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
+    executionStyle: RuntimeExecutionStyle = 'solution-method',
+    signal?: AbortSignal
   ): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
       request: 'trace',
@@ -79,7 +81,8 @@ class CSharpRuntimeClient implements RuntimeClient {
       functionName ?? '',
       inputs,
       options,
-      executionStyle as CSharpExecutionStyle
+      executionStyle as CSharpExecutionStyle,
+      signal
     );
   }
 
@@ -87,7 +90,8 @@ class CSharpRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
+    executionStyle: RuntimeExecutionStyle = 'solution-method',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
       request: 'execute',
@@ -98,7 +102,8 @@ class CSharpRuntimeClient implements RuntimeClient {
       code,
       functionName,
       inputs,
-      executionStyle as CSharpExecutionStyle
+      executionStyle as CSharpExecutionStyle,
+      signal
     );
   }
 
@@ -106,7 +111,8 @@ class CSharpRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
+    executionStyle: RuntimeExecutionStyle = 'solution-method',
+    signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
       request: 'interview',
@@ -117,7 +123,8 @@ class CSharpRuntimeClient implements RuntimeClient {
       code,
       functionName,
       inputs,
-      executionStyle as CSharpExecutionStyle
+      executionStyle as CSharpExecutionStyle,
+      signal
     );
   }
 }
