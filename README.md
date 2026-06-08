@@ -414,9 +414,10 @@ workspace.dispose();
 ```
 
 The workspace API includes file operations, `runCommand(...)`,
-`snapshot(...)`, streaming command events, and live file mutation events. Project
-commands are routed through the same command request shape across browser and
-native runners for Python, JavaScript/Node, Java, C#, and C/C++.
+`snapshot(...)`, `exportPatch(...)`, `importPatch(...)`, streaming command
+events, and live file mutation events. Project commands are routed through the
+same command request shape across browser and native runners for Python,
+JavaScript/Node, Java, C#, and C/C++.
 
 Tracekernel provides the workspace system model for this mode: configurable user
 and host identity, a canonical `/home/<user>/<project>` root, optional
@@ -505,6 +506,12 @@ A separate project-mode IDE lives in [examples/project-ide](./examples/project-i
 A fullscreen project terminal lives in [examples/project-terminal](./examples/project-terminal). It uses the same project harness and tracekernel terminal path without the IDE editor or explorer surface.
 
 Browser workspace persistence is application-owned. The built-in `createIndexedDbKernelStorage(...)` helper encrypts persisted snapshots and requires an AES-GCM `CryptoKey`; do not store that key in same-origin browser storage.
+
+For cloud sync, apps can store compact user overlays with
+`workspace.exportPatch(defaultSnapshot, { base: { id, version } })` and later
+restore them with `workspace.importPatch(defaultSnapshot, patch)`. TraceKernel
+validates the base manifest and per-file preconditions before mutating the
+workspace; the app owns problem IDs, problem versions, storage, and conflict UX.
 
 All examples are reference consumers for the SDK contract, not canonical product UI.
 

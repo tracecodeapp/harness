@@ -142,6 +142,14 @@ import type {
   RuntimeProjectSessionFile,
   RuntimeProjectSessionInfo,
   RuntimeProjectIoBridge,
+  RuntimeProjectPatch,
+  RuntimeProjectPatchBase,
+  RuntimeProjectPatchChange,
+  RuntimeProjectPatchDirectoryCreate,
+  RuntimeProjectPatchDirectoryDelete,
+  RuntimeProjectPatchFileDelete,
+  RuntimeProjectPatchFileWrite,
+  RuntimeProjectPatchOptions,
   RuntimeProjectLiveIoControllerOptions,
   RuntimeProjectWorkerBridgeOptions,
   RuntimeProjectSnapshot,
@@ -2291,6 +2299,12 @@ function assertSupportedEncoding(encoding: RuntimeFileEncoding | undefined): Run
   return encoding ?? 'utf8';
 }
 
+function normalizeRuntimeFileEncoding(encoding: RuntimeFileEncoding | undefined, label: string): RuntimeFileEncoding {
+  if (encoding === undefined || encoding === 'utf8') return 'utf8';
+  if (encoding === 'base64') return 'base64';
+  throw new Error(`${label}.encoding must be "utf8" or "base64".`);
+}
+
 function bytesFromBase64(value: string): Uint8Array {
   if (typeof Buffer !== 'undefined') {
     return Buffer.from(value, 'base64');
@@ -2346,6 +2360,247 @@ function contentToBytesForRuntimeFile(file: RuntimeFile): Uint8Array {
   return (file.encoding ?? 'utf8') === 'base64'
     ? bytesFromBase64(file.contents)
     : new TextEncoder().encode(file.contents);
+}
+
+interface RuntimeProjectPatchSnapshotFile {
+  path: string;
+  contents: string;
+  encoding?: RuntimeFileEncoding;
+  hash: string;
+}
+
+interface RuntimeProjectPatchSnapshotView {
+  manifestHash: string;
+  files: Map<string, RuntimeProjectPatchSnapshotFile>;
+  directories: Set<string>;
+  entrypoint?: string;
+}
+
+const RUNTIME_PROJECT_PATCH_VERSION = 1;
+const RUNTIME_PROJECT_PATCH_HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+async function createRuntimeProjectPatchSnapshotView(
+  snapshot: RuntimeProjectSnapshot,
+  label: string
+): Promise<RuntimeProjectPatchSnapshotView> {
+  const files = new Map<string, RuntimeProjectPatchSnapshotFile>();
+  for (const [index, file] of (snapshot.files ?? []).entries()) {
+    const path = normalizeRuntimeProjectPath(file.path);
+    if (files.has(path)) throw new Error(`${label}.files[${index}] duplicates project path: ${path}`);
+    if (typeof file.contents !== 'string') throw new Error(`${label}.files[${index}].contents must be a string.`);
+    const encoding = normalizeRuntimeFileEncoding(file.encoding, `${label}.files[${index}]`);
+    const normalizedFile: RuntimeFile = {
+      path,
+      contents: file.contents,
+      ...(encoding === 'base64' ? { encoding } : {}),
+    };
+    files.set(path, {
+      ...normalizedFile,
+      hash: await runtimeProjectPatchFileHash(normalizedFile),
+    });
+  }
+
+  const directories = new Set<string>();
+  for (const [index, directory] of (snapshot.directories ?? []).entries()) {
+    if (typeof directory !== 'string') throw new Error(`${label}.directories[${index}] must be a string.`);
+    const path = normalizeRuntimeProjectPath(directory);
+    if (files.has(path)) throw new Error(`${label}.directories[${index}] conflicts with file path: ${path}`);
+    directories.add(path);
+  }
+
+  const entrypoint = snapshot.entrypoint === undefined ? undefined : normalizeRuntimeProjectPath(snapshot.entrypoint);
+  const manifestHash = await runtimeProjectPatchHashJson({
+    version: RUNTIME_PROJECT_PATCH_VERSION,
+    entrypoint: entrypoint ?? null,
+    files: [...files.values()]
+      .map((file) => ({ path: file.path, hash: file.hash }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
+    directories: [...directories].sort((left, right) => left.localeCompare(right)),
+  });
+
+  return {
+    manifestHash,
+    files,
+    directories,
+    ...(entrypoint ? { entrypoint } : {}),
+  };
+}
+
+async function runtimeProjectPatchFileHash(file: RuntimeFile): Promise<string> {
+  return runtimeProjectPatchHashBytes(contentToBytesForRuntimeFile(file));
+}
+
+async function runtimeProjectPatchHashJson(value: unknown): Promise<string> {
+  return runtimeProjectPatchHashBytes(new TextEncoder().encode(JSON.stringify(value)));
+}
+
+async function runtimeProjectPatchHashBytes(bytes: Uint8Array): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error('Runtime project patch hashing requires Web Crypto SHA-256 support.');
+  }
+  const digestSource = new Uint8Array(bytes.byteLength);
+  digestSource.set(bytes);
+  return runtimeProjectPatchBytesToHex(new Uint8Array(await subtle.digest('SHA-256', digestSource.buffer as ArrayBuffer)));
+}
+
+function runtimeProjectPatchBytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function assertRuntimeProjectPatchHash(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !RUNTIME_PROJECT_PATCH_HASH_PATTERN.test(value)) {
+    throw new Error(`${label} must be a lowercase SHA-256 hex digest.`);
+  }
+  return value;
+}
+
+function staleRuntimeProjectPatchError(message: string, path?: string): Error {
+  return Object.assign(new Error(`ESTALE: ${message}`), {
+    code: 'ESTALE',
+    errno: 116,
+    syscall: 'patch',
+    ...(path ? { path } : {}),
+  });
+}
+
+function normalizeRuntimeProjectPatch(patch: RuntimeProjectPatch): RuntimeProjectPatch {
+  if (!patch || typeof patch !== 'object') throw new Error('Runtime project patch must be an object.');
+  if (patch.version !== RUNTIME_PROJECT_PATCH_VERSION) {
+    throw new Error(`Unsupported runtime project patch version: ${(patch as { version?: unknown }).version}`);
+  }
+  if (!patch.base || typeof patch.base !== 'object') throw new Error('Runtime project patch base is required.');
+  const base = {
+    ...(typeof patch.base.id === 'string' ? { id: patch.base.id } : {}),
+    ...(typeof patch.base.version === 'string' ? { version: patch.base.version } : {}),
+    manifestHash: assertRuntimeProjectPatchHash(patch.base.manifestHash, 'Runtime project patch base manifestHash'),
+  };
+  if (!Array.isArray(patch.changes)) throw new Error('Runtime project patch changes must be an array.');
+
+  const seen = new Set<string>();
+  const changes = patch.changes.map((change, index): RuntimeProjectPatchChange => {
+    if (!change || typeof change !== 'object') {
+      throw new Error(`Runtime project patch changes[${index}] must be an object.`);
+    }
+    const kind = (change as { kind?: unknown }).kind;
+    const rawPath = (change as { path?: unknown }).path;
+    if (typeof rawPath !== 'string') throw new Error(`Runtime project patch changes[${index}].path must be a string.`);
+    const path = normalizeRuntimeProjectPath(rawPath);
+    if (seen.has(path)) throw new Error(`Runtime project patch contains duplicate change for path: ${path}`);
+    seen.add(path);
+
+    if (kind === 'write') {
+      const write = change as RuntimeProjectPatchFileWrite;
+      if (typeof write.contents !== 'string') {
+        throw new Error(`Runtime project patch changes[${index}].contents must be a string.`);
+      }
+      const encoding = normalizeRuntimeFileEncoding(write.encoding, `Runtime project patch changes[${index}]`);
+      const baseHash = write.baseHash === null
+        ? null
+        : assertRuntimeProjectPatchHash(write.baseHash, `Runtime project patch changes[${index}].baseHash`);
+      return {
+        kind,
+        path,
+        contents: write.contents,
+        ...(encoding === 'base64' ? { encoding } : {}),
+        baseHash,
+      };
+    }
+
+    if (kind === 'delete') {
+      return {
+        kind,
+        path,
+        baseHash: assertRuntimeProjectPatchHash(
+          (change as RuntimeProjectPatchFileDelete).baseHash,
+          `Runtime project patch changes[${index}].baseHash`
+        ),
+      };
+    }
+
+    if (kind === 'mkdir' || kind === 'rmdir') return { kind, path };
+    throw new Error(`Runtime project patch changes[${index}].kind is unsupported: ${String(kind)}`);
+  });
+
+  return {
+    version: RUNTIME_PROJECT_PATCH_VERSION,
+    base,
+    changes: sortRuntimeProjectPatchChanges(changes),
+  };
+}
+
+function sortRuntimeProjectPatchChanges(changes: readonly RuntimeProjectPatchChange[]): RuntimeProjectPatchChange[] {
+  const rank = (change: RuntimeProjectPatchChange): number => {
+    if (change.kind === 'delete') return 0;
+    if (change.kind === 'rmdir') return 1;
+    if (change.kind === 'mkdir') return 2;
+    return 3;
+  };
+  return [...changes].sort((left, right) => {
+    const rankDelta = rank(left) - rank(right);
+    if (rankDelta !== 0) return rankDelta;
+    if (left.kind === 'rmdir' && right.kind === 'rmdir') return right.path.localeCompare(left.path);
+    return left.path.localeCompare(right.path);
+  });
+}
+
+function validateRuntimeProjectPatchAgainstBase(
+  base: RuntimeProjectPatchSnapshotView,
+  patch: RuntimeProjectPatch
+): void {
+  if (patch.base.manifestHash !== base.manifestHash) {
+    throw staleRuntimeProjectPatchError(
+      `patch base manifest ${patch.base.manifestHash} does not match provided base ${base.manifestHash}`
+    );
+  }
+
+  for (const change of patch.changes) {
+    if (change.kind === 'write') {
+      const baseFile = base.files.get(change.path);
+      if (change.baseHash === null) {
+        if (baseFile || base.directories.has(change.path)) {
+          throw staleRuntimeProjectPatchError(`patch expected '${change.path}' to be absent in the base`, change.path);
+        }
+      } else if (!baseFile || baseFile.hash !== change.baseHash) {
+        throw staleRuntimeProjectPatchError(`patch write precondition failed for '${change.path}'`, change.path);
+      }
+      continue;
+    }
+
+    if (change.kind === 'delete') {
+      const baseFile = base.files.get(change.path);
+      if (!baseFile || baseFile.hash !== change.baseHash) {
+        throw staleRuntimeProjectPatchError(`patch delete precondition failed for '${change.path}'`, change.path);
+      }
+      continue;
+    }
+
+    if (change.kind === 'mkdir') {
+      if (base.files.has(change.path) || base.directories.has(change.path)) {
+        throw staleRuntimeProjectPatchError(`patch expected directory '${change.path}' to be absent in the base`, change.path);
+      }
+      continue;
+    }
+
+    if (!base.directories.has(change.path)) {
+      throw staleRuntimeProjectPatchError(`patch expected directory '${change.path}' to exist in the base`, change.path);
+    }
+  }
+}
+
+function runtimeProjectPatchChangesToFileChanges(changes: readonly RuntimeProjectPatchChange[]): RuntimeFileChange[] {
+  return changes.map((change): RuntimeFileChange => {
+    if (change.kind === 'write') {
+      return {
+        path: change.path,
+        contents: change.contents,
+        ...(change.encoding === 'base64' ? { encoding: change.encoding } : {}),
+      };
+    }
+    if (change.kind === 'delete') return { path: change.path, deleted: true };
+    if (change.kind === 'mkdir') return { path: change.path, directory: true };
+    return { path: change.path, directory: true, deleted: true };
+  });
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -9792,6 +10047,89 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return options.includeHidden ? snapshot : filterHiddenSnapshotFiles(snapshot, this.projectSession?.hiddenFiles);
   }
 
+  async exportPatch(
+    baseSnapshot: RuntimeProjectSnapshot,
+    options: RuntimeProjectPatchOptions = {}
+  ): Promise<RuntimeProjectPatch> {
+    this.assertNotDestroyed();
+    const base = await createRuntimeProjectPatchSnapshotView(baseSnapshot, 'Runtime project patch base snapshot');
+    const current = await createRuntimeProjectPatchSnapshotView(await this.snapshot(), 'Runtime project patch current snapshot');
+    const changes: RuntimeProjectPatchChange[] = [];
+
+    for (const baseFile of [...base.files.values()].sort((left, right) => left.path.localeCompare(right.path))) {
+      const currentFile = current.files.get(baseFile.path);
+      if (!currentFile) {
+        changes.push({ kind: 'delete', path: baseFile.path, baseHash: baseFile.hash });
+      } else if (currentFile.hash !== baseFile.hash) {
+        changes.push({
+          kind: 'write',
+          path: currentFile.path,
+          contents: currentFile.contents,
+          ...(currentFile.encoding === 'base64' ? { encoding: currentFile.encoding } : {}),
+          baseHash: baseFile.hash,
+        });
+      }
+    }
+
+    for (const currentFile of [...current.files.values()].sort((left, right) => left.path.localeCompare(right.path))) {
+      if (!base.files.has(currentFile.path)) {
+        changes.push({
+          kind: 'write',
+          path: currentFile.path,
+          contents: currentFile.contents,
+          ...(currentFile.encoding === 'base64' ? { encoding: currentFile.encoding } : {}),
+          baseHash: null,
+        });
+      }
+    }
+
+    for (const directory of [...base.directories].sort((left, right) => right.localeCompare(left))) {
+      if (!current.directories.has(directory)) changes.push({ kind: 'rmdir', path: directory });
+    }
+    for (const directory of [...current.directories].sort((left, right) => left.localeCompare(right))) {
+      if (!base.directories.has(directory)) changes.push({ kind: 'mkdir', path: directory });
+    }
+
+    return {
+      version: RUNTIME_PROJECT_PATCH_VERSION,
+      base: {
+        ...(options.base?.id ? { id: options.base.id } : {}),
+        ...(options.base?.version ? { version: options.base.version } : {}),
+        manifestHash: base.manifestHash,
+      },
+      changes: sortRuntimeProjectPatchChanges(changes),
+    };
+  }
+
+  async importPatch(baseSnapshot: RuntimeProjectSnapshot, patch: RuntimeProjectPatch): Promise<void> {
+    this.assertNotDestroyed();
+    const normalizedPatch = normalizeRuntimeProjectPatch(patch);
+    const base = await createRuntimeProjectPatchSnapshotView(baseSnapshot, 'Runtime project patch base snapshot');
+    validateRuntimeProjectPatchAgainstBase(base, normalizedPatch);
+
+    const current = await createRuntimeProjectPatchSnapshotView(await this.snapshot(), 'Runtime project patch current snapshot');
+    if (current.manifestHash !== base.manifestHash) {
+      throw staleRuntimeProjectPatchError(
+        `current workspace manifest ${current.manifestHash} does not match patch base ${base.manifestHash}`
+      );
+    }
+
+    const changes = runtimeProjectPatchChangesToFileChanges(normalizedPatch.changes);
+    if (changes.length === 0) return;
+    const actor = this.currentCommandActor() ?? SYSTEM_ACTOR;
+    const committed = await this.fs.applyFinalDiffTransaction(changes, (change) =>
+      prepareFinalDiffChange(this.cwd, change)
+    );
+    for (const change of committed) {
+      this.emitLocalRuntimeEvent({
+        type: 'file-change',
+        change,
+        phase: 'final-diff',
+        actor,
+      });
+    }
+  }
+
   dispose(): void {
     this.httpListeners.clear();
     this.eventWatchers.clear();
@@ -10208,6 +10546,14 @@ export type {
   RuntimeProjectSessionFile,
   RuntimeProjectSessionInfo,
   RuntimeProjectIoBridge,
+  RuntimeProjectPatch,
+  RuntimeProjectPatchBase,
+  RuntimeProjectPatchChange,
+  RuntimeProjectPatchDirectoryCreate,
+  RuntimeProjectPatchDirectoryDelete,
+  RuntimeProjectPatchFileDelete,
+  RuntimeProjectPatchFileWrite,
+  RuntimeProjectPatchOptions,
   RuntimeProjectWorkerBridgeOptions,
   RuntimeProjectSnapshot,
   RuntimeWorkspace,

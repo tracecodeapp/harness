@@ -44,11 +44,13 @@ import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/proje
 import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
 import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
 import { createNativeProjectWorkspace } from '../src/project-node';
+import projectPackageJson from '../packages/harness-project/package.json' with { type: 'json' };
 
 const execFileAsync = promisify(execFile);
 const testTextDecoder = new TextDecoder();
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);
+const expectedTraceKernelVersion = projectPackageJson.version;
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -623,6 +625,128 @@ async function testWorkspaceConcurrentAppendFile(): Promise<void> {
       lines.join(',') === writes.map((line) => line.trim()).sort((left, right) => left.localeCompare(right)).join(','),
     `concurrent appendFile calls should preserve every write: ${JSON.stringify(content)}`
   );
+}
+
+function comparableProjectSnapshot(snapshot: Awaited<ReturnType<RuntimeWorkspace['snapshot']>>) {
+  return {
+    entrypoint: snapshot.entrypoint,
+    files: snapshot.files.map((file) => ({
+      path: file.path,
+      contents: file.contents,
+      ...(file.encoding ? { encoding: file.encoding } : {}),
+    })),
+    directories: snapshot.directories ?? [],
+  };
+}
+
+async function testWorkspaceProjectPatchExportImport(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    entrypoint: 'src/main.txt',
+    files: [
+      { path: 'src/main.txt', contents: 'base\n' },
+      { path: 'docs/old.txt', contents: 'old\n' },
+    ],
+    directories: ['empty', 'removed-empty'],
+  });
+  const base = await workspace.snapshot();
+  await workspace.writeFile('src/main.txt', 'changed\n');
+  await workspace.writeFile('src/new.txt', 'new\n');
+  await workspace.writeFile('assets/bin.dat', Buffer.from([0, 1, 2, 255]).toString('base64'), 'base64');
+  await workspace.deleteFile('docs/old.txt');
+  await workspace.remove('removed-empty', { recursive: true });
+  await workspace.mkdir('new-empty/deep');
+
+  const patch = await workspace.exportPatch(base, {
+    base: {
+      id: 'two-sum-project',
+      version: '2026-06-07',
+    },
+  });
+  assertCondition(patch.version === 1, 'exportPatch should use the v1 patch format');
+  assertCondition(patch.base.id === 'two-sum-project', 'exportPatch should preserve caller-provided base id');
+  assertCondition(patch.base.version === '2026-06-07', 'exportPatch should preserve caller-provided base version');
+  assertCondition(/^[0-9a-f]{64}$/.test(patch.base.manifestHash), `exportPatch should include a manifest hash: ${patch.base.manifestHash}`);
+  assertCondition(
+    patch.changes.some((change) => change.kind === 'write' && change.path === 'src/main.txt') &&
+      patch.changes.some((change) => change.kind === 'write' && change.path === 'src/new.txt' && change.baseHash === null) &&
+      patch.changes.some((change) => change.kind === 'write' && change.path === 'assets/bin.dat' && change.encoding === 'base64') &&
+      patch.changes.some((change) => change.kind === 'delete' && change.path === 'docs/old.txt') &&
+      patch.changes.some((change) => change.kind === 'rmdir' && change.path === 'removed-empty') &&
+      patch.changes.some((change) => change.kind === 'mkdir' && change.path === 'new-empty/deep'),
+    `exportPatch should describe writes, deletes, binary files, and empty directory changes: ${JSON.stringify(patch)}`
+  );
+
+  const restoredEvents: RuntimeWorkspaceEvent[] = [];
+  const restored = await createRuntimeWorkspace({
+    entrypoint: base.entrypoint,
+    files: base.files,
+    directories: base.directories,
+  });
+  restored.watch((event) => {
+    if (event.type === 'file-change') restoredEvents.push(event);
+  });
+  await restored.importPatch(base, patch);
+  assertCondition(
+    JSON.stringify(comparableProjectSnapshot(await restored.snapshot())) ===
+      JSON.stringify(comparableProjectSnapshot(await workspace.snapshot())),
+    'importPatch should recreate the exported workspace state from the base snapshot'
+  );
+  assertCondition(
+    restoredEvents.length === patch.changes.length,
+    `importPatch should emit one file-change event per committed patch change: ${restoredEvents.length} vs ${patch.changes.length}`
+  );
+
+  const changedBase = {
+    ...base,
+    files: base.files.map((file) => file.path === 'src/main.txt' ? { ...file, contents: 'released-edit\n' } : file),
+  };
+  const staleBaseWorkspace = await createRuntimeWorkspace({
+    entrypoint: changedBase.entrypoint,
+    files: changedBase.files,
+    directories: changedBase.directories,
+  });
+  await assertRejectsAsync(
+    () => staleBaseWorkspace.importPatch(changedBase, patch),
+    'importPatch should reject a patch whose base manifest does not match the provided base'
+  );
+  assertCondition(await staleBaseWorkspace.readFile('src/main.txt') === 'released-edit\n', 'stale import should not mutate the workspace');
+
+  const dirtyWorkspace = await createRuntimeWorkspace({
+    entrypoint: base.entrypoint,
+    files: base.files,
+    directories: base.directories,
+  });
+  await dirtyWorkspace.writeFile('local-only.txt', 'dirty\n');
+  await assertRejectsAsync(
+    () => dirtyWorkspace.importPatch(base, patch),
+    'importPatch should reject when the current workspace is not the patch base'
+  );
+  assertCondition(await dirtyWorkspace.readFile('local-only.txt') === 'dirty\n', 'current-workspace rejection should preserve existing files');
+  assertCondition(await dirtyWorkspace.readFile('src/main.txt') === 'base\n', 'current-workspace rejection should not apply patch writes');
+
+  const invalidPatch = {
+    ...patch,
+    changes: [
+      patch.changes.find((change) => change.kind === 'write' && change.path === 'src/main.txt')!,
+      {
+        kind: 'write' as const,
+        path: 'invalid.txt',
+        contents: 'invalid\n',
+        baseHash: '0'.repeat(64),
+      },
+    ],
+  };
+  const invalidWorkspace = await createRuntimeWorkspace({
+    entrypoint: base.entrypoint,
+    files: base.files,
+    directories: base.directories,
+  });
+  await assertRejectsAsync(
+    () => invalidWorkspace.importPatch(base, invalidPatch),
+    'importPatch should reject invalid path preconditions before mutating'
+  );
+  assertCondition(await invalidWorkspace.readFile('src/main.txt') === 'base\n', 'invalid patch rejection should not apply earlier writes');
+  assertCondition(!(await invalidWorkspace.exists('invalid.txt')), 'invalid patch rejection should not create later files');
 }
 
 async function testWorkspaceConcurrentFilesystemMutations(): Promise<void> {
@@ -9852,7 +9976,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     });
     assertCondition(python.exitCode === 0, `browser Python project command should succeed with alias cwd: ${python.stderr}`);
     assertCondition(
-      python.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-python:tracekernel:0.7.0-beta6\n',
+      python.stdout === `/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-python:tracekernel:${expectedTraceKernelVersion}\n`,
       `browser Python request should use canonical cwd and expose environment/kernel metadata: ${python.stdout}`
     );
     assertCondition(await workspace.readFile('python-browser.txt') === 'python-browser\n', 'browser Python final diff should persist through kernel FS');
@@ -9877,7 +10001,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         '/home/ada/weather-api/lib/value.js',
         '42',
         'user:tracevm:/workspace',
-        'tracekernel 0.7.0-beta6',
+        `tracekernel ${expectedTraceKernelVersion}`,
         'browser skill',
         'browser',
         'EROFS',
@@ -9928,7 +10052,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     const java = await workspace.runCommand('java Main', { cwd: '/workspace', env: { MODE: 'browser-java' } });
     assertCondition(java.exitCode === 0, `browser Java project command should succeed with alias cwd: ${java.stderr}`);
     assertCondition(
-      java.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-java:tracekernel:0.7.0-beta6\n',
+      java.stdout === `/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-java:tracekernel:${expectedTraceKernelVersion}\n`,
       `browser Java request should use canonical cwd and expose environment/kernel metadata: ${java.stdout}`
     );
     assertCondition(javaRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser Java request should include workspaceRoot');
@@ -9938,7 +10062,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     const csharp = await workspace.runCommand('dotnet run', { cwd: '/workspace', env: { MODE: 'browser-csharp' } });
     assertCondition(csharp.exitCode === 0, `browser C# project command should succeed with alias cwd: ${csharp.stderr}`);
     assertCondition(
-      csharp.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-csharp:tracekernel:0.7.0-beta6\n',
+      csharp.stdout === `/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-csharp:tracekernel:${expectedTraceKernelVersion}\n`,
       `browser C# request should use canonical cwd and expose environment/kernel metadata: ${csharp.stdout}`
     );
     assertCondition(csharpRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C# request should include workspaceRoot');
@@ -9951,7 +10075,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     });
     assertCondition(cpp.exitCode === 0, `browser C++ project command should succeed with canonical and alias args: ${cpp.stderr}`);
     assertCondition(
-      cpp.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-cpp:tracekernel:0.7.0-beta6\n',
+      cpp.stdout === `/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-cpp:tracekernel:${expectedTraceKernelVersion}\n`,
       `browser C++ request should use canonical cwd and expose environment/kernel metadata: ${cpp.stdout}`
     );
     assertCondition(cppRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C++ request should include workspaceRoot');
@@ -12657,6 +12781,7 @@ function testPathValidation(): void {
 async function main(): Promise<void> {
   testPathValidation();
   await testWorkspaceFilesAndCommands();
+  await testWorkspaceProjectPatchExportImport();
   await testWorkspaceConcurrentAppendFile();
   await testWorkspaceConcurrentFilesystemMutations();
   await testWorkspaceConcurrentRunCommandSerialization();

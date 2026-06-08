@@ -214,6 +214,55 @@ export interface RuntimeProjectSnapshot {
   kernel?: RuntimeKernelInfo;
 }
 
+export interface RuntimeProjectPatchBase {
+  id?: string;
+  version?: string;
+  manifestHash: string;
+}
+
+export interface RuntimeProjectPatchOptions {
+  base?: {
+    id?: string;
+    version?: string;
+  };
+}
+
+export interface RuntimeProjectPatchFileWrite {
+  kind: 'write';
+  path: string;
+  contents: string;
+  encoding?: RuntimeFileEncoding;
+  baseHash: string | null;
+}
+
+export interface RuntimeProjectPatchFileDelete {
+  kind: 'delete';
+  path: string;
+  baseHash: string;
+}
+
+export interface RuntimeProjectPatchDirectoryCreate {
+  kind: 'mkdir';
+  path: string;
+}
+
+export interface RuntimeProjectPatchDirectoryDelete {
+  kind: 'rmdir';
+  path: string;
+}
+
+export type RuntimeProjectPatchChange =
+  | RuntimeProjectPatchFileWrite
+  | RuntimeProjectPatchFileDelete
+  | RuntimeProjectPatchDirectoryCreate
+  | RuntimeProjectPatchDirectoryDelete;
+
+export interface RuntimeProjectPatch {
+  version: 1;
+  base: RuntimeProjectPatchBase;
+  changes: RuntimeProjectPatchChange[];
+}
+
 export interface RuntimeKernelHttpListenOptions {
   host?: string;
   port: number;
@@ -1306,6 +1355,8 @@ export interface RuntimeWorkspace {
   checkExpiration(now?: Date | string | number): Promise<RuntimeProjectSessionLifecycle | null>;
   destroy(options?: { reason?: string; clearStorage?: boolean }): Promise<void>;
   snapshot(options?: { entrypoint?: string; includeHidden?: boolean }): Promise<RuntimeProjectSnapshot>;
+  exportPatch(base: RuntimeProjectSnapshot, options?: RuntimeProjectPatchOptions): Promise<RuntimeProjectPatch>;
+  importPatch(base: RuntimeProjectSnapshot, patch: RuntimeProjectPatch): Promise<void>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
   dispose(): void;
 }
