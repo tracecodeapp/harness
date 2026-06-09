@@ -3615,7 +3615,7 @@ function unzipSync(data, opts) {
 // packages/harness-javascript/package.json
 var package_default = {
   name: "@tracecode/harness-javascript",
-  version: "0.9.4",
+  version: "0.9.5",
   description: "JavaScript and TypeScript runtime helpers and browser worker assets for TraceCode harness.",
   license: "AGPL-3.0-only",
   homepage: "https://tracecode.app",
@@ -4548,6 +4548,284 @@ function createBrowserEventLoopApi(executionState) {
     queueMicrotask: globalThis.queueMicrotask.bind(globalThis),
     drain,
     clearAll
+  };
+}
+var BrowserAssertionError = class extends Error {
+  code = "ERR_ASSERTION";
+  actual;
+  expected;
+  operator;
+  generatedMessage;
+  constructor(options = {}) {
+    const operator = options.operator ?? "fail";
+    const generatedMessage = options.message === void 0;
+    super(options.message ?? `Assertion failed: ${operator}`);
+    this.name = "AssertionError";
+    this.actual = options.actual;
+    this.expected = options.expected;
+    this.operator = operator;
+    this.generatedMessage = generatedMessage;
+  }
+};
+function browserDeepStrictEqual(left, right, seen = /* @__PURE__ */ new WeakMap()) {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false;
+  if (Object.getPrototypeOf(left) !== Object.getPrototypeOf(right)) return false;
+  const seenRight = seen.get(left);
+  if (seenRight) return seenRight === right;
+  seen.set(left, right);
+  if (left instanceof Date || right instanceof Date) {
+    return left instanceof Date && right instanceof Date && Object.is(left.getTime(), right.getTime());
+  }
+  if (ArrayBuffer.isView(left) || ArrayBuffer.isView(right)) {
+    if (!ArrayBuffer.isView(left) || !ArrayBuffer.isView(right)) return false;
+    const leftBytes = new Uint8Array(left.buffer, left.byteOffset, left.byteLength);
+    const rightBytes = new Uint8Array(right.buffer, right.byteOffset, right.byteLength);
+    return byteEqual(leftBytes, rightBytes);
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((value, index) => browserDeepStrictEqual(value, right[index], seen));
+  }
+  if (left instanceof Map || right instanceof Map) {
+    if (!(left instanceof Map) || !(right instanceof Map) || left.size !== right.size) return false;
+    for (const [key, value] of left.entries()) {
+      if (!right.has(key) || !browserDeepStrictEqual(value, right.get(key), seen)) return false;
+    }
+    return true;
+  }
+  if (left instanceof Set || right instanceof Set) {
+    if (!(left instanceof Set) || !(right instanceof Set) || left.size !== right.size) return false;
+    return [...left].every((value) => right.has(value));
+  }
+  const leftKeys = Reflect.ownKeys(left);
+  const rightKeys = Reflect.ownKeys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key) => Object.prototype.propertyIsEnumerable.call(right, key) && browserDeepStrictEqual(left[key], right[key], seen));
+}
+function createAssertApi() {
+  const fail = (message) => {
+    throw new BrowserAssertionError({ message, operator: "fail" });
+  };
+  const assert = ((value, message) => {
+    if (!value) throw new BrowserAssertionError({ actual: value, expected: true, message, operator: "==" });
+  });
+  const strictEqual = (actual, expected, message) => {
+    if (!Object.is(actual, expected)) throw new BrowserAssertionError({ actual, expected, message, operator: "strictEqual" });
+  };
+  const notStrictEqual = (actual, expected, message) => {
+    if (Object.is(actual, expected)) throw new BrowserAssertionError({ actual, expected, message, operator: "notStrictEqual" });
+  };
+  const deepStrictEqual = (actual, expected, message) => {
+    if (!browserDeepStrictEqual(actual, expected)) throw new BrowserAssertionError({ actual, expected, message, operator: "deepStrictEqual" });
+  };
+  const notDeepStrictEqual = (actual, expected, message) => {
+    if (browserDeepStrictEqual(actual, expected)) throw new BrowserAssertionError({ actual, expected, message, operator: "notDeepStrictEqual" });
+  };
+  const match = (actual, expected, message) => {
+    if (!(expected instanceof RegExp)) throw new TypeError('The "regexp" argument must be an instance of RegExp');
+    if (!expected.test(String(actual))) throw new BrowserAssertionError({ actual, expected, message, operator: "match" });
+  };
+  const doesNotMatch = (actual, expected, message) => {
+    if (!(expected instanceof RegExp)) throw new TypeError('The "regexp" argument must be an instance of RegExp');
+    if (expected.test(String(actual))) throw new BrowserAssertionError({ actual, expected, message, operator: "doesNotMatch" });
+  };
+  const throws = (fn, expected, message) => {
+    try {
+      fn();
+    } catch (error) {
+      if (expected instanceof RegExp && !expected.test(error instanceof Error ? error.message : String(error))) {
+        throw new BrowserAssertionError({ actual: error, expected, message, operator: "throws" });
+      }
+      if (typeof expected === "function" && !expected(error)) {
+        throw new BrowserAssertionError({ actual: error, expected, message, operator: "throws" });
+      }
+      return error;
+    }
+    throw new BrowserAssertionError({ actual: void 0, expected, message, operator: "throws" });
+  };
+  const rejects = async (fn, expected, message) => {
+    try {
+      await (typeof fn === "function" ? fn() : fn);
+    } catch (error) {
+      if (expected instanceof RegExp && !expected.test(error instanceof Error ? error.message : String(error))) {
+        throw new BrowserAssertionError({ actual: error, expected, message, operator: "rejects" });
+      }
+      if (typeof expected === "function" && !expected(error)) {
+        throw new BrowserAssertionError({ actual: error, expected, message, operator: "rejects" });
+      }
+      return error;
+    }
+    throw new BrowserAssertionError({ actual: void 0, expected, message, operator: "rejects" });
+  };
+  Object.assign(assert, {
+    AssertionError: BrowserAssertionError,
+    fail,
+    ok: assert,
+    equal: strictEqual,
+    notEqual: notStrictEqual,
+    strictEqual,
+    notStrictEqual,
+    deepEqual: deepStrictEqual,
+    notDeepEqual: notDeepStrictEqual,
+    deepStrictEqual,
+    notDeepStrictEqual,
+    match,
+    doesNotMatch,
+    throws,
+    rejects
+  });
+  return assert;
+}
+var BrowserEventEmitter = class {
+  listeners = /* @__PURE__ */ new Map();
+  on(eventName, listener) {
+    const entries = this.listeners.get(eventName) ?? [];
+    entries.push(listener);
+    this.listeners.set(eventName, entries);
+    return this;
+  }
+  addListener(eventName, listener) {
+    return this.on(eventName, listener);
+  }
+  once(eventName, listener) {
+    const wrapped = (...args) => {
+      this.off(eventName, wrapped);
+      listener(...args);
+    };
+    return this.on(eventName, wrapped);
+  }
+  off(eventName, listener) {
+    const entries = this.listeners.get(eventName);
+    if (!entries) return this;
+    const index = entries.indexOf(listener);
+    if (index !== -1) entries.splice(index, 1);
+    if (entries.length === 0) this.listeners.delete(eventName);
+    return this;
+  }
+  removeListener(eventName, listener) {
+    return this.off(eventName, listener);
+  }
+  emit(eventName, ...args) {
+    const entries = [...this.listeners.get(eventName) ?? []];
+    if (entries.length === 0) {
+      if (eventName === "error") throw args[0] instanceof Error ? args[0] : new Error(String(args[0] ?? "Unhandled error"));
+      return false;
+    }
+    for (const listener of entries) listener(...args);
+    return true;
+  }
+  listenerCount(eventName) {
+    return this.listeners.get(eventName)?.length ?? 0;
+  }
+  removeAllListeners(eventName) {
+    if (eventName === void 0) this.listeners.clear();
+    else this.listeners.delete(eventName);
+    return this;
+  }
+};
+function createEventsApi() {
+  return {
+    EventEmitter: BrowserEventEmitter,
+    once: (emitter, eventName) => new Promise((resolve, reject) => {
+      emitter.once(eventName, (...args) => resolve(args));
+      if (eventName !== "error") emitter.once("error", reject);
+    })
+  };
+}
+function createUtilApi() {
+  const inspect = (value) => {
+    if (typeof value === "string") return `'${value}'`;
+    if (value instanceof Error) return value.stack ?? value.message;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  };
+  const promisify = (fn) => (...args) => new Promise((resolve, reject) => {
+    fn(...args, (error, value) => {
+      if (error) reject(error);
+      else resolve(value);
+    });
+  });
+  const callbackify = (fn) => (...args) => {
+    const callback = args.pop();
+    if (typeof callback !== "function") throw new TypeError("Callback must be a function");
+    fn(...args).then((value) => callback(null, value), (error) => callback(error));
+  };
+  return {
+    inspect,
+    format: (...args) => args.map((arg) => typeof arg === "string" ? arg : inspect(arg)).join(" "),
+    promisify,
+    callbackify,
+    TextEncoder,
+    TextDecoder,
+    types: {
+      isDate: (value) => value instanceof Date,
+      isMap: (value) => value instanceof Map,
+      isSet: (value) => value instanceof Set,
+      isRegExp: (value) => value instanceof RegExp,
+      isUint8Array: (value) => value instanceof Uint8Array
+    }
+  };
+}
+function createTimersPromisesApi(eventLoopApi) {
+  return {
+    setTimeout: (delay, value) => new Promise((resolve) => {
+      eventLoopApi.setTimeout(() => resolve(value), delay);
+    }),
+    setImmediate: (value) => new Promise((resolve) => {
+      eventLoopApi.setImmediate(() => resolve(value));
+    })
+  };
+}
+function createCryptoApi() {
+  const randomFill = (target) => {
+    const cryptoApi = globalThis.crypto;
+    if (cryptoApi?.getRandomValues) {
+      cryptoApi.getRandomValues(target);
+      return target;
+    }
+    for (let index = 0; index < target.length; index += 1) {
+      target[index] = Math.floor(Math.random() * 256);
+    }
+    return target;
+  };
+  return {
+    randomUUID: () => globalThis.crypto?.randomUUID?.() ?? `${bytesToHex(randomFill(new Uint8Array(4)))}-${bytesToHex(randomFill(new Uint8Array(2)))}-4${bytesToHex(randomFill(new Uint8Array(2))).slice(1)}-8${bytesToHex(randomFill(new Uint8Array(2))).slice(1)}-${bytesToHex(randomFill(new Uint8Array(6)))}`,
+    randomBytes: (size) => browserBufferFromBytes(randomFill(new Uint8Array(Math.max(0, Math.floor(Number(size) || 0))))),
+    getRandomValues: (array) => randomFill(array)
+  };
+}
+function createStreamApi() {
+  class PassThrough extends BrowserEventEmitter {
+    ended = false;
+    write(chunk) {
+      if (this.ended) throw new Error("write after end");
+      this.emit("data", BrowserBuffer.isBuffer(chunk) ? chunk : BrowserBuffer.from(chunk));
+      return true;
+    }
+    end(chunk) {
+      if (chunk !== void 0) this.write(chunk);
+      this.ended = true;
+      this.emit("end");
+      this.emit("finish");
+      return this;
+    }
+    pipe(destination) {
+      this.on("data", (chunk) => destination.write(chunk));
+      this.on("end", () => destination.end?.());
+      return destination;
+    }
+  }
+  return {
+    Stream: BrowserEventEmitter,
+    Readable: PassThrough,
+    Writable: PassThrough,
+    Duplex: PassThrough,
+    Transform: PassThrough,
+    PassThrough
   };
 }
 function createUrlApi() {
@@ -6091,6 +6369,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const processApi = {
     argv: processArgvForRequest(request),
     env: request.env,
+    exitCode: void 0,
     cwd: () => request.cwd,
     stdin: stdinDevice,
     stdout: createWritableDevice("/dev/stdout", 1),
@@ -6103,6 +6382,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
   };
   const nodePathSearchEntries = nodePathEntries(request, cwdPath, workspacePathContext);
+  const pathApi = createPathApi(() => cwdPath, workspaceRoot);
+  const osApi = createOsApi(workspaceRoot);
+  const urlApi = createUrlApi();
+  const assertApi = createAssertApi();
+  const eventsApi = createEventsApi();
+  const utilApi = createUtilApi();
+  const streamApi = createStreamApi();
+  const cryptoApi = createCryptoApi();
+  const timersPromisesApi = createTimersPromisesApi(eventLoopApi);
   const syncTextModule = (path, bytes) => {
     const text = textFromBytes(bytes);
     if (byteEqual(utf8Bytes(text), bytes)) {
@@ -8679,18 +8967,34 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ["node:fs", fsApi],
     ["fs/promises", fsPromisesApi],
     ["node:fs/promises", fsPromisesApi],
-    ["path", createPathApi(() => cwdPath, workspaceRoot)],
-    ["node:path", createPathApi(() => cwdPath, workspaceRoot)],
-    ["os", createOsApi(workspaceRoot)],
-    ["node:os", createOsApi(workspaceRoot)],
-    ["url", createUrlApi()],
-    ["node:url", createUrlApi()],
+    ["path", pathApi],
+    ["node:path", pathApi],
+    ["os", osApi],
+    ["node:os", osApi],
+    ["url", urlApi],
+    ["node:url", urlApi],
     ["buffer", { Buffer: BrowserBuffer }],
     ["node:buffer", { Buffer: BrowserBuffer }],
     ["http", httpApi.module],
     ["node:http", httpApi.module],
     ["zlib", zlibApi],
-    ["node:zlib", zlibApi]
+    ["node:zlib", zlibApi],
+    ["assert", assertApi],
+    ["node:assert", assertApi],
+    ["assert/strict", assertApi],
+    ["node:assert/strict", assertApi],
+    ["events", eventsApi],
+    ["node:events", eventsApi],
+    ["util", utilApi],
+    ["node:util", utilApi],
+    ["stream", streamApi],
+    ["node:stream", streamApi],
+    ["timers/promises", timersPromisesApi],
+    ["node:timers/promises", timersPromisesApi],
+    ["crypto", cryptoApi],
+    ["node:crypto", cryptoApi],
+    ["process", processApi],
+    ["node:process", processApi]
   ]);
   const normalizeModuleSpecifier = (specifier) => specifier.startsWith("/") ? normalizeWorkspaceEntryPath(specifier, "", false, workspacePathContext) : specifier;
   const requireModule = (specifier, parentPath, parentModule = null) => {
@@ -8986,11 +9290,12 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }).files ?? [];
     httpApi.closeAll();
     eventLoopApi.clearAll();
-    createRuntimeProjectIoBridge(request.onEvent).status("process-exit", "Browser Node exited", { command: "node", exitCode: 0 });
+    const exitCode = typeof processApi.exitCode === "number" ? processApi.exitCode : 0;
+    createRuntimeProjectIoBridge(request.onEvent).status("process-exit", "Browser Node exited", { command: "node", exitCode });
     return {
       stdout: stdout.join(""),
       stderr: stderr.join(""),
-      exitCode: 0,
+      exitCode,
       ...files.length > 0 ? { files } : {}
     };
   } catch (error) {

@@ -68,10 +68,10 @@ function setTestGlobalProperty(name: string, value: unknown): () => void {
   };
 }
 
-async function testBrowserAsyncLocalStorageSingleFlightContexts(): Promise<void> {
+async function testBrowserAsyncLocalStorageAllowsOverlappingContexts(): Promise<void> {
   assertCondition(
-    (BrowserAsyncLocalStorage as unknown as { __tracecodeBrowserSingleFlight?: boolean }).__tracecodeBrowserSingleFlight === true,
-    'browser AsyncLocalStorage shim should advertise single-flight context semantics'
+    !('__tracecodeBrowserSingleFlight' in BrowserAsyncLocalStorage),
+    'browser AsyncLocalStorage shim should not force TraceKernel command scheduling into single-flight mode'
   );
   const storage = new BrowserAsyncLocalStorage<{ id: string }>();
   const events: string[] = [];
@@ -94,8 +94,8 @@ async function testBrowserAsyncLocalStorageSingleFlightContexts(): Promise<void>
   await Promise.resolve();
   await Promise.resolve();
   assertCondition(
-    events.join('|') === 'a:start:a',
-    `browser AsyncLocalStorage shim should not overlap queued contexts: ${JSON.stringify(events)}`
+    events.join('|') === 'a:start:a|b:start:b',
+    `browser AsyncLocalStorage shim should allow overlapping contexts: ${JSON.stringify(events)}`
   );
   releaseA();
   const [firstStore, secondStore] = await Promise.all([first, second]);
@@ -103,14 +103,37 @@ async function testBrowserAsyncLocalStorageSingleFlightContexts(): Promise<void>
     firstStore === 'a' &&
       secondStore === 'b' &&
       storage.getStore() === undefined &&
-      events.join('|') === 'a:start:a|a:end:a|b:start:b',
-    `browser AsyncLocalStorage shim should restore isolated queued contexts: ${JSON.stringify({ firstStore, secondStore, events, store: storage.getStore() })}`
+      events.join('|') === 'a:start:a|b:start:b|a:end:a',
+    `browser AsyncLocalStorage shim should allow overlap and restore the active context stack: ${JSON.stringify({ firstStore, secondStore, events, store: storage.getStore() })}`
+  );
+
+  const outOfOrderStorage = new BrowserAsyncLocalStorage<{ id: string }>();
+  let releaseLater!: () => void;
+  const laterReleased = new Promise<void>((resolve) => {
+    releaseLater = resolve;
+  });
+  const earlier = outOfOrderStorage.run({ id: 'earlier' }, async () => outOfOrderStorage.getStore()?.id);
+  const later = outOfOrderStorage.run({ id: 'later' }, async () => {
+    await laterReleased;
+    return outOfOrderStorage.getStore()?.id;
+  });
+  const earlierStore = await earlier;
+  assertCondition(
+    earlierStore === 'earlier' && outOfOrderStorage.getStore()?.id === 'later',
+    `browser AsyncLocalStorage shim should remove completed frames without clearing newer work: ${JSON.stringify({ earlierStore, store: outOfOrderStorage.getStore() })}`
+  );
+  releaseLater();
+  const laterStore = await later;
+  assertCondition(
+    laterStore === 'later' && outOfOrderStorage.getStore() === undefined,
+    `browser AsyncLocalStorage shim should restore cleanly when overlapping contexts complete out of order: ${JSON.stringify({ laterStore, store: outOfOrderStorage.getStore() })}`
   );
 
   const projectSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-project', 'src', 'index.ts'), 'utf8');
   assertCondition(
-    projectSource.includes('singleFlightAsyncContext: isSingleFlightBrowserAsyncLocalStorage()'),
-    'TraceKernel scheduler should clamp browser command concurrency when the async context shim is single-flight'
+    !projectSource.includes('singleFlightAsyncContext: isSingleFlightBrowserAsyncLocalStorage()') &&
+      !projectSource.includes('__tracecodeBrowserSingleFlight'),
+    'TraceKernel scheduler should not clamp browser command concurrency through the browser async context shim'
   );
 }
 
@@ -2876,7 +2899,7 @@ async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> 
 }
 
 async function main(): Promise<void> {
-  await testBrowserAsyncLocalStorageSingleFlightContexts();
+  await testBrowserAsyncLocalStorageAllowsOverlappingContexts();
   await testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn();
   await testBrowserTypeScriptDomCompilerScriptPolicy();
   await testIndexedDbKernelStorageEncryptsSnapshots();

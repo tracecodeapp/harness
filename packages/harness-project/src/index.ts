@@ -277,6 +277,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       kernelInfo: RuntimeKernelInfo;
       resolveCwd: (currentCwd: string, target: string) => Promise<string>;
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
+      jobRecords: () => readonly RuntimeProjectTerminalJobRecord[];
       isVerbose: () => boolean;
     },
     sessionOptions: RuntimeProjectTerminalSessionOptions = {}
@@ -403,7 +404,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       let error: RuntimeCommandError | undefined;
       for (const segment of segments) {
         if (segment.background) {
-          this.startTerminalBackgroundCommand(segment.command, options, this.currentCwd);
+          stdout += this.startTerminalBackgroundCommand(segment.command, options, this.currentCwd);
           continue;
         }
         const result = await this.runForegroundTerminalCommand(segment.command, options, commandStdinPipe);
@@ -535,7 +536,8 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     command: string,
     options: RuntimeProjectTerminalRunOptions,
     cwd: string
-  ): void {
+  ): string {
+    const previousJobPids = new Set(this.options.jobRecords().map((job) => job.pid));
     const handleBackgroundEvent = (event: RuntimeCommandEvent): void => {
       if (event.type === 'status' && !this.options.isVerbose()) return;
       options.onEvent?.(event);
@@ -558,7 +560,20 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       const message = error instanceof Error ? error.message : String(error);
       options.onEvent?.({ type: 'output', stream: 'stderr', data: `${message}\n` });
     });
+    const job = this.options.jobRecords().find((candidate) =>
+      !previousJobPids.has(candidate.pid) && candidate.command === command
+    );
+    if (!job) return '';
+    const line = `[${job.index}] ${job.pid}\n`;
+    options.onEvent?.({ type: 'output', stream: 'stdout', data: line });
+    return line;
   }
+}
+
+interface RuntimeProjectTerminalJobRecord {
+  index: number;
+  pid: number;
+  command: string;
 }
 
 const DEFAULT_CWD = '/workspace';
@@ -968,25 +983,15 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
   };
 }
 
-function isSingleFlightBrowserAsyncLocalStorage(): boolean {
-  return (AsyncLocalStorage as unknown as { __tracecodeBrowserSingleFlight?: boolean }).__tracecodeBrowserSingleFlight === true;
-}
-
-function normalizeRuntimeSchedulerConfig(
-  config: RuntimeTraceKernelSchedulerConfig | undefined,
-  options: { singleFlightAsyncContext?: boolean } = {}
-): RuntimeCommandSchedulerOptions {
+function normalizeRuntimeSchedulerConfig(config: RuntimeTraceKernelSchedulerConfig | undefined): RuntimeCommandSchedulerOptions {
   const configuredMaxConcurrentCommands = Number.isFinite(config?.maxConcurrentCommands)
     ? Math.max(1, Math.floor(config?.maxConcurrentCommands ?? 0))
     : 32;
-  const maxConcurrentCommands = options.singleFlightAsyncContext
-    ? 1
-    : configuredMaxConcurrentCommands;
   const maxQueuedCommands = config?.maxQueuedCommands === undefined || !Number.isFinite(config.maxQueuedCommands)
     ? undefined
     : Math.max(0, Math.floor(config.maxQueuedCommands));
   return {
-    maxConcurrentCommands,
+    maxConcurrentCommands: configuredMaxConcurrentCommands,
     ...(maxQueuedCommands !== undefined ? { maxQueuedCommands } : {}),
   };
 }
@@ -6678,9 +6683,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       json: (requestOptions) => this.requestHttpJson(requestOptions),
       listen: (listenOptions, handler) => this.listenHttp(listenOptions, handler),
     };
-    this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler, {
-      singleFlightAsyncContext: isSingleFlightBrowserAsyncLocalStorage(),
-    }));
+    this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler));
     this.cwd = this.kernelInfo.workspaceRoot;
     this.projectSession = options.projectSession ? createProjectSessionInfo(options.projectSession, this.kernelInfo) : undefined;
     for (const path of this.projectSession?.readonlyFiles ?? []) {
@@ -6904,12 +6907,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private createKernelHttpBridge(): RuntimeKernelHttpBridge {
     const actor = this.currentCommandActor() ?? SYSTEM_ACTOR;
+    const context = this.currentCommandContext();
+    const owner = context
+      ? { pid: context.process.pid, idPrefix: 'http', actor }
+      : { pid: 0, idPrefix: 'http-system', actor };
     return {
       listen: (options, handler) => {
-        const context = this.currentCommandContext();
-        return this.registerHttpListener(options, handler, context
-          ? { pid: context.process.pid, idPrefix: 'http', actor }
-          : { pid: 0, idPrefix: 'http-system', actor });
+        return this.registerHttpListener(options, handler, owner);
       },
       dispatch: (request, options) => this.dispatchHttpRequest(request, { ...options, actor }),
     };
@@ -8656,6 +8660,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return { stdout: rows.length > 0 ? `${rows.join('\n')}\n` : '', stderr: '', exitCode: 0 };
   }
 
+  private terminalJobRecords(): RuntimeProjectTerminalJobRecord[] {
+    return this.kernelJobRecords().map((process, index) => ({
+      index: index + 1,
+      pid: process.pid,
+      command: process.command,
+    }));
+  }
+
   private kernelJobRecords(currentPid = this.currentCommandContext()?.process.pid): RuntimeKernelProcessRecord[] {
     return this.activeProcessRecords().filter((process) => process.pid !== currentPid && process.pid !== 1);
   }
@@ -9869,6 +9881,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         kernelInfo: this.kernelInfo,
         resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
         runCommand: (command, commandOptions) => this.runCommand(command, commandOptions),
+        jobRecords: () => this.terminalJobRecords(),
         isVerbose: () => this.terminalVerbose,
       },
       {

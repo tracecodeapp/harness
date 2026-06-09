@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.9.5] - 2026-06-09
+
+### Added
+
+- Added TraceKernel browser project support for overlapping terminal commands so background server jobs can stay running while later `curl`, `npm`, or diagnostic commands execute.
+- Added terminal job launch output for background commands, printing the TraceKernel PID that can be used with `kill`, `wait`, `jobs -l`, and `/proc/<pid>`.
+- Added browser Node builtin support for `assert`, `assert/strict`, `events`, `util`, `stream`, `timers/promises`, `crypto` random helpers, `process`, and their `node:` aliases.
+
+### Fixed
+
+- Fixed browser HTTP listener ownership for worker-backed JavaScript project commands so delayed `http.createServer(...).listen(...)` calls remain attached to the command process that created them.
+- Fixed browser project scheduling so the browser `AsyncLocalStorage` shim no longer forces TraceKernel command concurrency down to one command.
+- Honored `process.exitCode` in browser Node project commands, matching common Node test-file catch-handler behavior.
+
 ## [0.9.4] - 2026-06-06
 
 ### Added

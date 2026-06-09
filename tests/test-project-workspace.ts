@@ -4735,6 +4735,42 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       { path: 'src/node_modules/exportedpkg/package.json', contents: '{"exports":{"./feature":{"require":"./nested-feature.js"}}}\n' },
       { path: 'src/node_modules/exportedpkg/nested-feature.js', contents: 'exports.value = "nested-export";\n' },
       { path: 'src/app/index.js', contents: 'console.log(require("localpkg").value);\nconsole.log(require("exportedpkg/feature").value);\n' },
+      {
+        path: 'compat.js',
+        contents: [
+          'const assert = require("node:assert/strict");',
+          'const { EventEmitter } = require("node:events");',
+          'const { promisify, types } = require("node:util");',
+          'const { setTimeout: delay } = require("node:timers/promises");',
+          'const { randomUUID, randomBytes } = require("node:crypto");',
+          'const processModule = require("node:process");',
+          'const { PassThrough } = require("node:stream");',
+          '(async () => {',
+          '  assert.equal(require("assert/strict"), assert);',
+          '  assert.deepEqual({ a: [1, Buffer.from("ok")] }, { a: [1, Buffer.from("ok")] });',
+          '  const emitter = new EventEmitter();',
+          '  let seen = "";',
+          '  emitter.once("ready", (value) => { seen = value; });',
+          '  emitter.emit("ready", "event");',
+          '  assert.equal(seen, "event");',
+          '  const read = promisify((value, callback) => callback(null, value + 1));',
+          '  assert.equal(await read(4), 5);',
+          '  assert.equal(types.isDate(new Date()), true);',
+          '  assert.match(randomUUID(), /^[0-9a-f-]{36}$/);',
+          '  assert.equal(randomBytes(4).length, 4);',
+          '  assert.equal(processModule.cwd(), process.cwd());',
+          '  const stream = new PassThrough();',
+          '  let streamed = "";',
+          '  stream.on("data", (chunk) => { streamed += chunk.toString(); });',
+          '  stream.write("st");',
+          '  stream.end("ream");',
+          '  await delay(0);',
+          '  assert.equal(streamed, "stream");',
+          '  console.log("compat-ok");',
+          '})().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
       { path: 'index.js', contents: 'const { add } = require("./lib/math"); console.log(add(2, 3)); console.log(process.argv.slice(2).join(","));\n' },
     ],
     nodeRunner: createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true }),
@@ -4743,6 +4779,10 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const result = await workspace.runCommand('node index.js alpha beta');
   assertCondition(result.exitCode === 0, `browser node should succeed: ${result.stderr}`);
   assertCondition(result.stdout === '9\nalpha,beta\n', `browser node should support require/json/argv: ${result.stdout}`);
+
+  const compatResult = await workspace.runCommand('node compat.js');
+  assertCondition(compatResult.exitCode === 0, `browser node compatibility builtins should succeed: ${compatResult.stderr}`);
+  assertCondition(compatResult.stdout === 'compat-ok\n', `browser node compatibility builtins should work: ${compatResult.stdout}`);
 
   const codeResult = await workspace.runCommand('node -e "const { add } = require(\\"./lib/math\\"); console.log(add(10, 7))"');
   assertCondition(codeResult.exitCode === 0, `browser node -e should succeed: ${codeResult.stderr}`);
@@ -4859,6 +4899,10 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   assertCondition(processExitResult.exitCode === 7, `browser node process.exit should return the requested exit code: ${processExitResult.exitCode}`);
   assertCondition(processExitResult.stdout === 'before-exit\n', `browser node process.exit should preserve stdout before exit: ${processExitResult.stdout}`);
   assertCondition(processExitResult.stderr === '', `browser node process.exit should not print an internal error: ${processExitResult.stderr}`);
+
+  const processExitCodeResult = await workspace.runCommand('node -e "process.exitCode = 5; console.log(\\"exit-code-set\\")"');
+  assertCondition(processExitCodeResult.exitCode === 5, `browser node process.exitCode should set the final exit code: ${JSON.stringify(processExitCodeResult)}`);
+  assertCondition(processExitCodeResult.stdout === 'exit-code-set\n', `browser node process.exitCode should preserve stdout: ${processExitCodeResult.stdout}`);
 
   const sideEffectResult = await workspace.runCommand([
     'node',
@@ -11224,8 +11268,11 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   });
   const backgroundSession = terminalBackgroundWorkspace.createTerminalSession();
   const backgroundStart = await backgroundSession.run('node background-terminal.js &');
+  const backgroundPid = await processPidForCommand(terminalBackgroundWorkspace, 'node background-terminal.js');
   assertCondition(
-    backgroundStart.exitCode === 0 && backgroundSession.inputState.mode === 'command',
+    backgroundStart.exitCode === 0 &&
+      backgroundStart.stdout === `[1] ${backgroundPid}\n` &&
+      backgroundSession.inputState.mode === 'command',
     `terminal background command should return the prompt immediately: ${JSON.stringify({ backgroundStart, inputState: backgroundSession.inputState })}`
   );
   await backgroundTerminalCommandStartedPromise;
@@ -11234,7 +11281,6 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
     backgroundPwd.exitCode === 0 && backgroundPwd.stdout === '/workspace\n',
     `terminal session should accept a new foreground command while a background job runs: ${JSON.stringify(backgroundPwd)}`
   );
-  const backgroundPid = await processPidForCommand(terminalBackgroundWorkspace, 'node background-terminal.js');
   const backgroundStatus = await terminalBackgroundWorkspace.readFile(`/proc/${backgroundPid}/status`);
   assertCondition(
     backgroundStatus.includes('Tty:\t/dev/tty\n') &&
@@ -11275,14 +11321,14 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   });
   const semicolonSession = terminalSemicolonWorkspace.createTerminalSession();
   const semicolonBackgroundStart = await semicolonSession.run('node first-terminal.js ; node background-terminal.js &');
+  await semicolonBackgroundCommandStartedPromise;
+  const semicolonBackgroundPid = await processPidForCommand(terminalSemicolonWorkspace, 'node background-terminal.js');
   assertCondition(
     semicolonBackgroundStart.exitCode === 0 &&
-      semicolonBackgroundStart.stdout === 'first:done\n' &&
+      semicolonBackgroundStart.stdout === `first:done\n[1] ${semicolonBackgroundPid}\n` &&
       semicolonSession.inputState.mode === 'command',
     `terminal semicolon list should background only the command terminated by &: ${JSON.stringify({ semicolonBackgroundStart, inputState: semicolonSession.inputState })}`
   );
-  await semicolonBackgroundCommandStartedPromise;
-  const semicolonBackgroundPid = await processPidForCommand(terminalSemicolonWorkspace, 'node background-terminal.js');
   releaseSemicolonBackgroundCommand();
   const semicolonBackgroundWait = await semicolonSession.run(`wait ${semicolonBackgroundPid}`);
   assertCondition(semicolonBackgroundWait.exitCode === 0, `terminal wait should reap semicolon background job: ${JSON.stringify(semicolonBackgroundWait)}`);
@@ -11311,14 +11357,14 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   });
   const andSession = terminalAndWorkspace.createTerminalSession();
   const andBackgroundStart = await andSession.run('node first-terminal.js && node background-terminal.js &');
+  await andBackgroundCommandStartedPromise;
+  const andBackgroundPid = await processPidForCommand(terminalAndWorkspace, 'node first-terminal.js && node background-terminal.js');
   assertCondition(
     andBackgroundStart.exitCode === 0 &&
-      andBackgroundStart.stdout === '' &&
+      andBackgroundStart.stdout === `[1] ${andBackgroundPid}\n` &&
       andSession.inputState.mode === 'command',
     `terminal && list should background the whole and-or command: ${JSON.stringify({ andBackgroundStart, inputState: andSession.inputState })}`
   );
-  await andBackgroundCommandStartedPromise;
-  const andBackgroundPid = await processPidForCommand(terminalAndWorkspace, 'node first-terminal.js && node background-terminal.js');
   const andBackgroundJobs = await andSession.run('jobs -l');
   assertCondition(
     andBackgroundJobs.exitCode === 0 &&
