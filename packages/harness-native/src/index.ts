@@ -1703,23 +1703,16 @@ class NativeJavaRuntimeClient implements RuntimeClient {
     if (this.hostPromise) return this.hostPromise;
     this.hostPromise = (async () => {
       const helperJar = javaAssetPath('java-browser-helper.jar');
-      const hostRoot = join(tmpdir(), `tracecode-native-java-host-${stableNativeHash({
-        helperJar,
-        javacCommand: this.options.javacCommand,
-        source: javaNativeHostSource(),
-      })}`);
+      const hostRoot = await mkdtemp(join(tmpdir(), 'tracecode-native-java-host-'));
       const hostDir = join(hostRoot, 'classes');
-      const hostClass = join(hostDir, 'TraceCodeNativeJavaHost.class');
-      if (!existsSync(hostClass)) {
-        await mkdir(hostDir, { recursive: true });
-        const hostSourcePath = join(hostRoot, 'TraceCodeNativeJavaHost.java');
-        await writeFile(hostSourcePath, javaNativeHostSource(), 'utf8');
-        const hostCompile = await runProcess(this.options.javacCommand, ['-cp', helperJar, '-d', hostDir, hostSourcePath], {
-          timeoutMs: this.options.timeoutMs,
-        });
-        if (hostCompile.exitCode !== 0 || hostCompile.timedOut) {
-          throw new Error(hostCompile.stderr || hostCompile.stdout || 'Native Java host compilation failed.');
-        }
+      await mkdir(hostDir, { recursive: true });
+      const hostSourcePath = join(hostRoot, 'TraceCodeNativeJavaHost.java');
+      await writeFile(hostSourcePath, javaNativeHostSource(), 'utf8');
+      const hostCompile = await runProcess(this.options.javacCommand, ['-cp', helperJar, '-d', hostDir, hostSourcePath], {
+        timeoutMs: this.options.timeoutMs,
+      });
+      if (hostCompile.exitCode !== 0 || hostCompile.timedOut) {
+        throw new Error(hostCompile.stderr || hostCompile.stdout || 'Native Java host compilation failed.');
       }
       return { hostDir, helperJar };
     })();

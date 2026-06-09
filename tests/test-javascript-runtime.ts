@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
-import { executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
+import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 
 interface WorkerMessage {
   id?: string;
@@ -317,6 +317,41 @@ async function main(): Promise<void> {
   assertCondition(
     importEscape.success === false && importEscape.error?.includes('dynamic import expressions are not supported'),
     `JavaScript runtime should reject non-literal dynamic import escapes: ${JSON.stringify(importEscape)}`
+  );
+  const selectorEscape = await harness.sendMessage<{ success: boolean; output?: unknown; error?: string }>('execute-code', {
+    code: 'function solve() { return 1; }',
+    functionName: '({}).constructor.constructor("globalThis.__tracecode_selector_escape = 7331; return function(){ return globalThis.__tracecode_selector_escape; }")()',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    selectorEscape.success === false && selectorEscape.error?.includes('Function name must be a JavaScript identifier'),
+    `JavaScript worker should reject selector eval escapes: ${JSON.stringify(selectorEscape)}`
+  );
+  const packageSelectorEscape = await executeJavaScriptCode(
+    'function solve() { return 1; }',
+    '({}).constructor.constructor("globalThis.__tracecode_selector_escape = 7331; return function(){ return globalThis.__tracecode_selector_escape; }")()',
+    {},
+    'function'
+  );
+  assertCondition(
+    packageSelectorEscape.success === false && packageSelectorEscape.error?.includes('Function name must be a JavaScript identifier'),
+    `Package executor should reject selector eval escapes: ${JSON.stringify(packageSelectorEscape)}`
+  );
+  assertCondition(
+    (globalThis as typeof globalThis & { __tracecode_selector_escape?: unknown }).__tracecode_selector_escape === undefined,
+    'Rejected package selector should not execute side effects'
+  );
+  const validDollarSelector = await executeJavaScriptCode(
+    'function $solve(value) { return value + 1; }',
+    '$solve',
+    { value: 4 },
+    'function'
+  );
+  assertCondition(
+    validDollarSelector.success === true && validDollarSelector.output === 5,
+    `Package executor should still allow valid JavaScript identifier selectors: ${JSON.stringify(validDollarSelector)}`
   );
   console.log('PASS: JavaScript runtime hardening blocks message/global/eval/import escapes');
 

@@ -567,6 +567,7 @@ export interface RuntimeCommandOptions {
   presentation?: 'programmatic' | 'terminal';
   foreground?: boolean;
   retainOnExit?: boolean;
+  includeHiddenFiles?: boolean;
   executionLimits?: RuntimeCommandExecutionLimits;
   onEvent?: RuntimeCommandEventHandler;
 }

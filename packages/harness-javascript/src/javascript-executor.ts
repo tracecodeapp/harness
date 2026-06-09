@@ -110,6 +110,56 @@ function javascriptRuntimeSandboxedCode(code: string, sourceCode = code): string
   ].join('\n');
 }
 
+const JAVASCRIPT_RUNTIME_RESERVED_SELECTOR_WORDS = new Set([
+  'await',
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'continue',
+  'debugger',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'enum',
+  'export',
+  'extends',
+  'false',
+  'finally',
+  'for',
+  'function',
+  'if',
+  'import',
+  'in',
+  'instanceof',
+  'new',
+  'null',
+  'return',
+  'super',
+  'switch',
+  'this',
+  'throw',
+  'true',
+  'try',
+  'typeof',
+  'var',
+  'void',
+  'while',
+  'with',
+  'yield',
+]);
+
+function assertJavaScriptRuntimeSelectorAllowed(selector: string, label: string): string {
+  if (!/^[A-Za-z_$][0-9A-Za-z_$]*$/.test(selector) || JAVASCRIPT_RUNTIME_RESERVED_SELECTOR_WORDS.has(selector)) {
+    throw Object.assign(new Error(`${label} must be a JavaScript identifier`), {
+      code: 'ERR_HARNESS_UNSAFE_JAVASCRIPT_SELECTOR',
+    });
+  }
+  return selector;
+}
+
 function createJavaScriptRuntimeGlobal(
   environment: JavaScriptLibraryEnvironment,
   consoleProxy: Console
@@ -1366,7 +1416,8 @@ function buildRunner(
   executionStyle: RuntimeExecutionStyle,
   argNames: string[],
   argumentMaterializers: Array<InputMaterializerKind | null> = [],
-  sourceCode = code
+  sourceCode = code,
+  targetName = ''
 ): DynamicRunner {
   const constructorRegistrySource = buildTrustedConstructorRegistrySource(argumentMaterializers);
   const materializedArgExpressions = argNames.map((name, index) => {
@@ -1374,9 +1425,9 @@ function buildRunner(
     return name.endsWith('__tracecodeRest') ? `...__tracecodeRestArgs(${materialized})` : materialized;
   });
   if (executionStyle === 'function') {
+    const targetIdentifier = assertJavaScriptRuntimeSelectorAllowed(targetName, 'Function name');
     return new Function(
       'console',
-      '__functionName',
       ...argNames,
       '__tracecode_global',
       `"use strict";
@@ -1385,18 +1436,19 @@ ${constructorRegistrySource}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
-  __target = eval(__functionName);
+  __target = ${targetIdentifier};
 } catch (_err) {
   __target = undefined;
 }
 if (typeof __target !== 'function') {
-  throw new Error('Function "' + __functionName + '" not found');
+  throw new Error('Function "${targetIdentifier}" not found');
 }
 return __target(${materializedArgExpressions.join(', ')});`
     ) as DynamicRunner;
   }
 
   if (executionStyle === 'solution-method') {
+    assertJavaScriptRuntimeSelectorAllowed(targetName, 'Solution method name');
     return new Function(
       'console',
       '__functionName',
@@ -1428,9 +1480,9 @@ throw new Error('Method "Solution.' + __functionName + '" not found');`
   }
 
   if (executionStyle === 'ops-class') {
+    const targetIdentifier = assertJavaScriptRuntimeSelectorAllowed(targetName, 'Class name');
     return new Function(
       'console',
-      '__className',
       '__operations',
       '__arguments',
       '__tracecode_global',
@@ -1446,12 +1498,12 @@ if (__operations.length !== __arguments.length) {
 }
 let __targetClass;
 try {
-  __targetClass = eval(__className);
+  __targetClass = ${targetIdentifier};
 } catch (_err) {
   __targetClass = undefined;
 }
 if (typeof __targetClass !== 'function') {
-  throw new Error('Class "' + __className + '" not found');
+  throw new Error('Class "${targetIdentifier}" not found');
 }
 let __instance = null;
 const __out = [];
@@ -1471,7 +1523,7 @@ for (let __i = 0; __i < __operations.length; __i++) {
     continue;
   }
   if (!__instance || typeof __instance[__op] !== 'function') {
-    throw new Error('Required method "' + __op + '" is not implemented on ' + (__className || 'target class'));
+    throw new Error('Required method "' + __op + '" is not implemented on ${targetIdentifier}');
   }
   __out.push(__instance[__op](...__callArgs));
 }
@@ -1552,27 +1604,37 @@ export async function executeJavaScriptCode(
   const consoleOutput: string[] = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
   const normalizedInputs = normalizeInputs(inputs);
-  const materializers = resolvedMaterializers ?? await resolveInputMaterializers(code, functionName, executionStyle, language);
-  const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const executableCode = language === 'javascript' ? stripJavaScriptModuleExports(code) : code;
   const javascriptLibraryEnvironment = await getJavaScriptLibraryEnvironment();
   const runtimeGlobal = createJavaScriptRuntimeGlobal(javascriptLibraryEnvironment, consoleProxy);
   const restoreJavaScriptLibraryGlobals = installJavaScriptLibraryGlobals(javascriptLibraryEnvironment);
 
   try {
+    const targetName = assertJavaScriptRuntimeSelectorAllowed(
+      functionName,
+      executionStyle === 'ops-class'
+        ? 'Class name'
+        : executionStyle === 'solution-method'
+          ? 'Solution method name'
+          : 'Function name'
+    );
+    const materializers = resolvedMaterializers ?? await resolveInputMaterializers(code, targetName, executionStyle, language);
+    const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
     let output: unknown;
 
     if (executionStyle === 'ops-class') {
       const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-      const runner = buildRunner(executableCode, executionStyle, [], [], sandboxSourceCode);
-      output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList, runtimeGlobal));
+      const runner = buildRunner(executableCode, executionStyle, [], [], sandboxSourceCode, targetName);
+      output = await Promise.resolve(runner(consoleProxy, operations, argumentsList, runtimeGlobal));
     } else {
-      const inputArguments = await resolveOrderedInputArguments(executableCode, functionName, materializedInputs, executionStyle, language);
+      const inputArguments = await resolveOrderedInputArguments(executableCode, targetName, materializedInputs, executionStyle, language);
       const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
       const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
       const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
-      const runner = buildRunner(executableCode, executionStyle, argNames, argumentMaterializers, sandboxSourceCode);
-      output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues, runtimeGlobal));
+      const runner = buildRunner(executableCode, executionStyle, argNames, argumentMaterializers, sandboxSourceCode, targetName);
+      output = executionStyle === 'solution-method'
+        ? await Promise.resolve(runner(consoleProxy, targetName, ...argValues, runtimeGlobal))
+        : await Promise.resolve(runner(consoleProxy, ...argValues, runtimeGlobal));
     }
 
     return {

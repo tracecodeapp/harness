@@ -11485,8 +11485,9 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
       }
       if (request.scriptPath.endsWith('read_fixture.py')) {
         const hiddenFixture = request.project.files.find((file) => file.path === '.trace/fixtures/input.txt')?.contents ?? 'missing\n';
+        const hiddenPolicy = request.project.hiddenFiles?.join(',') ?? 'no-hidden-policy';
         return {
-          stdout: `fixture:${hiddenFixture}`,
+          stdout: `fixture:${hiddenFixture}:policy:${hiddenPolicy}\n`,
           stderr: '',
           exitCode: 0,
         };
@@ -11617,8 +11618,8 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   );
   const fixtures = await workspace.runProjectCommand('fixtures');
   assertCondition(
-    fixtures.stdout === 'fixture:hidden-input\n',
-    `project session commands should receive hidden fixture files in runtime snapshots: ${JSON.stringify(fixtures)}`
+    fixtures.stdout === 'fixture:missing\n:policy:no-hidden-policy\n',
+    `project session commands should omit hidden fixture files from runtime snapshots by default: ${JSON.stringify(fixtures)}`
   );
   const hiddenGateBlocked = await workspace.runProjectCommand('hiddenGate');
   assertCondition(
@@ -11628,8 +11629,13 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   );
   const hiddenGate = await workspace.runProjectCommand('hiddenGate', { allowHidden: true });
   assertCondition(
-    hiddenGate.stdout === 'fixture:hidden-input\n',
-    `hidden project session commands should still be runnable by explicit host opt-in: ${JSON.stringify(hiddenGate)}`
+    hiddenGate.stdout === 'fixture:missing\n:policy:no-hidden-policy\n',
+    `allowHidden alone should not mount hidden fixture files into runtime snapshots: ${JSON.stringify(hiddenGate)}`
+  );
+  const hiddenGateWithFiles = await workspace.runProjectCommand('hiddenGate', { allowHidden: true, includeHiddenFiles: true });
+  assertCondition(
+    hiddenGateWithFiles.stdout === 'fixture:hidden-input\n:policy:.trace/fixtures/input.txt\n',
+    `hidden project session files should require explicit runtime snapshot opt-in: ${JSON.stringify(hiddenGateWithFiles)}`
   );
 
   const failEvents: RuntimeCommandEvent[] = [];
@@ -11679,7 +11685,15 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
 
 async function testPackageManagerProjectCommands(): Promise<void> {
   const nodeRequests: JavaScriptProjectCommandRequest[] = [];
-  const installRequests: Array<{ manager: string; command: string; args: string[]; cwd: string; manifestName: unknown }> = [];
+  const installRequests: Array<{
+    manager: string;
+    command: string;
+    args: string[];
+    cwd: string;
+    manifestName: unknown;
+    hiddenFixtureMounted: boolean;
+    hiddenPolicy: string | undefined;
+  }> = [];
   const workspace = await createRuntimeWorkspace({
     nodeRunner: async (request) => {
       nodeRequests.push(request);
@@ -11724,6 +11738,8 @@ async function testPackageManagerProjectCommands(): Promise<void> {
             args: [...request.args],
             cwd: request.cwd,
             manifestName: request.manifest.json.name,
+            hiddenFixtureMounted: request.project.files.some((file) => file.path === '.trace/fixtures/npm-secret.txt'),
+            hiddenPolicy: request.project.hiddenFiles?.join(','),
           });
           return {
             stdout: 'installed\n',
@@ -11772,6 +11788,7 @@ async function testPackageManagerProjectCommands(): Promise<void> {
         },
         { path: 'scripts/lifecycle.js', contents: '' },
         { path: 'scripts/test.js', contents: '' },
+        { path: '.trace/fixtures/npm-secret.txt', contents: 'hidden-npm\n', hidden: true },
         {
           path: 'packages/api/package.json',
           contents: JSON.stringify({
@@ -11792,11 +11809,13 @@ async function testPackageManagerProjectCommands(): Promise<void> {
   assertCondition(
     installRequests.length === 1 &&
       installRequests[0]?.manager === 'npm' &&
-      installRequests[0]?.command === 'install' &&
-      installRequests[0]?.args.length === 0 &&
-      installRequests[0]?.manifestName === 'weather-app',
-    `package dependency provider should receive normalized install request: ${JSON.stringify(installRequests)}`
-  );
+	      installRequests[0]?.command === 'install' &&
+	      installRequests[0]?.args.length === 0 &&
+	      installRequests[0]?.manifestName === 'weather-app' &&
+	      installRequests[0]?.hiddenFixtureMounted === false &&
+	      installRequests[0]?.hiddenPolicy === undefined,
+	    `package dependency provider should receive normalized install request: ${JSON.stringify(installRequests)}`
+	  );
   assertCondition(await workspace.exists('node_modules/.bin/weather-cli'), 'package install should materialize local package bin shims');
 
   const safeInstall = await workspace.runCommand('npm install --ignore-scripts left-pad');
@@ -12104,14 +12123,14 @@ async function testTypeScriptProjectCommands(): Promise<void> {
     'takehome/browser-ts/tests/report.test.ts',
     'import { cityKey } from "../src/parser";\nconst fs = require("node:fs");\nconst result = cityKey(" New York ");\nif (result !== "new-york") throw new Error("bad city key: " + result);\nfs.mkdirSync("takehome/browser-ts/reports", { recursive: true });\nfs.writeFileSync("takehome/browser-ts/reports/summary.txt", result + "\\n");\nconsole.log("takehome-ts=" + result);\n'
   );
-  const realisticCompile = await workspace.runCommand('tsc --project takehome/browser-ts/tsconfig.json');
+  const realisticCompile = await workspace.runCommand('tsc --project takehome/browser-ts/tsconfig.json', { includeHiddenFiles: true });
   assertCondition(realisticCompile.exitCode === 0, `realistic browser TS project should compile with pre-bundled package types: ${JSON.stringify(realisticCompile)}`);
   assertCondition(
     await workspace.exists('takehome/browser-ts/dist/src/parser.js') &&
       await workspace.exists('takehome/browser-ts/dist/tests/report.test.js'),
     'realistic browser TS project should emit src and tests into dist'
   );
-  const realisticRun = await workspace.runCommand('node takehome/browser-ts/dist/tests/report.test.js');
+  const realisticRun = await workspace.runCommand('node takehome/browser-ts/dist/tests/report.test.js', { includeHiddenFiles: true });
   assertCondition(
     realisticRun.exitCode === 0 &&
       realisticRun.stdout === 'takehome-ts=new-york\n' &&
@@ -12186,7 +12205,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
       };
     },
   });
-  const javaTest = await javaWorkspace.runProjectCommand('test');
+  const javaTest = await javaWorkspace.runProjectCommand('test', { includeHiddenFiles: true });
   assertCondition(
     javaTest.exitCode === 0 &&
       javaTest.stdout === 'java:/home/user/java-weather-api:takehome:new-york:\n' &&
@@ -12254,7 +12273,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
       };
     },
   });
-  const csharpTest = await csharpWorkspace.runProjectCommand('test');
+  const csharpTest = await csharpWorkspace.runProjectCommand('test', { includeHiddenFiles: true });
   assertCondition(
     csharpTest.exitCode === 0 &&
       csharpTest.stdout === 'Build succeeded.\ncsharp:/home/user/csharp-weather-api:takehome:new-york:--case,smoke\n' &&
@@ -12324,7 +12343,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
       };
     },
   });
-  const cppTest = await cppWorkspace.runProjectCommand('test');
+  const cppTest = await cppWorkspace.runProjectCommand('test', { includeHiddenFiles: true });
   assertCondition(
     cppTest.exitCode === 0 &&
       cppTest.stdout === 'cpp:/home/user/cpp-weather-api:takehome:new-york:smoke\n' &&
@@ -12338,6 +12357,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
   );
   const cppCompound = await cppWorkspace.runCommand('clang++ src/main.cpp src/normalizer.cpp -o build/weather-app && ./build/weather-app chain', {
     env: { MODE: 'compound' },
+    includeHiddenFiles: true,
   });
   assertCondition(
     cppCompound.exitCode === 0 &&
@@ -12348,6 +12368,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
   );
   const cppNestedCompound = await cppWorkspace.runCommand('cd src && clang++ main.cpp normalizer.cpp -o ../build/weather-app && ../build/weather-app nested', {
     env: { MODE: 'compound' },
+    includeHiddenFiles: true,
   });
   assertCondition(
     cppNestedCompound.exitCode === 0 &&
@@ -12358,6 +12379,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
   );
   const cppInteractiveCompound = await cppWorkspace.runCommand('clang++ src/main.cpp src/normalizer.cpp -o build/weather-app && ./build/weather-app stdin', {
     env: { MODE: 'compound' },
+    includeHiddenFiles: true,
     stdinPipe: stdinPipe('live-chain\n'),
   });
   assertCondition(
@@ -12368,7 +12390,9 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
     `C++ compiled executables should receive live stdin inside shell chains: ${JSON.stringify({ cppInteractiveCompound, lastRequest: cppRequests.at(-1) })}`
   );
   const cppWrongPathRunsBefore = cppRequests.filter((request) => request.source === 'run').length;
-  const cppWrongPath = await cppWorkspace.runCommand('cd src && clang++ main.cpp normalizer.cpp -o ../build/weather-app && ./build/weather-app wrong');
+  const cppWrongPath = await cppWorkspace.runCommand('cd src && clang++ main.cpp normalizer.cpp -o ../build/weather-app && ./build/weather-app wrong', {
+    includeHiddenFiles: true,
+  });
   const cppWrongPathRunsAfter = cppRequests.filter((request) => request.source === 'run').length;
   assertCondition(
     cppWrongPath.exitCode !== 0 &&

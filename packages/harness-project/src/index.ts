@@ -716,6 +716,7 @@ interface RuntimeCommandExecutionContext {
   readonly actor: RuntimeWorkspaceActor;
   readonly process: RuntimeKernelProcessRecord;
   readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
+  readonly includeHiddenFiles?: boolean;
   readonly runtimeIo: RuntimeProjectLiveIoController;
   readonly generationBaseline: RuntimeFileSystemGenerationSnapshot;
   readonly mutatedGenerationPaths: Set<string>;
@@ -2036,7 +2037,9 @@ async function snapshotCommandContext(
   entrypoint?: string,
   workspaceAlias?: string,
   kernel?: RuntimeKernelInfo,
-  readonlyFiles?: readonly string[]
+  readonlyFiles?: readonly string[],
+  hiddenFiles?: readonly string[],
+  includeHiddenFiles = false
 ): Promise<RuntimeProjectSnapshot> {
   const files: RuntimeFile[] = [];
   const directories: string[] = [];
@@ -2045,7 +2048,7 @@ async function snapshotCommandContext(
   directories.sort((left, right) => left.localeCompare(right));
   const publicKernel = kernel ? publicRuntimeKernelInfo(kernel) : undefined;
   const kernelFiles = kernel ? await snapshotRuntimeKernelVirtualFiles(ctx.fs, kernel) : undefined;
-  return {
+  const snapshot: RuntimeProjectSnapshot = {
     cwd: workspaceRoot,
     workspaceRoot,
     ...(workspaceAlias ? { workspaceAlias } : {}),
@@ -2055,8 +2058,10 @@ async function snapshotCommandContext(
     files,
     ...(directories.length > 0 ? { directories } : {}),
     ...(readonlyFiles && readonlyFiles.length > 0 ? { readonlyFiles: [...readonlyFiles] } : {}),
+    ...(includeHiddenFiles && hiddenFiles && hiddenFiles.length > 0 ? { hiddenFiles: [...hiddenFiles] } : {}),
     ...(entrypoint ? { entrypoint } : {}),
   };
+  return includeHiddenFiles ? snapshot : filterHiddenSnapshotFiles(snapshot, hiddenFiles);
 }
 
 function filterReadonlySnapshotFiles(
@@ -6060,6 +6065,8 @@ async function runPackageInstall(
   workspaceAlias: string | undefined,
   kernel: RuntimeKernelInfo | undefined,
   readonlyFiles: readonly string[] | undefined,
+  hiddenFiles: readonly string[] | undefined,
+  includeHiddenFiles: () => boolean,
   onFileChange: RuntimeFileChangeObserver | undefined
 ): Promise<RuntimeCommandResult> {
   if (!options.dependencyProvider) {
@@ -6080,7 +6087,7 @@ async function runPackageInstall(
     cwd: manifest.directory,
     env: commandEnv(ctx),
     manifest,
-    project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+    project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles()),
     ...(ctx.signal ? { signal: ctx.signal } : {}),
   }), onFileChange);
   if (result.exitCode === 0 && options.autoLinkBins) {
@@ -6099,6 +6106,8 @@ async function runPackageManagerCommand(
   workspaceAlias: string | undefined,
   kernel: RuntimeKernelInfo | undefined,
   readonlyFiles: readonly string[] | undefined,
+  hiddenFiles: readonly string[] | undefined,
+  includeHiddenFiles: () => boolean,
   onFileChange: RuntimeFileChangeObserver | undefined,
   emitOutput?: PackageManagerOutputEmitter
 ): Promise<RuntimeCommandResult> {
@@ -6134,7 +6143,7 @@ async function runPackageManagerCommand(
     case 'exec':
       return runPackageExec(manager, ctx, workspaceRoot, manifest, invocation.execCommand, invocation.execArgs, options);
     case 'install':
-      return runPackageInstall(manager, ctx, workspaceRoot, manifest, invocation, options, entrypoint, workspaceAlias, kernel, readonlyFiles, onFileChange);
+      return runPackageInstall(manager, ctx, workspaceRoot, manifest, invocation, options, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles, onFileChange);
     case 'list':
       return listPackageDependencies(manifest);
     case 'unsupported':
@@ -6151,17 +6160,19 @@ export function createPackageManagerProjectCommands(
   workspaceAlias?: string,
   kernel?: RuntimeKernelInfo,
   readonlyFiles?: readonly string[],
-  emitOutput?: PackageManagerOutputEmitter
+  emitOutput?: PackageManagerOutputEmitter,
+  hiddenFiles?: readonly string[],
+  includeHiddenFiles: () => boolean = () => false
 ): ProjectWorkspaceCommand[] {
   const normalized = normalizePackageManagerConfig(config, true);
   if (!normalized) return [];
   const commands: ProjectWorkspaceCommand[] = normalized.managers.map((manager) =>
     defineCommand(manager, (args, ctx) =>
-      runPackageManagerCommand(manager, args, ctx, workspaceRoot, normalized, entrypoint, workspaceAlias, kernel, readonlyFiles, onFileChange, emitOutput))
+      runPackageManagerCommand(manager, args, ctx, workspaceRoot, normalized, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles, onFileChange, emitOutput))
   );
   if (normalized.managers.includes('npm')) {
     commands.push(defineCommand('npx', (args, ctx) =>
-      runPackageManagerCommand('npx', args, ctx, workspaceRoot, normalized, entrypoint, workspaceAlias, kernel, readonlyFiles, onFileChange, emitOutput)));
+      runPackageManagerCommand('npx', args, ctx, workspaceRoot, normalized, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles, onFileChange, emitOutput)));
   }
   return commands;
 }
@@ -6173,7 +6184,9 @@ export function createPythonProjectCommands(
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
   kernel?: RuntimeKernelInfo,
-  readonlyFiles?: readonly string[]
+  readonlyFiles?: readonly string[],
+  hiddenFiles?: readonly string[],
+  includeHiddenFiles: () => boolean = () => false
 ): ProjectWorkspaceCommand[] {
   const runPython = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parsePythonInvocation(args);
@@ -6247,7 +6260,7 @@ export function createPythonProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles()),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
     }), onFileChange);
   };
@@ -6265,7 +6278,9 @@ export function createNodeProjectCommands(
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
   kernel?: RuntimeKernelInfo,
-  readonlyFiles?: readonly string[]
+  readonlyFiles?: readonly string[],
+  hiddenFiles?: readonly string[],
+  includeHiddenFiles: () => boolean = () => false
 ): ProjectWorkspaceCommand[] {
   const runNode = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parseNodeInvocation(args);
@@ -6340,7 +6355,7 @@ export function createNodeProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles()),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       ...(
         parsed.inputType || parsed.requireModules.length > 0
@@ -6367,7 +6382,9 @@ export function createTypeScriptProjectCommands(
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
   kernel?: RuntimeKernelInfo,
-  readonlyFiles?: readonly string[]
+  readonlyFiles?: readonly string[],
+  hiddenFiles?: readonly string[],
+  includeHiddenFiles: () => boolean = () => false
 ): ProjectWorkspaceCommand[] {
   const runTsc = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parseTscInvocation(args);
@@ -6382,7 +6399,7 @@ export function createTypeScriptProjectCommands(
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles()),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
     }), onFileChange);
   };
@@ -6399,7 +6416,9 @@ export function createJavaProjectCommands(
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
   kernel?: RuntimeKernelInfo,
-  readonlyFiles?: readonly string[]
+  readonlyFiles?: readonly string[],
+  hiddenFiles?: readonly string[],
+  includeHiddenFiles: () => boolean = () => false
 ): ProjectWorkspaceCommand[] {
   const runJavac = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -6428,7 +6447,7 @@ export function createJavaProjectCommands(
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles()),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
     }), onFileChange);
   };
@@ -6479,7 +6498,7 @@ export function createJavaProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles()),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       options: {
         ...(jarPath ? { jarPath, classpath: jarPath } : parsed.classpath ? { classpath: parsed.classpath } : {}),
@@ -6507,6 +6526,8 @@ export function createCppProjectCommands(
     workspaceAlias?: string;
     kernel?: RuntimeKernelInfo;
     readonlyFiles?: readonly string[];
+    hiddenFiles?: readonly string[];
+    includeHiddenFiles?: () => boolean;
   } = {}
 ): ProjectWorkspaceCommand[] {
   const runCompiler = (compilerCommand: string) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
@@ -6530,7 +6551,7 @@ export function createCppProjectCommands(
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles),
+      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles, options.hiddenFiles, options.includeHiddenFiles?.() ?? false),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       options: { compilerCommand },
     });
@@ -6557,7 +6578,7 @@ export function createCppProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
-      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles),
+      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles, options.hiddenFiles, options.includeHiddenFiles?.() ?? false),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
     }), options.onFileChange);
   };
@@ -6582,7 +6603,8 @@ export function createCSharpProjectCommands(
   workspaceAlias?: string,
   kernel?: RuntimeKernelInfo,
   readonlyFiles?: readonly string[],
-  hiddenFiles?: readonly string[]
+  hiddenFiles?: readonly string[],
+  includeHiddenFiles: () => boolean = () => false
 ): ProjectWorkspaceCommand[] {
   const runDotnet = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -6599,7 +6621,7 @@ export function createCSharpProjectCommands(
     }
 
     const project = filterReadonlySnapshotFiles(
-      await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles()),
       readonlyFiles,
       hiddenFiles
     );
@@ -6782,12 +6804,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         data,
       });
     };
+    const includeHiddenFilesForCurrentCommand = () => this.currentCommandContext()?.includeHiddenFiles === true;
     const customCommands = [
-      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
-      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
-      ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
-      ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput) : []),
-      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
+      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
+      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
+      ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
+      ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
+      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
       ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner), this.cwd, {
         recordExecutablePath: (path) => this.registerVirtualExecutable({ path, kind: 'cpp' }),
         entrypoint: this.entrypoint,
@@ -6795,8 +6818,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         workspaceAlias: this.kernelInfo.workspaceAlias,
         kernel: this.kernelInfo,
         readonlyFiles: this.projectSession?.readonlyFiles,
+        hiddenFiles: this.projectSession?.hiddenFiles,
+        includeHiddenFiles: includeHiddenFilesForCurrentCommand,
       }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles) : []),
+      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
       defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
       defineCommand('bg', async (args) => this.runKernelJobPlacement(args, 'bg')),
       defineCommand('curl', async (args, ctx) => this.runKernelCurl(args, ctx)),
@@ -9602,6 +9627,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       actor,
       process,
       stdinPipe,
+      includeHiddenFiles: options.includeHiddenFiles,
       runtimeIo: this.createRuntimeLiveIoController(actor, abortController.signal),
       generationBaseline: this.fs.snapshotGenerations(),
       mutatedGenerationPaths: new Set(),

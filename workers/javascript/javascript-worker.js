@@ -6147,6 +6147,23 @@ function javascriptRuntimeSandboxedCode(code, sourceCode = code) {
   return `${javascriptRuntimeSandboxPrelude()}\n${javascriptRuntimeCheckedCode(code, sourceCode)}`;
 }
 
+const JAVASCRIPT_RUNTIME_RESERVED_SELECTOR_WORDS = new Set([
+  'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger',
+  'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'false',
+  'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'new',
+  'null', 'return', 'super', 'switch', 'this', 'throw', 'true', 'try',
+  'typeof', 'var', 'void', 'while', 'with', 'yield',
+]);
+
+function assertJavaScriptRuntimeSelectorAllowed(selector, label) {
+  if (!/^[A-Za-z_$][0-9A-Za-z_$]*$/.test(selector) || JAVASCRIPT_RUNTIME_RESERVED_SELECTOR_WORDS.has(selector)) {
+    throw Object.assign(new Error(`${label} must be a JavaScript identifier`), {
+      code: 'ERR_HARNESS_UNSAFE_JAVASCRIPT_SELECTOR',
+    });
+  }
+  return selector;
+}
+
 function createJavaScriptRuntimeGlobal(consoleProxy) {
   const moduleObject = { exports: {} };
   const runtimeGlobal = Object.create(null);
@@ -6198,16 +6215,16 @@ return null;`
   );
 }
 
-function buildFunctionExecutionRunner(code, executionStyle, argNames, argumentMaterializers = [], sourceCode = code) {
+function buildFunctionExecutionRunner(code, executionStyle, argNames, argumentMaterializers = [], sourceCode = code, targetName = '') {
   const constructorRegistrySource = buildTrustedConstructorRegistrySource(argumentMaterializers);
   const materializedArgExpressions = argNames.map((name, index) => {
     const materialized = `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`;
     return name.endsWith('__tracecodeRest') ? `...__tracecodeRestArgs(${materialized})` : materialized;
   });
   if (executionStyle === 'function') {
+    const targetIdentifier = assertJavaScriptRuntimeSelectorAllowed(targetName, 'Function name');
     return new Function(
       'console',
-      '__functionName',
       ...argNames,
       '__tracecode_global',
       `"use strict";
@@ -6219,18 +6236,19 @@ ${constructorRegistrySource}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
-  __target = eval(__functionName);
+  __target = ${targetIdentifier};
 } catch (_err) {
   __target = undefined;
 }
 if (typeof __target !== 'function') {
-  throw new Error('Function "' + __functionName + '" not found');
+  throw new Error('Function "${targetIdentifier}" not found');
 }
 return __target(${materializedArgExpressions.join(', ')});`
     );
   }
 
   if (executionStyle === 'solution-method') {
+    assertJavaScriptRuntimeSelectorAllowed(targetName, 'Solution method name');
     return new Function(
       'console',
       '__functionName',
@@ -6265,9 +6283,9 @@ throw new Error('Method "Solution.' + __functionName + '" not found');`
   }
 
   if (executionStyle === 'ops-class') {
+    const targetIdentifier = assertJavaScriptRuntimeSelectorAllowed(targetName, 'Class name');
     return new Function(
       'console',
-      '__className',
       '__operations',
       '__arguments',
       '__tracecode_global',
@@ -6286,12 +6304,12 @@ if (__operations.length !== __arguments.length) {
 }
 let __targetClass;
 try {
-  __targetClass = eval(__className);
+  __targetClass = ${targetIdentifier};
 } catch (_err) {
   __targetClass = undefined;
 }
 if (typeof __targetClass !== 'function') {
-  throw new Error('Class "' + __className + '" not found');
+  throw new Error('Class "${targetIdentifier}" not found');
 }
 let __instance = null;
 const __out = [];
@@ -6311,7 +6329,7 @@ for (let __i = 0; __i < __operations.length; __i++) {
     continue;
   }
   if (!__instance || typeof __instance[__op] !== 'function') {
-    throw new Error('Required method "' + __op + '" is not implemented on ' + (__className || 'target class'));
+    throw new Error('Required method "' + __op + '" is not implemented on ${targetIdentifier}');
   }
   const __opResult = __instance[__op](...__callArgs);
   __out.push(__opResult === undefined ? null : __opResult);
@@ -6323,18 +6341,18 @@ return __out;`
   throw new Error(`Execution style "${executionStyle}" is not supported for JavaScript runtime yet.`);
 }
 
-function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH, argumentMaterializers = [], sourceCode = code) {
+function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH, argumentMaterializers = [], sourceCode = code, targetName = '') {
   const constructorRegistrySource = buildTrustedConstructorRegistrySource(argumentMaterializers);
   const materializedArgExpressions = argNames.map((name, index) => {
     const materialized = `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`;
     return name.endsWith('__tracecodeRest') ? `...__tracecodeRestArgs(${materialized})` : materialized;
   });
   if (executionStyle === 'function') {
+    const targetIdentifier = assertJavaScriptRuntimeSelectorAllowed(targetName, 'Function name');
     return new Function(
       'console',
       '__traceRecorder',
       '__traceCtx',
-      '__functionName',
       ...argNames,
       '__tracecode_global',
       `"use strict";
@@ -6347,18 +6365,19 @@ ${constructorRegistrySource}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
-  __target = eval(__functionName);
+  __target = ${targetIdentifier};
 } catch (_err) {
   __target = undefined;
 }
 if (typeof __target !== 'function') {
-  throw new Error('Function "' + __functionName + '" not found');
+  throw new Error('Function "${targetIdentifier}" not found');
 }
 return __target(${materializedArgExpressions.join(', ')});`
     );
   }
 
   if (executionStyle === 'solution-method') {
+    assertJavaScriptRuntimeSelectorAllowed(targetName, 'Solution method name');
     return new Function(
       'console',
       '__traceRecorder',
@@ -6396,11 +6415,11 @@ throw new Error('Method "Solution.' + __functionName + '" not found');`
   }
 
   if (executionStyle === 'ops-class') {
+    const targetIdentifier = assertJavaScriptRuntimeSelectorAllowed(targetName, 'Class name');
     return new Function(
       'console',
       '__traceRecorder',
       '__traceCtx',
-      '__className',
       '__operations',
       '__arguments',
       '__tracecode_global',
@@ -6420,12 +6439,12 @@ if (__operations.length !== __arguments.length) {
 }
 let __targetClass;
 try {
-  __targetClass = eval(__className);
+  __targetClass = ${targetIdentifier};
 } catch (_err) {
   __targetClass = undefined;
 }
 if (typeof __targetClass !== 'function') {
-  throw new Error('Class "' + __className + '" not found');
+  throw new Error('Class "${targetIdentifier}" not found');
 }
 let __instance = null;
 const __out = [];
@@ -6445,7 +6464,7 @@ for (let __i = 0; __i < __operations.length; __i++) {
     continue;
   }
   if (!__instance || typeof __instance[__op] !== 'function') {
-    throw new Error('Required method "' + __op + '" is not implemented on ' + (__className || 'target class'));
+    throw new Error('Required method "' + __op + '" is not implemented on ${targetIdentifier}');
   }
   const __opResult = __instance[__op](...__callArgs);
   __out.push(__opResult === undefined ? null : __opResult);
@@ -6495,20 +6514,32 @@ async function executeCode(payload) {
     const normalizedInputs = normalizeInputs(inputs);
     const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
     const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
+    const targetName = hasNamedFunction
+      ? assertJavaScriptRuntimeSelectorAllowed(
+        functionName,
+        executionStyle === 'ops-class'
+          ? 'Class name'
+          : executionStyle === 'solution-method'
+            ? 'Solution method name'
+            : 'Function name'
+      )
+      : '';
     let output;
 
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
         const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code);
-        output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList, runtimeGlobal));
+        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code, targetName);
+        output = await Promise.resolve(runner(consoleProxy, operations, argumentsList, runtimeGlobal));
       } else {
-        const inputArguments = await resolveOrderedInputArguments(code, functionName, materializedInputs, executionStyle, language);
+        const inputArguments = await resolveOrderedInputArguments(code, targetName, materializedInputs, executionStyle, language);
         const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
         const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
-        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code);
-        output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues, runtimeGlobal));
+        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code, targetName);
+        output = executionStyle === 'solution-method'
+          ? await Promise.resolve(runner(consoleProxy, targetName, ...argValues, runtimeGlobal))
+          : await Promise.resolve(runner(consoleProxy, ...argValues, runtimeGlobal));
       }
     } else {
       if (executionStyle !== 'function') {
@@ -6586,6 +6617,16 @@ async function executeCodeBatch(payload) {
     const executableCode = await prepareExecutableCode(code, language);
     const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
     const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
+    const targetName = hasNamedFunction
+      ? assertJavaScriptRuntimeSelectorAllowed(
+        functionName,
+        executionStyle === 'ops-class'
+          ? 'Class name'
+          : executionStyle === 'solution-method'
+            ? 'Solution method name'
+            : 'Function name'
+      )
+      : '';
     let runner;
     let inputArguments = [];
     let argNames = [];
@@ -6593,13 +6634,13 @@ async function executeCodeBatch(payload) {
 
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
-        runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code);
+        runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code, targetName);
       } else {
         const sampleInputs = applyInputMaterializers(normalizeInputs(batchSignatureSampleInput(inputBatch)), materializers);
-        inputArguments = await resolveOrderedInputArguments(code, functionName, sampleInputs, executionStyle, language);
+        inputArguments = await resolveOrderedInputArguments(code, targetName, sampleInputs, executionStyle, language);
         argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
-        runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code);
+        runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code, targetName);
       }
     } else {
       if (executionStyle !== 'function') {
@@ -6618,10 +6659,12 @@ async function executeCodeBatch(payload) {
         if (hasNamedFunction) {
           if (executionStyle === 'ops-class') {
             const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-            output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList, runtimeGlobal));
+            output = await Promise.resolve(runner(consoleProxy, operations, argumentsList, runtimeGlobal));
           } else {
             const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
-            output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues, runtimeGlobal));
+            output = executionStyle === 'solution-method'
+              ? await Promise.resolve(runner(consoleProxy, targetName, ...argValues, runtimeGlobal))
+              : await Promise.resolve(runner(consoleProxy, ...argValues, runtimeGlobal));
           }
         } else {
           const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
@@ -6683,7 +6726,8 @@ async function executeWithTracing(payload) {
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
-  const traceFunctionName = hasNamedFunction ? functionName : '<module>';
+  let targetName = hasNamedFunction ? functionName : '';
+  const traceFunctionName = hasNamedFunction ? targetName : '<module>';
   const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
   const statementSourceMap = typeof code === 'string' ? buildRuntimeStatementSourceMap(code) : new Map();
   const traceRecorder = createTraceRecorder({ ...(options ?? {}), maxPathDepth, statementSourceMap });
@@ -6697,9 +6741,19 @@ async function executeWithTracing(payload) {
     if (language !== 'javascript' && language !== 'typescript') {
       throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
     }
+    if (hasNamedFunction) {
+      targetName = assertJavaScriptRuntimeSelectorAllowed(
+        functionName,
+        executionStyle === 'ops-class'
+          ? 'Class name'
+          : executionStyle === 'solution-method'
+            ? 'Solution method name'
+            : 'Function name'
+      );
+    }
 
     const executableCode = await prepareExecutableCode(code, language);
-    traceLineBounds = determineTraceLineBounds(code, functionName, executionStyle);
+    traceLineBounds = determineTraceLineBounds(code, targetName, executionStyle);
 
     let instrumentedCode = null;
     try {
@@ -6756,26 +6810,27 @@ async function executeWithTracing(payload) {
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
         const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth, [], code);
+        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth, [], code, targetName);
         output = await Promise.resolve(
           runner(
             consoleProxy,
             traceRecorder,
             { functionName: traceFunctionName },
-            functionName,
             operations,
             argumentsList,
             runtimeGlobal
           )
         );
       } else {
-        const inputArguments = await resolveOrderedInputArguments(code, functionName, materializedInputs, executionStyle, language);
+        const inputArguments = await resolveOrderedInputArguments(code, targetName, materializedInputs, executionStyle, language);
         const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
         const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers, code);
+        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers, code, targetName);
         output = await Promise.resolve(
-          runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, functionName, ...argValues, runtimeGlobal)
+          executionStyle === 'solution-method'
+            ? runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, targetName, ...argValues, runtimeGlobal)
+            : runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, ...argValues, runtimeGlobal)
         );
       }
     } else {

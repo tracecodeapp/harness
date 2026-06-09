@@ -597,10 +597,10 @@ async function testBrowserJavaScriptReadonlyHardlinksAreRejected(): Promise<void
   assertCondition(result.exitCode === 0, `browser JS hardlink test should complete: ${JSON.stringify(result)}`);
   assertCondition(
     result.stdout === [
-      'README.md:EROFS',
-      'alias.txt:exists=false',
-      '.trace/fixtures/secret.txt:EROFS',
-      'visible-secret.txt:exists=false',
+	      'README.md:EROFS',
+	      'alias.txt:exists=false',
+	      '.trace/fixtures/secret.txt:ENOENT',
+	      'visible-secret.txt:exists=false',
       'readme=protected',
       '',
       '',
@@ -1348,7 +1348,7 @@ async function testCSharpWorkerInputPreflightBudgets(): Promise<void> {
 }
 
 async function testCSharpInputHydrationConstructorsAreBounded(): Promise<void> {
-  const source = await readFile(join(dirname(testDirectory), 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
+  const source = await readFile(join(dirname(testDirectory), 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
   assertCondition(
     source.includes('MaxInputConstructorCandidates = 32') &&
       source.includes('MaxInputConstructorParameters = 32'),
@@ -1412,14 +1412,14 @@ async function testCSharpBrowserRuntimeNetworkAssembliesAreDenied(): Promise<voi
     );
   }
 
-  const hostSource = await readFile(join(root, 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
+  const hostSource = await readFile(join(root, 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
   assertCondition(
     hostSource.includes('ValidateUserSourcePolicy(originalUserTree)') &&
       hostSource.includes('ValidateUserSourcePolicy(projectTree)') &&
       hostSource.includes('IsAllowedUserAssemblyName'),
     'C# compiler host should enforce denied browser runtime APIs before compiling user code and project references'
   );
-  const projectFile = await readFile(join(root, 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'TraceCode.CSharpHost.csproj'), 'utf8');
+  const projectFile = await readFile(join(root, 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'TraceCode.CSharpHost.csproj'), 'utf8');
   assertCondition(
     projectFile.includes('Remove="$(TargetDir)System.Net*.dll"') &&
       projectFile.includes('Remove="$(TargetDir)System.Reflection.Emit*.dll"') &&
@@ -1772,6 +1772,22 @@ public class JavaHelperStateSmoke {
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
+}
+
+async function testNativeJavaHostCacheUsesPrivateTempDirectory(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'packages', 'harness-native', 'src', 'index.ts'), 'utf8');
+  assertCondition(
+    source.includes("await mkdtemp(join(tmpdir(), 'tracecode-native-java-host-'))"),
+    'Native Java host helper should compile into a fresh private temp directory'
+  );
+  assertCondition(
+    !source.includes('existsSync(hostClass)'),
+    'Native Java host helper must not trust a pre-existing predictable class file'
+  );
+  assertCondition(
+    source.indexOf('const hostRoot = await mkdtemp') < source.indexOf('const hostCompile = await runProcess'),
+    'Native Java host helper should allocate the private directory before compiling the host'
+  );
 }
 
 async function testJavaWorkerDiagnosticsAreBounded(): Promise<void> {
@@ -2238,8 +2254,8 @@ async function testBulkTraceWritesAreBudgetedBeforeLoops(): Promise<void> {
     readFile(join(root, 'workers', 'javascript', 'javascript-worker.js'), 'utf8'),
     readFile(join(root, 'workers', 'python', 'runtime-core.js'), 'utf8'),
     readFile(join(root, 'workers', 'java', 'src', 'tracecode', 'user', 'TraceHooks.java'), 'utf8'),
-    readFile(join(root, 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'RuntimeTraceSink.cs'), 'utf8'),
-    readFile(join(root, 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8'),
+    readFile(join(root, 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'RuntimeTraceSink.cs'), 'utf8'),
+    readFile(join(root, 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8'),
     readFile(join(root, 'workers', 'cpp', 'tracecode_runtime.hpp'), 'utf8'),
   ]);
   assertCondition(
@@ -2926,6 +2942,7 @@ async function main(): Promise<void> {
   await testJavaWorkerCheerpJLoaderPolicyPinsCdn();
   await testJavaQueueAugmentationRequiresNativeBlockShape();
   testJavaHelperRunScopeAndCacheManifest();
+  await testNativeJavaHostCacheUsesPrivateTempDirectory();
   await testJavaWorkerDiagnosticsAreBounded();
   testJavaTraceHeaderExpansionIsBounded();
   await testJavaWorkerTraceHeaderExpansionIsBounded();
