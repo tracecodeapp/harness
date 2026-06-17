@@ -85,6 +85,11 @@ function javaHttpOkTestManifest(status: number, body: string): string {
   ].join('\n');
 }
 
+function javaProjectBridgeRunIdFromSource(source: string): string {
+  const match = source.match(/ProjectEvents\.beginProjectRun\("([^"\\]*(?:\\.[^"\\]*)*)"\)/);
+  return match?.[1] ?? '';
+}
+
 function isJavaHttpTestSharedArrayBuffer(value: unknown): value is SharedArrayBuffer {
   return Object.prototype.toString.call(value) === '[object SharedArrayBuffer]';
 }
@@ -2594,6 +2599,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
   const runLibraryClasspaths: string[] = [];
   const httpDispatches: Array<{ request: Record<string, unknown>; timeoutMs?: number }> = [];
   let cheerpjInitOptions: { natives?: Record<string, (...args: unknown[]) => unknown> } | undefined;
+  let activeProjectBridgeRunId = '';
   let nextId = 0;
 
   const selfObject: {
@@ -2968,6 +2974,12 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 .filter(Boolean)
                 .map((entry) => Buffer.from(entry.split('\t')[1] ?? '', 'base64').toString('utf8'))
                 .join('\n');
+              activeProjectBridgeRunId = javaProjectBridgeRunIdFromSource(decodedSourceManifest);
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                null,
+                'stdout',
+                'stale-native-output\n'
+              );
               const hasKernelDevices = decodedSourceManifest.includes('ProjectEvents.setKernelDevices("') &&
                 decodedSourceManifest.includes('/dev/stdout');
               const hasKernelFiles = decodedSourceManifest.includes('ProjectEvents.setKernelFiles("') &&
@@ -3013,6 +3025,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 ].join('\n');
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stderr',
                   rawStderr
                 );
@@ -3036,112 +3049,134 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\npw_log\ndev_stderr\nfd_stderr\nps_stderr\n' : 'dev_stderr\nfd_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'nio-writer-before-output.txt',
                 Buffer.from('nio-before-output\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 'after-nio-writer-live\n'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'empty-nio-stream.bin',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 'after-empty-nio-stream\n'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'empty-nio-writer.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 'after-empty-nio-writer\n'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'empty-nio-channel.bin',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 'after-empty-nio-channel\n'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'empty-open-writer.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 'after-empty-open-writer\n'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'empty-open-stream.bin',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 'after-empty-open-stream\n'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'writer-before-output.txt',
                 Buffer.from('before-output\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 'after-filewriter-live\n'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 '5\n'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 'java_args=alpha,beta\n'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdout',
                 'java_stdin=from-stdin\n'
               );
               if (hasKernelProc) {
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'proc-info\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'proc-stream=tracekernel test\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'proc-write:IOException\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'proc-list=info,version\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'proc-stat=true:false:28\n'
                 );
@@ -3149,150 +3184,178 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               if (hasKernelDevices) {
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   hasCustomKernelDevices ? 'dev-list=custom-in,log,null,stderr,stdin,stdout,tty\n' : 'dev-list=null,stderr,stdin,stdout,tty\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   hasCustomKernelDevices ? 'dev-stream=custom-in,log,null,stderr,stdin,stdout,tty\n' : 'dev-stream=null,stderr,stdin,stdout,tty\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev-glob=stderr,stdin,stdout\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev-filter=stderr,stdout\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev-stat=true:true:true:false\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev-nio-stat=true:false:false:true:0\n'
                 );
                 if (hasCustomKernelDevices) {
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                     null,
+                    activeProjectBridgeRunId,
                     'stdout',
                     'dev-custom=from-stdin:true\n'
                   );
                 }
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev-delete:IOException\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_stdin=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_stream_stdin=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_reader_stdin=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_nio_stream_stdin=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_nio_reader_stdin=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_read_all_lines=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_lines=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_channel_stdin=from-stdin\n'
                 );
                 if (hasCustomKernelDevices) {
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                     null,
+                    activeProjectBridgeRunId,
                     'stdout',
                     'dev_stream_custom=from-stdin\n'
                   );
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                     null,
+                    activeProjectBridgeRunId,
                     'stdout',
                     'dev_reader_custom=from-stdin\n'
                   );
                 }
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_stdout\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'fos_stdout\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'fd_stdout\n',
                   '/dev/stdout'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'fd_writer_stdout\n',
                   '/dev/stdout'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'fd_stdin=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'fd_reader_stdin=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_writer\n',
                   '/dev/stdout'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'pw_stdout\n',
                   '/dev/stdout'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'fw_tty\n',
                   '/dev/tty'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'dev_tty\n',
                   '/dev/tty'
@@ -3300,6 +3363,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 if (hasCustomKernelDevices) {
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                     null,
+                    activeProjectBridgeRunId,
                     'stdout',
                     'capture-device',
                     '',
@@ -3307,6 +3371,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   );
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                     null,
+                    activeProjectBridgeRunId,
                     'stdout',
                     'stdout-after-capture\n',
                     '',
@@ -3314,6 +3379,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   );
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                     null,
+                    activeProjectBridgeRunId,
                     'stdout',
                     'tee-device',
                     '/dev/tee',
@@ -3321,6 +3387,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   );
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                     null,
+                    activeProjectBridgeRunId,
                     'stdout',
                     'stdout-after-tee\n',
                     '',
@@ -3329,44 +3396,52 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 }
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'bad_nested_device\n',
                   '/dev/nested/path'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'stdout-read:IOException\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'stdout-stream-read:IOException\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'stdout-reader-read:IOException\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stdout',
                   'stdout-nio-stream-read:IOException\n'
                 );
                 if (hasCustomKernelDevices) {
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                     null,
+                    activeProjectBridgeRunId,
                     'stderr',
                     'dev_log\n',
                     '/dev/log'
                   );
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                     null,
+                    activeProjectBridgeRunId,
                     'stderr',
                     'pw_log\n',
                     '/dev/log'
@@ -3374,174 +3449,211 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 }
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stderr',
                   'dev_stderr\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stderr',
                   'fd_stderr\n',
                   '/dev/stderr'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  activeProjectBridgeRunId,
                   'stderr',
                   'ps_stderr\n'
                 );
               }
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'generated.txt',
                 Buffer.from('created\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'writer.txt',
                 Buffer.from('writer\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'printed.txt',
                 Buffer.from('printed\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'ps-file.txt',
                 Buffer.from('ps-file\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stream.bin',
                 Buffer.from([0, 254]).toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'data.bin',
                 Buffer.from([0, 253]).toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'nio-created.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'nio-created.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'nio-created.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'live-dir'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'live-dir/child'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'live-dir/child'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'live-dir/renamed-child'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'live-dir/renamed-child'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'live-dir'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'nio-stream.bin',
                 Buffer.from([0, 252]).toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'nio-writer.txt',
                 Buffer.from('nio-writer\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'byte-channel.bin',
                 Buffer.from([0, 7, 6]).toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'random.bin',
                 Buffer.from([0, 9, 8]).toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-created.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-metadata.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-metadata.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-metadata.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-dir'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-dir/child'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-dir/child'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-dir/renamed-child'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-dir/renamed-child'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-dir'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileDeleteNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-rename-source.txt'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-renamed.txt',
                 Buffer.from('classic\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileDeleteNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'classic-delete.txt'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stdin-copy.txt',
                 Buffer.from('from-stdin\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileDeleteNative?.(
                 null,
+                activeProjectBridgeRunId,
                 'stale.txt'
               );
               return JSON.stringify({
@@ -4293,6 +4405,15 @@ async function main(): Promise<void> {
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
     assertCondition(projectExecute.stderr === 'dev_log\npw_log\ndev_stderr\nfd_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
+    assertCondition(
+      projectExecute.events?.some(
+        (event) =>
+          event.type === 'output' &&
+          typeof event.data === 'string' &&
+          event.data.includes('stale-native-output')
+      ) !== true,
+      `Java execute-project-java should ignore native output without the active bridge run id: ${JSON.stringify(projectExecute.events)}`
+    );
     assertCondition(
       projectExecute.events?.some(
         (event) =>

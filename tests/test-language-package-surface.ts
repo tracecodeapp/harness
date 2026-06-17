@@ -652,13 +652,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         throw new Error(helperApi.stderr || helperApi.stdout || '@tracecode/harness-java helper jar API listing failed');
       }
       assertCondition(
-        helperApi.stdout.includes('emitOutputNative(java.lang.String, java.lang.String, java.lang.String, java.lang.String)'),
-        '@tracecode/harness-java helper jar should expose source/output-device native bridge'
+        helperApi.stdout.includes('emitOutputNative(java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String)'),
+        '@tracecode/harness-java helper jar should expose run-bound source/output-device native bridge'
       );
       assertCondition(
-        helperApi.stdout.includes('emitDirectoryCreateNative(java.lang.String)') &&
-          helperApi.stdout.includes('emitDirectoryDeleteNative(java.lang.String)'),
-        '@tracecode/harness-java helper jar should expose directory native bridge hooks'
+        helperApi.stdout.includes('emitDirectoryCreateNative(java.lang.String, java.lang.String)') &&
+          helperApi.stdout.includes('emitDirectoryDeleteNative(java.lang.String, java.lang.String)'),
+        '@tracecode/harness-java helper jar should expose run-bound directory native bridge hooks'
       );
       assertCondition(
         helperApi.stdout.includes('setKernelFiles(java.lang.String)'),

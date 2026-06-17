@@ -127,6 +127,7 @@ let cheerpjLoaderUrl = DEFAULT_CHEERPJ_LOADER_URL;
 let runWarmupPromise = null;
 let activeJavaProjectIo = null;
 let javaCompileIsolationCounter = 0;
+let javaProjectBridgeRunCounter = 0;
 const activeProtocolTokens = new Map();
 const pendingExternalJavaCompiles = new Map();
 const STDIN_PIPE_HEADER_INTS = 3;
@@ -491,32 +492,57 @@ function sanitizeJavaRuntimeStderr(stderr) {
     .join('\n');
 }
 
-function emitLiveJavaProjectOutput(stream, data, sourceDevice, outputDevice) {
-  if (!activeJavaProjectIo?.messageId || typeof data !== 'string' || data.length === 0) return;
+function createJavaProjectBridgeRunId(requestId) {
+  const cryptoSource = globalThis.crypto ?? (typeof self !== 'undefined' ? self.crypto : undefined);
+  if (cryptoSource && typeof cryptoSource.getRandomValues === 'function') {
+    const values = new Uint32Array(4);
+    cryptoSource.getRandomValues(values);
+    return Array.from(values, (value) => value.toString(16).padStart(8, '0')).join('');
+  }
+  javaProjectBridgeRunCounter += 1;
+  return `${String(requestId ?? '')}:${Date.now().toString(36)}:${javaProjectBridgeRunCounter.toString(36)}:${Math.random().toString(36).slice(2)}`;
+}
+
+function activeJavaProjectEventContext(bridgeRunId) {
+  if (
+    typeof bridgeRunId !== 'string' ||
+    bridgeRunId.length === 0 ||
+    !activeJavaProjectIo?.messageId ||
+    activeJavaProjectIo.bridgeRunId !== bridgeRunId
+  ) {
+    return null;
+  }
+  return activeJavaProjectIo;
+}
+
+function emitLiveJavaProjectOutput(bridgeRunId, stream, data, sourceDevice, outputDevice) {
+  const context = activeJavaProjectEventContext(bridgeRunId);
+  if (!context || typeof data !== 'string' || data.length === 0) return;
   const normalizedStream = stream === 'stderr' ? 'stderr' : 'stdout';
   const sourceDevicePath = normalizeKernelManifestDevicePath(sourceDevice);
   const requestedOutputDevice = normalizeKernelManifestDevicePath(outputDevice) || (normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout');
-  const outputDevicePath = kernelDeviceOutputTarget(requestedOutputDevice, activeJavaProjectIo.request)
+  const outputDevicePath = kernelDeviceOutputTarget(requestedOutputDevice, context.request)
     || (normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout');
   const eventStream = outputDevicePath === '/dev/stderr' ? 'stderr' : normalizedStream;
   const outputData = eventStream === 'stderr' ? sanitizeJavaRuntimeStderr(data) : data;
   if (outputData.length === 0) return;
-  postProjectEvent(activeJavaProjectIo.messageId, {
+  postProjectEvent(context.messageId, {
     type: 'output',
     stream: eventStream,
     device: outputDevicePath,
-    ...(sourceDevicePath && sourceDevicePath !== outputDevicePath && kernelDeviceOutputTarget(sourceDevicePath, activeJavaProjectIo.request) === outputDevicePath
+    ...(sourceDevicePath && sourceDevicePath !== outputDevicePath && kernelDeviceOutputTarget(sourceDevicePath, context.request) === outputDevicePath
       ? { sourceDevice: sourceDevicePath }
       : {}),
     data: outputData,
-  });
+  }, { context });
 }
 
-function emitLiveJavaProjectFileSnapshot(path, contents) {
-  if (!activeJavaProjectIo?.messageId || typeof path !== 'string' || path.length === 0 || typeof contents !== 'string') {
+function emitLiveJavaProjectFileSnapshot(bridgeRunId, path, contents) {
+  const context = activeJavaProjectEventContext(bridgeRunId);
+  if (!context || typeof path !== 'string' || path.length === 0 || typeof contents !== 'string') {
     return;
   }
-  postProjectEvent(activeJavaProjectIo.messageId, {
+  postProjectEvent(context.messageId, {
     type: 'file-change',
     phase: 'live',
     change: {
@@ -524,36 +550,39 @@ function emitLiveJavaProjectFileSnapshot(path, contents) {
       contents,
       encoding: 'base64',
     },
-  });
+  }, { context });
 }
 
-function emitLiveJavaProjectFileDelete(path) {
-  if (!activeJavaProjectIo?.messageId || typeof path !== 'string' || path.length === 0) return;
-  postProjectEvent(activeJavaProjectIo.messageId, {
+function emitLiveJavaProjectFileDelete(bridgeRunId, path) {
+  const context = activeJavaProjectEventContext(bridgeRunId);
+  if (!context || typeof path !== 'string' || path.length === 0) return;
+  postProjectEvent(context.messageId, {
     type: 'file-change',
     phase: 'live',
     change: {
       path: normalizeProjectFilePath(path),
       deleted: true,
     },
-  });
+  }, { context });
 }
 
-function emitLiveJavaProjectDirectoryCreate(path) {
-  if (!activeJavaProjectIo?.messageId || typeof path !== 'string' || path.length === 0) return;
-  postProjectEvent(activeJavaProjectIo.messageId, {
+function emitLiveJavaProjectDirectoryCreate(bridgeRunId, path) {
+  const context = activeJavaProjectEventContext(bridgeRunId);
+  if (!context || typeof path !== 'string' || path.length === 0) return;
+  postProjectEvent(context.messageId, {
     type: 'file-change',
     phase: 'live',
     change: {
       path: normalizeProjectFilePath(path),
       directory: true,
     },
-  });
+  }, { context });
 }
 
-function emitLiveJavaProjectDirectoryDelete(path) {
-  if (!activeJavaProjectIo?.messageId || typeof path !== 'string' || path.length === 0) return;
-  postProjectEvent(activeJavaProjectIo.messageId, {
+function emitLiveJavaProjectDirectoryDelete(bridgeRunId, path) {
+  const context = activeJavaProjectEventContext(bridgeRunId);
+  if (!context || typeof path !== 'string' || path.length === 0) return;
+  postProjectEvent(context.messageId, {
     type: 'file-change',
     phase: 'live',
     change: {
@@ -561,25 +590,25 @@ function emitLiveJavaProjectDirectoryDelete(path) {
       directory: true,
       deleted: true,
     },
-  });
+  }, { context });
 }
 
 function javaProjectNativeBridge() {
   return {
-    Java_tracecode_browser_ProjectEvents_emitOutputNative: (_library, stream, data, sourceDevice, outputDevice) => {
-      emitLiveJavaProjectOutput(String(stream ?? 'stdout'), String(data ?? ''), String(sourceDevice ?? ''), String(outputDevice ?? ''));
+    Java_tracecode_browser_ProjectEvents_emitOutputNative: (_library, bridgeRunId, stream, data, sourceDevice, outputDevice) => {
+      emitLiveJavaProjectOutput(String(bridgeRunId ?? ''), String(stream ?? 'stdout'), String(data ?? ''), String(sourceDevice ?? ''), String(outputDevice ?? ''));
     },
-    Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative: (_library, path, contents) => {
-      emitLiveJavaProjectFileSnapshot(String(path ?? ''), String(contents ?? ''));
+    Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative: (_library, bridgeRunId, path, contents) => {
+      emitLiveJavaProjectFileSnapshot(String(bridgeRunId ?? ''), String(path ?? ''), String(contents ?? ''));
     },
-    Java_tracecode_browser_ProjectEvents_emitFileDeleteNative: (_library, path) => {
-      emitLiveJavaProjectFileDelete(String(path ?? ''));
+    Java_tracecode_browser_ProjectEvents_emitFileDeleteNative: (_library, bridgeRunId, path) => {
+      emitLiveJavaProjectFileDelete(String(bridgeRunId ?? ''), String(path ?? ''));
     },
-    Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative: (_library, path) => {
-      emitLiveJavaProjectDirectoryCreate(String(path ?? ''));
+    Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative: (_library, bridgeRunId, path) => {
+      emitLiveJavaProjectDirectoryCreate(String(bridgeRunId ?? ''), String(path ?? ''));
     },
-    Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative: (_library, path) => {
-      emitLiveJavaProjectDirectoryDelete(String(path ?? ''));
+    Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative: (_library, bridgeRunId, path) => {
+      emitLiveJavaProjectDirectoryDelete(String(bridgeRunId ?? ''), String(path ?? ''));
     },
     Java_tracecode_browser_ProjectEvents_readInputNative: (_library, device) => (
       readJavaProjectInputByte(String(device ?? '/dev/stdin'), true)
@@ -4752,7 +4781,7 @@ function projectEnvironmentManifest(payload) {
     .join('\n');
 }
 
-function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, systemProperties = [], kernelDeviceManifest = '', kernelFileManifest = '', envManifest = '', virtualWorkspaceRoot = '/workspace', workspaceAlias = '/workspace', internalWorkspaceRoot = '', reflectiveMain = false) {
+function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, systemProperties = [], kernelDeviceManifest = '', kernelFileManifest = '', envManifest = '', virtualWorkspaceRoot = '/workspace', workspaceAlias = '/workspace', internalWorkspaceRoot = '', reflectiveMain = false, bridgeRunId = '') {
   const argsSource = args.map((arg) => javaStringLiteral(arg)).join(', ');
   const mainClassSource = javaStringLiteral(mainClassName);
   const kernelDeviceManifestSource = javaStringLiteral(kernelDeviceManifest);
@@ -4761,6 +4790,7 @@ function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, co
   const virtualWorkspaceRootSource = javaStringLiteral(virtualWorkspaceRoot);
   const workspaceAliasSource = javaStringLiteral(workspaceAlias);
   const internalWorkspaceRootSource = javaStringLiteral(internalWorkspaceRoot);
+  const bridgeRunIdSource = javaStringLiteral(bridgeRunId);
   const propertyKeysSource = systemProperties.map(([key]) => javaStringLiteral(key)).join(', ');
   const propertyValuesSource = systemProperties.map(([, value]) => javaStringLiteral(value)).join(', ');
   const invocation = compileOnly
@@ -4839,7 +4869,7 @@ public class ${exportsClassName} {
       for (int index = 0; index < propertyKeys.length; index += 1) {
         System.setProperty(propertyKeys[index], propertyValues[index]);
       }
-      tracecodeProjectRunToken = ProjectEvents.beginProjectRun();
+      tracecodeProjectRunToken = ProjectEvents.beginProjectRun(${bridgeRunIdSource});
       ProjectEvents.setProjectWorkspaceRoot(tracecodeWorkspaceRoot);
       ProjectEvents.setProjectVirtualWorkspaceRoot(${virtualWorkspaceRootSource}, ${workspaceAliasSource});
       ProjectEvents.setKernelDevices(${kernelDeviceManifestSource});
@@ -4884,7 +4914,7 @@ ${invocation}
 `;
 }
 
-function buildProjectJavaRunnableSource(payload, compileId) {
+function buildProjectJavaRunnableSource(payload, compileId, bridgeRunId = '') {
   const files = projectJavaFiles(payload.project);
   if (files.length === 0) {
     throw new Error('Java project execution requires at least one .java file.');
@@ -4924,7 +4954,9 @@ function buildProjectJavaRunnableSource(payload, compileId) {
           projectEnvironmentManifest(payload),
           projectCwd,
           workspaceAlias,
-          workspaceRoot
+          workspaceRoot,
+          false,
+          bridgeRunId
         ).trim(),
       };
 
@@ -4957,7 +4989,7 @@ function buildProjectJavaRunnableSource(payload, compileId) {
   };
 }
 
-function buildProjectJavaClassRunnableSource(payload, compileId) {
+function buildProjectJavaClassRunnableSource(payload, compileId, bridgeRunId = '') {
   const classpathFiles = projectJavaClasspathFiles(payload.project);
   if (classpathFiles.length === 0) {
     throw new Error('Java classpath execution requires persisted .class or .jar files.');
@@ -4989,7 +5021,8 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
       projectCwd,
       workspaceAlias,
       workspaceRoot,
-      true
+      true,
+      bridgeRunId
     ).trim(),
   };
 
@@ -5815,12 +5848,13 @@ async function runJavaProjectRequest(payload, requestId) {
       classpath: javaProjectEffectiveClasspath(payload) ?? '',
     },
   }), requestId);
+  const bridgeRunId = createJavaProjectBridgeRunId(requestId);
 
   let runnableSource;
   try {
     runnableSource = explicitClasspath
-      ? buildProjectJavaClassRunnableSource(payload, compileId)
-      : buildProjectJavaRunnableSource(payload, compileId);
+      ? buildProjectJavaClassRunnableSource(payload, compileId, bridgeRunId)
+      : buildProjectJavaRunnableSource(payload, compileId, bridgeRunId);
   } catch (error) {
     return {
       stdout: '',
@@ -5839,6 +5873,7 @@ async function runJavaProjectRequest(payload, requestId) {
   const libraryCallStart = performance.now();
   const projectIo = {
     messageId: requestId,
+    bridgeRunId,
     request: payload,
     stdinPipe: stdinPipeState(payload?.stdinPipe),
     stdoutEmitted: false,

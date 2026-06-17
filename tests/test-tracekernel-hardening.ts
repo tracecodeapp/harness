@@ -1583,6 +1583,7 @@ async function testJavaWorkerProjectEventBudgets(): Promise<void> {
     `(() => {
       activeJavaProjectIo = {
         messageId: 'java-budget-test',
+        bridgeRunId: 'java-budget-bridge',
         request: { project: { kernelDevices: [] } },
         stdinPipe: null,
         stdoutEmitted: false,
@@ -1595,9 +1596,9 @@ async function testJavaWorkerProjectEventBudgets(): Promise<void> {
         liveFileChangeBytes: 0,
         warnedLiveFileBudget: false,
       };
-      emitLiveJavaProjectOutput('stdout', 'x'.repeat(1024 * 1024 + 16), '', '');
-      emitLiveJavaProjectOutput('stdout', 'late', '', '');
-      emitLiveJavaProjectFileSnapshot('huge.txt', 'x'.repeat(6 * 1024 * 1024));
+      emitLiveJavaProjectOutput('java-budget-bridge', 'stdout', 'x'.repeat(1024 * 1024 + 16), '', '');
+      emitLiveJavaProjectOutput('java-budget-bridge', 'stdout', 'late', '', '');
+      emitLiveJavaProjectFileSnapshot('java-budget-bridge', 'huge.txt', 'x'.repeat(6 * 1024 * 1024));
       const stdout = activeJavaProjectIo.eventStdout.join('');
       const truncated = activeJavaProjectIo.truncatedOutputStreams.has('stdout');
       const emitted = { stdout: activeJavaProjectIo.stdoutEmitted, stderr: activeJavaProjectIo.stderrEmitted };

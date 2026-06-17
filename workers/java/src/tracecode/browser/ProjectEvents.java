@@ -88,6 +88,7 @@ public final class ProjectEvents {
         }
       };
   private static final InheritableThreadLocal<Integer> PROJECT_RUN_TOKEN = new InheritableThreadLocal<>();
+  private static final InheritableThreadLocal<String> PROJECT_BRIDGE_RUN_ID = new InheritableThreadLocal<>();
   private static final ThreadLocal<Path> PROJECT_WORKSPACE_ROOT = new ThreadLocal<>();
   private static final ThreadLocal<String> PROJECT_VIRTUAL_WORKSPACE_ROOT = new ThreadLocal<>();
   private static final ThreadLocal<String> PROJECT_WORKSPACE_ALIAS = new ThreadLocal<>();
@@ -172,6 +173,10 @@ public final class ProjectEvents {
   }
 
   public static int beginProjectRun() {
+    return beginProjectRun(null);
+  }
+
+  public static int beginProjectRun(String bridgeRunId) {
     int token;
     synchronized (ProjectEvents.class) {
       token = NEXT_PROJECT_RUN_TOKEN + 1;
@@ -180,6 +185,7 @@ public final class ProjectEvents {
       ACTIVE_PROJECT_RUN_TOKEN = token;
     }
     PROJECT_RUN_TOKEN.set(token);
+    setProjectBridgeRunIdForCurrentThread(bridgeRunId);
     PROJECT_EVENT_BRIDGE_ENABLED.set(Boolean.TRUE);
     PROJECT_EVENT_BUDGET.set(new ProjectEventBudget());
     return token;
@@ -197,12 +203,26 @@ public final class ProjectEvents {
   private static void disableProjectRunForCurrentThread() {
     PROJECT_EVENT_BRIDGE_ENABLED.set(Boolean.FALSE);
     PROJECT_RUN_TOKEN.remove();
+    PROJECT_BRIDGE_RUN_ID.remove();
     PROJECT_EVENT_BUDGET.remove();
+  }
+
+  private static void setProjectBridgeRunIdForCurrentThread(String bridgeRunId) {
+    if (bridgeRunId == null || bridgeRunId.isEmpty() || bridgeRunId.indexOf('\0') >= 0 || bridgeRunId.length() > 256) {
+      PROJECT_BRIDGE_RUN_ID.remove();
+      return;
+    }
+    PROJECT_BRIDGE_RUN_ID.set(bridgeRunId);
   }
 
   private static int currentProjectRunToken() {
     Integer token = PROJECT_RUN_TOKEN.get();
     return token == null ? 0 : token.intValue();
+  }
+
+  private static String currentProjectBridgeRunId() {
+    String bridgeRunId = PROJECT_BRIDGE_RUN_ID.get();
+    return bridgeRunId == null ? "" : bridgeRunId;
   }
 
   private static boolean projectRunActiveForCurrentThread() {
@@ -3069,9 +3089,15 @@ public final class ProjectEvents {
   }
 
   private static void emitOutput(String stream, String data, String sourceDevice, String outputDevice) {
+    emitOutput(currentProjectBridgeRunId(), stream, data, sourceDevice, outputDevice);
+  }
+
+  private static void emitOutput(String bridgeRunId, String stream, String data, String sourceDevice, String outputDevice) {
     if (!projectRunActiveForCurrentThread() || data.isEmpty()) return;
+    if (bridgeRunId == null || bridgeRunId.isEmpty()) return;
     try {
       emitOutputNative(
+          bridgeRunId,
           stream,
           data,
           sourceDevice == null ? "" : sourceDevice,
@@ -3081,11 +3107,11 @@ public final class ProjectEvents {
     }
   }
 
-  private static native void emitOutputNative(String stream, String data, String sourceDevice, String outputDevice);
-  private static native void emitFileSnapshotNative(String path, String contents);
-  private static native void emitFileDeleteNative(String path);
-  private static native void emitDirectoryCreateNative(String path);
-  private static native void emitDirectoryDeleteNative(String path);
+  private static native void emitOutputNative(String bridgeRunId, String stream, String data, String sourceDevice, String outputDevice);
+  private static native void emitFileSnapshotNative(String bridgeRunId, String path, String contents);
+  private static native void emitFileDeleteNative(String bridgeRunId, String path);
+  private static native void emitDirectoryCreateNative(String bridgeRunId, String path);
+  private static native void emitDirectoryDeleteNative(String bridgeRunId, String path);
   private static native int readInputNative(String device);
   private static native int readInputAvailableNative(String device);
   private static native int inputAvailableNative(String device);
@@ -4053,12 +4079,14 @@ public final class ProjectEvents {
 
   private static void emitFileSnapshot(Path path) {
     if (!projectRunActiveForCurrentThread()) return;
+    String bridgeRunId = currentProjectBridgeRunId();
+    if (bridgeRunId.isEmpty()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
     try {
       long size = Files.size(path);
       if (!reserveLiveFileChange(relativePath, size)) return;
-      emitFileSnapshotNative(relativePath, Base64.getEncoder().encodeToString(Files.readAllBytes(path)));
+      emitFileSnapshotNative(bridgeRunId, relativePath, Base64.getEncoder().encodeToString(Files.readAllBytes(path)));
     } catch (UnsatisfiedLinkError | SecurityException | IOException ignored) {
       // Final-diff persistence still captures writes when live browser bridge emission is unavailable.
     }
@@ -4075,11 +4103,13 @@ public final class ProjectEvents {
 
   private static void emitFileDelete(Path path) {
     if (!projectRunActiveForCurrentThread()) return;
+    String bridgeRunId = currentProjectBridgeRunId();
+    if (bridgeRunId.isEmpty()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
     if (!reserveLiveFileChange(relativePath, 0)) return;
     try {
-      emitFileDeleteNative(relativePath);
+      emitFileDeleteNative(bridgeRunId, relativePath);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
       // Final-diff persistence still captures deletes when live browser bridge emission is unavailable.
     }
@@ -4087,11 +4117,13 @@ public final class ProjectEvents {
 
   private static void emitDirectoryCreate(Path path) {
     if (!projectRunActiveForCurrentThread()) return;
+    String bridgeRunId = currentProjectBridgeRunId();
+    if (bridgeRunId.isEmpty()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
     if (!reserveLiveFileChange(relativePath, 0)) return;
     try {
-      emitDirectoryCreateNative(relativePath);
+      emitDirectoryCreateNative(bridgeRunId, relativePath);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
       // Final-diff persistence still captures directory creates when live browser bridge emission is unavailable.
     }
@@ -4099,11 +4131,13 @@ public final class ProjectEvents {
 
   private static void emitDirectoryDelete(Path path) {
     if (!projectRunActiveForCurrentThread()) return;
+    String bridgeRunId = currentProjectBridgeRunId();
+    if (bridgeRunId.isEmpty()) return;
     String relativePath = projectRelativePath(path);
     if (relativePath == null) return;
     if (!reserveLiveFileChange(relativePath, 0)) return;
     try {
-      emitDirectoryDeleteNative(relativePath);
+      emitDirectoryDeleteNative(bridgeRunId, relativePath);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
       // Final-diff persistence still captures directory deletes when live browser bridge emission is unavailable.
     }
@@ -4143,11 +4177,13 @@ public final class ProjectEvents {
     private final String stream;
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
     private final int runToken;
+    private final String bridgeRunId;
 
     StreamingProjectOutputStream(ByteArrayOutputStream capture, String stream) {
       this.capture = capture;
       this.stream = stream;
       this.runToken = currentProjectRunToken();
+      this.bridgeRunId = currentProjectBridgeRunId();
     }
 
     @Override
@@ -4185,7 +4221,7 @@ public final class ProjectEvents {
     public void flush() throws IOException {
       if (!projectRunTokenActive(runToken)) return;
       if (pending.size() == 0) return;
-      emitOutput(stream, pending.toString(StandardCharsets.UTF_8.name()));
+      emitOutput(bridgeRunId, stream, pending.toString(StandardCharsets.UTF_8.name()), "", "");
       pending.reset();
     }
 
