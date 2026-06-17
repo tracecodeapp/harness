@@ -1462,6 +1462,7 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
   const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
   const stdinPipeReader = stdinPipeState(stdinPipe);
   const previousReadProjectStdinByte = self.__tracecodeReadProjectStdinByte;
+  delete self.__tracecodeProjectProviderOutput;
   const deviceInputSource = (device) => (
     kernelPolicy && typeof kernelPolicy.runtimeKernelDeviceInputSource === 'function'
       ? String(kernelPolicy.runtimeKernelDeviceInputSource(devices, device) || '')
@@ -1484,10 +1485,6 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
   const emitProviderOutput = (stream, device, data, sourceDevice = '') => {
     if (!data) return;
     try {
-      if (typeof self.__tracecodeProjectProviderOutput === 'function') {
-        self.__tracecodeProjectProviderOutput(stream, device, data, sourceDevice);
-        return;
-      }
       if (typeof self.__tracecodeProjectEvent === 'function') {
         self.__tracecodeProjectEvent({
           type: 'output',
@@ -1539,6 +1536,7 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
   }
 
   return () => {
+    delete self.__tracecodeProjectProviderOutput;
     if (previousReadProjectStdinByte === undefined) {
       delete self.__tracecodeReadProjectStdinByte;
     } else {

@@ -496,6 +496,57 @@ async function assertPyodideProjectEventsApplyResourceBudgets(): Promise<void> {
   console.log('PASS: Pyodide project event budgets cap output and live file changes');
 }
 
+async function assertPyodideProviderOutputIgnoresMutableGlobalHook(): Promise<void> {
+  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const events: Array<{ type?: string; stream?: string; device?: string; data?: string }> = [];
+  let stdoutHandler: ((buffer: Uint8Array) => number) | undefined;
+  const selfObject: Record<string, unknown> = {
+    __tracecodeProjectEvent: (event: { type?: string; stream?: string; device?: string; data?: string }) => {
+      events.push(event);
+    },
+    __tracecodeProjectProviderOutput: () => {
+      events.push({ type: 'poisoned', data: 'stale-hook' });
+    },
+    postMessage: () => {},
+  };
+  const context = vm.createContext({
+    console,
+    self: selfObject,
+    TextDecoder,
+    Uint8Array,
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+  });
+  vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
+  (context as { __setStdout?: (handler: (buffer: Uint8Array) => number) => void }).__setStdout = (handler) => {
+    stdoutHandler = handler;
+  };
+  vm.runInContext(
+    `pyodide = {
+      setStdout(options) {
+        if (options && typeof options.write === 'function') __setStdout(options.write);
+      },
+    };
+    self.__restoreStdio = installPyodideProjectStdioBridge([{ path: '/dev/stdout', writable: true, outputDevice: '/dev/stdout' }], null);`,
+    context
+  );
+  assertCondition(typeof stdoutHandler === 'function', 'Pyodide stdout handler should be installed');
+  stdoutHandler?.(new TextEncoder().encode('provider-output\n'));
+  vm.runInContext('self.__restoreStdio();', context);
+
+  assertCondition(
+    events.some((event) =>
+      event.type === 'output' &&
+      event.stream === 'stdout' &&
+      event.device === '/dev/stdout' &&
+      event.data === 'provider-output\n'
+    ) &&
+      !events.some((event) => event.type === 'poisoned') &&
+      !('__tracecodeProjectProviderOutput' in selfObject),
+    `Pyodide provider stdout should ignore stale global hooks: ${JSON.stringify(events)}`
+  );
+  console.log('PASS: Pyodide provider output ignores mutable global hook');
+}
+
 async function runPythonScript(script: string): Promise<string> {
   const tempDir = await mkdtemp(join(tmpdir(), 'tracecode-python-runtime-'));
   const scriptPath = join(tempDir, 'trace.py');
@@ -3599,6 +3650,7 @@ def solve(box):
 async function main(): Promise<void> {
   await assertPyodideProjectFsEventsRejectTraversal();
   await assertPyodideProjectEventsApplyResourceBudgets();
+  await assertPyodideProviderOutputIgnoresMutableGlobalHook();
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
   await assertIndexSourceProvenanceIsRecorded();
