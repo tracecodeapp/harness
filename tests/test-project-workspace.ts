@@ -11438,6 +11438,13 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
             'python3 read_generated.py',
           ],
         },
+        tooManySteps: {
+          steps: [
+            'python3 main.py',
+            'python3 main.py',
+            'python3 main.py',
+          ],
+        },
         fixtures: 'python3 read_fixture.py',
         hiddenGate: {
           command: 'python3 read_fixture.py',
@@ -11618,6 +11625,14 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
     persist.stdout === 'wrote-generated\nread-generated:from-step-one\n' &&
       await workspace.readFile('src/generated.txt') === 'from-step-one\n',
     `project session step file changes should persist into later steps: ${JSON.stringify(persist)}`
+  );
+  const tooManySteps = await workspace.runProjectCommand('tooManySteps', {
+    executionLimits: { maxCommandCount: 2 },
+  });
+  assertCondition(
+    tooManySteps.exitCode === 2 &&
+      tooManySteps.stderr === 'Project command has too many steps: tooManySteps (3/2)\n',
+    `project session steps should be capped by command-count budgets: ${JSON.stringify(tooManySteps)}`
   );
   const fixtures = await workspace.runProjectCommand('fixtures');
   assertCondition(

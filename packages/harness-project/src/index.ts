@@ -9853,11 +9853,20 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     limits: RuntimeCommandExecutionLimits | undefined,
     stepCount: number
   ): RuntimeCommandExecutionLimits | undefined {
+    if (!limits) return limits;
     const maxCommandCount = this.finiteMaxCommandCount(limits);
-    if (maxCommandCount === undefined) return limits;
+    const timeoutMs = Number.isFinite(limits.timeoutMs)
+      ? Math.max(1, Math.floor(Number(limits.timeoutMs) / stepCount))
+      : undefined;
+    const maxOutputBytes = Number.isFinite(limits.maxOutputBytes)
+      ? Math.max(1, Math.floor(Number(limits.maxOutputBytes) / stepCount))
+      : undefined;
+    if (maxCommandCount === undefined && timeoutMs === undefined && maxOutputBytes === undefined) return limits;
     return {
       ...limits,
-      maxCommandCount: Math.max(1, Math.floor(maxCommandCount / stepCount)),
+      ...(maxCommandCount !== undefined ? { maxCommandCount: Math.max(1, Math.floor(maxCommandCount / stepCount)) } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(maxOutputBytes !== undefined ? { maxOutputBytes } : {}),
     };
   }
 
@@ -9918,6 +9927,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     const stepExecutionLimits = this.projectCommandStepExecutionLimits(commandLimits, command.steps.length);
     const files: RuntimeFileChange[] = [];
+    const outputBytes: Record<RuntimeCommandEventStream, number> = { stdout: 0, stderr: 0 };
+    const truncatedOutputStreams = new Set<RuntimeCommandEventStream>();
+    const appendOutput = (stream: RuntimeCommandEventStream, current: string, data: string): string => {
+      if (!data || truncatedOutputStreams.has(stream)) return current;
+      const used = outputBytes[stream];
+      const remaining = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+      const bytes = runtimeProjectUtf8Bytes(data);
+      if (bytes <= remaining) {
+        outputBytes[stream] = used + bytes;
+        return `${current}${data}`;
+      }
+      truncatedOutputStreams.add(stream);
+      const marker = `\n[tracekernel: ${stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+      outputBytes[stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
+      return `${current}${runtimeProjectTruncateUtf8(data, Math.max(0, remaining))}${marker}`;
+    };
     let stdout = '';
     let stderr = '';
     for (const [stepIndex, step] of command.steps.entries()) {
@@ -9935,8 +9960,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         actor: SYSTEM_ACTOR,
       });
       const result = await runStep(step, stepExecutionLimits);
-      stdout += result.stdout;
-      stderr += result.stderr;
+      stdout = appendOutput('stdout', stdout, result.stdout);
+      stderr = appendOutput('stderr', stderr, result.stderr);
       if (result.files) files.push(...result.files);
       this.emitCommandOptionEvent(options, {
         type: 'status',
