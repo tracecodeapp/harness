@@ -3357,6 +3357,40 @@ function smallest(nums: number[]): number {
   );
   assertCondition(asyncConditionTracing.output === 3, 'JavaScript tracing should preserve async condition output');
 
+  const asyncFunctionValueConditionTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `async function solve(flags) {
+  let i = 0;
+  let total = 0;
+  let invoked = 0;
+  function marker() {
+    invoked++;
+    return false;
+  }
+  async function nextFlag() {
+    return i++ < flags.length ? marker : null;
+  }
+  while (await nextFlag()) {
+    total += i;
+  }
+  return [total, invoked];
+}`,
+    functionName: 'solve',
+    inputs: { flags: [true, true] },
+    executionStyle: 'function',
+  });
+  assertCondition(
+    asyncFunctionValueConditionTracing.success === true,
+    `JavaScript tracing should preserve function-valued async conditions: ${asyncFunctionValueConditionTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(asyncFunctionValueConditionTracing.output) === JSON.stringify([3, 0]),
+    `JavaScript tracing should not invoke function-valued async conditions, got ${JSON.stringify(asyncFunctionValueConditionTracing.output)}`
+  );
+
   const generatorConditionTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;
@@ -3388,6 +3422,44 @@ function smallest(nums: number[]): number {
   assertCondition(
     JSON.stringify(generatorConditionTracing.output) === JSON.stringify([true, true, false, 2, true]),
     `JavaScript tracing should preserve generator condition output, got ${JSON.stringify(generatorConditionTracing.output)}`
+  );
+
+  const generatorFunctionValueConditionTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  function* counter() {
+    let count = 0;
+    let invoked = 0;
+    function marker() {
+      invoked++;
+      return false;
+    }
+    while (yield marker) {
+      count++;
+      if (count === 2) return [count, invoked];
+    }
+    return [count, invoked];
+  }
+  const iterator = counter();
+  const first = iterator.next();
+  const second = iterator.next(first.value);
+  const third = iterator.next(first.value);
+  return [typeof first.value, second.done, third.done, third.value];
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    generatorFunctionValueConditionTracing.success === true,
+    `JavaScript tracing should preserve function-valued generator conditions: ${generatorFunctionValueConditionTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(generatorFunctionValueConditionTracing.output) === JSON.stringify(['function', false, true, [2, 0]]),
+    `JavaScript tracing should not invoke function-valued generator conditions, got ${JSON.stringify(generatorFunctionValueConditionTracing.output)}`
   );
 
   const typeScriptNullPropertyTracing = await harness.sendMessage<{

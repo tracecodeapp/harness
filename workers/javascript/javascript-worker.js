@@ -2412,8 +2412,8 @@ function createTraceRecorder(options = {}) {
       }
       pendingAccessesByFrame.set(frameId, attachable);
     },
-    traceCondition(evaluate) {
-      if (typeof evaluate !== 'function') {
+    traceCondition(evaluate, shouldEvaluate = false) {
+      if (!shouldEvaluate) {
         this.attachPendingAccessesToPreviousLine();
         return evaluate;
       }
@@ -2423,8 +2423,8 @@ function createTraceRecorder(options = {}) {
         this.attachPendingAccessesToPreviousLine();
       }
     },
-    tracePostLineCondition(evaluate) {
-      if (typeof evaluate !== 'function') {
+    tracePostLineCondition(evaluate, shouldEvaluate = false) {
+      if (!shouldEvaluate) {
         return evaluate;
       }
       return evaluate();
@@ -4472,7 +4472,8 @@ function expressionMayHaveSideEffects(ts, expression) {
 
 function wrapTraceCondition(ts, expression, deferAccessesToNextLine = false) {
   const recorderMethod = deferAccessesToNextLine ? 'tracePostLineCondition' : 'traceCondition';
-  const argument = expressionContainsAwaitOrYield(ts, expression)
+  const containsAwaitOrYield = expressionContainsAwaitOrYield(ts, expression);
+  const argument = containsAwaitOrYield
     ? expression
     : ts.factory.createArrowFunction(
         undefined,
@@ -4482,13 +4483,16 @@ function wrapTraceCondition(ts, expression, deferAccessesToNextLine = false) {
         ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
         expression
       );
+  const args = containsAwaitOrYield
+    ? [argument]
+    : [argument, ts.factory.createTrue()];
   return ts.factory.createCallExpression(
     ts.factory.createPropertyAccessExpression(
       ts.factory.createIdentifier('__traceRecorder'),
       ts.factory.createIdentifier(recorderMethod)
     ),
     undefined,
-    [argument]
+    args
   );
 }
 
