@@ -3112,7 +3112,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   compilerDebugProfile: compilerProfile,
                 });
               }
-              const stdout = `after-nio-writer-live\nafter-empty-nio-stream\nafter-empty-nio-writer\nafter-empty-nio-channel\nafter-empty-open-writer\nafter-empty-open-stream\nafter-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-random=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\n' : ''}${hasKernelFiles ? 'custom-kernel=custom-kernel-file\ncustom-kernel-random=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-stream=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncapture-devicestdout-after-capture\ntee-devicestdout-after-tee\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : 'dev-list=null,stderr,stdin,stdout,tty\ndev-stream=null,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : ''}`;
+              const stdout = `after-nio-writer-live\nafter-empty-nio-stream\nafter-empty-nio-writer\nafter-empty-nio-channel\nafter-empty-open-writer\nafter-empty-open-stream\nafter-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-random=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\n' : ''}${hasKernelFiles ? 'custom-kernel=custom-kernel-file\ncustom-kernel-random=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-stream=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncapture-devicestdout-after-capture\ntee-devicestdout-after-tee\ncopy-existing:FileAlreadyExistsException\ncopy-existing-after=existing\ncopy-existing-replace=tracekernel test\ncopy-stdout-existing:FileAlreadyExistsException\ntracekernel test\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : 'dev-list=null,stderr,stdin,stdout,tty\ndev-stream=null,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncopy-existing:FileAlreadyExistsException\ncopy-existing-after=existing\ncopy-stdout-existing:FileAlreadyExistsException\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : ''}`;
               const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\npw_log\ndev_stderr\nfd_stderr\nps_stderr\n' : 'dev_stderr\nfd_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
@@ -3718,6 +3718,14 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 'stdin-copy.txt',
                 Buffer.from('from-stdin\n', 'utf8').toString('base64')
               );
+              if (hasKernelFiles) {
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                  null,
+                  activeProjectBridgeRunId,
+                  'copy-existing.txt',
+                  Buffer.from('tracekernel test\n', 'utf8').toString('base64')
+                );
+              }
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileDeleteNative?.(
                 null,
                 activeProjectBridgeRunId,
@@ -3751,6 +3759,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   { path: 'classic-metadata.txt', contents: '', encoding: 'base64' },
                   { path: 'classic-renamed.txt', contents: Buffer.from('classic\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'stdin-copy.txt', contents: Buffer.from('from-stdin\n', 'utf8').toString('base64'), encoding: 'base64' },
+                  ...(hasKernelFiles ? [{ path: 'copy-existing.txt', contents: Buffer.from('tracekernel test\n', 'utf8').toString('base64'), encoding: 'base64' }] : []),
                   { path: 'empty-open-writer.txt', contents: '', encoding: 'base64' },
                   { path: 'empty-open-stream.bin', contents: '', encoding: 'base64' },
                   { path: 'writer-before-output.txt', contents: Buffer.from('before-output\n', 'utf8').toString('base64'), encoding: 'base64' },
@@ -4371,6 +4380,13 @@ async function main(): Promise<void> {
               '    new File("classic-delete.txt").createNewFile();',
               '    new File("classic-delete.txt").delete();',
               '    Files.copy(Path.of("/dev/stdin"), Path.of("stdin-copy.txt"), StandardCopyOption.REPLACE_EXISTING);',
+              '    Files.writeString(Path.of("copy-existing.txt"), "existing\\\\n");',
+              '    try { Files.copy(Path.of("/dev/stdin"), Path.of("copy-existing.txt")); System.out.println("copy-existing:ok"); } catch (java.nio.file.FileAlreadyExistsException ex) { System.out.println("copy-existing:FileAlreadyExistsException"); }',
+              '    System.out.println("copy-existing-after=" + Files.readString(Path.of("copy-existing.txt")).trim());',
+              '    Files.copy(Path.of("/proc/kernel/version"), Path.of("copy-existing.txt"), StandardCopyOption.REPLACE_EXISTING);',
+              '    System.out.println("copy-existing-replace=" + Files.readString(Path.of("copy-existing.txt")).trim());',
+              '    try { Files.copy(Path.of("copy-existing.txt"), Path.of("/dev/stdout")); System.out.println("copy-stdout-existing:ok"); } catch (java.nio.file.FileAlreadyExistsException ex) { System.out.println("copy-stdout-existing:FileAlreadyExistsException"); }',
+              '    Files.copy(Path.of("copy-existing.txt"), Path.of("/dev/stdout"), StandardCopyOption.REPLACE_EXISTING);',
               '    Files.copy(Path.of("stdin-copy.txt"), Path.of("/dev/stdout"), StandardCopyOption.REPLACE_EXISTING);',
               '    Files.deleteIfExists(Path.of("stale.txt"));',
               '    var emptyOpenWriter = new FileWriter("empty-open-writer.txt");',
@@ -4470,7 +4486,7 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === 'after-nio-writer-live\nafter-empty-nio-stream\nafter-empty-nio-writer\nafter-empty-nio-channel\nafter-empty-open-writer\nafter-empty-open-stream\nafter-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-random=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\ncustom-kernel=custom-kernel-file\ncustom-kernel-random=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\ndev-list=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-stream=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncapture-devicestdout-after-capture\ntee-devicestdout-after-tee\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n',
+      projectExecute.stdout === 'after-nio-writer-live\nafter-empty-nio-stream\nafter-empty-nio-writer\nafter-empty-nio-channel\nafter-empty-open-writer\nafter-empty-open-stream\nafter-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-random=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\ncustom-kernel=custom-kernel-file\ncustom-kernel-random=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\ndev-list=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-stream=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncapture-devicestdout-after-capture\ntee-devicestdout-after-tee\ncopy-existing:FileAlreadyExistsException\ncopy-existing-after=existing\ncopy-existing-replace=tracekernel test\ncopy-stdout-existing:FileAlreadyExistsException\ntracekernel test\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
     assertCondition(projectExecute.stderr === 'dev_log\npw_log\ndev_stderr\nfd_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
@@ -5162,6 +5178,11 @@ async function main(): Promise<void> {
           file.path === 'stdin-copy.txt' &&
             file.encoding === 'base64' &&
             Buffer.from(file.contents, 'base64').toString('utf8') === 'from-stdin\n'
+        ) &&
+        projectExecute.files?.some((file) =>
+          file.path === 'copy-existing.txt' &&
+            file.encoding === 'base64' &&
+            Buffer.from(file.contents, 'base64').toString('utf8') === 'tracekernel test\n'
         ) &&
         projectExecute.files?.some((file) =>
           file.path === 'writer-before-output.txt' &&

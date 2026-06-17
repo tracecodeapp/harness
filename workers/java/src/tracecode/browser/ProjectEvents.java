@@ -50,6 +50,7 @@ import java.nio.file.NotDirectoryException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
@@ -728,20 +729,18 @@ public final class ProjectEvents {
     KernelDevice targetDevice = writableKernelDevice(target);
     byte[] sourceKernelFile = sourceDevice == null ? readableKernelFile(source) : null;
     if (targetDevice != null) {
+      assertVirtualCopyOptions(options);
+      if (!hasReplaceExisting(options)) throw new java.nio.file.FileAlreadyExistsException(target.toString());
       byte[] bytes = sourceDevice != null ? readKernelDevice(sourceDevice) : sourceKernelFile != null ? sourceKernelFile : Files.readAllBytes(runtimePath(source));
       writeKernelDevice(targetDevice, bytes);
       return target;
     }
     assertWritableProjectPath(target);
     if (sourceDevice != null) {
-      Files.write(runtimePath(target), readKernelDevice(sourceDevice));
-      emitFileSnapshot(target);
-      return target;
+      return copyKernelDeviceToProject(sourceDevice, target, options);
     }
     if (sourceKernelFile != null) {
-      Files.write(runtimePath(target), sourceKernelFile);
-      emitFileSnapshot(target);
-      return target;
+      return copyVirtualBytesToProject(sourceKernelFile, target, options);
     }
     Path runtimeSource = runtimePath(source);
     Path runtimeTarget = runtimePath(target);
@@ -753,6 +752,43 @@ public final class ProjectEvents {
       emitFileSnapshot(target);
     }
     return result;
+  }
+
+  private static boolean hasReplaceExisting(CopyOption... options) {
+    if (options == null) return false;
+    for (CopyOption option : options) {
+      if (option == StandardCopyOption.REPLACE_EXISTING) return true;
+    }
+    return false;
+  }
+
+  private static void assertVirtualCopyOptions(CopyOption... options) {
+    if (options == null) return;
+    for (CopyOption option : options) {
+      if (option == null) throw new NullPointerException();
+      if (option != StandardCopyOption.REPLACE_EXISTING) {
+        throw new UnsupportedOperationException("'" + option + "' is not a supported copy option");
+      }
+    }
+  }
+
+  private static Path copyVirtualBytesToProject(byte[] bytes, Path target, CopyOption... options) throws IOException {
+    assertVirtualCopyOptions(options);
+    Path runtimeTarget = runtimePath(target);
+    try (InputStream source = new ByteArrayInputStream(bytes)) {
+      Files.copy(source, runtimeTarget, options);
+    }
+    emitFileSnapshot(target);
+    return target;
+  }
+
+  private static Path copyKernelDeviceToProject(KernelDevice device, Path target, CopyOption... options) throws IOException {
+    assertVirtualCopyOptions(options);
+    Path runtimeTarget = runtimePath(target);
+    if (!hasReplaceExisting(options) && Files.exists(runtimeTarget)) {
+      throw new java.nio.file.FileAlreadyExistsException(target.toString());
+    }
+    return copyVirtualBytesToProject(readKernelDevice(device), target, options);
   }
 
   public static Path move(Path source, Path target, CopyOption... options) throws IOException {
