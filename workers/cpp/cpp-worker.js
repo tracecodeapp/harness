@@ -3112,20 +3112,22 @@ function minimalTraceForOptions(options = {}) {
 function traceBudgetHardStopForOptions(options = {}) {
   const traceOptions = options.traceOptions || {};
   if (traceOptions.softTraceBudget === true) return false;
-  if (
-    Number.isFinite(traceOptions.maxLineEvents) ||
-    Number.isFinite(traceOptions.maxSingleLineHits)
-  ) {
-    return true;
-  }
   return (
     Number.isFinite(traceOptions.maxTraceSteps) &&
     !Number.isFinite(traceOptions.maxStoredEvents)
   );
 }
 
+function traceLineBudgetHardStopForOptions(options = {}) {
+  const traceOptions = options.traceOptions || {};
+  return (
+    Number.isFinite(traceOptions.maxLineEvents) ||
+    Number.isFinite(traceOptions.maxSingleLineHits)
+  );
+}
+
 function configureTraceBudgetCall(options = {}) {
-  return `tracecode::configure_trace_budget(${traceBudgetForOptions(options)}, ${traceBudgetHardStopForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetForOptions(options)}, ${traceSingleLineHitBudgetForOptions(options)}, ${minimalTraceForOptions(options) ? 'true' : 'false'});`;
+  return `tracecode::configure_trace_budget(${traceBudgetForOptions(options)}, ${traceBudgetHardStopForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetForOptions(options)}, ${traceSingleLineHitBudgetForOptions(options)}, ${minimalTraceForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetHardStopForOptions(options) ? 'true' : 'false'});`;
 }
 
 function isRecord(value) {

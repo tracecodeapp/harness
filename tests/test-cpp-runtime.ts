@@ -1518,6 +1518,30 @@ if (!Number.isFinite(cappedTrace.droppedEventCount) || cappedTrace.droppedEventC
   throw new Error('C++ tracing should report dropped events when maxStoredEvents is exceeded');
 }
 
+const softStepLimitedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int spin() {',
+    '    int total = 0;',
+    '    for (int i = 0; i < 20; ++i) {',
+    '      total += i;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'spin',
+  inputs: {},
+  options: { maxTraceSteps: 4, softTraceBudget: true },
+});
+if (!softStepLimitedTrace.success || softStepLimitedTrace.output !== 190) {
+  throw new Error('C++ soft event-count trace budgets should preserve finite program output, received ' + JSON.stringify(softStepLimitedTrace));
+}
+if (!softStepLimitedTrace.traceLimitExceeded || softStepLimitedTrace.timeoutReason !== 'trace-limit') {
+  throw new Error('C++ soft event-count trace budgets should still report trace-limit metadata, received ' + JSON.stringify(softStepLimitedTrace));
+}
+
 const hugeStdoutResult = await sandbox.__tracecodeCppTest.handleCompileRun({
   code: [
     'class Solution {',
@@ -1619,11 +1643,14 @@ const softLineLimitedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithT
   inputs: {},
   options: { maxLineEvents: 4, maxTraceSteps: 1000, maxStoredEvents: 1000, softTraceBudget: true },
 });
-if (!softLineLimitedTrace.success || softLineLimitedTrace.output !== 190) {
-  throw new Error('C++ soft trace budgets should preserve finite program output, received ' + JSON.stringify(softLineLimitedTrace));
+if (softLineLimitedTrace.success || softLineLimitedTrace.output !== null) {
+  throw new Error('C++ soft line trace budgets should still hard-stop execution, received ' + JSON.stringify(softLineLimitedTrace));
 }
 if (!softLineLimitedTrace.traceLimitExceeded || softLineLimitedTrace.timeoutReason !== 'line-limit') {
-  throw new Error('C++ soft trace budgets should still report line-limit metadata, received ' + JSON.stringify(softLineLimitedTrace));
+  throw new Error('C++ soft line trace budgets should still report line-limit metadata, received ' + JSON.stringify(softLineLimitedTrace));
+}
+if (!softLineLimitedTrace.trace.events.some((event) => event.kind === 'timeout' && event.reason === 'line-limit')) {
+  throw new Error('C++ soft line trace budgets should emit a line-limit timeout event, received ' + JSON.stringify(softLineLimitedTrace.trace.events));
 }
 
 const minimalTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

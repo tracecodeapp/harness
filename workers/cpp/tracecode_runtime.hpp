@@ -116,6 +116,11 @@ inline bool& hard_stop_on_trace_budget() {
   return value;
 }
 
+inline bool& hard_stop_on_trace_line_budget() {
+  static bool value = false;
+  return value;
+}
+
 inline std::size_t trace_bulk_index_write_limit(std::size_t requested) {
   if (requested == 0 || trace_budget_exceeded()) return 0;
   const int remaining = trace_event_budget() - trace_event_count();
@@ -6801,7 +6806,8 @@ inline void configure_trace_budget(
   bool hard_stop = false,
   int max_line_events = 0,
   int max_single_line_hits = 0,
-  bool minimal_trace = false
+  bool minimal_trace = false,
+  bool line_hard_stop = false
 ) {
   trace_event_count() = 0;
   trace_line_event_count() = 0;
@@ -6811,6 +6817,7 @@ inline void configure_trace_budget(
   trace_line_hit_counts().clear();
   reset_tracecode_object_ref_ids();
   hard_stop_on_trace_budget() = hard_stop;
+  hard_stop_on_trace_line_budget() = line_hard_stop;
   trace_event_budget() = max_events > 0 ? max_events : 10000;
   trace_line_event_budget() = max_line_events > 0 ? max_line_events : 0;
   trace_single_line_hit_budget() = max_single_line_hits > 0 ? max_single_line_hits : 0;
@@ -6821,14 +6828,14 @@ inline void stop_for_trace_budget(
   int line,
   const char* reason = "trace-limit",
   const char* message = "C++ trace budget exceeded",
-  bool allow_hard_stop = true
+  bool hard_stop = false
 ) {
   trace_budget_exceeded() = true;
   if (trace_budget_timeout_reason().empty()) {
     trace_budget_timeout_reason() = reason;
   }
   dropped_trace_event_count() += 1;
-  if (allow_hard_stop && hard_stop_on_trace_budget()) {
+  if (hard_stop) {
     write_trace_event_json_raw(
       std::string("{\"kind\":\"timeout\",\"line\":") + std::to_string(line) +
       ",\"reason\":" + to_json(reason) +
@@ -6845,7 +6852,7 @@ inline bool check_trace_budget(int line) {
     return false;
   }
   if (trace_event_count() >= trace_event_budget()) {
-    stop_for_trace_budget(line, "trace-limit", "C++ trace budget exceeded");
+    stop_for_trace_budget(line, "trace-limit", "C++ trace budget exceeded", hard_stop_on_trace_budget());
     return false;
   }
   return true;
@@ -6858,13 +6865,13 @@ inline bool check_line_trace_budget(int line) {
   }
   trace_line_event_count() += 1;
   if (trace_line_event_budget() > 0 && trace_line_event_count() > trace_line_event_budget()) {
-    stop_for_trace_budget(line, "line-limit", "C++ line event limit exceeded");
+    stop_for_trace_budget(line, "line-limit", "C++ line event limit exceeded", hard_stop_on_trace_line_budget());
     return false;
   }
   int next_hits = trace_line_hit_counts()[line] + 1;
   trace_line_hit_counts()[line] = next_hits;
   if (trace_single_line_hit_budget() > 0 && next_hits > trace_single_line_hit_budget()) {
-    stop_for_trace_budget(line, "single-line-limit", "C++ single-line hit limit exceeded");
+    stop_for_trace_budget(line, "single-line-limit", "C++ single-line hit limit exceeded", hard_stop_on_trace_line_budget());
     return false;
   }
   return true;
