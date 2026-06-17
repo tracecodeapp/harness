@@ -760,6 +760,72 @@ print(json.dumps({
   console.log('PASS: Python runtime records indexed receiver mutations');
 }
 
+async function assertSubscriptedUserMethodsPreserveEvaluationOrder(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class Box:
+    def __init__(self, name):
+        self.name = name
+        self.values = []
+
+    def append(self, value):
+        self.values.append([self.name, value])
+
+def solve():
+    boxes = [Box("first"), Box("second")]
+    index = 0
+    def arg():
+        nonlocal index
+        index = 1
+        return 7
+    boxes[index].append(arg())
+    return [index, boxes[0].values, boxes[1].values]
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
+  assertCondition(
+    JSON.stringify(parsed.result) === JSON.stringify([1, [['first', 7]], []]),
+    `Python subscripted user methods should preserve receiver-before-argument evaluation order, received ${JSON.stringify(parsed.result)}`
+  );
+  const mutationLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'boxes[index].append(arg())') - 1;
+  assertCondition(
+    !parsed.runtimeTrace.events.some((event) =>
+      event.line === mutationLine &&
+      event.kind === 'mutate' &&
+      event.target?.variable === 'boxes' &&
+      event.method === 'append'
+    ),
+    `Python subscripted user methods should not be rewritten as container mutations, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python subscripted user methods preserve evaluation order');
+}
+
 async function assertIndexSourceProvenanceIsRecorded(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `def inspect(nums, grid):
@@ -3750,6 +3816,7 @@ async function main(): Promise<void> {
   await assertPyodideProviderOutputIgnoresMutableGlobalHook();
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
+  await assertSubscriptedUserMethodsPreserveEvaluationOrder();
   await assertIndexSourceProvenanceIsRecorded();
   await assertEnumerateLoopBindingIsRecorded();
   await assertEnumerateExpressionLoopBindingIsRecorded();

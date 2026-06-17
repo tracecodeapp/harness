@@ -2437,7 +2437,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
 
         if isinstance(node.func, ast.Attribute):
             method_name = node.func.attr
-            if method_name in _TRACE_MUTATING_METHODS:
+            if method_name in _TRACE_MUTATING_METHODS and method_name not in self._tracecode_user_function_names:
                 extracted = _tracecode_extract_named_subscript(node.func.value)
                 if extracted is not None:
                     var_name, indices = extracted
