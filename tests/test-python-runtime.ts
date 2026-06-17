@@ -140,11 +140,19 @@ type FakePyodideFs = {
   directories: Set<string>;
   createDataFile: (parent: string, name: string, contents?: unknown) => unknown;
   createPath: (parent: string, path: string) => unknown;
+  cwd: () => string;
+  ftruncate: (fd: number, length: number) => void;
+  getPath: (node: { path: string }) => string;
+  getStreamChecked: (fd: number) => { node: { path: string }; path?: string };
+  lookupPath: (path: string) => { node: { path: string } };
+  open: (path: string | { path: string }, flags: string) => { fd: number; node: { path: string }; path?: string };
   readFile: (path: string, options?: { encoding?: string }) => Uint8Array;
   stat: (path: string) => { mode: number };
   isFile: (mode: number) => boolean;
   isDir: (mode: number) => boolean;
   readdir: (path: string) => string[];
+  write: (stream: { node: { path: string }; path?: string }, value: unknown) => number;
+  writeFile: (path: string, contents?: unknown) => void;
 };
 
 function normalizeFakeFsPath(path: string): string {
@@ -165,6 +173,11 @@ function fakeFsTargetPath(parent: string, name: string): string {
   return normalizeFakeFsPath(name ? `${base.replace(/\/+$/, '')}/${String(name).replace(/^\/+/, '')}` : base);
 }
 
+function fakeFsResolvePath(path: string): string {
+  const raw = String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/');
+  return normalizeFakeFsPath(raw.startsWith('/') ? raw : `/workspace/${raw}`);
+}
+
 function fakeFsBytes(contents: unknown): Uint8Array {
   if (contents instanceof Uint8Array) return contents;
   if (typeof contents === 'string') return new TextEncoder().encode(contents);
@@ -174,7 +187,9 @@ function fakeFsBytes(contents: unknown): Uint8Array {
 
 function createFakePyodideFs(): FakePyodideFs {
   const files = new Map<string, Uint8Array>();
-  const directories = new Set<string>(['/', '/workspace']);
+  const directories = new Set<string>(['/', '/dev', '/proc', '/proc/kernel', '/workspace']);
+  const streams = new Map<number, { node: { path: string }; path?: string }>();
+  let nextFd = 3;
   const fileMode = 0x8000;
   const directoryMode = 0x4000;
   return {
@@ -188,8 +203,35 @@ function createFakePyodideFs(): FakePyodideFs {
       directories.add(fakeFsTargetPath(parent, path));
       return {};
     },
+    cwd() {
+      return '/workspace';
+    },
+    ftruncate(fd, length) {
+      const stream = streams.get(fd);
+      if (!stream) throw new Error(`missing stream: ${fd}`);
+      const normalized = stream.node.path;
+      const contents = files.get(normalized) ?? new Uint8Array();
+      files.set(normalized, contents.slice(0, length));
+    },
+    getPath(node) {
+      return node.path;
+    },
+    getStreamChecked(fd) {
+      const stream = streams.get(fd);
+      if (!stream) throw new Error(`missing stream: ${fd}`);
+      return stream;
+    },
+    lookupPath(path) {
+      return { node: { path: fakeFsResolvePath(path) } };
+    },
+    open(path) {
+      const normalized = typeof path === 'string' ? fakeFsResolvePath(path) : path.path;
+      const stream = { fd: nextFd++, node: { path: normalized }, ...(typeof path === 'string' ? { path: normalized } : {}) };
+      streams.set(stream.fd, stream);
+      return stream;
+    },
     readFile(path) {
-      const normalized = normalizeFakeFsPath(path);
+      const normalized = fakeFsResolvePath(path);
       const contents = files.get(normalized);
       if (!contents) throw new Error(`missing file: ${normalized}`);
       return contents;
@@ -207,7 +249,7 @@ function createFakePyodideFs(): FakePyodideFs {
       return (mode & directoryMode) !== 0;
     },
     readdir(path) {
-      const normalized = normalizeFakeFsPath(path);
+      const normalized = fakeFsResolvePath(path);
       const prefix = normalized === '/' ? '/' : `${normalized}/`;
       const names = new Set<string>(['.', '..']);
       for (const candidate of [...directories, ...files.keys()]) {
@@ -217,6 +259,14 @@ function createFakePyodideFs(): FakePyodideFs {
         if (name) names.add(name);
       }
       return [...names];
+    },
+    write(stream, value) {
+      const contents = fakeFsBytes(value);
+      files.set(stream.node.path, contents);
+      return contents.byteLength;
+    },
+    writeFile(path, contents) {
+      files.set(fakeFsResolvePath(path), fakeFsBytes(contents));
     },
   };
 }
@@ -256,6 +306,7 @@ async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
 
   fakeFs.createDataFile('/workspace', 'safe.txt', new TextEncoder().encode('safe'));
   fakeFs.createPath('/workspace', 'nested');
+  fakeFs.files.set('/proc/kernel/info', new TextEncoder().encode('kernel'));
   events.length = 0;
   fakeFs.createDataFile('/workspace/nested', '../safe2.txt', new TextEncoder().encode('safe2'));
   const escapedDataFileMessage = caughtMessage(() => {
@@ -263,6 +314,23 @@ async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
   });
   const escapedCreatePathMessage = caughtMessage(() => {
     fakeFs.createPath('/workspace', '../escape-dir');
+  });
+  const relativeDeviceWriteMessage = caughtMessage(() => {
+    fakeFs.writeFile('../dev/log', new TextEncoder().encode('bad'));
+  });
+  const projectProcTraversalMessage = caughtMessage(() => {
+    fakeFs.writeFile('/workspace/../proc/kernel/info', new TextEncoder().encode('bad'));
+  });
+  const procNodeOpenMessage = caughtMessage(() => {
+    fakeFs.open(fakeFs.lookupPath('/proc/kernel/info').node, 'w');
+  });
+  const staleKernelStream = fakeFs.open(fakeFs.lookupPath('/workspace/safe.txt').node, 'w');
+  staleKernelStream.node.path = '/proc/kernel/info';
+  const streamWriteMessage = caughtMessage(() => {
+    fakeFs.write(staleKernelStream, new TextEncoder().encode('bad'));
+  });
+  const streamTruncateMessage = caughtMessage(() => {
+    fakeFs.ftruncate(staleKernelStream.fd, 0);
   });
   vm.runInContext('self.__cleanupProjectFs();', context);
 
@@ -280,6 +348,23 @@ async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
       !fakeFs.files.has('/escape.txt') &&
       !fakeFs.directories.has('/escape-dir'),
     `Pyodide FS create hooks should reject workspace escapes: ${escapedDataFileMessage} / ${escapedCreatePathMessage}`
+  );
+  assertCondition(
+    (relativeDeviceWriteMessage.includes('Project path must stay within the workspace') ||
+      relativeDeviceWriteMessage.includes('Kernel virtual namespace is not a provider FS mutation target: /dev/log')) &&
+      projectProcTraversalMessage.includes('Project path must stay within the workspace') &&
+      procNodeOpenMessage.includes('Kernel virtual namespace is not a provider FS mutation target: /proc/kernel/info') &&
+      streamWriteMessage.includes('Kernel virtual namespace is not a provider FS mutation target: /proc/kernel/info') &&
+      streamTruncateMessage.includes('Kernel virtual namespace is not a provider FS mutation target: /proc/kernel/info') &&
+      !fakeFs.files.has('/dev/log') &&
+      new TextDecoder().decode(fakeFs.files.get('/proc/kernel/info') ?? new Uint8Array()) === 'kernel',
+    `Pyodide FS hooks should reject kernel namespace bypasses: ${JSON.stringify({
+      relativeDeviceWriteMessage,
+      projectProcTraversalMessage,
+      procNodeOpenMessage,
+      streamWriteMessage,
+      streamTruncateMessage,
+    })}`
   );
   console.log('PASS: Pyodide project FS live events reject traversal paths');
 }

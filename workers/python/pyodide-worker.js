@@ -862,11 +862,17 @@ function normalizePyodideFsProjectPath(path) {
   return normalized.startsWith('/') ? normalized : `/${normalized}`;
 }
 
-function normalizePyodideFsAbsolutePath(path) {
-  const normalized = normalizePyodideFsProjectPath(path);
-  if (!normalized) return null;
+function normalizePyodideFsAbsolutePath(path, basePath = '/') {
+  if (typeof path !== 'string' || !path) return null;
+  const normalized = path.replace(/\\/g, '/').replace(/\/+/g, '/');
+  const normalizedBase = typeof basePath === 'string' && basePath
+    ? basePath.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '')
+    : '';
+  const absolutePath = normalized.startsWith('/')
+    ? normalized
+    : `${normalizedBase || ''}/${normalized}`;
   const parts = [];
-  for (const part of normalized.split('/')) {
+  for (const part of absolutePath.split('/')) {
     if (!part || part === '.') continue;
     if (part === '..') {
       if (parts.length > 0) parts.pop();
@@ -891,7 +897,7 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   const kernelPolicy = self.TraceRuntimeKernelPolicy;
 
   const fallbackKernelVirtualPathTarget = (path) => {
-    const normalized = normalizePyodideFsProjectPath(path);
+    const normalized = normalizePyodideFsAbsolutePath(path);
     if (!normalized) return { kind: 'workspace', path: '/' };
     if (normalized === '/proc' || normalized.startsWith('/proc/')) return { kind: 'proc', path: normalized };
     if (normalized === '/dev') return { kind: 'device-directory', path: normalized };
@@ -954,7 +960,38 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     return Boolean(numericFlags & 1) || Boolean(numericFlags & 2) || isCreateOrTruncateOpenFlags(numericFlags);
   };
 
-  const rejectKernelVirtualMutation = (path, operation) => {
+  const currentFsCwd = () => {
+    if (typeof fs.cwd !== 'function') return '/';
+    try {
+      return normalizePyodideFsAbsolutePath(String(fs.cwd() || '/')) || '/';
+    } catch {
+      return '/';
+    }
+  };
+
+  const resolveFsMutationPath = (path) => {
+    if (typeof path === 'string') {
+      const normalized = path.replace(/\\/g, '/').replace(/\/+/g, '/');
+      const raw = normalized.startsWith('/')
+        ? normalized
+        : `${currentFsCwd().replace(/\/+$/, '')}/${normalized}`;
+      return { raw, resolved: normalizePyodideFsAbsolutePath(raw) };
+    }
+    if (path && typeof fs.getPath === 'function') {
+      const node = path.node || path;
+      try {
+        const resolved = normalizePyodideFsAbsolutePath(String(fs.getPath(node) || ''));
+        return resolved ? { raw: resolved, resolved } : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  const rejectKernelVirtualMutation = (candidate, operation) => {
+    const path = candidate?.resolved;
+    if (!path) return;
     const target = kernelVirtualMutationTarget(path);
     if (target.kind !== 'error') return;
     const error = new Error(`Kernel virtual namespace is not a provider FS mutation target: ${target.path}`);
@@ -964,10 +1001,10 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     throw error;
   };
 
-  const rejectWorkspaceEscapingMutation = (path, operation) => {
-    const rawPath = normalizePyodideFsProjectPath(path);
+  const rejectWorkspaceEscapingMutation = (path, candidate, operation) => {
+    const rawPath = candidate?.raw;
     if (!rawPath || (rawPath !== normalizedRoot && !rawPath.startsWith(`${normalizedRoot}/`))) return;
-    const resolvedPath = normalizePyodideFsAbsolutePath(rawPath);
+    const resolvedPath = candidate?.resolved;
     if (resolvedPath === normalizedRoot || resolvedPath?.startsWith(`${normalizedRoot}/`)) return;
     const error = new Error(`Project path must stay within the workspace: ${path}`);
     error.code = 'EACCES';
@@ -977,12 +1014,13 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   };
 
   const rejectProjectMutation = (path, operation) => {
-    rejectWorkspaceEscapingMutation(path, operation);
-    rejectKernelVirtualMutation(path, operation);
+    const candidate = resolveFsMutationPath(path);
+    rejectWorkspaceEscapingMutation(path, candidate, operation);
+    rejectKernelVirtualMutation(candidate, operation);
   };
 
   const relativePath = (path) => {
-    const normalized = normalizePyodideFsAbsolutePath(path);
+    const normalized = resolveFsMutationPath(path)?.resolved ?? normalizePyodideFsAbsolutePath(path);
     if (!normalized || normalized === normalizedRoot || !normalized.startsWith(`${normalizedRoot}/`)) {
       return null;
     }
@@ -1150,8 +1188,10 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   });
 
   patch('write', (original) => function patchedWrite(stream, ...args) {
+    const path = streamPath(stream);
+    rejectProjectMutation(path, 'write');
     const result = original.call(this, stream, ...args);
-    emitFileChange(streamPath(stream));
+    emitFileChange(path);
     return result;
   });
 
@@ -1210,6 +1250,7 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     } catch {
       path = null;
     }
+    rejectProjectMutation(path, 'ftruncate');
     const result = original.call(this, fd, ...args);
     emitFileChange(path);
     return result;
@@ -1305,7 +1346,7 @@ function normalizeProjectKernelDevices(value) {
 }
 
 function fallbackRuntimeKernelVirtualPathTarget(path, devices = {}) {
-  const normalized = normalizePyodideFsProjectPath(path);
+  const normalized = normalizePyodideFsAbsolutePath(path);
   if (!normalized) return { kind: 'error', reason: 'not-found', path: '' };
   if (normalized === '/proc' || normalized.startsWith('/proc/')) return { kind: 'proc', path: normalized };
   if (normalized === '/dev') return { kind: 'device-directory', path: normalized };
