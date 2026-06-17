@@ -3489,6 +3489,11 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
 ): JavaScriptProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const workerIsolation = options.workerIsolation ?? 'per-command';
+  if (workerIsolation !== 'per-command' && workerIsolation !== 'shared') {
+    return createBrowserJavaScriptProjectPolicyFailureRunner(
+      `node: invalid browser JavaScript worker isolation "${String(workerIsolation)}"; expected "per-command" or "shared"\n`
+    );
+  }
   if (workerIsolation === 'shared' && options.trustedReusableWorker !== true) {
     return createBrowserJavaScriptProjectPolicyFailureRunner(
       'node: browser JavaScript shared worker isolation is trusted-only and requires trustedReusableWorker: true\n'

@@ -985,9 +985,10 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
 }
 
 function normalizeRuntimeSchedulerConfig(config: RuntimeTraceKernelSchedulerConfig | undefined): RuntimeCommandSchedulerOptions {
+  const defaultMaxConcurrentCommands = typeof (globalThis as { process?: unknown }).process === 'object' ? 32 : 1;
   const configuredMaxConcurrentCommands = Number.isFinite(config?.maxConcurrentCommands)
     ? Math.max(1, Math.floor(config?.maxConcurrentCommands ?? 0))
-    : 32;
+    : defaultMaxConcurrentCommands;
   const maxQueuedCommands = config?.maxQueuedCommands === undefined || !Number.isFinite(config.maxQueuedCommands)
     ? undefined
     : Math.max(0, Math.floor(config.maxQueuedCommands));
@@ -7202,6 +7203,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return host === '0.0.0.0';
   }
 
+  private isHttpWildcardConnectHost(host: string): boolean {
+    return host === '127.0.0.1';
+  }
+
   private normalizeHttpConnectPort(port: number): number {
     const normalized = Math.trunc(Number(port));
     if (!Number.isFinite(normalized) || normalized < 1 || normalized > 65535) {
@@ -7322,8 +7327,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (url.protocol !== 'http:') return undefined;
     const host = this.normalizeHttpConnectHost(url.hostname);
     const port = this.normalizeHttpConnectPort(url.port ? Number(url.port) : 80);
-    return this.httpListeners.get(this.httpListenerKey(host, port, 'http')) ??
-      this.httpListeners.get(this.httpListenerKey('0.0.0.0', port, 'http'));
+    const exact = this.httpListeners.get(this.httpListenerKey(host, port, 'http'));
+    if (exact) return exact;
+    return this.isHttpWildcardConnectHost(host)
+      ? this.httpListeners.get(this.httpListenerKey('0.0.0.0', port, 'http'))
+      : undefined;
   }
 
   private recordHttpRequest(entry: Omit<RuntimeKernelHttpRequestRecord, 'seq' | 'time'>): void {
@@ -8855,9 +8863,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private isProjectPathHidden(path: string): boolean {
     const normalized = normalizeRuntimeProjectPath(path);
-    return (this.projectSession?.hiddenFiles ?? []).some((hiddenPath) =>
-      hiddenPath === normalized || hiddenPath.startsWith(`${normalized}/`)
-    );
+    return (this.projectSession?.hiddenFiles ?? []).some((hiddenPath) => {
+      if (hiddenPath === normalized || hiddenPath.startsWith(`${normalized}/`)) return true;
+      const separatorIndex = hiddenPath.lastIndexOf('/');
+      if (separatorIndex <= 0) return false;
+      const hiddenDirectory = hiddenPath.slice(0, separatorIndex);
+      return normalized === hiddenDirectory || normalized.startsWith(`${hiddenDirectory}/`);
+    });
   }
 
   private isWorkspacePathHidden(absolutePath: string): boolean {
@@ -8893,6 +8905,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         { code: 'EROFS' }
       );
     }
+    if (!this.isReadonlyPolicySuspended() && this.isWorkspacePathHidden(absolutePath)) {
+      throw Object.assign(
+        new Error(`EROFS: hidden project path is read-only, ${operation} '${toProjectPath(this.cwd, absolutePath)}'`),
+        { code: 'EROFS' }
+      );
+    }
     if (this.isReadonlyPolicySuspended() || !this.isWorkspacePathReadOnly(absolutePath)) return;
     throw createRuntimeKernelReadonlyFileError(toProjectPath(this.cwd, absolutePath), operation);
   }
@@ -8902,6 +8920,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (this.isHomePathOutsideWorkspace(absolutePath)) {
       throw Object.assign(
         new Error(`EROFS: project workspace is read-only outside '${this.cwd}', ${operation} '${absolutePath}'`),
+        { code: 'EROFS' }
+      );
+    }
+    if (!this.isReadonlyPolicySuspended() && this.isWorkspacePathHidden(absolutePath)) {
+      throw Object.assign(
+        new Error(`EROFS: hidden project subtree is read-only, ${operation} '${toProjectDirectoryPath(this.cwd, absolutePath)}'`),
         { code: 'EROFS' }
       );
     }

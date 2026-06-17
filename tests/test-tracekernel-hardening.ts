@@ -131,9 +131,8 @@ async function testBrowserAsyncLocalStorageAllowsOverlappingContexts(): Promise<
 
   const projectSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-project', 'src', 'index.ts'), 'utf8');
   assertCondition(
-    !projectSource.includes('singleFlightAsyncContext: isSingleFlightBrowserAsyncLocalStorage()') &&
-      !projectSource.includes('__tracecodeBrowserSingleFlight'),
-    'TraceKernel scheduler should not clamp browser command concurrency through the browser async context shim'
+    projectSource.includes("typeof (globalThis as { process?: unknown }).process === 'object' ? 32 : 1"),
+    'TraceKernel scheduler should default browser builds to single-flight until the browser async context shim is chain-local'
   );
 }
 
@@ -560,6 +559,37 @@ async function testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn(): Promise<
     assertCondition(
       result.stderr.includes('trustedReusableWorker'),
       `shared browser JS workers should require explicit trustedReusableWorker opt-in: ${JSON.stringify(result)}`
+    );
+
+    const invalidIsolationRunner = createBrowserJavaScriptProjectRunner({
+      workerUrl,
+      workerIsolation: 'shared ' as 'shared',
+      timeoutMs: 1000,
+    });
+    const invalidIsolationResult = await invalidIsolationRunner({
+      code: 'console.log("should-not-run-invalid-isolation");',
+      source: 'inline',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        cwd: '/workspace',
+        workspaceRoot: '/workspace',
+        files: [],
+      },
+    });
+
+    assertCondition(
+      invalidIsolationResult.exitCode === 1,
+      `invalid browser JS worker isolation should fail closed: ${JSON.stringify(invalidIsolationResult)}`
+    );
+    assertCondition(
+      invalidIsolationResult.stdout === '',
+      `invalid browser JS worker isolation should not execute project code: ${JSON.stringify(invalidIsolationResult)}`
+    );
+    assertCondition(
+      invalidIsolationResult.stderr.includes('invalid browser JavaScript worker isolation'),
+      `invalid browser JS worker isolation should report the bad option: ${JSON.stringify(invalidIsolationResult)}`
     );
   });
 }
@@ -1419,6 +1449,18 @@ async function testCSharpBrowserRuntimeNetworkAssembliesAreDenied(): Promise<voi
       hostSource.includes('IsAllowedUserAssemblyName'),
     'C# compiler host should enforce denied browser runtime APIs before compiling user code and project references'
   );
+  assertCondition(
+    [
+      '"System.Reflection.Assembly"',
+      '"System.Runtime.Loader"',
+      '"System.Type"',
+      '"System.AppDomain"',
+      'deniedAliases',
+      'usingDirective.Alias',
+      'IdentifierNameSyntax identifierName',
+    ].every((marker) => hostSource.includes(marker)),
+    'C# compiler host should deny fully qualified and aliased reflection/runtime loader bypasses'
+  );
   const projectFile = await readFile(join(root, 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'TraceCode.CSharpHost.csproj'), 'utf8');
   assertCondition(
     projectFile.includes('Remove="$(TargetDir)System.Net*.dll"') &&
@@ -1503,7 +1545,7 @@ async function testJavaWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `Java worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
-async function testJavaWorkerCheerpJLoaderPolicyPinsCdn(): Promise<void> {
+async function testJavaWorkerCheerpJLoaderPolicyRequiresLocalAppAsset(): Promise<void> {
   const source = await readFile(join(dirname(testDirectory), 'workers', 'java', 'java-worker.js'), 'utf8');
   const context = vm.createContext({
     console,
@@ -1529,10 +1571,11 @@ async function testJavaWorkerCheerpJLoaderPolicyPinsCdn(): Promise<void> {
   const result = vm.runInContext(
     `(() => {
       const rejected = [];
-      const accepted = assertTrustedJavaAsset('CheerpJ loader', 'https://cjrtnc.leaningtech.com/4.2/loader.js');
+      const accepted = assertTrustedJavaAsset('CheerpJ loader', '/app/workers/vendor/cheerpj-loader.js');
       for (const url of [
-        'https://cjrtnc.leaningtech.com/4.3/loader.js',
+        'https://cjrtnc.leaningtech.com/4.2/loader.js',
         'https://example.com/4.2/loader.js',
+        '/workers/vendor/cheerpj-loader.js',
       ]) {
         try {
           assertTrustedJavaAsset('CheerpJ loader', url);
@@ -1564,12 +1607,12 @@ async function testJavaWorkerCheerpJLoaderPolicyPinsCdn(): Promise<void> {
   };
 
   assertCondition(
-    result.accepted === 'https://cjrtnc.leaningtech.com/4.2/loader.js',
-    `CheerpJ loader policy should accept only the pinned hosted loader: ${JSON.stringify(result)}`
+    result.accepted === 'http://localhost/app/workers/vendor/cheerpj-loader.js',
+    `CheerpJ loader policy should accept only a same-origin /app/ asset: ${JSON.stringify(result)}`
   );
   assertCondition(
-    result.rejected.length === 2 && result.rejected.every((message) => message.includes('pinned CheerpJ runtime CDN')),
-    `CheerpJ loader policy should reject unpinned hosted URLs: ${JSON.stringify(result)}`
+    result.rejected.length === 3 && result.rejected.every((message) => message.includes('local /app/ asset path')),
+    `CheerpJ loader policy should reject remote or non-/app loader URLs: ${JSON.stringify(result)}`
   );
   assertCondition(
     result.sourceTreePolicy === 'http://localhost/workers/shared/runtime-kernel-policy-classic.js' &&
@@ -2649,6 +2692,33 @@ async function testTraceKernelHttpDiagnosticsAreRedacted(): Promise<void> {
   }
 }
 
+async function testTraceKernelWildcardHttpDoesNotCatchExternalHosts(): Promise<void> {
+  const workspace = await createRuntimeWorkspace();
+  let seenUrl = '';
+  const listener = workspace.http.listen({ port: 3658 }, (request) => {
+    seenUrl = request.url;
+    return { status: 200, body: 'wildcard\n' };
+  });
+  try {
+    const localResponse = await workspace.http.request({ url: 'http://localhost:3658/local' });
+    assertCondition(localResponse.status === 200, `local request should reach wildcard listener: ${JSON.stringify(localResponse)}`);
+    assertCondition(localResponse.body === 'wildcard\n', `local wildcard body mismatch: ${JSON.stringify(localResponse)}`);
+
+    const externalResponse = await workspace.http.request({ url: 'http://api.example.com:3658/secret?token=abc' });
+    assertCondition(
+      externalResponse.status === 0 && externalResponse.body.includes('Connection refused'),
+      `external host should not be captured by wildcard listener: ${JSON.stringify(externalResponse)}`
+    );
+    assertCondition(
+      seenUrl === 'http://localhost:3658/local',
+      `wildcard listener should only observe the local request, saw ${seenUrl}`
+    );
+  } finally {
+    listener.close();
+    workspace.dispose();
+  }
+}
+
 async function testTraceKernelHttpListenerLimit(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
   const listeners: Array<{ close(): void }> = [];
@@ -2939,7 +3009,7 @@ async function main(): Promise<void> {
   await testCSharpInputHydrationConstructorsAreBounded();
   await testCSharpBrowserRuntimeNetworkAssembliesAreDenied();
   await testJavaWorkerProjectEventBudgets();
-  await testJavaWorkerCheerpJLoaderPolicyPinsCdn();
+  await testJavaWorkerCheerpJLoaderPolicyRequiresLocalAppAsset();
   await testJavaQueueAugmentationRequiresNativeBlockShape();
   testJavaHelperRunScopeAndCacheManifest();
   await testNativeJavaHostCacheUsesPrivateTempDirectory();
@@ -2962,6 +3032,7 @@ async function main(): Promise<void> {
   await testTraceKernelPublicProcInfoIsRedacted();
   await testTraceKernelHttpTimeoutSignalsCooperativeHandlers();
   await testTraceKernelHttpDiagnosticsAreRedacted();
+  await testTraceKernelWildcardHttpDoesNotCatchExternalHosts();
   await testTraceKernelHttpListenerLimit();
   await testTraceKernelHttpRejectsMalformedInputs();
   await testTraceKernelHttpRejectsInvalidResponseStatus();

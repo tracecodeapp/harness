@@ -11670,6 +11670,7 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   await assertRejectsAsync(() => workspace.writeFile('README.md', 'principal overwrite\n'), 'principal writes should reject readonly files');
   await assertRejectsAsync(() => workspace.appendFile('README.md', 'principal append\n'), 'principal appends should reject readonly files');
   await assertRejectsAsync(() => workspace.writeFile('.trace/fixtures/input.txt', 'principal overwrite\n'), 'principal writes should reject hidden fixtures');
+  await assertRejectsAsync(() => workspace.writeFile('.trace/fixtures/conftest.py', 'poison\n'), 'principal writes should reject hidden fixture directory descendants');
   await assertRejectsAsync(() => workspace.copyFile('src/main.py', 'README.md'), 'copy destination should reject readonly files');
   await assertRejectsAsync(() => workspace.deleteFile('README.md'), 'delete should reject readonly files');
   await assertRejectsAsync(() => workspace.remove('.', { recursive: true }), 'recursive remove should reject readonly descendants');

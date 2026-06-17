@@ -208,6 +208,11 @@ export async function createBrowserProjectWorkspace(
     kernelStorage,
     ...workspaceOptions
   } = options;
+  if (projectWorkerIsolation !== 'per-command' && projectWorkerIsolation !== 'shared') {
+    throw new TypeError(
+      `Invalid browser project worker isolation "${String(projectWorkerIsolation)}"; expected "per-command" or "shared".`
+    );
+  }
   const ownedWorkers: Array<{ terminate(): void }> = [];
   const pythonWorkerOptions: PythonWorkerClientOptions = {
     workerUrl: assets.pythonWorker,
