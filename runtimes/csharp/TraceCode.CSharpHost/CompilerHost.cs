@@ -33,6 +33,10 @@ public static partial class CompilerHost
     {
         "System.Net",
         "System.Reflection.Emit",
+        "System.Reflection.Assembly",
+        "System.Runtime.Loader",
+        "System.Type",
+        "System.AppDomain",
         "System.Runtime.InteropServices.JavaScript",
         "AssemblyLoadContext",
     };
@@ -1039,9 +1043,16 @@ public static partial class CompilerHost
     private static void ValidateUserSourcePolicy(SyntaxTree tree)
     {
         SyntaxNode root = tree.GetRoot();
+        HashSet<string> deniedAliases = root
+            .DescendantNodes()
+            .OfType<UsingDirectiveSyntax>()
+            .Where(usingDirective => usingDirective.Alias is not null && DeniedUserApiSymbol(usingDirective.Name?.ToString()) is not null)
+            .Select(usingDirective => usingDirective.Alias!.Name.Identifier.ValueText)
+            .Where(alias => !string.IsNullOrWhiteSpace(alias))
+            .ToHashSet(StringComparer.Ordinal);
         foreach (SyntaxNode node in root.DescendantNodesAndSelf())
         {
-            string? deniedApi = DeniedUserApiForNode(node);
+            string? deniedApi = DeniedUserApiForNode(node, deniedAliases);
             if (deniedApi is not null)
             {
                 throw new InvalidOperationException($"C# user code references denied browser runtime API: {deniedApi}.");
@@ -1049,8 +1060,13 @@ public static partial class CompilerHost
         }
     }
 
-    private static string? DeniedUserApiForNode(SyntaxNode node)
+    private static string? DeniedUserApiForNode(SyntaxNode node, IReadOnlySet<string> deniedAliases)
     {
+        if (node is IdentifierNameSyntax identifierName && deniedAliases.Contains(identifierName.Identifier.ValueText))
+        {
+            return identifierName.Identifier.ValueText;
+        }
+
         if (node is UsingDirectiveSyntax usingDirective)
         {
             return DeniedUserApiSymbol(usingDirective.Name?.ToString());
@@ -1068,6 +1084,15 @@ public static partial class CompilerHost
 
         if (node is MemberAccessExpressionSyntax memberAccess)
         {
+            string memberText = NormalizeCSharpSymbolText(memberAccess.ToString());
+            foreach (string alias in deniedAliases)
+            {
+                if (string.Equals(memberText, alias, StringComparison.Ordinal) ||
+                    memberText.StartsWith(alias + ".", StringComparison.Ordinal))
+                {
+                    return alias;
+                }
+            }
             return DeniedUserApiSymbol(memberAccess.ToString());
         }
 
