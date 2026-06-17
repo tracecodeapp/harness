@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
+import { CSharpWorkerClient } from '../packages/harness-browser/src/csharp-worker-client';
 import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
 import { createRuntimeCommandStdinPipeFromText, readRuntimeCommandStdinPipeBytes } from '../packages/harness-core/src/runtime-project';
 import type { RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
@@ -761,7 +762,20 @@ function fixture(name: string): string {
   return readFileSync(join(FIXTURE_ROOT, name), 'utf8');
 }
 
+function testCSharpScriptTracingRespectsConfiguredTimeout(): void {
+  const client = new CSharpWorkerClient({
+    workerUrl: '/csharp-worker.js',
+    assetBaseUrl: '/workers/vendor/csharp/',
+    tracingTimeoutMs: 1_500,
+  });
+  const timeout = (client as unknown as {
+    resolveTracingTimeoutMs(functionName: string, executionStyle: 'function' | 'solution-method' | 'ops-class'): number;
+  }).resolveTracingTimeoutMs('', 'function');
+  assertCondition(timeout === 1_500, `C# script tracing should preserve lower configured timeout, received ${timeout}`);
+}
+
 async function main(): Promise<void> {
+  testCSharpScriptTracingRespectsConfiguredTimeout();
   await testBrowserCSharpProjectBridgeFinalDiffApplication();
   await testBrowserCSharpProjectBridgeUnsupportedNoBuildEvents();
 

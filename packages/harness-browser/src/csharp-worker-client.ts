@@ -68,7 +68,6 @@ interface WarmupResult {
 
 const EXECUTION_TIMEOUT_MS = 20_000;
 const TRACING_TIMEOUT_MS = 20_000;
-const SCRIPT_TRACING_TIMEOUT_MS = 60_000;
 const INTERVIEW_MODE_TIMEOUT_MS = 5_000;
 const INIT_TIMEOUT_MS = 45_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
@@ -785,13 +784,9 @@ export class CSharpWorkerClient {
   }
 
   private resolveTracingTimeoutMs(functionName: string, executionStyle: CSharpExecutionStyle): number {
-    return this.isScriptStyleRequest(functionName, executionStyle)
-      ? Math.max(this.tracingTimeoutMs, SCRIPT_TRACING_TIMEOUT_MS)
-      : this.tracingTimeoutMs;
-  }
-
-  private isScriptStyleRequest(functionName: string, executionStyle: CSharpExecutionStyle): boolean {
-    return executionStyle === 'function' && functionName.trim() === '';
+    void functionName;
+    void executionStyle;
+    return this.tracingTimeoutMs;
   }
 
   terminate(): void {
