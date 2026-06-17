@@ -50,6 +50,32 @@ type ExampleFixture = {
   executionStyle?: 'function' | 'solution-method' | 'ops-class';
 };
 
+const EDITOR_LANGUAGE_BY_RUNTIME: Record<Language, string> = {
+  python: 'python',
+  javascript: 'javascript',
+  typescript: 'typescript',
+  java: 'java',
+  csharp: 'csharp',
+  cpp: 'cpp',
+};
+
+const FILE_EXTENSION_BY_RUNTIME: Record<Language, string> = {
+  python: '.py',
+  javascript: '.js',
+  typescript: '.ts',
+  java: '.java',
+  csharp: '.cs',
+  cpp: '.cpp',
+};
+
+function getEditorLanguage(language: Language): string {
+  return EDITOR_LANGUAGE_BY_RUNTIME[language] ?? 'plaintext';
+}
+
+function getExtension(language: Language): string {
+  return FILE_EXTENSION_BY_RUNTIME[language] ?? '.txt';
+}
+
 const EXAMPLES: Record<Language, ExampleFixture> = {
   python: {
     functionName: 'solve',
