@@ -73,6 +73,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'dist/csharp.cjs',
     'dist/cpp.js',
     'dist/cpp.cjs',
+    'dist/sql.js',
+    'dist/sql.cjs',
     'THIRD_PARTY_NOTICES.md',
     'workers/python/pyodide-worker.js',
     'workers/javascript/javascript-worker.js',
@@ -144,6 +146,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const java = await import('@tracecode/harness/java');
       const csharp = await import('@tracecode/harness/csharp');
       const cpp = await import('@tracecode/harness/cpp');
+      const sql = await import('@tracecode/harness/sql');
 
       async function waitForPackedHttpListener(workspace, port) {
         let listeners = '';
@@ -166,6 +169,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
 
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
+      if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing SQL trace client export');
+      if (typeof sql.createPgliteSqlTraceClient !== 'function') throw new Error('Missing PGlite SQL trace client export');
+      if (typeof sql.assertValidSqlTrace !== 'function') throw new Error('Missing SQL trace validation export');
       if (typeof browser.getLanguageRuntimeInfo !== 'function') throw new Error('Missing browser runtime info export');
       if (typeof browser.getRuntimeProjectIoSupport !== 'function') {
         throw new Error('Missing browser project I/O support helper export');
@@ -573,7 +579,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof java.createJavaRuntimeClient !== 'function') throw new Error('Missing java export');
       if (typeof csharp.createCSharpRuntimeClient !== 'function') throw new Error('Missing csharp export');
       if (typeof cpp.createCppRuntimeClient !== 'function') throw new Error('Missing cpp export');
+      if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing sql export');
       if (typeof root.createBrowserHarness !== 'function') throw new Error('Root export should expose createBrowserHarness');
+      if ('createSqlTraceClient' in root) throw new Error('Root export should not expose SQL trace helpers; use @tracecode/harness/sql');
       if (typeof root.getRuntimeProjectIoSupport !== 'function') {
         throw new Error('Root export should expose project I/O support helper');
       }

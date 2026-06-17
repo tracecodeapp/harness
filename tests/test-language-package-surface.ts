@@ -48,6 +48,18 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
+    name: '@tracecode/harness-sql',
+    dir: 'packages/harness-sql',
+    exportName: 'createSqlTraceClient',
+    requiredFiles: [
+      'dist/index.js',
+      'dist/index.cjs',
+      'dist/index.d.ts',
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+    ],
+  },
+  {
     name: '@tracecode/harness-project',
     dir: 'packages/harness-project',
     exportName: 'createRuntimeWorkspace',
@@ -346,6 +358,21 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         declarations.includes("type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live'") &&
           declarations.includes('interface RuntimeProjectIoSupport'),
         '@tracecode/harness-core declarations should export project I/O support tier types'
+      );
+    }
+    if (packageCheck.name === '@tracecode/harness-sql') {
+      const declarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+      assertCondition(
+        declarations.includes('interface SqlTrace') &&
+          declarations.includes('interface SqlBatchEvent') &&
+          declarations.includes('interface SqlTraceHashPolicy') &&
+          declarations.includes('type SqlTraceCapturePolicyOptions') &&
+          declarations.includes('type SqlTraceEventKind') &&
+          declarations.includes('createSqlTraceClient') &&
+          declarations.includes('createPgliteSqlTraceClient') &&
+          declarations.includes('inferPgliteSqlPersistence') &&
+          declarations.includes('assertValidSqlTrace'),
+        '@tracecode/harness-sql declarations should ship the SQL trace contract and client helpers'
       );
     }
     if (packageCheck.name === '@tracecode/harness-project') {

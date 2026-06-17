@@ -35,6 +35,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     assets: [],
   },
   {
+    packageDir: 'packages/harness-sql',
+    assets: [],
+  },
+  {
     packageDir: 'packages/harness-native',
     assets: [
       {

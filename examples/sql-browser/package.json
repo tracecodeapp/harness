@@ -1,0 +1,18 @@
+{
+  "name": "@tracecode/harness-example-sql-browser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4175"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.2",
+    "@tracecode/harness-sql": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vite": "^7.3.2"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "@tracecode/harness-sql",
+  "version": "0.9.5",
+  "description": "Browser-first SQL trace contract and client wrappers for TraceCode harness.",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://tracecode.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tracecodeapp/harness.git",
+    "directory": "packages/harness-sql"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false
+}

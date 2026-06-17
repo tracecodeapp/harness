@@ -128,6 +128,22 @@ importers:
         specifier: ^7.3.2
         version: 7.3.2(@types/node@20.19.37)(tsx@4.21.0)(yaml@2.9.0)
 
+  examples/sql-browser:
+    dependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.5.2
+        version: 0.5.2
+      '@tracecode/harness-sql':
+        specifier: workspace:*
+        version: link:../../packages/harness-sql
+    devDependencies:
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.2(@types/node@20.19.37)(tsx@4.21.0)(yaml@2.9.0)
+
   examples/web-ide:
     dependencies:
       '@tracecode/harness':
@@ -252,6 +268,8 @@ importers:
 
   packages/harness-python: {}
 
+  packages/harness-sql: {}
+
 packages:
 
   '@borewit/text-codec@0.2.2':
@@ -289,6 +307,9 @@ packages:
 
   '@datastructures-js/trie@4.2.3':
     resolution: {integrity: sha512-4Iu2okR18BE3d/KQBKnpGZ+98cv/EwYl7wSwOU4yICxjSJfjUJixugBjh3kPhHe9Qf652qVDN/Ugp2dj4ak68w==}
+
+  '@electric-sql/pglite@0.5.2':
+    resolution: {integrity: sha512-y6ySdFE7FQB7BkVaSNaPINgY7mXCyvi+3GQB5ySX9WGwgrdh31WXMP5RM40oAyYff47lIr7xdcW8UbCW5NHDmw==}
 
   '@esbuild/aix-ppc64@0.27.3':
     resolution: {integrity: sha512-9fJMTNFTWZMh5qwrBItuziu834eOCUcEqymSH7pY+zoMVEZg3gcPuBNxH1EvfVYe9h0x/Ptw8KBzv7qxb7l8dg==}
@@ -1210,6 +1231,8 @@ snapshots:
   '@datastructures-js/stack@3.1.6': {}
 
   '@datastructures-js/trie@4.2.3': {}
+
+  '@electric-sql/pglite@0.5.2': {}
 
   '@esbuild/aix-ppc64@0.27.3':
     optional: true

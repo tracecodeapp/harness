@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "sql-trace-2026-06-13",
+  "runId": "sql:fixture:explain-estimate",
+  "engine": {
+    "kind": "pglite",
+    "dialect": "postgres",
+    "persistence": "memory",
+    "capabilities": ["single-statement-query", "parameterized-query", "transactions", "explain-json"]
+  },
+  "capture": {
+    "sqlText": "redacted",
+    "params": "redacted",
+    "diagnostics": "redacted",
+    "resultRows": "none",
+    "maxRowsPerResult": 50,
+    "maxCellBytes": 1024,
+    "plans": "estimate",
+    "planDetail": "summary",
+    "relationAccess": "none",
+    "hashes": {
+      "sql": "none",
+      "params": "none",
+      "plans": "none"
+    }
+  },
+  "events": [
+    {
+      "kind": "statement",
+      "eventId": "sql:fixture:explain-estimate:event:1",
+      "runId": "sql:fixture:explain-estimate",
+      "ordinal": 0,
+      "statementId": "sql:fixture:explain-estimate:statement:1",
+      "api": "query",
+      "sql": {
+        "redactedText": "SELECT id FROM users WHERE id = $<number>",
+        "dialect": "postgres",
+        "operation": "select",
+        "operationSource": "regex",
+        "operationConfidence": "medium"
+      },
+      "params": [
+        {
+          "position": 1,
+          "redacted": true
+        }
+      ],
+      "timing": {
+        "startTimeMs": 10,
+        "endTimeMs": 13,
+        "durationMs": 3
+      },
+      "timingSource": "measured",
+      "status": "ok",
+      "transactionContext": "autocommit-implicit",
+      "summary": {
+        "affectedRows": 0,
+        "returnedRowsKnown": 1,
+        "returnedRowsCaptured": 0,
+        "fieldsCount": 1
+      }
+    },
+    {
+      "kind": "result",
+      "eventId": "sql:fixture:explain-estimate:event:2",
+      "runId": "sql:fixture:explain-estimate",
+      "ordinal": 1,
+      "statementId": "sql:fixture:explain-estimate:statement:1",
+      "fields": [
+        {
+          "name": "id",
+          "ordinal": 0,
+          "pgTypeId": 23
+        }
+      ],
+      "fieldsSource": "engine",
+      "rows": {
+        "mode": "object",
+        "values": [],
+        "rowCountCaptured": 0,
+        "rowCountKnown": 1,
+        "truncated": true
+      },
+      "affectedRows": 0
+    },
+    {
+      "kind": "plan",
+      "eventId": "sql:fixture:explain-estimate:event:3",
+      "runId": "sql:fixture:explain-estimate",
+      "ordinal": 2,
+      "statementId": "sql:fixture:explain-estimate:statement:1",
+      "source": "explain-json",
+      "requestedBy": "harness",
+      "mode": "estimate",
+      "safeToExecute": true,
+      "targetStatementExecuted": false,
+      "diagnosticStatementExecuted": true,
+      "sideEffectRisk": "planner-only",
+      "timing": {
+        "startTimeMs": 13,
+        "endTimeMs": 16,
+        "durationMs": 3
+      },
+      "summary": {
+        "rootNodeType": "Seq Scan",
+        "estimatedRows": 12,
+        "estimatedTotalCost": 4.25,
+        "relations": [
+          {
+            "relation": {
+              "name": "users",
+              "kind": "table"
+            },
+            "access": "read"
+          }
+        ]
+      }
+    }
+  ]
+}

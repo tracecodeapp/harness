@@ -40,6 +40,7 @@ export default defineConfig([
       java: 'packages/harness-java/src/index.ts',
       csharp: 'packages/harness-csharp/src/index.ts',
       cpp: 'packages/harness-cpp/src/index.ts',
+      sql: 'packages/harness-sql/src/index.ts',
       cli: 'src/cli.ts',
     },
   },
@@ -121,5 +122,12 @@ export default defineConfig([
       index: 'packages/harness-native/src/index.ts',
     },
     outDir: 'packages/harness-native/dist',
+  },
+  {
+    ...commonConfig,
+    entry: {
+      index: 'packages/harness-sql/src/index.ts',
+    },
+    outDir: 'packages/harness-sql/dist',
   },
 ]);

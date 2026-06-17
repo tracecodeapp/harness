@@ -27,6 +27,7 @@ pnpm add @tracecode/harness-javascript
 pnpm add @tracecode/harness-java
 pnpm add @tracecode/harness-csharp
 pnpm add @tracecode/harness-cpp
+pnpm add @tracecode/harness-sql
 ```
 
 Add project/workspace execution only when you need shell-style multi-file
@@ -87,10 +88,11 @@ selected so the heavier compiler path can load before first execution.
 ## Packages
 
 The umbrella package exposes `/browser`, `/core`, `/python`, `/javascript`,
-`/java`, `/csharp`, `/cpp`, `/project`, `/project-node`, and `/native`
+`/java`, `/csharp`, `/cpp`, `/sql`, `/project`, `/project-node`, and `/native`
 entrypoints. Standalone packages expose the same surfaces with smaller installs:
 `@tracecode/harness-core`, `@tracecode/harness-browser`, the language packages,
-`@tracecode/harness-project`, and `@tracecode/harness-native`.
+`@tracecode/harness-sql`, `@tracecode/harness-project`, and
+`@tracecode/harness-native`.
 
 All supported languages are stable. Use `getLanguageRuntimeProfile(language)`
 for detailed capability checks and `getLanguageRuntimeInfo(language)` for

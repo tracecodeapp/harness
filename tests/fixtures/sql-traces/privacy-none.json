@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "sql-trace-2026-06-13",
+  "runId": "sql:fixture:privacy-none",
+  "engine": {
+    "kind": "custom",
+    "dialect": "unknown"
+  },
+  "capture": {
+    "sqlText": "none",
+    "params": "none",
+    "diagnostics": "none",
+    "resultRows": "none",
+    "maxRowsPerResult": 0,
+    "maxCellBytes": 128,
+    "plans": "none",
+    "planDetail": "summary",
+    "relationAccess": "none",
+    "hashes": {
+      "sql": "none",
+      "params": "none",
+      "plans": "none"
+    }
+  },
+  "events": [
+    {
+      "kind": "statement",
+      "eventId": "sql:fixture:privacy-none:event:1",
+      "runId": "sql:fixture:privacy-none",
+      "ordinal": 0,
+      "statementId": "sql:fixture:privacy-none:statement:1",
+      "api": "query",
+      "sql": {
+        "dialect": "unknown",
+        "operation": "select",
+        "operationSource": "regex",
+        "operationConfidence": "medium"
+      },
+      "status": "ok",
+      "transactionContext": "autocommit-implicit",
+      "summary": {
+        "returnedRowsKnown": 1,
+        "returnedRowsCaptured": 0,
+        "fieldsCount": 1
+      }
+    },
+    {
+      "kind": "result",
+      "eventId": "sql:fixture:privacy-none:event:2",
+      "runId": "sql:fixture:privacy-none",
+      "ordinal": 1,
+      "statementId": "sql:fixture:privacy-none:statement:1",
+      "fields": [
+        {
+          "name": "redacted_column",
+          "ordinal": 0
+        }
+      ],
+      "fieldsSource": "engine",
+      "rows": {
+        "mode": "object",
+        "values": [],
+        "rowCountCaptured": 0,
+        "rowCountKnown": 1,
+        "truncated": true
+      }
+    }
+  ]
+}
