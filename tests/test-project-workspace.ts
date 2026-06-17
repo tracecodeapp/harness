@@ -2603,6 +2603,7 @@ async function testWorkspaceFinalDiffUpdatesKernelInodeTable(): Promise<void> {
       exitCode: 0,
       files: [
         { path: 'old.txt', deleted: true },
+        { path: 'tree/child.txt', deleted: true },
         { path: 'tree', directory: true, deleted: true },
         { path: 'new-dir/new.txt', contents: 'new\n' },
       ],

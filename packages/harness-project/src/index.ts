@@ -2869,7 +2869,6 @@ class KernelObservedFileSystem implements IFileSystem {
 
   private async assertFinalDiffDirectoryDeleteIsExplicit(path: string, deletedPaths: ReadonlySet<string>): Promise<void> {
     const normalizedPath = normalizeFsLockPath(path);
-    const generationContext = this.commandGenerationContext();
     const stat = await this.base.lstat(normalizedPath).catch(() => null);
     if (!stat || (stat as { isSymbolicLink?: boolean }).isSymbolicLink || !stat.isDirectory) return;
     for (const entry of await this.base.readdir(normalizedPath)) {
@@ -2879,20 +2878,10 @@ class KernelObservedFileSystem implements IFileSystem {
       if (childStat.isDirectory && !(childStat as { isSymbolicLink?: boolean }).isSymbolicLink) {
         await this.assertFinalDiffDirectoryDeleteIsExplicit(childPath, deletedPaths);
       }
-      if (!deletedPaths.has(childPath) && !this.finalDiffDirectoryDeleteDescendantIsFresh(childPath, generationContext)) {
+      if (!deletedPaths.has(childPath)) {
         this.throwFinalDiffDirectoryDeleteConflict(childPath);
       }
     }
-  }
-
-  private finalDiffDirectoryDeleteDescendantIsFresh(
-    path: string,
-    generationContext: RuntimeFileSystemCommandGenerationContext | undefined
-  ): boolean {
-    if (!generationContext) return false;
-    const normalizedPath = normalizeFsLockPath(path);
-    if (generationContext.mutatedPaths.has(normalizedPath)) return true;
-    return this.currentGeneration(normalizedPath) === (generationContext.baseline.get(normalizedPath) ?? 0);
   }
 
   private throwFinalDiffDirectoryDeleteConflict(path: string): never {

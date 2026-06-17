@@ -2453,6 +2453,33 @@ async function testTraceKernelTraversalSkipsSymlinkCycles(): Promise<void> {
   } finally {
     workspace.dispose();
   }
+
+  const unchangedWorkspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'runner.js', contents: 'console.log("runner")\n' },
+      { path: 'tree/kept.txt', contents: 'kept\n' },
+    ],
+    nodeRunner: async () => ({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      files: [{ path: 'tree', directory: true, deleted: true }],
+    }),
+  });
+  try {
+    const result = await unchangedWorkspace.runCommand('node runner.js');
+    assertCondition(
+      result.exitCode === 116 &&
+        result.error?.code === 'ESTALE',
+      `directory final-diff tombstone should reject unchanged omitted descendants: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      await unchangedWorkspace.readFile('tree/kept.txt') === 'kept\n',
+      'rejected unchanged directory final-diff tombstone should not delete descendants'
+    );
+  } finally {
+    unchangedWorkspace.dispose();
+  }
 }
 
 async function testTraceKernelFinalDiffDirectoryDeletesRejectStaleDescendants(): Promise<void> {
