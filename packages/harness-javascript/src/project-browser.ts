@@ -5040,23 +5040,25 @@ export async function runBrowserJavaScriptProjectRequest(
     const parseOpenFlags = (flags: unknown = 'r') => {
       if (typeof flags === 'number') {
         const access = flags & 3;
+        const create = (flags & 0o100) !== 0;
         return {
           readable: access === 0 || access === 2,
           writable: access === 1 || access === 2,
           append: (flags & 0o2000) !== 0,
           truncate: (flags & 0o1000) !== 0,
-          create: (flags & 0o100) !== 0,
-          exclusive: (flags & 0o200) !== 0,
+          create,
+          exclusive: create && (flags & 0o200) !== 0,
         };
       }
       const text = String(flags);
+      const create = text.startsWith('w') || text.startsWith('a');
       return {
         readable: text.includes('+') || text.startsWith('r'),
-        writable: text.includes('+') || text.startsWith('w') || text.startsWith('a'),
+        writable: text.includes('+') || create,
         append: text.startsWith('a'),
         truncate: text.startsWith('w'),
-        create: text.startsWith('w') || text.startsWith('a'),
-        exclusive: text.includes('x'),
+        create,
+        exclusive: create && text.includes('x'),
       };
     };
     const fileDescriptor = (fd: number): BrowserFileDescriptor => {
