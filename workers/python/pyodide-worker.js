@@ -402,6 +402,25 @@ def _tracecode_ref_id(obj_ref, node_refs):
 def _truncation_marker(total, emitted):
     return {"__truncated__": True, "remaining": max(0, total - emitted)}
 
+def _serialize_repr_fallback(obj, node_refs=None):
+    obj_type = getattr(obj, '__class__', None)
+    class_name = getattr(obj_type, '__name__', 'object')
+    if getattr(obj_type, '__module__', '') == 'builtins':
+        try:
+            repr_str = repr(obj)
+        except Exception:
+            return _SKIP_SENTINEL
+        if repr_str.startswith('<') and repr_str.endswith('>'):
+            return _SKIP_SENTINEL
+        return repr_str
+    if node_refs is None:
+        return {"__type__": class_name, "__class__": class_name}
+    obj_ref = _builtins.id(obj)
+    if obj_ref in node_refs:
+        return {"__ref__": node_refs[obj_ref]}
+    node_id = _tracecode_ref_id(obj_ref, node_refs)
+    return {"__type__": class_name, "__class__": class_name, "__id__": node_id}
+
 def _serialize_sequence(values, depth, node_refs):
     values_list = _builtins.list(values)
     emitted = min(len(values_list), _MAX_SERIALIZED_ITEMS)
@@ -509,11 +528,7 @@ def _serialize(obj, depth=0, node_refs=None):
                 result["remaining"] = len(fields) - _MAX_OBJECT_FIELDS
         return result
     else:
-        repr_str = repr(obj)
-        # Filter out function-like representations (e.g., <function foo at 0x...>)
-        if repr_str.startswith('<') and repr_str.endswith('>'):
-            return _SKIP_SENTINEL
-        return repr_str
+        return _serialize_repr_fallback(obj, node_refs)
 
 def _serialize_output(obj, depth=0, node_refs=None):
     if node_refs is None:
@@ -592,10 +607,7 @@ def _serialize_output(obj, depth=0, node_refs=None):
                 result[key_str] = _serialize_output(value, depth + 1, node_refs)
         return result
     else:
-        repr_str = repr(obj)
-        if repr_str.startswith('<') and repr_str.endswith('>'):
-            return _SKIP_SENTINEL
-        return repr_str
+        return _serialize_repr_fallback(obj, node_refs)
 `
 );
 
@@ -603,6 +615,19 @@ const PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET = resolveSharedPythonSnippet(
   'PYTHON_EXECUTE_SERIALIZE_FUNCTION',
   `
 _MAX_SERIALIZE_DEPTH = 48
+
+def _serialize_repr_fallback(obj):
+    obj_type = getattr(obj, '__class__', None)
+    class_name = getattr(obj_type, '__name__', 'object')
+    if getattr(obj_type, '__module__', '') == 'builtins':
+        try:
+            repr_str = repr(obj)
+        except Exception:
+            return None
+        if repr_str.startswith('<') and repr_str.endswith('>'):
+            return None
+        return repr_str
+    return {"__type__": class_name, "__class__": class_name}
 
 def _serialize(obj, depth=0):
     if isinstance(obj, (bool, int, str, type(None))):
@@ -654,10 +679,7 @@ def _serialize(obj, depth=0):
                 result[key_str] = _serialize(value, depth + 1)
         return result
     else:
-        repr_str = repr(obj)
-        if repr_str.startswith('<') and repr_str.endswith('>'):
-            return None
-        return repr_str
+        return _serialize_repr_fallback(obj)
 `
 );
 

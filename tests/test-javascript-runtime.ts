@@ -1687,6 +1687,42 @@ result = [head.val, head.value, head.next.val, head.next.value, root.left.val, r
   );
   console.log('PASS: execute-code large final output serialization is uncapped');
 
+  const traceLargeArrayBuffer = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function largeArrayBuffer() {
+  const buffer = new ArrayBuffer(1024);
+  const bytes = new Uint8Array(buffer);
+  bytes[0] = 7;
+  bytes[63] = 63;
+  bytes[64] = 64;
+  return { buffer };
+}`,
+    functionName: 'largeArrayBuffer',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(traceLargeArrayBuffer.success === true, 'Large ArrayBuffer trace execution should succeed');
+  const traceBufferReturnValue = traceEvents(traceLargeArrayBuffer).find(
+    (event) => event.kind === 'return' && event.function === 'largeArrayBuffer'
+  )?.value as { buffer?: unknown[] } | undefined;
+  const traceBufferOutput = traceBufferReturnValue?.buffer;
+  const traceBufferMarker = Array.isArray(traceBufferOutput)
+    ? traceBufferOutput.at(-1) as { __truncated__?: unknown; remaining?: unknown } | undefined
+    : undefined;
+  assertCondition(
+    Array.isArray(traceBufferOutput) &&
+      traceBufferOutput.length === 65 &&
+      traceBufferOutput[0] === 7 &&
+      traceBufferOutput[63] === 63 &&
+      traceBufferMarker?.__truncated__ === true &&
+      traceBufferMarker.remaining === 960,
+    `Trace ArrayBuffer output should serialize only capped bytes plus truncation marker: ${JSON.stringify(traceBufferOutput)}`
+  );
+  console.log('PASS: execute-with-tracing caps ArrayBuffer serialization before copying');
+
   const executeTypeScript = await harness.sendMessage<{
     success: boolean;
     output: unknown;

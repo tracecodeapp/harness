@@ -96,7 +96,7 @@ function sanitizeJsonValue(value: unknown, depth = 0, seen = new WeakSet<object>
     return out;
   }
   const entries = Object.entries(value as Record<string, unknown>);
-  const out: Record<string, unknown> = {};
+  const out: Record<string, unknown> = Object.create(null);
   for (const [key, child] of entries.slice(0, MAX_NORMALIZED_OBJECT_FIELDS)) {
     const childValue = sanitizeJsonValue(child, depth + 1, seen);
     if (childValue !== undefined) out[key] = childValue;

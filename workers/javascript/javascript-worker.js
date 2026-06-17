@@ -454,6 +454,19 @@ function limitedEntries(items, maxItems) {
   };
 }
 
+function serializeIndexedValues(length, valueAt, depth, seen, nodeRefState) {
+  const maxItems = activeSerializationLimits.maxItems;
+  const emitted = Number.isFinite(maxItems)
+    ? Math.min(length, Math.max(0, maxItems))
+    : length;
+  const result = [];
+  for (let index = 0; index < emitted; index += 1) {
+    result.push(serializeValue(valueAt(index), depth + 1, seen, nodeRefState));
+  }
+  if (length > emitted) result.push(truncationMarker(length, emitted));
+  return result;
+}
+
 function ownEnumerableDataEntries(value) {
   if (!value || typeof value !== 'object') return [];
   const entries = [];
@@ -509,22 +522,16 @@ function serializeValue(
   if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) {
     if (seen.has(value)) return '<cycle>';
     seen.add(value);
-    const viewValues = value instanceof DataView
-      ? Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
-      : Array.from(value);
-    const limited = limitedEntries(viewValues, activeSerializationLimits.maxItems);
-    const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
-    if (limited.remaining > 0) result.push(truncationMarker(viewValues.length, limited.values.length));
-    return result;
+    if (value instanceof DataView) {
+      return serializeIndexedValues(value.byteLength, (index) => value.getUint8(index), depth, seen, nodeRefState);
+    }
+    return serializeIndexedValues(value.length, (index) => value[index], depth, seen, nodeRefState);
   }
   if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
     if (seen.has(value)) return '<cycle>';
     seen.add(value);
-    const bytes = Array.from(new Uint8Array(value));
-    const limited = limitedEntries(bytes, activeSerializationLimits.maxItems);
-    const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
-    if (limited.remaining > 0) result.push(truncationMarker(bytes.length, limited.values.length));
-    return result;
+    const bytes = new Uint8Array(value);
+    return serializeIndexedValues(bytes.byteLength, (index) => bytes[index], depth, seen, nodeRefState);
   }
   if (value instanceof Set) {
     if (seen.has(value)) return '<cycle>';

@@ -67,14 +67,11 @@ import math
 import ast
 import operator as _tracecode_operator
 import builtins as _builtins
-_TRACECODE_PRE_TYPING_GLOBALS = _builtins.set(globals().keys())
+import typing as _tracecode_typing
 from typing import *
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
 
-_TRACECODE_TYPING_GLOBALS = (
-    _builtins.set(name for name in globals().keys() if not name.startswith('_')) -
-    _builtins.set(name for name in _TRACECODE_PRE_TYPING_GLOBALS if not name.startswith('_'))
-)
+_TRACECODE_TYPING_GLOBALS = _builtins.set(getattr(_tracecode_typing, '__all__', ()))
 
 _trace_data = []
 _trace_events = []
@@ -126,8 +123,8 @@ _internal_locals = {
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
     '_TRACE_MAX_BULK_ACCESSES',
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
-    '_tracecode_builtin_id', '_tracecode_operator',
-    '_TRACECODE_PRE_TYPING_GLOBALS', '_TRACECODE_TYPING_GLOBALS',
+    '_tracecode_builtin_id', '_tracecode_operator', '_tracecode_typing',
+    '_TRACECODE_TYPING_GLOBALS',
     '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events',
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',

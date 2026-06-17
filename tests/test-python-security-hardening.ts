@@ -181,7 +181,44 @@ async function testSolutionConstructorRunsUnderTraceGuard(): Promise<void> {
   console.log('PASS: Python Solution constructor runs under trace guard');
 }
 
-async function testCallsiteFlushRunsUserReprUnderTraceGuard(): Promise<void> {
+async function testTypingGlobalsSurvivePersistentCleanup(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const firstPayload = runtime.generateTracingCode(
+    runtimeDeps(),
+    `def first(value):
+    return value + 1
+`,
+    'first',
+    { value: 1 },
+    'function',
+    { maxTraceSteps: 2000, maxLineEvents: 500, maxSingleLineHits: 25 }
+  );
+  const secondPayload = runtime.generateTracingCode(
+    runtimeDeps(),
+    `def second(nums: List[int]) -> int:
+    return len(nums)
+`,
+    'second',
+    { nums: [1, 2, 3] },
+    'function',
+    { maxTraceSteps: 2000, maxLineEvents: 500, maxSingleLineHits: 25 }
+  );
+  const stdout = await runPythonScript(`${firstPayload.code}
+${secondPayload.code}
+print(json.dumps({
+    'hasList': 'List' in globals(),
+    'traceFailed': _trace_failed,
+    'lastReturn': next((step.get('returnValue') for step in reversed(_trace_data) if step.get('event') == 'return'), None)
+}))
+`);
+  const result = JSON.parse(stdout) as { hasList?: boolean; traceFailed?: boolean; lastReturn?: unknown };
+  assertCondition(result.hasList === true, `Persistent Python cleanup should preserve typing.List: ${JSON.stringify(result)}`);
+  assertCondition(result.traceFailed !== true, `Second typed Python run should not fail after cleanup: ${JSON.stringify(result)}`);
+  assertCondition(result.lastReturn === 3, `Second typed Python run should return normally: ${JSON.stringify(result)}`);
+  console.log('PASS: Python typing globals survive persistent cleanup');
+}
+
+async function testCallsiteFlushDoesNotRunUserRepr(): Promise<void> {
   const result = await runTracingCase(`class Bomb:
     __slots__ = ()
     def __repr__(self):
@@ -196,20 +233,21 @@ def solve():
     return child()
 `, 'solve');
 
-  assertCondition(result.traceLimitExceeded === true, `Callsite flush should not disable trace guard for user repr: ${JSON.stringify(result)}`);
+  assertCondition(result.traceLimitExceeded !== true, `Callsite flush should not invoke user repr while snapshotting locals: ${JSON.stringify(result)}`);
   assertCondition(
-    result.timeoutReason === 'single-line-limit' || result.timeoutReason === 'line-limit',
-    `User repr loop should report a guard reason: ${JSON.stringify(result)}`
+    result.timeoutReason === undefined || result.timeoutReason === null,
+    `Skipped user repr should not report a guard timeout: ${JSON.stringify(result)}`
   );
-  console.log('PASS: Python callsite flush keeps trace guard active');
+  console.log('PASS: Python callsite flush skips user repr while snapshotting locals');
 }
 
 async function testPythonRuntimeClientNormalizesTraceResponse(): Promise<void> {
+  const protoPayload = JSON.parse('{"__proto__":{"poisoned":true},"ok":true}');
   const fakeWorker = {
     init: async () => ({ success: true, loadTimeMs: 0 }),
     executeWithTracing: async () => ({
       success: true,
-      output: { ok: true, dropped: () => 'nope' },
+      output: protoPayload,
       executionTimeMs: Number.POSITIVE_INFINITY,
       consoleOutput: { not: 'an array' },
       trace: {
@@ -245,6 +283,12 @@ async function testPythonRuntimeClientNormalizesTraceResponse(): Promise<void> {
     snapshot?.kind === 'snapshot' && JSON.stringify(snapshot.target.path) === '["safe",1]',
     `Python snapshot path should drop malformed components: ${JSON.stringify(snapshot)}`
   );
+  const normalizedOutput = result.output as Record<string, unknown>;
+  assertCondition(Object.getPrototypeOf(normalizedOutput) === null, 'Python sanitized object output should use a null prototype');
+  assertCondition(
+    Object.prototype.hasOwnProperty.call(normalizedOutput, '__proto__') && !('poisoned' in normalizedOutput),
+    'Python sanitized output should keep __proto__ inert instead of poisoning the result prototype'
+  );
   console.log('PASS: Python runtime client normalizes trace responses');
 }
 
@@ -273,6 +317,7 @@ async function testPythonProjectBridgeHardeningHooksArePresent(): Promise<void> 
 await testPythonInputLiteralSerializationHandlesCycles();
 await testRepeatedLineSuppressionStillCountsBudget();
 await testSolutionConstructorRunsUnderTraceGuard();
-await testCallsiteFlushRunsUserReprUnderTraceGuard();
+await testTypingGlobalsSurvivePersistentCleanup();
+await testCallsiteFlushDoesNotRunUserRepr();
 await testPythonRuntimeClientNormalizesTraceResponse();
 await testPythonProjectBridgeHardeningHooksArePresent();
