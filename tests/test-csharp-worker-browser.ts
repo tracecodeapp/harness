@@ -4572,6 +4572,37 @@ async function main(): Promise<void> {
       `C# worker traced nested Contains should evaluate receiver index/key once, received ${JSON.stringify(tracedNestedContainsSideEffectKey.output)}`
     );
 
+    const tracedIdentifierAddSideEffectArgs = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  private sealed class Bucket {',
+        '    public int Value;',
+        '    public void Add(int value) { Value += value; }',
+        '  }',
+        '  private int nextCalls;',
+        '  private int Next() { nextCalls += 1; return 4; }',
+        '  public int IdentifierAddSideEffectArgs() {',
+        '    var bucket = new Bucket();',
+        '    bucket.Add(Next());',
+        '    return bucket.Value * 100 + nextCalls;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'IdentifierAddSideEffectArgs',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedIdentifierAddSideEffectArgs.success,
+      `C# worker traced identifier Add side-effect args case should succeed: ${tracedIdentifierAddSideEffectArgs.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedIdentifierAddSideEffectArgs.output === 401,
+      `C# worker traced identifier Add should evaluate side-effecting argument once, received ${JSON.stringify(tracedIdentifierAddSideEffectArgs.output)}`
+    );
+
     const tracedIndexedEnqueueSideEffectArgs = await runWorkerCase(
       page,
       [

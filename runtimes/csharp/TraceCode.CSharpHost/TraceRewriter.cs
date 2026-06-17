@@ -2873,6 +2873,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             yield break;
         }
+        if (invocation.ArgumentList.Arguments.Any(argument => ShouldCaptureMutationExpression(argument.Expression)))
+        {
+            yield break;
+        }
         string args = MutationArgsExpression(invocation);
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal(method)}, new object?[] {{ {args} }}, {line});"
