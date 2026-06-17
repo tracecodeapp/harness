@@ -9982,6 +9982,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     let stdout = '';
     let stderr = '';
     for (const [stepIndex, step] of command.steps.entries()) {
+      const commandCwd = options.cwd ?? step.cwd;
       this.emitCommandOptionEvent(options, {
         type: 'status',
         phase: 'project-step-start',
@@ -9991,7 +9992,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           step: stepIndex + 1,
           stepCount: command.steps.length,
           shellCommand: step.command,
-          ...(step.cwd ? { cwd: this.resolveTerminalPath(this.cwd, step.cwd) } : {}),
+          ...(commandCwd ? { cwd: this.resolveTerminalPath(this.cwd, commandCwd) } : {}),
         },
         actor: SYSTEM_ACTOR,
       });

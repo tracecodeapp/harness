@@ -11475,6 +11475,11 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
             { command: 'printf "step-input\\n" | python3 -m unittest discover tests', cwd: '.', env: { TEST_MODE: 'visible' } },
           ],
         },
+        overrideCwd: {
+          steps: [
+            { command: 'python3 main.py', cwd: '../ignored-step-cwd' },
+          ],
+        },
         persist: {
           steps: [
             'python3 write_generated.py',
@@ -11639,6 +11644,20 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
       stepStatuses[0]?.detail?.shellCommand === 'python3 main.py' &&
       stepStatuses[2]?.detail?.cwd === '/home/user/weather-api',
     `project session step status details should expose command/cwd metadata: ${JSON.stringify(stepStatuses)}`
+  );
+  const overrideCwdEvents: RuntimeCommandEvent[] = [];
+  const overrideCwd = await workspace.runProjectCommand('overrideCwd', {
+    cwd: 'src',
+    onEvent: (event) => overrideCwdEvents.push(event),
+  });
+  const overrideCwdStatuses = overrideCwdEvents.filter((event): event is Extract<RuntimeCommandEvent, { type: 'status' }> => event.type === 'status');
+  assertCondition(
+    overrideCwd.stdout === 'src/main.py:/home/user/weather-api/src:session:\n',
+    `project session command cwd override should control step execution cwd: ${JSON.stringify(overrideCwd)}`
+  );
+  assertCondition(
+    overrideCwdStatuses.some((event) => event.phase === 'project-step-start' && event.detail?.cwd === '/home/user/weather-api/src'),
+    `project session step-start event should report the effective cwd override: ${JSON.stringify(overrideCwdStatuses)}`
   );
   const terminalStepEvents: RuntimeCommandEvent[] = [];
   const terminalCheck = await workspace.runProjectCommand('check', {
