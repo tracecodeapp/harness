@@ -1692,6 +1692,9 @@ class Box:
         old = heapq.heapreplace(heap, val)
         return [old, heap[0]]
 
+class Holder:
+    pass
+
 def inspect():
     box = Box()
     swap_result = box.swap(4)
@@ -1706,7 +1709,24 @@ def inspect():
         calls += 1
         return 0
     heapq.heappush(indexed_heaps[pick()], 2)
-    return [swap_result, rooms, popped, calls, indexed_heaps[0]]
+    holder = Holder()
+    first_heap = [3]
+    second_heap = [9]
+    holder.heaps = [first_heap]
+    def swap_heap():
+        holder.heaps = [second_heap]
+        return 2
+    heapq.heappush(holder.heaps[0], swap_heap())
+    def use_fake_heapq():
+        class FakeHeapq:
+            def heappush(self, heap, value):
+                heap.append(value * 10)
+        heapq = FakeHeapq()
+        fake_heap = []
+        heapq.heappush(fake_heap, 2)
+        return fake_heap
+    fake_result = use_fake_heapq()
+    return [swap_result, rooms, popped, calls, indexed_heaps[0], first_heap, second_heap, fake_result]
 `;
 
   const deps: RuntimeDeps = {
@@ -1736,7 +1756,10 @@ print(json.dumps({
 }))
 `);
   const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
-  assertCondition(JSON.stringify(parsed.result) === JSON.stringify([[1, 3], [30], 10, 1, [1, 2, 3, 5]]), 'Python heapq fixture should execute successfully');
+  assertCondition(
+    JSON.stringify(parsed.result) === JSON.stringify([[1, 3], [30], 10, 1, [1, 2, 3, 5], [2, 3], [9], [20]]),
+    `Python heapq fixture should execute successfully, received ${JSON.stringify(parsed.result)}`
+  );
 
   const heapifyLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'heapq.heapify(self.heap)') - 1;
   const heapreplaceLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'old = heapq.heapreplace(heap, val)') - 1;

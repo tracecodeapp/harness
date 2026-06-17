@@ -1306,11 +1306,9 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
                 pass
     return result
 
-def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, **kwargs):
-    import heapq as __tracecode_heapq
+def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name, *args, **kwargs):
     frame = sys._getframe(1)
     effective_indices = list(indices or [])
-    target = __tracecode_value_at_path(container, effective_indices)
     normalized = __tracecode_normalize_indices(effective_indices)
     invalid_nested_path = len(effective_indices) > 0 and normalized is None
     try:
@@ -1328,12 +1326,7 @@ def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, 
                 value=_serialize(target),
             ),
         )
-    if method_name == 'heappush':
-        result = __tracecode_heapq.heappush(target, *args, **kwargs)
-    elif method_name == 'heappop':
-        result = __tracecode_heapq.heappop(target, *args, **kwargs)
-    else:
-        result = getattr(__tracecode_heapq, method_name)(target, *args, **kwargs)
+    result = heapq_func(target, *args, **kwargs)
     if invalid_nested_path:
         return result
     if normalized:
@@ -1853,6 +1846,35 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 current = current.value
                 continue
             break
+
+    def _tracecode_replace_target_indices_with_values(self, target, index_values):
+        index_position = len(index_values) - 1
+        current = target
+        while index_position >= 0:
+            if isinstance(current, ast.Subscript):
+                current.slice = ast.copy_location(index_values[index_position], current.slice)
+                current = current.value
+                index_position -= 1
+                continue
+            if isinstance(current, ast.Attribute):
+                current = current.value
+                continue
+            break
+
+    def _tracecode_target_path_components(self, target):
+        components = []
+        current = target
+        while len(components) < _TRACE_MAX_PATH_DEPTH:
+            if isinstance(current, ast.Subscript):
+                components.insert(0, ('subscript', current.slice))
+                current = current.value
+                continue
+            if isinstance(current, ast.Attribute):
+                components.insert(0, ('attribute', ast.Constant(value=current.attr)))
+                current = current.value
+                continue
+            break
+        return components
 
     def _tracecode_wrap_comprehension_generators(self, generators):
         for generator in generators:
@@ -2421,13 +2443,44 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         ):
             extracted_heap = _tracecode_extract_mutable_container_target(node.args[0])
             if extracted_heap is not None:
-                var_name, container, indices = extracted_heap
+                var_name, _container, indices = extracted_heap
+                target_arg = node.args[0]
+                subscript_index_values = []
+                index_refs = []
+                if len(indices) > 0:
+                    components = self._tracecode_target_path_components(target_arg)
+                    for position, index in enumerate(indices):
+                        component_kind = components[position][0] if position < len(components) else 'subscript'
+                        if component_kind == 'attribute':
+                            index_refs.append(self.visit(index))
+                            continue
+                        temp_name = self._tracecode_next_temp_name('heapq_index')
+                        index_refs.append(ast.Name(id=temp_name, ctx=ast.Load()))
+                        subscript_index_values.append(ast.copy_location(
+                            ast.NamedExpr(
+                                target=ast.Name(id=temp_name, ctx=ast.Store()),
+                                value=self.visit(index),
+                            ),
+                            index,
+                        ))
+                    self._tracecode_replace_target_indices_with_values(target_arg, subscript_index_values)
                 call = ast.Call(
                     func=ast.Name(id='_tracecode_heapq_mutation', ctx=ast.Load()),
                     args=[
+                        ast.copy_location(
+                            ast.Attribute(
+                                value=self.visit(node.func.value),
+                                attr=node.func.attr,
+                                ctx=ast.Load(),
+                            ),
+                            node.func,
+                        ),
                         ast.Constant(value=var_name),
-                        container,
-                        ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
+                        target_arg,
+                        ast.List(
+                            elts=index_refs if len(index_refs) > 0 else [self.visit(index) for index in indices],
+                            ctx=ast.Load(),
+                        ),
                         ast.Constant(value=node.func.attr),
                         *[self.visit(arg) for arg in node.args[1:]],
                     ],
