@@ -1988,17 +1988,17 @@ function createClientIncomingMessage(response: RuntimeKernelHttpResponse) {
 function headersFromHttpOptions(headers: unknown): Record<string, string> {
   const result: Record<string, string> = {};
   if (!headers || typeof headers !== 'object') return result;
-  if (typeof (headers as { forEach?: unknown }).forEach === 'function') {
-    (headers as { forEach: (callback: (value: unknown, name: unknown) => void) => void }).forEach((value, name) => {
-      result[String(name).toLowerCase()] = String(value);
-    });
-    return result;
-  }
   if (Array.isArray(headers)) {
     for (const entry of headers) {
       if (!Array.isArray(entry) || entry.length < 2) continue;
       result[String(entry[0]).toLowerCase()] = String(entry[1]);
     }
+    return result;
+  }
+  if (typeof (headers as { forEach?: unknown }).forEach === 'function') {
+    (headers as { forEach: (callback: (value: unknown, name: unknown) => void) => void }).forEach((value, name) => {
+      result[String(name).toLowerCase()] = String(value);
+    });
     return result;
   }
   for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {

@@ -6062,7 +6062,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
           '      const headerSnapshot = res.getHeaders();',
           '      const hasTrace = res.hasHeader("x-trace");',
           '      res.writeHead(200, { "content-type": "application/json" });',
-          '      res.end(JSON.stringify({ method: req.method, url: req.url, body, hasTrace, trace: headerSnapshot["x-trace"] }) + "\\n");',
+          '      res.end(JSON.stringify({ method: req.method, url: req.url, body, hasTrace, trace: headerSnapshot["x-trace"], client: req.headers["x-client"] || "" }) + "\\n");',
           '      return;',
           '    }',
           '    if (req.method === "HEAD" && req.url === "/dequeue") {',
@@ -6188,7 +6188,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
   });
   assertCondition(apiResponse.status === 200, `workspace.http.request should succeed: ${JSON.stringify(apiResponse)}`);
   assertCondition(
-    apiResponse.body === '{"method":"GET","url":"/echo?api=1","body":"","hasTrace":true,"trace":"yes"}\n',
+    apiResponse.body === '{"method":"GET","url":"/echo?api=1","body":"","hasTrace":true,"trace":"yes","client":"workspace-api"}\n',
     `workspace.http.request should dispatch through TraceKernel: ${apiResponse.body}`
   );
 
@@ -6199,7 +6199,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
       '201:true:application/json',
       '{"size":1}:true',
       '200:{"id":3}',
-      '{"method":"GET","url":"/echo?fetch=1","body":"","hasTrace":true,"trace":"yes"}',
+      '{"method":"GET","url":"/echo?fetch=1","body":"","hasTrace":true,"trace":"yes","client":"fetch"}',
       'AbortError',
       '',
     ].join('\n'),
@@ -6224,7 +6224,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
   const echo = await workspace.runCommand('curl -s -H "x-client: trace" -G -d "q=hello world" http://localhost:3000/echo');
   assertCondition(echo.exitCode === 0, `curl -G echo should succeed: ${JSON.stringify(echo)}`);
   assertCondition(
-    echo.stdout === '{"method":"GET","url":"/echo?q=hello+world","body":"","hasTrace":true,"trace":"yes"}\n',
+    echo.stdout === '{"method":"GET","url":"/echo?q=hello+world","body":"","hasTrace":true,"trace":"yes","client":"trace"}\n',
     `curl -G should append data to query and preserve Node request metadata: ${echo.stdout}`
   );
 
