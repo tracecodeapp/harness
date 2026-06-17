@@ -2677,6 +2677,19 @@ function workspaceFileUrl(path: string, workspaceRoot = '/workspace'): string {
   return `file://${workspaceFilename(path, workspaceRoot).split('/').map((part) => encodeURIComponent(part)).join('/')}`;
 }
 
+function relativeWorkspacePath(from: string, to: string): string {
+  const fromParts = normalizeProjectPath(from).split('/').filter(Boolean);
+  const toParts = normalizeProjectPath(to).split('/').filter(Boolean);
+  let common = 0;
+  while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) {
+    common += 1;
+  }
+  return [
+    ...fromParts.slice(common).map(() => '..'),
+    ...toParts.slice(common),
+  ].join('/') || '.';
+}
+
 function workspaceDirname(path: string, workspaceRoot = '/workspace'): string {
   const normalizedDir = dirname(normalizeProjectPath(path));
   return normalizedDir ? `${workspaceRoot}/${normalizedDir}` : workspaceRoot;
@@ -6560,7 +6573,11 @@ export async function runBrowserJavaScriptProjectRequest(
           }
         }
         if (!options?.recursive || firstCreated === undefined) return undefined;
-        return rawPath.startsWith('/') ? workspaceFilename(firstCreated, workspaceRoot) : firstCreated;
+        if (rawPath.startsWith('/')) return workspaceFilename(firstCreated, workspaceRoot);
+        const relativeFirstCreated = relativeWorkspacePath(cwdPath, firstCreated);
+        return rawPath.startsWith('./') && !relativeFirstCreated.startsWith('.')
+          ? `./${relativeFirstCreated}`
+          : relativeFirstCreated;
       },
       mkdir: (
         path: unknown,

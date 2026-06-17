@@ -5969,6 +5969,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node empty directory workflow should match desktop semantics: ${directoryResult.stdout}`
   );
 
+  await workspace.mkdir('mkdir-cwd');
+  const mkdirRecursiveReturnResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); console.log(fs.mkdirSync(\\"a/b\\", { recursive: true })); console.log(fs.mkdirSync(\\"./dot/d\\", { recursive: true })); console.log(fs.mkdirSync(\\"../sibling/c\\", { recursive: true })); console.log(await new Promise((resolve, reject) => fs.mkdir(\\"async/e\\", { recursive: true }, (error, path) => error ? reject(error) : resolve(path)))); console.log(await fsp.mkdir(\\"promise/f\\", { recursive: true }));"',
+  ].join(' '), { cwd: 'mkdir-cwd' });
+  assertCondition(mkdirRecursiveReturnResult.exitCode === 0, `browser node recursive mkdir return workflow should succeed: ${mkdirRecursiveReturnResult.stderr}`);
+  assertCondition(
+    mkdirRecursiveReturnResult.stdout === 'a\n./dot\n../sibling\nasync\npromise\n',
+    `browser node recursive mkdir should return caller-relative first-created directories: ${JSON.stringify(mkdirRecursiveReturnResult)}`
+  );
+
   const mkdirConflictResult = await workspace.runCommand([
     'node',
     '-e',
