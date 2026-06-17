@@ -2617,6 +2617,24 @@ const unorderedMapVectorReferenceTrace = await sandbox.__tracecodeCppTest.handle
 if (!unorderedMapVectorReferenceTrace.success || unorderedMapVectorReferenceTrace.output !== 4) {
   throw new Error('C++ unordered_map<vector> explicit mapped reference tracing failed: ' + JSON.stringify(unorderedMapVectorReferenceTrace));
 }
+const unorderedMapVectorReferenceEvents = unorderedMapVectorReferenceTrace.trace.events;
+if (!unorderedMapVectorReferenceEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.target?.variable === 'graph' &&
+  event.target.path?.[0] === 1 &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify([4])
+)) {
+  throw new Error('C++ unordered_map<vector> mapped reference push_back should emit keyed mutation args, received ' + JSON.stringify(unorderedMapVectorReferenceEvents));
+}
+if (!unorderedMapVectorReferenceEvents.some((event) =>
+  event.kind === 'write' &&
+  event.target?.variable === 'graph' &&
+  JSON.stringify(event.target.path) === JSON.stringify([1, 0]) &&
+  event.value === 4
+)) {
+  throw new Error('C++ unordered_map<vector> mapped reference push_back should emit keyed nested write, received ' + JSON.stringify(unorderedMapVectorReferenceEvents));
+}
 
 const orderedMapVectorReferenceTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
@@ -2636,6 +2654,24 @@ const orderedMapVectorReferenceTrace = await sandbox.__tracecodeCppTest.handleEx
 });
 if (!orderedMapVectorReferenceTrace.success || orderedMapVectorReferenceTrace.output !== 5) {
   throw new Error('C++ map<vector> explicit mapped reference tracing failed: ' + JSON.stringify(orderedMapVectorReferenceTrace));
+}
+const orderedMapVectorReferenceEvents = orderedMapVectorReferenceTrace.trace.events;
+if (!orderedMapVectorReferenceEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.target?.variable === 'graph' &&
+  event.target.path?.[0] === 1 &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify([5])
+)) {
+  throw new Error('C++ map<vector> mapped reference push_back should emit keyed mutation args, received ' + JSON.stringify(orderedMapVectorReferenceEvents));
+}
+if (!orderedMapVectorReferenceEvents.some((event) =>
+  event.kind === 'write' &&
+  event.target?.variable === 'graph' &&
+  JSON.stringify(event.target.path) === JSON.stringify([1, 0]) &&
+  event.value === 5
+)) {
+  throw new Error('C++ map<vector> mapped reference push_back should emit keyed nested write, received ' + JSON.stringify(orderedMapVectorReferenceEvents));
 }
 
 const unorderedMapIteratorSecondTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

@@ -2965,6 +2965,10 @@ function vectorElementCppType(type, aliases = new Map()) {
   return normalized.slice('vector<'.length, -1).trim();
 }
 
+function mapValueCppType(type, aliases = new Map()) {
+  return mapKeyValueCppTypes(type, aliases)?.valueType ?? null;
+}
+
 function rangeForElementSnapshotType(rangeName, knownVariables, aliases = new Map()) {
   const rangeType = knownVariables?.get(rangeName)?.type;
   if (!rangeType) return null;
@@ -5096,7 +5100,7 @@ function detectIndexedElementAlias(line, variables, aliases = new Map(), scopeDe
   const { aliasName, sourceName, outerIndex } = declaration;
   const sourceVariable = variables?.get(sourceName);
   if (!sourceVariable) return null;
-  const elementType = vectorElementCppType(sourceVariable.type || '', aliases);
+  const elementType = vectorElementCppType(sourceVariable.type || '', aliases) ?? mapValueCppType(sourceVariable.type || '', aliases);
   if (elementType && isStringCppType(elementType, aliases)) return null;
   if (!elementType || !isIndexReadInstrumentableCppType(elementType, aliases)) return null;
   const indexVariableName = `__tracecode_alias_index_${lineNumber || 'local'}_${aliasName}`;
@@ -5190,6 +5194,16 @@ function rewriteIndexedElementAliasReadInstrumentation(line, lineNumber, indexed
     }
   }
   return rewritten;
+}
+
+function rewriteIndexedElementAliasMutationInstrumentation(line, lineNumber, indexedElementAliases = new Map()) {
+  if (!indexedElementAliases?.size) return line;
+  const match = line.match(/^(\s*)([A-Za-z_]\w*)\s*\.\s*(push_back|emplace_back)\s*\((.*)\)\s*;\s*$/);
+  if (!match) return line;
+  const [, indent, aliasName, method, argsSource] = match;
+  const alias = indexedElementAliases.get(aliasName);
+  if (!alias?.sourceName || !alias.outerIndex || !alias.outerSource) return line;
+  return `${indent}${alias.sourceName}.with_index_source(${alias.outerIndex}, ${alias.outerSource}, ${lineNumber}).${method}(${argsSource});`;
 }
 
 function isKeyedIndexSourceInstrumentableCppType(type, aliases = new Map()) {
@@ -6591,6 +6605,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewriteNestedIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteVectorIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewritePlainIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
+      lineForDriver = rewriteIndexedElementAliasMutationInstrumentation(lineForDriver, lineNumber, buildCppLexicalIndexedElementAliases(frameStack));
       lineForDriver = rewritePlainContainerMutationInstrumentation(lineForDriver, lineNumber, accessVariables, aliases, source);
       lineForDriver = rewritePlainContainerLookupInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteMapIteratorSecondMutationInstrumentation(lineForDriver, lineNumber, activeFrame.mapIterators);
