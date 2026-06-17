@@ -283,10 +283,13 @@ public class Main {
     Set<Integer> set = new LinkedHashSet<>();
     set.add(1);
     set.add(2);
+    Set<Integer> largeSet = new LinkedHashSet<>();
+    for (int i = 0; i < 70; i++) largeSet.add(i);
     Map<String, Integer> map = new LinkedHashMap<>();
     for (int i = 0; i < 70; i++) map.put(String.valueOf(i), i);
     System.out.println(TraceHooks.serializeResult(values));
     System.out.println(TraceHooks.serializeResult(set));
+    System.out.println(TraceHooks.serializeResult(largeSet));
     System.out.println(TraceHooks.serializeResult(map));
     System.out.println(TraceHooks.serializeOutputResult(values));
   }
@@ -305,7 +308,7 @@ public class Main {
       ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const [listJson, setJson, mapJson, outputListJson] = output.trim().split('\n');
+    const [listJson, setJson, largeSetJson, mapJson, outputListJson] = output.trim().split('\n');
     assertCondition(
       listJson.endsWith(',{"__truncated__":true,"remaining":6}]'),
       'Java large lists should serialize first 64 items plus truncation marker'
@@ -318,6 +321,16 @@ public class Main {
     assertCondition(
       setPayload.__type__ === 'set' && Array.isArray(setPayload.values) && setPayload.values.join(',') === '1,2',
       'Java sets should serialize as typed set payloads instead of generic arrays'
+    );
+    const largeSetPayload = JSON.parse(largeSetJson) as { __type__?: string; values?: unknown[]; __truncated__?: unknown; remaining?: unknown };
+    assertCondition(
+      largeSetPayload.__type__ === 'set' &&
+        Array.isArray(largeSetPayload.values) &&
+        largeSetPayload.values.length === 64 &&
+        largeSetPayload.__truncated__ === true &&
+        largeSetPayload.remaining === 6 &&
+        !largeSetPayload.values.some((value) => typeof value === 'object' && value !== null && (value as { __truncated__?: unknown }).__truncated__ === true),
+      'Java large sets should serialize truncation metadata on the typed set payload'
     );
     const outputList = JSON.parse(outputListJson) as unknown[];
     assertCondition(

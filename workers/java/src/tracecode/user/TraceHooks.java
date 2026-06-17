@@ -495,8 +495,12 @@ public final class TraceHooks {
         out.append(serializeResult(item, seen, depth + 1, capValues));
         index++;
       }
-      if (capValues) appendArrayTruncationMarker(out, index, set.size());
-      out.append("]}");
+      out.append("]");
+      if (capValues && index < set.size()) {
+        out.append(",");
+        appendObjectTruncationFields(out, set.size() - index);
+      }
+      out.append("}");
       return out.toString();
     }
     if (value instanceof java.util.Collection<?>) {
