@@ -2465,6 +2465,25 @@ class Solution {
     nativeListGetEnhancedForSource.includes('for (int next : TraceHooks.<Integer>iterationBindListAtLine(8, "graph", graph, node, "next", "node"))'),
     'Java native rewriter should emit nested enhanced-for iteration binding over List.get(...) sources'
   );
+  const nativeVarListGetEnhancedForSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  boolean solve(int n) {
+    List<List<Integer>> graph = new ArrayList<>();
+    graph.add(Arrays.asList(1, 2));
+    int node = 0;
+    int total = 0;
+    for (var next : graph.get(node)) {
+      total += next;
+    }
+    return total == 3;
+  }
+}`);
+  assertCondition(
+    nativeVarListGetEnhancedForSource.includes('for (var next : TraceHooks.<Integer>iterationBindListAtLine(9, "graph", graph, node, "next", "node"))') &&
+      !nativeVarListGetEnhancedForSource.includes('TraceHooks.<var>'),
+    'Java native rewriter should infer enhanced-for var element types for List.get(...) sources'
+  );
 
   const arraysFillSource = augmentRewrittenJavaForTest(`import java.util.*;
 

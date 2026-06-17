@@ -401,7 +401,7 @@ public final class JavaRewriteLibrary {
         String helper = arrayReadHelper(frame.typeOf(sourceName));
         if (helper != null) {
           String index = rewriteReads(rawIndex, sourceLine, frame);
-          return indent + "for (" + type + " " + name + " : TraceHooks.<" + boxedIterationType(type) + ">iterationBindArrayAtLine(" +
+          return indent + "for (" + type + " " + name + " : TraceHooks.<" + boxedIterationType(type, frame.typeOf(sourceName)) + ">iterationBindArrayAtLine(" +
               sourceLine + ", " + quote(sourceName) + ", " + sourceName + ", " + index + ", " +
               quote(name) + ", " + indexSourceArgument(rawIndex) + ")) {";
         }
@@ -413,7 +413,7 @@ public final class JavaRewriteLibrary {
         if (isListType(frame.typeOf(sourceName))) {
           String index = rewriteReads(rawIndex, sourceLine, frame);
           String indexSource = indexSourceArgument(rawIndex);
-          return indent + "for (" + type + " " + name + " : TraceHooks.<" + boxedIterationType(type) + ">iterationBindListAtLine(" +
+          return indent + "for (" + type + " " + name + " : TraceHooks.<" + boxedIterationType(type, frame.typeOf(sourceName)) + ">iterationBindListAtLine(" +
               sourceLine + ", " + quote(sourceName) + ", " + sourceName + ", " + index + ", " +
               quote(name) + ", " + indexSource + ")) {";
         }
@@ -1624,6 +1624,42 @@ public final class JavaRewriteLibrary {
       case "short": return "Short";
       default: return normalized;
     }
+  }
+
+  private static String firstGenericTypeArgument(String type) {
+    if (type == null) return null;
+    String normalized = normalizeJavaType(type);
+    int start = normalized.indexOf('<');
+    int end = normalized.lastIndexOf('>');
+    if (start < 0 || end <= start) return null;
+    java.util.List<String> args = splitTopLevel(normalized.substring(start + 1, end));
+    return args.isEmpty() ? null : args.get(0).trim();
+  }
+
+  private static String arrayComponentType(String type) {
+    if (type == null) return null;
+    String normalized = normalizeJavaType(type);
+    return normalized.endsWith("[]") ? normalized.substring(0, normalized.length() - 2).trim() : null;
+  }
+
+  private static String nestedIterationElementType(String sourceContainerType) {
+    String arrayRow = arrayComponentType(sourceContainerType);
+    if (arrayRow != null) {
+      String element = arrayComponentType(arrayRow);
+      return element != null ? element : "Object";
+    }
+    String rowType = firstGenericTypeArgument(sourceContainerType);
+    if (rowType == null) return null;
+    String rowElementType = firstGenericTypeArgument(rowType);
+    if (rowElementType != null) return rowElementType;
+    String arrayElementType = arrayComponentType(rowType);
+    return arrayElementType != null ? arrayElementType : "Object";
+  }
+
+  private static String boxedIterationType(String type, String sourceContainerType) {
+    if (!"var".equals(normalizeJavaType(type))) return boxedIterationType(type);
+    String inferred = nestedIterationElementType(sourceContainerType);
+    return inferred == null || inferred.isEmpty() ? "Object" : boxedIterationType(inferred);
   }
 
   private static String arrayReadHelper(String type) {
