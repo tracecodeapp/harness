@@ -954,7 +954,8 @@ class WasiProcess {
   }
 
   stdioEntryForDevice(device, devices = this.kernelDevices) {
-    const info = devices.get(normalizePath(device));
+    const normalizedDevice = normalizePath(device);
+    const info = devices.get(normalizedDevice) || standaloneKernelDevices().get(normalizedDevice);
     if (!info) return { kind: 'stdio', device, offset: 0, readable: false, writable: false, inputDevice: '', outputDevice: '' };
     return {
       kind: 'stdio',

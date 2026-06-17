@@ -107,7 +107,7 @@ async function main(): Promise<void> {
         new Promise((resolve, reject) => {
           const iframe = document.createElement('iframe');
           const frameToken = 'tracecode-frame-token-' + (++nextId);
-          iframe.src = `/workers/cpp-compiler-frame.html?tracecodeFrameToken=${encodeURIComponent(frameToken)}`;
+          iframe.src = '/workers/cpp-compiler-frame.html?tracecodeFrameToken=' + encodeURIComponent(frameToken);
           iframe.style.display = 'none';
           document.body.appendChild(iframe);
           const requestId = 'frame-' + (++nextId);
