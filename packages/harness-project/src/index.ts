@@ -1268,7 +1268,14 @@ function throwKernelReadTargetError(
   path: string,
   target: Extract<ReturnType<typeof runtimeKernelReadTarget>, { kind: 'error' }>
 ): never {
-  throw new Error(runtimeKernelReadErrorMessage(path, target));
+  throw kernelReadTargetError(path, target);
+}
+
+function kernelReadTargetError(
+  path: string,
+  target: Extract<ReturnType<typeof runtimeKernelReadTarget>, { kind: 'error' }>
+): Error {
+  return new Error(runtimeKernelReadErrorMessage(path, target));
 }
 
 function throwKernelFileReadTargetError(
@@ -3219,7 +3226,7 @@ class KernelObservedFileSystem implements IFileSystem {
     if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
     if (readTarget.kind === 'proc-file') return Promise.resolve(this.readProcFile(readTarget.path, options));
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
-    if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
+    if (readTarget.kind === 'error') return Promise.reject(kernelReadTargetError(path, readTarget));
     const mappedPath = this.mapPath(path);
     return this.withReadLocks([mappedPath], 'read-file', () => this.base.readFile(mappedPath, options));
   }
@@ -3238,7 +3245,7 @@ class KernelObservedFileSystem implements IFileSystem {
       return Promise.resolve(textToByteString(this.readProcFile(readTarget.path))) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
     }
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
-    if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
+    if (readTarget.kind === 'error') return Promise.reject(kernelReadTargetError(path, readTarget));
     if (!this.base.readFileBytes) return Promise.reject(new Error('readFileBytes is not supported by this filesystem.'));
     const mappedPath = this.mapPath(path);
     return this.withReadLocks([mappedPath], 'read-file', () =>
@@ -3254,7 +3261,7 @@ class KernelObservedFileSystem implements IFileSystem {
     if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
     if (readTarget.kind === 'proc-file') return Promise.resolve(new TextEncoder().encode(this.readProcFile(readTarget.path)));
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
-    if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
+    if (readTarget.kind === 'error') return Promise.reject(kernelReadTargetError(path, readTarget));
     const mappedPath = this.mapPath(path);
     return this.withReadLocks([mappedPath], 'read-file', () => this.base.readFileBuffer(mappedPath));
   }

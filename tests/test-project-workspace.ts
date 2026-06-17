@@ -11131,7 +11131,9 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   );
   const observedFs = (deviceWorkspace as unknown as {
     fs: {
+      readFile?: (path: string) => Promise<string>;
       readFileBytes?: (path: string) => Promise<unknown>;
+      readFileBuffer?: (path: string) => Promise<Uint8Array>;
       stat?: (path: string) => Promise<RuntimeWorkspaceStat>;
       lstat?: (path: string) => Promise<RuntimeWorkspaceStat>;
       realpath?: (path: string) => Promise<string>;
@@ -11160,6 +11162,27 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   await assertRejectsAsync(
     () => observedFs.stat?.('/dev/missing') ?? Promise.reject(new Error('stat missing')),
     'observed filesystem stat should reject unknown /dev paths through the kernel read target'
+  );
+  const assertReturnsRejectedPromise = async (read: () => Promise<unknown> | undefined, message: string) => {
+    let promise: Promise<unknown> | undefined;
+    try {
+      promise = read();
+    } catch (error) {
+      throw new Error(`${message} threw synchronously: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await assertRejectsAsync(() => promise ?? Promise.reject(new Error('read method missing')), message);
+  };
+  await assertReturnsRejectedPromise(
+    () => observedFs.readFile?.('/dev/missing'),
+    'observed filesystem readFile should return a rejected Promise for kernel read errors'
+  );
+  await assertReturnsRejectedPromise(
+    () => observedFs.readFileBytes?.('/dev/missing'),
+    'observed filesystem readFileBytes should return a rejected Promise for kernel read errors'
+  );
+  await assertReturnsRejectedPromise(
+    () => observedFs.readFileBuffer?.('/dev/missing'),
+    'observed filesystem readFileBuffer should return a rejected Promise for kernel read errors'
   );
   const observedVirtualFs = observedFs as {
     symlink?: (target: string, linkPath: string) => Promise<void>;
