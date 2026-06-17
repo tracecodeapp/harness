@@ -12,6 +12,8 @@ import {
   createRuntimeCommandStdinPipeFromText,
   createRuntimeProjectIoBridge,
   readRuntimeCommandStdinPipeBytes,
+  RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES,
+  RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES,
   RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES,
   runtimeHttpBodyBytes,
   runtimeHttpBodyFromBytes,
@@ -2667,6 +2669,9 @@ class KernelObservedFileSystem implements IFileSystem {
   private nextInode = 10_000;
   private readonly generations = new Map<string, number>();
   private readonly inodes = new Map<string, number>();
+  private liveFileChangeBudgetPid: number | undefined;
+  private liveFileChangeCount = 0;
+  private liveFileChangeBytes = 0;
 
   constructor(
     private readonly base: IFileSystem,
@@ -3680,6 +3685,36 @@ class KernelObservedFileSystem implements IFileSystem {
     }
   }
 
+  private resetLiveFileChangeBudgetFor(pid: number): void {
+    if (this.liveFileChangeBudgetPid === pid) return;
+    this.liveFileChangeBudgetPid = pid;
+    this.liveFileChangeCount = 0;
+    this.liveFileChangeBytes = 0;
+  }
+
+  private liveFileChangeContentBytes(stat: Awaited<ReturnType<IFileSystem['stat']>>): number | null {
+    const size = (stat as { size?: unknown }).size;
+    if (typeof size === 'number') return Number.isFinite(size) && size >= 0 ? Math.floor(size) : null;
+    if (typeof size === 'bigint') {
+      if (size < BigInt(0) || size > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      return Number(size);
+    }
+    return null;
+  }
+
+  private tryReserveLiveFileChange(relativePath: string, contentBytes = 0): boolean {
+    const context = this.commandGenerationContext();
+    if (!context) return false;
+    this.resetLiveFileChangeBudgetFor(context.pid);
+    const eventBytes = runtimeProjectUtf8Bytes(relativePath) + contentBytes;
+    if (this.liveFileChangeCount + 1 > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES) return false;
+    if (eventBytes > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) return false;
+    if (this.liveFileChangeBytes + eventBytes > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) return false;
+    this.liveFileChangeCount += 1;
+    this.liveFileChangeBytes += eventBytes;
+    return true;
+  }
+
   private async collectMissingDirectories(path: string): Promise<string[]> {
     const root = this.workspaceRoot();
     if (!isWithinWorkspace(root, path)) return [];
@@ -3720,10 +3755,15 @@ class KernelObservedFileSystem implements IFileSystem {
 
   private async emitFileWrite(path: string): Promise<void> {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
+    const projectPath = toProjectPath(this.workspaceRoot(), path);
+    const stat = await this.base.stat(path).catch(() => null);
+    if (!stat?.isFile) return;
+    const contentBytes = this.liveFileChangeContentBytes(stat);
+    if (contentBytes === null || !this.tryReserveLiveFileChange(projectPath, contentBytes)) return;
     const bytes = await this.base.readFileBuffer(path);
     const text = decodeUtf8(bytes);
     this.onFileChange({
-      path: toProjectPath(this.workspaceRoot(), path),
+      path: projectPath,
       contents: text ?? base64FromBytes(bytes),
       ...(text === null ? { encoding: 'base64' as const } : {}),
     });
@@ -3731,17 +3771,23 @@ class KernelObservedFileSystem implements IFileSystem {
 
   private emitFileDelete(path: string): void {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
-    this.onFileChange({ path: toProjectPath(this.workspaceRoot(), path), deleted: true });
+    const projectPath = toProjectPath(this.workspaceRoot(), path);
+    if (!this.tryReserveLiveFileChange(projectPath)) return;
+    this.onFileChange({ path: projectPath, deleted: true });
   }
 
   private emitDirectoryCreate(path: string): void {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path) || path === this.workspaceRoot()) return;
-    this.onFileChange({ path: toProjectPath(this.workspaceRoot(), path), directory: true });
+    const projectPath = toProjectPath(this.workspaceRoot(), path);
+    if (!this.tryReserveLiveFileChange(projectPath)) return;
+    this.onFileChange({ path: projectPath, directory: true });
   }
 
   private emitDirectoryDelete(path: string): void {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path) || path === this.workspaceRoot()) return;
-    this.onFileChange({ path: toProjectPath(this.workspaceRoot(), path), directory: true, deleted: true });
+    const projectPath = toProjectPath(this.workspaceRoot(), path);
+    if (!this.tryReserveLiveFileChange(projectPath)) return;
+    this.onFileChange({ path: projectPath, directory: true, deleted: true });
   }
 
   private readDeviceFile(device: '/dev' | RuntimeKernelDevicePath, options?: FsReadFileOptions): string {

@@ -11,7 +11,7 @@ import vm from 'node:vm';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../packages/harness-project/src/async-hooks-browser-shim';
-import { assertRuntimeFinalDiffBudget } from '../packages/harness-core/src/runtime-project';
+import { assertRuntimeFinalDiffBudget, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 import { createIndexedDbKernelStorage } from '../packages/harness-browser/src/project';
 import {
   createBrowserJavaScriptProjectRunner,
@@ -2502,6 +2502,55 @@ function testRuntimeFinalDiffBudgets(): void {
   assertCondition(totalError.includes('final-diff byte limit'), `final-diff total budget should reject large aggregate payloads: ${totalError}`);
 }
 
+async function testKernelObservedFileSystemLiveFileChangesAreBudgeted(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'chunk.txt', contents: 'x'.repeat(1024 * 1024) }],
+  });
+
+  try {
+    const oversizedEvents: RuntimeCommandEvent[] = [];
+    const oversized = await workspace.runCommand([
+      'cat chunk.txt chunk.txt chunk.txt chunk.txt chunk.txt > too-large.txt',
+      'printf "ok\\n" > small.txt',
+    ].join(' && '), { onEvent: (event) => oversizedEvents.push(event) });
+    assertCondition(oversized.exitCode === 0, `oversized live write command should complete: ${JSON.stringify(oversized)}`);
+    assertCondition((await workspace.stat('too-large.txt')).size === 5 * 1024 * 1024, 'oversized live write should persist without streaming its contents');
+    assertCondition(
+      !oversizedEvents.some((event) => event.type === 'file-change' && event.phase === 'live' && event.change.path === 'too-large.txt'),
+      `oversized live file-change should be dropped before reading contents: ${JSON.stringify(oversizedEvents)}`
+    );
+    assertCondition(
+      oversizedEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'small.txt' &&
+        event.change.contents === 'ok\n'
+      ),
+      `small live file-change should still stream after an oversized write is skipped: ${JSON.stringify(oversizedEvents)}`
+    );
+
+    const growthEvents: RuntimeCommandEvent[] = [];
+    const growth = await workspace.runCommand(
+      Array.from({ length: 8 }, () => 'cat chunk.txt >> grow.txt').join(' && '),
+      { onEvent: (event) => growthEvents.push(event) }
+    );
+    assertCondition(growth.exitCode === 0, `growing live write command should complete: ${JSON.stringify(growth)}`);
+    assertCondition((await workspace.stat('grow.txt')).size === 8 * 1024 * 1024, 'growing live write should persist the full file');
+    const growSnapshots = growthEvents.filter((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'grow.txt' &&
+      'contents' in event.change
+    );
+    assertCondition(
+      growSnapshots.length > 0 && growSnapshots.length < 8,
+      `growing live file snapshots should stop once the cumulative budget is exhausted: ${JSON.stringify(growthEvents)}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
 async function testTraceKernelTraversalSkipsSymlinkCycles(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     files: [{ path: 'loop/value.txt', contents: 'value\n' }],
@@ -3163,6 +3212,7 @@ async function main(): Promise<void> {
   await testBulkTraceWritesAreBudgetedBeforeLoops();
   await testSharedKernelPolicyCachesDeviceManifests();
   testRuntimeFinalDiffBudgets();
+  await testKernelObservedFileSystemLiveFileChangesAreBudgeted();
   await testTraceKernelTraversalSkipsSymlinkCycles();
   await testTraceKernelFinalDiffDirectoryDeletesRejectStaleDescendants();
   await testTraceKernelProjectCommandStepsAreBounded();
