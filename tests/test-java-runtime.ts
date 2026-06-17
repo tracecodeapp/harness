@@ -5710,7 +5710,7 @@ async function main(): Promise<void> {
         '-d',
         '/home/ada/weather-api/out',
         '-sourcepath',
-        '/home/ada/weather-api/src',
+        '/home/ada/weather-api',
         '/home/ada/weather-api/src/app/Main.java',
       ],
       cwd: '/home/ada/weather-api/src',
@@ -5731,10 +5731,10 @@ async function main(): Promise<void> {
     assertCondition(canonicalRootCompileProjectExecute.exitCode === 0, 'Java execute-project-java should accept canonical /home javac paths');
     const canonicalRootCompileCall = harness.projectCompileCalls.at(-1);
     assertCondition(
-      canonicalRootCompileCall?.resourceManifest?.includes('lib/external.jar') &&
+        canonicalRootCompileCall?.resourceManifest?.includes('lib/external.jar') &&
         canonicalRootCompileCall.compileClasspath?.includes('/classpath/lib/external.jar') &&
         canonicalRootCompileCall.compileSourcePaths === 'src/app/Main.java' &&
-        canonicalRootCompileCall.compileSourceRootPaths === 'src' &&
+        canonicalRootCompileCall.compileSourceRootPaths === '' &&
         canonicalRootCompileProjectExecute.files?.some((file) => file.path === 'out/app/Main.class'),
       'Java execute-project-java should normalize canonical /home javac paths inside the browser workspace'
     );

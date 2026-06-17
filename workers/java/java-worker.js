@@ -4445,12 +4445,15 @@ function resolveProjectCommandPath(path, relativeCwd, projectCwd = '/workspace',
   const raw = String(path ?? '').replace(/\\/g, '/');
   if (raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) {
     const stripped = stripProjectVirtualPrefix(raw, project, projectCwd);
-    if (stripped !== null) return normalizeProjectPathWithinWorkspace(stripped, allowEmpty) || '.';
+    if (stripped !== null) {
+      const resolved = normalizeProjectPathWithinWorkspace(stripped, allowEmpty);
+      return resolved || (allowEmpty ? '' : '.');
+    }
     throw new Error(`Project path must stay within the workspace: ${path}`);
   }
   const joined = relativeCwd ? `${relativeCwd}/${raw}` : raw;
   const resolved = normalizeProjectPathWithinWorkspace(joined, allowEmpty);
-  return resolved || '.';
+  return resolved || (allowEmpty ? '' : '.');
 }
 
 function javaStringLiteral(value) {
