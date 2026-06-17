@@ -1303,7 +1303,13 @@ export interface RuntimeProjectTerminalRunOptions extends RuntimeCommandOptions 
   onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 }
 
+export interface RuntimeProjectHiddenCommandAccess {
+  readonly __runtimeProjectHiddenCommandAccessBrand?: never;
+}
+
 export interface RuntimeProjectCommandOptions extends RuntimeCommandOptions {
+  hiddenCommandAccess?: RuntimeProjectHiddenCommandAccess;
+  /** @deprecated Hidden project commands require a workspace-specific hiddenCommandAccess token. */
   allowHidden?: boolean;
 }
 

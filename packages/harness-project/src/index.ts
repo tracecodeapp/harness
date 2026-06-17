@@ -126,6 +126,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandOptions,
   RuntimeProjectCommandRunner,
+  RuntimeProjectHiddenCommandAccess,
   RuntimeProjectTerminalPrompt,
   RuntimeProjectTerminalEvent,
   RuntimeProjectTerminalEventHandler,
@@ -238,6 +239,7 @@ export interface RuntimeTraceKernelControlOptions {
 
 export interface CreateRuntimeWorkspaceOptions {
   projectSession?: RuntimeProjectSession;
+  hiddenCommandAccess?: RuntimeProjectHiddenCommandAccess;
   files?: readonly RuntimeFile[];
   directories?: readonly string[];
   skills?: readonly RuntimeFile[];
@@ -258,6 +260,19 @@ export interface CreateRuntimeWorkspaceOptions {
   executionLimits?: ProjectWorkspaceExecutionLimits;
   kernel?: RuntimeTraceKernelConfig;
   kernelControl?: RuntimeTraceKernelControlOptions;
+}
+
+const runtimeProjectHiddenCommandAccesses = new WeakSet<RuntimeProjectHiddenCommandAccess>();
+
+export function createRuntimeProjectHiddenCommandAccess(): RuntimeProjectHiddenCommandAccess {
+  const access = {};
+  runtimeProjectHiddenCommandAccesses.add(access);
+  return access;
+}
+
+function isRuntimeProjectHiddenCommandAccess(value: unknown): value is RuntimeProjectHiddenCommandAccess {
+  return typeof value === 'object' && value !== null &&
+    runtimeProjectHiddenCommandAccesses.has(value as RuntimeProjectHiddenCommandAccess);
 }
 
 export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTerminalSession {
@@ -1141,6 +1156,24 @@ function createProjectSessionInfo(session: RuntimeProjectSession, kernelInfo: Ru
       expirationBehavior: session.expirationBehavior ?? 'none',
     },
     ...(session.metadata ? { metadata: { ...session.metadata } } : {}),
+  };
+}
+
+function visibleProjectSessionCommands(
+  commands: Record<string, RuntimeProjectSessionCommand>
+): Record<string, RuntimeProjectSessionCommand> {
+  const visible: Record<string, RuntimeProjectSessionCommand> = {};
+  for (const [name, command] of Object.entries(commands)) {
+    if (command.hidden === true) continue;
+    visible[name] = command;
+  }
+  return visible;
+}
+
+function publicProjectSessionInfo(session: RuntimeProjectSessionInfo): RuntimeProjectSessionInfo {
+  return {
+    ...session,
+    commands: visibleProjectSessionCommands(session.commands),
   };
 }
 
@@ -6674,6 +6707,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly entrypoint?: string;
   private readonly kernelControl?: RuntimeTraceKernelControlOptions;
   private readonly cppRunner?: CppProjectCommandRunner;
+  private readonly projectSessionCommands?: Record<string, RuntimeProjectSessionCommand>;
+  private readonly hiddenCommandAccess?: RuntimeProjectHiddenCommandAccess;
   private readonly traceKernelCommandRegistry: TraceKernelCommandInfo[];
   private readonly traceKernelCommandNames: ReadonlySet<string>;
   private readonly skillFiles = new Map<string, RuntimeFile>();
@@ -6708,7 +6743,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
     this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler));
     this.cwd = this.kernelInfo.workspaceRoot;
-    this.projectSession = options.projectSession ? createProjectSessionInfo(options.projectSession, this.kernelInfo) : undefined;
+    const projectSession = options.projectSession ? createProjectSessionInfo(options.projectSession, this.kernelInfo) : undefined;
+    this.projectSessionCommands = projectSession?.commands;
+    this.projectSession = projectSession ? publicProjectSessionInfo(projectSession) : undefined;
+    this.hiddenCommandAccess = options.hiddenCommandAccess;
     for (const path of this.projectSession?.readonlyFiles ?? []) {
       this.readonlyFiles.add(path);
     }
@@ -9826,7 +9864,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async runProjectCommand(name: string, options: RuntimeProjectCommandOptions = {}): Promise<RuntimeCommandResult> {
     const unusable = this.assertWorkspaceUsableForRun(name);
     if (unusable) return unusable;
-    const command = this.projectSession?.commands[name];
+    const command = this.projectSessionCommands?.[name];
     if (!command) {
       return {
         stdout: '',
@@ -9834,7 +9872,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         exitCode: 127,
       };
     }
-    if (command.hidden === true && options.allowHidden !== true) {
+    if (
+      command.hidden === true &&
+      (
+        !this.hiddenCommandAccess ||
+        options.hiddenCommandAccess !== this.hiddenCommandAccess ||
+        !isRuntimeProjectHiddenCommandAccess(options.hiddenCommandAccess)
+      )
+    ) {
       return {
         stdout: '',
         stderr: `Project command is hidden: ${name}\n`,

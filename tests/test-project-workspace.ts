@@ -18,6 +18,7 @@ import {
   type RuntimeProjectTerminalEvent,
   type RuntimeWorkspace,
   type RuntimeWorkspaceEvent,
+  createRuntimeProjectHiddenCommandAccess,
   createRuntimeWorkspace,
   normalizeRuntimeProjectPath,
 } from '../packages/harness-project/src/index';
@@ -11406,7 +11407,9 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
 }
 
 async function testProjectSessionMetadataAndCommands(): Promise<void> {
+  const hiddenCommandAccess = createRuntimeProjectHiddenCommandAccess();
   const workspace = await createRuntimeWorkspace({
+    hiddenCommandAccess,
     projectSession: {
       id: 'attempt-123',
       projectId: 'problem-weather-api',
@@ -11522,9 +11525,9 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   assertCondition(workspace.projectSession?.readonlyFiles.join(',') === '.trace/fixtures/input.txt,README.md', 'project session should expose readonly file policy');
   assertCondition(workspace.projectSession?.hiddenFiles.join(',') === '.trace/fixtures/input.txt', 'project session should expose hidden file policy');
   assertCondition(
-    workspace.projectSession?.commands.hiddenGate?.hidden === true &&
-      workspace.projectSession.commands.hiddenGate.label === 'Hidden Gate',
-    `project session should preserve hidden command metadata: ${JSON.stringify(workspace.projectSession?.commands.hiddenGate)}`
+    !Object.prototype.hasOwnProperty.call(workspace.projectSession?.commands ?? {}, 'hiddenGate') &&
+      Object.prototype.hasOwnProperty.call(workspace.projectSession?.commands ?? {}, 'start'),
+    `project session should expose only visible command metadata: ${JSON.stringify(workspace.projectSession?.commands)}`
   );
   assertCondition(await workspace.exists('src/main.py'), 'project session starter files should be written into workspace');
   assertCondition(await workspace.exists('tests'), 'project session directories should be written into workspace');
@@ -11627,12 +11630,18 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
       hiddenGateBlocked.stderr === 'Project command is hidden: hiddenGate\n',
     `hidden project session commands should be blocked unless explicitly allowed: ${JSON.stringify(hiddenGateBlocked)}`
   );
-  const hiddenGate = await workspace.runProjectCommand('hiddenGate', { allowHidden: true });
+  const hiddenGateBooleanBypass = await workspace.runProjectCommand('hiddenGate', { allowHidden: true });
+  assertCondition(
+    hiddenGateBooleanBypass.exitCode === 403 &&
+      hiddenGateBooleanBypass.stderr === 'Project command is hidden: hiddenGate\n',
+    `hidden project session commands should reject public boolean bypasses: ${JSON.stringify(hiddenGateBooleanBypass)}`
+  );
+  const hiddenGate = await workspace.runProjectCommand('hiddenGate', { hiddenCommandAccess });
   assertCondition(
     hiddenGate.stdout === 'fixture:missing\n:policy:no-hidden-policy\n',
-    `allowHidden alone should not mount hidden fixture files into runtime snapshots: ${JSON.stringify(hiddenGate)}`
+    `hidden command access alone should not mount hidden fixture files into runtime snapshots: ${JSON.stringify(hiddenGate)}`
   );
-  const hiddenGateWithFiles = await workspace.runProjectCommand('hiddenGate', { allowHidden: true, includeHiddenFiles: true });
+  const hiddenGateWithFiles = await workspace.runProjectCommand('hiddenGate', { hiddenCommandAccess, includeHiddenFiles: true });
   assertCondition(
     hiddenGateWithFiles.stdout === 'fixture:hidden-input\n:policy:.trace/fixtures/input.txt\n',
     `hidden project session files should require explicit runtime snapshot opt-in: ${JSON.stringify(hiddenGateWithFiles)}`
