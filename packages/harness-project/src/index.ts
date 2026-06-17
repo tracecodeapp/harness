@@ -10724,6 +10724,7 @@ export type {
   RuntimeProjectPatchFileDelete,
   RuntimeProjectPatchFileWrite,
   RuntimeProjectPatchOptions,
+  RuntimeProjectLiveIoControllerOptions,
   RuntimeProjectWorkerBridgeOptions,
   RuntimeProjectSnapshot,
   RuntimeWorkspace,
