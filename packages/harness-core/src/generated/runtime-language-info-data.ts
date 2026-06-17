@@ -219,11 +219,11 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
   "csharp": {
     "language": "csharp",
     "displayName": "C#",
-    "versionLabel": "C# 14 (.NET 10.0.8)",
-    "description": "C# 14 with .NET 10.0.8 runtime.\n\nCode is compiled with Microsoft.CodeAnalysis.CSharp 5.3.0 and executed by a browser-local .NET WebAssembly runtime.\n\nCommon namespaces are imported automatically: System, System.Collections, System.Collections.Generic, System.IO, System.Linq, System.Numerics, System.Text, System.Text.RegularExpressions.",
+    "versionLabel": "C# 14 (.NET 10.0.9)",
+    "description": "C# 14 with .NET 10.0.9 runtime.\n\nCode is compiled with Microsoft.CodeAnalysis.CSharp 5.3.0 and executed by a browser-local .NET WebAssembly runtime.\n\nCommon namespaces are imported automatically: System, System.Collections, System.Collections.Generic, System.IO, System.Linq, System.Numerics, System.Text, System.Text.RegularExpressions.",
     "runtime": {
       "name": ".NET WebAssembly runtime",
-      "version": "10.0.8",
+      "version": "10.0.9",
       "detail": "Browser-local .NET runtime targeting net10.0."
     },
     "compiler": {

@@ -3676,6 +3676,50 @@ async function main(): Promise<void> {
       `C# worker object-value dictionary input case should return alice:2, received ${JSON.stringify(objectValueDictionaryInput.output)}`
     );
 
+    const customObjectValueDictionaryInput = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'using System.Collections;',
+        'using System.Collections.Generic;',
+        'public class MyDict : IDictionary<string, object> {',
+        '  private readonly Dictionary<string, object> inner = new Dictionary<string, object>();',
+        '  public object this[string key] { get => inner[key]; set => inner[key] = value; }',
+        '  public ICollection<string> Keys => inner.Keys;',
+        '  public ICollection<object> Values => inner.Values;',
+        '  public int Count => inner.Count;',
+        '  public bool IsReadOnly => false;',
+        '  public void Add(string key, object value) => inner.Add(key, value);',
+        '  public bool ContainsKey(string key) => inner.ContainsKey(key);',
+        '  public bool Remove(string key) => inner.Remove(key);',
+        '  public bool TryGetValue(string key, out object value) => inner.TryGetValue(key, out value);',
+        '  public void Add(KeyValuePair<string, object> item) => ((IDictionary<string, object>)inner).Add(item);',
+        '  public void Clear() => inner.Clear();',
+        '  public bool Contains(KeyValuePair<string, object> item) => ((IDictionary<string, object>)inner).Contains(item);',
+        '  public void CopyTo(KeyValuePair<string, object>[] array, int arrayIndex) => ((IDictionary<string, object>)inner).CopyTo(array, arrayIndex);',
+        '  public bool Remove(KeyValuePair<string, object> item) => ((IDictionary<string, object>)inner).Remove(item);',
+        '  public IEnumerator<KeyValuePair<string, object>> GetEnumerator() => inner.GetEnumerator();',
+        '  IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();',
+        '}',
+        'public class Solution {',
+        '  public string ReadCustomObjectValueDictionary(MyDict user) {',
+        '    return (string)user["id"] + ":" + Convert.ToInt32(user["priority"]);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadCustomObjectValueDictionary',
+      { user: { id: 'alice', priority: 2 } },
+      assetBaseUrl
+    );
+    assertCondition(
+      customObjectValueDictionaryInput.success,
+      `C# worker custom object-value dictionary input case should hydrate: ${customObjectValueDictionaryInput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      customObjectValueDictionaryInput.output === 'alice:2',
+      `C# worker custom object-value dictionary input case should return alice:2, received ${JSON.stringify(customObjectValueDictionaryInput.output)}`
+    );
+
     const tracedNestedInterfaceList = await runWorkerCase(
       page,
       [

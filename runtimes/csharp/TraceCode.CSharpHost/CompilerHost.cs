@@ -4011,11 +4011,20 @@ public class TreeNode
             Type dictionaryType = effectiveType.IsInterface || effectiveType.IsAbstract
                 ? typeof(Dictionary<,>).MakeGenericType(keyType, typeof(object))
                 : effectiveType;
-            System.Collections.IDictionary result = (System.Collections.IDictionary)Activator.CreateInstance(dictionaryType)!;
+            Type mutableDictionaryType = typeof(IDictionary<,>).MakeGenericType(keyType, typeof(object));
+            if (!mutableDictionaryType.IsAssignableFrom(dictionaryType))
+            {
+                dictionary = null;
+                return false;
+            }
+
+            object result = Activator.CreateInstance(dictionaryType)!;
+            System.Reflection.MethodInfo addMethod = mutableDictionaryType.GetMethod("Add", new[] { keyType, typeof(object) })
+                ?? throw new InvalidOperationException("Unable to resolve dictionary Add method.");
             GuardInputObjectPropertyCount(value, budget, "C# input dictionary");
             foreach (JsonProperty property in value.EnumerateObject())
             {
-                result[ReadDictionaryKey(property.Name, keyType)] = ReadObjectValue(property.Value, budget, depth + 1);
+                addMethod.Invoke(result, new[] { ReadDictionaryKey(property.Name, keyType), ReadObjectValue(property.Value, budget, depth + 1) });
             }
 
             dictionary = result;
