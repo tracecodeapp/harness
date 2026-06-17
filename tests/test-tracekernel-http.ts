@@ -236,6 +236,11 @@ async function main(): Promise<void> {
       Array.from(runtimeHttpResponseBytes(requestBinary)).join(',') === '0,255,1,2',
       `workspace HTTP response should preserve binary response bytes: ${JSON.stringify(requestBinary)}`
     );
+    const bomBody = runtimeHttpBodyFromBytes(new Uint8Array([0xef, 0xbb, 0xbf, 0x41]));
+    assertCondition(
+      Array.from(runtimeHttpBodyBytes(bomBody)).join(',') === '239,187,191,65',
+      `workspace HTTP byte helpers should preserve leading UTF-8 BOM bytes: ${JSON.stringify(bomBody)}`
+    );
     assertCondition(
       requestBinary.rawHeaders?.some(([name, value]) => name.toLowerCase() === 'set-cookie' && value === 'a=1') === true &&
         requestBinary.rawHeaders?.some(([name, value]) => name.toLowerCase() === 'set-cookie' && value === 'b=2') === true,

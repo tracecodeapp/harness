@@ -1153,6 +1153,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       ) {
         throw new Error('@tracecode/harness-project HTTP body byte helper smoke failed: ' + JSON.stringify(binaryPayload));
       }
+      const bomPayload = projectMod.runtimeHttpBodyFromBytes(new Uint8Array([0xef, 0xbb, 0xbf, 0x41]));
+      if (Array.from(projectMod.runtimeHttpBodyBytes(bomPayload)).join(',') !== '239,187,191,65') {
+        throw new Error('@tracecode/harness-project HTTP body byte helper should preserve UTF-8 BOM bytes: ' + JSON.stringify(bomPayload));
+      }
       const httpJson = await projectWorkspace.http.json({
         method: 'POST',
         url: 'http://localhost:' + mockHttp.info.port + '/json',

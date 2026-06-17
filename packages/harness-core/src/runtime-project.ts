@@ -386,7 +386,7 @@ function runtimeHttpBase64FromBytes(bytes: Uint8Array): string {
 
 function runtimeHttpDecodeUtf8(bytes: Uint8Array): string | null {
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     return null;
   }
