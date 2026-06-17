@@ -5658,11 +5658,11 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const streamPauseResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"stream-pause.txt\\", \\"paused\\"); const input = fs.createReadStream(\\"stream-pause.txt\\", { encoding: \\"utf8\\" }); const events = []; console.log(String(input.readableFlowing)); input.pause(); console.log(String(input.readableFlowing)); input.on(\\"data\\", (chunk) => events.push(\\"data:\\" + chunk)); input.on(\\"end\\", () => events.push(\\"end\\")); await new Promise((resolve) => queueMicrotask(resolve)); console.log(events.join(\\"|\\")); input.resume(); console.log(String(input.readableFlowing)); await new Promise((resolve) => input.on(\\"close\\", resolve)); console.log(events.join(\\"|\\")); console.log(input.readableEnded + \\":\\" + input.closed);"',
+    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"stream-pause.txt\\", \\"paused\\"); const input = fs.createReadStream(\\"stream-pause.txt\\", { encoding: \\"utf8\\" }); const events = []; console.log(String(input.readableFlowing)); input.pause(); console.log(String(input.readableFlowing)); input.on(\\"data\\", (chunk) => events.push(\\"data:\\" + chunk)); input.on(\\"end\\", () => events.push(\\"end\\")); await new Promise((resolve) => queueMicrotask(resolve)); console.log(events.join(\\"|\\")); input.resume(); console.log(String(input.readableFlowing)); await new Promise((resolve) => input.on(\\"close\\", resolve)); console.log(events.join(\\"|\\")); console.log(input.readableEnded + \\":\\" + input.closed); fs.writeFileSync(\\"stream-pause-pending.txt\\", \\"pending\\"); const pending = fs.createReadStream(\\"stream-pause-pending.txt\\", { encoding: \\"utf8\\" }); const pendingEvents = []; pending.on(\\"data\\", (chunk) => pendingEvents.push(\\"data:\\" + chunk)); pending.on(\\"end\\", () => pendingEvents.push(\\"end\\")); pending.pause(); await new Promise((resolve) => queueMicrotask(resolve)); console.log(pendingEvents.join(\\"|\\")); pending.resume(); await new Promise((resolve) => pending.on(\\"close\\", resolve)); console.log(pendingEvents.join(\\"|\\"));"',
   ].join(' '));
   assertCondition(streamPauseResult.exitCode === 0, `browser node stream pause/resume workflow should succeed: ${streamPauseResult.stderr}`);
   assertCondition(
-    streamPauseResult.stdout === 'null\nfalse\n\ntrue\ndata:paused|end\ntrue:true\n',
+    streamPauseResult.stdout === 'null\nfalse\n\ntrue\ndata:paused|end\ntrue:true\n\ndata:pending|end\n',
     `browser node readable file streams should support pause/resume flow control: ${streamPauseResult.stdout}`
   );
 

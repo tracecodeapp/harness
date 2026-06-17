@@ -4483,6 +4483,10 @@ export async function runBrowserJavaScriptProjectRequest(
         started = true;
         queueMicrotask(() => {
           if (closed || destroyed) return;
+          if (readableFlowing === false) {
+            started = false;
+            return;
+          }
           const chunk = readChunk();
           if (chunk !== null && (typeof chunk !== 'string' || chunk.length > 0) && (!(chunk instanceof Uint8Array) || chunk.byteLength > 0)) {
             events.emit('data', chunk);
