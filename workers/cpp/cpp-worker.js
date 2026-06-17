@@ -726,7 +726,10 @@ class InMemoryFileSystem {
       return ESUCCESS;
     }
     if (!this.dirs.has(oldPath)) return ENOENT;
+    if (oldPath === '/') return EINVAL;
+    if (newPath.startsWith(`${oldPath}/`)) return EINVAL;
     if (this.files.has(newPath)) return ENOTDIR;
+    if (this.dirs.has(newPath)) return EEXIST;
     const oldPrefix = `${oldPath}/`;
     const newPrefix = `${newPath}/`;
     const directories = [...this.dirs]

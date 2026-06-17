@@ -461,6 +461,20 @@ async function main(): Promise<void> {
             '  mkdir("rename-dir-onto-file", 0777);',
             '  std::ofstream("rename-dir-target.txt") << "target\\\\n";',
             '  std::cout << (std::rename("rename-dir-onto-file", "rename-dir-target.txt") == 0 ? "rename-dir-onto-file:ok" : "rename-dir-onto-file:blocked") << "\\\\n";',
+            '  mkdir("rename-dir-existing-source", 0777);',
+            '  std::ofstream("rename-dir-existing-source/child.txt") << "source\\\\n";',
+            '  mkdir("rename-dir-existing-target", 0777);',
+            '  int rename_dir_existing_result = std::rename("rename-dir-existing-source", "rename-dir-existing-target");',
+            '  std::ifstream rename_dir_existing_child("rename-dir-existing-source/child.txt");',
+            '  std::string rename_dir_existing_text((std::istreambuf_iterator<char>(rename_dir_existing_child)), std::istreambuf_iterator<char>());',
+            '  std::cout << (rename_dir_existing_result != 0 && rename_dir_existing_text == "source\\\\n" ? "rename-dir-existing:blocked" : "rename-dir-existing:changed") << "\\\\n";',
+            '  mkdir("rename-dir-desc", 0777);',
+            '  mkdir("rename-dir-desc/child", 0777);',
+            '  std::ofstream("rename-dir-desc/child/value.txt") << "desc\\\\n";',
+            '  int rename_dir_desc_result = std::rename("rename-dir-desc", "rename-dir-desc/child/moved");',
+            '  std::ifstream rename_dir_desc_file("rename-dir-desc/child/value.txt");',
+            '  std::string rename_dir_desc_text((std::istreambuf_iterator<char>(rename_dir_desc_file)), std::istreambuf_iterator<char>());',
+            '  std::cout << (rename_dir_desc_result != 0 && rename_dir_desc_text == "desc\\\\n" ? "rename-dir-descendant:blocked" : "rename-dir-descendant:changed") << "\\\\n";',
             '  mkdir("unlink-dir", 0777);',
             '  int unlink_dir_result = unlink("unlink-dir");',
             '  std::cout << (unlink_dir_result == 0 ? "unlink-dir:ok" : "unlink-dir:blocked") << "\\\\n";',
@@ -1389,7 +1403,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-null:0\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
-        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nrename-file-onto-dir:blocked\nopen-dir-write:blocked\nopen-dir-truncate:blocked\nrename-dir-onto-file:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
+        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nrename-file-onto-dir:blocked\nopen-dir-write:blocked\nopen-dir-truncate:blocked\nrename-dir-onto-file:blocked\nrename-dir-existing:blocked\nrename-dir-descendant:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
         projectRun.stdout?.includes('device-out\ncapture-device\ntee-device\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
