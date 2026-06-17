@@ -545,6 +545,18 @@ async function main(): Promise<void> {
     );
     console.log('PASS: browser harness warms Python runtime on demand');
 
+    const coldPythonHarness = createBrowserHarness({ assetBaseUrl: '/cold-python' });
+    const coldPythonResult = await coldPythonHarness.getClient('python').executeCode('result = 1', 'noop', {}, 'function');
+    const coldPythonWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/cold-python/pyodide-worker.js'));
+    const coldPythonMessageTypes = coldPythonWorker?.messages.map((message) => message.type).join(',');
+    coldPythonHarness.dispose();
+    assertCondition(coldPythonResult.success, 'Cold Python harness should execute successfully');
+    assertCondition(
+      coldPythonMessageTypes === 'init,warmup,execute-code',
+      `Cold Python execution should warm the runtime before execute-code: ${coldPythonMessageTypes}`
+    );
+    console.log('PASS: browser harness warms cold Python execution before user-code timing');
+
     const javaWarmupResult = await harnessA.warmLanguage('java');
     const javaWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
     assertCondition(javaWarmupResult.success, 'Java warmLanguage should resolve successfully');

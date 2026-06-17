@@ -60,6 +60,18 @@ class PythonProtocolWorker {
       return;
     }
 
+    if (envelope.type === 'warmup') {
+      queueMicrotask(() => {
+        this.emit({
+          id: envelope.id,
+          type: 'warmup-result',
+          protocolToken: envelope.protocolToken,
+          payload: { success: true, loadTimeMs: 0 },
+        });
+      });
+      return;
+    }
+
     if (envelope.type === 'execute-project-python') {
       this.executeMessage = { id: envelope.id, protocolToken: envelope.protocolToken };
       queueMicrotask(() => {

@@ -673,8 +673,8 @@ export class PythonWorkerClient {
     executionStyle: ExecutionStyle = 'function',
     signal?: AbortSignal
   ): Promise<ExecutionResult> {
-    // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
-    await this.init();
+    // Keep runtime loading under the longer warmup budget so execution timers only measure user code.
+    await this.warmup();
     
     // Use longer timeout for tracing - Python heuristic detection handles infinite loops
     try {
@@ -723,8 +723,8 @@ export class PythonWorkerClient {
     executionStyle: ExecutionStyle = 'function',
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
-    await this.init();
+    // Keep runtime loading under the longer warmup budget so execution timers only measure user code.
+    await this.warmup();
     
     return this.executeWithTimeout(
       () => this.sendMessage<CodeExecutionResult>('execute-code', {
@@ -745,7 +745,7 @@ export class PythonWorkerClient {
     executionStyle: ExecutionStyle = 'function',
     signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
-    await this.init();
+    await this.warmup();
 
     return this.executeWithTimeout(
       () => this.sendMessage<CodeExecutionBatchResult>('execute-code-batch', {
@@ -770,8 +770,8 @@ export class PythonWorkerClient {
     executionStyle: ExecutionStyle = 'function',
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
-    await this.init();
+    // Keep runtime loading under the longer warmup budget so interview timers only measure user code.
+    await this.warmup();
     
     try {
       const result = await this.executeWithTimeout(
@@ -844,7 +844,7 @@ export class PythonWorkerClient {
     const abortInit = () => this.terminateAndReset(createExecutionAbortError());
     signal?.addEventListener('abort', abortInit, { once: true });
     try {
-      await this.init();
+      await this.warmup();
     } finally {
       signal?.removeEventListener('abort', abortInit);
     }
@@ -874,8 +874,8 @@ export class PythonWorkerClient {
    * Returns CodeFacts with semantic information about the code
    */
   async analyzeCode(code: string): Promise<unknown> {
-    // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
-    await this.init();
+    // Keep runtime loading under the longer warmup budget so analysis timers only measure user code.
+    await this.warmup();
     
     // Use a shorter timeout for analysis (5 seconds should be plenty)
     return this.sendMessage<unknown>('analyze-code', { code }, 5000);
