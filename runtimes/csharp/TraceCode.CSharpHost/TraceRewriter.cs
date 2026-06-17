@@ -141,7 +141,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         MethodDeclarationSyntax methodNode = ConvertExpressionBodiedMethod(node);
 
         methodNames.Push(methodNode.Identifier.ValueText);
-        methodReturnTypes.Push(methodNode.ReturnType.ToString());
+        methodReturnTypes.Push(GetReturnTempType(methodNode.ReturnType, methodNode.Modifiers));
         List<string> parameterNames = GetTraceableParameterNames(methodNode.ParameterList.Parameters).ToList();
         variableScopes.Push(new HashSet<string>(parameterNames, StringComparer.Ordinal));
         declaredLocalVariables.Push(new HashSet<string>(parameterNames, StringComparer.Ordinal));
@@ -270,7 +270,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         LocalFunctionStatementSyntax localFunctionNode = node;
 
         methodNames.Push(localFunctionNode.Identifier.ValueText);
-        methodReturnTypes.Push(localFunctionNode.ReturnType.ToString());
+        methodReturnTypes.Push(GetReturnTempType(localFunctionNode.ReturnType, localFunctionNode.Modifiers));
         variableScopes.Push(new HashSet<string>(
             localFunctionNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
             StringComparer.Ordinal
@@ -738,6 +738,36 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         return returnType is PredefinedTypeSyntax predefinedType
             && predefinedType.Keyword.IsKind(SyntaxKind.VoidKeyword);
+    }
+
+    private static string GetReturnTempType(TypeSyntax returnType, SyntaxTokenList modifiers)
+    {
+        if (!modifiers.Any(modifier => modifier.IsKind(SyntaxKind.AsyncKeyword)))
+        {
+            return returnType.ToString();
+        }
+
+        return TryGetAsyncResultType(returnType) ?? returnType.ToString();
+    }
+
+    private static string? TryGetAsyncResultType(TypeSyntax returnType)
+    {
+        GenericNameSyntax? genericName = returnType switch
+        {
+            GenericNameSyntax generic => generic,
+            QualifiedNameSyntax { Right: GenericNameSyntax generic } => generic,
+            AliasQualifiedNameSyntax { Name: GenericNameSyntax generic } => generic,
+            _ => null,
+        };
+
+        if (genericName is null
+            || genericName.TypeArgumentList.Arguments.Count != 1
+            || genericName.Identifier.ValueText is not ("Task" or "ValueTask"))
+        {
+            return null;
+        }
+
+        return genericName.TypeArgumentList.Arguments[0].ToString();
     }
 
     private static StatementSyntax CreateImplicitReturnStatement(string methodName, int line)

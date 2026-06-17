@@ -3266,6 +3266,7 @@ public static class TraceCodeDriver
         ISet<string> nestedSolutionTypeNames = GetNestedSolutionTypeNames(method);
         bool returnsVoid = method.ReturnType is PredefinedTypeSyntax predefinedType
             && predefinedType.Keyword.IsKind(SyntaxKind.VoidKeyword);
+        bool returnsTaskLike = TryGetTaskLikeReturn(method.ReturnType, out bool returnsTaskResult);
         var parameterReads = method.ParameterList.Parameters.Select((parameter, index) =>
         {
             string parameterName = parameter.Identifier.ValueText;
@@ -3292,18 +3293,25 @@ public static class TraceCodeDriver
             && firstParameterName is not null
             && (method.ParameterList.Parameters.First().Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.RefKeyword) || modifier.IsKind(SyntaxKind.OutKeyword))
                 || MutatesParameter(method, firstParameterName));
-        string driverBody = returnsVoid
+        string driverBody = returnsTaskLike
+            ? returnsTaskResult
+                ? $"return await {invocation};"
+                : $"await {invocation};\n        return null;"
+            : returnsVoid
             ? returnsMutatedFirstParameter
                 ? $"{invocation};\n        return {firstParameterName};"
                 : $"{invocation};\n        return null;"
             : $"return {invocation};";
+        string runSignature = returnsTaskLike
+            ? "public static async System.Threading.Tasks.Task<object?> Run()"
+            : "public static object? Run()";
 
         return $$"""
 using System;
 
 public static class TraceCodeDriver
 {
-    public static object? Run()
+    {{runSignature}}
     {
 {{solutionDeclaration}}{{readStatements}}
         {{driverBody}}
@@ -3356,6 +3364,41 @@ public static class TraceCodeDriver
         }
 
         return parameterType;
+    }
+
+    private static bool TryGetTaskLikeReturn(TypeSyntax returnType, out bool returnsResult)
+    {
+        string? typeName = null;
+        int typeArgumentCount = 0;
+
+        switch (returnType)
+        {
+            case IdentifierNameSyntax identifier:
+                typeName = identifier.Identifier.ValueText;
+                break;
+            case GenericNameSyntax generic:
+                typeName = generic.Identifier.ValueText;
+                typeArgumentCount = generic.TypeArgumentList.Arguments.Count;
+                break;
+            case QualifiedNameSyntax { Right: IdentifierNameSyntax identifier }:
+                typeName = identifier.Identifier.ValueText;
+                break;
+            case QualifiedNameSyntax { Right: GenericNameSyntax generic }:
+                typeName = generic.Identifier.ValueText;
+                typeArgumentCount = generic.TypeArgumentList.Arguments.Count;
+                break;
+            case AliasQualifiedNameSyntax { Name: IdentifierNameSyntax identifier }:
+                typeName = identifier.Identifier.ValueText;
+                break;
+            case AliasQualifiedNameSyntax { Name: GenericNameSyntax generic }:
+                typeName = generic.Identifier.ValueText;
+                typeArgumentCount = generic.TypeArgumentList.Arguments.Count;
+                break;
+        }
+
+        bool isTaskLike = typeName is "Task" or "ValueTask";
+        returnsResult = isTaskLike && typeArgumentCount == 1;
+        return isTaskLike;
     }
 
     private static bool MutatesParameter(MethodDeclarationSyntax method, string parameterName)
@@ -5818,7 +5861,20 @@ public class TreeNode
             ?? throw new InvalidOperationException("TraceCode generated driver was not found.");
         MethodInfo method = driverType.GetMethod("Run", BindingFlags.Static | BindingFlags.Public)
             ?? throw new InvalidOperationException("TraceCode generated driver did not expose Run().");
-        return method.Invoke(null, null);
+        object? result = method.Invoke(null, null);
+        if (result is not Task task)
+        {
+            return result;
+        }
+
+        task.GetAwaiter().GetResult();
+        Type taskType = result.GetType();
+        if (!taskType.IsGenericType)
+        {
+            return null;
+        }
+
+        return taskType.GetProperty("Result", BindingFlags.Instance | BindingFlags.Public)?.GetValue(result);
     }
 
     private static object? NormalizeOutput(object? output)

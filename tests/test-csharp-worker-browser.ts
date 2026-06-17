@@ -2057,6 +2057,38 @@ async function main(): Promise<void> {
       `C# worker traced target-typed return case should return [], received ${JSON.stringify(tracedTargetTypedReturn.output)}`
     );
 
+    const tracedAsyncTaskReturn = await runWorkerCase(
+      page,
+      [
+        'using System.Threading.Tasks;',
+        'public class Solution {',
+        '  public async Task<int> AddLater(int a, int b) {',
+        '    int sum = await Echo(a + b);',
+        '    return sum;',
+        '  }',
+        '  private async Task<int> Echo(int value) {',
+        '    return await Task.FromResult(value);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'AddLater',
+      { a: 3, b: 4 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedAsyncTaskReturn.success,
+      `C# worker traced async Task<T> return case should compile: ${tracedAsyncTaskReturn.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedAsyncTaskReturn.output === 7,
+      `C# worker traced async Task<T> return case should return 7, received ${JSON.stringify(tracedAsyncTaskReturn.output)}`
+    );
+    assertCondition(
+      tracedAsyncTaskReturn.events?.some((event) => event.kind === 'return' && event.function === 'AddLater' && event.value === 7) === true,
+      `C# worker traced async Task<T> return case should emit return value 7, received ${JSON.stringify(tracedAsyncTaskReturn.events)}`
+    );
+
     const tracedPrivateTrieObject = await runWorkerCase(
       page,
       [
