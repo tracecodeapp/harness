@@ -1380,6 +1380,17 @@ result = twoSum([2, 7, 11, 15], 9);`,
   assertCondition(scriptOutput[0] === 0 && scriptOutput[1] === 1, 'Script execution output should equal [0, 1]');
   console.log('PASS: execute-code script mode result assignment');
 
+  const executeScriptNoResultAfterAssignment = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+  }>('execute-code', {
+    code: 'const untouched = 1;',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(executeScriptNoResultAfterAssignment.success === true, 'Script execution without result should succeed after prior result assignment');
+  assertCondition(executeScriptNoResultAfterAssignment.output === null, 'Script execution should not reuse a previous script result');
+
   const executeScriptConstResult = await harness.sendMessage<{
     success: boolean;
     output: unknown;
@@ -4148,6 +4159,21 @@ result = twoSum([2, 7, 11, 15], 9);`,
     'Script tracing return step should include result variable'
   );
   console.log('PASS: execute-with-tracing script mode contract');
+
+  const scriptTracingNoResultAfterAssignment = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: 'const untouched = 1;',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    scriptTracingNoResultAfterAssignment.success === true,
+    `Script tracing without result should succeed after prior result assignment: ${scriptTracingNoResultAfterAssignment.error ?? 'unknown error'}`
+  );
+  assertCondition(scriptTracingNoResultAfterAssignment.output === null, 'Script tracing should not reuse a previous script result');
 
   const scriptConstResultTracing = await harness.sendMessage<{
     success: boolean;
