@@ -1888,18 +1888,30 @@ async function testJavaWorkerDiagnosticsAreBounded(): Promise<void> {
       const compilerStdout = Array.from({ length: 4096 }, () => diagnosticLine).join('\\n');
       const runtimeError = 'runtime:' + 'x'.repeat(200000);
       const stderr = javaProjectFailureStderr({ compilerStdout, compilerStderr: '', runtimeError }, sourceRoot, projectRoot);
+      const literalProjectRoot = "/workspace/$&/$\\x60/$'";
+      const literalStderr = javaProjectFailureStderr(
+        { compilerStdout: diagnosticLine, compilerStderr: '', runtimeError: '' },
+        sourceRoot,
+        literalProjectRoot
+      );
       return {
         length: stderr.length,
         hasHugePath: stderr.includes('r'.repeat(4096)),
         hasTruncation: stderr.includes('<truncated'),
+        literalStderr,
+        literalExpected: literalProjectRoot + '/Main.java:1: error: boom',
       };
     })()`,
     context
-  ) as { length: number; hasHugePath: boolean; hasTruncation: boolean };
+  ) as { length: number; hasHugePath: boolean; hasTruncation: boolean; literalStderr: string; literalExpected: string };
 
   assertCondition(result.length <= 66000, `Java project diagnostics should be capped: ${JSON.stringify(result)}`);
   assertCondition(!result.hasHugePath, `Java project diagnostics should cap replacement paths: ${JSON.stringify(result)}`);
   assertCondition(result.hasTruncation, `Java project diagnostics should include truncation marker: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.literalStderr === result.literalExpected,
+    `Java project diagnostics should treat replacement roots literally: ${JSON.stringify(result)}`
+  );
 }
 
 function testJavaTraceHeaderExpansionIsBounded(): void {

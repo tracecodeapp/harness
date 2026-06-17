@@ -4301,8 +4301,8 @@ function javaNormalizeProjectCompilerOutput(output, sourceRoot, projectRoot = ''
   const replacementRoot = boundedJavaDiagnosticPath(projectRoot, '.');
   const escapedRoot = escapeRegExp(root);
   return truncateJavaProjectDiagnostic(diagnostic
-    .replace(new RegExp(`${escapedRoot}/`, 'g'), `${replacementRoot}/`)
-    .replace(new RegExp(escapedRoot, 'g'), replacementRoot));
+    .replace(new RegExp(`${escapedRoot}/`, 'g'), () => `${replacementRoot}/`)
+    .replace(new RegExp(escapedRoot, 'g'), () => replacementRoot));
 }
 
 function javaProjectFailureStderr(report, sourceRoot, projectRoot) {
