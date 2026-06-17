@@ -4316,6 +4316,8 @@ async function main(): Promise<void> {
               '    Path tempRoot = Path.of("temp-root");',
               '    Files.createDirectories(tempRoot);',
               '    Files.createTempFile(tempRoot, "case", ".txt");',
+              '    Path twoArgNioTemp = Files.createTempFile("nio", ".tmp");',
+              '    Files.deleteIfExists(twoArgNioTemp);',
               '    Files.createTempDirectory(tempRoot, "child");',
               '    Files.move(Path.of("live-dir/child"), Path.of("live-dir/renamed-child"));',
               '    Files.delete(Path.of("live-dir/renamed-child"));',
@@ -5267,7 +5269,8 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.setLastModifiedTime(Path.of("nio-created.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.setAttribute(Path.of("nio-created.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createDirectories(Path.of("live-dir/child")') === true &&
-        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createTempFile(tempRoot, "case", ".txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createTempPath(tempRoot, "case", ".txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('Path twoArgNioTemp = tracecode.browser.ProjectEvents.createTempPath("nio", ".tmp")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createTempDirectory(tempRoot, "child")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.move(Path.of("live-dir/child"), Path.of("live-dir/renamed-child")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.delete(Path.of("live-dir/renamed-child")') === true &&

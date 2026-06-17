@@ -4668,8 +4668,10 @@ function javaProjectSourcePath(file) {
 
 function augmentJavaProjectFileMutations(source) {
   return String(source ?? '')
-    .replace(/\bjava\.nio\.file\.Files\.(readString|readAllBytes|readAllLines|lines|list|newDirectoryStream|newInputStream|newBufferedReader|exists|notExists|isDirectory|isRegularFile|isReadable|isWritable|size|writeString|write|createFile|createDirectory|createDirectories|createTempFile|createTempDirectory|setLastModifiedTime|setAttribute|newOutputStream|newBufferedWriter|newByteChannel|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
-    .replace(/(?<![\w.])Files\.(readString|readAllBytes|readAllLines|lines|list|newDirectoryStream|newInputStream|newBufferedReader|exists|notExists|isDirectory|isRegularFile|isReadable|isWritable|size|writeString|write|createFile|createDirectory|createDirectories|createTempFile|createTempDirectory|setLastModifiedTime|setAttribute|newOutputStream|newBufferedWriter|newByteChannel|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/\bjava\.nio\.file\.Files\.createTempFile\s*\(/g, 'tracecode.browser.ProjectEvents.createTempPath(')
+    .replace(/(?<![\w.])Files\.createTempFile\s*\(/g, 'tracecode.browser.ProjectEvents.createTempPath(')
+    .replace(/\bjava\.nio\.file\.Files\.(readString|readAllBytes|readAllLines|lines|list|newDirectoryStream|newInputStream|newBufferedReader|exists|notExists|isDirectory|isRegularFile|isReadable|isWritable|size|writeString|write|createFile|createDirectory|createDirectories|createTempDirectory|setLastModifiedTime|setAttribute|newOutputStream|newBufferedWriter|newByteChannel|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/(?<![\w.])Files\.(readString|readAllBytes|readAllLines|lines|list|newDirectoryStream|newInputStream|newBufferedReader|exists|notExists|isDirectory|isRegularFile|isReadable|isWritable|size|writeString|write|createFile|createDirectory|createDirectories|createTempDirectory|setLastModifiedTime|setAttribute|newOutputStream|newBufferedWriter|newByteChannel|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
     .replace(/\bjava\.io\.File\.createTempFile\s*\(/g, 'tracecode.browser.ProjectEvents.createTempFile(')
     .replace(/(?<![\w.])File\.createTempFile\s*\(/g, 'tracecode.browser.ProjectEvents.createTempFile(')
     .replace(/\bjava\.lang\.System\.getenv\s*\(/g, 'tracecode.browser.ProjectEvents.getenv(')
