@@ -32,6 +32,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private int exceptionValueCounter;
     private int conditionValueCounter;
     private int tupleAssignmentCounter;
+    private int indexedAssignmentCounter;
     private int mutationCaptureCounter;
 
     private TraceRewriter(
@@ -3320,16 +3321,26 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return statement;
         }
 
-        string valueExpression = assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
-            ? assignment.Right.ToString()
-            : CreateCompoundArrayValueExpression(
-                assignment,
-                arrayExpression,
-                runtimeIndexExpression,
-                identifier.Identifier.ValueText,
-                line,
-                CreateIndexSourcesExpression(sourceIndexExpression)
+        if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+        {
+            string indexTempName = $"__tracecode_indexed_assignment_index_{indexedAssignmentCounter++}";
+            string valueTempName = $"__tracecode_indexed_assignment_value_{indexedAssignmentCounter++}";
+            string unaryWriteStatements = string.Join(" ", GetUnaryIdentifierWriteNames(assignment)
+                .Where(ShouldEmitBareIdentifierWrite)
+                .Select(name => $"TraceCode.CSharpHost.RuntimeTraceSink.Write({Literal(name)}, {name}, {line});"));
+            return TraceStatement(
+                $"{{ var {indexTempName} = {runtimeIndexExpression}; {arrayExpression}[{indexTempName}] = {assignment.Right}; {unaryWriteStatements} var {valueTempName} = {arrayExpression}[{indexTempName}]; TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(identifier.Identifier.ValueText)}, {indexTempName}, {valueTempName}, {line}, {CreateIndexSourcesExpression(sourceIndexExpression)}); }}"
             );
+        }
+
+        string valueExpression = CreateCompoundArrayValueExpression(
+            assignment,
+            arrayExpression,
+            runtimeIndexExpression,
+            identifier.Identifier.ValueText,
+            line,
+            CreateIndexSourcesExpression(sourceIndexExpression)
+        );
         if (string.IsNullOrWhiteSpace(valueExpression))
         {
             return statement;

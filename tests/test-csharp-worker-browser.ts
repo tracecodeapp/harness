@@ -2161,6 +2161,32 @@ async function main(): Promise<void> {
       `C# worker traced char-array unary write case should return 49, received ${JSON.stringify(tracedCharArrayUnaryWrite.output)}`
     );
 
+    const invalidTracedCharArrayAssignment = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public string AssignInvalidChar(string input) {',
+        '    char[] chars = input.ToCharArray();',
+        '    int value = 65;',
+        '    chars[0] = value;',
+        '    return new string(chars);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'AssignInvalidChar',
+      { input: 'cat' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      !invalidTracedCharArrayAssignment.success,
+      'C# worker traced char-array int assignment should fail compilation'
+    );
+    assertCondition(
+      invalidTracedCharArrayAssignment.error?.includes("Cannot implicitly convert type 'int' to 'char'") === true,
+      `C# worker traced char-array int assignment should preserve compiler semantics, received ${invalidTracedCharArrayAssignment.error}`
+    );
+
     const tracedStringConstructorConsumption = await runWorkerCase(
       page,
       [
