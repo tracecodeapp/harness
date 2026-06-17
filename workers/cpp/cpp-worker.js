@@ -902,6 +902,7 @@ class WasiProcess {
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
     this.kernelDevices = wasiKernelDevices(options);
+    this.knownKernelDevices = new Set(this.kernelDevices.keys());
     this.filestatSizeOffset = options.filestatSizeOffset || 32;
     this.fds = new Map([
       [0, this.stdioEntryForDevice('/dev/stdin')],
@@ -977,12 +978,12 @@ class WasiProcess {
   }
 
   isKnownDevicePath(pathname) {
-    return this.kernelDevices.has(normalizePath(pathname));
+    return this.knownKernelDevices.has(normalizePath(pathname));
   }
 
   kernelVirtualPathTarget(pathname) {
     return runtimeKernelVirtualPathTarget(pathname, {
-      knownDevices: this.kernelDevices.keys(),
+      knownDevices: this.knownKernelDevices,
       readOnlyPaths: this.fs.readOnlyFiles,
     });
   }
@@ -1009,7 +1010,7 @@ class WasiProcess {
 
   kernelVirtualMutationErrno(pathname, missingErrno = ENOENT) {
     const target = runtimeKernelVirtualMutationTarget(pathname, {
-      knownDevices: this.kernelDevices.keys(),
+      knownDevices: this.knownKernelDevices,
       readOnlyPaths: this.fs.readOnlyFiles,
     });
     if (target.kind === 'workspace') return null;

@@ -2271,6 +2271,8 @@ async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
     ''
   );
+  const sharedKernelPolicySource = (await readFile(join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy.js'), 'utf8'))
+    .replace(/^export function /gm, 'function ');
   const context = vm.createContext({
     console,
     self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
@@ -2292,6 +2294,7 @@ async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
     btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
     atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
   });
+  vm.runInContext(sharedKernelPolicySource, context, { filename: 'runtime-kernel-policy.js' });
   vm.runInContext(source, context, { filename: 'cpp-worker.js' });
   const result = vm.runInContext(
     `(() => {
@@ -2302,12 +2305,28 @@ async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
       ]);
       const restricted = new WasiProcess({ args: [], fs: new InMemoryFileSystem(), kernelDevices: restrictedDevices });
       const standalone = new WasiProcess({ args: [], fs: new InMemoryFileSystem() });
+      const manyDevices = new Map(Array.from({ length: 256 }, (_, index) => {
+        const path = '/dev/custom-' + index;
+        return [path, { path, readable: false, writable: true, inputDevice: '', outputDevice: '/dev/stdout' }];
+      }));
+      const deviceHeavy = new WasiProcess({ args: [], fs: new InMemoryFileSystem(), kernelDevices: manyDevices });
+      const originalKeys = deviceHeavy.kernelDevices.keys.bind(deviceHeavy.kernelDevices);
+      let keysCalls = 0;
+      deviceHeavy.kernelDevices.keys = function() {
+        keysCalls += 1;
+        return originalKeys();
+      };
+      const firstDeviceType = deviceHeavy.filetypeForPath('/dev/custom-1');
+      const secondDeviceType = deviceHeavy.filetypeForPath('/dev/custom-2');
       return {
         restrictedStdin: restricted.fds.get(0),
         restrictedStdout: restricted.fds.get(1),
         restrictedStderr: restricted.fds.get(2),
         standaloneStdin: standalone.fds.get(0),
         standaloneStdout: standalone.fds.get(1),
+        deviceClassificationKeysCalls: keysCalls,
+        firstDeviceType,
+        secondDeviceType,
       };
     })()`,
     context
@@ -2317,6 +2336,9 @@ async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
     restrictedStderr: { writable: boolean; outputDevice: string };
     standaloneStdin: { readable: boolean; inputDevice: string };
     standaloneStdout: { writable: boolean; outputDevice: string };
+    deviceClassificationKeysCalls: number;
+    firstDeviceType: number;
+    secondDeviceType: number;
   };
 
   assertCondition(
@@ -2334,6 +2356,11 @@ async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
       result.standaloneStdout.writable &&
       result.standaloneStdout.outputDevice === '/dev/stdout',
     `C++ standalone inherited stdio fds should keep default devices: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.deviceClassificationKeysCalls === 0 &&
+      result.firstDeviceType === result.secondDeviceType,
+    `C++ /dev filetype classification should reuse the process known-device set: ${JSON.stringify(result)}`
   );
 }
 
