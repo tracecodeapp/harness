@@ -866,6 +866,74 @@ export function runtimeFileChangePath(change: RuntimeFileChange): string {
   return change.path;
 }
 
+function normalizeRuntimeFileChangePath(path: unknown): string {
+  if (typeof path !== 'string') {
+    throw Object.assign(new Error('EINVAL: TraceKernel file-change path must be a string'), { code: 'EINVAL' });
+  }
+  if (path.includes('\0')) {
+    throw Object.assign(new Error('EINVAL: TraceKernel file-change path must not contain NUL bytes'), { code: 'EINVAL' });
+  }
+  const normalized = path.replace(/\\/g, '/');
+  if (normalized.trim().length === 0) {
+    throw Object.assign(new Error('EINVAL: TraceKernel file-change path must not be empty'), { code: 'EINVAL' });
+  }
+  if (normalized.startsWith('/')) {
+    throw Object.assign(new Error(`EACCES: TraceKernel file-change path must be relative: ${path}`), { code: 'EACCES' });
+  }
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    throw Object.assign(new Error(`EACCES: TraceKernel file-change path must not include a drive prefix: ${path}`), { code: 'EACCES' });
+  }
+
+  const parts: string[] = [];
+  for (const part of normalized.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      throw Object.assign(new Error(`EACCES: TraceKernel file-change path must not escape the workspace: ${path}`), { code: 'EACCES' });
+    }
+    parts.push(part);
+  }
+  if (parts.length === 0) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change path must point to an entry: ${path}`), { code: 'EINVAL' });
+  }
+  return parts.join('/');
+}
+
+export function normalizeRuntimeFileChange(change: RuntimeFileChange): RuntimeFileChange {
+  if (!change || typeof change !== 'object') {
+    throw Object.assign(new Error('EINVAL: TraceKernel file-change must be an object'), { code: 'EINVAL' });
+  }
+  const path = normalizeRuntimeFileChangePath((change as { path?: unknown }).path);
+  const directory = (change as { directory?: unknown }).directory;
+  const deleted = (change as { deleted?: unknown }).deleted;
+  const contents = (change as { contents?: unknown }).contents;
+  const encoding = (change as { encoding?: unknown }).encoding;
+  if (directory !== undefined && directory !== true) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change directory flag must be true: ${path}`), { code: 'EINVAL' });
+  }
+  if (deleted !== undefined && deleted !== true) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change deleted flag must be true: ${path}`), { code: 'EINVAL' });
+  }
+  if (encoding !== undefined && encoding !== 'base64') {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change encoding is unsupported: ${path}`), { code: 'EINVAL' });
+  }
+  if (directory === true) {
+    if (contents !== undefined || encoding !== undefined) {
+      throw Object.assign(new Error(`EINVAL: TraceKernel directory file-change must not include contents: ${path}`), { code: 'EINVAL' });
+    }
+    return { path, directory: true, ...(deleted === true ? { deleted: true } : {}) };
+  }
+  if (deleted === true) {
+    if (contents !== undefined || encoding !== undefined) {
+      throw Object.assign(new Error(`EINVAL: TraceKernel delete file-change must not include contents: ${path}`), { code: 'EINVAL' });
+    }
+    return { path, deleted: true };
+  }
+  if (typeof contents !== 'string') {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change contents must be a string: ${path}`), { code: 'EINVAL' });
+  }
+  return { path, contents, ...(encoding === 'base64' ? { encoding } : {}) };
+}
+
 export function emitRuntimeCommandFileChanges(
   onEvent: RuntimeCommandEventHandler | undefined,
   changes: readonly RuntimeFileChange[] | undefined,
@@ -1005,11 +1073,13 @@ export class RuntimeProjectEventQueue {
         return;
       }
 
+      const change = normalizeRuntimeFileChange(event.change);
       const phase = event.phase ?? 'live';
-      const shouldEmit = await options.applyFileChange(event.change, phase);
+      const shouldEmit = await options.applyFileChange(change, phase);
       if (shouldEmit === false) return;
       options.emit({
         ...event,
+        change,
         phase,
         actor: event.actor ?? options.actor,
       });
@@ -1054,6 +1124,9 @@ export class RuntimeProjectLiveIoController {
 
   handleRuntimeEvent(event: RuntimeCommandEvent): void {
     if (this.closed || this.options.signal?.aborted) return;
+    if (event.type === 'file-change') {
+      event = { ...event, change: normalizeRuntimeFileChange(event.change) };
+    }
     if (event.type === 'file-change' && !this.eventQueue) this.recordLiveFileChangeBudget(event.change);
     if (event.type !== 'file-change' && this.pendingFileChanges === 0) {
       this.emit(event);
@@ -1141,7 +1214,7 @@ export async function applyRuntimeCommandResultFiles(
 ): Promise<RuntimeCommandResult> {
   assertRuntimeFinalDiffBudget(result.files);
   for (const file of result.files ?? []) {
-    await applyFileChange(file, 'final-diff');
+    await applyFileChange(normalizeRuntimeFileChange(file), 'final-diff');
   }
   const { files: _files, ...commandResult } = result;
   return commandResult;

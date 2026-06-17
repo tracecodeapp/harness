@@ -10488,6 +10488,48 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
 }
 
 async function testRuntimeProjectEventQueueRecoversAfterApplyFailure(): Promise<void> {
+  const rejectedChanges: string[] = [];
+  const unsafeQueue = new RuntimeProjectEventQueue();
+  unsafeQueue.enqueue(
+    { type: 'file-change', phase: 'live', change: { path: '../escape.txt', contents: 'bad\n' } },
+    {
+      applyFileChange: async (change) => {
+        rejectedChanges.push(change.path);
+      },
+      emit: (event) => rejectedChanges.push(`emit:${event.type}`),
+    }
+  );
+  let unsafeError = '';
+  try {
+    await unsafeQueue.flush();
+  } catch (error) {
+    unsafeError = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    unsafeError.includes('TraceKernel file-change path must not escape the workspace') &&
+      rejectedChanges.length === 0,
+    `event queue should reject unsafe file-change paths before apply: ${JSON.stringify({ unsafeError, rejectedChanges })}`
+  );
+
+  const normalizedChanges: string[] = [];
+  const normalizedEvents: RuntimeCommandEvent[] = [];
+  const normalizedQueue = new RuntimeProjectEventQueue();
+  normalizedQueue.enqueue(
+    { type: 'file-change', phase: 'live', change: { path: './safe.txt', contents: 'safe\n' } },
+    {
+      applyFileChange: async (change) => {
+        normalizedChanges.push(change.path);
+      },
+      emit: (event) => normalizedEvents.push(event),
+    }
+  );
+  await normalizedQueue.flush();
+  assertCondition(
+    normalizedChanges.includes('safe.txt') &&
+      normalizedEvents.some((event) => event.type === 'file-change' && event.change.path === 'safe.txt'),
+    `event queue should normalize safe file-change paths before apply and emit: ${JSON.stringify({ normalizedChanges, normalizedEvents })}`
+  );
+
   const events: RuntimeCommandEvent[] = [];
   const queue = new RuntimeProjectEventQueue();
 
