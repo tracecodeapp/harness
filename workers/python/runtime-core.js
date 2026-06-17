@@ -545,6 +545,12 @@ def __tracecode_value_at_path(value, path):
         try:
             current = current[part]
         except Exception:
+            if isinstance(part, _builtins.str):
+                try:
+                    current = getattr(current, part)
+                    continue
+                except Exception:
+                    pass
             return None
     return current
 
@@ -1300,10 +1306,11 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
                 pass
     return result
 
-def _tracecode_heapq_mutation(var_name, container, indices, target, method_name, *args, **kwargs):
+def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, **kwargs):
     import heapq as __tracecode_heapq
     frame = sys._getframe(1)
     effective_indices = list(indices or [])
+    target = __tracecode_value_at_path(container, effective_indices)
     normalized = __tracecode_normalize_indices(effective_indices)
     invalid_nested_path = len(effective_indices) > 0 and normalized is None
     try:
@@ -2421,7 +2428,6 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                         ast.Constant(value=var_name),
                         container,
                         ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                        self.visit(node.args[0]),
                         ast.Constant(value=node.func.attr),
                         *[self.visit(arg) for arg in node.args[1:]],
                     ],

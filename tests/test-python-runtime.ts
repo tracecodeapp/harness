@@ -1633,7 +1633,14 @@ def inspect():
     heapq.heappush(rooms, 30)
     heapq.heappush(rooms, 10)
     popped = heapq.heappop(rooms)
-    return [swap_result, rooms, popped]
+    indexed_heaps = [[1, 5, 3]]
+    calls = 0
+    def pick():
+        nonlocal calls
+        calls += 1
+        return 0
+    heapq.heappush(indexed_heaps[pick()], 2)
+    return [swap_result, rooms, popped, calls, indexed_heaps[0]]
 `;
 
   const deps: RuntimeDeps = {
@@ -1663,18 +1670,20 @@ print(json.dumps({
 }))
 `);
   const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
-  assertCondition(JSON.stringify(parsed.result) === JSON.stringify([[1, 3], [30], 10]), 'Python heapq fixture should execute successfully');
+  assertCondition(JSON.stringify(parsed.result) === JSON.stringify([[1, 3], [30], 10, 1, [1, 2, 3, 5]]), 'Python heapq fixture should execute successfully');
 
   const heapifyLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'heapq.heapify(self.heap)') - 1;
   const heapreplaceLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'old = heapq.heapreplace(heap, val)') - 1;
   const firstHeappushLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'heapq.heappush(rooms, 30)') - 1;
   const secondHeappushLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'heapq.heappush(rooms, 10)') - 1;
   const heappopLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'popped = heapq.heappop(rooms)') - 1;
+  const indexedHeappushLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'heapq.heappush(indexed_heaps[pick()], 2)') - 1;
   const heapifyStep = findTraceStep(parsed.trace, heapifyLine);
   const heapreplaceStep = findTraceStep(parsed.trace, heapreplaceLine);
   const firstHeappushStep = findTraceStep(parsed.trace, firstHeappushLine);
   const secondHeappushStep = findTraceStep(parsed.trace, secondHeappushLine);
   const heappopStep = findTraceStep(parsed.trace, heappopLine);
+  const indexedHeappushStep = findTraceStep(parsed.trace, indexedHeappushLine);
 
   assertCondition(
     (heapifyStep.accesses ?? []).some((access) => (
@@ -1767,6 +1776,26 @@ print(json.dumps({
       event.value === 10
     )),
     `Python runtime trace should emit concrete heapq write events, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+  assertCondition(
+    (indexedHeappushStep.accesses ?? []).some((access) => (
+      access.variable === 'indexed_heaps' &&
+      access.kind === 'mutating-call' &&
+      access.method === 'heappush' &&
+      JSON.stringify(access.indices) === JSON.stringify([0]) &&
+      JSON.stringify(access.args) === JSON.stringify([2])
+    )),
+    `Python indexed heapq.heappush should emit a nested mutate without re-evaluating the target, received ${JSON.stringify(indexedHeappushStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'mutate' &&
+      event.line === indexedHeappushLine &&
+      JSON.stringify(event.target) === JSON.stringify({ variable: 'indexed_heaps', path: [0] }) &&
+      event.method === 'heappush' &&
+      JSON.stringify(event.args) === JSON.stringify([2])
+    )),
+    `Python runtime trace should emit indexed heapq mutate events, received ${JSON.stringify(parsed.runtimeTrace.events)}`
   );
 
   console.log('PASS: Python runtime records heapq mutation provenance');
