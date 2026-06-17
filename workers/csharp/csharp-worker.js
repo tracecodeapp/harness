@@ -1031,6 +1031,19 @@ function emitMissingProjectResultOutput(result) {
   }
 }
 
+function emitMissingDirectDeviceResultOutput(result, context) {
+  if (!result || !context) return;
+  for (const stream of ['stdout', 'stderr']) {
+    if (context.truncatedOutputStreams.has(stream)) continue;
+    const resultText = typeof result[stream] === 'string' ? result[stream] : '';
+    if (!resultText) continue;
+    const emitted = (stream === 'stderr' ? context.eventStderr : context.eventStdout).join('');
+    if (resultText === emitted || emitted.includes(resultText)) continue;
+    const missing = resultText.startsWith(emitted) ? resultText.slice(emitted.length) : resultText;
+    emitProjectOutput(stream, missing);
+  }
+}
+
 function applyProjectResultOutputBudget(result, context) {
   if (!result || !context) return;
   if (context.truncatedOutputStreams.has('stdout')) {
@@ -2380,6 +2393,7 @@ async function handleMessage(message) {
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
       if (activeProjectIo.directDeviceOutput) {
+        emitMissingDirectDeviceResultOutput(result, activeProjectIo);
         result.stdout = activeProjectIo.eventStdout.join('');
         result.stderr = activeProjectIo.eventStderr.join('');
       }

@@ -6185,6 +6185,7 @@ async function main(): Promise<void> {
         cwd: '/workspace/errcs',
         env: {},
         project: {
+          kernelDevices: TRACE_KERNEL_DEVICES,
           files: [
             {
               path: 'errcs/ErrorProbe.csproj',
@@ -6195,9 +6196,10 @@ async function main(): Promise<void> {
               path: 'errcs/Program.cs',
               contents: [
                 'using System;',
+                'using System.IO;',
                 'class Program {',
                 '  static void Main() {',
-                '    Console.WriteLine("before");',
+                '    File.WriteAllText("/dev/stdout", "before\\n");',
                 '    throw new InvalidOperationException("boom-csharp-project");',
                 '  }',
                 '}',
