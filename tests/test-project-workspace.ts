@@ -10820,6 +10820,46 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   );
   liveWorkspace.dispose();
 
+  let repeatedLiveRunCount = 0;
+  const repeatedLiveEvents: RuntimeWorkspaceEvent[] = [];
+  const repeatedLiveWorkspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'first.js', contents: 'console.log("first")\n' },
+      { path: 'second.js', contents: 'console.log("second")\n' },
+    ],
+    nodeRunner: async (request) => {
+      repeatedLiveRunCount += 1;
+      request.onEvent?.({
+        type: 'file-change',
+        phase: 'live',
+        change: { path: 'shared.txt', contents: `live-${repeatedLiveRunCount}\n` },
+      });
+      return {
+        stdout: `${request.scriptPath}\n`,
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: 'shared.txt', contents: `final-${repeatedLiveRunCount}\n` }],
+      };
+    },
+  });
+  const repeatedLiveResult = await repeatedLiveWorkspace.runCommand('node first.js && node second.js', {
+    onEvent: (event) => repeatedLiveEvents.push(event),
+  });
+  assertCondition(repeatedLiveResult.exitCode === 0, `repeated live project runners should succeed: ${JSON.stringify(repeatedLiveResult)}`);
+  assertCondition(
+    repeatedLiveEvents.filter((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'shared.txt'
+    ).length === 2,
+    `live file-change events should remain active across multiple project runners: ${JSON.stringify(repeatedLiveEvents)}`
+  );
+  assertCondition(
+    await repeatedLiveWorkspace.readFile('shared.txt') === 'final-2\n',
+    'later project runner final diffs should not be filtered by earlier live file changes'
+  );
+  repeatedLiveWorkspace.dispose();
+
   const failedLiveEvents: RuntimeWorkspaceEvent[] = [];
   const failedLiveWorkspace = await createRuntimeWorkspace({
     files: [{ path: 'bad-live.js', contents: 'console.log("bad")\n' }],

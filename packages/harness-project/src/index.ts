@@ -6851,7 +6851,6 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           } as Request);
         } finally {
           acceptingRunnerEvents = false;
-          runtimeIo?.close();
         }
         if (runtimeIo) {
           await runtimeIo.flush();

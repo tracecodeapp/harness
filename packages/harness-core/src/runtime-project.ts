@@ -1195,8 +1195,10 @@ export class RuntimeProjectLiveIoController {
 
   filterAppliedResultFiles<Result extends RuntimeCommandResult>(result: Result): Result {
     if (this.appliedFileChangePaths.size === 0) return result;
+    const appliedFileChangePaths = new Set(this.appliedFileChangePaths);
+    this.appliedFileChangePaths.clear();
     return filterRuntimeCommandResultFiles(result, (change) =>
-      this.appliedFileChangePaths.has(runtimeFileChangePath(change))
+      appliedFileChangePaths.has(runtimeFileChangePath(change))
     ) as Result;
   }
 
