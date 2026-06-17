@@ -4071,6 +4071,51 @@ if (!opsClassEvents.some((event) => event.kind === 'return' && event.function ==
   throw new Error('C++ ops-class should preserve shared state across operations, received ' + JSON.stringify(opsClassEvents));
 }
 
+const opsClassPlainParameterMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Collector {',
+    'public:',
+    '  Collector() {}',
+    '  void seed(int value) {',
+    '    (void)value;',
+    '  }',
+    '  int append(std::vector<int>& values) {',
+    '    values.push_back(7);',
+    '    return values.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'Collector',
+  inputs: {
+    operations: ['Collector', 'seed', 'append'],
+    arguments: [[], [0], [[1, 2]]],
+  },
+  executionStyle: 'ops-class',
+  options: {},
+});
+if (!opsClassPlainParameterMutationTrace.success || JSON.stringify(opsClassPlainParameterMutationTrace.output) !== JSON.stringify([null, null, 3])) {
+  throw new Error('C++ ops-class plain parameter mutation output failed: ' + JSON.stringify(opsClassPlainParameterMutationTrace));
+}
+const opsClassPlainParameterMutationEvents = opsClassPlainParameterMutationTrace.trace.events;
+if (!opsClassPlainParameterMutationEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.target?.variable === 'values' &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify([7]) &&
+  event.callStack?.some((frame) => frame.function === 'append')
+)) {
+  throw new Error('C++ ops-class later-method std::vector parameter push_back should emit mutate event, received ' + JSON.stringify(opsClassPlainParameterMutationEvents));
+}
+if (!opsClassPlainParameterMutationEvents.some((event) =>
+  event.kind === 'write' &&
+  event.target?.variable === 'values' &&
+  event.target.path?.[0] === 2 &&
+  event.value === 7 &&
+  event.callStack?.some((frame) => frame.function === 'append')
+)) {
+  throw new Error('C++ ops-class later-method std::vector parameter push_back should emit index write, received ' + JSON.stringify(opsClassPlainParameterMutationEvents));
+}
+
 const opsClassTrieTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class TrieNode {',

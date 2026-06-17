@@ -4524,6 +4524,10 @@ function shouldTraceWrapCppParameter(parameter, signature, aliases = new Map(), 
   return true;
 }
 
+function shouldRewriteTraceContainerParametersForSignature(signature, functionName, options = {}) {
+  return !(options.traceMemberClassName && signature?.name !== functionName && !signature?.lambda);
+}
+
 function rewriteControlConditionSource(control, lineNumber, accessVariables = new Map(), aliases = new Map()) {
   if (control === 'else') return control;
   const openIndex = control.indexOf('(');
@@ -5478,6 +5482,7 @@ function rewritePlainIndexedWriteInstrumentation(line, lineNumber, variables, al
 
 function shouldEmitPlainContainerMutation(variable, name, aliases = new Map(), source = '') {
   if (!variable || !isSnapshotSerializableCppType(variable.type, aliases)) return false;
+  if (variable.parameter && variable.traceWrapEligible && !variable.traceWrapped) return true;
   if (/[&]/.test(variable.type || '') && isTraceWrappedCppType(variable.type, aliases)) return false;
   if (variable.parameter && /\bstd::/.test(variable.type)) {
     if (
@@ -6449,11 +6454,14 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       }
     }
 
-    let lineForDriver = pendingSignature
+    const shouldRewriteTraceParameters = pendingSignature
+      ? shouldRewriteTraceContainerParametersForSignature(pendingSignature, functionName, options)
+      : false;
+    let lineForDriver = shouldRewriteTraceParameters
       ? rewriteTraceContainerParameters(line, pendingSignature, aliases, source)
       : line;
     lineForDriver = rewriteCppStdFunctionTraceTypes(lineForDriver, aliases);
-    if (pendingSignature && options.traceMemberClassName && pendingSignature.name !== functionName && !pendingSignature.lambda) {
+    if (pendingSignature && !shouldRewriteTraceParameters) {
       lineForDriver = line;
     }
     if (inFunctionBodyBeforeLine && !skipActiveInstrumentation && !unbracedControlHeaderLine && !unbracedControlBodyLine && !inMultilineControlCondition && !inMultilineStatement) {
@@ -6697,11 +6705,15 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         const variables = new Map();
         for (const parameter of nextSignature.parameters) {
           if (isSnapshotSerializableCppType(parameter.type, aliases)) {
+            const traceWrapEligible = shouldTraceWrapCppParameter(parameter, nextSignature, aliases, source);
+            const traceWrapped = traceWrapEligible &&
+              shouldRewriteTraceContainerParametersForSignature(nextSignature, functionName, options);
             variables.set(parameter.name, {
               type: parameter.type,
               scopeDepth: 1,
               parameter: true,
-              traceWrapped: shouldTraceWrapCppParameter(parameter, nextSignature, aliases, source),
+              traceWrapEligible,
+              traceWrapped,
               lambdaParameter: Boolean(nextSignature.lambda),
             });
           }
