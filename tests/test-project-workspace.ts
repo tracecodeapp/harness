@@ -5383,11 +5383,11 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const fdFileResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); const fd = fs.openSync(\\"fd-file.txt\\", \\"w+\\"); fs.writeFileSync(fd, \\"one\\\\n\\"); fs.appendFileSync(fd, \\"two\\\\n\\"); fs.writeSync(fd, \\"three\\\\n\\"); fs.closeSync(fd); const readFd = fs.openSync(\\"fd-file.txt\\", \\"r\\"); const text = fs.readFileSync(readFd, \\"utf8\\"); const rest = fs.readFileSync(readFd, \\"utf8\\"); fs.closeSync(readFd); const stdoutFd = fs.openSync(\\"/dev/stdout\\", \\"w\\"); fs.writeFileSync(stdoutFd, \\"fd-writefile-out\\\\n\\"); fs.closeSync(stdoutFd); console.log(text.trim()); console.log(rest.length);"',
+    '"const fs = require(\\"node:fs\\"); const fd = fs.openSync(\\"fd-file.txt\\", \\"w+\\"); fs.writeFileSync(fd, \\"one\\\\n\\"); fs.appendFileSync(fd, \\"two\\\\n\\"); fs.writeSync(fd, \\"three\\\\n\\"); fs.closeSync(fd); fs.writeFileSync(\\"fd-append-position.txt\\", \\"abcdef\\"); const posFd = fs.openSync(\\"fd-append-position.txt\\", \\"r+\\"); fs.writeSync(posFd, \\"X\\"); fs.appendFileSync(posFd, \\"Y\\"); fs.writeSync(posFd, \\"Z\\"); fs.closeSync(posFd); const readFd = fs.openSync(\\"fd-file.txt\\", \\"r\\"); const text = fs.readFileSync(readFd, \\"utf8\\"); const rest = fs.readFileSync(readFd, \\"utf8\\"); fs.closeSync(readFd); const stdoutFd = fs.openSync(\\"/dev/stdout\\", \\"w\\"); fs.writeFileSync(stdoutFd, \\"fd-writefile-out\\\\n\\"); fs.closeSync(stdoutFd); console.log(text.trim()); console.log(rest.length); console.log(fs.readFileSync(\\"fd-append-position.txt\\", \\"utf8\\"));"',
   ].join(' '));
   assertCondition(fdFileResult.exitCode === 0, `browser node fd readFile/writeFile workflow should succeed: ${fdFileResult.stderr}`);
   assertCondition(
-    fdFileResult.stdout === 'fd-writefile-out\none\ntwo\nthree\n0\n',
+    fdFileResult.stdout === 'fd-writefile-out\none\ntwo\nthree\n0\nXYZdef\n',
     `browser node fd readFile/writeFile workflow stdout should match: ${fdFileResult.stdout}`
   );
   assertCondition(await workspace.readFile('fd-file.txt') === 'one\ntwo\nthree\n', 'browser node fd readFile/writeFile APIs should persist through kernel FS');

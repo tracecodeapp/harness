@@ -5934,7 +5934,7 @@ export async function runBrowserJavaScriptProjectRequest(
       },
       appendFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
         if (typeof path === 'number') {
-          writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options), true);
+          writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options), fileDescriptor(path).append);
           return;
         }
         const writeTarget = runtimeWriteTarget(path, kernelDevices);
