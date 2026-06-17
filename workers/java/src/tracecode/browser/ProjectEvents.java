@@ -1782,7 +1782,7 @@ public final class ProjectEvents {
     }
 
     public ProjectPrintWriter(String fileName, String charsetName) throws IOException {
-      super(printWriterOutput(Path.of(fileName), Charset.forName(charsetName)));
+      super(printWriterOutput(Path.of(fileName), printWriterCharset(charsetName)));
       this.path = Path.of(fileName);
     }
 
@@ -1797,7 +1797,7 @@ public final class ProjectEvents {
     }
 
     public ProjectPrintWriter(File file, String charsetName) throws IOException {
-      super(printWriterOutput(file == null ? null : file.toPath(), Charset.forName(charsetName)));
+      super(printWriterOutput(file == null ? null : file.toPath(), printWriterCharset(charsetName)));
       this.path = file.toPath();
     }
 
@@ -1829,6 +1829,16 @@ public final class ProjectEvents {
     public ProjectPrintWriter(Writer out, boolean autoFlush) {
       super(out, autoFlush);
       this.path = null;
+    }
+
+    private static Charset printWriterCharset(String charsetName) throws java.io.UnsupportedEncodingException {
+      try {
+        return Charset.forName(charsetName);
+      } catch (IllegalArgumentException error) {
+        java.io.UnsupportedEncodingException converted = new java.io.UnsupportedEncodingException(charsetName);
+        converted.initCause(error);
+        throw converted;
+      }
     }
 
     private void emitAfterWrite() {

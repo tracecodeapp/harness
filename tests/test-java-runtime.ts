@@ -653,10 +653,23 @@ public class ProjectWorkspaceDirectorySmoke {
       java.io.File fileApiTempFile = ProjectEvents.createTempFile("iot", ".tmp", tempRoot.toFile());
       ProjectEvents.writeString(fileApiTempFile.toPath(), "file-temp-created\\n");
       Path tempDir = ProjectEvents.createTempDirectory(tempRoot, "child");
+      String printWriterCharsetStringResult = "ok";
+      try {
+        new ProjectEvents.ProjectPrintWriter(tempRoot.resolve("bad-string.txt").toString(), "definitely-no-such-charset").close();
+      } catch (java.io.UnsupportedEncodingException ex) {
+        printWriterCharsetStringResult = ex.getClass().getSimpleName();
+      }
+      String printWriterCharsetFileResult = "ok";
+      try {
+        new ProjectEvents.ProjectPrintWriter(tempRoot.resolve("bad-file.txt").toFile(), "definitely-no-such-charset").close();
+      } catch (java.io.UnsupportedEncodingException ex) {
+        printWriterCharsetFileResult = ex.getClass().getSimpleName();
+      }
       System.out.println("temp-api="
         + tempFile.getParent().equals(tempRoot) + ":" + Files.exists(tempFile) + ":" + Files.readString(tempFile).replace("\\n", "|")
         + ":" + fileApiTempFile.getParentFile().toPath().equals(tempRoot) + ":" + fileApiTempFile.isFile() + ":" + Files.readString(fileApiTempFile.toPath()).replace("\\n", "|")
         + ":" + tempDir.getParent().equals(tempRoot) + ":" + Files.isDirectory(tempDir));
+      System.out.println("printwriter-charset=" + printWriterCharsetStringResult + ":" + printWriterCharsetFileResult);
       System.out.println("kernel-file-api="
         + customKernelDir.exists() + ":" + customKernelDir.isDirectory() + ":" + customKernelDir.canRead() + ":" + customKernelDir.canWrite()
         + ":" + customKernelFile.exists() + ":" + customKernelFile.isFile() + ":" + customKernelFile.canRead() + ":" + customKernelFile.canWrite()
@@ -705,6 +718,7 @@ public class ProjectWorkspaceDirectorySmoke {
       fileApiOutput,
       nioStatApiOutput,
       tempApiOutput,
+      printWriterCharsetOutput,
       kernelFileApiOutput,
     ] = output.trim().split('\n');
     assertCondition(isDirectory === 'true', `Java browser helper should materialize workspace directories: ${output}`);
@@ -751,6 +765,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       tempApiOutput === 'temp-api=true:true:temp-created|:true:true:file-temp-created|:true:true',
       `Java browser helper should create temp files/directories through ProjectEvents: ${output}`
+    );
+    assertCondition(
+      printWriterCharsetOutput === 'printwriter-charset=UnsupportedEncodingException:UnsupportedEncodingException',
+      `Java browser helper should preserve PrintWriter charset-name exception types: ${output}`
     );
     assertCondition(
       kernelFileApiOutput === 'kernel-file-api=true:true:true:false:true:true:true:false:19:false:false:false:custom:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:/tracekernel/custom:IOException:IOException',
