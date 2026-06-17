@@ -6800,6 +6800,22 @@ class Solution {
       'Java rewriter should not treat user-defined PriorityQueue-like classes as java.util.PriorityQueue'
     );
 
+    const rawCustomPriorityQueueSource = assertNativeJavaRewriterCompiles(`class PriorityQueue {
+  void offer(int value) {}
+}
+
+class Solution {
+  int solve() {
+    PriorityQueue heap = new PriorityQueue();
+    heap.offer(1);
+    return 1;
+  }
+}`, 'solve');
+    assertCondition(
+      !rawCustomPriorityQueueSource.includes('emitCollectionIndexedWritesAtLine'),
+      'Java rewriter should not treat raw user-defined PriorityQueue classes as java.util.PriorityQueue'
+    );
+
     const twoSumCode = `import java.util.*;
 
 class Solution {

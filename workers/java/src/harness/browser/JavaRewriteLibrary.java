@@ -1716,7 +1716,8 @@ public final class JavaRewriteLibrary {
 
   private static boolean isPriorityQueueType(String type) {
     if (type == null) return false;
-    return "PriorityQueue".equals(rawSimpleTypeName(type));
+    String normalized = normalizeJavaType(type);
+    return normalized.startsWith("PriorityQueue<") || normalized.startsWith("java.util.PriorityQueue<");
   }
 
   private static boolean isStackType(String type) {
