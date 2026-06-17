@@ -9158,79 +9158,17 @@ async function handleCompileRunBatch(payload) {
     };
   }
 
-  let driverSource;
-  const driverBuildStartedAt = now();
-  try {
-    driverSource = executionStyle === 'ops-class'
-      ? buildOpsClassBatchDriverSource(source, functionName, inputBatch, { executionStyle })
-      : buildBatchDriverSource(source, functionName, inputBatch, { executionStyle });
-  } catch (error) {
-    return {
-      success: false,
-      results: inputBatch.map(() => ({
-        success: false,
-        output: null,
-        error: error instanceof Error ? error.message : String(error),
-        consoleOutput: [],
-        timings: baseTimings(),
-      })),
-      error: error instanceof Error ? error.message : String(error),
-      consoleOutput: [],
-      timings: baseTimings(),
-    };
-  }
-
-  const firstInputs = inputBatch[0] || {};
-  const batchResult = await compileAndRun(source, functionName, firstInputs, {
-    executionStyle,
-    preparedDriverSource: driverSource,
-    stdinText: JSON.stringify(inputBatch),
-    timings: {
-      driverBuildMs: elapsedMs(driverBuildStartedAt),
-      batchMode: 'compile-once',
-      batchCaseCount: inputBatch.length,
-    },
-  });
-  const batchTimings = {
-    ...(batchResult.timings && typeof batchResult.timings === 'object' ? batchResult.timings : {}),
-    totalMs: elapsedMs(startedAt),
-  };
-  const consoleOutput = batchResult.consoleOutput ?? [];
-  const outputs = Array.isArray(batchResult.output) ? batchResult.output : [];
-  const success = batchResult.success === true && outputs.length === inputBatch.length;
-  const runtimeError = batchResult.error ||
-    (outputs.length !== inputBatch.length
-      ? `C++ batch returned ${outputs.length} result(s) for ${inputBatch.length} case(s).`
-      : 'C++ batch execution failed.');
   const results = [];
-  for (let index = 0; index < inputBatch.length; index += 1) {
-    const caseTimings = index === 0
-      ? batchTimings
-      : {
-          compileMs: 0,
-          linkMs: 0,
-          wasmCompileMs: 0,
-          runMs: 0,
-          totalMs: 0,
-          compileCacheHit: batchTimings.compileCacheHit,
-          batchMode: 'compile-once',
-        };
-    results.push({
-      success,
-      output: success ? outputs[index] : null,
-      ...(success ? {} : { error: runtimeError }),
-      consoleOutput,
-      ...(batchResult.timeoutReason ? { timeoutReason: batchResult.timeoutReason } : {}),
-      ...(batchResult.diagnosticStage ? { diagnosticStage: batchResult.diagnosticStage } : {}),
-      timings: caseTimings,
-    });
+  for (const inputs of inputBatch) {
+    results.push(await handleCompileRun({ ...payload, inputs, executionStyle }));
   }
+  const success = results.every((result) => result.success === true);
   return {
     success,
     results,
-    consoleOutput,
-    ...(success ? {} : { error: runtimeError }),
-    timings: batchTimings,
+    consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+    ...(success ? {} : { error: results.find((result) => result.success !== true)?.error ?? 'C++ batch execution failed.' }),
+    timings: { ...baseTimings(), batchMode: 'per-case-isolated', batchCaseCount: inputBatch.length },
   };
 }
 

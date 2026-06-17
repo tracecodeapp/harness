@@ -435,7 +435,6 @@ for (const testCase of cases) {
   }
 }
 
-const batchCacheSizeBefore = sandbox.__tracecodeCppTest.state().programCacheSize;
 const mutableVectorBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch({
   name: 'batch mutable vector isolation',
   code: [
@@ -465,14 +464,31 @@ if (
 ) {
   throw new Error('C++ true batch should hydrate independent vector inputs, received ' + JSON.stringify(mutableVectorBatch));
 }
-if (sandbox.__tracecodeCppTest.state().programCacheSize !== batchCacheSizeBefore + 1) {
-  throw new Error('C++ true batch should compile one batch driver, cache before/after ' + JSON.stringify({
-    before: batchCacheSizeBefore,
-    after: sandbox.__tracecodeCppTest.state().programCacheSize,
-  }));
+if (mutableVectorBatch.timings?.batchMode !== 'per-case-isolated' || mutableVectorBatch.timings?.batchCaseCount !== 3) {
+  throw new Error('C++ batch should report per-case isolated timings, received ' + JSON.stringify(mutableVectorBatch.timings));
 }
-if (mutableVectorBatch.timings?.batchMode !== 'compile-once' || mutableVectorBatch.timings?.batchCaseCount !== 3) {
-  throw new Error('C++ true batch should report compile-once batch timings, received ' + JSON.stringify(mutableVectorBatch.timings));
+
+const globalStateBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch({
+  name: 'batch global state isolation',
+  code: [
+    'int seen = 0;',
+    'class Solution {',
+    'public:',
+    '  int leak(int value) {',
+    '    int previous = seen;',
+    '    seen = value;',
+    '    return previous;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'leak',
+  inputBatch: [
+    { value: 11 },
+    { value: 22 },
+  ],
+});
+if (!globalStateBatch.success || JSON.stringify(globalStateBatch.results?.map((result) => result.output)) !== JSON.stringify([0, 0])) {
+  throw new Error('C++ batch should isolate file-scope globals per case, received ' + JSON.stringify(globalStateBatch));
 }
 
 const mutableListBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch({
@@ -520,10 +536,10 @@ if (
   JSON.stringify(opsClassBatch.results?.map((result) => result.output)) !==
     JSON.stringify([[null, 1, 3], [null, 5, 8]])
 ) {
-  throw new Error('C++ true batch ops-class failed: ' + JSON.stringify(opsClassBatch));
+  throw new Error('C++ batch ops-class failed: ' + JSON.stringify(opsClassBatch));
 }
-if (opsClassBatch.timings?.batchMode !== 'compile-once' || opsClassBatch.timings?.batchCaseCount !== 2) {
-  throw new Error('C++ ops-class batch should report compile-once timings, received ' + JSON.stringify(opsClassBatch.timings));
+if (opsClassBatch.timings?.batchMode !== 'per-case-isolated' || opsClassBatch.timings?.batchCaseCount !== 2) {
+  throw new Error('C++ ops-class batch should report per-case isolated timings, received ' + JSON.stringify(opsClassBatch.timings));
 }
 
 const nestedCustomMapTracingResult = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

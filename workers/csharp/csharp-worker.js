@@ -2227,6 +2227,49 @@ function normalizeCSharpBatchEntry(entry, timings = {}) {
   };
 }
 
+async function executeCSharpCodePayload(payload, messageType = 'execute-code') {
+  const startedAt = now();
+  const request = {
+    source: payload?.code ?? '',
+    functionName: payload?.functionName ?? '',
+    inputs: payload?.inputs ?? {},
+    executionStyle: payload?.executionStyle ?? 'solution-method',
+    trace: messageType === 'execute-with-tracing',
+    timeoutMs: payload?.timeoutMs,
+    maxTraceSteps: payload?.maxTraceSteps,
+    maxLineEvents: payload?.maxLineEvents,
+    maxSingleLineHits: payload?.maxSingleLineHits,
+    maxStoredEvents: payload?.maxStoredEvents,
+    maxPathDepth: payload?.maxPathDepth,
+    minimalTrace: payload?.minimalTrace,
+  };
+  try {
+    validateCSharpInputsForJson(request.inputs);
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+  const runtimeStartedAt = now();
+  const runtimeResult = await loadRuntime(payload?.assetBaseUrl);
+  const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
+  const hostCallStartedAt = now();
+  const result = normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request);
+  const hostCallMs = elapsedMs(hostCallStartedAt);
+  return {
+    ...result,
+    timings: {
+      ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
+      initMs,
+      hostCallMs,
+      totalMs: elapsedMs(startedAt),
+    },
+  };
+}
+
 async function executeCSharpCodeBatch(message) {
   const startedAt = now();
   const inputBatch = Array.isArray(message.payload?.inputBatch)
@@ -2256,76 +2299,22 @@ async function executeCSharpCodeBatch(message) {
     };
   }
 
-  let source;
-  try {
-    source = buildCSharpBatchScriptSource(message.payload);
-  } catch (error) {
-    return {
-      success: false,
-      results: [],
-      error: error instanceof Error ? error.message : String(error),
-      consoleOutput: [],
-      timings: { totalMs: elapsedMs(startedAt) },
-    };
+  const results = [];
+  for (const inputs of inputBatch) {
+    const result = await executeCSharpCodePayload({ ...message.payload, inputs }, 'execute-code');
+    results.push(normalizeCSharpBatchEntry(result, result.timings));
   }
-
-  const request = {
-    source,
-    functionName: '',
-    inputs: { __tracecodeBatchInputs: inputBatch },
-    executionStyle: 'function',
-    trace: false,
-    timeoutMs: message.payload?.timeoutMs,
-    maxTraceSteps: message.payload?.maxTraceSteps,
-    maxLineEvents: message.payload?.maxLineEvents,
-    maxSingleLineHits: message.payload?.maxSingleLineHits,
-    maxStoredEvents: message.payload?.maxStoredEvents,
-    maxPathDepth: message.payload?.maxPathDepth,
-    minimalTrace: message.payload?.minimalTrace,
-  };
-
-  const runtimeStartedAt = now();
-  const runtimeResult = await loadRuntime(message.payload?.assetBaseUrl);
-  const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
-  const hostCallStartedAt = now();
-  const result = normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request);
-  const hostCallMs = elapsedMs(hostCallStartedAt);
-  const timings = {
-    ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
-    initMs,
-    hostCallMs,
-    totalMs: elapsedMs(startedAt),
-  };
-
-  if (result?.success !== true || !Array.isArray(result.output)) {
-    const failure = {
-      success: false,
-      output: null,
-      error: result?.error ?? 'C# batch execution did not return a result array.',
-      consoleOutput: result?.consoleOutput ?? [],
-      timings,
-    };
-    return {
-      success: false,
-      results: inputBatch.map(() => failure),
-      error: failure.error,
-      consoleOutput: result?.consoleOutput ?? [],
-      executionTimeMs: result?.executionTimeMs,
-      timings,
-    };
-  }
-
-  const results = result.output.map((entry, index) =>
-    normalizeCSharpBatchEntry(entry, index === 0 ? { compileMs: timings.compileMs, hostCallMs, totalMs: timings.totalMs } : { compileMs: 0, hostCallMs: 0 })
-  );
   const consoleOutput = results.flatMap((entry) => entry.consoleOutput ?? []);
+  const success = results.length === inputBatch.length && results.every((entry) => entry.success === true);
   return {
-    success: results.length === inputBatch.length && results.every((entry) => entry.success === true),
+    success,
     results,
     consoleOutput,
-    executionTimeMs: result.executionTimeMs,
+    ...(success ? {} : { error: results.find((entry) => entry.success !== true)?.error ?? 'C# batch execution failed.' }),
     timings: {
-      ...timings,
+      totalMs: elapsedMs(startedAt),
+      batchMode: 'per-case-isolated',
+      batchCaseCount: inputBatch.length,
       runMs: results.reduce((sum, entry) => sum + (entry.timings?.runMs ?? 0), 0),
     },
   };
@@ -2349,46 +2338,7 @@ async function handleMessage(message) {
     message.type === 'execute-code-interview' ||
     message.type === 'execute-with-tracing'
   ) {
-    const startedAt = now();
-    const request = {
-      source: message.payload?.code ?? '',
-      functionName: message.payload?.functionName ?? '',
-      inputs: message.payload?.inputs ?? {},
-      executionStyle: message.payload?.executionStyle ?? 'solution-method',
-      trace: message.type === 'execute-with-tracing',
-      timeoutMs: message.payload?.timeoutMs,
-      maxTraceSteps: message.payload?.maxTraceSteps,
-      maxLineEvents: message.payload?.maxLineEvents,
-      maxSingleLineHits: message.payload?.maxSingleLineHits,
-      maxStoredEvents: message.payload?.maxStoredEvents,
-      maxPathDepth: message.payload?.maxPathDepth,
-      minimalTrace: message.payload?.minimalTrace,
-    };
-    try {
-      validateCSharpInputsForJson(request.inputs);
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-        consoleOutput: [],
-        timings: { totalMs: elapsedMs(startedAt) },
-      };
-    }
-    const runtimeStartedAt = now();
-    const runtimeResult = await loadRuntime(message.payload?.assetBaseUrl);
-    const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
-    const hostCallStartedAt = now();
-    const result = normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request);
-    const hostCallMs = elapsedMs(hostCallStartedAt);
-    return {
-      ...result,
-      timings: {
-        ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
-        initMs,
-        hostCallMs,
-        totalMs: elapsedMs(startedAt),
-      },
-    };
+    return executeCSharpCodePayload(message.payload, message.type);
   }
 
   if (message.type === 'execute-project-csharp') {

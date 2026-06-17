@@ -884,6 +884,32 @@ async function main(): Promise<void> {
       `C# worker script-style batch should capture per-case stdout, received ${JSON.stringify(scriptStyleBatch.consoleOutput)}`
     );
 
+    const staticStateBatch = await runWorkerBatchCase(
+      page,
+      [
+        'public class Solution {',
+        '  static int seen = 0;',
+        '  public int Leak(int value) {',
+        '    int previous = seen;',
+        '    seen = value;',
+        '    return previous;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Leak',
+      [{ value: 11 }, { value: 22 }],
+      assetBaseUrl
+    );
+    assertCondition(staticStateBatch.success, `C# worker static-state batch should succeed: ${staticStateBatch.error ?? 'unknown error'}`);
+    assertCondition(
+      JSON.stringify(staticStateBatch.results.map((entry) => entry.output)) === JSON.stringify([0, 0]),
+      `C# worker batch should isolate static fields per case, received ${JSON.stringify(staticStateBatch.results)}`
+    );
+    assertCondition(
+      staticStateBatch.timings?.batchMode === 'per-case-isolated' && staticStateBatch.timings?.batchCaseCount === 2,
+      `C# worker batch should report per-case isolated timings, received ${JSON.stringify(staticStateBatch.timings)}`
+    );
+
     const tracedScriptStyle = await runWorkerCase(
       page,
       [
