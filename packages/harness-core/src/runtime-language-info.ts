@@ -37,7 +37,9 @@ export const SUPPORTED_LANGUAGE_RUNTIME_INFOS: readonly LanguageRuntimeInfo[] = 
 );
 
 export function getLanguageRuntimeInfo(language: Language): LanguageRuntimeInfo {
-  const info = LANGUAGE_RUNTIME_INFOS[language];
+  const info = Object.prototype.hasOwnProperty.call(LANGUAGE_RUNTIME_INFOS, language)
+    ? LANGUAGE_RUNTIME_INFOS[language]
+    : undefined;
   if (!info) {
     throw new Error(`Runtime info for language "${language}" is not implemented yet.`);
   }

@@ -8,7 +8,8 @@
 import type { Language } from '../runtime-types';
 import type { LanguageRuntimeInfo } from '../runtime-language-info';
 
-export const LANGUAGE_RUNTIME_INFOS = Object.freeze({
+export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
+  Object.assign(Object.create(null), {
   "python": {
     "language": "python",
     "displayName": "Python",
@@ -325,4 +326,5 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze({
       }
     ]
   }
-}) as Record<Language, LanguageRuntimeInfo>;
+})
+) as Record<Language, LanguageRuntimeInfo>;

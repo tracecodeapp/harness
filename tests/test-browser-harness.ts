@@ -476,6 +476,12 @@ async function main(): Promise<void> {
     const csharpProfile = harnessA.getProfile('csharp');
     const typescriptInfo = harnessA.getLanguageInfo('typescript');
     const supportedInfos = harnessA.getSupportedLanguageInfos();
+    let invalidRuntimeInfoError = '';
+    try {
+      harnessA.getLanguageInfo('constructor' as never);
+    } catch (error) {
+      invalidRuntimeInfoError = error instanceof Error ? error.message : String(error);
+    }
     assertCondition(csharpProfile.capabilities.execution.styles.interviewMode, 'C# profile should support interview-mode execution');
     assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ profile should support function execution');
     assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ profile should support solution-method execution');
@@ -494,6 +500,10 @@ async function main(): Promise<void> {
     assertCondition(
       supportedInfos.some((info) => info.language === 'csharp' && Boolean(info.runtime.version)),
       'Browser harness should expose supported language runtime infos'
+    );
+    assertCondition(
+      invalidRuntimeInfoError.includes('Runtime info for language "constructor" is not implemented yet.'),
+      `Browser harness should reject inherited runtime info keys: ${invalidRuntimeInfoError}`
     );
 
     await harnessA.getClient('javascript').init();

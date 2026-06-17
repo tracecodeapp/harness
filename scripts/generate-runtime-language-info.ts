@@ -518,7 +518,9 @@ function buildGeneratedTypeScript(info: Record<string, RuntimeInfo>): string {
 import type { Language } from '../runtime-types';
 import type { LanguageRuntimeInfo } from '../runtime-language-info';
 
-export const LANGUAGE_RUNTIME_INFOS = Object.freeze(${JSON.stringify(info, null, 2)}) as Record<Language, LanguageRuntimeInfo>;
+export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
+  Object.assign(Object.create(null), ${JSON.stringify(info, null, 2)})
+) as Record<Language, LanguageRuntimeInfo>;
 `;
 }
 
