@@ -163,6 +163,114 @@ public class ProjectEventsDeleteOnCloseSmoke {
   console.log('PASS: Java ProjectEvents DELETE_ON_CLOSE closes with delete semantics');
 }
 
+function assertJavaProjectFileReaderDeviceCloseReleasesSuperclass(): void {
+  const projectEventsPath = join(
+    process.cwd(),
+    'workers',
+    'java',
+    'src',
+    'tracecode',
+    'browser',
+    'ProjectEvents.java'
+  );
+  const projectEventsSource = readFileSync(projectEventsPath, 'utf8');
+  assertCondition(
+    /ProjectFileReader[\s\S]*deviceReader\.close\(\);[\s\S]*super\.close\(\);[\s\S]*addSuppressed\(error\)/.test(
+      projectEventsSource
+    ),
+    'ProjectFileReader should close both the device reader and inherited FileReader target'
+  );
+
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-reader-close-'));
+  try {
+    const classesPath = join(tmpRoot, 'classes');
+    const smokePath = join(tmpRoot, 'ProjectEventsReaderCloseSmoke.java');
+    mkdirSync(classesPath);
+    writeFileSync(
+      smokePath,
+      `import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Base64;
+import tracecode.browser.ProjectEvents;
+
+public class ProjectEventsReaderCloseSmoke {
+  public static void main(String[] args) throws Exception {
+    Path fdDirectory = fdDirectory();
+    if (fdDirectory == null) {
+      System.out.println("reader-close-skipped");
+      return;
+    }
+
+    ProjectEvents.setKernelDevices(device("/dev/stdin", "1", "0", "/dev/stdin", ""));
+    try {
+      int before = countOpenFileDescriptors(fdDirectory);
+      for (int index = 0; index < 64; index += 1) {
+        try (ProjectEvents.ProjectFileReader reader = new ProjectEvents.ProjectFileReader("/dev/stdin")) {
+        }
+      }
+      int after = countOpenFileDescriptors(fdDirectory);
+      if (after - before > 4) {
+        throw new IllegalStateException("ProjectFileReader leaked descriptors: before=" + before + " after=" + after);
+      }
+      System.out.println("reader-close-ok");
+    } finally {
+      ProjectEvents.clearKernelDevices();
+    }
+  }
+
+  private static Path fdDirectory() {
+    Path proc = Path.of("/proc/self/fd");
+    if (Files.isDirectory(proc)) return proc;
+    Path dev = Path.of("/dev/fd");
+    if (Files.isDirectory(dev)) return dev;
+    return null;
+  }
+
+  private static int countOpenFileDescriptors(Path directory) throws IOException {
+    int count = 0;
+    try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
+      for (Path ignored : stream) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private static String device(String path, String readable, String writable, String input, String output) {
+    return b64(path) + "\\t" + b64(readable) + "\\t" + b64(writable) + "\\t" + b64(input) + "\\t" + b64(output);
+  }
+
+  private static String b64(String value) {
+    return Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
+  }
+}
+`,
+      'utf8'
+    );
+
+    execFileSync('javac', ['-d', classesPath, projectEventsPath, smokePath], {
+      cwd: process.cwd(),
+      stdio: 'pipe',
+    });
+    const output = execFileSync('java', ['-cp', classesPath, 'ProjectEventsReaderCloseSmoke'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: 'pipe',
+    }).trim();
+    assertCondition(
+      output === 'reader-close-ok' || output === 'reader-close-skipped',
+      `ProjectEvents ProjectFileReader close smoke failed: ${output}`
+    );
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+
+  console.log('PASS: Java ProjectFileReader closes inherited device target');
+}
+
 function assertJavaLexicalScannersAreCached(): void {
   const augmentationSource = readFileSync(join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js'), 'utf8');
   const workerSource = readFileSync(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
@@ -323,6 +431,7 @@ function assertJavaCompileCachePathsArePerExecution(): void {
 
 function main(): void {
   assertJavaDeleteOnCloseLiveDeleteContract();
+  assertJavaProjectFileReaderDeviceCloseReleasesSuperclass();
   assertJavaLexicalScannersAreCached();
   assertJavaCompileCachePathsArePerExecution();
 }

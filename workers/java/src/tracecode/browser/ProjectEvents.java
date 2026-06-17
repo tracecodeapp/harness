@@ -1198,7 +1198,22 @@ public final class ProjectEvents {
     @Override
     public void close() throws IOException {
       if (deviceReader != null) {
-        deviceReader.close();
+        IOException thrown = null;
+        try {
+          deviceReader.close();
+        } catch (IOException error) {
+          thrown = error;
+        }
+        try {
+          super.close();
+        } catch (IOException error) {
+          if (thrown == null) {
+            thrown = error;
+          } else {
+            thrown.addSuppressed(error);
+          }
+        }
+        if (thrown != null) throw thrown;
         return;
       }
       super.close();
