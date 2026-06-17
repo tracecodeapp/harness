@@ -1,108 +1,44 @@
-# @tracecode/harness-project
+# `@tracecode/harness-project`
 
-Project-mode workspace primitives for TraceCode harness.
+Project-mode workspace primitives for TraceCode Harness.
 
-This package is intentionally additive. Existing single-file runtime clients do
-not depend on it. Consumers install this package when they want a virtual
-project workspace backed by `just-bash`.
+Install this package when an app needs a virtual multi-file workspace instead
+of only single-file runtime clients. It provides the shared TraceKernel
+filesystem, shell, snapshot, and command-dispatch layer used by browser and
+native project runners.
 
-`createRuntimeWorkspace` provides the shared tracekernel file-system, shell,
-snapshot, and command-dispatch layer. Language commands such as `python3`,
-`node`, `javac`, `dotnet`, and `clang++` are available when callers provide the
-corresponding project command runner, or through the environment-specific
-factories:
+Import path:
+
+```ts
+import { createRuntimeWorkspace } from '@tracecode/harness-project';
+```
+
+Environment-specific factories wire language runners into the shared workspace:
 
 - `createBrowserProjectWorkspace` from `@tracecode/harness-browser/project`
 - `createNativeProjectWorkspace` from `@tracecode/harness/project-node`
 
-```ts
-import { createRuntimeWorkspace } from '@tracecode/harness-project';
+Basic workspace use:
 
+```ts
 const workspace = await createRuntimeWorkspace({
   kernel: {
-    user: { id: 'auth-user-123', username: 'ada' },
-    host: { hostname: 'tracevm' },
-    workspace: { id: 'weather-api-1', name: 'weather-api' },
+    user: { username: 'ada' },
+    workspace: { name: 'weather-api' },
   },
-  directories: ['src/generated'],
-  files: [
-    { path: 'src/solution.py', contents: 'print("hello")\n' },
-  ],
-  skills: [
-    { path: 'algorithms/sorting.md', contents: '# Sorting notes\n' },
-  ],
-  entrypoint: 'src/solution.py',
+  files: [{ path: 'src/main.py', contents: 'print("hello")\n' }],
 });
 
 await workspace.writeFile('src/generated.txt', 'created\n');
-await workspace.appendFile('src/generated.txt', 'more\n');
-await workspace.exists('src/generated.txt');
-await workspace.stat('src/generated.txt');
-await workspace.readDir('src');
-await workspace.mkdir('src/generated');
-await workspace.copyFile('src/solution.py', 'src/generated/solution.py');
-await workspace.moveFile('src/generated/solution.py', 'src/generated/copy.py');
-await workspace.remove('src/generated', { recursive: true });
-await workspace.deleteFile('src/generated.txt');
-
-console.log(workspace.cwd); // /home/ada/weather-api
-console.log(workspace.kernel.info.name); // tracekernel
-console.log(await workspace.readFile('/proc/kernel/info'));
-console.log(await workspace.readFile('/proc/self/mountinfo'));
-console.log(await workspace.readFile('/skills/algorithms/sorting.md'));
+console.log(await workspace.readFile('src/generated.txt'));
 ```
 
-When `kernel` identity is provided, the canonical workspace root is
-`/home/<user>/<project>`. `/workspace` is kept as a compatibility alias unless
-`kernel.workspaceAlias` is set to `false`. `/dev/stdin`, `/dev/stdout`,
-`/dev/stderr`, and `/dev/tty` are virtual devices connected to command I/O.
-`workspace.watch(...)` and command `onEvent` handlers receive streaming output
-and live/final file mutation events.
+TraceKernel exposes a canonical workspace root, optional `/workspace` alias,
+virtual `/dev` and `/proc` files, read-only skill files under `/skills`, command
+events, snapshots, patch export/import, and live/final file mutation events.
 
-All language runners use the same project request shape: source, script path,
-argv, cwd, environment, stdin, and a `RuntimeProjectSnapshot` containing the
-current files, empty directories, optional entrypoint, `workspaceRoot`, and
-optional `workspaceAlias`.
-
-Providers can seed kernel-protected skill files with `skills` during workspace
-creation, or later through `workspace.writeSkillFiles(...)` /
-`workspace.kernel.writeSkillFiles(...)`. Skills are exposed under `/skills` as a
-read-only virtual root: user code can read or copy them into the workspace, but
-normal workspace and shell mutations cannot create, replace, rename, or delete
-files under `/skills`.
-
-## Terminal Sessions
-
-Apps that render an interactive terminal should use
-`workspace.createTerminalSession(...)` instead of inferring prompt and stdin
-state from raw stdout.
-
-```ts
-const terminal = workspace.createTerminalSession({
-  onTerminalEvent: (event) => {
-    if (event.type === 'input-state') {
-      renderInput(event.state);
-    }
-  },
-});
-
-await terminal.run('node main.js', {
-  onEvent: (event) => {
-    if (event.type === 'output' && event.terminal?.role === 'stdin-prompt') {
-      return;
-    }
-    renderCommandEvent(event);
-  },
-});
-
-if (terminal.inputState.mode === 'stdin') {
-  terminal.writeStdin(`${value}\n`);
-}
-```
-
-The session exposes `terminal.prompt`, `terminal.inputState`, `terminal.run(...)`,
-and `terminal.writeStdin(...)`. It owns the live stdin pipe for terminal runs and
-emits input-state transitions for command, busy, and stdin modes.
-
-See [Project Terminal Sessions](../../docs/project-terminal-session.md) for the
-full consumer contract.
+Terminal UIs should use `workspace.createTerminalSession(...)` instead of
+inferring prompt and stdin state from raw stdout. See
+[TraceKernel Workspaces](../../docs/tracekernel-workspaces.md) and
+[Project Terminal Sessions](../../docs/project-terminal-session.md) for the
+workspace and terminal contracts.

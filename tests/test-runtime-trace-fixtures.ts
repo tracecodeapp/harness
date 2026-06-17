@@ -604,7 +604,7 @@ async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
   csharpExecutePromise = (async () => {
     const dotnetJsPath = join(CSHARP_ASSET_DIR, '_framework', 'dotnet.js');
     if (!existsSync(dotnetJsPath)) {
-      throw new Error('Missing C# WASM assets. Run `pnpm run spike:csharp:publish` and sync workers/vendor/csharp.');
+      throw new Error('Missing C# WASM assets. Run `pnpm update:csharp-runtime` and sync workers/vendor/csharp.');
     }
 
     const { dotnet } = (await import(pathToFileURL(dotnetJsPath).href)) as {

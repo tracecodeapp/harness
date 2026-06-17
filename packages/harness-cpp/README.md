@@ -1,6 +1,6 @@
 # `@tracecode/harness-cpp`
 
-C++ runtime client and browser worker assets for TraceCode harness.
+C++ runtime client and browser worker assets for TraceCode Harness.
 
 Install this package only when your application needs the C++ lane. It contains
 the C++ worker, TraceCode runtime header, and YoWASP/LLVM compiler assets.

@@ -1,6 +1,6 @@
 # `@tracecode/harness-java`
 
-Java runtime client and browser worker assets for TraceCode harness.
+Java runtime client and browser worker assets for TraceCode Harness.
 
 Install this package only when your application needs the Java lane. It contains
 the Java worker and Java helper JARs; the worker loads CheerpJ Core remotely from

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_FILE="$ROOT_DIR/spikes/csharp-wasm-roslyn/TraceCode.CSharpHost/TraceCode.CSharpHost.csproj"
+PROJECT_FILE="$ROOT_DIR/runtimes/csharp/TraceCode.CSharpHost/TraceCode.CSharpHost.csproj"
 VENDOR_DIR="$ROOT_DIR/workers/vendor/csharp"
 
 usage() {
@@ -89,7 +89,7 @@ fi
 
 "$DOTNET_ROOT/dotnet" publish "$PROJECT_FILE" -c Release
 
-publish_dir="$ROOT_DIR/spikes/csharp-wasm-roslyn/TraceCode.CSharpHost/bin/Release/$target_framework/browser-wasm/AppBundle"
+publish_dir="$ROOT_DIR/runtimes/csharp/TraceCode.CSharpHost/bin/Release/$target_framework/browser-wasm/AppBundle"
 if [[ ! -f "$publish_dir/_framework/dotnet.js" ]]; then
   echo "Missing published AppBundle at $publish_dir" >&2
   exit 1

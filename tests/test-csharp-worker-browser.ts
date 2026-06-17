@@ -114,7 +114,7 @@ function serializeProjectWorkerRequest(request: CSharpProjectWorkerRequest): Ser
 }
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const FIXTURE_ROOT = join(ROOT, 'spikes', 'csharp-wasm-roslyn', 'fixtures');
+const FIXTURE_ROOT = join(ROOT, 'tests', 'fixtures', 'csharp-worker');
 const WORKER_REQUEST_TIMEOUT_MS = 60_000;
 const TRACE_KERNEL_PROC_FILES = [
   { path: '/proc/kernel/info', contents: '{\n  "name": "tracekernel"\n}\n' },
@@ -784,7 +784,7 @@ async function main(): Promise<void> {
       page.on('console', (message) => console.log(`PAGE: ${message.text()}`));
       page.on('pageerror', (error) => console.log(`PAGEERROR: ${error.message}`));
     }
-    await page.goto(`${server.origin}/spikes/csharp-wasm-roslyn/browser-worker/blank.html`);
+    await page.goto(`${server.origin}/tests/fixtures/csharp-worker/blank.html`);
     await page.evaluate('globalThis.__name = (fn) => fn');
 
     const assetBaseUrl = `${server.origin}/workers/vendor/csharp`;

@@ -1130,7 +1130,7 @@ function createUnsupportedProfile(
 ): LanguageRuntimeProfile {
   return {
     language: 'javascript',
-    maturity: 'experimental',
+    maturity: 'stable',
     capabilities: {
       execution: {
         compilation: {
@@ -1491,10 +1491,9 @@ async function main(): Promise<void> {
   const csharpProfile = getLanguageRuntimeProfile('csharp');
   const cppProfile = getLanguageRuntimeProfile('cpp');
   for (const profile of profiles) {
-    const expectedMaturity = profile.language === 'java' || profile.language === 'csharp' || profile.language === 'cpp' ? 'experimental' : 'stable';
     assertCondition(
-      profile.maturity === expectedMaturity,
-      `${profile.language} should be marked ${expectedMaturity} in this release`
+      profile.maturity === 'stable',
+      `${profile.language} should be marked stable in this release`
     );
     assertProfileCoverageAlignment(profile);
   }

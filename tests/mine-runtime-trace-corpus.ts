@@ -36,7 +36,7 @@ const DEFAULT_CORPUS_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpu
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const JAVASCRIPT_WORKER_PATH = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
 const CSHARP_ASSET_DIR = join(process.cwd(), 'workers', 'vendor', 'csharp');
-const CSHARP_HOST_SOURCE_DIR = join(process.cwd(), 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost');
+const CSHARP_HOST_SOURCE_DIR = join(process.cwd(), 'runtimes', 'csharp', 'TraceCode.CSharpHost');
 const CPP_WORKER_PATH = join(process.cwd(), 'workers', 'cpp', 'cpp-worker.js');
 const CPP_RUNTIME_HEADER_PATH = join(process.cwd(), 'workers', 'cpp', 'tracecode_runtime.hpp');
 const YOWASP_COMPILER_BUNDLE_PATH = join(process.cwd(), 'node_modules', '@yowasp', 'clang', 'gen', 'bundle.js');
@@ -1016,7 +1016,7 @@ async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
   csharpExecutePromise = (async () => {
     const dotnetJsPath = join(CSHARP_ASSET_DIR, '_framework', 'dotnet.js');
     if (!existsSync(dotnetJsPath)) {
-      throw new Error('Missing C# WASM assets. Run `pnpm run spike:csharp:publish` and sync workers/vendor/csharp.');
+      throw new Error('Missing C# WASM assets. Run `pnpm update:csharp-runtime` and sync workers/vendor/csharp.');
     }
 
     const { dotnet } = (await import(pathToFileURL(dotnetJsPath).href)) as {

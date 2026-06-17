@@ -1,7 +1,7 @@
 # `@tracecode/harness-javascript`
 
 JavaScript and TypeScript execution helpers plus browser worker assets for
-TraceCode harness.
+TraceCode Harness.
 
 Import path:
 

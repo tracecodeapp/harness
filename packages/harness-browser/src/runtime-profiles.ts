@@ -305,7 +305,7 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
 
 const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   language: 'java',
-  maturity: 'experimental',
+  maturity: 'stable',
   capabilities: {
     execution: {
       compilation: {
@@ -365,16 +365,16 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     },
   },
   notes: [
-    'Java currently supports the browser-local Java 17 lane for function, solution-method, ops-class, and script-style execution.',
-    'Interview-mode Java reuses the same browser-local execution path and remains experimental.',
+    'Java supports the browser-local Java 17 lane for function, solution-method, ops-class, script-style, and interview-mode execution.',
+    'Interview-mode Java reuses the same browser-local execution path.',
     'Script-style Java uses an empty function name with executionStyle="function" and reads the top-level result variable.',
-    'Project-mode Java uses shared tracekernel /dev and /proc policy with bridged live file mutation and stdio events plus final-diff reconciliation.',
+    'Project-mode Java uses shared TraceKernel /dev and /proc policy with bridged live file mutation and stdio events plus final-diff reconciliation.',
   ],
 };
 
 const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   language: 'csharp',
-  maturity: 'experimental',
+  maturity: 'stable',
   capabilities: {
     execution: {
       compilation: {
@@ -434,22 +434,21 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     },
   },
   notes: [
-    'C# support is browser-local and experimental.',
+    'C# support is browser-local and stable.',
     'C# supports named function-style requests where the browser-local host can bind the named method.',
     'Script-style C# uses an empty function name with executionStyle="function" and reads the top-level result variable.',
     'Interview-mode C# uses the same browser-local worker execution path with interview timeout normalization.',
-    'The first C# slice supports public class Solution methods.',
+    'C# supports public class Solution methods and generated drivers.',
     'ListNode and TreeNode inputs are hydrated from level-order arrays or object-shaped JSON.',
     'Dictionary, HashSet, List, and array return values serialize through the browser-local worker.',
-    'Tracing currently supports line, call, return, stdout, and simple local variable write events.',
-    'Project-mode C# uses shared tracekernel /dev and /proc policy with bridged live file mutation and stdio events plus final-diff reconciliation.',
-    'Structural visualization is added after execution and diagnostics are proven.',
+    'Tracing supports line, call, return, stdout, timeout, and local-variable events.',
+    'Project-mode C# uses shared TraceKernel /dev and /proc policy with bridged live file mutation and stdio events plus final-diff reconciliation.',
   ],
 };
 
 const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   language: 'cpp',
-  maturity: 'experimental',
+  maturity: 'stable',
   capabilities: {
     execution: {
       compilation: {
@@ -513,7 +512,7 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'The runtime intentionally does not depend on a generic multi-language container/runtime SDK.',
     'Script-style C++ uses an empty function name with executionStyle="function"; the snippet must assign a serializable result variable.',
     'Interview-mode C++ reuses the tracing compiler path with a trace budget and returns a non-trace execution result.',
-    'Project-mode C++ uses shared tracekernel /dev and /proc policy with bridged live WASI file mutation and stdio events plus final-diff reconciliation.',
+    'Project-mode C++ uses shared TraceKernel /dev and /proc policy with bridged live WASI file mutation and stdio events plus final-diff reconciliation.',
   ],
 };
 
@@ -589,11 +588,11 @@ const PROJECT_IO_LIMITATIONS: Record<Language, readonly string[]> = {
     'Browser project mode advertises Pyodide-level live interception; node project mode uses host filesystem execution with final-diff reconciliation.',
   ],
   javascript: [
-    'Browser project mode is the reference live tracekernel path; node project mode uses host filesystem execution with final-diff reconciliation.',
+    'Browser project mode is the reference live TraceKernel path; node project mode uses host filesystem execution with final-diff reconciliation.',
   ],
   typescript: [
     'Browser project mode is disabled by default until TypeScript compiler loading is worker-backed or explicitly injected as trusted.',
-    'Node project mode supports tsc compile/typecheck commands through tracekernel snapshots; emitted JavaScript runs through the JavaScript project path.',
+    'Node project mode supports tsc compile/typecheck commands through TraceKernel snapshots; emitted JavaScript runs through the JavaScript project path.',
     'Package installation and watch/build mode are not implemented.',
   ],
   java: [

@@ -342,15 +342,15 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const csharpTfm = csharpRuntimeConfig.runtimeOptions?.tfm;
   if (!dotnetVersion) throw new Error('Unable to derive runtime info: missing .NET runtime version');
   const csharpProjectSource = await readText(
-    'spikes',
-    'csharp-wasm-roslyn',
+    'runtimes',
+    'csharp',
     'TraceCode.CSharpHost',
     'TraceCode.CSharpHost.csproj'
   );
   const roslynVersion = parsePackageReferenceVersion(csharpProjectSource, 'Microsoft.CodeAnalysis.CSharp');
   const csharpHostSource = await readText(
-    'spikes',
-    'csharp-wasm-roslyn',
+    'runtimes',
+    'csharp',
     'TraceCode.CSharpHost',
     'CompilerHost.cs'
   );

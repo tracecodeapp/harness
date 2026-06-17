@@ -127,7 +127,7 @@ interface RuntimeProjectTerminalPrompt {
 }
 ```
 
-The prompt is derived from tracekernel identity and the session cwd. Built-in
+The prompt is derived from TraceKernel identity and the session cwd. Built-in
 `cd` and leading compound commands such as `cd src && npm test` update the
 terminal session cwd. Programmatic `workspace.runCommand(...)` calls do not
 change a terminal session's cwd.
@@ -157,7 +157,7 @@ Terminal UIs usually suppress these chunks as committed output and render the
 prompt via `inputState` instead. This prevents the active line from gaining
 different spacing than the committed line after the user presses Enter.
 
-By default, terminal sessions hide status events unless tracekernel verbose mode
+By default, terminal sessions hide status events unless TraceKernel verbose mode
 is enabled. Direct `workspace.runCommand(...)` calls still receive status events
 normally.
 

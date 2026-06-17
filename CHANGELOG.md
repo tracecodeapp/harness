@@ -239,7 +239,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Notes
 
-- `0.6.0` is the first Java runtime preview release. Java remains capability-profiled as experimental.
+- `0.6.0` was the first Java runtime preview release.
 
 ## [0.5.0] - 2026-03-14
 

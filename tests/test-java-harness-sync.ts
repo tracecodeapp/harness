@@ -177,7 +177,7 @@ async function main(): Promise<void> {
 
   const javaProfile = getLanguageRuntimeProfile('java');
   assertCondition(javaProfile.language === 'java', 'Java runtime profile should resolve');
-  assertCondition(javaProfile.maturity === 'experimental', 'Java runtime should remain experimental');
+  assertCondition(javaProfile.maturity === 'stable', 'Java runtime should be stable');
   assertCondition(javaProfile.capabilities.execution.styles.solutionMethod, 'Java should support solution-method style');
   assertCondition(javaProfile.capabilities.execution.styles.opsClass, 'Java should support ops-class style');
   assertCondition(javaProfile.capabilities.execution.styles.function, 'Java should support function style');

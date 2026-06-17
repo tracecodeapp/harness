@@ -1,6 +1,6 @@
 # `@tracecode/harness-python`
 
-Python runtime helpers and browser worker assets for TraceCode harness.
+Python runtime helpers and browser worker assets for TraceCode Harness.
 
 Import path:
 

@@ -1,68 +1,25 @@
 # TraceCode Harness
 
-Browser-first execution and tracing harness for Python, JavaScript, TypeScript, experimental Java, experimental C#, and experimental C++ lanes.
+Browser-first execution and tracing runtime for Python, JavaScript,
+TypeScript, Java, C#, and C++.
 
-`@tracecode/harness` is a browser-consumable runtime SDK for code execution and tracing: explicit browser runtime creation, package-managed worker assets, and no app-specific storage/bootstrap contract in the public API.
+`@tracecode/harness` is a runtime SDK for browser applications that need code
+execution, runtime traces, package-managed worker assets, and explicit
+capability profiles. It is not a curriculum product, web IDE framework,
+visualizer planner, analytics layer, or complete application UI.
 
 Project site: [tracecode.app](https://tracecode.app)
 
-## Scope
+## Install
 
-This package provides an execution and tracing runtime for browser applications.
-
-It includes:
-
-- browser-hosted execution for Python, JavaScript, and TypeScript
-- an experimental browser-local Java 17 lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
-- an experimental browser-local C# lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
-- an experimental browser-local C++ lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
-- trace capture and normalized runtime contracts
-- browser worker assets and asset sync tooling
-
-It does not include a full end-user product.
-
-Specifically, this package does not ship:
-
-- any curriculum or problem corpus
-- guided-learning logic
-- higher-level visualization planners or rendering strategy
-- personalization, analytics, or product workflows
-- a complete application UI
-
-## Non-Goals
-
-`@tracecode/harness` is not intended to be:
-
-- a full web IDE framework
-- a white-labeled teaching product
-- a higher-level pedagogy or visualization-planning layer
-
-Consuming apps are expected to own their own UI, persistence, product logic, and any higher-order visualization behavior built on top of neutral runtime trace facts.
-
-For the security model and sandbox limits, see
-[Isolation Boundaries](docs/isolation-boundaries.md). TraceKernel provides a
-kernel-like simulated workspace contract, but native execution still requires an
-OS or infrastructure sandbox for hostile code.
-
-## What You Get
-
-- shared runtime contract types and trace adapters
-- browser runtime clients for Python, JavaScript, TypeScript, Java, C#, and C++
-- published worker assets plus a CLI to copy them into your app
-- capability profiles for honest per-language support claims
-- regression coverage for runtime parity, packaging, and consumer smoke tests
-
-This is not a general workflow engine. It is an opinionated execution harness designed for interactive code execution and trace playback in browser apps.
-
-## Installation
-
-The umbrella package keeps the backwards-compatible all-in-one install:
+Use the umbrella package for the full public surface:
 
 ```bash
 pnpm add @tracecode/harness
 ```
 
-For smaller installs, use the language packages you actually ship:
+For smaller installs, combine the core/browser packages with only the language
+assets your app ships:
 
 ```bash
 pnpm add @tracecode/harness-core @tracecode/harness-browser @tracecode/harness-python
@@ -72,17 +29,15 @@ pnpm add @tracecode/harness-csharp
 pnpm add @tracecode/harness-cpp
 ```
 
-Project/workspace execution is additive. Apps that need shell-style project mode should also install:
+Add project/workspace execution only when you need shell-style multi-file
+workspaces:
 
 ```bash
 pnpm add @tracecode/harness-project
 ```
 
-Each language package publishes only its own worker assets under `workers/`.
-That keeps license/runtime exposure scoped to the languages a consuming app
-chooses to distribute.
-
-If your app bundles dependencies, transpiling the package is usually the safest option. For Next.js:
+If your app bundles dependencies, transpiling the package is usually safest. For
+Next.js:
 
 ```ts
 transpilePackages: ['@tracecode/harness']
@@ -90,493 +45,129 @@ transpilePackages: ['@tracecode/harness']
 
 ## Quick Start
 
-1. Copy the worker assets into your app's public directory.
+Copy browser worker assets into your app's public directory:
 
 ```bash
 pnpm exec tracecode-harness sync-assets public/workers
 ```
 
-2. Create an explicit browser harness instance.
+Create a browser harness and execute code:
 
 ```ts
 import { createBrowserHarness } from '@tracecode/harness/browser';
 
-const harness = createBrowserHarness({
-  assetBaseUrl: '/workers',
-});
-```
-
-3. Get a runtime client and execute code.
-
-```ts
+const harness = createBrowserHarness({ assetBaseUrl: '/workers' });
 const client = harness.getClient('python');
 
 await client.init();
 
+const source = `
+def solve(nums):
+    return sum(nums)
+`;
+
 const result = await client.executeCode(
-  `
-def solve(nums, target):
-    seen = {}
-    for index, value in enumerate(nums):
-        complement = target - value
-        if complement in seen:
-            return [seen[complement], index]
-        seen[value] = index
-    return []
-`,
+  source,
   'solve',
-  { nums: [2, 7, 11, 15], target: 9 }
+  { nums: [1, 2, 3] }
 );
-```
 
-4. Run tracing when the selected language profile supports it.
-
-```ts
 const trace = await client.executeWithTracing(
-  code,
+  source,
   'solve',
-  inputs,
+  { nums: [1, 2, 3] },
   { maxTraceSteps: 200 },
   'function'
 );
 ```
 
-## Public Package Surface
+Use `harness.warmLanguage('java' | 'csharp' | 'cpp')` when a compiled runtime is
+selected so the heavier compiler path can load before first execution.
 
-The package publishes built ESM and CommonJS entrypoints plus `.d.ts` files.
+## Packages
 
-- `@tracecode/harness`
-  Re-exports the documented public surface.
-- `@tracecode/harness/browser`
-  Browser harness factory, capability guards, and language profiles.
-- `@tracecode/harness/core`
-  Shared runtime contracts, result types, and trace helpers.
-- `@tracecode/harness/python`
-  Python runtime helpers, worker client, and snippet artifacts.
-- `@tracecode/harness/javascript`
-  JavaScript and TypeScript execution helpers and worker client.
-- `@tracecode/harness/java`
-  Java runtime client and worker client.
-- `@tracecode/harness/csharp`
-  C# runtime client and worker client.
-- `@tracecode/harness/cpp`
-  C++ runtime client and worker client.
-- `@tracecode/harness/native`
-  Opt-in native Node harness for faster trusted batch execution and tracing.
+The umbrella package exposes `/browser`, `/core`, `/python`, `/javascript`,
+`/java`, `/csharp`, `/cpp`, `/project`, `/project-node`, and `/native`
+entrypoints. Standalone packages expose the same surfaces with smaller installs:
+`@tracecode/harness-core`, `@tracecode/harness-browser`, the language packages,
+`@tracecode/harness-project`, and `@tracecode/harness-native`.
 
-The same core, browser, and language surfaces are available as standalone
-packages:
-
-- `@tracecode/harness-core`
-- `@tracecode/harness-browser`
-- `@tracecode/harness-python`
-- `@tracecode/harness-javascript`
-- `@tracecode/harness-java`
-- `@tracecode/harness-csharp`
-- `@tracecode/harness-cpp`
-- `@tracecode/harness-native`
-
-The browser entrypoint is intentionally narrow. Low-level worker constructors, language gates, and isolation helpers are internal implementation details, not public SDK surface.
-Project/workspace mode is an additive surface exposed through explicit
-`/project` subpaths so ordinary single-file consumers do not import the
-`just-bash` workspace layer by accident. Its standalone package is
-`@tracecode/harness-project`; see
-[Advanced: Project Workspaces](#advanced-project-workspaces) when you need
-shell-style multi-file execution.
-Native batch/code execution is also additive and exposed through
-`@tracecode/harness/native` or `@tracecode/harness-native`; see
-[Native Harness](#native-harness) when you need host-native runners for trusted
-high-throughput jobs.
-
-## Browser API
-
-The browser package centers on `createBrowserHarness(options)`.
-
-```ts
-import {
-  createBrowserHarness,
-  getLanguageRuntimeInfo,
-  getLanguageRuntimeProfile,
-  isLanguageSupported,
-  SUPPORTED_LANGUAGES,
-} from '@tracecode/harness/browser';
-```
-
-The returned harness exposes:
-
-- `getClient(language)`
-- `getProfile(language)`
-- `getSupportedLanguageProfiles()`
-- `getLanguageInfo(language)`
-- `getSupportedLanguageInfos()`
-- `isLanguageSupported(language)`
-- `warmLanguage(language)`
-- `disposeLanguage(language)`
-- `dispose()`
-
-Configuration:
-
-- `assetBaseUrl?: string`
-- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; csharpWorker; csharpAssetBaseUrl; cppWorker; cppCompilerFrame; cppCompilerWorker; cppCompilerBundle; cppRuntimeHeader }>`
-- `debug?: boolean`
-- `java?: { workerIdleTimeoutMs?: number }`
-- `csharp?: { workerIdleTimeoutMs?: number }`
-- `cpp?: { workerIdleTimeoutMs?: number }`
-
-Example:
-
-```ts
-const harness = createBrowserHarness({
-  assetBaseUrl: '/workers',
-});
-
-const profile = harness.getProfile('typescript');
-const info = harness.getLanguageInfo('typescript');
-const pythonInfo = getLanguageRuntimeInfo('python');
-
-if (profile.capabilities.tracing.supported) {
-  // show trace controls
-}
-
-console.log(info.versionLabel);
-console.log(info.description);
-console.log(pythonInfo.versionLabel);
-```
-
-Runtime info is generated from worker constants, package manifests, and vendored runtime
-metadata. Each info object also includes `description`, a natural-language runtime
-summary suitable for product UI. Run `pnpm generate:runtime-info` after runtime
-dependency changes, or `pnpm test:runtime-info-sync` to check whether the
-generated SDK data is current.
-
-For Java, `init()` only performs a light CheerpJ initialization. Call `warmLanguage('java')`
-after the user selects Java, or after editor-driven assist work, to warm the heavier javac
-path in the background. The hot Java worker idles for 5 minutes by default; call
-`disposeLanguage('java')` when the editor closes or the user switches away to release it
-immediately.
-
-For C#, `init()` records the worker asset URL without loading the .NET runtime. Call
-`warmLanguage('csharp')` after the user selects C# to load the runtime and warm Roslyn in
-the background. Execution still works without an explicit warmup; the first request pays the
-runtime load cost.
-
-For C++, `init()` only records the worker asset URLs. Call `warmLanguage('cpp')` after the
-user selects C++ to load and warm the browser-local Clang/WASI toolchain in the background.
-The default browser client compiles through a disposable compiler frame/worker so the hot
-compiler context can be released after compilation; warmup uses that external compiler path
-when the frame or nested compiler worker is available, so the main C++ worker keeps only the
-compiled program cache. Hosting `cppCompilerFrame` on a separate process-isolated origin
-gives Chrome the strongest cleanup boundary. If the compiler frame is on another origin,
-serve `cppCompilerWorker`, `cppCompilerBundle`, `cppRuntimeHeader`, and the YoWASP assets
-from that origin too, or serve them with CORS headers. The hot C++ worker keeps its shorter
-default idle timeout; call `disposeLanguage('cpp')` when C++ is no longer active.
+All supported languages are stable. Use `getLanguageRuntimeProfile(language)`
+for detailed capability checks and `getLanguageRuntimeInfo(language)` for
+runtime labels/descriptions.
 
 ## Worker Assets
 
-`tracecode-harness sync-assets <target-dir>` copies the canonical browser asset set:
+`tracecode-harness sync-assets <target-dir>` copies the canonical browser asset
+set for installed languages, including runtime workers, vendored compiler
+assets, and `THIRD_PARTY_NOTICES.md`.
 
-- `THIRD_PARTY_NOTICES.md`
-- `pyodide-worker.js`
-- `generated-python-harness-snippets.js`
-- `pyodide/runtime-core.js`
-- `javascript-worker.js`
-- `vendor/typescript.js`
-- `vendor/javascript-libraries.js`
-- `java-worker.js`
-- `vendor/java-browser-helper.jar`
-- `vendor/java-rewriter.jar`
-- `vendor/javaparser-core-3.25.10.jar`
-- `vendor/jdk.compiler-17.jar`
-- `csharp-worker.js`
-- `vendor/csharp/**`
-- `cpp-worker.js`
-- `cpp-compiler-frame.html`
-- `cpp-compiler-worker.js`
-- `cpp/tracecode_runtime.hpp`
-- `vendor/cpp/yowasp/**`
-
-You can copy a smaller set from the umbrella CLI:
+Copy only selected languages from the umbrella package:
 
 ```bash
 pnpm exec tracecode-harness sync-assets public/workers --languages python,javascript
 ```
 
 Standalone language packages publish their own `workers/` directories with the
-same target layout, so consumers can copy only the package assets they install.
+same target layout, so consumers can distribute only the runtime assets they
+install. Advanced consumers can override individual asset URLs through
+`createBrowserHarness({ assets })`.
 
-By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those assets as:
+## Project Workspaces
 
-- `/workers/THIRD_PARTY_NOTICES.md`
-- `/workers/pyodide-worker.js`
-- `/workers/generated-python-harness-snippets.js`
-- `/workers/pyodide/runtime-core.js`
-- `/workers/javascript-worker.js`
-- `/workers/vendor/typescript.js`
-- `/workers/vendor/javascript-libraries.js`
-- `/workers/java-worker.js`
-- `/workers/vendor/java-browser-helper.jar`
-- `/workers/vendor/java-rewriter.jar`
-- `/workers/vendor/javaparser-core-3.25.10.jar`
-- `/workers/vendor/jdk.compiler-17.jar`
-- `/workers/csharp-worker.js`
-- `/workers/vendor/csharp`
-- `/workers/cpp-worker.js`
-- `/workers/cpp-compiler-frame.html`
-- `/workers/cpp-compiler-worker.js`
-- `/workers/cpp/tracecode_runtime.hpp`
-- `/workers/vendor/cpp/yowasp`
+Project/workspace mode is for browser IDEs, interview workspaces, terminal
+demos, and local project runners that need shell-style multi-file execution.
 
-Advanced consumers can override individual asset URLs through the `assets` option.
-
-## Capability Model
-
-Runtime support is expressed through language profiles, not a few flat booleans.
-
-Each profile includes:
-
-- `language`
-- `maturity`
-- `capabilities`
-
-Capability domains:
-
-- `execution`
-- `tracing`
-- `diagnostics`
-- `structures`
-
-The `execution.compilation` capability classifies how code reaches the runtime:
-
-- `required`: whether execution requires a compile/transpile step
-- `pipeline`: `interpreted`, `transpiled`, or `compiled`
-- `cost`: `none`, `low`, or `high`
-
-That lets the package be explicit about partial support and fail closed for unsupported requests.
-
-Current language status:
-
-- `python`: stable
-- `javascript`: stable
-- `typescript`: stable
-- `java`: experimental, browser-local Java 17 lane
-- `csharp`: experimental, browser-local .NET WASM + Roslyn lane
-- `cpp`: experimental, browser-local Clang/WASI lane
-
-Current Java scope:
-
-- supported: `function`, `solution-method`, `ops-class`, `script`, `interviewMode`, tracing, compile diagnostics, and neutral runtime trace facts
-- script mode uses an empty function name with `executionStyle: "function"` and reads the top-level `result` variable
-
-Current C# scope:
-
-- supported: named `function` execution, script-style `function` execution with an empty function name and top-level `result`, `interviewMode` execution with sanitized timeout responses, `solution-method` execution for `public class Solution`, `ops-class` execution with JS/TS/Java-style operation-output arrays, generated drivers including `void` methods, `ListNode`/`TreeNode` prelude classes and JSON hydration including linked `__id__`/`__ref__` cycle refs, neutral graph-like map/list serialization, stdout capture, runtime errors, mapped Roslyn compile diagnostics, soft loop timeouts, trace budgets (`maxTraceSteps`, `maxLineEvents`, `maxSingleLineHits`, `maxStoredEvents`, `minimalTrace`), call-stack attachment for traced frames, `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/array return-value serialization, block-bodied and expression-bodied method tracing, block-bodied and expression-bodied lambda tracing, basic line/call/return-value/simple-write tracing, one-dimensional array indexed read/write tracing including simple compound writes, and `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/`Queue<T>`/`PriorityQueue<TElement,TPriority>`/`Stack<T>` wrapper tracing for `var`, explicit local declarations, target-typed `new()`, collection initializers, common collection constructors, comparer constructor overloads, and priority-queue capacity/comparer constructors
-- not yet supported in tracing/snippet mode: NuGet packages, async/threading APIs, expression-tree lambda rewriting, or full expression/value tracing fidelity
-- project mode additionally supports project files, multiple source files, unsafe builds, resources, `HintPath`, and `ProjectReference` for compile/run execution
-
-## Advanced: Project Workspaces
-
-Project/workspace mode is for apps that need shell-style multi-file execution:
-browser IDEs, interview workspaces, terminal demos, and local project runners.
-It is built on a Tracekernel workspace and exposed separately from the primary
-single-file browser harness.
-
-The project surface lives behind explicit entrypoints:
-
-- `@tracecode/harness/browser/project`
-  Browser project/workspace factory.
-- `@tracecode/harness/project`
-  Shared workspace primitives backed by `just-bash`.
-- `@tracecode/harness/project-node`
-  Native Node project/workspace factory for local Python, Node, Java, C#, and C++ commands.
-- `@tracecode/harness-project`
-  Standalone package for consumers that install project mode separately.
-
-Browser project workspace:
-
-```ts
-import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/project';
-
-const workspace = await createBrowserProjectWorkspace({
-  assetBaseUrl: '/workers',
-  kernel: {
-    user: { username: 'ada' },
-    host: { hostname: 'tracevm' },
-    workspace: { name: 'weather-api' },
-  },
-  files: [
-    { path: 'src/main.py', contents: 'print("hello")\n' },
-  ],
-});
-
-const result = await workspace.runCommand('python3 src/main.py');
-
-workspace.dispose();
-```
-
-The workspace API includes file operations, `runCommand(...)`,
-`snapshot(...)`, `exportPatch(...)`, `importPatch(...)`, streaming command
-events, and live file mutation events. Project commands are routed through the
-same command request shape across browser and native runners for Python,
-JavaScript/Node, Java, C#, and C/C++.
-
-Tracekernel provides the workspace system model for this mode: configurable user
-and host identity, a canonical `/home/<user>/<project>` root, optional
-`/workspace` alias, virtual `/dev` and `/proc` files, readonly/hidden session
-fixtures, and browser storage hooks. Most consumers only need this through the
-workspace and terminal APIs.
-
-For terminal UIs, use `workspace.createTerminalSession(...)` instead of
-building prompt/stdin heuristics around raw command output. See
-[Project Terminal Sessions](./docs/project-terminal-session.md).
-
-For fuller references, see [packages/harness-project](./packages/harness-project),
-[examples/project-ide](./examples/project-ide), and
-[examples/project-terminal](./examples/project-terminal).
+Use `createBrowserProjectWorkspace(...)` for browser workspaces,
+`createNativeProjectWorkspace(...)` for local trusted project execution, and
+`workspace.createTerminalSession(...)` for terminal UIs. See
+[Project Terminal Sessions](./docs/project-terminal-session.md) and the
+[project IDE](./examples/project-ide) / [project terminal](./examples/project-terminal)
+examples.
 
 ## Native Harness
 
 Native harness is for trusted local automation, CI, regression mining, and
-high-throughput batch inference where browser startup and WebAssembly runtime
-costs are too high. It exposes the same code/trace `RuntimeClient` shape as the
-browser harness for supported native code clients, while `createNativeProjectWorkspace`
-continues to provide shell-style project execution.
+high-throughput batch inference. It runs host-native tools and Node VM contexts,
+so it is not a sandbox for arbitrary untrusted code.
 
-```ts
-import { createNativeHarness } from '@tracecode/harness/native';
+Use `createNativeHarness(...)` for trusted local execution and `runJobs` /
+`runJobsEach` for batch workloads.
 
-const harness = createNativeHarness({
-  pythonCommand: 'python3',
-});
+## Docs And Examples
 
-const client = harness.getClient('python');
-
-const result = await client.execute({
-  kind: 'code',
-  code: 'def solve(nums):\n    return sum(nums)\n',
-  functionName: 'solve',
-  cases: [
-    { id: 'small', inputs: { nums: [1, 2, 3] }, expected: 6 },
-  ],
-});
-```
-
-Use `runJobs` or `createQueue` for native batch inference across many
-independent jobs:
-
-```ts
-const results = await harness.runJobs(jobs, { workers: 8 });
-```
-
-For very large corpora, prefer the streaming form so results can be written as
-they complete and the producer is backpressured by the worker pool:
-
-```ts
-await harness.runJobsEach(solutionJobs, async (result) => {
-  await writeResult(result);
-}, { workers: 8 });
-```
-
-For best throughput, make each job one solution with many `cases`; avoid one job
-per individual test case.
-
-Each worker owns its own runtime clients. `python`, `javascript`, `typescript`,
-`java`, `csharp`, and `cpp` support the native code-client API and queue
-scheduling. Native event tracing is available for Python, JavaScript,
-TypeScript, and C++; Java and C# native code clients run and batch through host
-toolchains, but host-side trace instrumentation is still reported as unsupported
-by `getNativeLanguageSupport()`.
-
-Native harness is not a sandbox. It runs code through host-native tools and
-Node VM contexts, so it must not be used as the isolation boundary for arbitrary
-untrusted code. Browser runtimes remain the default for normal product usage.
-Use native harness when speed and host-tool access are the goal, and put it
-inside an OS/container/VM sandbox if the submitted code is not trusted.
-
-## Example Consumer
-
-A minimal tracing/problem-style browser IDE lives in [examples/web-ide](./examples/web-ide). It is intentionally small and exists to prove that a third-party app can:
-
-- consume the public browser API
-- sync worker assets with the CLI
-- initialize all supported runtimes
-- execute and trace code without any app-specific state wiring
-
-A separate project-mode IDE lives in [examples/project-ide](./examples/project-ide). It exercises tracekernel workspace behavior, project sessions, live filesystem mutation events, stdio streaming, and shell-style project commands.
-
-A fullscreen project terminal lives in [examples/project-terminal](./examples/project-terminal). It uses the same project harness and tracekernel terminal path without the IDE editor or explorer surface.
-
-Browser workspace persistence is application-owned. The built-in `createIndexedDbKernelStorage(...)` helper encrypts persisted snapshots and requires an AES-GCM `CryptoKey`; do not store that key in same-origin browser storage.
-
-For cloud sync, apps can store compact user overlays with
-`workspace.exportPatch(defaultSnapshot, { base: { id, version } })` and later
-restore them with `workspace.importPatch(defaultSnapshot, patch)`. TraceKernel
-validates the base manifest and per-file preconditions before mutating the
-workspace; the app owns problem IDs, problem versions, storage, and conflict UX.
-
-All examples are reference consumers for the SDK contract, not canonical product UI.
+- [Docs index](./docs/README.md)
+- [Harness Execution Contract](./docs/harness-execution-contract.md)
+- [Isolation Boundaries](./docs/isolation-boundaries.md)
+- [TraceKernel Workspaces](./docs/tracekernel-workspaces.md)
+- [TraceKernel HTTP Simulation](./docs/tracekernel-http.md)
+- [Example Web IDE](./examples/web-ide)
+- [Example Project IDE](./examples/project-ide)
+- [Example Project Terminal](./examples/project-terminal)
 
 ## Development
 
-Install workspace dependencies:
-
 ```bash
 pnpm install
-```
-
-Run the full gate:
-
-```bash
 pnpm test
 ```
 
-That covers:
-
-- package typechecks
-- runtime and trace contract tests
-- packaging/import smoke tests
-- asset sync contract tests
-- example app browser smoke tests
-
-If you change Python harness templates or generated snippets, regenerate artifacts:
+Useful focused commands:
 
 ```bash
 pnpm generate:python-harness
-```
-
-To update the vendored C# browser-WASM runtime, run:
-
-```bash
 pnpm update:csharp-runtime
+pnpm test:runtime-info-sync
 ```
 
-The updater reads the C# host `TargetFramework`, installs or updates the matching
-.NET SDK channel under `.dotnet/`, installs `wasm-tools`, republishes the host,
-replaces `workers/vendor/csharp`, and regenerates runtime language info. Set
-`TRACECODE_DOTNET_VERSION` to pin an exact SDK version for a repeatable refresh.
+The C# runtime updater reads the host under
+`runtimes/csharp/TraceCode.CSharpHost`, publishes the browser-WASM bundle,
+replaces `workers/vendor/csharp`, and regenerates runtime language info.
 
-## Releases
+## Releases And Notices
 
-This repo uses explicit versioned release boundaries.
+Release history lives in [CHANGELOG.md](./CHANGELOG.md). Runtime dependency and
+license notes live in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md); keep
+that file with any redistribution of worker assets.
 
-- `0.6.2` enables experimental Java script-style execution using the empty function name and top-level `result` convention
-- `0.6.1` resolves Dependabot-reported vulnerabilities in Vite, DOMPurify, and Picomatch dependency paths
-- `0.6.0` adds an experimental browser-local Java 17 runtime lane for `function`, `solution-method`, `ops-class`, and `interviewMode` execution, plus public asset packaging and browser smoke coverage for Java
-- `0.5.0` improves JavaScript tree/list input hydration, fixes sparse tree deserialization, and trims GitHub CI to the non-browser verification set
-- `0.1.0` introduced the public harness baseline
-- `0.2.0` introduced structured runtime capability profiles
-- `0.3.0` introduced runtime access metadata in traces
-- `0.4.0` makes the harness a clean browser SDK with explicit runtime creation and asset sync tooling
-
-Detailed release notes live in [CHANGELOG.md](./CHANGELOG.md).
-
-## Third-Party Runtime Notices
-
-Runtime dependencies and license notes are tracked in
-[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md). Keep that file with any
-redistribution of worker assets. The Java lane does not redistribute CheerpJ;
-it loads the pinned hosted CheerpJ runtime from Leaning Technologies. That remote
-runtime is a trusted third-party dependency, not a hash-verified bundled asset.
-
-## License
-
-AGPL-3.0-only
+License: AGPL-3.0-only

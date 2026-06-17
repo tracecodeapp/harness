@@ -1,6 +1,7 @@
 # Runtime Conformance Fixtures
 
-`cpp-fixtures.ts` is the reviewed C++ seed corpus. These fixtures use simple semantics and unusual user-code shapes to test runtime behavior rather than algorithm difficulty.
+The reviewed conformance fixtures use simple semantics and unusual user-code
+shapes to test runtime behavior rather than algorithm difficulty.
 
 To validate a new ChatGPT-generated batch without trusting it as the oracle:
 

@@ -1,6 +1,6 @@
 # Example Project Terminal
 
-Fullscreen terminal demo for `@tracecode/harness` project mode and tracekernel.
+Fullscreen terminal demo for `@tracecode/harness` project mode and TraceKernel.
 
 This app is intentionally tiny for screen recordings: one C++ stdin program and one Java stdin program, both compiled and run inside the browser project workspace.
 
@@ -19,8 +19,8 @@ The app syncs harness worker assets into `public/workers` before `dev`, `build`,
 
 - `createBrowserProjectWorkspace(...)` from `@tracecode/harness/browser/project`
 - `workspace.createTerminalSession(...)` for prompt state and live stdin
-- C++ compile/run through tracekernel
-- Java compile/run through tracekernel
+- C++ compile/run through TraceKernel
+- Java compile/run through TraceKernel
 - prompted stdin, stdout/stderr, and generated project files
 
 Browser workspace persistence is intentionally not enabled by default in this
@@ -45,5 +45,3 @@ javac java/TicketTriage.java
 java -cp java TicketTriage
 cat ticket.json
 ```
-
-Project site: [tracecode.app](https://tracecode.app)

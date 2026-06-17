@@ -10,7 +10,9 @@ This app is intentionally small. It exists to prove that a third-party browser a
 - execute and trace Python, JavaScript, TypeScript, Java, C#, and C++
 - render execution output and full trace payloads
 
-It is not the canonical TraceCode product UI, and it does not exercise project-mode workspace semantics. Use `examples/project-ide` for the tracekernel project workspace example.
+It is not the canonical TraceCode product UI, and it does not exercise
+project-mode workspace semantics. Use `examples/project-ide` for the
+TraceKernel project workspace example.
 
 ## Run It
 
@@ -32,12 +34,6 @@ The app syncs harness worker assets into `public/workers` before `dev`, `build`,
 
 ## Production Note
 
-This example uses the workspace package during local development:
-
-```json
-"@tracecode/harness": "workspace:*"
-```
-
-Outside this repository, install the published package from npm and keep the same public API usage.
-
-Project site: [tracecode.app](https://tracecode.app)
+This example uses the workspace package during local development. Outside this
+repository, install the published package from npm and keep the same public API
+usage.

@@ -7,6 +7,7 @@ Before opening larger changes:
 - keep the runtime contract stable
 - keep browser worker behavior stable
 - keep the public package surface deliberate and documented
+- keep public docs focused on stable SDK contracts, not temporary status logs
 - avoid changing generated artifacts by hand
 
 The package now has two distinct responsibilities:
@@ -22,6 +23,11 @@ Avoid reintroducing app-coupled assumptions into the runtime surface, especially
 - `localStorage`-driven runtime behavior
 - consumer-repo file paths
 - consumer app names or product-specific workflow hooks
+
+Docs in `docs/` should be consumer-facing or stable contributor contracts.
+Temporary parity ledgers, spike findings, corpus-mining notes, and migration
+status reports should stay out of the public docs tree unless they are promoted
+into a durable contract document.
 
 Run the local gate before submitting changes:
 
