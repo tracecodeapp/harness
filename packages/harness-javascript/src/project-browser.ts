@@ -5592,6 +5592,7 @@ export async function runBrowserJavaScriptProjectRequest(
         let bytesRead = 0;
         let nextPosition = typeof position === 'number' ? Math.max(0, position) : position;
         for (const buffer of buffers) {
+          if (buffer.byteLength === 0) continue;
           const count = fsApi.readSync(fd, buffer, 0, buffer.byteLength, nextPosition);
           bytesRead += count;
           if (typeof nextPosition === 'number') nextPosition += count;
