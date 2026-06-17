@@ -430,6 +430,7 @@ const RUNTIME_VALUE_MAX_DEPTH = 48;
 const RUNTIME_VALUE_MAX_ITEMS = 64;
 const RUNTIME_VALUE_MAX_OBJECT_FIELDS = 32;
 const RUNTIME_VALUE_MAX_NODES = 4096;
+const INPUT_MATERIALIZER_MAX_DEPTH = 512;
 const TRACE_SERIALIZATION_LIMITS = {
   maxItems: RUNTIME_VALUE_MAX_ITEMS,
   maxFields: RUNTIME_VALUE_MAX_OBJECT_FIELDS,
@@ -993,7 +994,15 @@ function buildTreeNodeFromLevelOrder(values) {
   return root;
 }
 
-function materializeTreeInput(value, materialized = new WeakMap()) {
+function assertInputMaterializerDepth(depth) {
+  if (depth > INPUT_MATERIALIZER_MAX_DEPTH) {
+    throw Object.assign(new Error(`Input materializer exceeded maximum depth (${INPUT_MATERIALIZER_MAX_DEPTH})`), {
+      code: 'ERR_HARNESS_INPUT_MATERIALIZER_DEPTH',
+    });
+  }
+}
+
+function materializeTreeInput(value, materialized = new WeakMap(), depth = 0) {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     return buildTreeNodeFromLevelOrder(value);
@@ -1004,6 +1013,7 @@ function materializeTreeInput(value, materialized = new WeakMap()) {
   if (isLikelyTreeNodeValue(value) || value.__type__ === 'TreeNode') {
     const existingMaterialized = materialized.get(value);
     if (existingMaterialized) return existingMaterialized;
+    assertInputMaterializerDepth(depth);
     const nodeValue = value;
     const node = {
       val: nodeValue.val ?? nodeValue.value ?? null,
@@ -1012,18 +1022,18 @@ function materializeTreeInput(value, materialized = new WeakMap()) {
       right: null,
     };
     materialized.set(value, node);
-    node.left = materializeTreeInput(nodeValue.left ?? null, materialized);
-    node.right = materializeTreeInput(nodeValue.right ?? null, materialized);
+    node.left = materializeTreeInput(nodeValue.left ?? null, materialized, depth + 1);
+    node.right = materializeTreeInput(nodeValue.right ?? null, materialized, depth + 1);
     for (const [key, nested] of Object.entries(value)) {
       if (key === '__id__' || key === '__type__' || key === '__class__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
-      node[key] = materializeTreeInput(nested, materialized);
+      node[key] = materializeTreeInput(nested, materialized, depth + 1);
     }
     return node;
   }
   return value;
 }
 
-function materializeListInput(value, refs = new Map(), materialized = new WeakMap()) {
+function materializeListInput(value, refs = new Map(), materialized = new WeakMap(), depth = 0) {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     if (value.length === 0) return null;
@@ -1046,6 +1056,7 @@ function materializeListInput(value, refs = new Map(), materialized = new WeakMa
     if (existingMaterialized) {
       return existingMaterialized;
     }
+    assertInputMaterializerDepth(depth);
     const node = {
       val: value.val ?? value.value ?? null,
       value: value.val ?? value.value ?? null,
@@ -1055,10 +1066,10 @@ function materializeListInput(value, refs = new Map(), materialized = new WeakMa
     if (typeof value.__id__ === 'string' && value.__id__.length > 0) {
       refs.set(value.__id__, node);
     }
-    node.next = materializeListInput(value.next ?? null, refs, materialized);
+    node.next = materializeListInput(value.next ?? null, refs, materialized, depth + 1);
     for (const [key, nested] of Object.entries(value)) {
       if (key === '__id__' || key === '__type__' || key === '__class__' || key === 'val' || key === 'value' || key === 'next') continue;
-      node[key] = materializeListInput(nested, refs, materialized);
+      node[key] = materializeListInput(nested, refs, materialized, depth + 1);
     }
     return node;
   }
@@ -1151,20 +1162,21 @@ function applyInputMaterializers(inputs, materializers) {
   return next;
 }
 
-function applyPreRuntimeInputMaterializer(value, kind) {
+function applyPreRuntimeInputMaterializer(value, kind, depth = 0) {
   if (!kind) return value;
+  assertInputMaterializerDepth(depth);
   if (kind === 'tree') return materializeTreeInput(value);
   if (kind === 'list') return materializeListInput(value);
   if (kind.kind === 'array') {
     return Array.isArray(value)
-      ? value.map((item) => applyPreRuntimeInputMaterializer(item, kind.element))
+      ? value.map((item) => applyPreRuntimeInputMaterializer(item, kind.element, depth + 1))
       : value;
   }
   if (kind.kind === 'record') {
     if (!isPlainObjectRecord(value)) return value;
     const out = {};
     for (const [key, child] of Object.entries(value)) {
-      out[key] = applyPreRuntimeInputMaterializer(child, kind.value);
+      out[key] = applyPreRuntimeInputMaterializer(child, kind.value, depth + 1);
     }
     return out;
   }
@@ -1175,7 +1187,7 @@ function applyPreRuntimeInputMaterializer(value, kind) {
         ? Object.entries(value)
         : null;
     return entries
-      ? new Map(entries.map(([key, child]) => [key, applyPreRuntimeInputMaterializer(child, kind.value)]))
+      ? new Map(entries.map(([key, child]) => [key, applyPreRuntimeInputMaterializer(child, kind.value, depth + 1)]))
       : value;
   }
   return value;

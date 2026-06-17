@@ -17,6 +17,7 @@ import {
   createBrowserJavaScriptProjectRunner,
   createBrowserTypeScriptProjectRunner,
 } from '../packages/harness-javascript/src/project-browser';
+import { executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
 import { createNativeCppProjectRunner } from '../packages/harness-cpp/src/project-node';
 import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
@@ -1141,6 +1142,12 @@ async function testJavaScriptInputHydrationIsBounded(): Promise<void> {
       !source.includes('const node = queue.shift()'),
       `${label} tree level-order hydration should use a cursor queue instead of Array.shift`
     );
+    assertCondition(
+      source.includes('INPUT_MATERIALIZER_MAX_DEPTH') &&
+        source.includes('Input materializer exceeded maximum depth') &&
+        source.includes('ERR_HARNESS_INPUT_MATERIALIZER_DEPTH'),
+      `${label} input materializer should reject oversized nested inputs before stack exhaustion`
+    );
   }
 
   const context = vm.createContext({
@@ -1179,6 +1186,46 @@ async function testJavaScriptInputHydrationIsBounded(): Promise<void> {
   assertCondition(
     result.val === 1 && result.leftCycles && result.extraCycles,
     `JavaScript tree input hydration should preserve cycles without recursive overflow: ${JSON.stringify(result)}`
+  );
+
+  const deepWorkerResult = vm.runInContext(
+    `(() => {
+      const head = { __type__: 'ListNode', val: 0, next: null };
+      let cursor = head;
+      for (let index = 0; index < 600; index += 1) {
+        cursor.next = { __type__: 'ListNode', val: index + 1, next: null };
+        cursor = cursor.next;
+      }
+      try {
+        materializeListInput(head);
+        return 'ok';
+      } catch (error) {
+        return String(error && error.message ? error.message : error);
+      }
+    })()`,
+    context
+  ) as string;
+  assertCondition(
+    deepWorkerResult.includes('maximum depth'),
+    `JavaScript worker list input hydration should reject deep chains before stack exhaustion: ${deepWorkerResult}`
+  );
+
+  const deepTree: Record<string, unknown> = { __type__: 'TreeNode', val: 0, left: null, right: null };
+  let cursor = deepTree;
+  for (let depth = 0; depth < 600; depth += 1) {
+    const child: Record<string, unknown> = { __type__: 'TreeNode', val: depth + 1, left: null, right: null };
+    cursor.left = child;
+    cursor = child;
+  }
+  const packageResult = await executeTypeScriptCode(
+    'function depth(root: TreeNode | null): number { return root ? 1 : 0; }',
+    'depth',
+    { root: deepTree },
+    'function'
+  );
+  assertCondition(
+    packageResult.success === false && typeof packageResult.error === 'string' && packageResult.error.includes('maximum depth'),
+    `Package TypeScript tree input hydration should reject deep chains before stack exhaustion: ${JSON.stringify(packageResult)}`
   );
 }
 

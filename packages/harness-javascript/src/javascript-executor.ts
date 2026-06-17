@@ -447,6 +447,7 @@ function getCustomClassName(value: unknown): string | null {
 const RUNTIME_VALUE_MAX_DEPTH = 48;
 const RUNTIME_VALUE_MAX_ITEMS = 64;
 const RUNTIME_VALUE_MAX_OBJECT_FIELDS = 32;
+const INPUT_MATERIALIZER_MAX_DEPTH = 512;
 const TRACE_SERIALIZATION_LIMITS = { maxItems: RUNTIME_VALUE_MAX_ITEMS, maxFields: RUNTIME_VALUE_MAX_OBJECT_FIELDS };
 const OUTPUT_SERIALIZATION_LIMITS = { maxItems: Number.POSITIVE_INFINITY, maxFields: Number.POSITIVE_INFINITY };
 let activeSerializationLimits = TRACE_SERIALIZATION_LIMITS;
@@ -1084,9 +1085,18 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
   return root;
 }
 
+function assertInputMaterializerDepth(depth: number): void {
+  if (depth > INPUT_MATERIALIZER_MAX_DEPTH) {
+    throw Object.assign(new Error(`Input materializer exceeded maximum depth (${INPUT_MATERIALIZER_MAX_DEPTH})`), {
+      code: 'ERR_HARNESS_INPUT_MATERIALIZER_DEPTH',
+    });
+  }
+}
+
 function materializeTreeInput(
   value: unknown,
-  materialized: WeakMap<object, Record<string, unknown>> = new WeakMap()
+  materialized: WeakMap<object, Record<string, unknown>> = new WeakMap(),
+  depth = 0
 ): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
@@ -1099,6 +1109,7 @@ function materializeTreeInput(
   if (isLikelyTreeNodeValue(record)) {
     const existingMaterialized = materialized.get(record);
     if (existingMaterialized) return existingMaterialized;
+    assertInputMaterializerDepth(depth);
     const node: Record<string, unknown> = {
       val: record.val ?? record.value ?? null,
       value: record.val ?? record.value ?? null,
@@ -1106,11 +1117,11 @@ function materializeTreeInput(
       right: null,
     };
     materialized.set(record, node);
-    node.left = materializeTreeInput(record.left ?? null, materialized);
-    node.right = materializeTreeInput(record.right ?? null, materialized);
+    node.left = materializeTreeInput(record.left ?? null, materialized, depth + 1);
+    node.right = materializeTreeInput(record.right ?? null, materialized, depth + 1);
     for (const [key, nested] of Object.entries(record)) {
       if (key === '__id__' || key === '__type__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
-      node[key] = materializeTreeInput(nested, materialized);
+      node[key] = materializeTreeInput(nested, materialized, depth + 1);
     }
     return node;
   }
@@ -1118,6 +1129,7 @@ function materializeTreeInput(
   if (taggedRecord.__type__ === 'TreeNode') {
     const existingMaterialized = materialized.get(taggedRecord);
     if (existingMaterialized) return existingMaterialized;
+    assertInputMaterializerDepth(depth);
     const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
       value: taggedRecord.val ?? taggedRecord.value ?? null,
@@ -1125,11 +1137,11 @@ function materializeTreeInput(
       right: null,
     };
     materialized.set(taggedRecord, node);
-    node.left = materializeTreeInput(taggedRecord.left ?? null, materialized);
-    node.right = materializeTreeInput(taggedRecord.right ?? null, materialized);
+    node.left = materializeTreeInput(taggedRecord.left ?? null, materialized, depth + 1);
+    node.right = materializeTreeInput(taggedRecord.right ?? null, materialized, depth + 1);
     for (const [key, nested] of Object.entries(taggedRecord)) {
       if (key === '__id__' || key === '__type__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
-      node[key] = materializeTreeInput(nested, materialized);
+      node[key] = materializeTreeInput(nested, materialized, depth + 1);
     }
     return node;
   }
@@ -1139,7 +1151,8 @@ function materializeTreeInput(
 function materializeListInput(
   value: unknown,
   refs: Map<string, Record<string, unknown>> = new Map(),
-  materialized: WeakMap<object, Record<string, unknown>> = new WeakMap()
+  materialized: WeakMap<object, Record<string, unknown>> = new WeakMap(),
+  depth = 0
 ): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
@@ -1170,6 +1183,7 @@ function materializeListInput(
     if (existingMaterialized) {
       return existingMaterialized;
     }
+    assertInputMaterializerDepth(depth);
     const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
       value: taggedRecord.val ?? taggedRecord.value ?? null,
@@ -1179,10 +1193,10 @@ function materializeListInput(
     if (typeof taggedRecord.__id__ === 'string' && taggedRecord.__id__.length > 0) {
       refs.set(taggedRecord.__id__, node);
     }
-    node.next = materializeListInput(taggedRecord.next ?? null, refs, materialized);
+    node.next = materializeListInput(taggedRecord.next ?? null, refs, materialized, depth + 1);
     for (const [key, nested] of Object.entries(taggedRecord)) {
       if (key === '__id__' || key === '__type__' || key === '__class__' || key === 'val' || key === 'value' || key === 'next') continue;
-      node[key] = materializeListInput(nested, refs, materialized);
+      node[key] = materializeListInput(nested, refs, materialized, depth + 1);
     }
     return node;
   }
@@ -1285,20 +1299,21 @@ function applyInputMaterializers(
   return next;
 }
 
-function applyPreRuntimeInputMaterializer(value: unknown, kind: InputMaterializerKind | null): unknown {
+function applyPreRuntimeInputMaterializer(value: unknown, kind: InputMaterializerKind | null, depth = 0): unknown {
   if (!kind) return value;
+  assertInputMaterializerDepth(depth);
   if (kind === 'tree') return materializeTreeInput(value);
   if (kind === 'list') return materializeListInput(value);
   if (kind.kind === 'array') {
     return Array.isArray(value)
-      ? value.map((item) => applyPreRuntimeInputMaterializer(item, kind.element))
+      ? value.map((item) => applyPreRuntimeInputMaterializer(item, kind.element, depth + 1))
       : value;
   }
   if (kind.kind === 'record') {
     if (!isPlainObjectRecord(value)) return value;
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value)) {
-      out[key] = applyPreRuntimeInputMaterializer(child, kind.value);
+      out[key] = applyPreRuntimeInputMaterializer(child, kind.value, depth + 1);
     }
     return out;
   }
@@ -1309,7 +1324,7 @@ function applyPreRuntimeInputMaterializer(value: unknown, kind: InputMaterialize
         ? Object.entries(value)
         : null;
     return entries
-      ? new Map(entries.map(([key, child]) => [key, applyPreRuntimeInputMaterializer(child, kind.value)]))
+      ? new Map(entries.map(([key, child]) => [key, applyPreRuntimeInputMaterializer(child, kind.value, depth + 1)]))
       : value;
   }
   return value;
