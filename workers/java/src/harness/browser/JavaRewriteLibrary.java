@@ -964,7 +964,7 @@ public final class JavaRewriteLibrary {
         MutatingArgs rewrittenArgs = mutatingArgs(rawArgs, sourceLine, frame);
         String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
             pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
-        String writeEvent = sequenceAppendWriteHook(sourceLine, name, frame.typeOf(name), method, rawArgs, rewrittenArgs.callArgs);
+        String writeEvent = sequenceAppendWriteHook(sourceLine, name, frame.typeOf(name), method, rawArgs, rewrittenArgs.callArgs, frame.isDeclaredObject(name));
         String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
         return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + name + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
       }
@@ -972,7 +972,7 @@ public final class JavaRewriteLibrary {
       String mutateHook = rawArgs.isEmpty()
           ? "TraceHooks.emitNoArgMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ")"
           : "TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ", " + rewrittenArgs.callArgs + ")";
-      String writeEvent = sequenceAppendWriteHook(sourceLine, name, frame.typeOf(name), method, rawArgs, rewrittenArgs.callArgs);
+      String writeEvent = sequenceAppendWriteHook(sourceLine, name, frame.typeOf(name), method, rawArgs, rewrittenArgs.callArgs, frame.isDeclaredObject(name));
       return indent + "{ " + rewrittenArgs.prefix + name + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateHook + ";" + writeEvent + " TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + "); }";
     }
 
@@ -1730,57 +1730,90 @@ public final class JavaRewriteLibrary {
 
   private static boolean isMapType(String type) {
     if (type == null) return false;
-    return normalizeJavaType(type).contains("Map");
+    return rawSimpleTypeName(type).endsWith("Map");
   }
 
   private static boolean isSetType(String type) {
     if (type == null) return false;
-    return normalizeJavaType(type).contains("Set<");
+    return rawSimpleTypeName(type).endsWith("Set");
   }
 
   private static boolean isListType(String type) {
     if (type == null) return false;
-    String normalized = normalizeJavaType(type);
-    return normalized.contains("List<") && !normalized.contains("Map");
+    return rawSimpleTypeName(type).endsWith("List");
   }
 
   private static boolean isQueueLikeType(String type) {
     if (type == null) return false;
-    String normalized = normalizeJavaType(type);
-    return normalized.contains("Queue<") || normalized.contains("Deque<") || normalized.contains("PriorityQueue<");
+    String rawType = rawSimpleTypeName(type);
+    return rawType.endsWith("Queue") || rawType.endsWith("Deque");
   }
 
   private static boolean isPriorityQueueType(String type) {
     if (type == null) return false;
-    String normalized = normalizeJavaType(type);
-    return normalized.startsWith("PriorityQueue<") || normalized.startsWith("java.util.PriorityQueue<");
+    return rawSimpleTypeName(type).endsWith("PriorityQueue");
   }
 
   private static boolean isStackType(String type) {
     if (type == null) return false;
-    return normalizeJavaType(type).contains("Stack<");
+    return rawSimpleTypeName(type).endsWith("Stack");
   }
 
   private static boolean isDequeType(String type) {
     if (type == null) return false;
-    return normalizeJavaType(type).contains("Deque<");
+    return rawSimpleTypeName(type).endsWith("Deque");
   }
 
   private static String indexedAccessExpression(String name, String type, String index) {
     String normalized = type == null ? "" : normalizeJavaType(type);
-    if (normalized.contains("Map")) {
-      return "((" + indexedValueCastType(normalized, "java.util.Map") + ")((java.util.Map)" + name + ").get(" + index + "))";
-    }
-    return "((" + indexedValueCastType(normalized, "java.util.List") + ")((java.util.List)" + name + ").get(" + index + "))";
+    String receiverCast = indexedReceiverCastType(normalized);
+    String valueCast = indexedValueCastType(normalized, "java.util.Map".equals(receiverCast) ? "java.util.Map" : "java.util.List");
+    return "((" + valueCast + ")((" + receiverCast + ")" + name + ").get(" + index + "))";
+  }
+
+  private static String indexedReceiverCastType(String normalizedType) {
+    String rawType = rawSimpleTypeName(normalizedType);
+    if (rawType.endsWith("Map")) return "java.util.Map";
+    return "java.util.List";
   }
 
   private static String indexedValueCastType(String normalizedType, String fallback) {
-    if (normalizedType.contains("Deque<")) return "java.util.Deque";
-    if (normalizedType.contains("Queue<")) return "java.util.Queue";
-    if (normalizedType.contains("Set<")) return "java.util.Set";
-    if (normalizedType.contains("Collection<")) return "java.util.Collection";
-    if (normalizedType.contains("List<")) return "java.util.List";
+    String valueType = indexedValueType(normalizedType);
+    if (valueType == null) return fallback;
+    String rawType = rawSimpleTypeName(valueType);
+    if (rawType.endsWith("Deque")) return "java.util.Deque";
+    if (rawType.endsWith("Queue")) return "java.util.Queue";
+    if (rawType.endsWith("Set")) return "java.util.Set";
+    if (rawType.endsWith("Collection")) return "java.util.Collection";
+    if (rawType.endsWith("List")) return "java.util.List";
+    if (rawType.endsWith("Map")) return "java.util.Map";
     return fallback;
+  }
+
+  private static String indexedValueType(String normalizedType) {
+    int genericStart = normalizedType.indexOf('<');
+    if (genericStart < 0) return null;
+    int depth = 0;
+    int genericEnd = -1;
+    for (int i = genericStart; i < normalizedType.length(); i++) {
+      char ch = normalizedType.charAt(i);
+      if (ch == '<') {
+        depth++;
+      } else if (ch == '>') {
+        depth--;
+        if (depth == 0) {
+          genericEnd = i;
+          break;
+        }
+      }
+    }
+    if (genericEnd <= genericStart) return null;
+    java.util.List<String> args = splitTopLevel(normalizedType.substring(genericStart + 1, genericEnd));
+    String rawType = rawSimpleTypeName(normalizedType);
+    if (rawType.endsWith("Map")) {
+      return args.size() >= 2 ? args.get(1).trim() : null;
+    }
+    return args.size() >= 1 ? args.get(0).trim() : null;
   }
 
   private static String normalizeJavaType(String type) {
@@ -1974,7 +2007,8 @@ public final class JavaRewriteLibrary {
         "pollLast".equals(method) || "removeLast".equals(method) || "pop".equals(method);
   }
 
-  private static String sequenceAppendWriteHook(int sourceLine, String name, String receiverType, String method, String rawArgs, String callArgs) {
+  private static String sequenceAppendWriteHook(int sourceLine, String name, String receiverType, String method, String rawArgs, String callArgs, boolean declaredObject) {
+    if (declaredObject) return "";
     java.util.List<String> rawParts = splitTopLevel(rawArgs);
     if (rawParts.size() != 1 || callArgs.trim().isEmpty()) return "";
     if (isPriorityQueueType(receiverType) && ("add".equals(method) || "offer".equals(method))) {

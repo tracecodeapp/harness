@@ -2168,6 +2168,36 @@ class Solution {
     `Java indexed collection mutation tracing should not re-evaluate side-effecting indexes, received ${sideEffectIndexedMutationOutput}`
   );
 
+  const listMapIndexedPutOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<Map<Integer, Integer>> rows = new ArrayList<>();
+    rows.add(new HashMap<>());
+    rows.get(0).put(1, 2);
+    return rows.get(0).get(1);
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    listMapIndexedPutOutput === '2',
+    `Java indexed Map mutation tracing should preserve List<Map<...>> receivers, received ${listMapIndexedPutOutput}`
+  );
+
+  const mapListIndexedAddOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int solve() {
+    Map<Integer, List<Integer>> rows = new HashMap<>();
+    rows.put(0, new ArrayList<>());
+    rows.get(0).add(4);
+    return rows.get(0).get(0);
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    mapListIndexedAddOutput === '4',
+    `Java indexed List mutation tracing should preserve Map<..., List<...>> receivers, received ${mapListIndexedAddOutput}`
+  );
+
   const sideEffectArrayIndexedMutationOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
 
 class Solution {
