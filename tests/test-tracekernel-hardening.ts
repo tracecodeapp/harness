@@ -1541,6 +1541,32 @@ async function testCSharpInputHydrationConstructorsAreBounded(): Promise<void> {
   );
 }
 
+async function testNativeCSharpInputConversionPrefersStringDictionaries(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'packages', 'harness-native', 'src', 'index.ts'), 'utf8');
+  const convertStart = source.indexOf('private static object? ConvertJsonElement');
+  const convertEnd = source.indexOf('private static Type? ListElementType', convertStart);
+  const convertSource = source.slice(convertStart, convertEnd);
+  const dictionaryBranch = convertSource.indexOf('var dictionaryValueType = StringDictionaryValueType(targetType);');
+  const listBranch = convertSource.indexOf('var listElementType = ListElementType(targetType);');
+  assertCondition(
+    dictionaryBranch >= 0 && listBranch >= 0 && dictionaryBranch < listBranch,
+    'Native C# input conversion should classify string-keyed dictionaries before list-like collection interfaces'
+  );
+  assertCondition(
+    convertSource.includes('targetType.IsAssignableFrom(dictionaryType)'),
+    'Native C# input conversion should only synthesize Dictionary<string,T> values for assignable targets'
+  );
+
+  const listStart = source.indexOf('private static Type? ListElementType');
+  const listEnd = source.indexOf('private static Type? StringDictionaryValueType', listStart);
+  const listSource = source.slice(listStart, listEnd);
+  assertCondition(
+    listSource.includes('StringDictionaryValueType(type) != null') &&
+      listSource.indexOf('StringDictionaryValueType(type) != null') < listSource.indexOf('typeof(List<>)'),
+    'Native C# list input conversion should not treat string-keyed dictionaries as list-like inputs'
+  );
+}
+
 async function listFilesRecursive(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   const files: string[] = [];
@@ -3269,6 +3295,7 @@ async function main(): Promise<void> {
   await testCSharpManagedLiveSnapshotsReserveBeforeRead();
   await testCSharpWorkerInputPreflightBudgets();
   await testCSharpInputHydrationConstructorsAreBounded();
+  await testNativeCSharpInputConversionPrefersStringDictionaries();
   await testCSharpBrowserRuntimeNetworkAssembliesAreDenied();
   await testJavaWorkerProjectEventBudgets();
   await testJavaWorkerCheerpJLoaderPolicyRequiresLocalAppAsset();

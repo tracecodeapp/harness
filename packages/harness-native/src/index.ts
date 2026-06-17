@@ -2286,6 +2286,23 @@ public static class __TraceCodeNativeCSharpDriver
             }
             return output;
         }
+        var dictionaryValueType = StringDictionaryValueType(targetType);
+        if (dictionaryValueType != null)
+        {
+            var dictionaryType = typeof(Dictionary<,>).MakeGenericType(typeof(string), dictionaryValueType);
+            if (targetType.IsAssignableFrom(dictionaryType))
+            {
+                var output = (IDictionary)Activator.CreateInstance(dictionaryType)!;
+                if (value.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in value.EnumerateObject())
+                    {
+                        output[property.Name] = ConvertJsonElement(property.Value, dictionaryValueType);
+                    }
+                }
+                return output;
+            }
+        }
         var listElementType = ListElementType(targetType);
         if (listElementType != null)
         {
@@ -2300,25 +2317,15 @@ public static class __TraceCodeNativeCSharpDriver
             }
             return output;
         }
-        var dictionaryValueType = StringDictionaryValueType(targetType);
-        if (dictionaryValueType != null)
-        {
-            var dictionaryType = typeof(Dictionary<,>).MakeGenericType(typeof(string), dictionaryValueType);
-            var output = (IDictionary)Activator.CreateInstance(dictionaryType)!;
-            if (value.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var property in value.EnumerateObject())
-                {
-                    output[property.Name] = ConvertJsonElement(property.Value, dictionaryValueType);
-                }
-            }
-            return output;
-        }
         return JsonSerializer.Deserialize(value.GetRawText(), targetType);
     }
 
     private static Type? ListElementType(Type type)
     {
+        if (StringDictionaryValueType(type) != null)
+        {
+            return null;
+        }
         if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
         {
             return type.GetGenericArguments()[0];
