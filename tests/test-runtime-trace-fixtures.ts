@@ -1798,6 +1798,10 @@ async function main(): Promise<void> {
       executedFixtureCount += 1;
     }
   }
+  assertCondition(
+    executedFixtureCount > 0,
+    `Runtime trace fixture selection executed 0 fixtures (fixtures=${fixtureNames.join(',') || '<none>'}; languages=${languages.join(',') || '<none>'})`
+  );
   console.log(`PASS: runtime trace fixture parity (${executedFixtureCount} fixtures)`);
 }
 
