@@ -6416,6 +6416,16 @@ export async function runBrowserJavaScriptProjectRequest(
             return entries[index++] ?? null;
           },
           read: (callback?: (error: Error | null, dirent?: unknown) => void) => {
+            if (typeof callback !== 'function') {
+              return new Promise((resolve, reject) => {
+                try {
+                  const entry = dir.readSync();
+                  queueMicrotask(() => resolve(entry));
+                } catch (error) {
+                  queueMicrotask(() => reject(error));
+                }
+              });
+            }
             try {
               const entry = dir.readSync();
               queueMicrotask(() => callback?.(null, entry));
@@ -6427,6 +6437,12 @@ export async function runBrowserJavaScriptProjectRequest(
             closed = true;
           },
           close: (callback?: (error?: Error | null) => void) => {
+            if (typeof callback !== 'function') {
+              return new Promise<void>((resolve) => {
+                closed = true;
+                queueMicrotask(resolve);
+              });
+            }
             closed = true;
             queueMicrotask(() => callback?.(null));
           },
