@@ -464,6 +464,38 @@ function limitedEntries<T>(items: T[], maxItems: number): { values: T[]; remaini
   };
 }
 
+function builtinCollectionSize(value: unknown, prototype: object): number | undefined {
+  try {
+    const getter = Object.getOwnPropertyDescriptor(prototype, 'size')?.get;
+    const size = typeof getter === 'function' ? getter.call(value) : undefined;
+    return Number.isFinite(size) ? Math.max(0, Math.floor(Number(size))) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function limitedBuiltinIteratorValues<T>(
+  iterator: Iterator<T>,
+  maxItems: number
+): { values: T[]; exhausted: boolean } {
+  const emitted = Number.isFinite(maxItems) ? Math.max(0, Math.floor(maxItems)) : Number.POSITIVE_INFINITY;
+  const values: T[] = [];
+  let exhausted = false;
+  while (values.length < emitted) {
+    const next = iterator.next();
+    if (next.done) {
+      exhausted = true;
+      break;
+    }
+    values.push(next.value);
+  }
+  if (!exhausted && Number.isFinite(emitted)) {
+    const next = iterator.next();
+    exhausted = Boolean(next.done);
+  }
+  return { values, exhausted };
+}
+
 function serializeValue(
   value: unknown,
   depth = 0,
@@ -493,22 +525,35 @@ function serializeValue(
   }
 
   if (value instanceof Set) {
-    const items = [...value];
-    const limited = limitedEntries(items, activeSerializationLimits.maxItems);
+    let limited: { values: unknown[]; exhausted: boolean };
+    try {
+      limited = limitedBuiltinIteratorValues(Set.prototype.values.call(value), activeSerializationLimits.maxItems);
+    } catch {
+      return '<unserializable Set>';
+    }
+    const size = builtinCollectionSize(value, Set.prototype);
     const result: Record<string, unknown> = {
       __type__: 'set',
       values: limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState)),
     };
-    if (limited.remaining > 0) {
+    const remaining = size === undefined
+      ? (limited.exhausted ? 0 : 1)
+      : Math.max(0, size - limited.values.length);
+    if (remaining > 0) {
       result.__truncated__ = true;
-      result.remaining = limited.remaining;
+      result.remaining = remaining;
     }
     return result;
   }
 
   if (value instanceof Map) {
-    const entries = [...value.entries()];
-    const limited = limitedEntries(entries, activeSerializationLimits.maxItems);
+    let limited: { values: Array<[unknown, unknown]>; exhausted: boolean };
+    try {
+      limited = limitedBuiltinIteratorValues(Map.prototype.entries.call(value), activeSerializationLimits.maxItems);
+    } catch {
+      return '<unserializable Map>';
+    }
+    const size = builtinCollectionSize(value, Map.prototype);
     const result: Record<string, unknown> = {
       __type__: 'map',
       entries: limited.values.map(([k, v]) => [
@@ -516,9 +561,12 @@ function serializeValue(
         serializeValue(v, depth + 1, seen, nodeRefState),
       ]),
     };
-    if (limited.remaining > 0) {
+    const remaining = size === undefined
+      ? (limited.exhausted ? 0 : 1)
+      : Math.max(0, size - limited.values.length);
+    if (remaining > 0) {
       result.__truncated__ = true;
-      result.remaining = limited.remaining;
+      result.remaining = remaining;
     }
     return result;
   }

@@ -467,6 +467,35 @@ function serializeIndexedValues(length, valueAt, depth, seen, nodeRefState) {
   return result;
 }
 
+function builtinCollectionSize(value, prototype) {
+  try {
+    const getter = Object.getOwnPropertyDescriptor(prototype, 'size')?.get;
+    const size = typeof getter === 'function' ? getter.call(value) : undefined;
+    return Number.isFinite(size) ? Math.max(0, Math.floor(size)) : undefined;
+  } catch (_error) {
+    return undefined;
+  }
+}
+
+function limitedBuiltinIteratorValues(iterator, maxItems) {
+  const emitted = Number.isFinite(maxItems) ? Math.max(0, Math.floor(maxItems)) : Infinity;
+  const values = [];
+  let exhausted = false;
+  while (values.length < emitted) {
+    const next = iterator.next();
+    if (next.done) {
+      exhausted = true;
+      break;
+    }
+    values.push(next.value);
+  }
+  if (!exhausted && Number.isFinite(emitted)) {
+    const next = iterator.next();
+    exhausted = Boolean(next.done);
+  }
+  return { values, exhausted };
+}
+
 function ownEnumerableDataEntries(value) {
   if (!value || typeof value !== 'object') return [];
   const entries = [];
@@ -536,23 +565,36 @@ function serializeValue(
   if (value instanceof Set) {
     if (seen.has(value)) return '<cycle>';
     seen.add(value);
-    const items = [...value];
-    const limited = limitedEntries(items, activeSerializationLimits.maxItems);
+    let limited;
+    try {
+      limited = limitedBuiltinIteratorValues(Set.prototype.values.call(value), activeSerializationLimits.maxItems);
+    } catch (_error) {
+      return '<unserializable Set>';
+    }
+    const size = builtinCollectionSize(value, Set.prototype);
     const result = {
       __type__: 'set',
       values: limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState)),
     };
-    if (limited.remaining > 0) {
+    const remaining = size === undefined
+      ? (limited.exhausted ? 0 : 1)
+      : Math.max(0, size - limited.values.length);
+    if (remaining > 0) {
       result.__truncated__ = true;
-      result.remaining = limited.remaining;
+      result.remaining = remaining;
     }
     return result;
   }
   if (value instanceof Map) {
     if (seen.has(value)) return '<cycle>';
     seen.add(value);
-    const entries = [...value.entries()];
-    const limited = limitedEntries(entries, activeSerializationLimits.maxItems);
+    let limited;
+    try {
+      limited = limitedBuiltinIteratorValues(Map.prototype.entries.call(value), activeSerializationLimits.maxItems);
+    } catch (_error) {
+      return '<unserializable Map>';
+    }
+    const size = builtinCollectionSize(value, Map.prototype);
     const result = {
       __type__: 'map',
       entries: limited.values.map(([k, v]) => [
@@ -560,9 +602,12 @@ function serializeValue(
         serializeValue(v, depth + 1, seen, nodeRefState),
       ]),
     };
-    if (limited.remaining > 0) {
+    const remaining = size === undefined
+      ? (limited.exhausted ? 0 : 1)
+      : Math.max(0, size - limited.values.length);
+    if (remaining > 0) {
       result.__truncated__ = true;
-      result.remaining = limited.remaining;
+      result.remaining = remaining;
     }
     return result;
   }

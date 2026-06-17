@@ -1039,7 +1039,28 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
           '  for (const [a, b] of [makePair()]) {',
           '    total = a * 10 + b;',
           '  }',
-          '  return { total, pulls };',
+          '  let setPulls = 0;',
+          '  class GuardedSet extends Set {',
+          '    [Symbol.iterator]() {',
+          '      const iterator = super[Symbol.iterator]();',
+          '      return {',
+          '        next() {',
+          '          setPulls += 1;',
+          '          if (setPulls > 1) throw new Error("set overread");',
+          '          return iterator.next();',
+          '        },',
+          '        return() { return { done: true }; },',
+          '        [Symbol.iterator]() { return this; },',
+          '      };',
+          '    }',
+          '  }',
+          '  const buckets = [new GuardedSet([5, 6, 7])];',
+          '  let first = 0;',
+          '  for (const value of buckets[0]) {',
+          '    first = value;',
+          '    break;',
+          '  }',
+          '  return { total, pulls, first, setPulls };',
           '}',
         ].join('\n'),
         functionName: 'solve',
@@ -1053,7 +1074,7 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
   const result = await response;
   assertCondition(result.success === true, `destructured iterable trace should execute: ${result.error ?? 'unknown error'}`);
   assertCondition(
-    JSON.stringify(result.output) === JSON.stringify({ total: 23, pulls: 2 }),
+    JSON.stringify(result.output) === JSON.stringify({ total: 23, pulls: 2, first: 5, setPulls: 1 }),
     `destructured iterable tracing should not pre-consume yielded iterables: ${JSON.stringify(result.output)}`
   );
 }
