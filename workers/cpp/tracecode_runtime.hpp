@@ -1514,8 +1514,14 @@ inline void emit_container_lookup_presence_value(const std::string& name, const 
 
 template <typename Container, typename Key>
 inline void emit_container_lookup_read_value(const std::string& name, const Container& container, const Key& key, int line, const char* index_source = nullptr) {
+  if (minimal_trace_enabled() || !check_trace_budget(line)) return;
   const bool present = container.find(key) != container.end();
-  emit_container_lookup_presence_value(name, key, present, line, index_source);
+  trace_event_count() += 1;
+  write_trace_event_json_raw(
+    std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+    ",\"target\":" + target_json_key_with_index_source(name, key, index_source) +
+    ",\"value\":" + to_json(present) + "}"
+  );
 }
 
 template <typename Container, typename Key>

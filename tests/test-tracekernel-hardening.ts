@@ -2447,6 +2447,18 @@ async function testCppTraceIdsDoNotExposePointers(): Promise<void> {
   );
 }
 
+async function testCppContainerLookupFindsRespectTraceBudget(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'tracecode_runtime.hpp'), 'utf8');
+  const start = source.indexOf('inline void emit_container_lookup_read_value');
+  const end = source.indexOf('template <typename Container, typename Key>', start + 1);
+  const helperSource = source.slice(start, end);
+  assertCondition(
+    helperSource.includes('if (minimal_trace_enabled() || !check_trace_budget(line)) return;') &&
+      helperSource.indexOf('check_trace_budget(line)') < helperSource.indexOf('container.find(key)'),
+    'C++ container lookup read instrumentation should check trace budget before the instrumentation-only find'
+  );
+}
+
 async function testCppInferredNumericLiteralsRejectNonFiniteValues(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
@@ -3309,6 +3321,7 @@ async function main(): Promise<void> {
   await testCppCompilerWorkersAreDisposable();
   await testCppInheritedStdioRespectsKernelDevices();
   await testCppTraceIdsDoNotExposePointers();
+  await testCppContainerLookupFindsRespectTraceBudget();
   await testCppInferredNumericLiteralsRejectNonFiniteValues();
   await testBulkTraceWritesAreBudgetedBeforeLoops();
   await testSharedKernelPolicyRefreshesMutableDeviceManifests();
