@@ -2089,6 +2089,47 @@ async function main(): Promise<void> {
       `C# worker traced async Task<T> return case should emit return value 7, received ${JSON.stringify(tracedAsyncTaskReturn.events)}`
     );
 
+    const tracedTargetTypedFieldAssignments = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private List<int> xs = new();',
+        '  private Func<int, int> bump = value => value;',
+        '  public int TargetTypedFieldAssignments() {',
+        '    xs = default;',
+        '    if (xs != null) return -1;',
+        '    xs = new();',
+        '    xs.Add(1);',
+        '    bump = value => value + xs[0];',
+        '    return bump(4);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'TargetTypedFieldAssignments',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedTargetTypedFieldAssignments.success,
+      `C# worker traced target-typed field assignment case should compile: ${tracedTargetTypedFieldAssignments.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedTargetTypedFieldAssignments.output === 5,
+      `C# worker traced target-typed field assignment case should return 5, received ${JSON.stringify(tracedTargetTypedFieldAssignments.output)}`
+    );
+    assertCondition(
+      tracedTargetTypedFieldAssignments.events?.some((event) =>
+        event.kind === 'write' &&
+        event.target?.variable === 'this' &&
+        JSON.stringify(event.target.path) === JSON.stringify(['xs']) &&
+        Array.isArray(event.value)
+      ) === true,
+      `C# worker traced target-typed field assignment should emit an xs field write, received ${JSON.stringify(tracedTargetTypedFieldAssignments.events)}`
+    );
+
     const tracedPrivateTrieObject = await runWorkerCase(
       page,
       [

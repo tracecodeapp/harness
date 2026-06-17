@@ -23,6 +23,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private readonly HashSet<string> interfaceDispatchedCollectionVariables = new(StringComparer.Ordinal);
     private readonly HashSet<string> collectionParameterVariables = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string TypeName, string TypeArguments)> collectionVariableTypes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string TypeName, string TypeArguments)> memberCollectionVariableTypes;
     private readonly HashSet<string> memberNames;
     private readonly HashSet<string> memberCollectionNames;
     private readonly HashSet<string> memberStringBuilderNames;
@@ -39,12 +40,17 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         bool emitTraceEvents,
         IEnumerable<string> memberNames,
         IEnumerable<string> memberCollectionNames,
+        IDictionary<string, (string TypeName, string TypeArguments)> memberCollectionVariableTypes,
         IEnumerable<string> memberStringBuilderNames,
         SourceText originalSourceText)
     {
         this.emitTraceEvents = emitTraceEvents;
         this.memberNames = memberNames.ToHashSet(StringComparer.Ordinal);
         this.memberCollectionNames = memberCollectionNames.ToHashSet(StringComparer.Ordinal);
+        this.memberCollectionVariableTypes = new Dictionary<string, (string TypeName, string TypeArguments)>(
+            memberCollectionVariableTypes,
+            StringComparer.Ordinal
+        );
         this.memberStringBuilderNames = memberStringBuilderNames.ToHashSet(StringComparer.Ordinal);
         this.originalSourceText = originalSourceText;
     }
@@ -56,6 +62,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             emitTraceEvents,
             GetDeclaredMemberNames(root),
             GetDeclaredCollectionMemberNames(root),
+            GetDeclaredCollectionMemberTypes(root),
             GetDeclaredStringBuilderMemberNames(root),
             userTree.GetText()
         );
@@ -85,26 +92,34 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     private static IEnumerable<string> GetDeclaredCollectionMemberNames(CompilationUnitSyntax root)
     {
+        return GetDeclaredCollectionMemberTypes(root).Keys;
+    }
+
+    private static Dictionary<string, (string TypeName, string TypeArguments)> GetDeclaredCollectionMemberTypes(CompilationUnitSyntax root)
+    {
+        var types = new Dictionary<string, (string TypeName, string TypeArguments)>(StringComparer.Ordinal);
         foreach (FieldDeclarationSyntax field in root.DescendantNodes().OfType<FieldDeclarationSyntax>())
         {
-            if (TryGetGenericType(field.Declaration.Type, out string typeName, out _)
+            if (TryGetGenericType(field.Declaration.Type, out string typeName, out string typeArguments)
                 && IsSupportedCollectionType(typeName))
             {
                 foreach (VariableDeclaratorSyntax variable in field.Declaration.Variables)
                 {
-                    yield return variable.Identifier.ValueText;
+                    types[variable.Identifier.ValueText] = (typeName, typeArguments);
                 }
             }
         }
 
         foreach (PropertyDeclarationSyntax property in root.DescendantNodes().OfType<PropertyDeclarationSyntax>())
         {
-            if (TryGetGenericType(property.Type, out string typeName, out _)
+            if (TryGetGenericType(property.Type, out string typeName, out string typeArguments)
                 && IsSupportedCollectionType(typeName))
             {
-                yield return property.Identifier.ValueText;
+                types[property.Identifier.ValueText] = (typeName, typeArguments);
             }
         }
+
+        return types;
     }
 
     private static IEnumerable<string> GetDeclaredStringBuilderMemberNames(CompilationUnitSyntax root)
@@ -2444,7 +2459,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return statement;
         }
 
-        if (!TryRewriteCollectionCreation(assignment.Right, variableName, null, out ExpressionSyntax? replacement)
+        TypeSyntax? declaredType = GetTrackedCollectionDeclaredType(variableName);
+        if (!TryRewriteCollectionCreation(assignment.Right, variableName, declaredType, out ExpressionSyntax? replacement)
             && !TryRewriteCollectionFactoryAssignment(assignment.Right, variableName, line, out replacement)
             && !TryRewriteCollectionCompatibleAssignment(assignment.Right, variableName, line, out replacement))
         {
@@ -3453,6 +3469,18 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string right = assignment.Right.ToString();
+        if (RequiresAssignmentTargetType(assignment.Right))
+        {
+            if (ShouldCaptureMutationExpression(elementAccess.ArgumentList.Arguments[0].Expression))
+            {
+                return statement;
+            }
+
+            return TraceStatement(
+                $"{{ {left} = {right}; TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal(variable)}, {pathExpression}, {left}, {line}, {indexSourcesExpression}); }}"
+            );
+        }
+
         return TraceStatement(
             $"{left} = TraceCode.Internal.TraceCodeTrace.FieldWrite({right}, {Literal(variable)}, {pathExpression}, {line}, {indexSourcesExpression});"
         );
@@ -3572,6 +3600,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             }
 
             string implicitRight = assignment.Right.ToString();
+            if (RequiresAssignmentTargetType(assignment.Right))
+            {
+                return TraceStatement(
+                    $"{{ {left} = {implicitRight}; TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal("this")}, {implicitThisPathExpression}, {left}, {line}); }}"
+                );
+            }
+
             return TraceStatement(
                 $"{left} = TraceCode.Internal.TraceCodeTrace.FieldWrite({implicitRight}, {Literal("this")}, {implicitThisPathExpression}, {line});"
             );
@@ -3593,6 +3628,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string right = assignment.Right.ToString();
+        if (RequiresAssignmentTargetType(assignment.Right))
+        {
+            return TraceStatement(
+                $"{{ {memberLeft} = {right}; TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal(variable)}, {pathExpression}, {memberLeft}, {line}); }}"
+            );
+        }
+
         return TraceStatement(
             $"{memberLeft} = TraceCode.Internal.TraceCodeTrace.FieldWrite({right}, {Literal(variable)}, {pathExpression}, {line});"
         );
@@ -3714,6 +3756,25 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         return expression.DescendantNodesAndSelf().Any(IsEvaluationSensitiveExpressionNode);
+    }
+
+    private static bool RequiresAssignmentTargetType(ExpressionSyntax expression)
+    {
+        return expression.DescendantNodesAndSelf().Any(IsTargetTypedExpressionNode);
+    }
+
+    private static bool IsTargetTypedExpressionNode(SyntaxNode node)
+    {
+        return node switch
+        {
+            ImplicitObjectCreationExpressionSyntax => true,
+            ImplicitArrayCreationExpressionSyntax => true,
+            CollectionExpressionSyntax => true,
+            LambdaExpressionSyntax => true,
+            AnonymousMethodExpressionSyntax => true,
+            LiteralExpressionSyntax literal => literal.IsKind(SyntaxKind.DefaultLiteralExpression),
+            _ => false,
+        };
     }
 
     private static bool IsEvaluationSensitiveExpressionNode(SyntaxNode node)
@@ -4383,7 +4444,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     )
     {
         replacement = null;
-        if (!collectionVariableTypes.TryGetValue(variableName, out var collectionType)
+        if (!TryGetTrackedCollectionType(variableName, out var collectionType)
             || value is not InvocationExpressionSyntax invocation
             || !IsCollectionFactoryInvocation(collectionType.TypeName, invocation)
             || GetTraceCollectionTypeName(collectionType.TypeName) is not string wrapperType)
@@ -4405,9 +4466,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     )
     {
         replacement = null;
-        if (!collectionVariableTypes.TryGetValue(variableName, out var collectionType)
+        if (!TryGetTrackedCollectionType(variableName, out var collectionType)
             || value.IsKind(SyntaxKind.NullLiteralExpression)
             || value is DefaultExpressionSyntax
+            || RequiresAssignmentTargetType(value)
             || GetTraceCollectionTypeName(collectionType.TypeName) is not string wrapperType)
         {
             return false;
@@ -4417,6 +4479,30 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             $"new TraceCode.Internal.{wrapperType}<{collectionType.TypeArguments}>({Literal(variableName)}, {line}, {value})"
         );
         return true;
+    }
+
+    private bool TryGetTrackedCollectionType(string variableName, out (string TypeName, string TypeArguments) collectionType)
+    {
+        if (collectionVariableTypes.TryGetValue(variableName, out collectionType))
+        {
+            return true;
+        }
+
+        if (!IsDeclaredLocalVariable(variableName)
+            && memberCollectionVariableTypes.TryGetValue(variableName, out collectionType))
+        {
+            return true;
+        }
+
+        collectionType = default;
+        return false;
+    }
+
+    private TypeSyntax? GetTrackedCollectionDeclaredType(string variableName)
+    {
+        return TryGetTrackedCollectionType(variableName, out var collectionType)
+            ? SyntaxFactory.ParseTypeName($"{collectionType.TypeName}<{collectionType.TypeArguments}>")
+            : null;
     }
 
     private static bool IsCollectionFactoryInvocation(string typeName, InvocationExpressionSyntax invocation)
