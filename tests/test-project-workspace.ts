@@ -8828,6 +8828,40 @@ async function testLiveStdinAcrossProjectRunners(): Promise<void> {
   assertCondition(javaResult.stdout === 'java> java=native-java\n', `native Java should receive stdin after prompting: ${javaResult.stdout}`);
   javaWorkspace.dispose();
 
+  const javaUtf8OutputEvents: RuntimeCommandEvent[] = [];
+  const javaUtf8Workspace = await createRuntimeWorkspace({
+    files: [{
+      path: 'Utf8Bytes.java',
+      contents: [
+        'public class Utf8Bytes {',
+        '  public static void main(String[] args) throws Exception {',
+        '    System.out.write(0xE2);',
+        '    System.out.write(0x82);',
+        '    System.out.write(0xAC);',
+        '    System.out.write(0x0A);',
+        '    System.out.flush();',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    }],
+    javaRunner: createNativeJavaProjectRunner(),
+  });
+  const javaUtf8Result = await javaUtf8Workspace.runCommand('java Utf8Bytes', {
+    onEvent: (event) => javaUtf8OutputEvents.push(event),
+  });
+  const javaUtf8LiveStdout = javaUtf8OutputEvents
+    .filter((event): event is Extract<RuntimeCommandEvent, { type: 'output' }> => event.type === 'output' && event.stream === 'stdout')
+    .map((event) => event.data)
+    .join('');
+  assertCondition(javaUtf8Result.exitCode === 0, `native Java split UTF-8 stdout should succeed: ${javaUtf8Result.stderr}`);
+  assertCondition(javaUtf8Result.stdout === '€\n', `native Java final stdout should preserve split UTF-8 bytes: ${JSON.stringify(javaUtf8Result)}`);
+  assertCondition(
+    javaUtf8LiveStdout === '€\n',
+    `native Java live stdout should preserve split UTF-8 bytes: ${JSON.stringify(javaUtf8OutputEvents)}`
+  );
+  javaUtf8Workspace.dispose();
+
   const cppWorkspace = await createRuntimeWorkspace({
     files: [{
       path: 'ask.cpp',

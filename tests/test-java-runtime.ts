@@ -771,8 +771,9 @@ public class ProjectWorkspaceDirectorySmoke {
         /createTempFile[\s\S]*emitFileSnapshot\(result\);/.test(projectEventsSource) &&
         /File createTempFile\(String prefix, String suffix, File directory\)[\s\S]*emitFileSnapshot\(result\.toPath\(\)\);/.test(projectEventsSource) &&
         /createTempDirectory[\s\S]*emitDirectoryCreate\(result\);/.test(projectEventsSource) &&
-        /StreamingProjectOutputStream[\s\S]*write\(int value\)[\s\S]*pending\.write\(value\);\s*flush\(\);/.test(projectEventsSource) &&
-        /StreamingProjectOutputStream[\s\S]*write\(byte\[\] bytes, int offset, int length\)[\s\S]*pending\.write\(bytes, offset, length\);\s*flush\(\);/.test(projectEventsSource),
+        /StreamingProjectOutputStream[\s\S]*write\(int value\)[\s\S]*pending\.write\(value\);\s*emitPending\(false\);/.test(projectEventsSource) &&
+        /StreamingProjectOutputStream[\s\S]*write\(byte\[\] bytes, int offset, int length\)[\s\S]*pending\.write\(bytes, offset, length\);\s*emitPending\(false\);/.test(projectEventsSource) &&
+        /StreamingProjectOutputStream[\s\S]*completeUtf8PrefixLength\(byte\[\] bytes\)/.test(projectEventsSource),
       'Java browser helper should emit live file snapshots and unbuffered stdio write events'
     );
     console.log('PASS: Java browser helper materializes workspace directories');

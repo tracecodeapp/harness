@@ -4210,11 +4210,11 @@ public final class ProjectEvents {
       capture.write(outputBytes, 0, outputBytes.length);
       if (outputBytes.length == 1 && outputBytes[0] == (byte) value) {
         pending.write(value);
-        flush();
+        emitPending(false);
         return;
       }
       pending.write(outputBytes, 0, outputBytes.length);
-      flush();
+      emitPending(false);
     }
 
     @Override
@@ -4225,19 +4225,68 @@ public final class ProjectEvents {
       capture.write(outputBytes, 0, outputBytes.length);
       if (outputBytes.length == length) {
         pending.write(bytes, offset, length);
-        flush();
+        emitPending(false);
         return;
       }
       pending.write(outputBytes, 0, outputBytes.length);
-      flush();
+      emitPending(false);
     }
 
     @Override
     public void flush() throws IOException {
       if (!projectRunTokenActive(runToken)) return;
+      emitPending(true);
+    }
+
+    private void emitPending(boolean endOfInput) throws IOException {
       if (pending.size() == 0) return;
-      emitOutput(bridgeRunId, stream, pending.toString(StandardCharsets.UTF_8.name()), "", "");
+      byte[] bytes = pending.toByteArray();
+      int length = endOfInput ? bytes.length : completeUtf8PrefixLength(bytes);
+      if (length == 0) return;
+      emitOutput(bridgeRunId, stream, new String(bytes, 0, length, StandardCharsets.UTF_8), "", "");
       pending.reset();
+      if (length < bytes.length) {
+        pending.write(bytes, length, bytes.length - length);
+      }
+    }
+
+    private static int completeUtf8PrefixLength(byte[] bytes) {
+      int index = 0;
+      int complete = 0;
+      while (index < bytes.length) {
+        int first = bytes[index] & 0xff;
+        int width;
+        if (first < 0x80) {
+          width = 1;
+        } else if (first >= 0xc2 && first <= 0xdf) {
+          width = 2;
+        } else if (first >= 0xe0 && first <= 0xef) {
+          width = 3;
+        } else if (first >= 0xf0 && first <= 0xf4) {
+          width = 4;
+        } else {
+          index += 1;
+          complete = index;
+          continue;
+        }
+        if (index + width > bytes.length) break;
+        boolean valid = true;
+        for (int offset = 1; offset < width; offset += 1) {
+          int continuation = bytes[index + offset] & 0xff;
+          if (continuation < 0x80 || continuation > 0xbf) {
+            valid = false;
+            break;
+          }
+        }
+        if (!valid) {
+          index += 1;
+          complete = index;
+          continue;
+        }
+        index += width;
+        complete = index;
+      }
+      return complete;
     }
 
     @Override
