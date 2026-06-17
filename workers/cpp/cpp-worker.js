@@ -1939,14 +1939,33 @@ function splitTopLevelCommaList(source) {
   return splitTopLevel(source, ',').map((part) => part.trim()).filter(Boolean);
 }
 
+function isCppTemplateAngleStart(source, index) {
+  let previous = '';
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const ch = source[cursor];
+    if (/\s/.test(ch)) continue;
+    previous = ch;
+    break;
+  }
+  if (!previous || !/[A-Za-z0-9_>:]/.test(previous)) return false;
+  for (let cursor = index + 1; cursor < source.length; cursor += 1) {
+    const ch = source[cursor];
+    if (/\s/.test(ch)) continue;
+    return /[A-Za-z0-9_:]/.test(ch);
+  }
+  return false;
+}
+
 function splitTopLevel(source, separator, options = {}) {
   const trackAngleBrackets = options.trackAngleBrackets !== false;
   const parts = [];
   let current = '';
   let depth = 0;
+  let angleDepth = 0;
   let quote = null;
   let escaped = false;
-  for (const ch of source) {
+  for (let index = 0; index < source.length; index += 1) {
+    const ch = source[index];
     if (quote) {
       current += ch;
       if (escaped) {
@@ -1963,9 +1982,16 @@ function splitTopLevel(source, separator, options = {}) {
       current += ch;
       continue;
     }
-    if ((trackAngleBrackets && ch === '<') || ch === '(' || ch === '[' || ch === '{') depth += 1;
-    if ((trackAngleBrackets && ch === '>') || ch === ')' || ch === ']' || ch === '}') depth -= 1;
-    if (ch === separator && depth === 0) {
+    if (trackAngleBrackets && ch === '<' && isCppTemplateAngleStart(source, index)) {
+      angleDepth += 1;
+    } else if (trackAngleBrackets && ch === '>' && angleDepth > 0) {
+      angleDepth -= 1;
+    } else if (ch === '(' || ch === '[' || ch === '{') {
+      depth += 1;
+    } else if ((ch === ')' || ch === ']' || ch === '}') && depth > 0) {
+      depth -= 1;
+    }
+    if (ch === separator && depth === 0 && angleDepth === 0) {
       parts.push(current);
       current = '';
       continue;
@@ -5526,7 +5552,7 @@ function cppValueTypeTempInitialization(containerName, tempName, argumentSource)
 function buildMutationArgumentCapture(containerName, tempName, argumentSource, indent = '') {
   const trimmedArgument = argumentSource.trim();
   if (trimmedArgument.startsWith('{') && trimmedArgument.endsWith('}')) {
-    const aggregateArgs = splitTopLevel(trimmedArgument.slice(1, -1), ',', { trackAngleBrackets: false })
+    const aggregateArgs = splitTopLevel(trimmedArgument.slice(1, -1), ',', { trackAngleBrackets: true })
       .map((arg) => arg.trim())
       .filter(Boolean);
     if (aggregateArgs.length > 0 && aggregateArgs.every((arg) => !arg.startsWith('{'))) {

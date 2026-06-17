@@ -2833,6 +2833,43 @@ if (
   throw new Error('C++ aggregate push_back should serialize the evaluated temporary, received ' + JSON.stringify(aggregatePushBackSideEffectEvents));
 }
 
+const aggregatePushBackTemplateCommaTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    '  struct Bucket { pair<int, int> span; int weight; };',
+    'public:',
+    '  int build() {',
+    '    vector<Bucket> buckets;',
+    '    buckets.push_back({pair<int, int>{1, 2}, 3});',
+    '    return buckets[0].span.second + buckets[0].weight;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!aggregatePushBackTemplateCommaTrace.success || aggregatePushBackTemplateCommaTrace.output !== 5) {
+  throw new Error('C++ aggregate push_back should preserve template commas, received ' + JSON.stringify(aggregatePushBackTemplateCommaTrace));
+}
+const aggregatePushBackTemplateCommaEvents = aggregatePushBackTemplateCommaTrace.trace.events;
+const aggregatePushBackTemplateCommaMutate = aggregatePushBackTemplateCommaEvents.find((event) =>
+  event.kind === 'mutate' &&
+  event.line === 6 &&
+  event.target?.variable === 'buckets' &&
+  event.method === 'push_back'
+);
+if (
+  !aggregatePushBackTemplateCommaMutate ||
+  !Array.isArray(aggregatePushBackTemplateCommaMutate.args?.[0]) ||
+  !Array.isArray(aggregatePushBackTemplateCommaMutate.args[0][0]) ||
+  aggregatePushBackTemplateCommaMutate.args[0][0][0] !== 1 ||
+  aggregatePushBackTemplateCommaMutate.args[0][0][1] !== 2 ||
+  aggregatePushBackTemplateCommaMutate.args[0][1] !== 3
+) {
+  throw new Error('C++ aggregate push_back should emit templated aggregate args, received ' + JSON.stringify(aggregatePushBackTemplateCommaEvents));
+}
+
 const auditStructuredVectorRangeTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
