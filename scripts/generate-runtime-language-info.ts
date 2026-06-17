@@ -101,15 +101,11 @@ function parseJavaDefaultImports(javaWorkerSource: string): string[] {
     .filter((value): value is string => Boolean(value));
 }
 
-function parseCheerpJVersion(javaWorkerSource: string): string {
+function parseCheerpJVersion(javaWorkerSource: string): string | undefined {
   const localLoaderVersion = javaWorkerSource.match(/const\s+CHEERPJ_LOADER_VERSION\s*=\s*['"]([^'"]+)['"]/);
   if (localLoaderVersion?.[1]) return localLoaderVersion[1];
 
-  return requireMatch(
-    javaWorkerSource,
-    /cjrtnc\.leaningtech\.com\/([^/]+)\/loader\.js/,
-    'CheerpJ loader version'
-  )[1]!;
+  return javaWorkerSource.match(/cjrtnc\.leaningtech\.com\/([^/]+)\/loader\.js/)?.[1];
 }
 
 function parseCSharpGlobalUsings(compilerHostSource: string): string[] {
@@ -253,11 +249,14 @@ function buildTypeScriptDescription(input: {
 
 function buildJavaDescription(input: {
   javaVersion: string;
-  cheerpjVersion: string;
+  cheerpjVersion?: string;
   defaultImports: readonly string[];
 }): string {
+  const runtimeDetail = input.cheerpjVersion
+    ? `CheerpJ ${input.cheerpjVersion}`
+    : 'a same-origin CheerpJ runtime asset';
   return [
-    `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed in the browser through CheerpJ ${input.cheerpjVersion}.`,
+    `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed in the browser through ${runtimeDetail}.`,
     '',
     `Common imports are added automatically: ${input.defaultImports.join(', ')}.`,
   ].join('\n');
@@ -443,7 +442,9 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       runtime: {
         name: 'CheerpJ browser-local OpenJDK runtime',
         version: javaVersion,
-        detail: `Loaded through CheerpJ ${cheerpjVersion}.`,
+        detail: cheerpjVersion
+          ? `Loaded through CheerpJ ${cheerpjVersion}.`
+          : 'Loaded from a configured same-origin CheerpJ runtime asset.',
       },
       compiler: {
         name: 'javac',

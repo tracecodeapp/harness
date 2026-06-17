@@ -51,7 +51,7 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze({
     "libraries": [
       {
         "name": "lodash",
-        "version": "4.18.1",
+        "version": "4.17.21",
         "importName": "lodash",
         "globalName": "_"
       },
@@ -107,13 +107,13 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze({
       }
     ],
     "standard": "ECMAScript 2023-compatible syntax in the browser worker lane.",
-    "description": "JavaScript runs in an isolated browser Web Worker with ECMAScript 2023-compatible syntax.\n\nLodash 4.18.1 is available as both lodash and _.\n\nThe @datastructures-js packages are bundled for common algorithm data structures. Queue, Stack, Deque, Heap, PriorityQueue, MinPriorityQueue, and MaxPriorityQueue are available globally.\n\nBundled @datastructures-js versions:\n\n\"@datastructures-js/binary-search-tree\": \"5.4.0\"\n\"@datastructures-js/deque\": \"1.0.8\"\n\"@datastructures-js/graph\": \"5.3.1\"\n\"@datastructures-js/heap\": \"4.3.7\"\n\"@datastructures-js/linked-list\": \"6.1.4\"\n\"@datastructures-js/priority-queue\": \"6.3.5\"\n\"@datastructures-js/queue\": \"4.3.0\"\n\"@datastructures-js/set\": \"4.2.2\"\n\"@datastructures-js/stack\": \"3.1.6\"\n\"@datastructures-js/trie\": \"4.2.3\"\n\nBinary Search Tree, Trie, and Graph are bundled too, but are not exposed globally because those names can collide with problem definitions. Import or require the matching package when you need one."
+    "description": "JavaScript runs in an isolated browser Web Worker with ECMAScript 2023-compatible syntax.\n\nLodash 4.17.21 is available as both lodash and _.\n\nThe @datastructures-js packages are bundled for common algorithm data structures. Queue, Stack, Deque, Heap, PriorityQueue, MinPriorityQueue, and MaxPriorityQueue are available globally.\n\nBundled @datastructures-js versions:\n\n\"@datastructures-js/binary-search-tree\": \"5.4.0\"\n\"@datastructures-js/deque\": \"1.0.8\"\n\"@datastructures-js/graph\": \"5.3.1\"\n\"@datastructures-js/heap\": \"4.3.7\"\n\"@datastructures-js/linked-list\": \"6.1.4\"\n\"@datastructures-js/priority-queue\": \"6.3.5\"\n\"@datastructures-js/queue\": \"4.3.0\"\n\"@datastructures-js/set\": \"4.2.2\"\n\"@datastructures-js/stack\": \"3.1.6\"\n\"@datastructures-js/trie\": \"4.2.3\"\n\nBinary Search Tree, Trie, and Graph are bundled too, but are not exposed globally because those names can collide with problem definitions. Import or require the matching package when you need one."
   },
   "typescript": {
     "language": "typescript",
     "displayName": "TypeScript",
     "versionLabel": "TypeScript 5.9.3",
-    "description": "TypeScript 5.9.3 is compiled in the browser and then executed on the JavaScript worker runtime.\n\nCompiler options: --target ES2020 --module None --strict false --esModuleInterop\n\nLodash 4.18.1 is available as both lodash and _.\n\nThe @datastructures-js packages are bundled for common algorithm data structures. Queue, Stack, Deque, Heap, PriorityQueue, MinPriorityQueue, and MaxPriorityQueue are available globally.\n\nBundled @datastructures-js versions:\n\n\"@datastructures-js/binary-search-tree\": \"5.4.0\"\n\"@datastructures-js/deque\": \"1.0.8\"\n\"@datastructures-js/graph\": \"5.3.1\"\n\"@datastructures-js/heap\": \"4.3.7\"\n\"@datastructures-js/linked-list\": \"6.1.4\"\n\"@datastructures-js/priority-queue\": \"6.3.5\"\n\"@datastructures-js/queue\": \"4.3.0\"\n\"@datastructures-js/set\": \"4.2.2\"\n\"@datastructures-js/stack\": \"3.1.6\"\n\"@datastructures-js/trie\": \"4.2.3\"\n\nBinary Search Tree, Trie, and Graph are bundled too, but are not exposed globally because those names can collide with problem definitions. Import or require the matching package when you need one.\n\nThe compiled output runs on the same browser worker execution lane as JavaScript submissions.",
+    "description": "TypeScript 5.9.3 is compiled in the browser and then executed on the JavaScript worker runtime.\n\nCompiler options: --target ES2020 --module None --strict false --esModuleInterop\n\nLodash 4.17.21 is available as both lodash and _.\n\nThe @datastructures-js packages are bundled for common algorithm data structures. Queue, Stack, Deque, Heap, PriorityQueue, MinPriorityQueue, and MaxPriorityQueue are available globally.\n\nBundled @datastructures-js versions:\n\n\"@datastructures-js/binary-search-tree\": \"5.4.0\"\n\"@datastructures-js/deque\": \"1.0.8\"\n\"@datastructures-js/graph\": \"5.3.1\"\n\"@datastructures-js/heap\": \"4.3.7\"\n\"@datastructures-js/linked-list\": \"6.1.4\"\n\"@datastructures-js/priority-queue\": \"6.3.5\"\n\"@datastructures-js/queue\": \"4.3.0\"\n\"@datastructures-js/set\": \"4.2.2\"\n\"@datastructures-js/stack\": \"3.1.6\"\n\"@datastructures-js/trie\": \"4.2.3\"\n\nBinary Search Tree, Trie, and Graph are bundled too, but are not exposed globally because those names can collide with problem definitions. Import or require the matching package when you need one.\n\nThe compiled output runs on the same browser worker execution lane as JavaScript submissions.",
     "runtime": {
       "name": "Browser Worker JavaScript runtime",
       "detail": "TypeScript is compiled before execution and runs on the JavaScript worker lane."
@@ -126,7 +126,7 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze({
     "libraries": [
       {
         "name": "lodash",
-        "version": "4.18.1",
+        "version": "4.17.21",
         "importName": "lodash",
         "globalName": "_"
       },
@@ -186,11 +186,11 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze({
     "language": "java",
     "displayName": "Java",
     "versionLabel": "Java 17",
-    "description": "Java 17 is compiled with javac 17 and executed in the browser through CheerpJ 4.2.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
+    "description": "Java 17 is compiled with javac 17 and executed in the browser through a same-origin CheerpJ runtime asset.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
     "runtime": {
       "name": "CheerpJ browser-local OpenJDK runtime",
       "version": "17",
-      "detail": "Loaded through CheerpJ 4.2."
+      "detail": "Loaded from a configured same-origin CheerpJ runtime asset."
     },
     "compiler": {
       "name": "javac",

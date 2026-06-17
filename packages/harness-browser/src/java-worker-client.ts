@@ -23,6 +23,7 @@ export interface JavaWorkerClientOptions {
   debug?: boolean;
   workerIdleTimeoutMs?: number;
   externalCompilerUrl?: string;
+  cheerpjLoaderUrl?: string;
 }
 
 interface PendingMessage {
@@ -935,10 +936,11 @@ export class JavaWorkerClient {
     }
   }
 
-  private workerOptionsPayload(): { idleTimeoutMs?: number; externalCompilerEnabled?: boolean } {
+  private workerOptionsPayload(): { idleTimeoutMs?: number; externalCompilerEnabled?: boolean; cheerpjLoaderUrl?: string } {
     return {
       ...(this.options.workerIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
       ...(this.options.externalCompilerUrl ? { externalCompilerEnabled: true } : {}),
+      ...(this.options.cheerpjLoaderUrl ? { cheerpjLoaderUrl: this.options.cheerpjLoaderUrl } : {}),
     };
   }
 

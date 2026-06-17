@@ -1,6 +1,4 @@
-const CHEERPJ_LOADER_VERSION = '4.2';
-// CheerpJ licensing requires loading their hosted runtime; keep this URL versioned and origin-pinned.
-const CHEERPJ_LOADER_URL = `https://cjrtnc.leaningtech.com/${CHEERPJ_LOADER_VERSION}/loader.js`;
+const DEFAULT_CHEERPJ_LOADER_URL = '/app/workers/vendor/cheerpj-loader.js';
 const HELPER_JAR_PATH = '/app/workers/vendor/java-browser-helper.jar';
 const JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
 const REWRITER_JAR_PATH = '/app/workers/vendor/java-rewriter.jar';
@@ -54,22 +52,33 @@ function javaWorkerHref() {
 }
 
 function assertTrustedJavaAsset(name, url) {
+  const value = String(url ?? '').trim();
+  if (value.length === 0) {
+    throw new Error(`${name} must reference a local /app/ asset path.`);
+  }
   if (typeof URL !== 'function') {
-    const value = String(url ?? '');
-    if (value === CHEERPJ_LOADER_URL || value.startsWith('/app/workers/vendor/')) return value;
-    throw new Error(`${name} must be served from the Java worker origin or the pinned CheerpJ runtime CDN.`);
+    if (value.startsWith('/app/')) return value;
+    throw new Error(`${name} must reference a local /app/ asset path.`);
   }
   const workerHref = javaWorkerHref();
   const workerOrigin = new URL(workerHref).origin;
-  const parsed = new URL(url, workerHref);
-  if (parsed.origin === workerOrigin) return parsed.href;
-
-  const expectedCheerpJLoaderPath = `/${CHEERPJ_LOADER_VERSION}/loader.js`;
-  if (parsed.origin === 'https://cjrtnc.leaningtech.com' && parsed.pathname === expectedCheerpJLoaderPath) {
+  const parsed = new URL(value, workerHref);
+  if (parsed.origin === workerOrigin && parsed.pathname.startsWith('/app/')) {
     return parsed.href;
   }
 
-  throw new Error(`${name} must be served from the Java worker origin or the pinned CheerpJ runtime CDN.`);
+  throw new Error(`${name} must reference a local /app/ asset path.`);
+}
+
+function resolveCheerpjLoaderUrl(payload) {
+  const configuredUrl = payload?.cheerpjLoaderUrl;
+  if (configuredUrl === undefined || configuredUrl === null || String(configuredUrl).trim().length === 0) {
+    return DEFAULT_CHEERPJ_LOADER_URL;
+  }
+  if (typeof configuredUrl !== 'string') {
+    throw new Error('Java worker init payload.cheerpjLoaderUrl must be a string when provided.');
+  }
+  return assertTrustedJavaAsset('CheerpJ loader', configuredUrl);
 }
 
 function javaSharedKernelPolicyUrl(workerHref = javaWorkerHref()) {
@@ -114,6 +123,7 @@ let rewriteLibraryClassPromise = null;
 let idleGeneration = 0;
 let initLoadTimeMs = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
+let cheerpjLoaderUrl = DEFAULT_CHEERPJ_LOADER_URL;
 let runWarmupPromise = null;
 let activeJavaProjectIo = null;
 let javaCompileIsolationCounter = 0;
@@ -703,6 +713,7 @@ function applyWorkerOptions(payload) {
   if (Number.isFinite(nextIdleTimeoutMs) && nextIdleTimeoutMs > 0) {
     idleTimeoutMs = Math.max(1_000, Math.floor(nextIdleTimeoutMs));
   }
+  cheerpjLoaderUrl = resolveCheerpjLoaderUrl(payload);
 }
 
 function assertSupportedExecutionStyle(executionStyle) {
@@ -3466,7 +3477,7 @@ async function ensureReady() {
     workerReadyPromise = (async () => {
       const startedAt = performance.now();
       if (typeof self.cheerpjInit !== 'function') {
-        self.importScripts(assertTrustedJavaAsset('CheerpJ loader', CHEERPJ_LOADER_URL));
+        self.importScripts(cheerpjLoaderUrl);
       }
       if (typeof self.cheerpjInit !== 'function') {
         throw new Error('CheerpJ loader did not expose cheerpjInit');

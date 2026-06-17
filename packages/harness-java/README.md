@@ -3,10 +3,10 @@
 Java runtime client and browser worker assets for TraceCode Harness.
 
 Install this package only when your application needs the Java lane. It contains
-the Java worker and Java helper JARs; the worker loads CheerpJ Core remotely from
-Leaning Technologies' `cjrtnc.leaningtech.com` runtime domain at the pinned
-versioned loader path documented in `THIRD_PARTY_NOTICES.md`. CheerpJ is not
-vendored or redistributed by this package.
+the Java worker and Java helper JARs. CheerpJ is not vendored or redistributed by
+this package; applications that enable the Java lane must provide a licensed
+CheerpJ loader through a same-origin `/app/` asset path documented in
+`THIRD_PARTY_NOTICES.md`.
 
 Import path:
 
@@ -21,9 +21,9 @@ Runtime assets are published under `workers/`. Review `THIRD_PARTY_NOTICES.md`
 before redistributing this package, especially the CheerpJ and OpenJDK/JBR
 sections.
 
-The Java lane trusts Leaning Technologies' hosted CheerpJ runtime. The worker
-restricts the remote loader to the pinned CheerpJ runtime CDN path, but browser
+The Java lane trusts the host application's CheerpJ asset pipeline. Browser
 worker `importScripts()` does not provide browser-enforced subresource
-integrity. If your deployment requires hash-locked CheerpJ artifacts or
-self-hosting, use a CheerpJ Commercial License and provide those assets through
-your own controlled runtime asset pipeline.
+integrity, so the worker rejects remote loader URLs and only imports same-origin
+`/app/` asset paths. If your deployment needs self-hosted or bundled CheerpJ
+artifacts, confirm the required CheerpJ license and maintain explicit
+hashes/allowlists for those assets.

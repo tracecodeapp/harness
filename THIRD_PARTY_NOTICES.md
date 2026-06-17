@@ -69,33 +69,30 @@ sources.
 ### CheerpJ Core
 
 - Use: browser-hosted JVM runtime loaded by the Java worker.
-- Runtime URL: `https://cjrtnc.leaningtech.com/4.2/loader.js`.
+- Runtime loader path: `/app/workers/vendor/cheerpj-loader.js` by default,
+  or another same-origin `/app/` asset path supplied by the host application.
 - Provider: Leaning Technologies.
 - Terms: CheerpJ Community License or CheerpJ Commercial License depending on
   the user's use case.
 - Licensing docs: https://cheerpj.com/docs/licensing
 - Version/changelog docs: https://cheerpj.com/docs/changelog
 
-CheerpJ is not vendored in this package; it is loaded from Leaning Technologies'
-`cjrtnc.leaningtech.com` runtime domain at the pinned versioned loader path
-listed above. This package redistributes the TraceCode-authored Java worker and
-Java helper assets, but does not redistribute CheerpJ itself.
+CheerpJ is not vendored in this package. This package redistributes the
+TraceCode-authored Java worker and Java helper assets, but does not redistribute
+CheerpJ itself. Host applications that enable the Java lane must provide the
+CheerpJ loader through their own same-origin asset pipeline.
 
 The CheerpJ Community License currently covers individuals, one-person
 companies, FOSS projects, and technical evaluations. That is expected to cover
-TraceCode's current educational, single-person-business use case when CheerpJ is
-loaded from Leaning Technologies' runtime domain. Uses outside that scope, and
-especially self-hosting, OEM distribution, or bundling CheerpJ with redistributed
-assets, can require a CheerpJ Commercial License.
+TraceCode's current educational, single-person-business use case. Uses outside
+that scope, and especially self-hosting, OEM distribution, or bundling CheerpJ
+with redistributed assets, can require a CheerpJ Commercial License.
 
-Supply-chain note: the Java worker pins the CheerpJ loader to the versioned
-`cjrtnc.leaningtech.com` URL and rejects unexpected remote script origins.
-Browser worker `importScripts()` does not provide browser-enforced subresource
-integrity, and CheerpJ may load additional runtime assets from its provider
-domain. Treat the remote CheerpJ runtime as a trusted third-party runtime. If a
-deployment requires hash-locked runtime artifacts, use a commercial self-hosted
-CheerpJ deployment and maintain explicit asset hashes/allowlists for that
-deployment.
+Supply-chain note: browser worker `importScripts()` does not provide
+browser-enforced subresource integrity, so the Java worker rejects remote
+CheerpJ loader URLs and only imports same-origin `/app/` asset paths. Treat the
+host application's CheerpJ asset pipeline as trusted third-party runtime code
+and maintain explicit hashes/allowlists for that deployment.
 
 ### JavaParser
 
