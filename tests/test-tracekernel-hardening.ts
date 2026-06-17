@@ -891,6 +891,54 @@ async function testBrowserJavaScriptSyntaxErrorsHideRunnerInternals(): Promise<v
   );
 }
 
+async function testBrowserJavaScriptTimeoutWaitsForLiveFileChangeQueue(): Promise<void> {
+  let releaseApply!: () => void;
+  const applyCanFinish = new Promise<void>((resolve) => {
+    releaseApply = resolve;
+  });
+  let applyStarted = false;
+  const runner = createBrowserJavaScriptProjectRunner({
+    allowMainThreadExecution: true,
+    trustedMainThreadExecution: true,
+    timeoutMs: 5,
+    applyFileChange: async () => {
+      applyStarted = true;
+      await applyCanFinish;
+      return false;
+    },
+  });
+  let settled = false;
+  const command = runner({
+    code: [
+      'const fs = require("node:fs");',
+      'fs.writeFileSync("late.txt", "late\\n");',
+      '',
+    ].join('\n'),
+    source: 'inline',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+      files: [],
+    },
+  }).finally(() => {
+    settled = true;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assertCondition(applyStarted, 'browser JS timeout test should start live file-change application');
+  assertCondition(!settled, 'browser JS timeout should not resolve while live file-change application is pending');
+  releaseApply();
+  const result = await command;
+  assertCondition(
+    result.exitCode === 124 &&
+      result.stderr.includes('node: execution timed out after 5ms'),
+    `browser JS timeout should return the timeout result after live queue settles: ${JSON.stringify(result)}`
+  );
+}
+
 async function testJavaScriptTraceSerializationIsBounded(): Promise<void> {
   const source = await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8');
   const postedMessages: unknown[] = [];
@@ -3064,6 +3112,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics();
   await testBrowserJavaScriptCpRejectsFileToRootDirectory();
   await testBrowserJavaScriptSyntaxErrorsHideRunnerInternals();
+  await testBrowserJavaScriptTimeoutWaitsForLiveFileChangeQueue();
   await testJavaScriptTraceSerializationIsBounded();
   await testJavaScriptInputMaterializerAvoidsTypeNameEval();
   await testJavaScriptDestructuredIterableTracingDoesNotExhaustValues();

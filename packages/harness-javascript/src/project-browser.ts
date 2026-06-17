@@ -3564,46 +3564,52 @@ export function createBrowserJavaScriptProjectRunner(
     );
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return (request) => {
+  return async (request) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
+    let forcedResult: RuntimeCommandResult | undefined;
     const executionState: BrowserJavaScriptProjectExecutionState = { cancelled: false };
     const execution = runBrowserJavaScriptProjectRequest(request, options, executionState).finally(() => {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
       if (abortListener) request.signal?.removeEventListener('abort', abortListener);
     });
-    const timeout = new Promise<RuntimeCommandResult>((resolve) => {
-      timeoutId = setTimeout(() => {
-        executionState.cancelled = true;
-        const io = createRuntimeProjectIoBridge(request.onEvent);
-        const timeoutStderr = `node: execution timed out after ${timeoutMs}ms\n`;
-        io.output('stderr', timeoutStderr);
-        io.status('process-exit', 'Browser Node timed out', { command: 'node', exitCode: 124, timeoutMs });
-        resolve({
-          stdout: '',
-          stderr: timeoutStderr,
-          exitCode: 124,
-        });
-      }, timeoutMs);
-    });
-    const abort = new Promise<RuntimeCommandResult>((resolve) => {
-      if (!request.signal) return;
+    timeoutId = setTimeout(() => {
+      if (forcedResult) return;
+      executionState.cancelled = true;
+      const io = createRuntimeProjectIoBridge(request.onEvent);
+      const timeoutStderr = `node: execution timed out after ${timeoutMs}ms\n`;
+      io.output('stderr', timeoutStderr);
+      io.status('process-exit', 'Browser Node timed out', { command: 'node', exitCode: 124, timeoutMs });
+      forcedResult = {
+        stdout: '',
+        stderr: timeoutStderr,
+        exitCode: 124,
+      };
+    }, timeoutMs);
+    if (request.signal) {
       abortListener = () => {
+        if (forcedResult) return;
         executionState.cancelled = true;
         const signal = runtimeAbortSignalName(request.signal);
         const exitCode = runtimeSignalExitCode(signal);
         const io = createRuntimeProjectIoBridge(request.onEvent);
         io.status('process-exit', 'Browser Node interrupted', { command: 'node', exitCode, signal });
-        resolve({
+        forcedResult = {
           stdout: '',
           stderr: 'Execution aborted\n',
           exitCode,
-        });
+        };
       };
       request.signal.addEventListener('abort', abortListener, { once: true });
       if (request.signal.aborted) abortListener();
-    });
-    return Promise.race([execution, timeout, abort]);
+    }
+    try {
+      const result = await execution;
+      return forcedResult ?? result;
+    } catch (error) {
+      if (forcedResult) return forcedResult;
+      throw error;
+    }
   };
 }
 
