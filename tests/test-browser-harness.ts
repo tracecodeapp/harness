@@ -756,6 +756,20 @@ async function main(): Promise<void> {
     );
     console.log('PASS: browser harness warms C# runtime on demand');
 
+    const coldCSharpHarness = createBrowserHarness({ assetBaseUrl: '/cold-csharp' });
+    const coldCSharpResult = await coldCSharpHarness
+      .getClient('csharp')
+      .executeCode('public class Solution { public int Add(int a, int b) => a + b; }', 'Add', { a: 1, b: 2 }, 'solution-method');
+    const coldCSharpWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/cold-csharp/csharp-worker.js'));
+    const coldCSharpMessageTypes = coldCSharpWorker?.messages.map((message) => message.type).join(',');
+    coldCSharpHarness.dispose();
+    assertCondition(coldCSharpResult.success, 'Cold C# harness should execute successfully');
+    assertCondition(
+      coldCSharpMessageTypes === 'init,warmup,execute-code',
+      `Cold C# execution should warm the runtime before execute-code: ${coldCSharpMessageTypes}`
+    );
+    console.log('PASS: browser harness warms cold C# execution before user-code timing');
+
     const typescriptWarmupResult = await harnessA.warmLanguage('typescript');
     const typescriptWarmupWorker = workerInstances.findLast((worker) =>
       String(worker.url).startsWith('/instance-a/javascript-worker.js')

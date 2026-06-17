@@ -462,7 +462,7 @@ export class CSharpWorkerClient {
     executionStyle: CSharpExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    await this.init();
+    await this.warmup();
     const result = await this.executeWithTimeout(
       () =>
         this.sendMessage<CSharpWorkerExecuteResult>(
@@ -509,7 +509,7 @@ export class CSharpWorkerClient {
     executionStyle: CSharpExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
-    await this.init();
+    await this.warmup();
     const result = await this.executeWithTimeout(
       () =>
         this.sendMessage<CodeExecutionBatchResult>(
@@ -545,7 +545,7 @@ export class CSharpWorkerClient {
     executionStyle: CSharpExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    await this.init();
+    await this.warmup();
     let result: CSharpWorkerExecuteResult;
     try {
       result = await this.executeWithTimeout(
@@ -618,7 +618,7 @@ export class CSharpWorkerClient {
     executionStyle: CSharpExecutionStyle,
     signal?: AbortSignal
   ): Promise<ExecutionResult> {
-    await this.init();
+    await this.warmup();
     let result: CSharpWorkerExecuteResult;
     const tracingTimeoutMs = this.resolveTracingTimeoutMs(functionName, executionStyle);
     try {
@@ -736,7 +736,7 @@ export class CSharpWorkerClient {
     const abortInit = () => this.terminateAndReset(createExecutionAbortError());
     signal?.addEventListener('abort', abortInit, { once: true });
     try {
-      await this.init();
+      await this.warmup();
     } finally {
       signal?.removeEventListener('abort', abortInit);
     }
