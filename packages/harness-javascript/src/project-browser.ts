@@ -243,6 +243,12 @@ const AsyncFunction = Object.getPrototypeOf(async function noop() {
 }).constructor as typeof Function;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const streamInternalCloseListeners = Symbol('tracecode.streamInternalCloseListeners');
+
+type InternalCloseAwareStream = {
+  [streamInternalCloseListeners]?: Set<() => void>;
+};
+
 function moduleDefault(value: unknown): unknown {
   return (value as Record<string, unknown>).default;
 }
@@ -4446,10 +4452,13 @@ export async function runBrowserJavaScriptProjectRequest(
       let streamEncoding = encoding;
       let readableFlowing: boolean | null = null;
       const pipeBindings: PipeBinding[] = [];
+      const internalCloseListeners = new Set<() => void>();
       const closeStream = (): void => {
         if (closed) return;
         closed = true;
         onClose?.();
+        for (const listener of internalCloseListeners) listener();
+        internalCloseListeners.clear();
         events.emit('close');
       };
       const formatChunk = (chunk: Uint8Array): BrowserBuffer | string => {
@@ -4502,6 +4511,7 @@ export async function runBrowserJavaScriptProjectRequest(
         get readableFlowing() {
           return readableFlowing;
         },
+        [streamInternalCloseListeners]: internalCloseListeners,
         setEncoding: (nextEncoding: string) => {
           streamEncoding = nextEncoding;
           return stream;
@@ -4664,6 +4674,7 @@ export async function runBrowserJavaScriptProjectRequest(
         ? Math.max(0, options.start)
         : 0;
       const hasExplicitWriteStart = typeof options === 'object' && typeof options?.start === 'number';
+      const internalCloseListeners = new Set<() => void>();
       const writeBytes = (value: unknown, writeEncoding?: string): number => {
         if (writableEnded) {
           throw Object.assign(new Error('ERR_STREAM_WRITE_AFTER_END: write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' });
@@ -4707,6 +4718,8 @@ export async function runBrowserJavaScriptProjectRequest(
           if (error) events.emit('error', error);
           done?.();
           if (autoClose && optionFd !== null) fsApi.closeSync(optionFd);
+          for (const listener of internalCloseListeners) listener();
+          internalCloseListeners.clear();
           if (emitFinish) {
             writableFinished = true;
             events.emit('finish');
@@ -4740,6 +4753,7 @@ export async function runBrowserJavaScriptProjectRequest(
         get writableCorked() {
           return writableCorked;
         },
+        [streamInternalCloseListeners]: internalCloseListeners,
         on: (event: string, listener: (...args: unknown[]) => void) => {
           events.on(event, listener);
           return stream;
@@ -6671,6 +6685,12 @@ export async function runBrowserJavaScriptProjectRequest(
         const assertFileHandleOpen = (): void => {
           if (closed) throw Object.assign(new Error('file closed'), { code: 'EBADF' });
         };
+        const trackAutoCloseStream = (stream: unknown, autoClose: boolean): void => {
+          if (!autoClose) return;
+          (stream as InternalCloseAwareStream)[streamInternalCloseListeners]?.add(() => {
+            closed = true;
+          });
+        };
         const readFileFromHandle = (encoding?: string | { encoding?: string | null } | null): BrowserBuffer | string => {
           assertFileHandleOpen();
           const entry = fileDescriptor(fd);
@@ -6746,22 +6766,14 @@ export async function runBrowserJavaScriptProjectRequest(
             assertFileHandleOpen();
             const streamOptions = typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd };
             const stream = fsApi.createReadStream(null, streamOptions);
-            if (typeof options !== 'object' || options?.autoClose !== false) {
-              stream.once('close', () => {
-                closed = true;
-              });
-            }
+            trackAutoCloseStream(stream, typeof options !== 'object' || options?.autoClose !== false);
             return stream;
           },
           createWriteStream: (options?: string | { autoClose?: boolean; encoding?: string | null; flags?: string } | null) => {
             assertFileHandleOpen();
             const streamOptions = typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd };
             const stream = fsApi.createWriteStream(null, streamOptions);
-            if (typeof options !== 'object' || options?.autoClose !== false) {
-              stream.once('close', () => {
-                closed = true;
-              });
-            }
+            trackAutoCloseStream(stream, typeof options !== 'object' || options?.autoClose !== false);
             return stream;
           },
           appendFile: async (value: unknown, options?: string | { encoding?: string | null } | null) => {
