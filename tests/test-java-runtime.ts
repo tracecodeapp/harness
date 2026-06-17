@@ -7051,6 +7051,7 @@ class Solution {
     const graphHasAugmentedIndexedAppend =
       /var __tracecodeIndex7_\d+ = 0;/.test(graphSource) &&
       /var __tracecodeValue7_\d+ = 1;/.test(graphSource) &&
+      /var __tracecodeIndex7_\d+ = 0; java\.util\.List __tracecodeTarget = TraceHooks\.readObjectListAtLine\(7, "graph", graph, __tracecodeIndex7_\d+, (?:\(String\) )?null\); var __tracecodeValue7_\d+ = 1;/.test(graphSource) &&
       graphSource.includes('TraceHooks.readObjectListAtLine(7, "graph", graph, __tracecodeIndex7_') &&
       graphSource.includes('__tracecodeTarget.add(__tracecodeValue7_') &&
       graphSource.includes('TraceHooks.emitMutatingCallAtLine(7, "graph", __tracecodeIndex7_') &&
@@ -7077,6 +7078,40 @@ class Solution {
         graphExecute.events.every((event) => event.startsWith('trace:')),
       'Java graph adjacency runtime events should be native runtime trace'
     );
+
+    const failedNestedAddSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  static int sideEffect(int[] sideEffects) {
+    sideEffects[0] += 1;
+    return 1;
+  }
+
+  public int solve(int unused) {
+    int[] sideEffects = new int[] { 0 };
+    List<List<Integer>> graph = new ArrayList<>();
+    graph.add(new ArrayList<>());
+    try {
+      graph.get(99).add(sideEffect(sideEffects));
+    } catch (RuntimeException error) {
+    }
+    return sideEffects[0];
+  }
+}`, 'solve');
+    const failedNestedTargetIndex = failedNestedAddSource.indexOf('java.util.List __tracecodeTarget = TraceHooks.readObjectListAtLine');
+    const failedNestedValueIndex = failedNestedAddSource.indexOf('var __tracecodeValue');
+    const nativeFailedNestedTargetIndex = failedNestedAddSource.indexOf('var __tracecodeIndexedTarget');
+    const nativeFailedNestedValueIndex = failedNestedAddSource.indexOf('var __tracecodeArg');
+    assertCondition(
+      (failedNestedTargetIndex >= 0 && failedNestedValueIndex >= 0 && failedNestedTargetIndex < failedNestedValueIndex) ||
+        (
+          nativeFailedNestedTargetIndex >= 0 &&
+          nativeFailedNestedValueIndex >= 0 &&
+          nativeFailedNestedTargetIndex < nativeFailedNestedValueIndex
+        ),
+      `Java nested adjacency mutation should resolve the receiver before evaluating value args: ${failedNestedAddSource}`
+    );
+    assertJavaSourceCompiles(failedNestedAddSource, 'augmented Java failed nested adjacency mutation source');
 
     const graphTrace = javaTraceHooksEventsToRuntimeTrace(graphExecute.events ?? [], undefined, {
       runId: 'java:test',
