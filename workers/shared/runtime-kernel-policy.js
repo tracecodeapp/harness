@@ -43,19 +43,7 @@ function normalizedSet(values) {
   return new Set(Array.from(values ?? [], (value) => normalizeRuntimeKernelPath(value)).filter(Boolean));
 }
 
-const normalizedDeviceInfoCache = new WeakMap();
-const normalizedKnownDeviceCache = new WeakMap();
-
-function cacheablePolicyObject(value) {
-  return value && typeof value === 'object' ? value : null;
-}
-
 function normalizedDeviceInfos(devices) {
-  const cacheKey = cacheablePolicyObject(devices);
-  if (cacheKey && normalizedDeviceInfoCache.has(cacheKey)) {
-    return normalizedDeviceInfoCache.get(cacheKey);
-  }
-
   let entries = [];
   if (devices instanceof Map) {
     entries = Array.from(devices.values());
@@ -78,18 +66,11 @@ function normalizedDeviceInfos(devices) {
       outputDevice: normalizeRuntimeKernelDeviceReference(entry.outputDevice) || '',
     });
   }
-  if (cacheKey) normalizedDeviceInfoCache.set(cacheKey, normalized);
   return normalized;
 }
 
 function normalizedKnownDevices(values) {
-  const cacheKey = cacheablePolicyObject(values);
-  if (cacheKey && normalizedKnownDeviceCache.has(cacheKey)) {
-    return normalizedKnownDeviceCache.get(cacheKey);
-  }
-  const normalized = normalizedSet(values);
-  if (cacheKey) normalizedKnownDeviceCache.set(cacheKey, normalized);
-  return normalized;
+  return normalizedSet(values);
 }
 
 export function runtimeKernelDeviceInfo(devices, device) {

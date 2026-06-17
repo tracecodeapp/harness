@@ -2447,12 +2447,12 @@ async function testBulkTraceWritesAreBudgetedBeforeLoops(): Promise<void> {
   );
 }
 
-async function testSharedKernelPolicyCachesDeviceManifests(): Promise<void> {
+async function testSharedKernelPolicyRefreshesMutableDeviceManifests(): Promise<void> {
   const source = await readFile(join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy.js'), 'utf8');
   assertCondition(
-    source.includes('const normalizedDeviceInfoCache = new WeakMap()') &&
-      source.includes('const normalizedKnownDeviceCache = new WeakMap()'),
-    'shared kernel policy should cache normalized device manifests by object identity'
+    !source.includes('normalizedDeviceInfoCache') &&
+      !source.includes('normalizedKnownDeviceCache'),
+    'shared kernel policy should not cache mutable device manifests by object identity'
   );
   assertCondition(
     source.includes('runtimeKernelDeviceEntryKind(devices, value, entries = normalizedDeviceInfos(devices))') &&
@@ -3210,7 +3210,7 @@ async function main(): Promise<void> {
   await testCppTraceIdsDoNotExposePointers();
   await testCppInferredNumericLiteralsRejectNonFiniteValues();
   await testBulkTraceWritesAreBudgetedBeforeLoops();
-  await testSharedKernelPolicyCachesDeviceManifests();
+  await testSharedKernelPolicyRefreshesMutableDeviceManifests();
   testRuntimeFinalDiffBudgets();
   await testKernelObservedFileSystemLiveFileChangesAreBudgeted();
   await testTraceKernelTraversalSkipsSymlinkCycles();

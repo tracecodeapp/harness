@@ -544,6 +544,35 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
         stableStringify({ kind: 'error', reason: 'is-directory', path: '/proc/kernel' }),
     'shared worker kernel policy should classify virtual open targets'
   );
+
+  const mutableDevices = [
+    { path: '/dev/revoked', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+  ];
+  const mutableKnownDevices = ['/dev/revoked'];
+  assertCondition(
+    workerRuntimeKernelDeviceOutputTarget(mutableDevices, '/dev/revoked') === '/dev/stdout' &&
+      workerRuntimeKernelDeviceInputSource(mutableDevices, '/dev/revoked') === '/dev/stdin' &&
+      stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/revoked', { knownDevices: mutableKnownDevices })) ===
+        stableStringify({ kind: 'device-file', path: '/dev/revoked' }),
+    'shared worker kernel policy mutable-manifest precondition should expose the configured device'
+  );
+  mutableDevices[0].readable = false;
+  mutableDevices[0].writable = false;
+  mutableKnownDevices.length = 0;
+  assertCondition(
+    workerRuntimeKernelDeviceOutputTarget(mutableDevices, '/dev/revoked') === '' &&
+      workerRuntimeKernelDeviceInputSource(mutableDevices, '/dev/revoked') === '' &&
+      stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/revoked', { knownDevices: mutableKnownDevices })) ===
+        stableStringify({ kind: 'device-not-found', path: '/dev/revoked' }),
+    'shared worker kernel policy should honor device permission revocation and known-device removal on reused mutable manifests'
+  );
+  mutableDevices.length = 0;
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/revoked', { devices: mutableDevices })) ===
+      stableStringify({ kind: 'device-not-found', path: '/dev/revoked' }),
+    'shared worker kernel policy should honor device removal on reused mutable manifests'
+  );
+
   assertCondition(
     stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
       stableStringify({ kind: 'error', reason: 'kernel-read-only', path: '/tracekernel/new' }),
@@ -579,6 +608,28 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
       stableStringify(classicPolicy.runtimeKernelVirtualOpenTarget('/dev/log', { writable: true }, { devices })) ===
         stableStringify(workerRuntimeKernelVirtualOpenTarget('/dev/log', { writable: true }, { devices })),
     'classic worker kernel policy should match module worker kernel policy'
+  );
+
+  const classicMutableDevices = [
+    { path: '/dev/revoked', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+  ];
+  const classicMutableKnownDevices = ['/dev/revoked'];
+  assertCondition(
+    classicPolicy !== undefined &&
+      classicPolicy.runtimeKernelDeviceOutputTarget(classicMutableDevices, '/dev/revoked') === '/dev/stdout' &&
+      stableStringify(classicPolicy.runtimeKernelVirtualPathTarget('/dev/revoked', { knownDevices: classicMutableKnownDevices })) ===
+        stableStringify({ kind: 'device-file', path: '/dev/revoked' }),
+    'classic worker kernel policy mutable-manifest precondition should expose the configured device'
+  );
+  classicMutableDevices[0].readable = false;
+  classicMutableDevices[0].writable = false;
+  classicMutableKnownDevices.length = 0;
+  assertCondition(
+    classicPolicy !== undefined &&
+      classicPolicy.runtimeKernelDeviceOutputTarget(classicMutableDevices, '/dev/revoked') === '' &&
+      stableStringify(classicPolicy.runtimeKernelVirtualPathTarget('/dev/revoked', { knownDevices: classicMutableKnownDevices })) ===
+        stableStringify({ kind: 'device-not-found', path: '/dev/revoked' }),
+    'classic worker kernel policy should honor reused mutable manifest revocations'
   );
 }
 
