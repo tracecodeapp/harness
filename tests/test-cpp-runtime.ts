@@ -1175,6 +1175,40 @@ if (!traced.trace.events.some((event) => event.kind === 'line' && event.callStac
   throw new Error('C++ tracing should attach callStack frames to runtime events, received ' + JSON.stringify(traced.trace.events));
 }
 
+const tracecodePrefixedUserFunctionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int run(int value) {',
+    '    return tracecodeEvil(value);',
+    '  }',
+    '  int tracecodeEvil(int value) {',
+    '    int adjusted = value + 7;',
+    '    return adjusted;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'run',
+  inputs: { value: 5 },
+  options: {},
+});
+if (!tracecodePrefixedUserFunctionTrace.success || tracecodePrefixedUserFunctionTrace.output !== 12) {
+  throw new Error('C++ tracecode-prefixed user function tracing failed: ' + JSON.stringify(tracecodePrefixedUserFunctionTrace));
+}
+const tracecodePrefixedUserFunctionEvents = tracecodePrefixedUserFunctionTrace.trace.events;
+if (!tracecodePrefixedUserFunctionEvents.some((event) => event.kind === 'call' && event.function === 'tracecodeEvil' && event.args?.value === 5)) {
+  throw new Error('C++ tracing should keep tracecode-prefixed user function calls, received ' + JSON.stringify(tracecodePrefixedUserFunctionEvents));
+}
+if (!tracecodePrefixedUserFunctionEvents.some((event) => event.kind === 'line' && event.function === 'tracecodeEvil')) {
+  throw new Error('C++ tracing should keep tracecode-prefixed user function line events, received ' + JSON.stringify(tracecodePrefixedUserFunctionEvents));
+}
+if (!tracecodePrefixedUserFunctionEvents.some((event) => event.kind === 'return' && event.function === 'tracecodeEvil' && event.value === 12)) {
+  throw new Error('C++ tracing should keep tracecode-prefixed user function returns, received ' + JSON.stringify(tracecodePrefixedUserFunctionEvents));
+}
+if (!tracecodePrefixedUserFunctionEvents.some((event) => event.callStack?.some((frame) => frame.function === 'tracecodeEvil'))) {
+  throw new Error('C++ tracing should keep tracecode-prefixed user call stack frames, received ' + JSON.stringify(tracecodePrefixedUserFunctionEvents));
+}
+
 const priorityQueueMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',

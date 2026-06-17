@@ -7333,19 +7333,72 @@ function normalizeRuntimeTraceEventTargetDepth(event, maxPathDepth) {
   return { ...event, target: nextTarget };
 }
 
-function isCppSyntheticHelperFunctionName(name) {
-  return typeof name === 'string' && /^tracecode[A-Z]/.test(name);
+function buildCppUserFunctionNameSet(source) {
+  const names = new Set();
+  if (typeof source !== 'string' || source.trim() === '') return names;
+  for (const signature of parseCppFunctionSignatures(source)) {
+    if (typeof signature?.name === 'string' && signature.name) names.add(signature.name);
+  }
+
+  const cleaned = stripComments(source);
+  const namePattern = /\b(tracecode[A-Z]\w*)\s*\(/g;
+  const skippedReturnTypes = new Set([
+    'class',
+    'struct',
+    'public:',
+    'private:',
+    'protected:',
+    'if',
+    'for',
+    'while',
+    'switch',
+    'catch',
+    'return',
+  ]);
+  let match;
+  while ((match = namePattern.exec(cleaned))) {
+    const name = match[1];
+    const openParenIndex = cleaned.indexOf('(', match.index);
+    const closeParenIndex = findMatchingParen(cleaned, openParenIndex);
+    if (closeParenIndex < 0) continue;
+
+    let cursor = closeParenIndex + 1;
+    while (/\s/.test(cleaned[cursor] || '')) cursor += 1;
+    while (/^(?:const|noexcept|override|final)\b/.test(cleaned.slice(cursor))) {
+      const qualifier = cleaned.slice(cursor).match(/^(?:const|noexcept|override|final)\b/)?.[0] || '';
+      cursor += qualifier.length;
+      while (/\s/.test(cleaned[cursor] || '')) cursor += 1;
+    }
+    if (cleaned[cursor] !== '{') continue;
+
+    const signaturePrefix = cleaned.slice(0, match.index);
+    const returnTypeMatch = signaturePrefix.match(/([A-Za-z_][\w:\s<>,*&]*?)\s*$/);
+    if (!returnTypeMatch) continue;
+    const returnType = cleanCppReturnType(returnTypeMatch[1]);
+    if (skippedReturnTypes.has(returnType)) continue;
+    names.add(name);
+    namePattern.lastIndex = closeParenIndex + 1;
+  }
+  return names;
 }
 
-function stripCppSyntheticHelperFrames(event) {
+function isCppSyntheticHelperFunctionName(name, userFunctionNames = new Set()) {
+  return (
+    typeof name === 'string' &&
+    /^tracecode[A-Z]/.test(name) &&
+    !(userFunctionNames instanceof Set && userFunctionNames.has(name))
+  );
+}
+
+function stripCppSyntheticHelperFrames(event, userFunctionNames = new Set()) {
   if (!event || typeof event !== 'object' || !Array.isArray(event.callStack)) return event;
-  const callStack = event.callStack.filter((frame) => !isCppSyntheticHelperFunctionName(frame?.function));
+  const callStack = event.callStack.filter((frame) => !isCppSyntheticHelperFunctionName(frame?.function, userFunctionNames));
   return callStack.length === event.callStack.length ? event : { ...event, callStack };
 }
 
-function isDroppableCppSyntheticHelperEvent(event) {
+function isDroppableCppSyntheticHelperEvent(event, userFunctionNames = new Set()) {
   return (
-    isCppSyntheticHelperFunctionName(event?.function) &&
+    isCppSyntheticHelperFunctionName(event?.function, userFunctionNames) &&
     (event.kind === 'call' || event.kind === 'line' || event.kind === 'return')
   );
 }
@@ -7435,6 +7488,7 @@ function finalizeRuntimeTrace(events, options = {}) {
   const statementSourceMap = typeof options.sourceCode === 'string'
     ? buildRuntimeStatementSourceMap(options.sourceCode)
     : new Map();
+  const userFunctionNames = buildCppUserFunctionNameSet(options.sourceCode);
   const maxEvents = Number.isFinite(options.maxStoredEvents)
     ? Number(options.maxStoredEvents)
     : Number.isFinite(options.maxTraceSteps)
@@ -7447,8 +7501,8 @@ function finalizeRuntimeTrace(events, options = {}) {
       ...(event.kind === 'line' && !event.function && activeFunction ? { function: activeFunction } : {}),
       runId,
       file,
-    });
-    if (isDroppableCppSyntheticHelperEvent(normalized)) return [];
+    }, userFunctionNames);
+    if (isDroppableCppSyntheticHelperEvent(normalized, userFunctionNames)) return [];
     return [normalizeRuntimeTraceEventTargetDepth({
       ...normalized,
       ...cppRuntimeTraceSourceOwnership(normalized, statementSourceMap),
