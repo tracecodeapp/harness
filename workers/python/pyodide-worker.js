@@ -1067,11 +1067,25 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     return btoa(binary);
   };
 
+  const pathStat = (path, follow = true) => {
+    const statFn = !follow && typeof fs.lstat === 'function' ? fs.lstat : fs.stat;
+    if (typeof statFn !== 'function') return null;
+    try {
+      return statFn.call(fs, path);
+    } catch {
+      return null;
+    }
+  };
+
+  const isSymlinkStat = (stat) => Boolean(stat && typeof fs.isLink === 'function' && fs.isLink(stat.mode));
+
   const runtimeFileChange = (path) => {
     const relative = relativePath(path);
     if (!relative || typeof fs.readFile !== 'function') return null;
     try {
-      const stat = typeof fs.stat === 'function' ? fs.stat(path) : null;
+      const linkStat = pathStat(path, false);
+      if (isSymlinkStat(linkStat)) return null;
+      const stat = pathStat(path, true);
       if (stat && typeof stat.size === 'number' && stat.size > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) {
         return null;
       }
@@ -1128,14 +1142,19 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     }
   };
 
-  const emitPathSnapshot = (path) => {
-    if (!path || typeof fs.stat !== 'function' || typeof fs.isDir !== 'function' || typeof fs.isFile !== 'function') return;
-    let stat;
-    try {
-      stat = fs.stat(path);
-    } catch {
+  const emitPathSnapshot = (path, budget = { count: 0 }) => {
+    if (
+      !path ||
+      budget.count >= PROJECT_MAX_LIVE_FILE_CHANGES ||
+      typeof fs.isDir !== 'function' ||
+      typeof fs.isFile !== 'function'
+    ) {
       return;
     }
+    budget.count += 1;
+    const stat = pathStat(path, false);
+    if (!stat) return;
+    if (isSymlinkStat(stat)) return;
     if (fs.isFile(stat.mode)) {
       emitFileChange(path);
       return;
@@ -1151,7 +1170,8 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     }
     for (const entry of entries) {
       if (entry === '.' || entry === '..') continue;
-      emitPathSnapshot(`${String(path).replace(/\/+$/, '')}/${entry}`);
+      emitPathSnapshot(`${String(path).replace(/\/+$/, '')}/${entry}`, budget);
+      if (budget.count >= PROJECT_MAX_LIVE_FILE_CHANGES) return;
     }
   };
 

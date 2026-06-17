@@ -138,6 +138,7 @@ async function loadRuntimeCore(): Promise<RuntimeCore> {
 type FakePyodideFs = {
   files: Map<string, Uint8Array>;
   directories: Set<string>;
+  symlinks: Map<string, string>;
   createDataFile: (parent: string, name: string, contents?: unknown) => unknown;
   createPath: (parent: string, path: string) => unknown;
   cwd: () => string;
@@ -145,11 +146,14 @@ type FakePyodideFs = {
   getPath: (node: { path: string }) => string;
   getStreamChecked: (fd: number) => { node: { path: string }; path?: string };
   lookupPath: (path: string) => { node: { path: string } };
+  lstat: (path: string) => { mode: number };
   open: (path: string | { path: string }, flags: string) => { fd: number; node: { path: string }; path?: string };
   readFile: (path: string, options?: { encoding?: string }) => Uint8Array;
+  rename: (oldPath: string, newPath: string) => void;
   stat: (path: string) => { mode: number };
   isFile: (mode: number) => boolean;
   isDir: (mode: number) => boolean;
+  isLink: (mode: number) => boolean;
   readdir: (path: string) => string[];
   write: (stream: { node: { path: string }; path?: string }, value: unknown) => number;
   writeFile: (path: string, contents?: unknown) => void;
@@ -188,13 +192,33 @@ function fakeFsBytes(contents: unknown): Uint8Array {
 function createFakePyodideFs(): FakePyodideFs {
   const files = new Map<string, Uint8Array>();
   const directories = new Set<string>(['/', '/dev', '/proc', '/proc/kernel', '/workspace']);
+  const symlinks = new Map<string, string>();
   const streams = new Map<number, { node: { path: string }; path?: string }>();
   let nextFd = 3;
+  const fileTypeMask = 0xf000;
   const fileMode = 0x8000;
   const directoryMode = 0x4000;
+  const symlinkMode = 0xa000;
+  const resolveSymlinkPath = (path: string): string => {
+    const normalized = fakeFsResolvePath(path);
+    const link = [...symlinks.keys()]
+      .sort((left, right) => right.length - left.length)
+      .find((candidate) => normalized === candidate || normalized.startsWith(`${candidate}/`));
+    if (!link) return normalized;
+    const rest = normalized.slice(link.length);
+    return normalizeFakeFsPath(`${symlinks.get(link) ?? ''}${rest}`);
+  };
+  const moveEntry = <T>(store: Map<string, T>, from: string, to: string): void => {
+    for (const [path, value] of [...store.entries()]) {
+      if (path !== from && !path.startsWith(`${from}/`)) continue;
+      store.delete(path);
+      store.set(`${to}${path.slice(from.length)}`, value);
+    }
+  };
   return {
     files,
     directories,
+    symlinks,
     createDataFile(parent, name, contents) {
       files.set(fakeFsTargetPath(parent, name), fakeFsBytes(contents));
       return {};
@@ -224,6 +248,13 @@ function createFakePyodideFs(): FakePyodideFs {
     lookupPath(path) {
       return { node: { path: fakeFsResolvePath(path) } };
     },
+    lstat(path) {
+      const normalized = fakeFsResolvePath(path);
+      if (symlinks.has(normalized)) return { mode: symlinkMode };
+      if (files.has(normalized)) return { mode: fileMode };
+      if (directories.has(normalized)) return { mode: directoryMode };
+      throw new Error(`missing path: ${normalized}`);
+    },
     open(path) {
       const normalized = typeof path === 'string' ? fakeFsResolvePath(path) : path.path;
       const stream = { fd: nextFd++, node: { path: normalized }, ...(typeof path === 'string' ? { path: normalized } : {}) };
@@ -231,28 +262,40 @@ function createFakePyodideFs(): FakePyodideFs {
       return stream;
     },
     readFile(path) {
-      const normalized = fakeFsResolvePath(path);
+      const normalized = resolveSymlinkPath(path);
       const contents = files.get(normalized);
       if (!contents) throw new Error(`missing file: ${normalized}`);
       return contents;
     },
+    rename(oldPath, newPath) {
+      const oldNormalized = fakeFsResolvePath(oldPath);
+      const newNormalized = fakeFsResolvePath(newPath);
+      moveEntry(files, oldNormalized, newNormalized);
+      moveEntry(symlinks, oldNormalized, newNormalized);
+      const movedDirectories = [...directories].filter((path) => path === oldNormalized || path.startsWith(`${oldNormalized}/`));
+      for (const path of movedDirectories) directories.delete(path);
+      for (const path of movedDirectories) directories.add(`${newNormalized}${path.slice(oldNormalized.length)}`);
+    },
     stat(path) {
-      const normalized = normalizeFakeFsPath(path);
+      const normalized = resolveSymlinkPath(path);
       if (files.has(normalized)) return { mode: fileMode };
       if (directories.has(normalized)) return { mode: directoryMode };
       throw new Error(`missing path: ${normalized}`);
     },
     isFile(mode) {
-      return (mode & fileMode) !== 0;
+      return (mode & fileTypeMask) === fileMode;
     },
     isDir(mode) {
-      return (mode & directoryMode) !== 0;
+      return (mode & fileTypeMask) === directoryMode;
+    },
+    isLink(mode) {
+      return (mode & fileTypeMask) === symlinkMode;
     },
     readdir(path) {
-      const normalized = fakeFsResolvePath(path);
+      const normalized = resolveSymlinkPath(path);
       const prefix = normalized === '/' ? '/' : `${normalized}/`;
       const names = new Set<string>(['.', '..']);
-      for (const candidate of [...directories, ...files.keys()]) {
+      for (const candidate of [...directories, ...files.keys(), ...symlinks.keys()]) {
         if (!candidate.startsWith(prefix) || candidate === normalized) continue;
         const rest = candidate.slice(prefix.length);
         const name = rest.split('/')[0];
@@ -332,6 +375,12 @@ async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
   const streamTruncateMessage = caughtMessage(() => {
     fakeFs.ftruncate(staleKernelStream.fd, 0);
   });
+  fakeFs.createPath('/workspace', 'tree');
+  fakeFs.createDataFile('/workspace/tree', 'local.txt', new TextEncoder().encode('local'));
+  fakeFs.directories.add('/outside');
+  fakeFs.files.set('/outside/secret.txt', new TextEncoder().encode('secret'));
+  fakeFs.symlinks.set('/workspace/tree/link', '/outside');
+  fakeFs.rename('/workspace/tree', '/workspace/moved');
   vm.runInContext('self.__cleanupProjectFs();', context);
 
   assertCondition(
@@ -365,6 +414,11 @@ async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
       streamWriteMessage,
       streamTruncateMessage,
     })}`
+  );
+  assertCondition(
+    events.some((event) => event.type === 'file-change' && event.change?.path === 'moved/local.txt') &&
+      !events.some((event) => String(event.change?.path ?? '').startsWith('moved/link')),
+    `Pyodide moved-directory snapshots should not follow symlinks: ${JSON.stringify(events)}`
   );
   console.log('PASS: Pyodide project FS live events reject traversal paths');
 }
