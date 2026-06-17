@@ -1355,6 +1355,74 @@ print(json.dumps({
   console.log('PASS: Python runtime records tuple assignment indexed writes');
 }
 
+async function assertClassMethodAssignmentTempsAreHidden(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class Solution:
+    def solve(self, xs: list[str]) -> list[str]:
+        xs[0], *_ = ["visible", "secret"]
+        return xs
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    { xs: ['old'] },
+    'solution-method',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'schemaVersion': 'runtime-trace-2026-04-28',
+        'language': 'python',
+        'runId': 'python:run',
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
+  assertCondition(
+    Array.isArray(parsed.result) && parsed.result.join(',') === 'visible',
+    `Python class-method assignment fixture should execute successfully, received ${JSON.stringify(parsed.result)}`
+  );
+  const serializedVariables = JSON.stringify(parsed.trace.map((step) => step.variables ?? {}));
+  assertCondition(
+    !serializedVariables.includes('__tracecode') &&
+      !serializedVariables.includes('_Solution__tracecode') &&
+      !serializedVariables.includes('secret'),
+    `Python class-method trace snapshots should hide mangled trace temporaries: ${serializedVariables}`
+  );
+  const assignmentLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'xs[0], *_ =') - 1;
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) =>
+      event.kind === 'write' &&
+      event.line === assignmentLine &&
+      event.target?.variable === 'xs' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+      event.value === 'visible'
+    ),
+    `Python class-method assignment should still record the user-visible indexed write: ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python class-method assignment hides trace temporaries');
+}
+
 async function assertChainedAssignmentScalarWritesAreRecorded(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `def solve(nums):
@@ -3661,6 +3729,7 @@ async function main(): Promise<void> {
   await assertLiteralTupleUnpackingForLoopBindingIsRecorded();
   await assertTupleAssignmentScalarWritesAreRecorded();
   await assertTupleAssignmentIndexedWritesAreRecorded();
+  await assertClassMethodAssignmentTempsAreHidden();
   await assertChainedAssignmentScalarWritesAreRecorded();
   await assertListComprehensionAssignmentEmitsSingleWriteFrame();
   await assertInPlaceSortMutationIsRecorded();
