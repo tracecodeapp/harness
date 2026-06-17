@@ -1306,6 +1306,9 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
     interval: boolean;
   };
 
+  const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
+  const hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
+  const hostQueueMicrotask = globalThis.queueMicrotask.bind(globalThis);
   let nextTimerId = 1;
   let pendingTimerWork: Promise<void> = Promise.resolve();
   let timerError: unknown;
@@ -1327,7 +1330,7 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
   };
   const setTrackedTimeout = (callback: TimerCallback, delay?: number, ...args: unknown[]): number => {
     const id = nextTimerId++;
-    const handle = globalThis.setTimeout(() => {
+    const handle = hostSetTimeout(() => {
       timers.delete(id);
       if (executionState.cancelled) return;
       runTimerCallback(callback, args);
@@ -1339,7 +1342,7 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
     if (typeof id !== 'number') return;
     const timer = timers.get(id);
     if (!timer) return;
-    globalThis.clearTimeout(timer.handle);
+    hostClearTimeout(timer.handle);
     timers.delete(id);
   };
   const setTrackedInterval = (callback: TimerCallback, delay?: number, ...args: unknown[]): number => {
@@ -1349,20 +1352,20 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
       runTimerCallback(callback, args);
       const timer = timers.get(id);
       if (!timer) return;
-      timer.handle = globalThis.setTimeout(run, Math.max(0, Number(delay) || 0));
+      timer.handle = hostSetTimeout(run, Math.max(0, Number(delay) || 0));
     };
-    const handle = globalThis.setTimeout(run, Math.max(0, Number(delay) || 0));
+    const handle = hostSetTimeout(run, Math.max(0, Number(delay) || 0));
     timers.set(id, { handle, interval: true });
     return id;
   };
   const setTrackedImmediate = (callback: TimerCallback, ...args: unknown[]): number => setTrackedTimeout(callback, 0, ...args);
   const drain = async (): Promise<void> => {
     while (!executionState.cancelled && timers.size > 0) {
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      await new Promise((resolve) => hostSetTimeout(resolve, 0));
       await pendingTimerWork;
       if (timerError !== undefined) throw timerError;
       if ([...timers.values()].some((timer) => timer.interval)) {
-        await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+        await new Promise((resolve) => hostSetTimeout(resolve, 0));
       }
     }
     await pendingTimerWork;
@@ -1370,7 +1373,7 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
   };
   const clearAll = (): void => {
     for (const timer of timers.values()) {
-      globalThis.clearTimeout(timer.handle);
+      hostClearTimeout(timer.handle);
     }
     timers.clear();
   };
@@ -1382,7 +1385,7 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
     clearInterval: clearTrackedTimeout,
     setImmediate: setTrackedImmediate,
     clearImmediate: clearTrackedTimeout,
-    queueMicrotask: globalThis.queueMicrotask.bind(globalThis),
+    queueMicrotask: hostQueueMicrotask,
     drain,
     clearAll,
   };
@@ -2620,6 +2623,46 @@ function installBrowserHttpGlobalLockdown(httpApi: ReturnType<typeof createHttpA
   };
 }
 
+function installBrowserTimerGlobals(eventLoopApi: ReturnType<typeof createBrowserEventLoopApi>): () => void {
+  const global = globalThis as typeof globalThis & Record<string, unknown>;
+  const replacements: Record<string, unknown> = {
+    setTimeout: eventLoopApi.setTimeout,
+    clearTimeout: eventLoopApi.clearTimeout,
+    setInterval: eventLoopApi.setInterval,
+    clearInterval: eventLoopApi.clearInterval,
+    setImmediate: eventLoopApi.setImmediate,
+    clearImmediate: eventLoopApi.clearImmediate,
+    queueMicrotask: eventLoopApi.queueMicrotask,
+  };
+  const previousDescriptors = new Map<string, PropertyDescriptor | undefined>();
+  for (const [name, value] of Object.entries(replacements)) {
+    previousDescriptors.set(name, Object.getOwnPropertyDescriptor(global, name));
+    try {
+      Object.defineProperty(global, name, {
+        configurable: true,
+        enumerable: false,
+        writable: true,
+        value,
+      });
+    } catch {
+      // Same-realm execution is best-effort; worker-backed execution remains the stronger boundary.
+    }
+  }
+  return () => {
+    for (const [name, descriptor] of previousDescriptors) {
+      try {
+        if (descriptor) {
+          Object.defineProperty(global, name, descriptor);
+        } else {
+          delete global[name];
+        }
+      } catch {
+        // User code can still poison same-realm globals; later executions should prefer worker-backed mode.
+      }
+    }
+  };
+}
+
 function dirname(path: string): string {
   const index = path.lastIndexOf('/');
   return index === -1 ? '' : path.slice(0, index);
@@ -3565,15 +3608,17 @@ export function createBrowserJavaScriptProjectRunner(
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return async (request) => {
+    const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
+    const hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
     let forcedResult: RuntimeCommandResult | undefined;
     const executionState: BrowserJavaScriptProjectExecutionState = { cancelled: false };
     const execution = runBrowserJavaScriptProjectRequest(request, options, executionState).finally(() => {
-      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (timeoutId !== undefined) hostClearTimeout(timeoutId);
       if (abortListener) request.signal?.removeEventListener('abort', abortListener);
     });
-    timeoutId = setTimeout(() => {
+    timeoutId = hostSetTimeout(() => {
       if (forcedResult) return;
       executionState.cancelled = true;
       const io = createRuntimeProjectIoBridge(request.onEvent);
@@ -6858,6 +6903,7 @@ export async function runBrowserJavaScriptProjectRequest(
     const zlibApi = createZlibApi();
     const httpApi = createHttpApi(request.kernelHttp, request.signal);
     const restoreHttpGlobals = installBrowserHttpGlobalLockdown(httpApi);
+    const restoreTimerGlobals = installBrowserTimerGlobals(eventLoopApi);
     const builtins = new Map<string, unknown>([
       ['fs', fsApi],
       ['node:fs', fsApi],
@@ -7003,17 +7049,6 @@ export async function runBrowserJavaScriptProjectRequest(
           'Buffer',
           '__filename',
           '__dirname',
-          'setTimeout',
-          'clearTimeout',
-          'setInterval',
-          'clearInterval',
-          'setImmediate',
-          'clearImmediate',
-          'queueMicrotask',
-          'fetch',
-          'Headers',
-          'Request',
-          'Response',
           executableCode
         );
         fn.call(
@@ -7026,18 +7061,7 @@ export async function runBrowserJavaScriptProjectRequest(
           processApi,
           BrowserBuffer,
           workspaceFilename(normalizedPath, workspaceRoot),
-          workspaceDirname(normalizedPath, workspaceRoot),
-          eventLoopApi.setTimeout,
-          eventLoopApi.clearTimeout,
-          eventLoopApi.setInterval,
-          eventLoopApi.clearInterval,
-          eventLoopApi.setImmediate,
-          eventLoopApi.clearImmediate,
-          eventLoopApi.queueMicrotask,
-          httpApi.fetch,
-          httpApi.Headers,
-          httpApi.Request,
-          httpApi.Response
+          workspaceDirname(normalizedPath, workspaceRoot)
         );
       } catch (error) {
         throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
@@ -7086,17 +7110,6 @@ export async function runBrowserJavaScriptProjectRequest(
           'Buffer',
           '__filename',
           '__dirname',
-          'setTimeout',
-          'clearTimeout',
-          'setInterval',
-          'clearInterval',
-          'setImmediate',
-          'clearImmediate',
-          'queueMicrotask',
-          'fetch',
-          'Headers',
-          'Request',
-          'Response',
           executableCode
         );
         await fn.call(
@@ -7109,18 +7122,7 @@ export async function runBrowserJavaScriptProjectRequest(
           processApi,
           BrowserBuffer,
           workspaceFilename(normalizedPath, workspaceRoot),
-          workspaceDirname(normalizedPath, workspaceRoot),
-          eventLoopApi.setTimeout,
-          eventLoopApi.clearTimeout,
-          eventLoopApi.setInterval,
-          eventLoopApi.clearInterval,
-          eventLoopApi.setImmediate,
-          eventLoopApi.clearImmediate,
-          eventLoopApi.queueMicrotask,
-          httpApi.fetch,
-          httpApi.Headers,
-          httpApi.Request,
-          httpApi.Response
+          workspaceDirname(normalizedPath, workspaceRoot)
         );
       } catch (error) {
         throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
@@ -7164,17 +7166,6 @@ export async function runBrowserJavaScriptProjectRequest(
             'Buffer',
             '__filename',
             '__dirname',
-            'setTimeout',
-            'clearTimeout',
-            'setInterval',
-            'clearInterval',
-            'setImmediate',
-            'clearImmediate',
-            'queueMicrotask',
-            'fetch',
-            'Headers',
-            'Request',
-            'Response',
             transformDynamicImports(evalCode)
           );
           await fn.call(
@@ -7187,18 +7178,7 @@ export async function runBrowserJavaScriptProjectRequest(
             processApi,
             BrowserBuffer,
             `${workspaceRoot}/[eval]`,
-            cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot,
-            eventLoopApi.setTimeout,
-            eventLoopApi.clearTimeout,
-            eventLoopApi.setInterval,
-            eventLoopApi.clearInterval,
-            eventLoopApi.setImmediate,
-            eventLoopApi.clearImmediate,
-            eventLoopApi.queueMicrotask,
-            httpApi.fetch,
-            httpApi.Headers,
-            httpApi.Request,
-            httpApi.Response
+            cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot
           );
         } catch (error) {
           throw sanitizeBrowserJavaScriptStack(error, `${workspaceRoot}/[eval]`);
@@ -7273,6 +7253,7 @@ export async function runBrowserJavaScriptProjectRequest(
         exitCode,
       };
     } finally {
+      restoreTimerGlobals();
       restoreHttpGlobals();
     }
 }

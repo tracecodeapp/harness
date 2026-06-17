@@ -4427,6 +4427,60 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     `browser node should stream timer file changes before later stdout and exit: ${JSON.stringify(timerEvents)}`
   );
 
+  const timerGlobalShadowResult = await createBrowserJavaScriptProjectRunner({
+    allowMainThreadExecution: true,
+    trustedMainThreadExecution: true,
+  })({
+    code: [
+      'const setTimeout = 1;',
+      'let clearInterval = 2;',
+      'const queueMicrotask = 3;',
+      'const fetch = 4;',
+      'console.log(setTimeout + clearInterval + queueMicrotask + fetch);',
+    ].join('\n'),
+    source: 'argument',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      files: [],
+    },
+  });
+  assertCondition(
+    timerGlobalShadowResult.exitCode === 0 && timerGlobalShadowResult.stdout === '10\n',
+    `browser node eval wrappers should allow lexical timer/global shadows: ${JSON.stringify(timerGlobalShadowResult)}`
+  );
+
+  const timerGlobalShadowFileResult = await createBrowserJavaScriptProjectRunner({
+    allowMainThreadExecution: true,
+    trustedMainThreadExecution: true,
+  })({
+    code: '',
+    source: 'file',
+    scriptPath: 'shadow.js',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      files: [{
+        path: 'shadow.js',
+        contents: [
+          'const setTimeout = 1;',
+          'let clearInterval = 2;',
+          'const queueMicrotask = 3;',
+          'const fetch = 4;',
+          'console.log(setTimeout + clearInterval + queueMicrotask + fetch);',
+        ].join('\n'),
+      }],
+    },
+  });
+  assertCondition(
+    timerGlobalShadowFileResult.exitCode === 0 && timerGlobalShadowFileResult.stdout === '10\n',
+    `browser node module wrappers should allow lexical timer/global shadows: ${JSON.stringify(timerGlobalShadowFileResult)}`
+  );
+
   const timeoutTimerEvents: RuntimeCommandEvent[] = [];
   const timeoutTimerResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 5 })({
     code: [
