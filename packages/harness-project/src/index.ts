@@ -7109,6 +7109,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private normalizeHttpHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
     if (!headers) return undefined;
     const entries = Object.entries(headers);
+    if (entries.length === 0) return undefined;
     if (entries.length > TRACEKERNEL_HTTP_MAX_HEADER_COUNT) {
       throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP header count limit exceeded'), { code: 'EMSGSIZE' });
     }

@@ -3075,6 +3075,19 @@ async function testTraceKernelHttpRejectsMalformedInputs(): Promise<void> {
       rawHeaders: [['x-safe', 'ok'], ['x-bad', 'ok\r\nX-Smuggled: yes']],
     });
     assertCondition(invalidRawHeader.status === 400, `invalid raw HTTP header should be rejected: ${JSON.stringify(invalidRawHeader)}`);
+    const rawOnlyHeader = await workspace.http.request({
+      url: 'http://localhost:3652/raw-only',
+      rawHeaders: [['x-visible', 'raw-only']],
+    });
+    assertCondition(rawOnlyHeader.status === 200, `raw-only HTTP header request should succeed: ${JSON.stringify(rawOnlyHeader)}`);
+    assertCondition(
+      seenRequests.some((request) =>
+        request.path === '/raw-only' &&
+        request.visibleHeader === 'raw-only' &&
+        request.rawHeader === 'raw-only'
+      ),
+      `HTTP raw-only header pairs should be preserved when headers is empty: ${JSON.stringify(seenRequests)}`
+    );
     const canonicalRawHeader = await workspace.http.request({
       url: 'http://localhost:3652/path',
       headers: { 'x-visible': 'headers-map' },
