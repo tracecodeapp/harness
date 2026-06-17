@@ -2434,11 +2434,14 @@ public sealed class ProjectFileStream : System.IO.FileStream
         return changes;
     }
 
-    private static void EmitProjectFileChanges(IEnumerable<CSharpProjectFileChange> changes, string phase)
+    private static void EmitProjectFileChanges(
+        IEnumerable<CSharpProjectFileChange> changes,
+        string phase,
+        bool liveBudgetReserved = false)
     {
         foreach (CSharpProjectFileChange change in changes)
         {
-            if (!ShouldEmitProjectFileChange(change, phase))
+            if (!liveBudgetReserved && !ShouldEmitProjectFileChange(change, phase))
             {
                 continue;
             }
@@ -2465,8 +2468,12 @@ public sealed class ProjectFileStream : System.IO.FileStream
             return true;
         }
 
+        return TryReserveLiveProjectFileChangeBudget(ProjectFileChangeByteSize(change));
+    }
+
+    private static bool TryReserveLiveProjectFileChangeBudget(long size)
+    {
         projectLiveFileChangeCount++;
-        long size = ProjectFileChangeByteSize(change);
         bool overBudget = projectLiveFileChangeCount > ProjectMaxLiveFileChanges
             || size > ProjectMaxLiveFileChangeBytes
             || projectLiveFileChangeBytes + size > ProjectMaxLiveFileChangeBytes;
@@ -2492,16 +2499,17 @@ public sealed class ProjectFileStream : System.IO.FileStream
         return size;
     }
 
-    private static bool LiveFileSnapshotWithinBudget(string relativePath, string absolutePath)
+    private static bool TryReserveLiveFileSnapshotBudget(string relativePath, string absolutePath)
     {
         try
         {
             long size = new FileInfo(absolutePath).Length + Encoding.UTF8.GetByteCount(relativePath);
-            return size <= ProjectMaxLiveFileChangeBytes;
+            return TryReserveLiveProjectFileChangeBudget(size);
         }
         catch
         {
-            return true;
+            EmitProjectLiveBudgetWarning();
+            return false;
         }
     }
 
@@ -2530,12 +2538,14 @@ public sealed class ProjectFileStream : System.IO.FileStream
             {
                 return;
             }
-            if (!LiveFileSnapshotWithinBudget(relativePath, absolutePath))
+            if (!TryReserveLiveFileSnapshotBudget(relativePath, absolutePath))
             {
-                EmitProjectLiveBudgetWarning();
                 return;
             }
-            EmitProjectFileChanges(new[] { EncodeProjectFileChange(relativePath, File.ReadAllBytes(absolutePath)) }, "live");
+            EmitProjectFileChanges(
+                new[] { EncodeProjectFileChange(relativePath, File.ReadAllBytes(absolutePath)) },
+                "live",
+                liveBudgetReserved: true);
         }
         catch
         {
@@ -2556,12 +2566,14 @@ public sealed class ProjectFileStream : System.IO.FileStream
             string absolutePath = Path.GetFullPath(path);
             if (File.Exists(absolutePath))
             {
-                if (!LiveFileSnapshotWithinBudget(relativePath, absolutePath))
+                if (!TryReserveLiveFileSnapshotBudget(relativePath, absolutePath))
                 {
-                    EmitProjectLiveBudgetWarning();
                     return;
                 }
-                EmitProjectFileChanges(new[] { EncodeProjectFileChange(relativePath, File.ReadAllBytes(absolutePath)) }, "live");
+                EmitProjectFileChanges(
+                    new[] { EncodeProjectFileChange(relativePath, File.ReadAllBytes(absolutePath)) },
+                    "live",
+                    liveBudgetReserved: true);
                 return;
             }
             if (!Directory.Exists(absolutePath))
@@ -2583,12 +2595,14 @@ public sealed class ProjectFileStream : System.IO.FileStream
                 string? nestedRelativePath = ProjectRelativePathForRuntimePath(filePath);
                 if (nestedRelativePath is not null)
                 {
-                    if (!LiveFileSnapshotWithinBudget(nestedRelativePath, filePath))
+                    if (!TryReserveLiveFileSnapshotBudget(nestedRelativePath, filePath))
                     {
-                        EmitProjectLiveBudgetWarning();
                         continue;
                     }
-                    EmitProjectFileChanges(new[] { EncodeProjectFileChange(nestedRelativePath, File.ReadAllBytes(filePath)) }, "live");
+                    EmitProjectFileChanges(
+                        new[] { EncodeProjectFileChange(nestedRelativePath, File.ReadAllBytes(filePath)) },
+                        "live",
+                        liveBudgetReserved: true);
                 }
             }
         }

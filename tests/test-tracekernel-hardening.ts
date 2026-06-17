@@ -1403,6 +1403,28 @@ async function testCSharpWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `C# worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
+async function testCSharpManagedLiveSnapshotsReserveBeforeRead(): Promise<void> {
+  const source = await readFile(join(dirname(testDirectory), 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
+  assertCondition(
+    source.includes('TryReserveLiveProjectFileChangeBudget(ProjectFileChangeByteSize(change))') &&
+      source.includes('TryReserveLiveFileSnapshotBudget') &&
+      source.includes('liveBudgetReserved: true'),
+    'C# managed live file snapshots should reserve live budgets before emitting snapshot changes'
+  );
+  assertCondition(
+    /if \(!TryReserveLiveFileSnapshotBudget\(relativePath, absolutePath\)\)[\s\S]*?return;[\s\S]*?File\.ReadAllBytes\(absolutePath\)[\s\S]*?liveBudgetReserved: true/.test(source),
+    'C# managed live file snapshots should check budget before reading the changed file'
+  );
+  assertCondition(
+    /if \(!TryReserveLiveFileSnapshotBudget\(nestedRelativePath, filePath\)\)[\s\S]*?continue;[\s\S]*?File\.ReadAllBytes\(filePath\)[\s\S]*?liveBudgetReserved: true/.test(source),
+    'C# managed directory snapshots should check each nested file budget before reading file bytes'
+  );
+  assertCondition(
+    !source.includes('LiveFileSnapshotWithinBudget'),
+    'C# managed live file snapshots should not use the old per-file-only budget check'
+  );
+}
+
 async function testCSharpWorkerInputPreflightBudgets(): Promise<void> {
   const source = csharpWorkerVmSource(await readFile(join(dirname(testDirectory), 'workers', 'csharp', 'csharp-worker.js'), 'utf8'));
   const context = vm.createContext({
@@ -3121,6 +3143,7 @@ async function main(): Promise<void> {
   await testNativeProjectRunnersRejectVirtualPathTraversal();
   await testCSharpWorkerRejectsKernelAndWorkspaceTraversal();
   await testCSharpWorkerProjectEventBudgets();
+  await testCSharpManagedLiveSnapshotsReserveBeforeRead();
   await testCSharpWorkerInputPreflightBudgets();
   await testCSharpInputHydrationConstructorsAreBounded();
   await testCSharpBrowserRuntimeNetworkAssembliesAreDenied();
