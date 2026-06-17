@@ -415,7 +415,10 @@ function kernelDeviceStream(path) {
 function normalizeKernelVirtualManifestPath(value) {
   const normalized = normalizeRuntimeAbsolutePath(value, { rejectParentTraversal: true });
   if (!normalized) return null;
-  return normalized.startsWith('/') && normalized !== '/dev' && !normalized.startsWith('/dev/')
+  return normalized === '/proc' ||
+    normalized.startsWith('/proc/') ||
+    normalized === '/tracekernel' ||
+    normalized.startsWith('/tracekernel/')
     ? normalized
     : null;
 }

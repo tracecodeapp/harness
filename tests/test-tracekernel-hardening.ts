@@ -1226,6 +1226,8 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
       }
       return {
         kernelTraversal: normalizeKernelVirtualManifestPath('/proc/../workspace/pwn.txt'),
+        internalKernelPath: normalizeKernelVirtualManifestPath('/tmp/tracecode-csharp-project/lock'),
+        customKernelPath: normalizeKernelVirtualManifestPath('/tracekernel/custom'),
         deviceTraversal: normalizeRawKernelDevicePath('/dev/../workspace/stdout'),
         escapedLivePath: normalizeProjectFsPath('/workspace/src/../../escape.txt', request),
         normalizedLivePath: normalizeProjectFsPath('/workspace/src/../safe.txt', request),
@@ -1244,6 +1246,8 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
     context
   ) as {
     kernelTraversal: string | null;
+    internalKernelPath: string | null;
+    customKernelPath: string | null;
     deviceTraversal: string | null;
     escapedLivePath: string | null;
     normalizedLivePath: string | null;
@@ -1255,6 +1259,8 @@ async function testCSharpWorkerRejectsKernelAndWorkspaceTraversal(): Promise<voi
   };
 
   assertCondition(result.kernelTraversal === null, `C# kernel manifest traversal should be rejected: ${JSON.stringify(result)}`);
+  assertCondition(result.internalKernelPath === null, `C# kernel manifest internal paths should be rejected: ${JSON.stringify(result)}`);
+  assertCondition(result.customKernelPath === '/tracekernel/custom', `C# custom kernel manifest path should be preserved: ${JSON.stringify(result)}`);
   assertCondition(result.deviceTraversal === null, `C# device manifest traversal should be rejected: ${JSON.stringify(result)}`);
   assertCondition(result.escapedLivePath === null, `C# live event traversal path should not be emitted: ${JSON.stringify(result)}`);
   assertCondition(result.normalizedLivePath === 'safe.txt', `C# live event path should normalize in-workspace dot segments: ${JSON.stringify(result)}`);
