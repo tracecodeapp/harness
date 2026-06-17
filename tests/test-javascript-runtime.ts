@@ -721,6 +721,37 @@ async function main(): Promise<void> {
   }
   console.log('PASS: execute-with-tracing string for-of binding aligns with header snapshot');
 
+  const forOfBodyLocalSnapshotTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const values = [1, 2];
+  let total = 0;
+  for (const value of values) {
+    const doubled = value * 2;
+    total += doubled;
+  }
+  return total;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    forOfBodyLocalSnapshotTracing.success === true,
+    `For-of body-local snapshot tracing should succeed: ${forOfBodyLocalSnapshotTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(forOfBodyLocalSnapshotTracing.output === 6, 'For-of body-local snapshot tracing should preserve output');
+  const forOfHeaderFrames = traceSnapshotFrames(forOfBodyLocalSnapshotTracing).filter((frame) => frame.line === 4);
+  assertCondition(forOfHeaderFrames.length >= 2, `For-of body-local snapshot test should emit header frames, received ${JSON.stringify(forOfBodyLocalSnapshotTracing.trace?.events)}`);
+  assertCondition(
+    forOfHeaderFrames.every((frame) => !Object.prototype.hasOwnProperty.call(frame.snapshots, 'doubled')),
+    `For-of header snapshots should not include body-local doubled variable, received ${JSON.stringify(forOfHeaderFrames)}`
+  );
+
   const indexedTypeScriptForOfTracing = await harness.sendMessage<{
     success: boolean;
     output: unknown;
