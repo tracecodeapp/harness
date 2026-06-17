@@ -2277,6 +2277,22 @@ class Solution {
     `Java array enhanced-for tracing should not re-evaluate side-effecting indexes, received ${sideEffectArrayEnhancedForOutput}`
   );
 
+  const sideEffectMutationArgOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<Integer> dst = new ArrayList<>();
+    Deque<Integer> src = new ArrayDeque<>();
+    src.add(7);
+    dst.add(src.remove());
+    return dst.get(0) * 10 + src.size();
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    sideEffectMutationArgOutput === '70',
+    `Java mutation tracing should not re-evaluate side-effecting arguments, received ${sideEffectMutationArgOutput}`
+  );
+
   const sideEffectMultilineMutationArgOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
 
 class Solution {
