@@ -1321,10 +1321,18 @@ public final class JavaRewriteLibrary {
         continue;
       }
       if (ch == '/' && line.charAt(index + 1) == '/') {
-        return line.substring(0, index).replaceAll("\\s+$", "");
+        return trimTrailingWhitespace(line, index);
       }
     }
     return line;
+  }
+
+  private static String trimTrailingWhitespace(String value, int endExclusive) {
+    int end = Math.max(0, Math.min(value.length(), endExclusive));
+    while (end > 0 && Character.isWhitespace(value.charAt(end - 1))) {
+      end -= 1;
+    }
+    return value.substring(0, end);
   }
 
   private static boolean startsMultilineInitializer(String trimmed) {

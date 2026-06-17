@@ -274,10 +274,17 @@ public class ProjectEventsReaderCloseSmoke {
 function assertJavaLexicalScannersAreCached(): void {
   const augmentationSource = readFileSync(join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js'), 'utf8');
   const workerSource = readFileSync(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
+  const rewriteLibrarySource = readFileSync(
+    join(process.cwd(), 'workers', 'java', 'src', 'harness', 'browser', 'JavaRewriteLibrary.java'),
+    'utf8'
+  );
   const adapterSource = readFileSync(
     join(process.cwd(), 'packages', 'harness-core', 'src', 'trace-adapters', 'java.ts'),
     'utf8'
   );
+  const stripCommentStart = rewriteLibrarySource.indexOf('private static String stripTrailingLineComment');
+  const stripCommentEnd = rewriteLibrarySource.indexOf('private static boolean startsMultilineInitializer', stripCommentStart);
+  const stripCommentSource = rewriteLibrarySource.slice(stripCommentStart, stripCommentEnd);
 
   assertCondition(
     augmentationSource.includes('javaLexicalStateCache') &&
@@ -291,6 +298,12 @@ function assertJavaLexicalScannersAreCached(): void {
       workerSource.includes('buildJavaWorkerLineLexicalState') &&
       !/function isInsideJavaStringLiteral[\s\S]*?for \(let index = 0; index < offset; index \+= 1\)/.test(workerSource),
     'Java worker fallback augmentation should use cached lexical state instead of prefix rescans'
+  );
+  assertCondition(
+    stripCommentSource.includes('trimTrailingWhitespace(line, index)') &&
+      stripCommentSource.includes('Character.isWhitespace') &&
+      !stripCommentSource.includes('replaceAll("\\\\s+$", "")'),
+    'Java rewrite line-comment stripping should trim trailing whitespace without regex backtracking'
   );
   assertCondition(
     adapterSource.includes('pieces.push(line.slice(segmentStart, index))') &&
