@@ -3810,6 +3810,51 @@ def solve(box):
   console.log('PASS: Python executeCodeBatch isolates globals and mutable inputs');
 }
 
+async function assertVirtualScandirMatchesIteratorContract(): Promise<void> {
+  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const match = source.match(/class _TraceDirEntry:[\s\S]*?\nclass _TraceProcFile:/);
+  assertCondition(match !== null, 'Python worker should define virtual scandir helpers');
+  const helperSource = match[0].replace(/\nclass _TraceProcFile:$/, '');
+  const script = `
+import os
+import stat
+from pathlib import Path
+
+${helperSource}
+
+def _entries(path):
+    return ["kernel", "self"] if os.fspath(path) == "/proc" else None
+
+def _kind(path):
+    path = os.fspath(path)
+    if path in {"/proc", "/proc/kernel", "/proc/self"}:
+        return "directory"
+    return None
+
+def _stat(path):
+    return os.stat_result((stat.S_IFDIR | 0o555, 0, 0, 2, 0, 0, 0, 0, 0, 0))
+
+with _virtual_scandir("/proc", _entries, _kind, _stat) as entries:
+    assert iter(entries) is entries
+    assert [entry.name for entry in entries] == ["kernel", "self"]
+    assert list(entries) == []
+
+closed = _virtual_scandir("/proc", _entries, _kind, _stat)
+assert next(closed).name == "kernel"
+closed.close()
+assert list(closed) == []
+
+original_scandir = os.scandir
+os.scandir = lambda path: _virtual_scandir(os.fspath(path), _entries, _kind, _stat)
+try:
+    assert [path.name for path in Path("/proc").iterdir()] == ["kernel", "self"]
+finally:
+    os.scandir = original_scandir
+`;
+  execFileSync('python3', ['-c', script], { stdio: 'pipe' });
+  console.log('PASS: Python virtual scandir matches iterator contract');
+}
+
 async function main(): Promise<void> {
   await assertPyodideProjectFsEventsRejectTraversal();
   await assertPyodideProjectEventsApplyResourceBudgets();
@@ -3857,6 +3902,7 @@ async function main(): Promise<void> {
   await assertFunctionStyleFallsBackToSolutionMethod();
   await assertExecuteCodeHydratesAnnotatedCustomObjects();
   await assertExecuteCodeBatchIsolatesGlobalsAndMutableInputs();
+  await assertVirtualScandirMatchesIteratorContract();
   console.log('\nPython runtime checks passed.');
 }
 

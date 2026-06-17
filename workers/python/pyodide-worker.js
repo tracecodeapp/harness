@@ -3512,13 +3512,40 @@ class _TraceDirEntry:
     def __fspath__(self):
         return self.path
 
+class _TraceScandirIterator:
+    def __init__(self, _entries):
+        self._entries = list(_entries)
+        self._index = 0
+        self._closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._closed or self._index >= len(self._entries):
+            raise StopIteration
+        _entry = self._entries[self._index]
+        self._index += 1
+        return _entry
+
+    def close(self):
+        self._closed = True
+        self._entries = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback):
+        self.close()
+        return False
+
 def _virtual_scandir(_path, _entries_fn, _kind_fn, _stat_fn):
     _entries = _entries_fn(_path)
     if _entries is None:
         if _kind_fn(_path) is None:
             raise FileNotFoundError(_path)
         raise NotADirectoryError(_path)
-    return [_TraceDirEntry(_path, _name, _kind_fn, _stat_fn) for _name in _entries]
+    return _TraceScandirIterator(_TraceDirEntry(_path, _name, _kind_fn, _stat_fn) for _name in _entries)
 
 class _TraceProcFile:
     def __init__(self, _path, _mode="r"):
