@@ -219,7 +219,7 @@
     "@datastructures-js/trie": "4.2.3",
     "@yowasp/clang": "22.0.0-git20542-10",
     "fflate": "^0.8.3",
-    "lodash": "4.18.1",
+    "lodash": "4.17.21",
     "typescript": "^5.0.0"
   }
 }
