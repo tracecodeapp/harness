@@ -2198,6 +2198,75 @@ class Solution {
     `Java indexed List mutation tracing should preserve Map<..., List<...>> receivers, received ${mapListIndexedAddOutput}`
   );
 
+  const customCollectionSuffixSource = assertNativeJavaRewriterCompiles(`class TodoList {
+  String get(int index) { return "todo" + index; }
+  void add(String value) {}
+  String remove(int index) { return "removed" + index; }
+}
+
+class UserMap {
+  String get(String key) { return "map-" + key; }
+  String getOrDefault(String key, String fallback) { return fallback; }
+  boolean containsKey(String key) { return key.length() > 0; }
+  void put(String key, String value) {}
+}
+
+class AppSet {
+  boolean contains(String key) { return key.equals("x"); }
+  boolean remove(String key) { return key.equals("x"); }
+}
+
+class WorkQueue {
+  String peek() { return "peek"; }
+  String poll() { return "poll"; }
+  void offer(String value) {}
+}
+
+class AppStack {
+  String pop() { return "pop"; }
+  void push(String value) {}
+}
+
+class Solution {
+  int solve() {
+    TodoList todos = new TodoList();
+    UserMap users = new UserMap();
+    AppSet set = new AppSet();
+    WorkQueue queue = new WorkQueue();
+    AppStack stack = new AppStack();
+    todos.add("a");
+    todos.remove(0);
+    users.put("a", "b");
+    queue.offer("c");
+    stack.push("d");
+    return todos.get(0).length()
+        + users.get("a").length()
+        + users.getOrDefault("missing", "fallback").length()
+        + (users.containsKey("a") ? 1 : 0)
+        + (set.contains("x") ? 1 : 0)
+        + (set.remove("x") ? 1 : 0)
+        + queue.peek().length()
+        + queue.poll().length()
+        + stack.pop().length();
+  }
+}`);
+  assertCondition(
+    !customCollectionSuffixSource.includes('TraceHooks.readListAtLine') &&
+      !customCollectionSuffixSource.includes('TraceHooks.readMapAtLine') &&
+      !customCollectionSuffixSource.includes('TraceHooks.readMapOrDefaultAtLine') &&
+      !customCollectionSuffixSource.includes('TraceHooks.containsMapKeyAtLine') &&
+      !customCollectionSuffixSource.includes('TraceHooks.readSetAtLine') &&
+      !customCollectionSuffixSource.includes('TraceHooks.readQueuePeekAtLine') &&
+      !customCollectionSuffixSource.includes('TraceHooks.pollQueueAtLine') &&
+      !customCollectionSuffixSource.includes('TraceHooks.popStackAtLine'),
+    'Java rewriter should not classify user-declared *List/*Map/*Set/*Queue/*Stack classes as JDK collections'
+  );
+  const customCollectionSuffixOutput = executeJavaSourceExpression(customCollectionSuffixSource, 'new Solution().solve()');
+  assertCondition(
+    customCollectionSuffixOutput === '32',
+    `Java custom collection-suffix classes should still execute after tracing rewrite, received ${customCollectionSuffixOutput}`
+  );
+
   const sideEffectArrayIndexedMutationOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
 
 class Solution {
@@ -2342,6 +2411,27 @@ class Solution {
     `Java mutation tracing should not re-evaluate side-effecting arguments, received ${sideEffectMutationArgOutput}`
   );
 
+  const constructorMutationArgOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  static int calls = 0;
+  static class Evil {
+    Evil() {
+      calls++;
+      if (calls > 1) throw new RuntimeException("double constructor");
+    }
+  }
+  int solve() {
+    List<Evil> values = new ArrayList<>();
+    values.add(new Evil());
+    return calls * 10 + values.size();
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    constructorMutationArgOutput === '11',
+    `Java mutation tracing should not re-evaluate constructor arguments, received ${constructorMutationArgOutput}`
+  );
+
   const sideEffectMultilineMutationArgOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
 
 class Solution {
@@ -2358,6 +2448,29 @@ class Solution {
   assertCondition(
     sideEffectMultilineMutationArgOutput === '70',
     `Java multiline mutation tracing should not re-evaluate side-effecting arguments, received ${sideEffectMultilineMutationArgOutput}`
+  );
+
+  const constructorMultilineMutationArgOutput = executeNativeJavaRewrittenExpression(`import java.util.*;
+
+class Solution {
+  static int calls = 0;
+  static class Evil {
+    Evil() {
+      calls++;
+      if (calls > 1) throw new RuntimeException("double constructor");
+    }
+  }
+  int solve() {
+    Map<Evil, int[]> values = new HashMap<>();
+    values.put(new Evil(), new int[] {
+      1
+    });
+    return calls * 10 + values.size();
+  }
+}`, 'new Solution().solve()');
+  assertCondition(
+    constructorMultilineMutationArgOutput === '11',
+    `Java multiline mutation tracing should not re-evaluate constructor arguments, received ${constructorMultilineMutationArgOutput}`
   );
 
   const indexedSetMutationSource = rewriteWithNativeJavaRewriter(`import java.util.*;
@@ -3816,6 +3929,31 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               compilerProfile: string
             ) => {
               projectCompileCalls.push({ sourcePaths: sourceManifest, mainClassName: '<javac>', resourceManifest, compileClasspath, compileSourcePaths, compileSourceRootPaths });
+              const decodedSourceManifest = sourceManifest
+                .split('\n')
+                .filter(Boolean)
+                .map((entry) => Buffer.from(entry.split('\t')[1] ?? '', 'base64').toString('utf8'))
+                .join('\n');
+              if (decodedSourceManifest.includes('diagnosticReplacementMetacharacters')) {
+                return JSON.stringify({
+                  success: false,
+                  output: JSON.stringify({
+                    stdout: '',
+                    stderr: '',
+                    exitCode: 1,
+                  }),
+                  compilerStdout: '',
+                  compilerStderr: [
+                    `${_sourceRoot}/src/app/Main.java:1: error: diagnosticReplacementMetacharacters`,
+                    `${_sourceRoot}/src/app/Main.java:2: error: diagnosticReplacementMetacharacters`,
+                  ].join('\n'),
+                  compileTimeMs: 1,
+                  classLoadTimeMs: 0,
+                  runTimeMs: 0,
+                  compileCacheHit: false,
+                  compilerDebugProfile: compilerProfile,
+                });
+              }
               const compiledPath = sourceManifest.includes('java/TicketTriage.java') ? 'TicketTriage.class' : 'app/Main.class';
               return JSON.stringify({
                 success: true,
@@ -5469,7 +5607,7 @@ async function main(): Promise<void> {
       transitiveJavacProjectExecute.exitCode === 0,
       `Java execute-project-java should compile javac Main.java with referenced project sources: ${transitiveJavacProjectExecute.stderr}`
     );
-    const transitiveJavacManifest = harness.projectCompileCalls.at(-1)?.sourcePaths ?? '';
+    const transitiveJavacManifest = harness.projectCompileCalls.at(-1)?.compileSourcePaths ?? '';
     assertCondition(
       transitiveJavacManifest.includes('Main.java') && transitiveJavacManifest.includes('Helper.java'),
       `Java execute-project-java should include transitive helper sources for javac Main.java: ${transitiveJavacManifest}`
@@ -5769,6 +5907,38 @@ async function main(): Promise<void> {
       'Java execute-project-java should normalize canonical /home javac paths inside the browser workspace'
     );
     console.log('PASS: java worker resolves canonical /home javac source, output, sourcepath, and classpath paths');
+
+    for (const workspaceRoot of ["/$'", '/$&']) {
+      const metacharRootCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+        code: '',
+        source: 'compile',
+        scriptPath: `${workspaceRoot}/src/app/Main.java`,
+        args: ['-d', `${workspaceRoot}/out`, `${workspaceRoot}/src/app/Main.java`],
+        cwd: workspaceRoot,
+        env: {},
+        project: {
+          cwd: workspaceRoot,
+          workspaceRoot,
+          files: [
+            {
+              path: 'src/app/Main.java',
+              contents: 'package app;\n// diagnosticReplacementMetacharacters\npublic class Main { }\n',
+            },
+          ],
+        },
+      });
+      assertCondition(metacharRootCompileProjectExecute.exitCode !== 0, 'Java metachar diagnostic compile should fail');
+      assertCondition(
+        metacharRootCompileProjectExecute.stderr.includes(`${workspaceRoot}/src/app/Main.java`) &&
+          !metacharRootCompileProjectExecute.stderr.includes('/files/java-worker/') &&
+          metacharRootCompileProjectExecute.stderr.length < 1000,
+        `Java diagnostic normalization should treat replacement metacharacters literally: ${JSON.stringify({
+          workspaceRoot,
+          stderr: metacharRootCompileProjectExecute.stderr,
+        })}`
+      );
+    }
+    console.log('PASS: java worker treats diagnostic replacement metacharacters literally');
 
     const envClasspathCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
       code: '',
@@ -7249,6 +7419,11 @@ class Solution {
       `Java nested adjacency mutation should resolve the receiver before evaluating value args: ${failedNestedAddSource}`
     );
     assertJavaSourceCompiles(failedNestedAddSource, 'augmented Java failed nested adjacency mutation source');
+    const failedNestedAddOutput = executeJavaSourceExpression(failedNestedAddSource, 'new Solution().solve(0)');
+    assertCondition(
+      failedNestedAddOutput === '0',
+      `Java nested adjacency mutation should not evaluate value args after receiver lookup failure, received ${failedNestedAddOutput}`
+    );
 
     const graphTrace = javaTraceHooksEventsToRuntimeTrace(graphExecute.events ?? [], undefined, {
       runId: 'java:test',
