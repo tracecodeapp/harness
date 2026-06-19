@@ -20,12 +20,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private readonly Stack<HashSet<string>> declaredLocalVariables = new();
     private readonly Stack<HashSet<string>> stringBuilderScopes = new();
     private readonly HashSet<string> collectionVariables = new(StringComparer.Ordinal);
+    private readonly HashSet<string> arrayVariables = new(StringComparer.Ordinal);
     private readonly HashSet<string> interfaceDispatchedCollectionVariables = new(StringComparer.Ordinal);
     private readonly HashSet<string> collectionParameterVariables = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string TypeName, string TypeArguments)> collectionVariableTypes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string TypeName, string TypeArguments)> memberCollectionVariableTypes;
     private readonly HashSet<string> memberNames;
     private readonly HashSet<string> memberCollectionNames;
+    private readonly HashSet<string> memberArrayNames;
     private readonly HashSet<string> memberStringBuilderNames;
     private readonly SourceText originalSourceText;
     private readonly bool emitTraceEvents;
@@ -41,6 +43,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         IEnumerable<string> memberNames,
         IEnumerable<string> memberCollectionNames,
         IDictionary<string, (string TypeName, string TypeArguments)> memberCollectionVariableTypes,
+        IEnumerable<string> memberArrayNames,
         IEnumerable<string> memberStringBuilderNames,
         SourceText originalSourceText)
     {
@@ -51,6 +54,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             memberCollectionVariableTypes,
             StringComparer.Ordinal
         );
+        this.memberArrayNames = memberArrayNames.ToHashSet(StringComparer.Ordinal);
         this.memberStringBuilderNames = memberStringBuilderNames.ToHashSet(StringComparer.Ordinal);
         this.originalSourceText = originalSourceText;
     }
@@ -63,6 +67,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             GetDeclaredMemberNames(root),
             GetDeclaredCollectionMemberNames(root),
             GetDeclaredCollectionMemberTypes(root),
+            GetDeclaredArrayMemberNames(root),
             GetDeclaredStringBuilderMemberNames(root),
             userTree.GetText()
         );
@@ -122,6 +127,30 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return types;
     }
 
+    private static IEnumerable<string> GetDeclaredArrayMemberNames(CompilationUnitSyntax root)
+    {
+        foreach (FieldDeclarationSyntax field in root.DescendantNodes().OfType<FieldDeclarationSyntax>())
+        {
+            if (!IsArrayType(field.Declaration.Type))
+            {
+                continue;
+            }
+
+            foreach (VariableDeclaratorSyntax variable in field.Declaration.Variables)
+            {
+                yield return variable.Identifier.ValueText;
+            }
+        }
+
+        foreach (PropertyDeclarationSyntax property in root.DescendantNodes().OfType<PropertyDeclarationSyntax>())
+        {
+            if (IsArrayType(property.Type))
+            {
+                yield return property.Identifier.ValueText;
+            }
+        }
+    }
+
     private static IEnumerable<string> GetDeclaredStringBuilderMemberNames(CompilationUnitSyntax root)
     {
         foreach (FieldDeclarationSyntax field in root.DescendantNodes().OfType<FieldDeclarationSyntax>())
@@ -166,6 +195,12 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             collectionParameterVariables.Add(collectionParameter);
         }
+        HashSet<string> arrayVariablesBeforeMethod = arrayVariables.ToHashSet(StringComparer.Ordinal);
+        List<string> arrayParameters = GetArrayParameterNames(methodNode).ToList();
+        foreach (string arrayParameter in arrayParameters)
+        {
+            arrayVariables.Add(arrayParameter);
+        }
         HashSet<string> collectionVariablesBeforeMethod = collectionVariables.ToHashSet(StringComparer.Ordinal);
         HashSet<string> interfaceDispatchedCollectionVariablesBeforeMethod = interfaceDispatchedCollectionVariables.ToHashSet(StringComparer.Ordinal);
 
@@ -184,6 +219,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             foreach (string collectionVariable in collectionVariablesBeforeMethod)
             {
                 collectionVariables.Add(collectionVariable);
+            }
+            arrayVariables.Clear();
+            foreach (string arrayVariable in arrayVariablesBeforeMethod)
+            {
+                arrayVariables.Add(arrayVariable);
             }
             interfaceDispatchedCollectionVariables.Clear();
             foreach (string collectionVariable in interfaceDispatchedCollectionVariablesBeforeMethod)
@@ -240,6 +280,12 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             StringComparer.Ordinal
         ));
         stringBuilderScopes.Push(GetStringBuilderParameterNames(node).ToHashSet(StringComparer.Ordinal));
+        HashSet<string> arrayVariablesBeforeConstructor = arrayVariables.ToHashSet(StringComparer.Ordinal);
+        List<string> arrayParameters = GetArrayParameterNames(node).ToList();
+        foreach (string arrayParameter in arrayParameters)
+        {
+            arrayVariables.Add(arrayParameter);
+        }
 
         ConstructorDeclarationSyntax rewritten;
         try
@@ -251,6 +297,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             declaredLocalVariables.Pop();
             variableScopes.Pop();
             stringBuilderScopes.Pop();
+            arrayVariables.Clear();
+            foreach (string arrayVariable in arrayVariablesBeforeConstructor)
+            {
+                arrayVariables.Add(arrayVariable);
+            }
             methodNames.Pop();
         }
 
@@ -300,6 +351,12 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             collectionParameterVariables.Add(collectionParameter);
         }
+        HashSet<string> arrayVariablesBeforeLocalFunction = arrayVariables.ToHashSet(StringComparer.Ordinal);
+        List<string> arrayParameters = GetArrayParameterNames(localFunctionNode).ToList();
+        foreach (string arrayParameter in arrayParameters)
+        {
+            arrayVariables.Add(arrayParameter);
+        }
 
         LocalFunctionStatementSyntax rewritten;
         try
@@ -315,6 +372,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             declaredLocalVariables.Pop();
             variableScopes.Pop();
             stringBuilderScopes.Pop();
+            arrayVariables.Clear();
+            foreach (string arrayVariable in arrayVariablesBeforeLocalFunction)
+            {
+                arrayVariables.Add(arrayVariable);
+            }
             methodReturnTypes.Pop();
             methodNames.Pop();
         }
@@ -354,7 +416,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string functionName = GetAnonymousFunctionName(node);
         List<ParameterSyntax> parameters = node.ParameterList.Parameters.ToList();
-        List<string> collectionParameters = PushAnonymousFunctionContext(functionName, parameters);
+        var context = PushAnonymousFunctionContext(functionName, parameters);
 
         CSharpSyntaxNode rewrittenBody;
         try
@@ -363,7 +425,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
         finally
         {
-            PopAnonymousFunctionContext(collectionParameters);
+            PopAnonymousFunctionContext(context);
         }
 
         if (rewrittenBody is BlockSyntax block)
@@ -395,7 +457,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string functionName = GetAnonymousFunctionName(node);
         var parameters = new List<ParameterSyntax> { node.Parameter };
-        List<string> collectionParameters = PushAnonymousFunctionContext(functionName, parameters);
+        var context = PushAnonymousFunctionContext(functionName, parameters);
 
         CSharpSyntaxNode rewrittenBody;
         try
@@ -404,7 +466,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
         finally
         {
-            PopAnonymousFunctionContext(collectionParameters);
+            PopAnonymousFunctionContext(context);
         }
 
         if (rewrittenBody is BlockSyntax block)
@@ -431,7 +493,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string functionName = GetAnonymousFunctionName(node);
         List<ParameterSyntax> parameters = node.ParameterList?.Parameters.ToList() ?? new List<ParameterSyntax>();
-        List<string> collectionParameters = PushAnonymousFunctionContext(functionName, parameters);
+        var context = PushAnonymousFunctionContext(functionName, parameters);
 
         AnonymousMethodExpressionSyntax rewritten;
         try
@@ -440,13 +502,15 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
         finally
         {
-            PopAnonymousFunctionContext(collectionParameters);
+            PopAnonymousFunctionContext(context);
         }
 
         return rewritten.WithBlock(AddAnonymousFunctionTraceStatements(rewritten.Block, functionName, parameters, GetLine(node)));
     }
 
-    private List<string> PushAnonymousFunctionContext(string functionName, IReadOnlyList<ParameterSyntax> parameters)
+    private (List<string> CollectionParameters, HashSet<string> ArrayVariablesBeforeFunction) PushAnonymousFunctionContext(
+        string functionName,
+        IReadOnlyList<ParameterSyntax> parameters)
     {
         List<string> parameterNames = GetTraceableParameterNames(parameters).ToList();
         methodNames.Push(functionName);
@@ -461,16 +525,28 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             collectionParameterVariables.Add(collectionParameter);
         }
 
-        return collectionParameters;
+        HashSet<string> arrayVariablesBeforeFunction = arrayVariables.ToHashSet(StringComparer.Ordinal);
+        foreach (string arrayParameter in GetArrayParameterNames(parameters))
+        {
+            arrayVariables.Add(arrayParameter);
+        }
+
+        return (collectionParameters, arrayVariablesBeforeFunction);
     }
 
-    private void PopAnonymousFunctionContext(IEnumerable<string> collectionParameters)
+    private void PopAnonymousFunctionContext(
+        (List<string> CollectionParameters, HashSet<string> ArrayVariablesBeforeFunction) context)
     {
-        foreach (string collectionParameter in collectionParameters)
+        foreach (string collectionParameter in context.CollectionParameters)
         {
             collectionParameterVariables.Remove(collectionParameter);
         }
 
+        arrayVariables.Clear();
+        foreach (string arrayVariable in context.ArrayVariablesBeforeFunction)
+        {
+            arrayVariables.Add(arrayVariable);
+        }
         declaredLocalVariables.Pop();
         variableScopes.Pop();
         stringBuilderScopes.Pop();
@@ -1078,6 +1154,27 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
     }
 
+    private static IEnumerable<string> GetArrayParameterNames(BaseMethodDeclarationSyntax node)
+    {
+        return GetArrayParameterNames(node.ParameterList.Parameters);
+    }
+
+    private static IEnumerable<string> GetArrayParameterNames(LocalFunctionStatementSyntax node)
+    {
+        return GetArrayParameterNames(node.ParameterList.Parameters);
+    }
+
+    private static IEnumerable<string> GetArrayParameterNames(IEnumerable<ParameterSyntax> parameters)
+    {
+        foreach (ParameterSyntax parameter in parameters)
+        {
+            if (parameter.Type is not null && IsArrayType(parameter.Type))
+            {
+                yield return parameter.Identifier.ValueText;
+            }
+        }
+    }
+
     private static IEnumerable<string> GetStringBuilderParameterNames(BaseMethodDeclarationSyntax node)
     {
         foreach (ParameterSyntax parameter in node.ParameterList.Parameters)
@@ -1508,7 +1605,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         var rewritten = (ElementAccessExpressionSyntax)base.VisitElementAccessExpression(node)!;
         if (rewritten.Expression is IdentifierNameSyntax rectangularIdentifier
-            && !collectionVariables.Contains(rectangularIdentifier.Identifier.ValueText)
+            && IsTraceableArrayVariable(rectangularIdentifier.Identifier.ValueText)
             && IsSupportedRectangularRank(rewritten.ArgumentList.Arguments.Count))
         {
             int rectangularLine = GetLine(node);
@@ -1532,14 +1629,19 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         int line = GetLine(node);
         string arrayExpression = rewritten.Expression.ToString();
+        string variableName = identifier.Identifier.ValueText;
         string indexExpression = rewritten.ArgumentList.Arguments[0].Expression.ToString();
         string indexSourceExpression = node.ArgumentList.Arguments[0].Expression.ToString();
         if (node.ArgumentList.Arguments[0].Expression is RangeExpressionSyntax rangeExpression)
         {
-            string pathExpression = CreateRangePathExpression(arrayExpression, rangeExpression);
+            if (!IsTraceableArrayVariable(variableName))
+            {
+                return rewritten;
+            }
+
             string indexSourcesExpression = CreateRangeIndexSourcesExpression(rangeExpression);
             return SyntaxFactory.ParseExpression(
-                $"TraceCode.Internal.TraceCodeTrace.ArraySliceRead({arrayExpression}, {indexExpression}, {pathExpression}, {Literal(identifier.Identifier.ValueText)}, {line}, {indexSourcesExpression})"
+                $"TraceCode.Internal.TraceCodeTrace.ArraySliceRead({arrayExpression}, {indexExpression}, {Literal(variableName)}, {line}, {indexSourcesExpression})"
             );
         }
         if (IsRangeIndex(indexSourceExpression))
@@ -1548,7 +1650,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         return SyntaxFactory.ParseExpression(
-            $"TraceCode.Internal.TraceCodeTrace.ArrayRead({arrayExpression}, {indexExpression}, {Literal(identifier.Identifier.ValueText)}, {line}, {CreateIndexSourcesExpression(indexSourceExpression)})"
+            $"TraceCode.Internal.TraceCodeTrace.ArrayRead({arrayExpression}, {indexExpression}, {Literal(variableName)}, {line}, {CreateIndexSourcesExpression(indexSourceExpression)})"
         );
     }
 
@@ -1560,7 +1662,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         int originalLine = GetLine(node);
-        if (TryRewriteMemberCollectionInvocationLine(node, originalLine, out ExpressionSyntax? originalMemberLineScopedReplacement))
+        bool isExpressionStatementContext = node.Parent is ExpressionStatementSyntax;
+        if (TryRewriteMemberCollectionInvocationLine(node, originalLine, isExpressionStatementContext, out ExpressionSyntax? originalMemberLineScopedReplacement))
         {
             return originalMemberLineScopedReplacement;
         }
@@ -1581,7 +1684,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return lineScopedReplacement;
         }
 
-        if (TryRewriteMemberCollectionInvocationLine(rewritten, originalLine, out ExpressionSyntax? memberLineScopedReplacement))
+        if (TryRewriteMemberCollectionInvocationLine(rewritten, originalLine, isExpressionStatementContext, out ExpressionSyntax? memberLineScopedReplacement))
         {
             return memberLineScopedReplacement;
         }
@@ -1791,7 +1894,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && forStatement.Incrementors.Any(incrementor => ReferenceEquals(incrementor, invocation));
     }
 
-    private bool TryRewriteMemberCollectionInvocationLine(InvocationExpressionSyntax invocation, int line, out ExpressionSyntax? replacement)
+    private bool TryRewriteMemberCollectionInvocationLine(
+        InvocationExpressionSyntax invocation,
+        int line,
+        bool isExpressionStatementContext,
+        out ExpressionSyntax? replacement)
     {
         replacement = null;
         if (invocation.Expression is MemberAccessExpressionSyntax expressionStatementMutationMemberAccess
@@ -1801,7 +1908,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && IsIndexedReceiverMutationMethod(expressionStatementMutationMemberAccess.Name.Identifier.ValueText)
             && invocation.ArgumentList.Arguments.All(argument => argument.NameColon is null && argument.RefOrOutKeyword.RawKind == 0)
             && !invocation.ArgumentList.Arguments.Any(argument => ShouldCaptureMutationExpression(argument.Expression))
-            && invocation.Parent is ExpressionStatementSyntax
+            && isExpressionStatementContext
             && !IsInsideTraceCodeSourceLineScope(invocation))
         {
             string method = expressionStatementMutationMemberAccess.Name.Identifier.ValueText;
@@ -1817,7 +1924,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && expressionStatementMemberAccess.Name.Identifier.ValueText is "Sort"
             && invocation.ArgumentList.Arguments.All(argument => argument.NameColon is null && argument.RefOrOutKeyword.RawKind == 0)
             && !invocation.ArgumentList.Arguments.Any(argument => ShouldCaptureMutationExpression(argument.Expression))
-            && invocation.Parent is ExpressionStatementSyntax
+            && isExpressionStatementContext
             && !IsInsideTraceCodeSourceLineScope(invocation))
         {
             string args = MutationArgsExpression(invocation);
@@ -1832,7 +1939,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || !IsDeclaredMemberCollectionPath(variable, path)
             || !IsIndexedReceiverMutationMethod(memberAccess.Name.Identifier.ValueText)
             || invocation.ArgumentList.Arguments.Any(argument => argument.NameColon is not null || argument.RefOrOutKeyword.RawKind != 0)
-            || invocation.Parent is ExpressionStatementSyntax
+            || isExpressionStatementContext
             || IsInsideTraceCodeSourceLineScope(invocation))
         {
             return false;
@@ -2382,6 +2489,12 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             TrackStringBuilderVariable(rewritten.Identifier.ValueText);
         }
 
+        if ((declaredType is not null && IsArrayType(declaredType))
+            || (rewritten.Initializer?.Value is ExpressionSyntax arrayInitializer && IsArrayCreation(arrayInitializer)))
+        {
+            arrayVariables.Add(node.Identifier.ValueText);
+        }
+
         if (IsNonRewritableCollectionFieldDeclarator(node))
         {
             return rewritten;
@@ -2771,8 +2884,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             }
 
             string name = initializer.Identifier.ValueText;
+            string localName = variable.Identifier.ValueText;
             yield return TraceStatement(
-                $"TraceCode.CSharpHost.RuntimeTraceSink.FieldRead({Literal("this")}, {pathExpression}, {name}, {line});"
+                $"TraceCode.CSharpHost.RuntimeTraceSink.FieldRead({Literal("this")}, {pathExpression}, {localName}, {line});"
             );
         }
     }
@@ -3150,6 +3264,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && identifier.Ancestors().OfType<ArgumentSyntax>().Any(argument =>
                 argument.Ancestors().OfType<InvocationExpressionSyntax>().Any())
             && !identifier.Ancestors().Any(ancestor => ancestor is TypeOfExpressionSyntax)
+            && !IsNameOfIdentifier(identifier)
+            && !IsInvocationTargetIdentifier(identifier)
             && !IsInsideTraceCodeInstrumentationCall(identifier)
             && !IsInsideUserAnonymousFunction(identifier);
     }
@@ -3180,7 +3296,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             .Where(name =>
                 !declaredNames.Contains(name)
                 && !string.IsNullOrWhiteSpace(name)
-                && (ShouldEmitBareIdentifierWrite(name) || collectionVariables.Contains(name) || collectionParameterVariables.Contains(name)))
+                && (IsDeclaredLocalVariable(name) || collectionVariables.Contains(name) || collectionParameterVariables.Contains(name)))
             .Distinct(StringComparer.Ordinal);
     }
 
@@ -3190,6 +3306,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             .DescendantNodesAndSelf()
             .Where(node => node is ObjectCreationExpressionSyntax or ImplicitObjectCreationExpressionSyntax)
             .SelectMany(GetObjectCreationArguments)
+            .Where(argument => argument.RefOrOutKeyword.RawKind == 0)
             .SelectMany(argument => argument.Expression.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
             .Where(IsConstructorConsumptionIdentifier)
             .Select(identifier => identifier.Identifier.ValueText);
@@ -3209,7 +3326,24 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         return identifier.Parent is not MemberAccessExpressionSyntax
             && identifier.Parent is not QualifiedNameSyntax
+            && identifier.Parent is not TypeOfExpressionSyntax
+            && identifier.Parent is not SizeOfExpressionSyntax
+            && !IsNameOfIdentifier(identifier)
+            && !IsInvocationTargetIdentifier(identifier)
             && !IsInsideUserAnonymousFunction(identifier);
+    }
+
+    private static bool IsNameOfIdentifier(IdentifierNameSyntax identifier)
+    {
+        return identifier.Ancestors().Any(ancestor => string.Equals(ancestor.Kind().ToString(), "NameOfExpression", StringComparison.Ordinal))
+            || identifier.Ancestors().OfType<InvocationExpressionSyntax>().Any(invocation =>
+            invocation.Expression is IdentifierNameSyntax invocationIdentifier
+            && string.Equals(invocationIdentifier.Identifier.ValueText, "nameof", StringComparison.Ordinal));
+    }
+
+    private static bool IsInvocationTargetIdentifier(IdentifierNameSyntax identifier)
+    {
+        return identifier.Parent is InvocationExpressionSyntax invocation && invocation.Expression == identifier;
     }
 
     private void RegisterDeclaredVariables(StatementSyntax statement)
@@ -3379,7 +3513,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 .Where(ShouldEmitBareIdentifierWrite)
                 .Select(name => $"TraceCode.CSharpHost.RuntimeTraceSink.Write({Literal(name)}, {name}, {line});"));
             return TraceStatement(
-                $"{{ var {indexTempName} = {runtimeIndexExpression}; {arrayExpression}[{indexTempName}] = {assignment.Right}; {unaryWriteStatements} var {valueTempName} = {arrayExpression}[{indexTempName}]; TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(identifier.Identifier.ValueText)}, {indexTempName}, {valueTempName}, {line}, {CreateIndexSourcesExpression(sourceIndexExpression)}); }}"
+                $"{{ var {indexTempName} = {runtimeIndexExpression}; var {valueTempName} = ({arrayExpression}[{indexTempName}] = {assignment.Right}); {unaryWriteStatements} TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(identifier.Identifier.ValueText)}, {indexTempName}, {valueTempName}, {line}, {CreateIndexSourcesExpression(sourceIndexExpression)}); }}"
             );
         }
 
@@ -3607,7 +3741,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             if (RequiresAssignmentTargetType(assignment.Right))
             {
                 return TraceStatement(
-                    $"{{ {left} = {implicitRight}; TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal("this")}, {implicitThisPathExpression}, {left}, {line}); }}"
+                    $"{{ {left} = {implicitRight}; TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal("this")}, {implicitThisPathExpression}, null, {line}); }}"
                 );
             }
 
@@ -3635,7 +3769,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (RequiresAssignmentTargetType(assignment.Right))
         {
             return TraceStatement(
-                $"{{ {memberLeft} = {right}; TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal(variable)}, {pathExpression}, {memberLeft}, {line}); }}"
+                $"{{ {memberLeft} = {right}; TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal(variable)}, {pathExpression}, null, {line}); }}"
             );
         }
 
@@ -3788,6 +3922,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             InvocationExpressionSyntax => true,
             ObjectCreationExpressionSyntax => true,
             ImplicitObjectCreationExpressionSyntax => true,
+            MemberAccessExpressionSyntax => true,
             AssignmentExpressionSyntax => true,
             AwaitExpressionSyntax => true,
             ThrowExpressionSyntax => true,
@@ -3907,6 +4042,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return expression
             .DescendantNodesAndSelf()
             .Any(node => node is DeclarationPatternSyntax or RecursivePatternSyntax or DeclarationExpressionSyntax);
+    }
+
+    private bool IsTraceableArrayVariable(string variable)
+    {
+        return arrayVariables.Contains(variable) || memberArrayNames.Contains(variable);
     }
 
     private bool TryGetMemberAccessPath(
@@ -4281,33 +4421,6 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return $"new string?[] {{ {CreateIndexSourceLiteral(indexExpression)}, null }}";
     }
 
-    private static string CreateRangePathExpression(string receiverExpression, RangeExpressionSyntax rangeExpression)
-    {
-        string start = CreateRangeBoundaryPathExpression(receiverExpression, rangeExpression.LeftOperand, "0");
-        string end = CreateRangeBoundaryPathExpression(receiverExpression, rangeExpression.RightOperand, $"{receiverExpression}.Length");
-        return $"new object?[] {{ {start}, {end} }}";
-    }
-
-    private static string CreateRangeBoundaryPathExpression(
-        string receiverExpression,
-        ExpressionSyntax? boundaryExpression,
-        string fallbackExpression)
-    {
-        if (boundaryExpression is null)
-        {
-            return fallbackExpression;
-        }
-
-        string boundary = boundaryExpression.ToString().Trim();
-        if (boundary.StartsWith("^", StringComparison.Ordinal))
-        {
-            string fromEnd = boundary[1..].Trim();
-            return $"({receiverExpression}.Length - ({fromEnd}))";
-        }
-
-        return boundary;
-    }
-
     private static string CreateRangeIndexSourcesExpression(RangeExpressionSyntax rangeExpression)
     {
         string start = rangeExpression.LeftOperand?.ToString() ?? "0";
@@ -4640,6 +4753,16 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         typeName = genericName.Identifier.ValueText;
         typeArguments = string.Join(", ", genericName.TypeArgumentList.Arguments.Select(argument => argument.ToString()));
         return true;
+    }
+
+    private static bool IsArrayType(TypeSyntax type)
+    {
+        return type is ArrayTypeSyntax;
+    }
+
+    private static bool IsArrayCreation(ExpressionSyntax expression)
+    {
+        return expression is ArrayCreationExpressionSyntax or ImplicitArrayCreationExpressionSyntax;
     }
 
     private static bool IsSupportedCollectionType(string typeName)

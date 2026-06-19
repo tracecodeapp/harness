@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { readFileSync } from 'node:fs';
 import { createCSharpRuntimeClient } from '../packages/harness-browser/src/csharp-runtime-client';
 import {
   CSharpWorkerClient,
@@ -86,6 +87,10 @@ class MockCSharpWorker {
         return;
       }
 
+      if (MockCSharpWorker.hangingMessageTypes.has(type)) {
+        return;
+      }
+
       if (type === 'warmup') {
         this.onmessage?.({
           data: {
@@ -95,10 +100,6 @@ class MockCSharpWorker {
             protocolToken: message.protocolToken,
           },
         } as MessageEvent<WorkerMessage>);
-        return;
-      }
-
-      if (MockCSharpWorker.hangingMessageTypes.has(type)) {
         return;
       }
 
@@ -510,8 +511,8 @@ async function testWorkerResultMapping(): Promise<void> {
         message.type === 'execute-with-tracing'
         && (message.payload as { executionStyle?: string; functionName?: string; timeoutMs?: number } | undefined)?.executionStyle === 'function'
         && (message.payload as { functionName?: string } | undefined)?.functionName === ''
-        && (message.payload as { timeoutMs?: number } | undefined)?.timeoutMs === 59_000),
-      'C# script-style tracing should get an extended outer worker deadline for cold playground runs'
+        && (message.payload as { timeoutMs?: number } | undefined)?.timeoutMs === 19_000),
+      'C# script-style tracing should preserve the configured worker deadline'
     );
 
     MockCSharpWorker.responses.push({
@@ -673,6 +674,70 @@ async function testClientTimeoutReset(): Promise<void> {
   console.log('PASS: C# worker client timeout reset contract');
 }
 
+async function testWarmupTimeoutReset(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>(['warmup']);
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  // @ts-expect-error test stub
+  globalThis.Worker = MockCSharpWorker;
+
+  const workerClient = new CSharpWorkerClient({
+    workerUrl: '/workers/csharp-worker.js',
+    assetBaseUrl: '/workers/vendor/csharp',
+    executionTimeoutMs: 5,
+    initTimeoutMs: 5,
+  });
+
+  try {
+    await workerClient.init();
+    const firstWorker = MockCSharpWorker.instances[0];
+    assertCondition(Boolean(firstWorker), 'C# warmup timeout test should create an initial worker');
+
+    await expectRejects(
+      () =>
+        workerClient.executeCode(
+          'public class Solution { public int Add(int a, int b) { return a + b; } }',
+          'Add',
+          { a: 2, b: 3 },
+          'solution-method'
+        ),
+      'Worker request timed out: warmup'
+    );
+    assertCondition(
+      MockCSharpWorker.received.some((message) => message.type === 'warmup'),
+      'C# execution should attempt warmup before timing out'
+    );
+    assertCondition(firstWorker.terminated, 'C# warmup timeout should terminate the stuck worker');
+
+    MockCSharpWorker.hangingMessageTypes = new Set<string>();
+    MockCSharpWorker.responses.push({
+      success: true,
+      output: 5,
+      consoleOutput: ['recovered'],
+      executionTimeMs: 2,
+    });
+
+    const recovered = await workerClient.executeCode(
+      'public class Solution { public int Add(int a, int b) { return a + b; } }',
+      'Add',
+      { a: 2, b: 3 },
+      'solution-method'
+    );
+    assertCondition(recovered.success, 'C# worker client should recover after warmup timeout');
+    assertCondition(MockCSharpWorker.instances.length >= 2, 'C# worker client should replace a warmup-timeout worker');
+  } finally {
+    MockCSharpWorker.hangingMessageTypes = new Set<string>();
+    MockCSharpWorker.erroringMessageTypes = new Set<string>();
+    workerClient.terminate();
+    globalThis.Worker = originalWorker;
+  }
+
+  console.log('PASS: C# worker client warmup timeout reset contract');
+}
+
 async function testInterviewClientTimeout(): Promise<void> {
   const originalWorker = globalThis.Worker;
   const originalSetTimeout = globalThis.setTimeout;
@@ -795,12 +860,46 @@ async function testWorkerErrorReset(): Promise<void> {
   console.log('PASS: C# worker client error reset contract');
 }
 
+function testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers(): void {
+  const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
+  assertCondition(
+    source.includes('FieldWrite({Literal("this")}, {implicitThisPathExpression}, null, {line})'),
+    'C# TraceRewriter target-typed implicit-this field writes should record without reading the assigned member'
+  );
+  assertCondition(
+    source.includes('FieldWrite({Literal(variable)}, {pathExpression}, null, {line})'),
+    'C# TraceRewriter target-typed member writes should record without reading the assigned member'
+  );
+  assertCondition(
+    !source.includes('FieldWrite({Literal("this")}, {implicitThisPathExpression}, {left}, {line})') &&
+      !source.includes('FieldWrite({Literal(variable)}, {pathExpression}, {memberLeft}, {line})'),
+    'C# TraceRewriter target-typed field writes must not read the assigned target for trace value capture'
+  );
+  console.log('PASS: C# TraceRewriter target-typed field writes avoid read-after-write instrumentation');
+}
+
+function testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers(): void {
+  const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
+  assertCondition(
+    source.includes('var {valueTempName} = ({arrayExpression}[{indexTempName}] = {assignment.Right});'),
+    'C# TraceRewriter indexed assignments should capture the assignment expression result'
+  );
+  assertCondition(
+    !source.includes('var {valueTempName} = {arrayExpression}[{indexTempName}];'),
+    'C# TraceRewriter indexed assignments must not read the assigned indexer after assignment'
+  );
+  console.log('PASS: C# TraceRewriter indexed assignments avoid post-assignment getter reads');
+}
+
 async function main(): Promise<void> {
   await testRuntimeAdapterContract();
   await testWorkerResultMapping();
   await testClientTimeoutReset();
+  await testWarmupTimeoutReset();
   await testInterviewClientTimeout();
   await testWorkerErrorReset();
+  testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers();
+  testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();
 }
 
 main().catch((error) => {

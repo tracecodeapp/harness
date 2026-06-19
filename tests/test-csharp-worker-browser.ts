@@ -2130,6 +2130,72 @@ async function main(): Promise<void> {
       `C# worker traced target-typed field assignment should emit an xs field write, received ${JSON.stringify(tracedTargetTypedFieldAssignments.events)}`
     );
 
+    const tracedTargetTypedPropertyAssignments = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'public class Solution {',
+        '  private int getterReads;',
+        '  public Action Callback { set { } }',
+        '  public Func<int> Counter {',
+        '    get { getterReads += 1; return () => -1; }',
+        '    set { }',
+        '  }',
+        '  public int TargetTypedPropertyAssignments() {',
+        '    Callback = () => { };',
+        '    Counter = () => 5;',
+        '    return getterReads;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'TargetTypedPropertyAssignments',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedTargetTypedPropertyAssignments.success,
+      `C# worker traced target-typed property assignment case should compile: ${tracedTargetTypedPropertyAssignments.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedTargetTypedPropertyAssignments.output === 0,
+      `C# worker traced target-typed property assignment should not read assigned properties, received ${JSON.stringify(tracedTargetTypedPropertyAssignments.output)}`
+    );
+
+    const tracedIndexerAssignment = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'public class WriteOnlyIndexer {',
+        '  private int assigned;',
+        '  public int this[int index] {',
+        '    get { throw new Exception("getter invoked after assignment"); }',
+        '    set { assigned = value + index; }',
+        '  }',
+        '  public int Assigned => assigned;',
+        '}',
+        'public class Solution {',
+        '  public int AssignIndexer() {',
+        '    var box = new WriteOnlyIndexer();',
+        '    box[2] = 5;',
+        '    return box.Assigned;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'AssignIndexer',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedIndexerAssignment.success,
+      `C# worker traced indexer assignment case should not read the assigned indexer: ${tracedIndexerAssignment.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedIndexerAssignment.output === 7,
+      `C# worker traced indexer assignment should return setter result 7, received ${JSON.stringify(tracedIndexerAssignment.output)}`
+    );
+
     const tracedPrivateTrieObject = await runWorkerCase(
       page,
       [
@@ -2302,6 +2368,133 @@ async function main(): Promise<void> {
         && event.value === 'zat'
       ) === true,
       `C# worker traced string constructor consumption should write rev, received ${JSON.stringify(tracedStringConstructorConsumption.events)}`
+    );
+
+    const tracedOutConstructorArgument = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public class Box {',
+        '    public Box(out int value) { value = 42; }',
+        '  }',
+        '  public int UseOut() {',
+        '    int x;',
+        '    var box = new Box(out x);',
+        '    return x;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UseOut',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedOutConstructorArgument.success,
+      `C# worker traced out constructor argument case should succeed: ${tracedOutConstructorArgument.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedOutConstructorArgument.output === 42,
+      `C# worker traced out constructor argument case should return 42, received ${JSON.stringify(tracedOutConstructorArgument.output)}`
+    );
+
+    const tracedNameofConstructorArgument = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public class Label {',
+        '    public Label(string name) {}',
+        '  }',
+        '  public int UseNameof() {',
+        '    int x;',
+        '    var label = new Label(nameof(x));',
+        '    return 7;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UseNameof',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedNameofConstructorArgument.success,
+      `C# worker traced nameof constructor argument case should succeed: ${tracedNameofConstructorArgument.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedNameofConstructorArgument.output === 7,
+      `C# worker traced nameof constructor argument case should return 7, received ${JSON.stringify(tracedNameofConstructorArgument.output)}`
+    );
+
+    const tracedMethodGroupConstructorArgument = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public delegate int Getter();',
+        '  public class UsesGetter {',
+        '    public UsesGetter(Getter getter) {}',
+        '  }',
+        '  public int Get() => 4;',
+        '  public int UseMethodGroup() {',
+        '    var uses = new UsesGetter(Get);',
+        '    return 5;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UseMethodGroup',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedMethodGroupConstructorArgument.success,
+      `C# worker traced method-group constructor argument case should succeed: ${tracedMethodGroupConstructorArgument.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedMethodGroupConstructorArgument.output === 5,
+      `C# worker traced method-group constructor argument case should return 5, received ${JSON.stringify(tracedMethodGroupConstructorArgument.output)}`
+    );
+
+    const tracedImplicitPropertyAlias = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  private int calls;',
+        '  public int Counter {',
+        '    get {',
+        '      calls++;',
+        '      if (calls > 1) throw new System.InvalidOperationException("getter called twice");',
+        '      return 7;',
+        '    }',
+        '  }',
+        '  public int UseProperty() {',
+        '    var x = Counter;',
+        '    return x * 10 + calls;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UseProperty',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedImplicitPropertyAlias.success,
+      `C# worker traced implicit property alias case should succeed without re-reading getter: ${tracedImplicitPropertyAlias.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedImplicitPropertyAlias.output === 71,
+      `C# worker traced implicit property alias case should return 71, received ${JSON.stringify(tracedImplicitPropertyAlias.output)}`
+    );
+    assertCondition(
+      tracedImplicitPropertyAlias.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 11
+        && event.target?.variable === 'this'
+        && JSON.stringify(event.target.path) === JSON.stringify(['Counter'])
+        && event.value === 7
+      ) === true,
+      `C# worker traced implicit property alias should record the assigned local value, received ${JSON.stringify(tracedImplicitPropertyAlias.events)}`
     );
 
     const tracedStringBuilderIndexedAccess = await runWorkerCase(
@@ -3583,6 +3776,29 @@ async function main(): Promise<void> {
       `C# worker nested Node input case should return 4, received ${JSON.stringify(nestedNodeInput.output)}`
     );
 
+    const rejectedFrameworkObjectInput = await runWorkerCase(
+      page,
+      [
+        'using System.Text;',
+        'public class Solution {',
+        '  public int BuilderLength(StringBuilder builder) {',
+        '    return builder.Length;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuilderLength',
+      { builder: { capacity: 2147483647 } },
+      assetBaseUrl
+    );
+    assertCondition(
+      !rejectedFrameworkObjectInput.success,
+      `C# worker should reject object-shaped framework input hydration, received ${JSON.stringify(rejectedFrameworkObjectInput.output)}`
+    );
+    assertCondition(
+      String(rejectedFrameworkObjectInput.error ?? '').includes('does not support object-shaped JSON for framework type System.Text.StringBuilder'),
+      `C# worker framework input rejection should name the rejected type, received ${JSON.stringify(rejectedFrameworkObjectInput.error)}`
+    );
+
     const rejectedDeepNodeInput = await runWorkerCase(
       page,
       [
@@ -3979,6 +4195,65 @@ async function main(): Promise<void> {
         && JSON.stringify(event.target.path) === JSON.stringify([0, 3])
       ) === true,
       `C# worker traced nums[..^1] should emit concrete leading slice bounds, received ${JSON.stringify(tracedArrayRangeSyntax.events)}`
+    );
+
+    const tracedStringRangeSyntax = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public string SliceString(string text) {',
+        '    string middle = text[1..3];',
+        '    return middle;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SliceString',
+      { text: 'trace' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedStringRangeSyntax.success,
+      `C# worker traced string range syntax case should compile: ${tracedStringRangeSyntax.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedStringRangeSyntax.output === 'ra',
+      `C# worker traced string range syntax should preserve output, received ${JSON.stringify(tracedStringRangeSyntax.output)}`
+    );
+
+    const tracedSideEffectRangeSyntax = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int SideEffectRangeBounds(int[] nums) {',
+        '    int i = 1;',
+        '    int j = 3;',
+        '    int[] slice = nums[i++..j++];',
+        '    return slice.Length * 100 + i * 10 + j;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SideEffectRangeBounds',
+      { nums: [2, 3, 5, 7] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedSideEffectRangeSyntax.success,
+      `C# worker traced side-effect range syntax case should compile: ${tracedSideEffectRangeSyntax.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedSideEffectRangeSyntax.output === 224,
+      `C# worker traced side-effect range syntax should evaluate bounds once, received ${JSON.stringify(tracedSideEffectRangeSyntax.output)}`
+    );
+    assertCondition(
+      tracedSideEffectRangeSyntax.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 5
+        && event.target?.variable === 'nums'
+        && JSON.stringify(event.target.path) === JSON.stringify([1, 3])
+      ) === true,
+      `C# worker traced side-effect range syntax should emit evaluated concrete slice bounds, received ${JSON.stringify(tracedSideEffectRangeSyntax.events)}`
     );
 
     const tracedExplicitCollections = await runWorkerCase(
@@ -4661,6 +4936,52 @@ async function main(): Promise<void> {
     assertCondition(
       tracedMemberFieldEnqueueSideEffectArgs.output === 711,
       `C# worker traced member-field Enqueue should evaluate value/priority once, received ${JSON.stringify(tracedMemberFieldEnqueueSideEffectArgs.output)}`
+    );
+
+    const tracedMemberFieldEnqueuePropertyArg = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private readonly Queue<int> queue = new Queue<int>();',
+        '  private int nextCalls;',
+        '  private int Next {',
+        '    get {',
+        '      nextCalls += 1;',
+        '      if (nextCalls > 1) throw new InvalidOperationException("property evaluated twice");',
+        '      return 8;',
+        '    }',
+        '  }',
+        '  public int MemberFieldEnqueuePropertyArg() {',
+        '    this.queue.Enqueue(this.Next);',
+        '    return this.queue.Dequeue() * 10 + nextCalls;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'MemberFieldEnqueuePropertyArg',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedMemberFieldEnqueuePropertyArg.success,
+      `C# worker traced member-field Enqueue property arg case should succeed: ${tracedMemberFieldEnqueuePropertyArg.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedMemberFieldEnqueuePropertyArg.output === 81,
+      `C# worker traced member-field Enqueue property arg should evaluate once, received ${JSON.stringify(tracedMemberFieldEnqueuePropertyArg.output)}`
+    );
+    assertCondition(
+      tracedMemberFieldEnqueuePropertyArg.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 14
+        && event.target?.variable === 'this'
+        && JSON.stringify(event.target.path) === JSON.stringify(['queue'])
+        && event.method === 'Enqueue'
+        && JSON.stringify(event.args) === JSON.stringify([8])
+      ) === true,
+      `C# worker traced member-field Enqueue property arg should emit captured args once, received ${JSON.stringify(tracedMemberFieldEnqueuePropertyArg.events)}`
     );
 
     const tracedQueueStackPeekReads = await runWorkerCase(
@@ -5395,7 +5716,10 @@ async function main(): Promise<void> {
         stdinPipe: createRuntimeCommandStdinPipeFromText('from-stdin\nfrom-device\n'),
         project: {
           directories: ['src/empty/child'],
-          kernelFiles: TRACE_KERNEL_PROC_FILES,
+          kernelFiles: [
+            ...TRACE_KERNEL_PROC_FILES,
+            { path: '/tmp/tracecode-csharp-project/lock', contents: 'poison\n' },
+          ],
           kernelDevices: TRACE_KERNEL_DEVICES,
           files: [
             {
@@ -6002,6 +6326,45 @@ async function main(): Promise<void> {
         liveManagedDirectoryMovedFileIndex > liveManagedDirectoryMoveCreateIndex &&
         liveManagedDirectoryDeleteIndex > liveManagedDirectoryMovedFileIndex,
       `C# project worker should stream managed Directory.CreateDirectory/Move/Delete live events, received ${JSON.stringify(projectRun.events)}`
+    );
+
+    const oversizedLiveRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        project: {
+          files: [
+            {
+              path: 'src/Program.cs',
+              contents: [
+                'using System.IO;',
+                'File.WriteAllText("too-large.txt", new string(\'x\', 4 * 1024 * 1024 + 1));',
+                'Console.WriteLine("after-large");',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    const oversizedFinalFile = oversizedLiveRun.files?.find((file) => file.path === 'src/too-large.txt');
+    assertCondition(oversizedLiveRun.exitCode === 0, `C# oversized live snapshot run should succeed: ${oversizedLiveRun.stderr}`);
+    assertCondition(
+      oversizedLiveRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/too-large.txt'
+      ) !== true,
+      'C# oversized live snapshot should be dropped before streaming the full file contents'
+    );
+    assertCondition(
+      oversizedFinalFile?.contents?.length === 4 * 1024 * 1024 + 1,
+      `C# oversized file should still be returned by final diff, received length ${oversizedFinalFile?.contents?.length ?? 'missing'}`
     );
 
     const [kernelVirtualFirstRun, kernelVirtualSecondRun] = await runProjectWorkerSequenceCase(

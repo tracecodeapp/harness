@@ -294,6 +294,7 @@ export class CSharpWorkerClient {
         const pending = this.pendingMessages.get(id);
         if (!pending) return;
         this.pendingMessages.delete(id);
+        const timeoutError = new Error(`Worker request timed out: ${type}`);
         logRuntimeDiagnostic('warn', {
           component: 'CSharpWorkerClient',
           runtime: 'csharp',
@@ -301,7 +302,8 @@ export class CSharpWorkerClient {
           message: 'C# worker request timed out.',
           detail: { id, type, timeoutMs },
         }, { enabled: this.debug });
-        pending.reject(new Error(`Worker request timed out: ${type}`));
+        pending.reject(timeoutError);
+        this.terminateAndReset(timeoutError);
       }, timeoutMs);
 
       const pending = this.pendingMessages.get(id);
@@ -345,8 +347,9 @@ export class CSharpWorkerClient {
           message: 'C# execution timed out; terminating worker.',
           detail: { timeoutMs },
         }, { enabled: this.debug });
-        this.terminateAndReset();
-        reject(new Error(`C# execution timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
+        const timeoutError = new Error(`C# execution timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+        this.terminateAndReset(timeoutError);
+        reject(timeoutError);
       }, timeoutMs);
 
       signal?.addEventListener('abort', onAbort, { once: true });
@@ -448,11 +451,67 @@ export class CSharpWorkerClient {
           this.initTimeoutMs
         );
       } catch (error) {
+        const warmupError = error instanceof Error ? error : new Error(String(error));
         this.warmupPromise = null;
-        throw error;
+        if (this.shouldRetryInit(warmupError)) this.terminateAndReset(warmupError);
+        throw warmupError;
       }
     })();
     return this.warmupPromise;
+  }
+
+  private executeAfterWarmupWithTimeout<T>(
+    executor: () => Promise<T>,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<T> {
+    return this.warmupBeforeExecution(signal).then(() =>
+      this.executeWithTimeout(executor, timeoutMs, signal)
+    );
+  }
+
+  private async warmupBeforeExecution(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      const abortError = createExecutionAbortError();
+      this.terminateAndReset(abortError);
+      throw abortError;
+    }
+
+    if (!signal) {
+      await this.warmup();
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        signal.removeEventListener('abort', onAbort);
+      };
+      const settleReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () => {
+        const abortError = createExecutionAbortError();
+        this.terminateAndReset(abortError);
+        settleReject(abortError);
+      };
+
+      signal.addEventListener('abort', onAbort, { once: true });
+
+      this.warmup()
+        .then(() => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve();
+        })
+        .catch((error) => {
+          settleReject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
   }
 
   async executeCode(
@@ -462,8 +521,7 @@ export class CSharpWorkerClient {
     executionStyle: CSharpExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    await this.warmup();
-    const result = await this.executeWithTimeout(
+    const result = await this.executeAfterWarmupWithTimeout(
       () =>
         this.sendMessage<CSharpWorkerExecuteResult>(
           'execute-code',
@@ -509,8 +567,7 @@ export class CSharpWorkerClient {
     executionStyle: CSharpExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
-    await this.warmup();
-    const result = await this.executeWithTimeout(
+    const result = await this.executeAfterWarmupWithTimeout(
       () =>
         this.sendMessage<CodeExecutionBatchResult>(
           'execute-code-batch',
@@ -545,10 +602,9 @@ export class CSharpWorkerClient {
     executionStyle: CSharpExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    await this.warmup();
     let result: CSharpWorkerExecuteResult;
     try {
-      result = await this.executeWithTimeout(
+      result = await this.executeAfterWarmupWithTimeout(
         () =>
           this.sendMessage<CSharpWorkerExecuteResult>(
             'execute-code-interview',
@@ -618,11 +674,10 @@ export class CSharpWorkerClient {
     executionStyle: CSharpExecutionStyle,
     signal?: AbortSignal
   ): Promise<ExecutionResult> {
-    await this.warmup();
     let result: CSharpWorkerExecuteResult;
     const tracingTimeoutMs = this.resolveTracingTimeoutMs(functionName, executionStyle);
     try {
-      result = await this.executeWithTimeout(
+      result = await this.executeAfterWarmupWithTimeout(
         () =>
           this.sendMessage<CSharpWorkerExecuteResult>(
             'execute-with-tracing',
@@ -733,15 +788,8 @@ export class CSharpWorkerClient {
       this.terminateAndReset(abortError);
       throw abortError;
     }
-    const abortInit = () => this.terminateAndReset(createExecutionAbortError());
-    signal?.addEventListener('abort', abortInit, { once: true });
-    try {
-      await this.warmup();
-    } finally {
-      signal?.removeEventListener('abort', abortInit);
-    }
     const { signal: _signal, onEvent: _requestOnEvent, ...workerRequest } = request;
-    return this.executeWithTimeout(
+    return this.executeAfterWarmupWithTimeout(
       () =>
         this.sendMessage<CSharpProjectCommandResult>(
           'execute-project-csharp',
