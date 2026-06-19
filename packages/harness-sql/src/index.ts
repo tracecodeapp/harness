@@ -767,11 +767,7 @@ export function stableSqlHash(value: string): string {
 }
 
 export function redactSqlText(sql: string): string {
-  return sql
-    .replace(/'([^']|'')*'/g, "'<redacted>'")
-    .replace(/\b\d+(?:\.\d+)?\b/g, '<number>')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return redactSqlSensitiveText(sql, { redactDoubleQuoted: false });
 }
 
 export function normalizeSqlTextForHash(sql: string): string {
@@ -1188,7 +1184,75 @@ export function sqlErrorFromUnknown(
 }
 
 function redactSqlDiagnostic(message: string): string {
-  return message.replace(/'([^']|'')*'/g, "'<redacted>'").replace(/\([^)]*\)/g, '(<redacted>)');
+  return redactSqlSensitiveText(message, { redactDoubleQuoted: true })
+    .replace(/\([^)]*\)/g, '(<redacted>)');
+}
+
+function redactSqlSensitiveText(value: string, options: { redactDoubleQuoted: boolean }): string {
+  let output = '';
+  let index = 0;
+  while (index < value.length) {
+    const ch = value[index] ?? '';
+    const dollarQuote = parseSqlDollarQuoteTag(value, index);
+    if (dollarQuote) {
+      const endIndex = value.indexOf(dollarQuote.tag, index + dollarQuote.tag.length);
+      output += "'<redacted>'";
+      index = endIndex < 0 ? value.length : endIndex + dollarQuote.tag.length;
+      continue;
+    }
+    if ((ch === 'E' || ch === 'e') && value[index + 1] === "'" && !/[A-Za-z0-9_]/.test(value[index - 1] ?? '')) {
+      output += "'<redacted>'";
+      index = skipSqlQuotedString(value, index + 1, "'", true);
+      continue;
+    }
+    if (ch === "'") {
+      output += "'<redacted>'";
+      index = skipSqlQuotedString(value, index, "'", true);
+      continue;
+    }
+    if (options.redactDoubleQuoted && ch === '"') {
+      output += '"<redacted>"';
+      index = skipSqlQuotedString(value, index, '"', false);
+      continue;
+    }
+    if (/\d/.test(ch) && !/[A-Za-z0-9_]/.test(value[index - 1] ?? '')) {
+      const numberMatch = value.slice(index).match(/^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+      if (numberMatch && !/[A-Za-z0-9_]/.test(value[index + numberMatch[0].length] ?? '')) {
+        output += '<number>';
+        index += numberMatch[0].length;
+        continue;
+      }
+    }
+    output += ch;
+    index += 1;
+  }
+  return output.replace(/\s+/g, ' ').trim();
+}
+
+function parseSqlDollarQuoteTag(value: string, index: number): { tag: string } | null {
+  if (value[index] !== '$') return null;
+  const match = value.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+  return match ? { tag: match[0] } : null;
+}
+
+function skipSqlQuotedString(value: string, quoteIndex: number, quote: '"' | "'", allowBackslashEscapes: boolean): number {
+  let index = quoteIndex + 1;
+  while (index < value.length) {
+    const ch = value[index] ?? '';
+    if (allowBackslashEscapes && ch === '\\') {
+      index += 2;
+      continue;
+    }
+    if (ch === quote) {
+      if (value[index + 1] === quote) {
+        index += 2;
+        continue;
+      }
+      return index + 1;
+    }
+    index += 1;
+  }
+  return value.length;
 }
 
 export function validateSqlTrace(value: unknown): SqlTraceValidationResult {

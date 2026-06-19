@@ -7,6 +7,7 @@ import {
   createPgliteSqlTraceClient,
   createSqlTraceClient,
   inferPgliteSqlPersistence,
+  redactSqlText,
   runIsolatedSqlCases,
   splitSqlStatements,
   validateSqlTrace,
@@ -93,6 +94,15 @@ function testSqlScriptSplitting(): void {
     'double-quoted identifier semicolon should stay in statement'
   );
   console.log('PASS: SQL script splitter respects quotes, comments, and dollar quotes');
+}
+
+function testSqlRedactionCoversPostgresLiteralForms(): void {
+  const redacted = redactSqlText("SELECT $$dollar_secret$$, $tag$tagged_secret$tag$, E'escaped\\'secret', 42, 'plain_secret'");
+  assertCondition(!redacted.includes('dollar_secret'), `dollar-quoted literal should be redacted: ${redacted}`);
+  assertCondition(!redacted.includes('tagged_secret'), `tagged dollar-quoted literal should be redacted: ${redacted}`);
+  assertCondition(!redacted.includes('escaped') && !redacted.includes('secret'), `escape-string literal should be redacted: ${redacted}`);
+  assertCondition(!redacted.includes('42') && redacted.includes('<number>'), `numeric literal should be redacted: ${redacted}`);
+  console.log('PASS: SQL redaction covers PostgreSQL dollar and escape literal forms');
 }
 
 async function testTracedQueryCapture(): Promise<void> {
@@ -611,7 +621,7 @@ async function testExplicitSqlTransactionCapture(): Promise<void> {
 async function testErrorCapture(): Promise<void> {
   const mockClient: SqlClientLike = {
     async query() {
-      throw Object.assign(new Error("duplicate key value violates unique constraint ('secret@example.com')"), {
+      throw Object.assign(new Error('duplicate key value "tenant_secret" violates unique constraint (email)=(\'secret@example.com\')'), {
         code: '23505',
         detail: "Key (email)=('secret@example.com') already exists.",
         constraint: 'users_email_key',
@@ -638,6 +648,7 @@ async function testErrorCapture(): Promise<void> {
   assertCondition(error.constraintName === 'users_email_key', 'error should preserve constraint name');
   assertCondition(error.detail === undefined, 'redacted error capture should omit detail');
   assertCondition(error.message.includes('<redacted>'), 'redacted error message should hide quoted values');
+  assertCondition(!error.message.includes('tenant_secret') && !error.message.includes('secret@example.com'), `redacted error message should not leak diagnostic values: ${error.message}`);
   console.log('PASS: traced SQL errors preserve diagnostics while redacting sensitive details');
 }
 
@@ -1000,6 +1011,7 @@ async function main(): Promise<void> {
   testEmptyTrace();
   testPgliteTraceDefaults();
   testSqlScriptSplitting();
+  testSqlRedactionCoversPostgresLiteralForms();
   await testTracedQueryCapture();
   await testBinaryScalarAndClonePrivacy();
   await testExplainEstimatePlanCapture();
