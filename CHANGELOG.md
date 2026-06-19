@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.9.6] - 2026-06-19
+
+### Fixed
+
+- Fixed project-mode command bookkeeping around multi-step limits, live file changes, directory deletions, and interrupted browser Node commands.
+- Fixed cold Python and C# browser executions so runtime warmup uses the runtime-load budget before user-code execution timers begin.
+- Fixed runtime tracing edge cases across Java, C#, JavaScript/TypeScript, Python, and C++ involving side-effecting expressions, target-typed assignments, heap/list mutations, and snapshot alignment.
+- Fixed SQL diagnostic redaction for additional string and numeric literal forms.
+- Fixed native C# dictionary input hydration for dictionary interface types.
+
 ## [0.9.5] - 2026-06-09
 
 ### Added
