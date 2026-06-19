@@ -238,6 +238,7 @@ export async function createBrowserProjectWorkspace(
     sysrootUrl: assets.cppSysroot,
     runtimeHeaderUrl: assets.cppRuntimeHeader,
     compilerBundleUrl: assets.cppCompilerBundle,
+    toolchainIntegrity: assets.cppToolchainIntegrity,
     debug,
     workerIdleTimeoutMs: cppWorkerIdleTimeoutMs,
   };

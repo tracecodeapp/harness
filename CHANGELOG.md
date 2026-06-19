@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.9.7] - 2026-06-19
+
+### Added
+
+- Added pinned C++ browser toolchain integrity manifests so consumers can host large YOWASP assets on a remote HTTPS origin while requiring exact SHA-256 digests before execution.
+
+### Fixed
+
+- Replaced the C++ browser worker's same-origin-only assumption with a stricter trust model: same-origin assets remain allowed, while cross-origin compiler bundles and WASM/sysroot assets must match an exact manifest entry.
+- Loaded pinned remote C++ compiler bundles through verified Blob modules and rewrote their `import.meta.url` base so secondary YOWASP fetches are also checked against the same manifest.
+
 ## [0.9.6] - 2026-06-19
 
 ### Added

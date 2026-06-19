@@ -10,12 +10,94 @@ function encodeUtf8(value) {
   return new TextEncoder().encode(value);
 }
 
-function assertSameOriginCompilerAsset(name, url) {
-  const parsed = new URL(url, self.location.href);
-  if (parsed.origin !== self.location.origin) {
-    throw new Error(`${name} must be served from the compiler worker origin.`);
+let configuredAssets = null;
+
+function bytesToHex(bytes) {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function normalizeSha256(value) {
+  return String(value || '').trim().toLowerCase().replace(/^sha256[-:]/, '');
+}
+
+async function sha256Hex(bytes) {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error('C++ compiler asset integrity verification requires Web Crypto.');
   }
-  return parsed.href;
+  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+}
+
+function compilerIntegrityEntries() {
+  const assets = configuredAssets?.toolchainIntegrity?.assets;
+  return Array.isArray(assets) ? assets : [];
+}
+
+function compilerIntegrityEntryForHref(href) {
+  for (const entry of compilerIntegrityEntries()) {
+    if (!entry?.url || !entry?.sha256) continue;
+    try {
+      if (new URL(entry.url, self.location.href).href === href) return entry;
+    } catch {
+      // Ignore malformed manifest entries; the exact asset will fail closed.
+    }
+  }
+  return null;
+}
+
+function assertTrustedCompilerAsset(name, url) {
+  const parsed = new URL(url, self.location.href);
+  const href = parsed.href;
+  const integrity = compilerIntegrityEntryForHref(href);
+  if (parsed.origin === self.location.origin) {
+    return { href, integrity };
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`${name} must be served from the compiler worker origin or a pinned HTTPS toolchain manifest URL.`);
+  }
+  if (!integrity) {
+    throw new Error(`${name} must be served from the compiler worker origin or an exact pinned toolchain manifest URL.`);
+  }
+  return { href, integrity };
+}
+
+function assertSameOriginCompilerAsset(name, url) {
+  return assertTrustedCompilerAsset(name, url).href;
+}
+
+async function verifyCompilerAssetBytes(name, href, integrity, bytes) {
+  if (!integrity) return;
+  if (typeof integrity.size === 'number' && bytes.byteLength !== integrity.size) {
+    throw new Error(`${name} failed integrity verification: expected ${integrity.size} bytes, got ${bytes.byteLength}.`);
+  }
+  const expectedSha256 = normalizeSha256(integrity.sha256);
+  if (!/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    throw new Error(`${name} has an invalid pinned SHA-256 digest.`);
+  }
+  const actualSha256 = await sha256Hex(bytes);
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(`${name} failed integrity verification from ${href}.`);
+  }
+}
+
+async function fetchTrustedCompilerAssetResponse(name, url, init, fetchImplementation = globalThis.fetch) {
+  if (!url || typeof url !== 'string') {
+    throw new Error(`Missing C++ compiler asset URL for ${name}.`);
+  }
+  const { href, integrity } = assertTrustedCompilerAsset(name, url);
+  const response = await fetchImplementation(href, init);
+  if (!response.ok) {
+    throw new Error(`${name} failed to load from ${url} (${response.status} ${response.statusText})`);
+  }
+  if (!integrity) return response;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  await verifyCompilerAssetBytes(name, href, integrity, bytes);
+  const headers = new Headers(response.headers);
+  headers.set('content-length', String(bytes.byteLength));
+  return new Response(bytes, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function concatBytes(chunks) {
@@ -30,16 +112,8 @@ function concatBytes(chunks) {
 }
 
 async function fetchText(name, url) {
-  if (!url || typeof url !== 'string') {
-    throw new Error(`Missing C++ compiler asset URL for ${name}.`);
-  }
-
-  const response = await fetch(assertSameOriginCompilerAsset(name, url));
-  if (!response.ok) {
-    throw new Error(`${name} failed to load from ${url} (${response.status} ${response.statusText})`);
-  }
-
-  return response.text();
+  const response = await fetchTrustedCompilerAssetResponse(name, url);
+  return decodeUtf8(new Uint8Array(await response.arrayBuffer()));
 }
 
 function transferableArrayBuffer(bytes) {
@@ -67,14 +141,42 @@ function loadRuntimeHeader(url) {
 }
 
 function loadCompilerBundle(url) {
-  const safeUrl = assertSameOriginCompilerAsset('C++ compiler bundle', url);
-  if (compilerBundlePromise && compilerBundleUrl === safeUrl) return compilerBundlePromise;
-  compilerBundleUrl = safeUrl;
-  compilerBundlePromise = import(safeUrl);
+  const { href, integrity } = assertTrustedCompilerAsset('C++ compiler bundle', url);
+  const cacheKey = `${href}\0${normalizeSha256(integrity?.sha256 || '')}`;
+  if (compilerBundlePromise && compilerBundleUrl === cacheKey) return compilerBundlePromise;
+  compilerBundleUrl = cacheKey;
+  compilerBundlePromise = integrity ? importPinnedCompilerBundle('C++ compiler bundle', href) : import(href);
   compilerBundlePromise.catch(() => {
     compilerBundlePromise = null;
   });
   return compilerBundlePromise;
+}
+
+function compilerSourceWithPinnedImportMetaUrl(source, href) {
+  return source.replace(/\bimport\.meta\.url\b/g, JSON.stringify(href));
+}
+
+async function importPinnedCompilerBundle(name, href) {
+  if (typeof Blob === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    throw new Error(`${name} requires Blob module loading for pinned remote toolchain assets.`);
+  }
+  const response = await fetchTrustedCompilerAssetResponse(name, href);
+  const source = compilerSourceWithPinnedImportMetaUrl(decodeUtf8(new Uint8Array(await response.arrayBuffer())), href);
+  const blobUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    const requestUrl = input instanceof Request ? input.url : String(input);
+    const requestHref = new URL(requestUrl, href).href;
+    const requestIntegrity = compilerIntegrityEntryForHref(requestHref);
+    if (!requestIntegrity) return nativeFetch(input, init);
+    return fetchTrustedCompilerAssetResponse(requestHref, requestHref, init, nativeFetch);
+  };
+  try {
+    return await import(blobUrl);
+  } finally {
+    globalThis.fetch = nativeFetch;
+    URL.revokeObjectURL(blobUrl);
+  }
 }
 
 function pchHeaderSource() {
@@ -141,6 +243,7 @@ async function loadPrecompiledHeader(compilerBundle, runtimeHeader, payload) {
 async function compileWithYowasp(payload) {
   const startedAt = performance.now();
   const assets = payload?.assets || {};
+  configuredAssets = assets;
   const driverSource = typeof payload?.driverSource === 'string' ? payload.driverSource : '';
   if (!driverSource) {
     throw new Error('Missing C++ driver source.');
@@ -390,7 +493,8 @@ function shouldLinkTracekernelStatvfs(args) {
 async function compileProjectWithYowasp(payload) {
   const startedAt = performance.now();
   const assets = payload?.assets || {};
-  const compilerBundle = await import(assertSameOriginCompilerAsset('C++ compiler bundle', assets.compilerBundleUrl));
+  configuredAssets = assets;
+  const compilerBundle = await loadCompilerBundle(assets.compilerBundleUrl);
   if (typeof compilerBundle.runClang !== 'function') {
     throw new Error('C++ compiler bundle does not expose runClang.');
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { mkdtemp, readdir, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -80,6 +80,18 @@ async function main(): Promise<void> {
     rootEntries.includes('java-source-augmentations.js'),
     'Asset sync should flatten the Java augmentation helper into the target root'
   );
+
+  for (const relativePath of ['cpp-worker.js', 'cpp-compiler-worker.js']) {
+    const source = await readFile(join(targetDir, relativePath), 'utf8');
+    assertCondition(
+      source.includes('toolchainIntegrity'),
+      `${relativePath} should enforce pinned C++ toolchain integrity manifests`
+    );
+    assertCondition(
+      !source.includes('trusted HTTP(S) asset origin'),
+      `${relativePath} should not trust arbitrary HTTP(S) C++ toolchain assets`
+    );
+  }
 
   const filteredTargetDir = join(tempRoot, 'public', 'python-workers');
   const filteredRun = spawnSync('node', ['dist/cli.js', 'sync-assets', filteredTargetDir, '--languages', 'python'], {

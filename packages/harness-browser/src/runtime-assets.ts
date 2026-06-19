@@ -1,3 +1,5 @@
+import type { CppToolchainIntegrityManifest } from './cpp-worker-client';
+
 const DEFAULT_ASSET_BASE_URL = '/workers';
 
 export interface BrowserHarnessAssets {
@@ -18,6 +20,7 @@ export interface BrowserHarnessAssets {
   cppSysroot: string;
   cppRuntimeHeader: string;
   cppCompilerBundle: string;
+  cppToolchainIntegrity?: CppToolchainIntegrityManifest;
 }
 
 export type BrowserHarnessAssetOverrides = Partial<BrowserHarnessAssets>;
@@ -125,5 +128,6 @@ export function resolveBrowserHarnessAssets(options: {
       assetBaseUrl,
       assets.cppCompilerBundle ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppCompilerBundle
     ),
+    ...(assets.cppToolchainIntegrity ? { cppToolchainIntegrity: assets.cppToolchainIntegrity } : {}),
   };
 }

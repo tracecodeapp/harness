@@ -1,7 +1,8 @@
 #!/usr/bin/env npx tsx
 
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
@@ -38,6 +39,29 @@ interface CppProjectWorkerResponse {
   }>;
 }
 
+async function cppToolchainIntegrity(workersRoot: string, origin: string): Promise<{
+  assets: Array<{ url: string; size: number; sha256: string }>;
+}> {
+  const files = [
+    'bundle.js',
+    'llvm-resources.tar',
+    'llvm.core.wasm',
+    'llvm.core2.wasm',
+    'llvm.core3.wasm',
+    'llvm.core4.wasm',
+  ];
+  const assets = [];
+  for (const file of files) {
+    const bytes = await readFile(join(workersRoot, 'vendor', 'cpp', 'yowasp', file));
+    assets.push({
+      url: `${origin}/workers/vendor/cpp/yowasp/${file}`,
+      size: bytes.byteLength,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    });
+  }
+  return { assets };
+}
+
 async function main(): Promise<void> {
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-cpp-browser-'));
   const workersRoot = join(tempRoot, 'workers');
@@ -70,8 +94,10 @@ async function main(): Promise<void> {
     const page = await browser.newPage();
     page.setDefaultTimeout(120_000);
     await page.goto(origin);
+    const integrityManifest = await cppToolchainIntegrity(workersRoot, origin);
 
     const results = await page.evaluate(`(async () => {
+      const cppToolchainIntegrity = ${JSON.stringify(integrityManifest)};
       const worker = new Worker('/workers/cpp-worker.js', { type: 'module' });
       let nextId = 0;
       const pending = new Map();
@@ -256,6 +282,7 @@ async function main(): Promise<void> {
           lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
           sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
           runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
+          toolchainIntegrity: cppToolchainIntegrity,
         },
       });
       const warmup = await send('warmup', {});

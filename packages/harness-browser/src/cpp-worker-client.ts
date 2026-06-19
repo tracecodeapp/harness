@@ -29,6 +29,7 @@ export interface CppWorkerAssets {
   compilerBundleUrl: string;
   compilerFrameUrl?: string;
   compilerWorkerUrl?: string;
+  toolchainIntegrity?: CppToolchainIntegrityManifest;
 }
 
 export interface CppWorkerClientOptions extends CppWorkerAssets {
@@ -42,6 +43,16 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   programCacheLimit?: number;
   usePrecompiledHeader?: boolean;
   externalCompilerUrl?: string;
+}
+
+export interface CppToolchainIntegrityEntry {
+  url: string;
+  sha256: string;
+  size?: number;
+}
+
+export interface CppToolchainIntegrityManifest {
+  assets: readonly CppToolchainIntegrityEntry[];
 }
 
 interface PendingMessage {
@@ -557,6 +568,7 @@ export class CppWorkerClient {
           compilerFrameEnabled: Boolean(this.externalCompilerUrl || (this.compilerFrameUrl && typeof document !== 'undefined')),
           compilerFrameUrl: this.compilerFrameUrl,
           compilerWorkerUrl: this.options.compilerWorkerUrl,
+          toolchainIntegrity: this.options.toolchainIntegrity,
         },
         ...this.workerOptionsPayload(),
       },

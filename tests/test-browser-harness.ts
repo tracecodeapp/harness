@@ -388,6 +388,15 @@ async function main(): Promise<void> {
       'Default JavaScript project worker path should resolve'
     );
 
+    const cppToolchainIntegrity = {
+      assets: [
+        {
+          url: 'https://cdn.example.com/cpp/bundle.js',
+          size: 1234,
+          sha256: '0'.repeat(64),
+        },
+      ],
+    };
     const customAssets = resolveBrowserHarnessAssets({
       assetBaseUrl: '/sdk-assets',
       assets: {
@@ -399,6 +408,7 @@ async function main(): Promise<void> {
         cppCompilerFrame: 'workers/cpp-compiler-frame.html',
         cppCompilerWorker: 'workers/cpp-compiler-worker.js',
         cppCompilerBundle: 'https://cdn.example.com/cpp/bundle.js',
+        cppToolchainIntegrity,
       },
     });
     assertCondition(customAssets.pythonWorker === 'https://cdn.example.com/python-worker.js', 'Explicit asset URLs should be preserved');
@@ -406,6 +416,7 @@ async function main(): Promise<void> {
     assertCondition(customAssets.cppCompilerFrame === '/sdk-assets/workers/cpp-compiler-frame.html', 'Relative custom C++ compiler frame should join assetBaseUrl');
     assertCondition(customAssets.cppCompilerWorker === '/sdk-assets/workers/cpp-compiler-worker.js', 'Relative custom C++ compiler worker should join assetBaseUrl');
     assertCondition(customAssets.cppCompilerBundle === 'https://cdn.example.com/cpp/bundle.js', 'Explicit C++ compiler bundle URLs should be preserved');
+    assertCondition(customAssets.cppToolchainIntegrity === cppToolchainIntegrity, 'C++ toolchain integrity manifest should be preserved');
     assertCondition(customAssets.javascriptWorker === '/sdk-assets/workers/js-runtime.js', 'Relative custom assets should join assetBaseUrl');
     assertCondition(
       customAssets.javascriptProjectWorker === '/sdk-assets/workers/js-project-runtime.js',

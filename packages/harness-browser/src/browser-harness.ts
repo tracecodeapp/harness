@@ -113,6 +113,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
       sysrootUrl: this.assets.cppSysroot,
       runtimeHeaderUrl: this.assets.cppRuntimeHeader,
       compilerBundleUrl: this.assets.cppCompilerBundle,
+      toolchainIntegrity: this.assets.cppToolchainIntegrity,
       debug: options.debug,
       initTimeoutMs: options.cpp?.initTimeoutMs,
       executionTimeoutMs: options.cpp?.executionTimeoutMs,
@@ -224,3 +225,7 @@ export {
   type BrowserHarnessAssets,
   type BrowserHarnessAssetOverrides,
 };
+export type {
+  CppToolchainIntegrityEntry,
+  CppToolchainIntegrityManifest,
+} from './cpp-worker-client';

@@ -492,25 +492,135 @@ function postProjectEvent(id, payload) {
   postMessage({ id, type: 'project-event', payload, ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}) });
 }
 
-function assertSameOriginCppAsset(name, url) {
-  const parsed = new URL(url, self.location.href);
-  if (parsed.origin !== self.location.origin) {
-    throw new Error(`${name} must be served from the C++ worker origin.`);
-  }
-  return parsed.href;
+function bytesToHex(bytes) {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function fetchAsset(name, url, responseType) {
+function normalizeSha256(value) {
+  return String(value || '').trim().toLowerCase().replace(/^sha256[-:]/, '');
+}
+
+async function sha256Hex(bytes) {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error('C++ asset integrity verification requires Web Crypto.');
+  }
+  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+}
+
+function cppIntegrityEntries() {
+  const assets = configuredAssets?.toolchainIntegrity?.assets;
+  return Array.isArray(assets) ? assets : [];
+}
+
+function cppIntegrityEntryForHref(href) {
+  for (const entry of cppIntegrityEntries()) {
+    if (!entry?.url || !entry?.sha256) continue;
+    try {
+      if (new URL(entry.url, self.location.href).href === href) return entry;
+    } catch {
+      // Ignore malformed manifest entries; the exact asset will fail closed.
+    }
+  }
+  return null;
+}
+
+function assertTrustedCppAsset(name, url) {
+  const parsed = new URL(url, self.location.href);
+  const href = parsed.href;
+  const integrity = cppIntegrityEntryForHref(href);
+  if (parsed.origin === self.location.origin) {
+    return { href, integrity };
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`${name} must be served from the C++ worker origin or a pinned HTTPS toolchain manifest URL.`);
+  }
+  if (!integrity) {
+    throw new Error(`${name} must be served from the C++ worker origin or an exact pinned toolchain manifest URL.`);
+  }
+  return { href, integrity };
+}
+
+function assertSameOriginCppAsset(name, url) {
+  return assertTrustedCppAsset(name, url).href;
+}
+
+async function verifyCppAssetBytes(name, href, integrity, bytes) {
+  if (!integrity) return;
+  if (typeof integrity.size === 'number' && bytes.byteLength !== integrity.size) {
+    throw new Error(`${name} failed integrity verification: expected ${integrity.size} bytes, got ${bytes.byteLength}.`);
+  }
+  const expectedSha256 = normalizeSha256(integrity.sha256);
+  if (!/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    throw new Error(`${name} has an invalid pinned SHA-256 digest.`);
+  }
+  const actualSha256 = await sha256Hex(bytes);
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(`${name} failed integrity verification from ${href}.`);
+  }
+}
+
+async function fetchTrustedCppAssetResponse(name, url, init, fetchImplementation = globalThis.fetch) {
   if (!url || typeof url !== 'string') {
     throw new Error(`Missing C++ toolchain asset URL for ${name}.`);
   }
-
-  const response = await fetch(assertSameOriginCppAsset(name, url));
+  const { href, integrity } = assertTrustedCppAsset(name, url);
+  const response = await fetchImplementation(href, init);
   if (!response.ok) {
     throw new Error(`${name} failed to load from ${url} (${response.status} ${response.statusText})`);
   }
+  if (!integrity) return response;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  await verifyCppAssetBytes(name, href, integrity, bytes);
+  const headers = new Headers(response.headers);
+  headers.set('content-length', String(bytes.byteLength));
+  return new Response(bytes, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
-  return responseType === 'text' ? response.text() : response.arrayBuffer();
+async function fetchAsset(name, url, responseType) {
+  const response = await fetchTrustedCppAssetResponse(name, url);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return responseType === 'text' ? decodeUtf8(bytes) : arrayBufferFromBytes(bytes);
+}
+
+function arrayBufferFromBytes(bytes) {
+  return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+    ? bytes.buffer
+    : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function cppSourceWithPinnedImportMetaUrl(source, href) {
+  return source.replace(/\bimport\.meta\.url\b/g, JSON.stringify(href));
+}
+
+async function importCppCompilerBundle(name, url) {
+  const { href, integrity } = assertTrustedCppAsset(name, url);
+  if (!integrity) {
+    return import(href);
+  }
+  if (typeof Blob === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    throw new Error(`${name} requires Blob module loading for pinned remote toolchain assets.`);
+  }
+  const response = await fetchTrustedCppAssetResponse(name, href);
+  const source = cppSourceWithPinnedImportMetaUrl(decodeUtf8(new Uint8Array(await response.arrayBuffer())), href);
+  const blobUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    const requestUrl = input instanceof Request ? input.url : String(input);
+    const requestHref = new URL(requestUrl, href).href;
+    const requestIntegrity = cppIntegrityEntryForHref(requestHref);
+    if (!requestIntegrity) return nativeFetch(input, init);
+    return fetchTrustedCppAssetResponse(requestHref, requestHref, init, nativeFetch);
+  };
+  try {
+    return await import(blobUrl);
+  } finally {
+    globalThis.fetch = nativeFetch;
+    URL.revokeObjectURL(blobUrl);
+  }
 }
 
 function defaultCompilerWorkerUrl() {
@@ -1716,7 +1826,7 @@ async function loadToolchain() {
 
     if (configuredAssets.compilerBundleUrl) {
       try {
-        const compilerBundle = await import(assertSameOriginCppAsset('C++ compiler bundle', configuredAssets.compilerBundleUrl));
+        const compilerBundle = await importCppCompilerBundle('C++ compiler bundle', configuredAssets.compilerBundleUrl);
         if (typeof compilerBundle.runClang === 'function') {
           return {
             compiler: 'yowasp',
