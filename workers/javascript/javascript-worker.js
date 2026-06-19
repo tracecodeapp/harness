@@ -3835,6 +3835,79 @@ function createTraceWriteIndexExpression(ts, sourceFile, node, variableName, ind
   ]);
 }
 
+function createTraceResolvedWriteIndexExpression(
+  ts,
+  sourceFile,
+  node,
+  variableName,
+  receiverExpression,
+  indices,
+  value,
+  indexSourceExpressions,
+  visit
+) {
+  if (!Array.isArray(indices) || indices.length < 2) {
+    return createTraceWriteIndexExpression(ts, sourceFile, node, variableName, indices, value, indexSourceExpressions);
+  }
+
+  const statements = [];
+  const evaluatedIndices = [];
+  let parentExpression = receiverExpression;
+
+  for (let index = 0; index < indices.length - 1; index += 1) {
+    const indexName = ts.factory.createUniqueName('__traceWriteIndexPart');
+    const visitedIndex = ts.visitNode(indices[index], visit);
+    statements.push(createConstDeclarationStatement(ts, indexName, visitedIndex));
+    evaluatedIndices.push(indexName);
+    parentExpression = ts.factory.createElementAccessExpression(parentExpression, indexName);
+  }
+
+  const parentName = ts.factory.createUniqueName('__traceWriteParent');
+  statements.push(createConstDeclarationStatement(ts, parentName, parentExpression));
+
+  const finalIndexName = ts.factory.createUniqueName('__traceWriteIndexPart');
+  const visitedFinalIndex = ts.visitNode(indices[indices.length - 1], visit);
+  statements.push(createConstDeclarationStatement(ts, finalIndexName, visitedFinalIndex));
+  evaluatedIndices.push(finalIndexName);
+
+  statements.push(ts.factory.createReturnStatement(ts.factory.createCallExpression(
+    ts.factory.createIdentifier('__traceWriteResolvedIndex'),
+    undefined,
+    [
+      ts.factory.createStringLiteral(variableName),
+      parentName,
+      finalIndexName,
+      createIndicesArrayExpression(ts, evaluatedIndices),
+      createIndexSourcesArrayExpression(ts, sourceFile, indexSourceExpressions),
+      value,
+      createSourceLocationObject(ts, sourceFile, node),
+    ]
+  )));
+
+  return ts.factory.createCallExpression(
+    ts.factory.createParenthesizedExpression(ts.factory.createArrowFunction(
+      undefined,
+      undefined,
+      [],
+      undefined,
+      ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+      ts.factory.createBlock(statements, true)
+    )),
+    undefined,
+    []
+  );
+}
+
+function createConstDeclarationStatement(ts, name, initializer) {
+  return ts.factory.createVariableStatement(
+    undefined,
+    ts.factory.createVariableDeclarationList(
+      [ts.factory.createVariableDeclaration(name, undefined, undefined, initializer)],
+      ts.NodeFlags.Const
+    )
+  );
+}
+
 function createTraceRecordIndexWriteExpression(ts, sourceFile, node, variableName, indices, indexSourceExpressions = indices) {
   return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceRecordIndexWrite'), undefined, [
     ts.factory.createStringLiteral(variableName),
@@ -5104,6 +5177,19 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
             );
           }
           if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            if (tracedLeft.indices.length > 1) {
+              return createTraceResolvedWriteIndexExpression(
+                ts,
+                sourceFile,
+                node.left,
+                tracedLeft.variableName,
+                tracedLeft.receiverExpression,
+                tracedLeft.indices,
+                visitedRight,
+                tracedLeft.indices,
+                visit
+              );
+            }
             return createTraceWriteIndexExpression(
               ts,
               sourceFile,
@@ -5457,7 +5543,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
 }
 
 function buildScriptExecutionRunner(code, sourceCode = code) {
-  const resultPrelude = javascriptRuntimeDeclaresBinding(sourceCode, 'result') ? '' : 'var result;';
+  const resultPrelude = javascriptRuntimeDeclaresTopLevelLexicalBinding(sourceCode, 'result') ? '' : 'var result;';
   return new Function(
     'console',
     '__tracecodeStdin',
@@ -5481,9 +5567,6 @@ ${resultPrelude}
 ${javascriptRuntimeCheckedCode(code, sourceCode)}
 if (typeof result !== 'undefined') {
   return result;
-}
-if (typeof globalThis.result !== 'undefined') {
-  return globalThis.result;
 }
 return null;`
   );
@@ -5840,6 +5923,27 @@ function __traceWriteIndex(__varName, __container, __indices, __indexSources, __
   }
   __traceFlushDeferredScalarUpdates(__effectiveIndices);
   return __result;
+}
+
+function __traceWriteResolvedIndex(__varName, __parent, __lastIndex, __indices, __indexSources, __value, __location) {
+  const __normalized = __traceNormalizeIndices(__indices);
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
+  const __effectiveIndices = Array.isArray(__indices) ? __traceResolveIndexValues(__indices) : [];
+  const __effectiveLastIndex = __traceResolvedIndexValue(__lastIndex);
+  __parent[__effectiveLastIndex] = __value;
+  if (__normalized) {
+    __traceRecorder.recordAccess({
+      variable: __varName,
+      kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
+      indices: __normalized,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+      pathDepth: __normalized.length,
+      value: __value,
+      ...__traceNormalizeSourceLocation(__location),
+    });
+  }
+  __traceFlushDeferredScalarUpdates(__effectiveIndices);
+  return __value;
 }
 
 function __traceScalarWrite(__varName, __value, __location) {
@@ -6241,6 +6345,50 @@ function javascriptRuntimeDeclaresBinding(code, name) {
   return new RegExp(`(^|[^\\w$])(?:class|function|const|let|var)\\s+${name}\\b`).test(searchableCode);
 }
 
+function javascriptRuntimeDeclaresTopLevelLexicalBinding(code, name) {
+  const searchableCode = maskJavaScriptRuntimeStringsAndComments(String(code ?? ''));
+  let braceDepth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  for (let index = 0; index < searchableCode.length; index += 1) {
+    const char = searchableCode[index];
+    if (char === '{') {
+      braceDepth += 1;
+      continue;
+    }
+    if (char === '}') {
+      braceDepth = Math.max(0, braceDepth - 1);
+      continue;
+    }
+    if (char === '(') {
+      parenDepth += 1;
+      continue;
+    }
+    if (char === ')') {
+      parenDepth = Math.max(0, parenDepth - 1);
+      continue;
+    }
+    if (char === '[') {
+      bracketDepth += 1;
+      continue;
+    }
+    if (char === ']') {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+    if (braceDepth !== 0 || parenDepth !== 0 || bracketDepth !== 0) {
+      continue;
+    }
+
+    const remaining = searchableCode.slice(index);
+    const match = /^(?:class|const|let)\s+([A-Za-z_$][\w$]*)\b/.exec(remaining);
+    if (match?.[1] === name) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function javascriptRuntimePreludeBindings(code) {
   const bindings = [];
   if (!javascriptRuntimeDeclaresBinding(code, 'ListNode')) {
@@ -6294,7 +6442,7 @@ function createJavaScriptRuntimeGlobal(consoleProxy) {
 }
 
 function buildScriptTracingRunner(code, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH, sourceCode = code) {
-  const resultPrelude = javascriptRuntimeDeclaresBinding(sourceCode, 'result') ? '' : 'var result;';
+  const resultPrelude = javascriptRuntimeDeclaresTopLevelLexicalBinding(sourceCode, 'result') ? '' : 'var result;';
   return new Function(
     'console',
     '__traceRecorder',
@@ -6321,9 +6469,6 @@ ${resultPrelude}
 ${javascriptRuntimeCheckedCode(code, sourceCode)}
 if (typeof result !== 'undefined') {
   return result;
-}
-if (typeof globalThis.result !== 'undefined') {
-  return globalThis.result;
 }
 return null;`
   );

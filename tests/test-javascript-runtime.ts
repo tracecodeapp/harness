@@ -1422,6 +1422,45 @@ result = twoSum([2, 7, 11, 15], 9);`,
   assertCondition(executeScriptNoResultAfterAssignment.success === true, 'Script execution without result should succeed after prior result assignment');
   assertCondition(executeScriptNoResultAfterAssignment.output === null, 'Script execution should not reuse a previous script result');
 
+  const executeScriptDeadScopedResult = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `if (false) {
+  let result;
+}
+result = 'SCRIPT_SECRET';`,
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    executeScriptDeadScopedResult.success === true,
+    `Script execution should keep undeclared result local despite nested result declarations: ${executeScriptDeadScopedResult.error ?? 'unknown error'}`
+  );
+  assertCondition(executeScriptDeadScopedResult.output === 'SCRIPT_SECRET', 'Script execution should return the local result assignment');
+
+  const executeScriptNoResultAfterDeadScopedDeclaration = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `if (false) {
+  let result;
+}
+const untouched = 1;`,
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    executeScriptNoResultAfterDeadScopedDeclaration.success === true,
+    `Script execution should succeed after a nested result declaration: ${executeScriptNoResultAfterDeadScopedDeclaration.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    executeScriptNoResultAfterDeadScopedDeclaration.output === null,
+    'Script execution should not reuse a result assigned before a nested result declaration'
+  );
+
   const executeScriptConstResult = await harness.sendMessage<{
     success: boolean;
     output: unknown;
@@ -1529,6 +1568,97 @@ result = [head.val, head.value, head.next.val, head.next.value, root.left.val, r
     'Linked-list ref input should be hydrated so identity-based cycle checks pass'
   );
   console.log('PASS: execute-code linked-list ref hydration contract');
+
+  const cyclicListInput: Record<string, unknown> = { __type__: 'ListNode', val: 7, next: null };
+  cyclicListInput.next = cyclicListInput;
+  const executeLinkedListDirectCycle = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `function hasSelfCycle(head: ListNode | null): boolean {
+  return !!head && head.next === head;
+}`,
+    functionName: 'hasSelfCycle',
+    executionStyle: 'function',
+    language: 'typescript',
+    inputs: {
+      head: cyclicListInput,
+    },
+  });
+  assertCondition(
+    executeLinkedListDirectCycle.success === true,
+    `Direct cyclic linked-list input should not overflow materialization: ${executeLinkedListDirectCycle.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    executeLinkedListDirectCycle.output === true,
+    'Direct cyclic linked-list input should preserve object identity after materialization'
+  );
+
+  const cyclicTreeInput: Record<string, unknown> = { __type__: 'TreeNode', val: 11, left: null, right: null };
+  cyclicTreeInput.left = cyclicTreeInput;
+  const executeTreeDirectCycle = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `function hasSelfLeft(root: TreeNode | null): boolean {
+  return !!root && root.left === root;
+}`,
+    functionName: 'hasSelfLeft',
+    executionStyle: 'function',
+    language: 'typescript',
+    inputs: {
+      root: cyclicTreeInput,
+    },
+  });
+  assertCondition(
+    executeTreeDirectCycle.success === true,
+    `Direct cyclic tree input should not overflow materialization: ${executeTreeDirectCycle.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    executeTreeDirectCycle.output === true,
+    'Direct cyclic tree input should preserve object identity after materialization'
+  );
+
+  let deepListInput: Record<string, unknown> = { __type__: 'ListNode', val: 0, next: null };
+  const deepListHead = deepListInput;
+  for (let index = 1; index < 600; index += 1) {
+    const nextNode: Record<string, unknown> = { __type__: 'ListNode', val: index, next: null };
+    deepListInput.next = nextNode;
+    deepListInput = nextNode;
+  }
+  const executeLinkedListTooDeep = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `function length(head: ListNode | null): number {
+  let count = 0;
+  let node = head;
+  while (node) {
+    count += 1;
+    node = node.next;
+  }
+  return count;
+}`,
+    functionName: 'length',
+    executionStyle: 'function',
+    language: 'typescript',
+    inputs: {
+      head: deepListHead,
+    },
+  });
+  assertCondition(executeLinkedListTooDeep.success === false, 'Overly deep linked-list input should fail safely');
+  assertCondition(
+    String(executeLinkedListTooDeep.error ?? '').includes('Input materializer exceeded maximum depth'),
+    `Overly deep linked-list input should return the materializer depth error, received ${executeLinkedListTooDeep.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    !String(executeLinkedListTooDeep.error ?? '').includes('Maximum call stack size exceeded'),
+    'Overly deep linked-list input should not overflow the JavaScript call stack'
+  );
+  console.log('PASS: execute-code TreeNode/ListNode materializer recursion guard');
 
   const sharedLinkedListArrayInput = {
     lists: [
@@ -4140,6 +4270,34 @@ function smallest(nums: number[]): number {
       nestedWriteEvaluationOrderTracing.output
     )}`
   );
+
+  const nestedWriteGetterOrderTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  let rhs = 1;
+  const original = { c: 0 };
+  const obj = { a: { get b() { rhs = 2; return original; } } };
+  obj.a.b.c = rhs;
+  return [original.c, rhs];
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    nestedWriteGetterOrderTracing.success === true,
+    `JavaScript nested write getter-order tracing should succeed: ${nestedWriteGetterOrderTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(nestedWriteGetterOrderTracing.output) === JSON.stringify([2, 2]),
+    `JavaScript nested write tracing should resolve LHS parent before simple RHS, got ${JSON.stringify(
+      nestedWriteGetterOrderTracing.output
+    )}`
+  );
   console.log('PASS: execute-with-tracing JS nested write evaluation order');
 
   const tuplePushArgsTracing = await harness.sendMessage<{
@@ -4277,6 +4435,45 @@ result = twoSum([2, 7, 11, 15], 9);`,
     `Script tracing without result should succeed after prior result assignment: ${scriptTracingNoResultAfterAssignment.error ?? 'unknown error'}`
   );
   assertCondition(scriptTracingNoResultAfterAssignment.output === null, 'Script tracing should not reuse a previous script result');
+
+  const scriptTracingDeadScopedResult = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `if (false) {
+  let result;
+}
+result = 'TRACE_SECRET';`,
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    scriptTracingDeadScopedResult.success === true,
+    `Script tracing should keep undeclared result local despite nested result declarations: ${scriptTracingDeadScopedResult.error ?? 'unknown error'}`
+  );
+  assertCondition(scriptTracingDeadScopedResult.output === 'TRACE_SECRET', 'Script tracing should return the local result assignment');
+
+  const scriptTracingNoResultAfterDeadScopedDeclaration = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `if (false) {
+  let result;
+}
+const untouched = 1;`,
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    scriptTracingNoResultAfterDeadScopedDeclaration.success === true,
+    `Script tracing should succeed after a nested result declaration: ${scriptTracingNoResultAfterDeadScopedDeclaration.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    scriptTracingNoResultAfterDeadScopedDeclaration.output === null,
+    'Script tracing should not reuse a result assigned before a nested result declaration'
+  );
 
   const scriptConstResultTracing = await harness.sendMessage<{
     success: boolean;
@@ -5032,6 +5229,32 @@ function solve(x: number): number {
       { __type__: 'ListNode', __id__: 'ref-1', val: 2, next: { __type__: 'ListNode', __id__: 'ref-2', val: 1, next: null } },
     ]),
     `JavaScript execute-code-batch should isolate mutable linked-list inputs per case: ${JSON.stringify(javaScriptBatchMutationIsolation)}`
+  );
+
+  const javaScriptBatchScriptResultIsolation = await harness.sendMessage<{
+    success: boolean;
+    results?: Array<{ success: boolean; output?: unknown; error?: string }>;
+    error?: string;
+  }>('execute-code-batch', {
+    code: `const input = require('fs').readFileSync(0, 'utf8');
+if (false) {
+  let result;
+}
+if (input === 'first') {
+  result = 'SECRET_BATCH';
+}`,
+    functionName: '',
+    inputBatch: [{ stdin: 'first' }, { stdin: 'second' }],
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    javaScriptBatchScriptResultIsolation.success === true,
+    `JavaScript script batch should succeed: ${JSON.stringify(javaScriptBatchScriptResultIsolation)}`
+  );
+  assertCondition(
+    JSON.stringify(javaScriptBatchScriptResultIsolation.results?.map((result) => result.output)) === JSON.stringify(['SECRET_BATCH', '']),
+    `JavaScript script batch should not reuse result globals: ${JSON.stringify(javaScriptBatchScriptResultIsolation)}`
   );
   console.log('PASS: execute-code-batch isolates JS/TS globals and mutable inputs');
 
