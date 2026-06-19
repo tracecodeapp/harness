@@ -6,13 +6,31 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [0.9.6] - 2026-06-19
 
+### Added
+
+- Added browser-first SQL tracing through `@tracecode/harness-sql` and `@tracecode/harness/sql`, including query, exec, transaction, rollback/failure, explain-plan, privacy-mode, and fixture-backed trace contracts.
+- Added SQL trace documentation for contract semantics, privacy modes, product integration, and review workflows, plus a browser SQL example app.
+- Added package-surface coverage for the SQL package and expanded standalone package checks for shipped runtime worker assets.
+
+### Changed
+
+- Refreshed public docs, READMEs, package metadata, runtime language info, third-party notices, and package asset syncing for the expanded package set.
+- Moved C# browser host sources and generated runtime assets into the runtime tree and refreshed the packaged C# worker artifacts.
+- Tightened TraceKernel project-mode routing and bookkeeping for command step budgets, live I/O controller options, cwd events, virtual paths/devices, final diffs, HTTP headers, and result filtering.
+
 ### Fixed
 
-- Fixed project-mode command bookkeeping around multi-step limits, live file changes, directory deletions, and interrupted browser Node commands.
+- Fixed project-mode filesystem and device behavior across live file changes, recursive directory snapshots, directory deletes, rename/copy targets, stdin/stdout routing, pending reads, file-handle streams, append/readv/opendir operations, and interrupted browser Node commands.
 - Fixed cold Python and C# browser executions so runtime warmup uses the runtime-load budget before user-code execution timers begin.
-- Fixed runtime tracing edge cases across Java, C#, JavaScript/TypeScript, Python, and C++ involving side-effecting expressions, target-typed assignments, heap/list mutations, and snapshot alignment.
+- Fixed runtime trace correctness across Java, C#, C++, Python, and JavaScript/TypeScript for side-effecting expressions, mutation ordering, indexed writes/receivers, collection snapshots, heap/priority-queue operations, target-typed assignments, function-valued conditions, and snapshot alignment.
+- Fixed Java project/runtime edge cases around diagnostic paths, event run binding, reader cleanup, NIO temp files, virtual copy options, PrintWriter charset errors, nested mutation order, `PriorityQueue` rewrites, var loop element inference, and indexed receiver casts.
+- Fixed C# runtime edge cases around qualified API references, serialization bounds, kernel file mounts, custom dictionary input hydration, indexed assignment semantics, async returns, project diagnostics, target-typed field assignments, and mutation argument replay.
+- Fixed C++ runtime/project edge cases around prefixed trace functions, line-limit failures, known device lookup, mapped reference mutations, aggregate template parsing, project stdio defaults, and directory rename targets.
+- Fixed Python runtime/project edge cases around Pyodide path resolution, directory snapshot budgets, provider output routing, class-scope trace temporaries, heap target resolution, `heapq` call order, indexed user method calls, and `scandir` behavior.
+- Fixed JavaScript/TypeScript runtime/project edge cases around bounded input materializers, collection snapshot budgets, fetch tuple headers, UTF-8 BOM/header byte preservation, web IDE language helpers, open exclusivity, global shadows, and file I/O bridge behavior.
 - Fixed SQL diagnostic redaction for additional string and numeric literal forms.
 - Fixed native C# dictionary input hydration for dictionary interface types.
+- Fixed runtime info lookups and package-surface guards for current worker assets.
 
 ## [0.9.5] - 2026-06-09
 
