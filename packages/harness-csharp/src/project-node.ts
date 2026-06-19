@@ -139,11 +139,16 @@ async function snapshotDirectories(root: string): Promise<Set<string>> {
   return directories;
 }
 
+function explicitlySnapshottedProjectDirectories(project: CSharpProjectSnapshot): Set<string> {
+  return new Set((project.directories ?? []).map((directory) => assertSafeProjectPath(directory)));
+}
+
 async function collectChangedFiles(
   root: string,
   absolutePath: string,
   baselineFiles: Map<string, Buffer>,
   baselineDirectories: Set<string>,
+  deletableDirectories: Set<string>,
   files: RuntimeFileChange[]
 ): Promise<void> {
   const info = await lstat(absolutePath);
@@ -153,12 +158,13 @@ async function collectChangedFiles(
     if (relativePath && !relativePath.startsWith('..') && !relativePath.startsWith('.tracecode-build/')) {
       if (baselineDirectories.has(relativePath)) {
         baselineDirectories.delete(relativePath);
+        deletableDirectories.delete(relativePath);
       } else {
         files.push({ path: relativePath, directory: true });
       }
     }
     for (const entry of await readdir(absolutePath)) {
-      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, baselineDirectories, files);
+      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, baselineDirectories, deletableDirectories, files);
     }
     return;
   }
@@ -183,14 +189,15 @@ async function collectChangedFiles(
 async function changedProjectFiles(
   root: string,
   baselineFiles: Map<string, Buffer>,
-  baselineDirectories: Set<string>
+  baselineDirectories: Set<string>,
+  deletableDirectories: Set<string>
 ): Promise<RuntimeFileChange[]> {
   const files: RuntimeFileChange[] = [];
-  await collectChangedFiles(root, root, baselineFiles, baselineDirectories, files);
+  await collectChangedFiles(root, root, baselineFiles, baselineDirectories, deletableDirectories, files);
   for (const path of baselineFiles.keys()) {
     files.push({ path, deleted: true });
   }
-  for (const path of baselineDirectories) {
+  for (const path of deletableDirectories) {
     files.push({ path, directory: true, deleted: true });
   }
   files.sort((left, right) => left.path.localeCompare(right.path));
@@ -609,6 +616,7 @@ export function createNativeCSharpProjectRunner(
       if (request.source === 'compile') {
         const baseline = await snapshotFileBytes(root);
         const baselineDirectories = await snapshotDirectories(root);
+        const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
         const result = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, request.args, request.project)], {
           cwd,
           env: request.env,
@@ -619,7 +627,7 @@ export function createNativeCSharpProjectRunner(
           onEvent: request.onEvent,
         });
         if (result.exitCode !== 0) return result;
-        const files = await changedProjectFiles(root, baseline, baselineDirectories);
+        const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...result, files };
       }
@@ -638,6 +646,7 @@ export function createNativeCSharpProjectRunner(
 
       const baseline = await snapshotFileBytes(root);
       const baselineDirectories = await snapshotDirectories(root);
+      const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
       const run = await runProcess(resolvedDotnetCommand, ['run', '--project', projectArg, '--no-build', '--no-launch-profile', '--', ...request.args], {
         cwd,
         env: request.env,
@@ -647,7 +656,7 @@ export function createNativeCSharpProjectRunner(
         timeoutLabel: 'dotnet run',
         onEvent: request.onEvent,
       });
-      const files = await changedProjectFiles(root, baseline, baselineDirectories);
+      const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
       emitRuntimeCommandFileChanges(request.onEvent, files);
       return { ...run, files };
     } finally {

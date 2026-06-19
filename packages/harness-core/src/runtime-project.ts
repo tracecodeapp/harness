@@ -1059,7 +1059,12 @@ export class RuntimeProjectOutputTracker {
 
 export interface RuntimeProjectEventQueueOptions {
   actor?: RuntimeWorkspaceActor;
-  applyFileChange(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): Promise<boolean | void>;
+  signal?: AbortSignal;
+  applyFileChange(
+    change: RuntimeFileChange,
+    phase: RuntimeFileMutationPhase,
+    options?: RuntimeProjectFileChangeApplyOptions
+  ): Promise<boolean | void>;
   emit(event: RuntimeCommandEvent): void;
 }
 
@@ -1068,6 +1073,7 @@ export class RuntimeProjectEventQueue {
 
   enqueue(event: RuntimeCommandEvent, options: RuntimeProjectEventQueueOptions): void {
     this.queue = this.queue.then(async () => {
+      if (options.signal?.aborted) return;
       if (event.type !== 'file-change') {
         options.emit(event);
         return;
@@ -1075,7 +1081,9 @@ export class RuntimeProjectEventQueue {
 
       const change = normalizeRuntimeFileChange(event.change);
       const phase = event.phase ?? 'live';
-      const shouldEmit = await options.applyFileChange(change, phase);
+      if (options.signal?.aborted) return;
+      const shouldEmit = await options.applyFileChange(change, phase, { signal: options.signal });
+      if (options.signal?.aborted) return;
       if (shouldEmit === false) return;
       options.emit({
         ...event,
@@ -1093,9 +1101,17 @@ export class RuntimeProjectEventQueue {
   }
 }
 
+export interface RuntimeProjectFileChangeApplyOptions {
+  signal?: AbortSignal;
+}
+
 export interface RuntimeProjectLiveIoControllerOptions {
   actor?: RuntimeWorkspaceActor;
-  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
+  applyFileChange?: (
+    change: RuntimeFileChange,
+    phase: RuntimeFileMutationPhase,
+    options?: RuntimeProjectFileChangeApplyOptions
+  ) => Promise<boolean | void>;
   onEvent?: RuntimeCommandEventHandler;
   signal?: AbortSignal;
 }
@@ -1103,6 +1119,9 @@ export interface RuntimeProjectLiveIoControllerOptions {
 export class RuntimeProjectLiveIoController {
   private readonly outputTracker = new RuntimeProjectOutputTracker();
   private readonly eventQueue: RuntimeProjectEventQueue | null;
+  private readonly abortController = new AbortController();
+  private readonly abortInputSignal?: AbortSignal;
+  private readonly abortInputListener?: () => void;
   private readonly appliedFileChangePaths = new Set<string>();
   private readonly outputBytes: Record<RuntimeCommandEventStream, number> = { stdout: 0, stderr: 0 };
   private readonly truncatedOutputStreams = new Set<RuntimeCommandEventStream>();
@@ -1113,6 +1132,13 @@ export class RuntimeProjectLiveIoController {
 
   constructor(private readonly options: RuntimeProjectLiveIoControllerOptions) {
     this.eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
+    this.abortInputSignal = options.signal;
+    if (options.signal?.aborted) {
+      this.abortController.abort();
+    } else if (options.signal) {
+      this.abortInputListener = () => this.abortController.abort();
+      options.signal.addEventListener('abort', this.abortInputListener, { once: true });
+    }
   }
 
   emit(event: RuntimeCommandEvent): void {
@@ -1123,7 +1149,7 @@ export class RuntimeProjectLiveIoController {
   }
 
   handleRuntimeEvent(event: RuntimeCommandEvent): void {
-    if (this.closed || this.options.signal?.aborted) return;
+    if (this.closed || this.abortController.signal.aborted) return;
     if (event.type === 'file-change') {
       event = { ...event, change: normalizeRuntimeFileChange(event.change) };
     }
@@ -1139,10 +1165,14 @@ export class RuntimeProjectLiveIoController {
     if (event.type === 'file-change') this.pendingFileChanges += 1;
     this.eventQueue.enqueue(event, {
       actor: this.options.actor,
-      applyFileChange: async (change, phase) => {
+      signal: this.abortController.signal,
+      applyFileChange: async (change, phase, applyOptions) => {
         try {
+          if (this.abortController.signal.aborted) return false;
           if (phase === 'live') this.recordLiveFileChangeBudget(change);
-          const shouldEmit = await this.options.applyFileChange?.(change, phase);
+          if (this.abortController.signal.aborted) return false;
+          const shouldEmit = await this.options.applyFileChange?.(change, phase, applyOptions);
+          if (this.abortController.signal.aborted) return false;
           this.appliedFileChangePaths.add(runtimeFileChangePath(change));
           return shouldEmit;
         } finally {
@@ -1155,6 +1185,9 @@ export class RuntimeProjectLiveIoController {
 
   close(): void {
     this.closed = true;
+    if (this.abortInputSignal && this.abortInputListener) {
+      this.abortInputSignal.removeEventListener('abort', this.abortInputListener);
+    }
   }
 
   private applyEventBudgets(event: RuntimeCommandEvent): RuntimeCommandEvent | null {

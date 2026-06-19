@@ -221,11 +221,16 @@ async function snapshotDirectories(root: string): Promise<Set<string>> {
   return directories;
 }
 
+function explicitlySnapshottedProjectDirectories(project: JavaProjectSnapshot): Set<string> {
+  return new Set((project.directories ?? []).map((directory) => assertSafeProjectPath(directory)));
+}
+
 async function collectChangedFiles(
   root: string,
   absolutePath: string,
   baselineFiles: Map<string, Buffer>,
   baselineDirectories: Set<string>,
+  deletableDirectories: Set<string>,
   files: RuntimeFileChange[]
 ): Promise<void> {
   const info = await lstat(absolutePath);
@@ -235,12 +240,13 @@ async function collectChangedFiles(
     if (relativePath && !relativePath.startsWith('..')) {
       if (baselineDirectories.has(relativePath)) {
         baselineDirectories.delete(relativePath);
+        deletableDirectories.delete(relativePath);
       } else {
         files.push({ path: relativePath, directory: true });
       }
     }
     for (const entry of await readdir(absolutePath)) {
-      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, baselineDirectories, files);
+      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, baselineDirectories, deletableDirectories, files);
     }
     return;
   }
@@ -265,14 +271,15 @@ async function collectChangedFiles(
 async function changedProjectFiles(
   root: string,
   baselineFiles: Map<string, Buffer>,
-  baselineDirectories: Set<string>
+  baselineDirectories: Set<string>,
+  deletableDirectories: Set<string>
 ): Promise<RuntimeFileChange[]> {
   const files: RuntimeFileChange[] = [];
-  await collectChangedFiles(root, root, baselineFiles, baselineDirectories, files);
+  await collectChangedFiles(root, root, baselineFiles, baselineDirectories, deletableDirectories, files);
   for (const path of baselineFiles.keys()) {
     files.push({ path, deleted: true });
   }
-  for (const path of baselineDirectories) {
+  for (const path of deletableDirectories) {
     files.push({ path, directory: true, deleted: true });
   }
   files.sort((left, right) => left.path.localeCompare(right.path));
@@ -655,6 +662,7 @@ export function createNativeJavaProjectRunner(
       if (request.source === 'run' && jarPath) {
         const baseline = await snapshotFileBytes(root);
         const baselineDirectories = await snapshotDirectories(root);
+        const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
         const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-jar', jarPath, ...request.args], {
           cwd,
           env: mapJavaEnv(root, cwd, request.env, request.project),
@@ -664,7 +672,7 @@ export function createNativeJavaProjectRunner(
           timeoutLabel: 'java',
           onEvent: request.onEvent,
         });
-        const files = await changedProjectFiles(root, baseline, baselineDirectories);
+        const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...run, files };
       }
@@ -673,6 +681,7 @@ export function createNativeJavaProjectRunner(
       if (request.source === 'run' && effectiveJavaClasspath(request)) {
         const baseline = await snapshotFileBytes(root);
         const baselineDirectories = await snapshotDirectories(root);
+        const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
         const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
           cwd,
           env: mapJavaEnv(root, cwd, request.env, request.project),
@@ -682,13 +691,16 @@ export function createNativeJavaProjectRunner(
           timeoutLabel: 'java',
           onEvent: request.onEvent,
         });
-        const files = await changedProjectFiles(root, baseline, baselineDirectories);
+        const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...run, files };
       }
 
       const compileBaseline = request.source === 'compile' ? await snapshotFileBytes(root) : null;
       const compileBaselineDirectories = request.source === 'compile' ? await snapshotDirectories(root) : null;
+      const compileDeletableDirectories = request.source === 'compile'
+        ? explicitlySnapshottedProjectDirectories(request.project)
+        : null;
       const compile = await runProcess(javacCommand, javacArgsForRequest(request, root, cwd), {
         cwd,
           env: mapJavaEnv(root, cwd, request.env, request.project),
@@ -699,7 +711,12 @@ export function createNativeJavaProjectRunner(
         });
       if (request.source === 'compile') {
         if (compile.exitCode !== 0) return compile;
-        const files = await changedProjectFiles(root, compileBaseline ?? new Map(), compileBaselineDirectories ?? new Set());
+        const files = await changedProjectFiles(
+          root,
+          compileBaseline ?? new Map(),
+          compileBaselineDirectories ?? new Set(),
+          compileDeletableDirectories ?? new Set()
+        );
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...compile, files };
       }
@@ -709,6 +726,7 @@ export function createNativeJavaProjectRunner(
 
       const baseline = await snapshotFileBytes(root);
       const baselineDirectories = await snapshotDirectories(root);
+      const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
       const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
         cwd,
         env: mapJavaEnv(root, cwd, request.env, request.project),
@@ -718,7 +736,7 @@ export function createNativeJavaProjectRunner(
         timeoutLabel: 'java',
         onEvent: request.onEvent,
       });
-      const files = await changedProjectFiles(root, baseline, baselineDirectories);
+      const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
       emitRuntimeCommandFileChanges(request.onEvent, files);
       return {
         stdout: `${compile.stdout}${run.stdout}`,

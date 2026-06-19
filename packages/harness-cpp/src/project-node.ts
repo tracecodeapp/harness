@@ -112,11 +112,16 @@ function originalProjectDirectories(project: CppProjectSnapshot): Set<string> {
   return directories;
 }
 
+function explicitlySnapshottedProjectDirectories(project: CppProjectSnapshot): Set<string> {
+  return new Set((project.directories ?? []).map((directory) => assertSafeProjectPath(directory)));
+}
+
 async function collectChangedFiles(
   root: string,
   absolutePath: string,
   originalFiles: Map<string, Buffer>,
   originalDirectories: Set<string>,
+  deletableDirectories: Set<string>,
   files: RuntimeFileChange[]
 ): Promise<void> {
   const info = await lstat(absolutePath);
@@ -126,12 +131,13 @@ async function collectChangedFiles(
     if (relativePath && !relativePath.startsWith('..')) {
       if (originalDirectories.has(relativePath)) {
         originalDirectories.delete(relativePath);
+        deletableDirectories.delete(relativePath);
       } else {
         files.push({ path: relativePath, directory: true });
       }
     }
     for (const entry of await readdir(absolutePath)) {
-      await collectChangedFiles(root, join(absolutePath, entry), originalFiles, originalDirectories, files);
+      await collectChangedFiles(root, join(absolutePath, entry), originalFiles, originalDirectories, deletableDirectories, files);
     }
     return;
   }
@@ -157,11 +163,12 @@ async function changedProjectFiles(root: string, project: CppProjectSnapshot): P
   const files: RuntimeFileChange[] = [];
   const originalFiles = originalProjectFiles(project);
   const originalDirectories = originalProjectDirectories(project);
-  await collectChangedFiles(root, root, originalFiles, originalDirectories, files);
+  const deletableDirectories = explicitlySnapshottedProjectDirectories(project);
+  await collectChangedFiles(root, root, originalFiles, originalDirectories, deletableDirectories, files);
   for (const path of originalFiles.keys()) {
     files.push({ path, deleted: true });
   }
-  for (const path of originalDirectories) {
+  for (const path of deletableDirectories) {
     files.push({ path, directory: true, deleted: true });
   }
   files.sort((left, right) => left.path.localeCompare(right.path));

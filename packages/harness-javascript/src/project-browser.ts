@@ -16,6 +16,7 @@ import type {
   RuntimeKernelInfo,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
 import {
@@ -108,7 +109,11 @@ export type BrowserJavaScriptProjectCommandRunner = JavaScriptProjectCommandRunn
 export type BrowserJavaScriptProjectWorkerIsolation = 'shared' | 'per-command';
 
 export interface BrowserJavaScriptProjectRunnerOptions {
-  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
+  applyFileChange?: (
+    change: RuntimeFileChange,
+    phase: RuntimeFileMutationPhase,
+    options?: RuntimeProjectFileChangeApplyOptions
+  ) => Promise<boolean | void>;
   allowDynamicEval?: boolean;
   allowMainThreadExecution?: boolean;
   hardened?: boolean;
@@ -214,6 +219,7 @@ export function createBrowserTypeScriptProjectRunner(
 
 interface BrowserJavaScriptProjectExecutionState {
   cancelled: boolean;
+  abortController: AbortController;
 }
 
 type ModuleRecord = {
@@ -243,11 +249,16 @@ const AsyncFunction = Object.getPrototypeOf(async function noop() {
 }).constructor as typeof Function;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
-const streamInternalCloseListeners = Symbol('tracecode.streamInternalCloseListeners');
+const streamInternalCloseListeners = new WeakMap<object, Set<() => void>>();
 
-type InternalCloseAwareStream = {
-  [streamInternalCloseListeners]?: Set<() => void>;
-};
+function setStreamInternalCloseListeners(stream: object, listeners: Set<() => void>): void {
+  streamInternalCloseListeners.set(stream, listeners);
+}
+
+function addStreamInternalCloseListener(stream: unknown, listener: () => void): void {
+  if ((typeof stream !== 'object' && typeof stream !== 'function') || stream === null) return;
+  streamInternalCloseListeners.get(stream)?.add(listener);
+}
 
 function moduleDefault(value: unknown): unknown {
   return (value as Record<string, unknown>).default;
@@ -1374,7 +1385,7 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
         await new Promise((resolve) => hostSetTimeout(resolve, 0));
       }
     }
-    await pendingTimerWork;
+    if (!executionState.cancelled) await pendingTimerWork;
     if (timerError !== undefined) throw timerError;
   };
   const clearAll = (): void => {
@@ -3632,47 +3643,68 @@ export function createBrowserJavaScriptProjectRunner(
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
     let forcedResult: RuntimeCommandResult | undefined;
-    const executionState: BrowserJavaScriptProjectExecutionState = { cancelled: false };
-    const execution = runBrowserJavaScriptProjectRequest(request, options, executionState).finally(() => {
-      if (timeoutId !== undefined) hostClearTimeout(timeoutId);
-      if (abortListener) request.signal?.removeEventListener('abort', abortListener);
+    let resolveForcedResult!: (result: RuntimeCommandResult) => void;
+    const forcedResultPromise = new Promise<RuntimeCommandResult>((resolve) => {
+      resolveForcedResult = resolve;
     });
-    timeoutId = hostSetTimeout(() => {
+    const forceResult = (result: RuntimeCommandResult): void => {
       if (forcedResult) return;
       executionState.cancelled = true;
+      executionState.abortController.abort();
+      forcedResult = result;
+      resolveForcedResult(result);
+    };
+    const cleanup = (): void => {
+      if (timeoutId !== undefined) {
+        hostClearTimeout(timeoutId);
+        timeoutId = undefined;
+      }
+      if (abortListener) {
+        request.signal?.removeEventListener('abort', abortListener);
+        abortListener = undefined;
+      }
+    };
+    const executionState: BrowserJavaScriptProjectExecutionState = {
+      cancelled: false,
+      abortController: new AbortController(),
+    };
+    const execution = runBrowserJavaScriptProjectRequest(request, options, executionState).finally(cleanup);
+    void execution.catch(() => undefined);
+    timeoutId = hostSetTimeout(() => {
+      if (forcedResult) return;
       const io = createRuntimeProjectIoBridge(request.onEvent);
       const timeoutStderr = `node: execution timed out after ${timeoutMs}ms\n`;
       io.output('stderr', timeoutStderr);
       io.status('process-exit', 'Browser Node timed out', { command: 'node', exitCode: 124, timeoutMs });
-      forcedResult = {
+      forceResult({
         stdout: '',
         stderr: timeoutStderr,
         exitCode: 124,
-      };
+      });
     }, timeoutMs);
     if (request.signal) {
       abortListener = () => {
         if (forcedResult) return;
-        executionState.cancelled = true;
         const signal = runtimeAbortSignalName(request.signal);
         const exitCode = runtimeSignalExitCode(signal);
         const io = createRuntimeProjectIoBridge(request.onEvent);
         io.status('process-exit', 'Browser Node interrupted', { command: 'node', exitCode, signal });
-        forcedResult = {
+        forceResult({
           stdout: '',
           stderr: 'Execution aborted\n',
           exitCode,
-        };
+        });
       };
       request.signal.addEventListener('abort', abortListener, { once: true });
       if (request.signal.aborted) abortListener();
     }
     try {
-      const result = await execution;
-      return forcedResult ?? result;
+      return await Promise.race([execution, forcedResultPromise]);
     } catch (error) {
       if (forcedResult) return forcedResult;
       throw error;
+    } finally {
+      cleanup();
     }
   };
 }
@@ -3697,14 +3729,14 @@ export async function runBrowserJavaScriptProjectRequest(
     const stdout: string[] = [];
     const stderr: string[] = [];
     const liveIo = new RuntimeProjectLiveIoController({
-      applyFileChange: options.applyFileChange ? async (change, phase) => {
+      applyFileChange: options.applyFileChange ? async (change, phase, applyOptions) => {
         if (executionState.cancelled) return false;
-        return options.applyFileChange?.(change, phase);
+        return options.applyFileChange?.(change, phase, applyOptions);
       } : undefined,
       onEvent: (event) => {
         if (!executionState.cancelled) request.onEvent?.(event);
       },
-      signal: request.signal,
+      signal: executionState.abortController.signal,
     });
     const emitRuntimeEvent = (event: RuntimeCommandEvent): void => {
       liveIo.handleRuntimeEvent(event);
@@ -4515,7 +4547,6 @@ export async function runBrowserJavaScriptProjectRequest(
         get readableFlowing() {
           return readableFlowing;
         },
-        [streamInternalCloseListeners]: internalCloseListeners,
         setEncoding: (nextEncoding: string) => {
           streamEncoding = nextEncoding;
           return stream;
@@ -4629,6 +4660,7 @@ export async function runBrowserJavaScriptProjectRequest(
           return stream;
         },
       };
+      setStreamInternalCloseListeners(stream, internalCloseListeners);
       return stream;
     };
     const createWritableStream = (
@@ -4757,7 +4789,6 @@ export async function runBrowserJavaScriptProjectRequest(
         get writableCorked() {
           return writableCorked;
         },
-        [streamInternalCloseListeners]: internalCloseListeners,
         on: (event: string, listener: (...args: unknown[]) => void) => {
           events.on(event, listener);
           return stream;
@@ -4841,6 +4872,7 @@ export async function runBrowserJavaScriptProjectRequest(
           return stream;
         },
       };
+      setStreamInternalCloseListeners(stream, internalCloseListeners);
       return stream;
     };
     const assertStreamRangeInteger = (name: 'start' | 'end', value: unknown): number | undefined => {
@@ -6710,7 +6742,7 @@ export async function runBrowserJavaScriptProjectRequest(
         };
         const trackAutoCloseStream = (stream: unknown, autoClose: boolean): void => {
           if (!autoClose) return;
-          (stream as InternalCloseAwareStream)[streamInternalCloseListeners]?.add(() => {
+          addStreamInternalCloseListener(stream, () => {
             closed = true;
           });
         };

@@ -119,6 +119,71 @@ function createRuntimeProjectIoBridge(onEvent) {
 function runtimeFileChangePath(change) {
   return change.path;
 }
+function normalizeRuntimeFileChangePath(path) {
+  if (typeof path !== "string") {
+    throw Object.assign(new Error("EINVAL: TraceKernel file-change path must be a string"), { code: "EINVAL" });
+  }
+  if (path.includes("\0")) {
+    throw Object.assign(new Error("EINVAL: TraceKernel file-change path must not contain NUL bytes"), { code: "EINVAL" });
+  }
+  const normalized = path.replace(/\\/g, "/");
+  if (normalized.trim().length === 0) {
+    throw Object.assign(new Error("EINVAL: TraceKernel file-change path must not be empty"), { code: "EINVAL" });
+  }
+  if (normalized.startsWith("/")) {
+    throw Object.assign(new Error(`EACCES: TraceKernel file-change path must be relative: ${path}`), { code: "EACCES" });
+  }
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    throw Object.assign(new Error(`EACCES: TraceKernel file-change path must not include a drive prefix: ${path}`), { code: "EACCES" });
+  }
+  const parts = [];
+  for (const part of normalized.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      throw Object.assign(new Error(`EACCES: TraceKernel file-change path must not escape the workspace: ${path}`), { code: "EACCES" });
+    }
+    parts.push(part);
+  }
+  if (parts.length === 0) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change path must point to an entry: ${path}`), { code: "EINVAL" });
+  }
+  return parts.join("/");
+}
+function normalizeRuntimeFileChange(change) {
+  if (!change || typeof change !== "object") {
+    throw Object.assign(new Error("EINVAL: TraceKernel file-change must be an object"), { code: "EINVAL" });
+  }
+  const path = normalizeRuntimeFileChangePath(change.path);
+  const directory = change.directory;
+  const deleted = change.deleted;
+  const contents = change.contents;
+  const encoding = change.encoding;
+  if (directory !== void 0 && directory !== true) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change directory flag must be true: ${path}`), { code: "EINVAL" });
+  }
+  if (deleted !== void 0 && deleted !== true) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change deleted flag must be true: ${path}`), { code: "EINVAL" });
+  }
+  if (encoding !== void 0 && encoding !== "base64") {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change encoding is unsupported: ${path}`), { code: "EINVAL" });
+  }
+  if (directory === true) {
+    if (contents !== void 0 || encoding !== void 0) {
+      throw Object.assign(new Error(`EINVAL: TraceKernel directory file-change must not include contents: ${path}`), { code: "EINVAL" });
+    }
+    return { path, directory: true, ...deleted === true ? { deleted: true } : {} };
+  }
+  if (deleted === true) {
+    if (contents !== void 0 || encoding !== void 0) {
+      throw Object.assign(new Error(`EINVAL: TraceKernel delete file-change must not include contents: ${path}`), { code: "EINVAL" });
+    }
+    return { path, deleted: true };
+  }
+  if (typeof contents !== "string") {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change contents must be a string: ${path}`), { code: "EINVAL" });
+  }
+  return { path, contents, ...encoding === "base64" ? { encoding } : {} };
+}
 function filterRuntimeCommandResultFiles(result, shouldFilter) {
   if (!result.files?.length) return result;
   const files = result.files.filter((change) => !shouldFilter(change));
@@ -184,15 +249,20 @@ var RuntimeProjectEventQueue = class {
   queue = Promise.resolve();
   enqueue(event, options) {
     this.queue = this.queue.then(async () => {
+      if (options.signal?.aborted) return;
       if (event.type !== "file-change") {
         options.emit(event);
         return;
       }
+      const change = normalizeRuntimeFileChange(event.change);
       const phase = event.phase ?? "live";
-      const shouldEmit = await options.applyFileChange(event.change, phase);
+      if (options.signal?.aborted) return;
+      const shouldEmit = await options.applyFileChange(change, phase, { signal: options.signal });
+      if (options.signal?.aborted) return;
       if (shouldEmit === false) return;
       options.emit({
         ...event,
+        change,
         phase,
         actor: event.actor ?? options.actor
       });
@@ -208,9 +278,19 @@ var RuntimeProjectLiveIoController = class {
   constructor(options) {
     this.options = options;
     this.eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
+    this.abortInputSignal = options.signal;
+    if (options.signal?.aborted) {
+      this.abortController.abort();
+    } else if (options.signal) {
+      this.abortInputListener = () => this.abortController.abort();
+      options.signal.addEventListener("abort", this.abortInputListener, { once: true });
+    }
   }
   outputTracker = new RuntimeProjectOutputTracker();
   eventQueue;
+  abortController = new AbortController();
+  abortInputSignal;
+  abortInputListener;
   appliedFileChangePaths = /* @__PURE__ */ new Set();
   outputBytes = { stdout: 0, stderr: 0 };
   truncatedOutputStreams = /* @__PURE__ */ new Set();
@@ -225,7 +305,10 @@ var RuntimeProjectLiveIoController = class {
     this.options.onEvent?.(budgetedEvent);
   }
   handleRuntimeEvent(event) {
-    if (this.closed || this.options.signal?.aborted) return;
+    if (this.closed || this.abortController.signal.aborted) return;
+    if (event.type === "file-change") {
+      event = { ...event, change: normalizeRuntimeFileChange(event.change) };
+    }
     if (event.type === "file-change" && !this.eventQueue) this.recordLiveFileChangeBudget(event.change);
     if (event.type !== "file-change" && this.pendingFileChanges === 0) {
       this.emit(event);
@@ -238,10 +321,14 @@ var RuntimeProjectLiveIoController = class {
     if (event.type === "file-change") this.pendingFileChanges += 1;
     this.eventQueue.enqueue(event, {
       actor: this.options.actor,
-      applyFileChange: async (change, phase) => {
+      signal: this.abortController.signal,
+      applyFileChange: async (change, phase, applyOptions) => {
         try {
+          if (this.abortController.signal.aborted) return false;
           if (phase === "live") this.recordLiveFileChangeBudget(change);
-          const shouldEmit = await this.options.applyFileChange?.(change, phase);
+          if (this.abortController.signal.aborted) return false;
+          const shouldEmit = await this.options.applyFileChange?.(change, phase, applyOptions);
+          if (this.abortController.signal.aborted) return false;
           this.appliedFileChangePaths.add(runtimeFileChangePath(change));
           return shouldEmit;
         } finally {
@@ -253,6 +340,9 @@ var RuntimeProjectLiveIoController = class {
   }
   close() {
     this.closed = true;
+    if (this.abortInputSignal && this.abortInputListener) {
+      this.abortInputSignal.removeEventListener("abort", this.abortInputListener);
+    }
   }
   applyEventBudgets(event) {
     if (event.type !== "output") return event;
@@ -291,9 +381,11 @@ var RuntimeProjectLiveIoController = class {
   }
   filterAppliedResultFiles(result) {
     if (this.appliedFileChangePaths.size === 0) return result;
+    const appliedFileChangePaths = new Set(this.appliedFileChangePaths);
+    this.appliedFileChangePaths.clear();
     return filterRuntimeCommandResultFiles(
       result,
-      (change) => this.appliedFileChangePaths.has(runtimeFileChangePath(change))
+      (change) => appliedFileChangePaths.has(runtimeFileChangePath(change))
     );
   }
   emitMissingFinalOutput(result, output) {
@@ -302,331 +394,333 @@ var RuntimeProjectLiveIoController = class {
 };
 
 // packages/harness-core/src/generated/runtime-language-info-data.ts
-var LANGUAGE_RUNTIME_INFOS = Object.freeze({
-  "python": {
-    "language": "python",
-    "displayName": "Python",
-    "versionLabel": "Python 3.13.2 (Pyodide 0.29.0)",
-    "description": "Python 3.13.2 (Pyodide 0.29.0).\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nsortedcontainers 2.4.0 is available for TreeMap, ordered-set, and sorted-list style workflows.",
-    "runtime": {
-      "name": "Pyodide",
-      "version": "0.29.0",
-      "detail": "CPython 3.13.2 compiled to WebAssembly."
+var LANGUAGE_RUNTIME_INFOS = Object.freeze(
+  Object.assign(/* @__PURE__ */ Object.create(null), {
+    "python": {
+      "language": "python",
+      "displayName": "Python",
+      "versionLabel": "Python 3.13.2 (Pyodide 0.29.0)",
+      "description": "Python 3.13.2 (Pyodide 0.29.0).\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nsortedcontainers 2.4.0 is available for TreeMap, ordered-set, and sorted-list style workflows.",
+      "runtime": {
+        "name": "Pyodide",
+        "version": "0.29.0",
+        "detail": "CPython 3.13.2 compiled to WebAssembly."
+      },
+      "defaultImports": [
+        "array",
+        "bisect",
+        "collections",
+        "functools",
+        "heapq",
+        "itertools",
+        "operator",
+        "re",
+        "string",
+        "typing"
+      ],
+      "libraries": [
+        {
+          "name": "sortedcontainers",
+          "version": "2.4.0",
+          "importName": "sortedcontainers",
+          "detail": "SortedDict, SortedList, and SortedSet are loaded for tree-map/tree-set style use cases."
+        }
+      ]
     },
-    "defaultImports": [
-      "array",
-      "bisect",
-      "collections",
-      "functools",
-      "heapq",
-      "itertools",
-      "operator",
-      "re",
-      "string",
-      "typing"
-    ],
-    "libraries": [
-      {
-        "name": "sortedcontainers",
-        "version": "2.4.0",
-        "importName": "sortedcontainers",
-        "detail": "SortedDict, SortedList, and SortedSet are loaded for tree-map/tree-set style use cases."
-      }
-    ]
-  },
-  "javascript": {
-    "language": "javascript",
-    "displayName": "JavaScript",
-    "versionLabel": "JavaScript (ECMAScript 2023)",
-    "runtime": {
-      "name": "Browser Worker JavaScript runtime",
-      "detail": "Runs in the host browser worker; Node.js is not required for browser execution."
+    "javascript": {
+      "language": "javascript",
+      "displayName": "JavaScript",
+      "versionLabel": "JavaScript (ECMAScript 2023)",
+      "runtime": {
+        "name": "Browser Worker JavaScript runtime",
+        "detail": "Runs in the host browser worker; Node.js is not required for browser execution."
+      },
+      "libraries": [
+        {
+          "name": "lodash",
+          "version": "4.17.21",
+          "importName": "lodash",
+          "globalName": "_"
+        },
+        {
+          "name": "@datastructures-js/binary-search-tree",
+          "version": "5.4.0",
+          "importName": "@datastructures-js/binary-search-tree"
+        },
+        {
+          "name": "@datastructures-js/deque",
+          "version": "1.0.8",
+          "importName": "@datastructures-js/deque"
+        },
+        {
+          "name": "@datastructures-js/graph",
+          "version": "5.3.1",
+          "importName": "@datastructures-js/graph"
+        },
+        {
+          "name": "@datastructures-js/heap",
+          "version": "4.3.7",
+          "importName": "@datastructures-js/heap"
+        },
+        {
+          "name": "@datastructures-js/linked-list",
+          "version": "6.1.4",
+          "importName": "@datastructures-js/linked-list"
+        },
+        {
+          "name": "@datastructures-js/priority-queue",
+          "version": "6.3.5",
+          "importName": "@datastructures-js/priority-queue"
+        },
+        {
+          "name": "@datastructures-js/queue",
+          "version": "4.3.0",
+          "importName": "@datastructures-js/queue"
+        },
+        {
+          "name": "@datastructures-js/set",
+          "version": "4.2.2",
+          "importName": "@datastructures-js/set"
+        },
+        {
+          "name": "@datastructures-js/stack",
+          "version": "3.1.6",
+          "importName": "@datastructures-js/stack"
+        },
+        {
+          "name": "@datastructures-js/trie",
+          "version": "4.2.3",
+          "importName": "@datastructures-js/trie"
+        }
+      ],
+      "standard": "ECMAScript 2023-compatible syntax in the browser worker lane.",
+      "description": 'JavaScript runs in an isolated browser Web Worker with ECMAScript 2023-compatible syntax.\n\nLodash 4.17.21 is available as both lodash and _.\n\nThe @datastructures-js packages are bundled for common algorithm data structures. Queue, Stack, Deque, Heap, PriorityQueue, MinPriorityQueue, and MaxPriorityQueue are available globally.\n\nBundled @datastructures-js versions:\n\n"@datastructures-js/binary-search-tree": "5.4.0"\n"@datastructures-js/deque": "1.0.8"\n"@datastructures-js/graph": "5.3.1"\n"@datastructures-js/heap": "4.3.7"\n"@datastructures-js/linked-list": "6.1.4"\n"@datastructures-js/priority-queue": "6.3.5"\n"@datastructures-js/queue": "4.3.0"\n"@datastructures-js/set": "4.2.2"\n"@datastructures-js/stack": "3.1.6"\n"@datastructures-js/trie": "4.2.3"\n\nBinary Search Tree, Trie, and Graph are bundled too, but are not exposed globally because those names can collide with problem definitions. Import or require the matching package when you need one.'
     },
-    "libraries": [
-      {
-        "name": "lodash",
-        "version": "4.17.21",
-        "importName": "lodash",
-        "globalName": "_"
+    "typescript": {
+      "language": "typescript",
+      "displayName": "TypeScript",
+      "versionLabel": "TypeScript 5.9.3",
+      "description": 'TypeScript 5.9.3 is compiled in the browser and then executed on the JavaScript worker runtime.\n\nCompiler options: --target ES2020 --module None --strict false --esModuleInterop\n\nLodash 4.17.21 is available as both lodash and _.\n\nThe @datastructures-js packages are bundled for common algorithm data structures. Queue, Stack, Deque, Heap, PriorityQueue, MinPriorityQueue, and MaxPriorityQueue are available globally.\n\nBundled @datastructures-js versions:\n\n"@datastructures-js/binary-search-tree": "5.4.0"\n"@datastructures-js/deque": "1.0.8"\n"@datastructures-js/graph": "5.3.1"\n"@datastructures-js/heap": "4.3.7"\n"@datastructures-js/linked-list": "6.1.4"\n"@datastructures-js/priority-queue": "6.3.5"\n"@datastructures-js/queue": "4.3.0"\n"@datastructures-js/set": "4.2.2"\n"@datastructures-js/stack": "3.1.6"\n"@datastructures-js/trie": "4.2.3"\n\nBinary Search Tree, Trie, and Graph are bundled too, but are not exposed globally because those names can collide with problem definitions. Import or require the matching package when you need one.\n\nThe compiled output runs on the same browser worker execution lane as JavaScript submissions.',
+      "runtime": {
+        "name": "Browser Worker JavaScript runtime",
+        "detail": "TypeScript is compiled before execution and runs on the JavaScript worker lane."
       },
-      {
-        "name": "@datastructures-js/binary-search-tree",
-        "version": "5.4.0",
-        "importName": "@datastructures-js/binary-search-tree"
+      "compiler": {
+        "name": "TypeScript",
+        "version": "5.9.3"
       },
-      {
-        "name": "@datastructures-js/deque",
-        "version": "1.0.8",
-        "importName": "@datastructures-js/deque"
-      },
-      {
-        "name": "@datastructures-js/graph",
-        "version": "5.3.1",
-        "importName": "@datastructures-js/graph"
-      },
-      {
-        "name": "@datastructures-js/heap",
-        "version": "4.3.7",
-        "importName": "@datastructures-js/heap"
-      },
-      {
-        "name": "@datastructures-js/linked-list",
-        "version": "6.1.4",
-        "importName": "@datastructures-js/linked-list"
-      },
-      {
-        "name": "@datastructures-js/priority-queue",
-        "version": "6.3.5",
-        "importName": "@datastructures-js/priority-queue"
-      },
-      {
-        "name": "@datastructures-js/queue",
-        "version": "4.3.0",
-        "importName": "@datastructures-js/queue"
-      },
-      {
-        "name": "@datastructures-js/set",
-        "version": "4.2.2",
-        "importName": "@datastructures-js/set"
-      },
-      {
-        "name": "@datastructures-js/stack",
-        "version": "3.1.6",
-        "importName": "@datastructures-js/stack"
-      },
-      {
-        "name": "@datastructures-js/trie",
-        "version": "4.2.3",
-        "importName": "@datastructures-js/trie"
-      }
-    ],
-    "standard": "ECMAScript 2023-compatible syntax in the browser worker lane.",
-    "description": 'JavaScript runs in an isolated browser Web Worker with ECMAScript 2023-compatible syntax.\n\nLodash 4.17.21 is available as both lodash and _.\n\nThe @datastructures-js packages are bundled for common algorithm data structures. Queue, Stack, Deque, Heap, PriorityQueue, MinPriorityQueue, and MaxPriorityQueue are available globally.\n\nBundled @datastructures-js versions:\n\n"@datastructures-js/binary-search-tree": "5.4.0"\n"@datastructures-js/deque": "1.0.8"\n"@datastructures-js/graph": "5.3.1"\n"@datastructures-js/heap": "4.3.7"\n"@datastructures-js/linked-list": "6.1.4"\n"@datastructures-js/priority-queue": "6.3.5"\n"@datastructures-js/queue": "4.3.0"\n"@datastructures-js/set": "4.2.2"\n"@datastructures-js/stack": "3.1.6"\n"@datastructures-js/trie": "4.2.3"\n\nBinary Search Tree, Trie, and Graph are bundled too, but are not exposed globally because those names can collide with problem definitions. Import or require the matching package when you need one.'
-  },
-  "typescript": {
-    "language": "typescript",
-    "displayName": "TypeScript",
-    "versionLabel": "TypeScript 5.9.3",
-    "description": 'TypeScript 5.9.3 is compiled in the browser and then executed on the JavaScript worker runtime.\n\nCompiler options: --target ES2020 --module None --strict false --esModuleInterop\n\nLodash 4.17.21 is available as both lodash and _.\n\nThe @datastructures-js packages are bundled for common algorithm data structures. Queue, Stack, Deque, Heap, PriorityQueue, MinPriorityQueue, and MaxPriorityQueue are available globally.\n\nBundled @datastructures-js versions:\n\n"@datastructures-js/binary-search-tree": "5.4.0"\n"@datastructures-js/deque": "1.0.8"\n"@datastructures-js/graph": "5.3.1"\n"@datastructures-js/heap": "4.3.7"\n"@datastructures-js/linked-list": "6.1.4"\n"@datastructures-js/priority-queue": "6.3.5"\n"@datastructures-js/queue": "4.3.0"\n"@datastructures-js/set": "4.2.2"\n"@datastructures-js/stack": "3.1.6"\n"@datastructures-js/trie": "4.2.3"\n\nBinary Search Tree, Trie, and Graph are bundled too, but are not exposed globally because those names can collide with problem definitions. Import or require the matching package when you need one.\n\nThe compiled output runs on the same browser worker execution lane as JavaScript submissions.',
-    "runtime": {
-      "name": "Browser Worker JavaScript runtime",
-      "detail": "TypeScript is compiled before execution and runs on the JavaScript worker lane."
+      "standard": "Transpiles to JavaScript for the browser worker lane.",
+      "libraries": [
+        {
+          "name": "lodash",
+          "version": "4.17.21",
+          "importName": "lodash",
+          "globalName": "_"
+        },
+        {
+          "name": "@datastructures-js/binary-search-tree",
+          "version": "5.4.0",
+          "importName": "@datastructures-js/binary-search-tree"
+        },
+        {
+          "name": "@datastructures-js/deque",
+          "version": "1.0.8",
+          "importName": "@datastructures-js/deque"
+        },
+        {
+          "name": "@datastructures-js/graph",
+          "version": "5.3.1",
+          "importName": "@datastructures-js/graph"
+        },
+        {
+          "name": "@datastructures-js/heap",
+          "version": "4.3.7",
+          "importName": "@datastructures-js/heap"
+        },
+        {
+          "name": "@datastructures-js/linked-list",
+          "version": "6.1.4",
+          "importName": "@datastructures-js/linked-list"
+        },
+        {
+          "name": "@datastructures-js/priority-queue",
+          "version": "6.3.5",
+          "importName": "@datastructures-js/priority-queue"
+        },
+        {
+          "name": "@datastructures-js/queue",
+          "version": "4.3.0",
+          "importName": "@datastructures-js/queue"
+        },
+        {
+          "name": "@datastructures-js/set",
+          "version": "4.2.2",
+          "importName": "@datastructures-js/set"
+        },
+        {
+          "name": "@datastructures-js/stack",
+          "version": "3.1.6",
+          "importName": "@datastructures-js/stack"
+        },
+        {
+          "name": "@datastructures-js/trie",
+          "version": "4.2.3",
+          "importName": "@datastructures-js/trie"
+        }
+      ]
     },
-    "compiler": {
-      "name": "TypeScript",
-      "version": "5.9.3"
+    "java": {
+      "language": "java",
+      "displayName": "Java",
+      "versionLabel": "Java 17",
+      "description": "Java 17 is compiled with javac 17 and executed in the browser through a same-origin CheerpJ runtime asset.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
+      "runtime": {
+        "name": "CheerpJ browser-local OpenJDK runtime",
+        "version": "17",
+        "detail": "Loaded from a configured same-origin CheerpJ runtime asset."
+      },
+      "compiler": {
+        "name": "javac",
+        "version": "17"
+      },
+      "defaultImports": [
+        "java.util.*",
+        "java.io.*",
+        "java.math.*",
+        "java.util.stream.*",
+        "javafx.util.Pair"
+      ],
+      "libraries": [
+        {
+          "name": "JavaParser",
+          "version": "3.25.10",
+          "detail": "Used internally for Java source rewriting."
+        },
+        {
+          "name": "javafx.util.Pair",
+          "detail": "Small compatibility Pair class bundled with the Java helper jar."
+        }
+      ]
     },
-    "standard": "Transpiles to JavaScript for the browser worker lane.",
-    "libraries": [
-      {
-        "name": "lodash",
-        "version": "4.17.21",
-        "importName": "lodash",
-        "globalName": "_"
+    "csharp": {
+      "language": "csharp",
+      "displayName": "C#",
+      "versionLabel": "C# 14 (.NET 10.0.9)",
+      "description": "C# 14 with .NET 10.0.9 runtime.\n\nCode is compiled with Microsoft.CodeAnalysis.CSharp 5.3.0 and executed by a browser-local .NET WebAssembly runtime.\n\nCommon namespaces are imported automatically: System, System.Collections, System.Collections.Generic, System.IO, System.Linq, System.Numerics, System.Text, System.Text.RegularExpressions.",
+      "runtime": {
+        "name": ".NET WebAssembly runtime",
+        "version": "10.0.9",
+        "detail": "Browser-local .NET runtime targeting net10.0."
       },
-      {
-        "name": "@datastructures-js/binary-search-tree",
-        "version": "5.4.0",
-        "importName": "@datastructures-js/binary-search-tree"
+      "compiler": {
+        "name": "Microsoft.CodeAnalysis.CSharp",
+        "version": "5.3.0"
       },
-      {
-        "name": "@datastructures-js/deque",
-        "version": "1.0.8",
-        "importName": "@datastructures-js/deque"
-      },
-      {
-        "name": "@datastructures-js/graph",
-        "version": "5.3.1",
-        "importName": "@datastructures-js/graph"
-      },
-      {
-        "name": "@datastructures-js/heap",
-        "version": "4.3.7",
-        "importName": "@datastructures-js/heap"
-      },
-      {
-        "name": "@datastructures-js/linked-list",
-        "version": "6.1.4",
-        "importName": "@datastructures-js/linked-list"
-      },
-      {
-        "name": "@datastructures-js/priority-queue",
-        "version": "6.3.5",
-        "importName": "@datastructures-js/priority-queue"
-      },
-      {
-        "name": "@datastructures-js/queue",
-        "version": "4.3.0",
-        "importName": "@datastructures-js/queue"
-      },
-      {
-        "name": "@datastructures-js/set",
-        "version": "4.2.2",
-        "importName": "@datastructures-js/set"
-      },
-      {
-        "name": "@datastructures-js/stack",
-        "version": "3.1.6",
-        "importName": "@datastructures-js/stack"
-      },
-      {
-        "name": "@datastructures-js/trie",
-        "version": "4.2.3",
-        "importName": "@datastructures-js/trie"
-      }
-    ]
-  },
-  "java": {
-    "language": "java",
-    "displayName": "Java",
-    "versionLabel": "Java 17",
-    "description": "Java 17 is compiled with javac 17 and executed in the browser through a same-origin CheerpJ runtime asset.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
-    "runtime": {
-      "name": "CheerpJ browser-local OpenJDK runtime",
-      "version": "17",
-      "detail": "Loaded from a configured same-origin CheerpJ runtime asset."
+      "standard": "C# 14",
+      "defaultImports": [
+        "System",
+        "System.Collections",
+        "System.Collections.Generic",
+        "System.IO",
+        "System.Linq",
+        "System.Numerics",
+        "System.Text",
+        "System.Text.RegularExpressions"
+      ]
     },
-    "compiler": {
-      "name": "javac",
-      "version": "17"
-    },
-    "defaultImports": [
-      "java.util.*",
-      "java.io.*",
-      "java.math.*",
-      "java.util.stream.*",
-      "javafx.util.Pair"
-    ],
-    "libraries": [
-      {
-        "name": "JavaParser",
-        "version": "3.25.10",
-        "detail": "Used internally for Java source rewriting."
+    "cpp": {
+      "language": "cpp",
+      "displayName": "C++",
+      "versionLabel": "C++23 (YoWASP Clang 22)",
+      "description": "C++ is compiled with YoWASP Clang/LLD 22.0.0-git20542-10 using the C++23 standard.\n\nSubmissions compile to WebAssembly and run in a browser-local WASI-style execution lane. The harness currently compiles with -O0 and -fno-exceptions, with a fixed program stack size.\n\nCommon standard library headers are included automatically, including <algorithm>, <array>, <bitset>, <climits>, <cmath>, <cstdint>, <functional>, <limits>, <numeric>, <sstream>, <tuple>, <vector>, <unordered_map>, <unordered_set> and more.",
+      "runtime": {
+        "name": "WASI/WebAssembly execution lane",
+        "detail": "Compiled and executed in a browser-local WASI-style worker lane."
       },
-      {
-        "name": "javafx.util.Pair",
-        "detail": "Small compatibility Pair class bundled with the Java helper jar."
-      }
-    ]
-  },
-  "csharp": {
-    "language": "csharp",
-    "displayName": "C#",
-    "versionLabel": "C# 14 (.NET 10.0.8)",
-    "description": "C# 14 with .NET 10.0.8 runtime.\n\nCode is compiled with Microsoft.CodeAnalysis.CSharp 5.3.0 and executed by a browser-local .NET WebAssembly runtime.\n\nCommon namespaces are imported automatically: System, System.Collections, System.Collections.Generic, System.IO, System.Linq, System.Numerics, System.Text, System.Text.RegularExpressions.",
-    "runtime": {
-      "name": ".NET WebAssembly runtime",
-      "version": "10.0.8",
-      "detail": "Browser-local .NET runtime targeting net10.0."
-    },
-    "compiler": {
-      "name": "Microsoft.CodeAnalysis.CSharp",
-      "version": "5.3.0"
-    },
-    "standard": "C# 14",
-    "defaultImports": [
-      "System",
-      "System.Collections",
-      "System.Collections.Generic",
-      "System.IO",
-      "System.Linq",
-      "System.Numerics",
-      "System.Text",
-      "System.Text.RegularExpressions"
-    ]
-  },
-  "cpp": {
-    "language": "cpp",
-    "displayName": "C++",
-    "versionLabel": "C++23 (YoWASP Clang 22)",
-    "description": "C++ is compiled with YoWASP Clang/LLD 22.0.0-git20542-10 using the C++23 standard.\n\nSubmissions compile to WebAssembly and run in a browser-local WASI-style execution lane. The harness currently compiles with -O0 and -fno-exceptions, with a fixed program stack size.\n\nCommon standard library headers are included automatically, including <algorithm>, <array>, <bitset>, <climits>, <cmath>, <cstdint>, <functional>, <limits>, <numeric>, <sstream>, <tuple>, <vector>, <unordered_map>, <unordered_set> and more.",
-    "runtime": {
-      "name": "WASI/WebAssembly execution lane",
-      "detail": "Compiled and executed in a browser-local WASI-style worker lane."
-    },
-    "compiler": {
-      "name": "YoWASP Clang/LLD",
-      "version": "22.0.0-git20542-10"
-    },
-    "standard": "C++23",
-    "defaultImports": [
-      "<algorithm>",
-      "<array>",
-      "<bitset>",
-      "<climits>",
-      "<cmath>",
-      "<cstdint>",
-      "<functional>",
-      "<limits>",
-      "<numeric>",
-      "<sstream>",
-      "<tuple>",
-      "<vector>",
-      "<unordered_map>",
-      "<unordered_set>",
-      "<map>",
-      "<set>",
-      "<deque>",
-      "<queue>",
-      "<stack>",
-      "<utility>",
-      "<string>",
-      "<span>",
-      "<ranges>",
-      "<concepts>",
-      "<any>",
-      "<bit>",
-      "<cctype>",
-      "<cerrno>",
-      "<cfloat>",
-      "<charconv>",
-      "<chrono>",
-      "<cinttypes>",
-      "<compare>",
-      "<complex>",
-      "<cstddef>",
-      "<cstdio>",
-      "<cstdlib>",
-      "<cstring>",
-      "<exception>",
-      "<expected>",
-      "<forward_list>",
-      "<initializer_list>",
-      "<iomanip>",
-      "<ios>",
-      "<iostream>",
-      "<iterator>",
-      "<list>",
-      "<memory>",
-      "<numbers>",
-      "<optional>",
-      "<random>",
-      "<ratio>",
-      "<regex>",
-      "<stdexcept>",
-      "<string_view>",
-      "<type_traits>",
-      "<typeindex>",
-      "<typeinfo>",
-      "<valarray>",
-      "<variant>",
-      "<version>"
-    ],
-    "libraries": [
-      {
-        "name": "C++ standard library and WASI libc",
-        "detail": "Provided by the YoWASP Clang toolchain bundle."
-      }
-    ]
-  }
-});
+      "compiler": {
+        "name": "YoWASP Clang/LLD",
+        "version": "22.0.0-git20542-10"
+      },
+      "standard": "C++23",
+      "defaultImports": [
+        "<algorithm>",
+        "<array>",
+        "<bitset>",
+        "<climits>",
+        "<cmath>",
+        "<cstdint>",
+        "<functional>",
+        "<limits>",
+        "<numeric>",
+        "<sstream>",
+        "<tuple>",
+        "<vector>",
+        "<unordered_map>",
+        "<unordered_set>",
+        "<map>",
+        "<set>",
+        "<deque>",
+        "<queue>",
+        "<stack>",
+        "<utility>",
+        "<string>",
+        "<span>",
+        "<ranges>",
+        "<concepts>",
+        "<any>",
+        "<bit>",
+        "<cctype>",
+        "<cerrno>",
+        "<cfloat>",
+        "<charconv>",
+        "<chrono>",
+        "<cinttypes>",
+        "<compare>",
+        "<complex>",
+        "<cstddef>",
+        "<cstdio>",
+        "<cstdlib>",
+        "<cstring>",
+        "<exception>",
+        "<expected>",
+        "<forward_list>",
+        "<initializer_list>",
+        "<iomanip>",
+        "<ios>",
+        "<iostream>",
+        "<iterator>",
+        "<list>",
+        "<memory>",
+        "<numbers>",
+        "<optional>",
+        "<random>",
+        "<ratio>",
+        "<regex>",
+        "<stdexcept>",
+        "<string_view>",
+        "<type_traits>",
+        "<typeindex>",
+        "<typeinfo>",
+        "<valarray>",
+        "<variant>",
+        "<version>"
+      ],
+      "libraries": [
+        {
+          "name": "C++ standard library and WASI libc",
+          "detail": "Provided by the YoWASP Clang toolchain bundle."
+        }
+      ]
+    }
+  })
+);
 
 // packages/harness-core/src/runtime-language-info.ts
 var SUPPORTED_LANGUAGE_RUNTIME_INFOS = Object.freeze(
   Object.values(LANGUAGE_RUNTIME_INFOS)
 );
 function getLanguageRuntimeInfo(language) {
-  const info = LANGUAGE_RUNTIME_INFOS[language];
+  const info = Object.prototype.hasOwnProperty.call(LANGUAGE_RUNTIME_INFOS, language) ? LANGUAGE_RUNTIME_INFOS[language] : void 0;
   if (!info) {
     throw new Error(`Runtime info for language "${language}" is not implemented yet.`);
   }
@@ -3679,6 +3773,14 @@ var AsyncFunction = Object.getPrototypeOf(async function noop() {
 }).constructor;
 var textEncoder = new TextEncoder();
 var textDecoder = new TextDecoder();
+var streamInternalCloseListeners = /* @__PURE__ */ new WeakMap();
+function setStreamInternalCloseListeners(stream, listeners) {
+  streamInternalCloseListeners.set(stream, listeners);
+}
+function addStreamInternalCloseListener(stream, listener) {
+  if (typeof stream !== "object" && typeof stream !== "function" || stream === null) return;
+  streamInternalCloseListeners.get(stream)?.add(listener);
+}
 function moduleDefault(value) {
   return value.default;
 }
@@ -4473,6 +4575,9 @@ function createOsApi(workspaceRoot) {
   };
 }
 function createBrowserEventLoopApi(executionState) {
+  const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
+  const hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
+  const hostQueueMicrotask = globalThis.queueMicrotask.bind(globalThis);
   let nextTimerId = 1;
   let pendingTimerWork = Promise.resolve();
   let timerError;
@@ -4491,7 +4596,7 @@ function createBrowserEventLoopApi(executionState) {
   };
   const setTrackedTimeout = (callback, delay, ...args) => {
     const id = nextTimerId++;
-    const handle = globalThis.setTimeout(() => {
+    const handle = hostSetTimeout(() => {
       timers.delete(id);
       if (executionState.cancelled) return;
       runTimerCallback(callback, args);
@@ -4503,7 +4608,7 @@ function createBrowserEventLoopApi(executionState) {
     if (typeof id !== "number") return;
     const timer = timers.get(id);
     if (!timer) return;
-    globalThis.clearTimeout(timer.handle);
+    hostClearTimeout(timer.handle);
     timers.delete(id);
   };
   const setTrackedInterval = (callback, delay, ...args) => {
@@ -4513,28 +4618,28 @@ function createBrowserEventLoopApi(executionState) {
       runTimerCallback(callback, args);
       const timer = timers.get(id);
       if (!timer) return;
-      timer.handle = globalThis.setTimeout(run, Math.max(0, Number(delay) || 0));
+      timer.handle = hostSetTimeout(run, Math.max(0, Number(delay) || 0));
     };
-    const handle = globalThis.setTimeout(run, Math.max(0, Number(delay) || 0));
+    const handle = hostSetTimeout(run, Math.max(0, Number(delay) || 0));
     timers.set(id, { handle, interval: true });
     return id;
   };
   const setTrackedImmediate = (callback, ...args) => setTrackedTimeout(callback, 0, ...args);
   const drain = async () => {
     while (!executionState.cancelled && timers.size > 0) {
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      await new Promise((resolve) => hostSetTimeout(resolve, 0));
       await pendingTimerWork;
       if (timerError !== void 0) throw timerError;
       if ([...timers.values()].some((timer) => timer.interval)) {
-        await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+        await new Promise((resolve) => hostSetTimeout(resolve, 0));
       }
     }
-    await pendingTimerWork;
+    if (!executionState.cancelled) await pendingTimerWork;
     if (timerError !== void 0) throw timerError;
   };
   const clearAll = () => {
     for (const timer of timers.values()) {
-      globalThis.clearTimeout(timer.handle);
+      hostClearTimeout(timer.handle);
     }
     timers.clear();
   };
@@ -4545,7 +4650,7 @@ function createBrowserEventLoopApi(executionState) {
     clearInterval: clearTrackedTimeout,
     setImmediate: setTrackedImmediate,
     clearImmediate: clearTrackedTimeout,
-    queueMicrotask: globalThis.queueMicrotask.bind(globalThis),
+    queueMicrotask: hostQueueMicrotask,
     drain,
     clearAll
   };
@@ -5112,17 +5217,17 @@ function createClientIncomingMessage(response) {
 function headersFromHttpOptions(headers) {
   const result = {};
   if (!headers || typeof headers !== "object") return result;
-  if (typeof headers.forEach === "function") {
-    headers.forEach((value, name) => {
-      result[String(name).toLowerCase()] = String(value);
-    });
-    return result;
-  }
   if (Array.isArray(headers)) {
     for (const entry of headers) {
       if (!Array.isArray(entry) || entry.length < 2) continue;
       result[String(entry[0]).toLowerCase()] = String(entry[1]);
     }
+    return result;
+  }
+  if (typeof headers.forEach === "function") {
+    headers.forEach((value, name) => {
+      result[String(name).toLowerCase()] = String(value);
+    });
     return result;
   }
   for (const [name, value] of Object.entries(headers)) {
@@ -5664,6 +5769,43 @@ function installBrowserHttpGlobalLockdown(httpApi) {
     }
   };
 }
+function installBrowserTimerGlobals(eventLoopApi) {
+  const global = globalThis;
+  const replacements = {
+    setTimeout: eventLoopApi.setTimeout,
+    clearTimeout: eventLoopApi.clearTimeout,
+    setInterval: eventLoopApi.setInterval,
+    clearInterval: eventLoopApi.clearInterval,
+    setImmediate: eventLoopApi.setImmediate,
+    clearImmediate: eventLoopApi.clearImmediate,
+    queueMicrotask: eventLoopApi.queueMicrotask
+  };
+  const previousDescriptors = /* @__PURE__ */ new Map();
+  for (const [name, value] of Object.entries(replacements)) {
+    previousDescriptors.set(name, Object.getOwnPropertyDescriptor(global, name));
+    try {
+      Object.defineProperty(global, name, {
+        configurable: true,
+        enumerable: false,
+        writable: true,
+        value
+      });
+    } catch {
+    }
+  }
+  return () => {
+    for (const [name, descriptor] of previousDescriptors) {
+      try {
+        if (descriptor) {
+          Object.defineProperty(global, name, descriptor);
+        } else {
+          delete global[name];
+        }
+      } catch {
+      }
+    }
+  };
+}
 function dirname(path) {
   const index = path.lastIndexOf("/");
   return index === -1 ? "" : path.slice(0, index);
@@ -5674,6 +5816,18 @@ function workspaceFilename(path, workspaceRoot = "/workspace") {
 }
 function workspaceFileUrl(path, workspaceRoot = "/workspace") {
   return `file://${workspaceFilename(path, workspaceRoot).split("/").map((part) => encodeURIComponent(part)).join("/")}`;
+}
+function relativeWorkspacePath(from, to) {
+  const fromParts = normalizeProjectPath(from).split("/").filter(Boolean);
+  const toParts = normalizeProjectPath(to).split("/").filter(Boolean);
+  let common = 0;
+  while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) {
+    common += 1;
+  }
+  return [
+    ...fromParts.slice(common).map(() => ".."),
+    ...toParts.slice(common)
+  ].join("/") || ".";
 }
 function workspaceDirname(path, workspaceRoot = "/workspace") {
   const normalizedDir = dirname(normalizeProjectPath(path));
@@ -6039,14 +6193,14 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const stdout = [];
   const stderr = [];
   const liveIo = new RuntimeProjectLiveIoController({
-    applyFileChange: options.applyFileChange ? async (change, phase) => {
+    applyFileChange: options.applyFileChange ? async (change, phase, applyOptions) => {
       if (executionState.cancelled) return false;
-      return options.applyFileChange?.(change, phase);
+      return options.applyFileChange?.(change, phase, applyOptions);
     } : void 0,
     onEvent: (event) => {
       if (!executionState.cancelled) request.onEvent?.(event);
     },
-    signal: request.signal
+    signal: executionState.abortController.signal
   });
   const emitRuntimeEvent = (event) => {
     liveIo.handleRuntimeEvent(event);
@@ -6674,10 +6828,13 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     let streamEncoding = encoding;
     let readableFlowing = null;
     const pipeBindings = [];
+    const internalCloseListeners = /* @__PURE__ */ new Set();
     const closeStream = () => {
       if (closed) return;
       closed = true;
       onClose?.();
+      for (const listener of internalCloseListeners) listener();
+      internalCloseListeners.clear();
       events.emit("close");
     };
     const formatChunk = (chunk) => {
@@ -6702,6 +6859,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       started = true;
       queueMicrotask(() => {
         if (closed || destroyed) return;
+        if (readableFlowing === false) {
+          started = false;
+          return;
+        }
         const chunk = readChunk();
         if (chunk !== null && (typeof chunk !== "string" || chunk.length > 0) && (!(chunk instanceof Uint8Array) || chunk.byteLength > 0)) {
           events.emit("data", chunk);
@@ -6843,6 +7004,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         return stream;
       }
     };
+    setStreamInternalCloseListeners(stream, internalCloseListeners);
     return stream;
   };
   const createWritableStream = (path, options2) => {
@@ -6885,6 +7047,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     let writableCorked = 0;
     let writeOffset = typeof options2 === "object" && typeof options2?.start === "number" ? Math.max(0, options2.start) : 0;
     const hasExplicitWriteStart = typeof options2 === "object" && typeof options2?.start === "number";
+    const internalCloseListeners = /* @__PURE__ */ new Set();
     const writeBytes = (value, writeEncoding) => {
       if (writableEnded) {
         throw Object.assign(new Error("ERR_STREAM_WRITE_AFTER_END: write after end"), { code: "ERR_STREAM_WRITE_AFTER_END" });
@@ -6928,6 +7091,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         if (error) events.emit("error", error);
         done?.();
         if (autoClose && optionFd !== null) fsApi.closeSync(optionFd);
+        for (const listener of internalCloseListeners) listener();
+        internalCloseListeners.clear();
         if (emitFinish) {
           writableFinished = true;
           events.emit("finish");
@@ -7044,6 +7209,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         return stream;
       }
     };
+    setStreamInternalCloseListeners(stream, internalCloseListeners);
     return stream;
   };
   const assertStreamRangeInteger = (name, value) => {
@@ -7221,23 +7387,25 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const parseOpenFlags = (flags = "r") => {
     if (typeof flags === "number") {
       const access = flags & 3;
+      const create2 = (flags & 64) !== 0;
       return {
         readable: access === 0 || access === 2,
         writable: access === 1 || access === 2,
         append: (flags & 1024) !== 0,
         truncate: (flags & 512) !== 0,
-        create: (flags & 64) !== 0,
-        exclusive: (flags & 128) !== 0
+        create: create2,
+        exclusive: create2 && (flags & 128) !== 0
       };
     }
     const text = String(flags);
+    const create = text.startsWith("w") || text.startsWith("a");
     return {
       readable: text.includes("+") || text.startsWith("r"),
-      writable: text.includes("+") || text.startsWith("w") || text.startsWith("a"),
+      writable: text.includes("+") || create,
       append: text.startsWith("a"),
       truncate: text.startsWith("w"),
-      create: text.startsWith("w") || text.startsWith("a"),
-      exclusive: text.includes("x")
+      create,
+      exclusive: create && text.includes("x")
     };
   };
   const fileDescriptor = (fd2) => {
@@ -7728,6 +7896,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       let bytesRead = 0;
       let nextPosition = typeof position === "number" ? Math.max(0, position) : position;
       for (const buffer of buffers) {
+        if (buffer.byteLength === 0) continue;
         const count = fsApi.readSync(fd2, buffer, 0, buffer.byteLength, nextPosition);
         bytesRead += count;
         if (typeof nextPosition === "number") nextPosition += count;
@@ -8041,7 +8210,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     },
     appendFileSync: (path, value, options2) => {
       if (typeof path === "number") {
-        writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options2), true);
+        writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options2), fileDescriptor(path).append);
         return;
       }
       const writeTarget = runtimeWriteTarget(path, kernelDevices);
@@ -8482,6 +8651,16 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           return entries[index++] ?? null;
         },
         read: (callback) => {
+          if (typeof callback !== "function") {
+            return new Promise((resolve, reject) => {
+              try {
+                const entry = dir.readSync();
+                queueMicrotask(() => resolve(entry));
+              } catch (error) {
+                queueMicrotask(() => reject(error));
+              }
+            });
+          }
           try {
             const entry = dir.readSync();
             queueMicrotask(() => callback?.(null, entry));
@@ -8493,6 +8672,12 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           closed = true;
         },
         close: (callback) => {
+          if (typeof callback !== "function") {
+            return new Promise((resolve) => {
+              closed = true;
+              queueMicrotask(resolve);
+            });
+          }
           closed = true;
           queueMicrotask(() => callback?.(null));
         },
@@ -8648,7 +8833,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         }
       }
       if (!options2?.recursive || firstCreated === void 0) return void 0;
-      return rawPath.startsWith("/") ? workspaceFilename(firstCreated, workspaceRoot) : firstCreated;
+      if (rawPath.startsWith("/")) return workspaceFilename(firstCreated, workspaceRoot);
+      const relativeFirstCreated = relativeWorkspacePath(cwdPath, firstCreated);
+      return rawPath.startsWith("./") && !relativeFirstCreated.startsWith(".") ? `./${relativeFirstCreated}` : relativeFirstCreated;
     },
     mkdir: (path, optionsOrCallback, callback) => {
       const done = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
@@ -8726,6 +8913,12 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       const assertFileHandleOpen = () => {
         if (closed) throw Object.assign(new Error("file closed"), { code: "EBADF" });
       };
+      const trackAutoCloseStream = (stream, autoClose) => {
+        if (!autoClose) return;
+        addStreamInternalCloseListener(stream, () => {
+          closed = true;
+        });
+      };
       const readFileFromHandle = (encoding) => {
         assertFileHandleOpen();
         const entry = fileDescriptor(fd2);
@@ -8789,22 +8982,14 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           assertFileHandleOpen();
           const streamOptions = typeof options2 === "string" ? { encoding: options2, fd: fd2 } : { ...options2 ?? {}, fd: fd2 };
           const stream = fsApi.createReadStream(null, streamOptions);
-          if (typeof options2 !== "object" || options2?.autoClose !== false) {
-            stream.once("close", () => {
-              closed = true;
-            });
-          }
+          trackAutoCloseStream(stream, typeof options2 !== "object" || options2?.autoClose !== false);
           return stream;
         },
         createWriteStream: (options2) => {
           assertFileHandleOpen();
           const streamOptions = typeof options2 === "string" ? { encoding: options2, fd: fd2 } : { ...options2 ?? {}, fd: fd2 };
           const stream = fsApi.createWriteStream(null, streamOptions);
-          if (typeof options2 !== "object" || options2?.autoClose !== false) {
-            stream.once("close", () => {
-              closed = true;
-            });
-          }
+          trackAutoCloseStream(stream, typeof options2 !== "object" || options2?.autoClose !== false);
           return stream;
         },
         appendFile: async (value, options2) => {
@@ -8962,6 +9147,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const zlibApi = createZlibApi();
   const httpApi = createHttpApi(request.kernelHttp, request.signal);
   const restoreHttpGlobals = installBrowserHttpGlobalLockdown(httpApi);
+  const restoreTimerGlobals = installBrowserTimerGlobals(eventLoopApi);
   const builtins = /* @__PURE__ */ new Map([
     ["fs", fsApi],
     ["node:fs", fsApi],
@@ -9080,17 +9266,6 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         "Buffer",
         "__filename",
         "__dirname",
-        "setTimeout",
-        "clearTimeout",
-        "setInterval",
-        "clearInterval",
-        "setImmediate",
-        "clearImmediate",
-        "queueMicrotask",
-        "fetch",
-        "Headers",
-        "Request",
-        "Response",
         executableCode
       );
       fn.call(
@@ -9103,18 +9278,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         processApi,
         BrowserBuffer,
         workspaceFilename(normalizedPath, workspaceRoot),
-        workspaceDirname(normalizedPath, workspaceRoot),
-        eventLoopApi.setTimeout,
-        eventLoopApi.clearTimeout,
-        eventLoopApi.setInterval,
-        eventLoopApi.clearInterval,
-        eventLoopApi.setImmediate,
-        eventLoopApi.clearImmediate,
-        eventLoopApi.queueMicrotask,
-        httpApi.fetch,
-        httpApi.Headers,
-        httpApi.Request,
-        httpApi.Response
+        workspaceDirname(normalizedPath, workspaceRoot)
       );
     } catch (error) {
       throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
@@ -9158,17 +9322,6 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         "Buffer",
         "__filename",
         "__dirname",
-        "setTimeout",
-        "clearTimeout",
-        "setInterval",
-        "clearInterval",
-        "setImmediate",
-        "clearImmediate",
-        "queueMicrotask",
-        "fetch",
-        "Headers",
-        "Request",
-        "Response",
         executableCode
       );
       await fn.call(
@@ -9181,18 +9334,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         processApi,
         BrowserBuffer,
         workspaceFilename(normalizedPath, workspaceRoot),
-        workspaceDirname(normalizedPath, workspaceRoot),
-        eventLoopApi.setTimeout,
-        eventLoopApi.clearTimeout,
-        eventLoopApi.setInterval,
-        eventLoopApi.clearInterval,
-        eventLoopApi.setImmediate,
-        eventLoopApi.clearImmediate,
-        eventLoopApi.queueMicrotask,
-        httpApi.fetch,
-        httpApi.Headers,
-        httpApi.Request,
-        httpApi.Response
+        workspaceDirname(normalizedPath, workspaceRoot)
       );
     } catch (error) {
       throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
@@ -9231,17 +9373,6 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           "Buffer",
           "__filename",
           "__dirname",
-          "setTimeout",
-          "clearTimeout",
-          "setInterval",
-          "clearInterval",
-          "setImmediate",
-          "clearImmediate",
-          "queueMicrotask",
-          "fetch",
-          "Headers",
-          "Request",
-          "Response",
           transformDynamicImports(evalCode)
         );
         await fn.call(
@@ -9254,18 +9385,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           processApi,
           BrowserBuffer,
           `${workspaceRoot}/[eval]`,
-          cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot,
-          eventLoopApi.setTimeout,
-          eventLoopApi.clearTimeout,
-          eventLoopApi.setInterval,
-          eventLoopApi.clearInterval,
-          eventLoopApi.setImmediate,
-          eventLoopApi.clearImmediate,
-          eventLoopApi.queueMicrotask,
-          httpApi.fetch,
-          httpApi.Headers,
-          httpApi.Request,
-          httpApi.Response
+          cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot
         );
       } catch (error) {
         throw sanitizeBrowserJavaScriptStack(error, `${workspaceRoot}/[eval]`);
@@ -9330,6 +9450,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       exitCode
     };
   } finally {
+    restoreTimerGlobals();
     restoreHttpGlobals();
   }
 }

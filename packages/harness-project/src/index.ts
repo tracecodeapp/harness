@@ -1001,8 +1001,18 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
   };
 }
 
+function isBrowserAsyncLocalStorageSingleFlight(): boolean {
+  return (AsyncLocalStorage as typeof AsyncLocalStorage & { __tracecodeBrowserSingleFlight?: unknown })
+    .__tracecodeBrowserSingleFlight === true;
+}
+
 function normalizeRuntimeSchedulerConfig(config: RuntimeTraceKernelSchedulerConfig | undefined): RuntimeCommandSchedulerOptions {
-  const defaultMaxConcurrentCommands = typeof (globalThis as { process?: unknown }).process === 'object' ? 32 : 1;
+  const forceSingleFlight = isBrowserAsyncLocalStorageSingleFlight();
+  const defaultMaxConcurrentCommands = forceSingleFlight
+    ? 1
+    : typeof (globalThis as { process?: unknown }).process === 'object'
+      ? 32
+      : 1;
   const configuredMaxConcurrentCommands = Number.isFinite(config?.maxConcurrentCommands)
     ? Math.max(1, Math.floor(config?.maxConcurrentCommands ?? 0))
     : defaultMaxConcurrentCommands;
@@ -1010,30 +1020,56 @@ function normalizeRuntimeSchedulerConfig(config: RuntimeTraceKernelSchedulerConf
     ? undefined
     : Math.max(0, Math.floor(config.maxQueuedCommands));
   return {
-    maxConcurrentCommands: configuredMaxConcurrentCommands,
+    maxConcurrentCommands: forceSingleFlight ? 1 : configuredMaxConcurrentCommands,
     ...(maxQueuedCommands !== undefined ? { maxQueuedCommands } : {}),
   };
 }
 
 const TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS = 64;
+const TRACEKERNEL_MAX_PROJECT_COMMAND_STEP_NESTING_DEPTH = 32;
 
 function normalizeProjectSessionCommand(
-  command: RuntimeProjectSessionCommandDefinition
+  command: RuntimeProjectSessionCommandDefinition,
+  name = 'project command',
+  depth = 0,
+  state: { steps: number } = { steps: 0 }
 ): RuntimeProjectSessionCommand {
   if (typeof command === 'string') {
+    state.steps += 1;
+    if (state.steps > TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS) {
+      throw new Error(
+        `Project session command "${name}" must include at most ${TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS} steps.`
+      );
+    }
     return { command };
   }
   if ('steps' in command) {
-    const steps = command.steps.flatMap((step): RuntimeProjectSessionCommandStep[] => {
-      const normalized = normalizeProjectSessionCommand(step);
-      return 'steps' in normalized ? [...normalized.steps] : [normalized];
-    });
+    if (depth >= TRACEKERNEL_MAX_PROJECT_COMMAND_STEP_NESTING_DEPTH) {
+      throw new Error(
+        `Project session command "${name}" must not nest steps deeper than ${TRACEKERNEL_MAX_PROJECT_COMMAND_STEP_NESTING_DEPTH} levels.`
+      );
+    }
+    const steps: RuntimeProjectSessionCommandStep[] = [];
+    for (const step of command.steps) {
+      const normalized = normalizeProjectSessionCommand(step, name, depth + 1, state);
+      if ('steps' in normalized) {
+        steps.push(...normalized.steps);
+      } else {
+        steps.push(normalized);
+      }
+    }
     return {
       steps,
       ...(command.hidden === true ? { hidden: true } : {}),
       ...(command.label ? { label: command.label } : {}),
       ...(command.description ? { description: command.description } : {}),
     };
+  }
+  state.steps += 1;
+  if (state.steps > TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS) {
+    throw new Error(
+      `Project session command "${name}" must include at most ${TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS} steps.`
+    );
   }
   return { ...command, ...(command.env ? { env: { ...command.env } } : {}) };
 }
@@ -1044,7 +1080,7 @@ function normalizeProjectSessionCommands(
   const normalized: Record<string, RuntimeProjectSessionCommand> = {};
   for (const [name, command] of Object.entries(commands ?? {})) {
     if (!name.trim()) throw new Error('Project session command names must not be empty.');
-    const normalizedCommand = normalizeProjectSessionCommand(command);
+    const normalizedCommand = normalizeProjectSessionCommand(command, name);
     if ('steps' in normalizedCommand) {
       if (normalizedCommand.steps.length === 0) {
         throw new Error(`Project session command "${name}" must include at least one step.`);
@@ -9893,22 +9929,60 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private projectCommandStepExecutionLimits(
     limits: RuntimeCommandExecutionLimits | undefined,
-    stepCount: number
+    stepCount: number,
+    remaining?: {
+      timeoutMs?: number;
+      maxOutputBytes?: number;
+    }
   ): RuntimeCommandExecutionLimits | undefined {
     if (!limits) return limits;
     const maxCommandCount = this.finiteMaxCommandCount(limits);
-    const timeoutMs = Number.isFinite(limits.timeoutMs)
-      ? Math.max(1, Math.floor(Number(limits.timeoutMs) / stepCount))
-      : undefined;
-    const maxOutputBytes = Number.isFinite(limits.maxOutputBytes)
-      ? Math.max(1, Math.floor(Number(limits.maxOutputBytes) / stepCount))
-      : undefined;
+    const timeoutMs = remaining?.timeoutMs !== undefined
+      ? remaining.timeoutMs
+      : Number.isFinite(limits.timeoutMs)
+        ? Math.max(1, Math.floor(Number(limits.timeoutMs)))
+        : undefined;
+    const maxOutputBytes = remaining?.maxOutputBytes !== undefined
+      ? remaining.maxOutputBytes
+      : Number.isFinite(limits.maxOutputBytes)
+        ? Math.max(1, Math.floor(Number(limits.maxOutputBytes)))
+        : undefined;
     if (maxCommandCount === undefined && timeoutMs === undefined && maxOutputBytes === undefined) return limits;
     return {
       ...limits,
       ...(maxCommandCount !== undefined ? { maxCommandCount: Math.max(1, Math.floor(maxCommandCount / stepCount)) } : {}),
-      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-      ...(maxOutputBytes !== undefined ? { maxOutputBytes } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs: Math.max(1, Math.floor(timeoutMs)) } : {}),
+      ...(maxOutputBytes !== undefined ? { maxOutputBytes: Math.max(1, Math.floor(maxOutputBytes)) } : {}),
+    };
+  }
+
+  private finiteProjectCommandTimeoutMs(limits: RuntimeCommandExecutionLimits | undefined): number | undefined {
+    return Number.isFinite(limits?.timeoutMs)
+      ? Math.max(1, Math.floor(Number(limits?.timeoutMs)))
+      : undefined;
+  }
+
+  private finiteProjectCommandMaxOutputBytes(limits: RuntimeCommandExecutionLimits | undefined): number | undefined {
+    return Number.isFinite(limits?.maxOutputBytes)
+      ? Math.max(1, Math.floor(Number(limits?.maxOutputBytes)))
+      : undefined;
+  }
+
+  private projectCommandLimitResult(
+    stdout: string,
+    stderr: string,
+    code: 'ETIMEDOUT' | 'EMSGSIZE',
+    message: string,
+    exitCode: number
+  ): RuntimeCommandResult {
+    return {
+      stdout,
+      stderr,
+      exitCode,
+      error: {
+        code,
+        message,
+      },
     };
   }
 
@@ -9967,27 +10041,68 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         exitCode: 2,
       };
     }
-    const stepExecutionLimits = this.projectCommandStepExecutionLimits(commandLimits, command.steps.length);
+    const aggregateTimeoutMs = this.finiteProjectCommandTimeoutMs(commandLimits);
+    const aggregateTimeoutDeadlineMs = aggregateTimeoutMs === undefined ? undefined : Date.now() + aggregateTimeoutMs;
+    const aggregateOutputLimitBytes = this.finiteProjectCommandMaxOutputBytes(commandLimits);
     const files: RuntimeFileChange[] = [];
     const outputBytes: Record<RuntimeCommandEventStream, number> = { stdout: 0, stderr: 0 };
     const truncatedOutputStreams = new Set<RuntimeCommandEventStream>();
+    let aggregateOutputBytes = 0;
+    let aggregateOutputExceeded = false;
     const appendOutput = (stream: RuntimeCommandEventStream, current: string, data: string): string => {
-      if (!data || truncatedOutputStreams.has(stream)) return current;
+      if (!data || truncatedOutputStreams.has(stream) || aggregateOutputExceeded) return current;
       const used = outputBytes[stream];
-      const remaining = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+      const streamRemaining = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
+      const aggregateRemaining = aggregateOutputLimitBytes === undefined
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, aggregateOutputLimitBytes - aggregateOutputBytes);
+      const remaining = Math.min(streamRemaining, aggregateRemaining);
       const bytes = runtimeProjectUtf8Bytes(data);
       if (bytes <= remaining) {
         outputBytes[stream] = used + bytes;
+        aggregateOutputBytes += bytes;
         return `${current}${data}`;
+      }
+      const truncated = runtimeProjectTruncateUtf8(data, Math.max(0, remaining));
+      const truncatedBytes = runtimeProjectUtf8Bytes(truncated);
+      outputBytes[stream] = used + truncatedBytes;
+      aggregateOutputBytes += truncatedBytes;
+      if (aggregateRemaining <= streamRemaining) {
+        aggregateOutputExceeded = true;
+        const marker = `\n[tracekernel: project command output truncated after ${aggregateOutputLimitBytes} bytes]\n`;
+        outputBytes[stream] += runtimeProjectUtf8Bytes(marker);
+        aggregateOutputBytes += runtimeProjectUtf8Bytes(marker);
+        return `${current}${truncated}${marker}`;
       }
       truncatedOutputStreams.add(stream);
       const marker = `\n[tracekernel: ${stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
       outputBytes[stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
-      return `${current}${runtimeProjectTruncateUtf8(data, Math.max(0, remaining))}${marker}`;
+      aggregateOutputBytes += runtimeProjectUtf8Bytes(marker);
+      return `${current}${truncated}${marker}`;
     };
     let stdout = '';
     let stderr = '';
     for (const [stepIndex, step] of command.steps.entries()) {
+      const remainingTimeoutMs = aggregateTimeoutDeadlineMs === undefined
+        ? undefined
+        : aggregateTimeoutDeadlineMs - Date.now();
+      if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
+        const message = `ETIMEDOUT: Project command "${name}" timed out after ${aggregateTimeoutMs} milliseconds`;
+        stderr = appendOutput('stderr', stderr, `${message}\n`);
+        return this.projectCommandLimitResult(stdout, stderr, 'ETIMEDOUT', message, 124);
+      }
+      const remainingOutputBytes = aggregateOutputLimitBytes === undefined
+        ? undefined
+        : aggregateOutputLimitBytes - aggregateOutputBytes;
+      if (remainingOutputBytes !== undefined && remainingOutputBytes <= 0) {
+        const message = `EMSGSIZE: Project command "${name}" output exceeded ${aggregateOutputLimitBytes} bytes`;
+        stderr = appendOutput('stderr', stderr, `${message}\n`);
+        return this.projectCommandLimitResult(stdout, stderr, 'EMSGSIZE', message, 1);
+      }
+      const stepExecutionLimits = this.projectCommandStepExecutionLimits(commandLimits, command.steps.length, {
+        ...(remainingTimeoutMs !== undefined ? { timeoutMs: remainingTimeoutMs } : {}),
+        ...(remainingOutputBytes !== undefined ? { maxOutputBytes: remainingOutputBytes } : {}),
+      });
       const commandCwd = options.cwd ?? step.cwd;
       this.emitCommandOptionEvent(options, {
         type: 'status',
@@ -10019,6 +10134,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         },
         actor: SYSTEM_ACTOR,
       });
+      if (aggregateOutputExceeded) {
+        const message = `EMSGSIZE: Project command "${name}" output exceeded ${aggregateOutputLimitBytes} bytes`;
+        return this.projectCommandLimitResult(stdout, stderr, 'EMSGSIZE', message, 1);
+      }
       if (result.exitCode !== 0) {
         return {
           stdout,

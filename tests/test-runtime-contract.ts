@@ -693,6 +693,54 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
     `runtime live I/O controller should ignore late runner events after close: ${stableStringify({ closedControllerEvents, closedControllerAppliedChanges })}`
   );
 
+  const pendingAbortControllerEvents: RuntimeCommandEvent[] = [];
+  const pendingAbortControllerStarted: string[] = [];
+  const pendingAbortControllerCommitted: string[] = [];
+  const pendingAbortSignalController = new AbortController();
+  let resolvePendingAbortStarted!: () => void;
+  let resolvePendingAbortApply!: () => void;
+  const pendingAbortApplyStarted = new Promise<void>((resolve) => {
+    resolvePendingAbortStarted = resolve;
+  });
+  const pendingAbortApplyGate = new Promise<void>((release) => {
+    resolvePendingAbortApply = release;
+  });
+  const pendingAbortController = new RuntimeProjectLiveIoController({
+    signal: pendingAbortSignalController.signal,
+    onEvent: (event) => pendingAbortControllerEvents.push(event),
+    applyFileChange: async (change, phase, options) => {
+      pendingAbortControllerStarted.push(`${phase}:${change.path}`);
+      resolvePendingAbortStarted();
+      await pendingAbortApplyGate;
+      if (options?.signal?.aborted) return false;
+      pendingAbortControllerCommitted.push(`${phase}:${change.path}`);
+    },
+  });
+  pendingAbortController.handleRuntimeEvent({
+    type: 'file-change',
+    phase: 'live',
+    change: { path: 'pending-abort-one.txt', contents: 'one\n' },
+  });
+  pendingAbortController.handleRuntimeEvent({
+    type: 'file-change',
+    phase: 'live',
+    change: { path: 'pending-abort-two.txt', contents: 'two\n' },
+  });
+  await pendingAbortApplyStarted;
+  pendingAbortSignalController.abort();
+  resolvePendingAbortApply();
+  await pendingAbortController.flush();
+  assertCondition(
+    stableStringify(pendingAbortControllerStarted) === stableStringify(['live:pending-abort-one.txt']) &&
+      pendingAbortControllerCommitted.length === 0 &&
+      pendingAbortControllerEvents.length === 0,
+    `runtime live I/O controller should abort pending apply work on signal abort: ${stableStringify({
+      pendingAbortControllerStarted,
+      pendingAbortControllerCommitted,
+      pendingAbortControllerEvents,
+    })}`
+  );
+
   const budgetedOutputEvents: RuntimeCommandEvent[] = [];
   const budgetedOutputController = new RuntimeProjectLiveIoController({
     onEvent: (event) => budgetedOutputEvents.push(event),

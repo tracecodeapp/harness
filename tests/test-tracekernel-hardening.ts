@@ -69,71 +69,43 @@ function setTestGlobalProperty(name: string, value: unknown): () => void {
   };
 }
 
-async function testBrowserAsyncLocalStorageAllowsOverlappingContexts(): Promise<void> {
+async function testBrowserAsyncLocalStorageForcesSingleFlightScheduling(): Promise<void> {
   assertCondition(
-    !('__tracecodeBrowserSingleFlight' in BrowserAsyncLocalStorage),
-    'browser AsyncLocalStorage shim should not force TraceKernel command scheduling into single-flight mode'
+    (BrowserAsyncLocalStorage as unknown as { __tracecodeBrowserSingleFlight?: boolean })
+      .__tracecodeBrowserSingleFlight === true,
+    'browser AsyncLocalStorage shim should force TraceKernel command scheduling into single-flight mode'
   );
   const storage = new BrowserAsyncLocalStorage<{ id: string }>();
-  const events: string[] = [];
-  let releaseA!: () => void;
-  const aReleased = new Promise<void>((resolve) => {
-    releaseA = resolve;
-  });
-
-  const first = storage.run({ id: 'a' }, async () => {
-    events.push(`a:start:${storage.getStore()?.id ?? 'none'}`);
-    await aReleased;
-    events.push(`a:end:${storage.getStore()?.id ?? 'none'}`);
-    return storage.getStore()?.id;
-  });
-  const second = storage.run({ id: 'b' }, async () => {
-    events.push(`b:start:${storage.getStore()?.id ?? 'none'}`);
-    return storage.getStore()?.id;
-  });
-
-  await Promise.resolve();
-  await Promise.resolve();
-  assertCondition(
-    events.join('|') === 'a:start:a|b:start:b',
-    `browser AsyncLocalStorage shim should allow overlapping contexts: ${JSON.stringify(events)}`
-  );
-  releaseA();
-  const [firstStore, secondStore] = await Promise.all([first, second]);
-  assertCondition(
-    firstStore === 'a' &&
-      secondStore === 'b' &&
-      storage.getStore() === undefined &&
-      events.join('|') === 'a:start:a|b:start:b|a:end:a',
-    `browser AsyncLocalStorage shim should allow overlap and restore the active context stack: ${JSON.stringify({ firstStore, secondStore, events, store: storage.getStore() })}`
-  );
-
-  const outOfOrderStorage = new BrowserAsyncLocalStorage<{ id: string }>();
   let releaseLater!: () => void;
   const laterReleased = new Promise<void>((resolve) => {
     releaseLater = resolve;
   });
-  const earlier = outOfOrderStorage.run({ id: 'earlier' }, async () => outOfOrderStorage.getStore()?.id);
-  const later = outOfOrderStorage.run({ id: 'later' }, async () => {
-    await laterReleased;
-    return outOfOrderStorage.getStore()?.id;
+
+  const first = storage.run({ id: 'a' }, async () => {
+    await Promise.resolve();
+    return storage.getStore()?.id;
   });
-  const earlierStore = await earlier;
+  const second = storage.run({ id: 'b' }, async () => {
+    await laterReleased;
+    return storage.getStore()?.id;
+  });
+  const firstStore = await first;
   assertCondition(
-    earlierStore === 'earlier' && outOfOrderStorage.getStore()?.id === 'later',
-    `browser AsyncLocalStorage shim should remove completed frames without clearing newer work: ${JSON.stringify({ earlierStore, store: outOfOrderStorage.getStore() })}`
+    firstStore === 'b',
+    `browser AsyncLocalStorage shim is stack-based and must not be used with overlapping commands: ${JSON.stringify({ firstStore })}`
   );
   releaseLater();
-  const laterStore = await later;
+  const secondStore = await second;
   assertCondition(
-    laterStore === 'later' && outOfOrderStorage.getStore() === undefined,
-    `browser AsyncLocalStorage shim should restore cleanly when overlapping contexts complete out of order: ${JSON.stringify({ laterStore, store: outOfOrderStorage.getStore() })}`
+    secondStore === 'b' && storage.getStore() === undefined,
+    `browser AsyncLocalStorage shim should still restore completed frames: ${JSON.stringify({ secondStore, store: storage.getStore() })}`
   );
 
   const projectSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-project', 'src', 'index.ts'), 'utf8');
   assertCondition(
-    projectSource.includes("typeof (globalThis as { process?: unknown }).process === 'object' ? 32 : 1"),
-    'TraceKernel scheduler should default browser builds to single-flight until the browser async context shim is chain-local'
+    projectSource.includes('isBrowserAsyncLocalStorageSingleFlight') &&
+      projectSource.includes('forceSingleFlight ? 1 : configuredMaxConcurrentCommands'),
+    'TraceKernel scheduler should clamp browser builds to single-flight until the browser async context shim is chain-local'
   );
 }
 
@@ -834,6 +806,41 @@ async function testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics(): Pro
   );
 }
 
+async function testBrowserJavaScriptFileHandleStreamCloseStateIsNotSymbolForgeable(): Promise<void> {
+  const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
+  const result = await runner({
+    code: [
+      'const fs = require("node:fs");',
+      'const handle = await fs.promises.open("close.txt", "w+");',
+      'const stream = handle.createWriteStream();',
+      'const symbolSets = Object.getOwnPropertySymbols(stream).map((symbol) => stream[symbol]).filter((value) => value instanceof Set);',
+      'for (const set of symbolSets) for (const listener of [...set]) listener();',
+      'try { await handle.writeFile("ok"); console.log("write:open"); }',
+      'catch (error) { console.log("write:" + error.code); }',
+      'stream.end();',
+      'await new Promise((resolve) => stream.on("close", resolve));',
+      'try { await handle.writeFile("late"); console.log("late:open"); }',
+      'catch (error) { console.log("late:" + error.code); }',
+      '',
+    ].join('\n'),
+    source: 'inline',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+      files: [],
+    },
+  });
+
+  assertCondition(result.exitCode === 0, `FileHandle close forgeability test should complete: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stdout === 'write:open\nlate:EBADF\n',
+    `FileHandle close state should not be forgeable through stream symbols: ${result.stdout}`
+  );
+}
+
 async function testBrowserJavaScriptCpRejectsFileToRootDirectory(): Promise<void> {
   const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
   const result = await runner({
@@ -930,14 +937,14 @@ async function testBrowserJavaScriptTimeoutWaitsForLiveFileChangeQueue(): Promis
 
   await new Promise((resolve) => setTimeout(resolve, 25));
   assertCondition(applyStarted, 'browser JS timeout test should start live file-change application');
-  assertCondition(!settled, 'browser JS timeout should not resolve while live file-change application is pending');
-  releaseApply();
+  assertCondition(settled, 'browser JS timeout should resolve even while live file-change application is pending');
   const result = await command;
   assertCondition(
     result.exitCode === 124 &&
       result.stderr.includes('node: execution timed out after 5ms'),
-    `browser JS timeout should return the timeout result after live queue settles: ${JSON.stringify(result)}`
+    `browser JS timeout should return the timeout result before live queue settles: ${JSON.stringify(result)}`
   );
+  releaseApply();
 }
 
 async function testJavaScriptTraceSerializationIsBounded(): Promise<void> {
@@ -3296,7 +3303,7 @@ async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> 
 }
 
 async function main(): Promise<void> {
-  await testBrowserAsyncLocalStorageAllowsOverlappingContexts();
+  await testBrowserAsyncLocalStorageForcesSingleFlightScheduling();
   await testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn();
   await testBrowserTypeScriptDomCompilerScriptPolicy();
   await testIndexedDbKernelStorageEncryptsSnapshots();
@@ -3307,6 +3314,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
   await testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamespace();
   await testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics();
+  await testBrowserJavaScriptFileHandleStreamCloseStateIsNotSymbolForgeable();
   await testBrowserJavaScriptCpRejectsFileToRootDirectory();
   await testBrowserJavaScriptSyntaxErrorsHideRunnerInternals();
   await testBrowserJavaScriptTimeoutWaitsForLiveFileChangeQueue();

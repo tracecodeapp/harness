@@ -7,6 +7,7 @@ import type {
   RuntimeCommandEventHandler,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
 import { runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
@@ -25,7 +26,11 @@ export type PyodidePythonProjectCommandRunner = PythonProjectCommandRunner;
 
 export interface BrowserPythonProjectRunnerOptions {
   timeoutMs?: number;
-  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
+  applyFileChange?: (
+    change: RuntimeFileChange,
+    phase: RuntimeFileMutationPhase,
+    options?: RuntimeProjectFileChangeApplyOptions
+  ) => Promise<boolean | void>;
 }
 
 export type CreatePyodidePythonProjectRunnerOptions = BrowserPythonProjectRunnerOptions;

@@ -7,6 +7,7 @@ import type {
   RuntimeFileMutationPhase,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
 import { runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
@@ -22,7 +23,11 @@ export type BrowserCppProjectCommandRunner = CppProjectCommandRunner;
 
 export interface BrowserCppProjectRunnerOptions {
   timeoutMs?: number;
-  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
+  applyFileChange?: (
+    change: RuntimeFileChange,
+    phase: RuntimeFileMutationPhase,
+    options?: RuntimeProjectFileChangeApplyOptions
+  ) => Promise<boolean | void>;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;

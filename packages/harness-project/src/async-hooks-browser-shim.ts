@@ -1,4 +1,6 @@
 export class AsyncLocalStorage<T> {
+  static readonly __tracecodeBrowserSingleFlight = true;
+
   private frames: Array<{ readonly token: symbol; readonly store: T }> = [];
 
   getStore(): T | undefined {

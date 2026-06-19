@@ -271,14 +271,18 @@ export async function createBrowserProjectWorkspace(
   let storageBinding: BrowserKernelStorageBinding | undefined;
   const sessionReadonlyFiles = readonlySessionFiles(workspaceOptions);
   const applyWorkerFileChange: NonNullable<Parameters<typeof createBrowserPythonProjectRunner>[1]>['applyFileChange'] =
-    async (change, phase) => {
+    async (change, phase, options) => {
+      if (options?.signal?.aborted) return false;
       await workspace.kernel.applyFileChange(change, undefined, phase);
+      if (options?.signal?.aborted) return false;
       return false;
     };
   const applyCSharpWorkerFileChange: NonNullable<Parameters<typeof createBrowserCSharpProjectRunner>[1]>['applyFileChange'] =
-    async (change, phase) => {
+    async (change, phase, options) => {
+      if (options?.signal?.aborted) return false;
       if (isReadonlyDeletion(change, sessionReadonlyFiles)) return false;
       await workspace.kernel.applyFileChange(change, undefined, phase);
+      if (options?.signal?.aborted) return false;
       return false;
     };
 

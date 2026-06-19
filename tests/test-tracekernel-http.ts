@@ -2,6 +2,7 @@
 
 import {
   createRuntimeWorkspace,
+  runtimeHttpBodyBytes,
   runtimeHttpBodyFromBytes,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
@@ -285,13 +286,20 @@ async function main(): Promise<void> {
       `node http client rawHeaders should preserve repeated response headers: ${nodeClient.stdout}`
     );
 
-    const mockRequests: Array<{ method: string; path: string; body?: string; headers?: Record<string, string> }> = [];
+    const mockRequests: Array<{
+      method: string;
+      path: string;
+      body?: string;
+      headers?: Record<string, string>;
+      rawHeaders?: readonly [string, string][];
+    }> = [];
     const mockServer = workspace.http.listen({ host: '127.0.0.1', port: 3400 }, async (request) => {
       mockRequests.push({
         method: request.method,
         path: request.path,
         ...(request.body !== undefined ? { body: request.body } : {}),
         ...(request.headers ? { headers: request.headers } : {}),
+        ...(request.rawHeaders ? { rawHeaders: request.rawHeaders } : {}),
       });
       return {
         status: request.path === '/from-curl' ? 201 : 202,
@@ -326,6 +334,16 @@ async function main(): Promise<void> {
       `project node:http should receive consumer-owned listener response: ${httpToMock.stdout}`
     );
 
+    const rawOnlyToMock = await workspace.http.request({
+      url: 'http://localhost:3400/from-raw-only',
+      rawHeaders: [['X-Client', 'raw-only']],
+    });
+    assertCondition(rawOnlyToMock.status === 202, `workspace raw-only HTTP request should succeed: ${JSON.stringify(rawOnlyToMock)}`);
+    assertCondition(
+      runtimeHttpResponseText(rawOnlyToMock) === '{"method":"GET","path":"/from-raw-only","body":"","client":"raw-only"}\n',
+      `workspace raw-only HTTP request should preserve headers: ${runtimeHttpResponseText(rawOnlyToMock)}`
+    );
+
     const curlToMock = await workspace.runCommand('curl -s --json \'{"id":1}\' http://localhost:3400/from-curl');
     assertCondition(curlToMock.exitCode === 0, `project curl should call consumer-owned listener: ${JSON.stringify(curlToMock)}`);
     assertCondition(
@@ -333,8 +351,14 @@ async function main(): Promise<void> {
       `project curl should receive consumer-owned listener response: ${curlToMock.stdout}`
     );
     assertCondition(
-      mockRequests.map((request) => request.path).join(',') === '/from-fetch,/from-http,/from-curl',
+      mockRequests.map((request) => request.path).join(',') === '/from-fetch,/from-http,/from-raw-only,/from-curl',
       `consumer-owned listener should receive project requests in order: ${JSON.stringify(mockRequests)}`
+    );
+    const rawOnlyRequest = mockRequests.find((request) => request.path === '/from-raw-only');
+    assertCondition(
+      rawOnlyRequest?.headers?.['x-client'] === 'raw-only' &&
+        rawOnlyRequest.rawHeaders?.some(([name, value]) => name === 'X-Client' && value === 'raw-only') === true,
+      `consumer-owned listener should receive raw-only request headers: ${JSON.stringify(rawOnlyRequest)}`
     );
 
     mockServer.close();

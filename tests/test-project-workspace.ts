@@ -748,6 +748,41 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
   );
   assertCondition(await invalidWorkspace.readFile('src/main.txt') === 'base\n', 'invalid patch rejection should not apply earlier writes');
   assertCondition(!(await invalidWorkspace.exists('invalid.txt')), 'invalid patch rejection should not create later files');
+
+  const hiddenWorkspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'hidden-patch-test',
+      projectId: 'hidden-patch-project',
+      projectSlug: 'hidden-patch',
+      language: 'python',
+      files: [
+        { path: 'src/main.py', contents: 'print("visible")\n' },
+        { path: '.trace/fixtures/input.txt', contents: 'secret\n', hidden: true },
+      ],
+    },
+  });
+  const hiddenBase = await hiddenWorkspace.snapshot();
+  const hiddenBasePatch = await hiddenWorkspace.exportPatch(hiddenBase);
+  await assertRejectsAsync(
+    () =>
+      hiddenWorkspace.importPatch(hiddenBase, {
+        ...hiddenBasePatch,
+        changes: [
+          {
+            kind: 'write',
+            path: '.trace/fixtures/conftest.py',
+            contents: 'poison\n',
+            baseHash: null,
+          },
+        ],
+      }),
+    'importPatch should reject hidden fixture directory descendant writes'
+  );
+  const hiddenSnapshot = await hiddenWorkspace.snapshot({ includeHidden: true });
+  assertCondition(
+    !hiddenSnapshot.files.some((file) => file.path === '.trace/fixtures/conftest.py'),
+    'hidden fixture directory patch rejection should not create hidden descendant files'
+  );
 }
 
 async function testWorkspaceConcurrentFilesystemMutations(): Promise<void> {
@@ -4522,6 +4557,67 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     timeoutStderrIndex >= 0 && timeoutExitIndex > timeoutStderrIndex,
     `browser node timeout should stream timeout stderr before process-exit: ${JSON.stringify(timeoutTimerEvents)}`
   );
+
+  const timeoutApplyStarted: string[] = [];
+  const timeoutApplyCommitted: string[] = [];
+  const timeoutApplyEvents: RuntimeCommandEvent[] = [];
+  let resolveTimeoutApplyStarted!: () => void;
+  let resolveTimeoutApply!: () => void;
+  const timeoutApplyStartedPromise = new Promise<void>((resolve) => {
+    resolveTimeoutApplyStarted = resolve;
+  });
+  const timeoutApplyGate = new Promise<void>((resolve) => {
+    resolveTimeoutApply = resolve;
+  });
+  const timeoutApplyRunner = createBrowserJavaScriptProjectRunner({
+    allowMainThreadExecution: true,
+    trustedMainThreadExecution: true,
+    timeoutMs: 5,
+    applyFileChange: async (change, phase, options) => {
+      timeoutApplyStarted.push(`${phase}:${change.path}`);
+      resolveTimeoutApplyStarted();
+      await timeoutApplyGate;
+      if (options?.signal?.aborted) return false;
+      timeoutApplyCommitted.push(`${phase}:${change.path}`);
+      return true;
+    },
+  });
+  const timeoutApplyRun = timeoutApplyRunner({
+    code: [
+      'const fs = require("node:fs");',
+      'fs.writeFileSync("timeout-apply-one.txt", "one\\n");',
+      'fs.writeFileSync("timeout-apply-two.txt", "two\\n");',
+      'await new Promise((resolve) => setTimeout(resolve, 50));',
+    ].join('\n'),
+    source: 'argument',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      files: [],
+    },
+    onEvent: (event) => timeoutApplyEvents.push(event),
+  });
+  await timeoutApplyStartedPromise;
+  const timeoutApplyResult = await timeoutApplyRun;
+  resolveTimeoutApply();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assertCondition(
+    timeoutApplyResult.exitCode === 124 &&
+      timeoutApplyStarted.length === 1 &&
+      timeoutApplyStarted[0] === 'live:timeout-apply-one.txt' &&
+      timeoutApplyCommitted.length === 0,
+    `browser node timeout should abort pending live file-change applies: ${JSON.stringify({
+      timeoutApplyResult,
+      timeoutApplyStarted,
+      timeoutApplyCommitted,
+    })}`
+  );
+  assertCondition(
+    !timeoutApplyEvents.some((event) => event.type === 'file-change' && event.change.path.startsWith('timeout-apply-')),
+    `browser node timeout should suppress queued live file-change events after apply abort: ${JSON.stringify(timeoutApplyEvents)}`
+  );
 }
 
 async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promise<void> {
@@ -5462,6 +5558,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node FileHandle streams should auto-close handles unless autoClose is false: ${fileHandleStreamResult.stdout}`
   );
   assertCondition(await workspace.readFile('handle-stream.txt') === 'handle-one\nhandle-two\n', 'browser node FileHandle streams should persist through kernel FS');
+
+  const fileHandleStreamSymbolResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fsp = require(\\"node:fs/promises\\"); await fsp.writeFile(\\"handle-symbol.txt\\", \\"abcdef\\"); const symbolSets = (stream) => Object.getOwnPropertySymbols(stream).map((symbol) => stream[symbol]).filter((value) => value && typeof value.forEach === \\"function\\" && typeof value.clear === \\"function\\"); const readAll = (stream) => new Promise((resolve, reject) => stream.on(\\"error\\", reject).on(\\"data\\", () => {}).on(\\"end\\", resolve)); const forged = await fsp.open(\\"handle-symbol.txt\\", \\"r\\"); const forgedStream = forged.createReadStream({ encoding: \\"utf8\\" }); const forgedSets = symbolSets(forgedStream); console.log(\\"forge-symbols:\\" + forgedSets.length); for (const set of forgedSets) set.forEach((listener) => { if (typeof listener === \\"function\\") listener(); }); let before = \\"ok\\"; try { before = String((await forged.stat()).isFile()); } catch (error) { before = error.code; } console.log(\\"forge-before:\\" + before); await readAll(forgedStream); try { await forged.stat(); } catch (error) { console.log(\\"forge-after:\\" + error.code); } const cleared = await fsp.open(\\"handle-symbol.txt\\", \\"r\\"); const clearedStream = cleared.createReadStream({ encoding: \\"utf8\\" }); const clearedSets = symbolSets(clearedStream); console.log(\\"clear-symbols:\\" + clearedSets.length); for (const set of clearedSets) set.clear(); await readAll(clearedStream); let closeStatus = \\"ok\\"; try { await cleared.close(); } catch (error) { closeStatus = error.code; } console.log(\\"clear-close:\\" + closeStatus);"',
+  ].join(' '));
+  assertCondition(fileHandleStreamSymbolResult.exitCode === 0, `browser node FileHandle symbol workflow should succeed: ${fileHandleStreamSymbolResult.stderr}`);
+  assertCondition(
+    fileHandleStreamSymbolResult.stdout === 'forge-symbols:0\nforge-before:true\nforge-after:EBADF\nclear-symbols:0\nclear-close:ok\n',
+    `browser node FileHandle stream auto-close internals should not be exposed through Symbols: ${fileHandleStreamSymbolResult.stdout}`
+  );
 
   const vectorEvents: RuntimeCommandEvent[] = [];
   const vectorResult = await workspace.runCommand([
@@ -10582,9 +10689,48 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
         event.change.path === 'direct-empty/deep' &&
         event.change.directory === true &&
         event.change.deleted === true
-      ),
+    ),
     `direct native project runner should emit final-diff directory changes: ${JSON.stringify(directEvents)}`
   );
+
+  const partialSnapshotDelete = await createNativePythonProjectRunner()({
+    code: [
+      'import shutil',
+      'shutil.rmtree("src")',
+      '',
+    ].join('\n'),
+    source: 'argument',
+    scriptPath: '-c',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      files: [{ path: 'src/main.py', contents: 'print("visible")\n' }],
+    },
+  });
+  assertCondition(partialSnapshotDelete.exitCode === 0, `partial snapshot delete should run: ${partialSnapshotDelete.stderr}`);
+  assertCondition(
+    partialSnapshotDelete.files?.some((file) => file.path === 'src/main.py' && file.deleted === true) &&
+      !partialSnapshotDelete.files?.some((file) => file.path === 'src' && file.directory === true && file.deleted === true),
+    `partial snapshot deletes should not emit recursive ancestor directory tombstones: ${JSON.stringify(partialSnapshotDelete.files)}`
+  );
+  const partialHostWorkspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'src/main.py', contents: 'print("visible")\n' },
+      { path: 'src/hidden_test.py', contents: 'print("hidden")\n' },
+    ],
+  });
+  for (const change of partialSnapshotDelete.files ?? []) {
+    await partialHostWorkspace.kernel.applyFileChange(
+      change,
+      { id: 'runtime:partial-final-diff', kind: 'runtime', capabilities: { write: ['/workspace/**'], delete: ['/workspace/**'], execute: true } },
+      'final-diff'
+    );
+  }
+  assertCondition(!(await partialHostWorkspace.exists('src/main.py')), 'partial final diff should delete known removed files');
+  assertCondition(await partialHostWorkspace.exists('src/hidden_test.py'), 'partial final diff should preserve unsnapshotted descendants');
+  partialHostWorkspace.dispose();
 }
 
 async function testRuntimeProjectEventQueueRecoversAfterApplyFailure(): Promise<void> {
@@ -11613,6 +11759,30 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
 }
 
 async function testProjectSessionMetadataAndCommands(): Promise<void> {
+  let deeplyNestedCommand: unknown = 'python3 main.py';
+  for (let depth = 0; depth < 40; depth += 1) {
+    deeplyNestedCommand = { steps: [deeplyNestedCommand] };
+  }
+  let deepStepError = '';
+  try {
+    await createRuntimeWorkspace({
+      projectSession: {
+        id: 'deep-steps',
+        name: 'Deep Steps',
+        commands: {
+          deep: deeplyNestedCommand as never,
+        },
+        files: [],
+      },
+    });
+  } catch (error) {
+    deepStepError = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    deepStepError.includes('must not nest steps deeper than'),
+    `deeply nested project command steps should fail with a controlled validation error: ${deepStepError}`
+  );
+
   const hiddenCommandAccess = createRuntimeProjectHiddenCommandAccess();
   const workspace = await createRuntimeWorkspace({
     hiddenCommandAccess,
@@ -11858,6 +12028,16 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
     tooManySteps.exitCode === 2 &&
       tooManySteps.stderr === 'Project command has too many steps: tooManySteps (3/2)\n',
     `project session steps should be capped by command-count budgets: ${JSON.stringify(tooManySteps)}`
+  );
+  const outputBudget = await workspace.runProjectCommand('check', {
+    executionLimits: { maxOutputBytes: 60 },
+  });
+  assertCondition(
+    outputBudget.exitCode === 1 &&
+      outputBudget.error?.code === 'EMSGSIZE' &&
+      outputBudget.stdout.includes('[tracekernel: project command output truncated after 60 bytes]') &&
+      !outputBudget.stdout.includes('step-input'),
+    `project session steps should enforce an aggregate output budget: ${JSON.stringify(outputBudget)}`
   );
   const fixtures = await workspace.runProjectCommand('fixtures');
   assertCondition(
