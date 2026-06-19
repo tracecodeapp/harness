@@ -463,8 +463,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-python worker should ship live directory mutation hooks'
       );
       assertCondition(
-        worker.includes('const emitPathSnapshot = (path) =>') &&
-          worker.includes('emitPathSnapshot(`${String(path).replace(/\\/+$/, \'\')}/${entry}`)') &&
+        /const emitPathSnapshot = \(path(?:, [^)]+)?\) =>/.test(worker) &&
+          worker.includes('emitPathSnapshot(`${String(path).replace(/\\/+$/, \'\')}/${entry}`, budget)') &&
           worker.includes('emitPathSnapshot(newPath)'),
         '@tracecode/harness-python worker should ship recursive moved-directory live snapshots'
       );
@@ -586,7 +586,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-java worker should ship live directory mutation bridge hooks'
       );
       assertCondition(
-        worker.includes('emitLiveJavaProjectOutput(String(stream ?? \'stdout\'), String(data ?? \'\'), String(sourceDevice ?? \'\'), String(outputDevice ?? \'\'))') &&
+        worker.includes("emitLiveJavaProjectOutput(String(bridgeRunId ?? ''), String(stream ?? 'stdout'), String(data ?? ''), String(sourceDevice ?? ''), String(outputDevice ?? ''))") &&
           worker.includes('shared-kernel-policy-loaded') &&
           worker.includes('self.TraceRuntimeKernelPolicy') &&
           worker.includes('runtimeKernelDeviceOutputTarget') &&
@@ -821,7 +821,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         worker.includes("from './shared/runtime-kernel-policy.js'") &&
           worker.includes('runtimeKernelVirtualPathTarget(pathname') &&
           worker.includes('runtimeKernelVirtualMutationTarget(pathname') &&
-          worker.includes('knownDevices: this.kernelDevices.keys()'),
+          worker.includes('knownDevices: this.knownKernelDevices'),
         '@tracecode/harness-cpp worker should classify and guard manifest kernel namespaces with shared worker kernel policy'
       );
       assertCondition(
