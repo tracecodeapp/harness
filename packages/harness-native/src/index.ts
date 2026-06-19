@@ -2355,13 +2355,18 @@ public static class __TraceCodeNativeCSharpDriver
 
     private static Type? StringDictionaryValueType(Type type)
     {
-        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Dictionary<,>) && type.GetGenericArguments()[0] == typeof(string))
+        if (type.IsGenericType && (
+            type.GetGenericTypeDefinition() == typeof(Dictionary<,>) ||
+            type.GetGenericTypeDefinition() == typeof(IDictionary<,>) ||
+            type.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>)) &&
+            type.GetGenericArguments()[0] == typeof(string))
         {
             return type.GetGenericArguments()[1];
         }
         var dictionaryInterface = type.GetInterfaces()
             .FirstOrDefault(candidate => candidate.IsGenericType &&
-                candidate.GetGenericTypeDefinition() == typeof(IDictionary<,>) &&
+                (candidate.GetGenericTypeDefinition() == typeof(IDictionary<,>) ||
+                 candidate.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>)) &&
                 candidate.GetGenericArguments()[0] == typeof(string));
         return dictionaryInterface?.GetGenericArguments()[1];
     }

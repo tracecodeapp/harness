@@ -110,6 +110,27 @@ async function main(): Promise<void> {
   assertCondition(csharpBatch.success === true, `native C# batch should succeed: ${JSON.stringify(csharpBatch)}`);
   assertCondition(csharpBatch.cases.every((testCase) => testCase.passed === true), `native C# cases should pass: ${JSON.stringify(csharpBatch)}`);
 
+  const csharpDictionaryInput = await csharp.executeCode(
+    [
+      'using System.Collections.Generic;',
+      'public class Solution {',
+      '  public string ReadDictionaries(Dictionary<string, string> labels, IDictionary<string, int> scores) {',
+      '    return labels["chosen"] + ":" + scores["alice"];',
+      '  }',
+      '}',
+    ].join('\n'),
+    'ReadDictionaries',
+    {
+      labels: { chosen: 'variant_b' },
+      scores: { alice: 2 },
+    },
+    'solution-method'
+  );
+  assertCondition(
+    csharpDictionaryInput.success === true && csharpDictionaryInput.output === 'variant_b:2',
+    `native C# dictionary inputs should hydrate as dictionary types: ${JSON.stringify(csharpDictionaryInput)}`
+  );
+
   const cpp = harness.getClient('cpp');
   const cppBatch = await cpp.execute({
     kind: 'code',
