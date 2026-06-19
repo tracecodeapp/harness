@@ -1753,6 +1753,12 @@ template <typename T, typename Allocator>
 struct is_std_vector<std::vector<T, Allocator>> : std::true_type {};
 
 template <typename T>
+struct is_std_deque : std::false_type {};
+
+template <typename T, typename Allocator>
+struct is_std_deque<std::deque<T, Allocator>> : std::true_type {};
+
+template <typename T>
 struct is_std_string : std::false_type {};
 
 template <>
@@ -5434,7 +5440,7 @@ class UnorderedMapValueRef {
   }
 
   template <typename U = V>
-  std::enable_if_t<is_std_vector<U>::value, void>
+  std::enable_if_t<is_std_vector<U>::value || is_std_deque<U>::value, void>
   push_back(const typename U::value_type& value) {
     const int line = trace_event_line();
     const bool present = owner_.values_.count(key_) > 0;
@@ -5461,6 +5467,26 @@ class UnorderedMapValueRef {
       owner_.emit_snapshot(trace_event_line());
       return result;
     }
+  }
+
+  template <typename U = V>
+  auto front() -> decltype(std::declval<U&>().front()) {
+    return get().front();
+  }
+
+  template <typename U = V>
+  auto front() const -> decltype(std::declval<const U&>().front()) {
+    return get().front();
+  }
+
+  template <typename U = V>
+  auto back() -> decltype(std::declval<U&>().back()) {
+    return get().back();
+  }
+
+  template <typename U = V>
+  auto back() const -> decltype(std::declval<const U&>().back()) {
+    return get().back();
   }
 
   template <typename Index, typename U = V>
@@ -6058,7 +6084,7 @@ class MapValueRef {
   }
 
   template <typename U = V>
-  std::enable_if_t<is_std_vector<U>::value, void>
+  std::enable_if_t<is_std_vector<U>::value || is_std_deque<U>::value, void>
   push_back(const typename U::value_type& value) {
     const int line = trace_event_line();
     const bool present = owner_.values_.count(key_) > 0;
@@ -6085,6 +6111,26 @@ class MapValueRef {
       owner_.emit_snapshot(trace_event_line());
       return result;
     }
+  }
+
+  template <typename U = V>
+  auto front() -> decltype(std::declval<U&>().front()) {
+    return get().front();
+  }
+
+  template <typename U = V>
+  auto front() const -> decltype(std::declval<const U&>().front()) {
+    return get().front();
+  }
+
+  template <typename U = V>
+  auto back() -> decltype(std::declval<U&>().back()) {
+    return get().back();
+  }
+
+  template <typename U = V>
+  auto back() const -> decltype(std::declval<const U&>().back()) {
+    return get().back();
   }
 
   template <typename Index, typename U = V>

@@ -1943,21 +1943,58 @@ function splitTopLevelCommaList(source) {
   return splitTopLevel(source, ',').map((part) => part.trim()).filter(Boolean);
 }
 
+const CPP_SPACED_TEMPLATE_PREFIXES = new Set([
+  'array',
+  'deque',
+  'map',
+  'multimap',
+  'multiset',
+  'optional',
+  'pair',
+  'priority_queue',
+  'queue',
+  'set',
+  'stack',
+  'tuple',
+  'unordered_map',
+  'unordered_multimap',
+  'unordered_multiset',
+  'unordered_set',
+  'variant',
+  'vector',
+]);
+
+function cppTokenBefore(source, index) {
+  let end = index - 1;
+  while (end >= 0 && /\s/.test(source[end] || '')) end -= 1;
+  let start = end;
+  while (start >= 0 && /[A-Za-z0-9_:>]/.test(source[start] || '')) start -= 1;
+  return source.slice(start + 1, end + 1);
+}
+
+function cppTokenAfter(source, index) {
+  let start = index + 1;
+  while (start < source.length && /\s/.test(source[start] || '')) start += 1;
+  let end = start;
+  while (end < source.length && /[A-Za-z0-9_:]/.test(source[end] || '')) end += 1;
+  return source.slice(start, end);
+}
+
+function isCppSpacedTemplatePrefix(token) {
+  if (!token) return false;
+  if (token.endsWith('>')) return true;
+  const unqualified = token.split('::').filter(Boolean).at(-1) || token;
+  return CPP_SPACED_TEMPLATE_PREFIXES.has(unqualified) || /^[A-Z]/.test(unqualified);
+}
+
 function isCppTemplateAngleStart(source, index) {
-  let previous = '';
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const ch = source[cursor];
-    if (/\s/.test(ch)) continue;
-    previous = ch;
-    break;
-  }
-  if (!previous || !/[A-Za-z0-9_>:]/.test(previous)) return false;
-  for (let cursor = index + 1; cursor < source.length; cursor += 1) {
-    const ch = source[cursor];
-    if (/\s/.test(ch)) continue;
-    return /[A-Za-z0-9_:]/.test(ch);
-  }
-  return false;
+  const previousToken = cppTokenBefore(source, index);
+  const nextToken = cppTokenAfter(source, index);
+  if (!previousToken || !nextToken) return false;
+  if (/^\d/.test(previousToken) || /^\d/.test(nextToken)) return false;
+  if (!/[A-Za-z_>:]/.test(previousToken.at(-1) || '') || !/^[A-Za-z_:]/.test(nextToken)) return false;
+  const compact = !/\s/.test(source[index - 1] || '') && !/\s/.test(source[index + 1] || '');
+  return compact || isCppSpacedTemplatePrefix(previousToken);
 }
 
 function splitTopLevel(source, separator, options = {}) {
@@ -3091,6 +3128,14 @@ function isSetCppType(type, aliases = new Map()) {
   return splitTopLevelCommaList(normalized.slice(prefix.length, -1)).length === 1;
 }
 
+function isSetLikeCppType(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  return (
+    (normalized.startsWith('unordered_set<') || normalized.startsWith('set<')) &&
+    normalized.endsWith('>')
+  );
+}
+
 function isTraceWrappedCppType(type, aliases = new Map()) {
   return (
     isVectorCppType(type, aliases) ||
@@ -4023,12 +4068,16 @@ function shouldGuardNullCheckedPointerFieldRead(strippedExpression, objectName, 
   const guardedReadPrefix = String.raw`(?:[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?\s*\(\s*)*`;
   const pointerCondition = String.raw`\(?\s*\b${escapedName}\s*\)?`;
   const nullComparison = String.raw`(?:\(?\s*\b${escapedName}\s*(?:!=|==)\s*${nullValue}\s*\)?|\(?\s*${nullValue}\s*(?:!=|==)\s*\b${escapedName}\s*\)?)`;
+  const nullEquality = String.raw`(?:\(?\s*\b${escapedName}\s*==\s*${nullValue}\s*\)?|\(?\s*${nullValue}\s*==\s*\b${escapedName}\s*\)?)`;
+  const negatedPointerCondition = String.raw`\(?\s*!\s*\(?\s*\b${escapedName}\s*\)?\s*\)?`;
   return (
     new RegExp(String.raw`\b${escapedName}\s*(?:\?|\&\&)\s*$`).test(before) ||
     new RegExp(String.raw`${pointerCondition}\s*(?:\?|\&\&)\s*${guardedReadPrefix}$`).test(before) ||
     new RegExp(String.raw`\b${escapedName}\s*(?:!=|==)\s*${nullValue}\s*(?:\?|\&\&)\s*$`).test(before) ||
     new RegExp(String.raw`${nullValue}\s*(?:!=|==)\s*\b${escapedName}\s*(?:\?|\&\&)\s*$`).test(before) ||
     new RegExp(String.raw`${nullComparison}\s*(?:\?|\&\&)\s*${guardedReadPrefix}$`).test(before) ||
+    new RegExp(String.raw`${negatedPointerCondition}\s*\|\|\s*${guardedReadPrefix}$`).test(before) ||
+    new RegExp(String.raw`${nullEquality}\s*\|\|\s*${guardedReadPrefix}$`).test(before) ||
     new RegExp(String.raw`\b${escapedName}\s*(?:!=|==)\s*${nullValue}\s*\?[^:]*:\s*$`).test(before) ||
     new RegExp(String.raw`${nullValue}\s*(?:!=|==)\s*\b${escapedName}\s*\?[^:]*:\s*$`).test(before) ||
     new RegExp(String.raw`${nullComparison}\s*\?[^:]*:\s*${guardedReadPrefix}$`).test(before)
@@ -4111,7 +4160,7 @@ function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = ne
     const before = stripped.slice(0, accessStart);
     const after = stripped.slice(accessEnd);
     if (/\b(?:new|delete)\s+$/.test(before)) continue;
-    if (/^\s*=/.test(after)) continue;
+    if (/^\s*=(?!=)/.test(after)) continue;
     if (/^\s*\(/.test(after)) continue;
     const bracketStart = stripped.indexOf('[', accessEnd);
     let expression = `${objectName}->${fieldName}`;
@@ -5130,7 +5179,9 @@ function detectIndexedElementAlias(line, variables, aliases = new Map(), scopeDe
   const { aliasName, sourceName, outerIndex } = declaration;
   const sourceVariable = variables?.get(sourceName);
   if (!sourceVariable) return null;
-  const elementType = vectorElementCppType(sourceVariable.type || '', aliases) ?? mapValueCppType(sourceVariable.type || '', aliases);
+  const vectorElementType = vectorElementCppType(sourceVariable.type || '', aliases);
+  const mappedValueType = vectorElementType ? null : mapValueCppType(sourceVariable.type || '', aliases);
+  const elementType = vectorElementType ?? (mappedValueType && isVectorCppType(mappedValueType, aliases) ? mappedValueType : null);
   if (elementType && isStringCppType(elementType, aliases)) return null;
   if (!elementType || !isIndexReadInstrumentableCppType(elementType, aliases)) return null;
   const indexVariableName = `__tracecode_alias_index_${lineNumber || 'local'}_${aliasName}`;
@@ -5547,6 +5598,10 @@ function shouldEmitPlainContainerMutation(variable, name, aliases = new Map(), s
   return normalized === 'vector<string>' && !localVectorStringFeedsTraceWrappedParameter(source, name, aliases);
 }
 
+function isAssociativeCppType(type, aliases = new Map()) {
+  return isMapCppType(type, aliases) || isUnorderedMapCppType(type, aliases) || isSetLikeCppType(type, aliases);
+}
+
 function cppValueTypeTempInitialization(containerName, tempName, argumentSource) {
   const trimmedArgument = argumentSource.trim();
   const initializer = trimmedArgument.startsWith('{') ? trimmedArgument : `(${trimmedArgument})`;
@@ -5630,7 +5685,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_member_mutation_arg_${lineNumber}_${name}`;
         const capture = buildMutationArgumentCapture(`this->${name}`, tempName, args[0], indent);
-        const isSetInsert = method === 'insert' && variable && isSetCppType(variable.type, aliases);
+        const isAssociativeInsert = method === 'insert' && variable && isAssociativeCppType(variable.type, aliases);
         const writeIndex = `tracecode::trace_container_raw_size(this->${name}) - 1`;
         const rewritten = [
           `${indent}{`,
@@ -5638,7 +5693,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
           `${indent}  this->${name}.${method}(${tempName});`,
           `${indent}  tracecode::emit_field_container_mutate_value("this", ${cppStringLiteral(name)}, this->${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${capture.argsJsonExpression});`,
         ];
-        if (!isSetInsert) {
+        if (!isAssociativeInsert) {
           rewritten.push(`${indent}  tracecode::emit_field_index_write_value("this", ${cppStringLiteral(name)}, this->${name}, ${writeIndex}, ${lineNumber}, nullptr);`);
         }
         rewritten.push(`${indent}}`);
@@ -5673,7 +5728,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_mutation_arg_${lineNumber}_${name}`;
         const capture = buildMutationArgumentCapture(name, tempName, args[0], indent);
-        const isSetInsert = variable && method === 'insert' && isSetCppType(variable.type, aliases);
+        const isAssociativeInsert = variable && method === 'insert' && isAssociativeCppType(variable.type, aliases);
         const writeIndex = `tracecode::trace_container_raw_size(${name}) - 1`;
         const rewritten = [
           `${indent}{`,
@@ -5681,7 +5736,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
           `${indent}  ${name}.${method}(${tempName});`,
           `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${capture.argsJsonExpression});`,
         ];
-        if (!isSetInsert) {
+        if (!isAssociativeInsert) {
           rewritten.push(`${indent}  tracecode::emit_index_write_value(${cppStringLiteral(name)}, ${name}, ${writeIndex}, ${lineNumber}, nullptr);`);
         }
         rewritten.push(`${indent}}`);
@@ -5709,7 +5764,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
 
 function shouldEmitPlainSetLookup(variable, aliases = new Map()) {
   if (!variable || !variable.parameter || !/\bstd::/.test(variable.type || '')) return false;
-  return isSetCppType(variable.type, aliases);
+  return isSetLikeCppType(variable.type, aliases);
 }
 
 function rewritePlainContainerLookupInstrumentation(line, lineNumber, variables, aliases = new Map()) {

@@ -904,6 +904,100 @@ if (!guardedUnknownPointerFieldReadEvents.some((event) =>
   throw new Error('C++ guarded unknown pointer field read should emit the non-null branch read, received ' + JSON.stringify(guardedUnknownPointerFieldReadEvents));
 }
 
+const nullSafeOrUnknownPointerFieldReadTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct Box {',
+    '  int val;',
+    '  Box(int value) : val(value) {}',
+    '};',
+    'class Solution {',
+    'public:',
+    '  bool safeOrRead() {',
+    '    Box* node = nullptr;',
+    '    return !node || node->val == 0;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'safeOrRead',
+  inputs: {},
+  options: {},
+});
+if (!nullSafeOrUnknownPointerFieldReadTracing.success || nullSafeOrUnknownPointerFieldReadTracing.output !== true) {
+  throw new Error('C++ null-safe || unknown pointer field read tracing failed: ' + JSON.stringify(nullSafeOrUnknownPointerFieldReadTracing));
+}
+const nullSafeOrUnknownPointerFieldReadEvents = nullSafeOrUnknownPointerFieldReadTracing.trace.events;
+if (nullSafeOrUnknownPointerFieldReadEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 9 &&
+  event.target?.variable === 'node' &&
+  event.target.path?.[0] === 'val'
+)) {
+  throw new Error('C++ null-safe || unknown pointer field read should not emit a read for the null branch, received ' + JSON.stringify(nullSafeOrUnknownPointerFieldReadEvents));
+}
+
+const nullEqualityOrUnknownPointerFieldReadTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct Box {',
+    '  int val;',
+    '  Box(int value) : val(value) {}',
+    '};',
+    'class Solution {',
+    'public:',
+    '  bool safeNullEqualityOrRead() {',
+    '    Box* node = nullptr;',
+    '    return node == nullptr || node->val == 0;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'safeNullEqualityOrRead',
+  inputs: {},
+  options: {},
+});
+if (!nullEqualityOrUnknownPointerFieldReadTracing.success || nullEqualityOrUnknownPointerFieldReadTracing.output !== true) {
+  throw new Error('C++ null equality || unknown pointer field read tracing failed: ' + JSON.stringify(nullEqualityOrUnknownPointerFieldReadTracing));
+}
+const nullEqualityOrUnknownPointerFieldReadEvents = nullEqualityOrUnknownPointerFieldReadTracing.trace.events;
+if (nullEqualityOrUnknownPointerFieldReadEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 9 &&
+  event.target?.variable === 'node' &&
+  event.target.path?.[0] === 'val'
+)) {
+  throw new Error('C++ null equality || unknown pointer field read should not emit a read for the null branch, received ' + JSON.stringify(nullEqualityOrUnknownPointerFieldReadEvents));
+}
+
+const nonNullOrUnknownPointerFieldReadTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct Box {',
+    '  int val;',
+    '  Box(int value) : val(value) {}',
+    '};',
+    'class Solution {',
+    'public:',
+    '  bool nonNullOrRead() {',
+    '    Box* node = new Box(0);',
+    '    return !node || node->val == 0;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'nonNullOrRead',
+  inputs: {},
+  options: {},
+});
+if (!nonNullOrUnknownPointerFieldReadTracing.success || nonNullOrUnknownPointerFieldReadTracing.output !== true) {
+  throw new Error('C++ non-null || unknown pointer field read tracing failed: ' + JSON.stringify(nonNullOrUnknownPointerFieldReadTracing));
+}
+const nonNullOrUnknownPointerFieldReadEvents = nonNullOrUnknownPointerFieldReadTracing.trace.events;
+if (!nonNullOrUnknownPointerFieldReadEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 9 &&
+  event.target?.variable === 'node' &&
+  event.target.path?.[0] === 'val' &&
+  event.value === 0
+)) {
+  throw new Error('C++ non-null || unknown pointer field read should emit the RHS read, received ' + JSON.stringify(nonNullOrUnknownPointerFieldReadEvents));
+}
+
 const nestedPointerFieldAssignmentTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'struct Node {',
@@ -2836,11 +2930,11 @@ if (
 const aggregatePushBackTemplateCommaTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
-    '  struct Bucket { pair<int, int> span; int weight; };',
+    '  struct Bucket { pair < int, int > span; int weight; };',
     'public:',
     '  int build() {',
-    '    vector<Bucket> buckets;',
-    '    buckets.push_back({pair<int, int>{1, 2}, 3});',
+    '    vector < Bucket > buckets;',
+    '    buckets.push_back({pair < int, int >{1, 2}, 3});',
     '    return buckets[0].span.second + buckets[0].weight;',
     '  }',
     '};',
@@ -2868,6 +2962,62 @@ if (
   aggregatePushBackTemplateCommaMutate.args[0][1] !== 3
 ) {
   throw new Error('C++ aggregate push_back should emit templated aggregate args, received ' + JSON.stringify(aggregatePushBackTemplateCommaEvents));
+}
+
+const aggregatePushBackComparisonTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    '  struct Bucket { bool ok; int weight; };',
+    'public:',
+    '  int build() {',
+    '    vector<Bucket> buckets;',
+    '    buckets.push_back({1 < 2, 3});',
+    '    return (buckets[0].ok ? 10 : 0) + buckets[0].weight;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!aggregatePushBackComparisonTrace.success || aggregatePushBackComparisonTrace.output !== 13) {
+  throw new Error('C++ aggregate push_back should preserve comparison commas, received ' + JSON.stringify(aggregatePushBackComparisonTrace));
+}
+const aggregatePushBackComparisonEvents = aggregatePushBackComparisonTrace.trace.events;
+const aggregatePushBackComparisonMutate = aggregatePushBackComparisonEvents.find((event) =>
+  event.kind === 'mutate' &&
+  event.line === 6 &&
+  event.target?.variable === 'buckets' &&
+  event.method === 'push_back'
+);
+if (
+  !aggregatePushBackComparisonMutate ||
+  !Array.isArray(aggregatePushBackComparisonMutate.args?.[0]) ||
+  aggregatePushBackComparisonMutate.args[0][0] !== true ||
+  aggregatePushBackComparisonMutate.args[0][1] !== 3
+) {
+  throw new Error('C++ aggregate push_back should emit comparison aggregate args, received ' + JSON.stringify(aggregatePushBackComparisonEvents));
+}
+
+const mappedDequeAliasTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int build() {',
+    '    unordered_map<int, deque<int>> graph;',
+    '    graph[1].push_back(3);',
+    '    deque<int>& bucket = graph[1];',
+    '    bucket.push_back(4);',
+    '    return graph[1].back();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!mappedDequeAliasTrace.success || mappedDequeAliasTrace.output !== 4) {
+  throw new Error('C++ mapped deque alias push_back should compile and preserve behavior, received ' + JSON.stringify(mappedDequeAliasTrace));
 }
 
 const auditStructuredVectorRangeTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -4216,6 +4366,32 @@ if (!opsClassPlainParameterMutationEvents.some((event) =>
   throw new Error('C++ ops-class later-method std::vector parameter push_back should emit index write, received ' + JSON.stringify(opsClassPlainParameterMutationEvents));
 }
 
+const opsClassMapParameterInsertTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Collector {',
+    'public:',
+    '  Collector() {}',
+    '  void seed(int value) {',
+    '    (void)value;',
+    '  }',
+    '  int insertOne(std::map<std::string, int>& values) {',
+    '    values.insert({"z", 3});',
+    '    return values.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'Collector',
+  inputs: {
+    operations: ['Collector', 'seed', 'insertOne'],
+    arguments: [[], [0], [{ a: 2 }]],
+  },
+  executionStyle: 'ops-class',
+  options: {},
+});
+if (!opsClassMapParameterInsertTrace.success || JSON.stringify(opsClassMapParameterInsertTrace.output) !== JSON.stringify([null, null, 2])) {
+  throw new Error('C++ ops-class later-method std::map parameter insert should compile, received ' + JSON.stringify(opsClassMapParameterInsertTrace));
+}
+
 const opsClassTrieTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class TrieNode {',
@@ -4897,6 +5073,51 @@ if (!nativeSetFindSideEffectEvents.some((event) =>
   JSON.stringify(event.target.indexSources) === JSON.stringify(['v'])
 )) {
   throw new Error('C++ side-effecting native set find should emit one lookup read with key provenance, received ' + JSON.stringify(nativeSetFindSideEffectEvents));
+}
+
+const nativeSetFindAfterBudgetTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct CountingLess {',
+    '  static int comparisons;',
+    '  static int limit;',
+    '  bool operator()(int left, int right) const {',
+    '    comparisons++;',
+    '    if (comparisons > limit) throw std::runtime_error("extra lookup");',
+    '    return left < right;',
+    '  }',
+    '};',
+    'int CountingLess::comparisons = 0;',
+    'int CountingLess::limit = 1000;',
+    'class Solution {',
+    'public:',
+    '  int visit() {',
+    '    set<int, CountingLess> visited;',
+    '    visited.insert(1);',
+    '    function<int(std::set<int, CountingLess>&)> check = [&](std::set<int, CountingLess>& seen) {',
+    '      CountingLess::comparisons = 0;',
+    '      CountingLess::limit = 2;',
+    '      auto it = seen.find(1);',
+    '      if (it == seen.end()) return -1;',
+    '      return CountingLess::comparisons;',
+    '    };',
+    '    return check(visited);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'visit',
+  inputs: {},
+  options: { maxTraceSteps: 1, softTraceBudget: true },
+});
+if (
+  !nativeSetFindAfterBudgetTrace.success ||
+  typeof nativeSetFindAfterBudgetTrace.output !== 'number' ||
+  nativeSetFindAfterBudgetTrace.output < 1 ||
+  nativeSetFindAfterBudgetTrace.output > 2
+) {
+  throw new Error('C++ set find should not perform an instrumentation lookup after trace budget exhaustion, received ' + JSON.stringify(nativeSetFindAfterBudgetTrace));
+}
+if (!nativeSetFindAfterBudgetTrace.traceLimitExceeded || nativeSetFindAfterBudgetTrace.timeoutReason !== 'trace-limit') {
+  throw new Error('C++ set find after exhausted soft trace budget should still report trace-limit metadata, received ' + JSON.stringify(nativeSetFindAfterBudgetTrace));
 }
 
 const nativeSetCountContainsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
