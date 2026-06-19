@@ -4,6 +4,7 @@ import { createBrowserHarness, resolveBrowserHarnessAssets } from '../packages/h
 import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
 import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
 import { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
+import { PythonWorkerClient } from '../packages/harness-browser/src/pyodide-worker-client';
 import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): void {
@@ -38,6 +39,7 @@ function testJavaHttpResponseManifest(status: number, headers: Record<string, st
 const workerInstances: MockWorker[] = [];
 let heldPythonProjectStarted: (() => void) | undefined;
 let releaseHeldPythonProject: (() => void) | undefined;
+let holdPythonWarmupForUrlPrefix: string | undefined;
 let javaHttpTimeoutServerStarted: (() => void) | undefined;
 let javaHttpTimeoutRequestBuffer: SharedArrayBuffer | undefined;
 
@@ -73,6 +75,12 @@ class MockWorker {
       }
 
       if (type === 'warmup') {
+        if (
+          holdPythonWarmupForUrlPrefix &&
+          String(this.url).startsWith(holdPythonWarmupForUrlPrefix)
+        ) {
+          return;
+        }
         this.onmessage?.({
           data: {
             id,
@@ -556,6 +564,42 @@ async function main(): Promise<void> {
       `Cold Python execution should warm the runtime before execute-code: ${coldPythonMessageTypes}`
     );
     console.log('PASS: browser harness warms cold Python execution before user-code timing');
+
+    const timeoutPythonUrl = '/cold-python-timeout/pyodide-worker.js';
+    const timeoutPythonClient = new PythonWorkerClient({ workerUrl: timeoutPythonUrl });
+    const beforePythonTimeoutWorkerCount = workerInstances.length;
+    let coldWarmupTimeoutError = '';
+    holdPythonWarmupForUrlPrefix = timeoutPythonUrl;
+    const originalSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 120_000) {
+        return originalSetTimeout(handler, 0, ...args);
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    try {
+      await timeoutPythonClient.executeCode('result = 1', 'noop', {}, 'function');
+    } catch (error) {
+      coldWarmupTimeoutError = error instanceof Error ? error.message : String(error);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      holdPythonWarmupForUrlPrefix = undefined;
+      timeoutPythonClient.terminate();
+    }
+    const coldWarmupTimeoutWorker = workerInstances[beforePythonTimeoutWorkerCount];
+    assertCondition(
+      coldWarmupTimeoutError.includes('Worker request timed out: warmup'),
+      `Cold Python warmup should fail under the runtime warmup timeout: ${coldWarmupTimeoutError}`
+    );
+    assertCondition(
+      coldWarmupTimeoutWorker?.terminated === true,
+      'Cold Python warmup timeout should terminate and reset the worker'
+    );
+    assertCondition(
+      coldWarmupTimeoutWorker?.messages.map((message) => message.type).join(',') === 'init,warmup',
+      `Cold Python warmup timeout should not reach execute-code: ${coldWarmupTimeoutWorker?.messages.map((message) => message.type).join(',')}`
+    );
+    console.log('PASS: Python cold warmup is bounded by runtime warmup timeout');
 
     const javaWarmupResult = await harnessA.warmLanguage('java');
     const javaWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));

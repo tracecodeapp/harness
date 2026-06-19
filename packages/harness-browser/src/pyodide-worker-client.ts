@@ -554,6 +554,50 @@ export class PythonWorkerClient {
         })
         .catch((error) => {
           settleReject(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
+  }
+
+  private async warmupBeforeExecution(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      const abortError = createExecutionAbortError();
+      this.terminateAndReset(abortError);
+      throw abortError;
+    }
+
+    if (!signal) {
+      await this.warmup();
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        signal.removeEventListener('abort', onAbort);
+      };
+      const settleReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () => {
+        const abortError = createExecutionAbortError();
+        this.terminateAndReset(abortError);
+        settleReject(abortError);
+      };
+
+      signal.addEventListener('abort', onAbort, { once: true });
+
+      this.warmup()
+        .then(() => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve();
+        })
+        .catch((error) => {
+          settleReject(error instanceof Error ? error : new Error(String(error)));
         });
     });
   }
@@ -582,6 +626,17 @@ export class PythonWorkerClient {
     this.pendingMessages.clear();
   }
 
+  private shouldResetRuntimeLoadError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      message.includes('Worker request timed out: init') ||
+      message.includes('Worker request timed out: warmup') ||
+      message.includes('Worker was terminated') ||
+      message.includes('Worker error') ||
+      message.includes('failed to initialize in time')
+    );
+  }
+
   /**
    * Initialize the Python worker. Runtime loading is lazy unless warmup() is called.
    */
@@ -603,18 +658,11 @@ export class PythonWorkerClient {
       try {
         return await this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-
-        const shouldRetry =
-          message.includes('Worker request timed out: init') ||
-          message.includes('Worker was terminated') ||
-          message.includes('Worker error') ||
-          message.includes('failed to initialize in time');
-
-        if (!shouldRetry) {
+        if (!this.shouldResetRuntimeLoadError(error)) {
           throw error;
         }
 
+        const message = error instanceof Error ? error.message : String(error);
         logRuntimeDiagnostic('warn', {
           component: 'PythonWorkerClient',
           runtime: 'python',
@@ -647,8 +695,10 @@ export class PythonWorkerClient {
         await this.init();
         return await this.sendMessage<WarmupResult>('warmup', undefined, INIT_TIMEOUT_MS);
       } catch (error) {
+        const warmupError = error instanceof Error ? error : new Error(String(error));
         this.warmupPromise = null;
-        throw error;
+        if (this.shouldResetRuntimeLoadError(warmupError)) this.terminateAndReset(warmupError);
+        throw warmupError;
       }
     })();
 
@@ -673,19 +723,20 @@ export class PythonWorkerClient {
     executionStyle: ExecutionStyle = 'function',
     signal?: AbortSignal
   ): Promise<ExecutionResult> {
-    // Keep runtime loading under the longer warmup budget so execution timers only measure user code.
-    await this.warmup();
-    
     // Use longer timeout for tracing - Python heuristic detection handles infinite loops
+    await this.warmupBeforeExecution(signal);
+
     try {
       return await this.executeWithTimeout(
-        () => this.sendMessage<ExecutionResult>('execute-with-tracing', {
-          code,
-          functionName,
-          inputs,
-          executionStyle,
-          options,
-        }, TRACING_TIMEOUT_MS + 5000), // Message timeout slightly longer than execution timeout
+        async () => {
+          return this.sendMessage<ExecutionResult>('execute-with-tracing', {
+            code,
+            functionName,
+            inputs,
+            executionStyle,
+            options,
+          }, TRACING_TIMEOUT_MS + 5000); // Message timeout slightly longer than execution timeout
+        },
         TRACING_TIMEOUT_MS,
         signal
       );
@@ -723,16 +774,17 @@ export class PythonWorkerClient {
     executionStyle: ExecutionStyle = 'function',
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    // Keep runtime loading under the longer warmup budget so execution timers only measure user code.
-    await this.warmup();
-    
+    await this.warmupBeforeExecution(signal);
+
     return this.executeWithTimeout(
-      () => this.sendMessage<CodeExecutionResult>('execute-code', {
-        code,
-        functionName,
-        inputs,
-        executionStyle,
-      }, EXECUTION_TIMEOUT_MS + 5000),
+      async () => {
+        return this.sendMessage<CodeExecutionResult>('execute-code', {
+          code,
+          functionName,
+          inputs,
+          executionStyle,
+        }, EXECUTION_TIMEOUT_MS + 5000);
+      },
       EXECUTION_TIMEOUT_MS,
       signal
     );
@@ -745,15 +797,17 @@ export class PythonWorkerClient {
     executionStyle: ExecutionStyle = 'function',
     signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
-    await this.warmup();
+    await this.warmupBeforeExecution(signal);
 
     return this.executeWithTimeout(
-      () => this.sendMessage<CodeExecutionBatchResult>('execute-code-batch', {
-        code,
-        functionName,
-        inputBatch,
-        executionStyle,
-      }, EXECUTION_TIMEOUT_MS + 5000),
+      async () => {
+        return this.sendMessage<CodeExecutionBatchResult>('execute-code-batch', {
+          code,
+          functionName,
+          inputBatch,
+          executionStyle,
+        }, EXECUTION_TIMEOUT_MS + 5000);
+      },
       EXECUTION_TIMEOUT_MS,
       signal
     );
@@ -770,17 +824,18 @@ export class PythonWorkerClient {
     executionStyle: ExecutionStyle = 'function',
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    // Keep runtime loading under the longer warmup budget so interview timers only measure user code.
-    await this.warmup();
-    
     try {
+      await this.warmupBeforeExecution(signal);
+
       const result = await this.executeWithTimeout(
-        () => this.sendMessage<CodeExecutionResult>('execute-code-interview', {
-          code,
-          functionName,
-          inputs,
-          executionStyle,
-        }, INTERVIEW_MODE_TIMEOUT_MS + 2000),
+        async () => {
+          return this.sendMessage<CodeExecutionResult>('execute-code-interview', {
+            code,
+            functionName,
+            inputs,
+            executionStyle,
+          }, INTERVIEW_MODE_TIMEOUT_MS + 2000);
+        },
         INTERVIEW_MODE_TIMEOUT_MS,
         signal
       );
@@ -836,27 +891,19 @@ export class PythonWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     signal: AbortSignal | undefined = request.signal
   ): Promise<PythonProjectCommandResult> {
-    if (signal?.aborted) {
-      const abortError = createExecutionAbortError();
-      this.terminateAndReset(abortError);
-      throw abortError;
-    }
-    const abortInit = () => this.terminateAndReset(createExecutionAbortError());
-    signal?.addEventListener('abort', abortInit, { once: true });
-    try {
-      await this.warmup();
-    } finally {
-      signal?.removeEventListener('abort', abortInit);
-    }
     const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+    await this.warmupBeforeExecution(signal);
+
     return this.executeWithTimeout(
-      () => this.sendMessage<PythonProjectCommandResult>(
-        'execute-project-python',
-        workerRequest,
-        timeoutMs + 5000,
-        onEvent,
-        kernelHttp
-      ),
+      async () => {
+        return this.sendMessage<PythonProjectCommandResult>(
+          'execute-project-python',
+          workerRequest,
+          timeoutMs + 5000,
+          onEvent,
+          kernelHttp
+        );
+      },
       timeoutMs,
       signal
     );

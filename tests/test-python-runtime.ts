@@ -701,6 +701,9 @@ print(json.dumps({
 async function assertIndexedReceiverMutationsAreRecordedAsMutations(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `def build_graph(edges, n):
+    def append(value):
+        return value
+
     graph = []
     for _ in range(n):
         graph.append([])
@@ -1726,7 +1729,14 @@ def inspect():
         heapq.heappush(fake_heap, 2)
         return fake_heap
     fake_result = use_fake_heapq()
-    return [swap_result, rooms, popped, calls, indexed_heaps[0], first_heap, second_heap, fake_result]
+    comp_heaps = [[4, 1]]
+    comp_calls = 0
+    def pick_comp():
+        nonlocal comp_calls
+        comp_calls += 1
+        return 0
+    comp_values = [item for item in (heapq.heappush(comp_heaps[pick_comp()], 0) or comp_heaps[0])]
+    return [swap_result, rooms, popped, calls, indexed_heaps[0], first_heap, second_heap, fake_result, comp_calls, comp_values]
 `;
 
   const deps: RuntimeDeps = {
@@ -1757,7 +1767,7 @@ print(json.dumps({
 `);
   const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
   assertCondition(
-    JSON.stringify(parsed.result) === JSON.stringify([[1, 3], [30], 10, 1, [1, 2, 3, 5], [2, 3], [9], [20]]),
+    JSON.stringify(parsed.result) === JSON.stringify([[1, 3], [30], 10, 1, [1, 2, 3, 5], [2, 3], [9], [20], 1, [0, 1, 4]]),
     `Python heapq fixture should execute successfully, received ${JSON.stringify(parsed.result)}`
   );
 
@@ -3383,11 +3393,21 @@ print(json.dumps({
 
 async function assertPythonTraceHelpersIgnoreUserShadowing(): Promise<void> {
   const runtime = await loadRuntimeCore();
-  const source = `def solve(values):
-    global TraceHooks
+  const source = `def tampered_hook(*args, **kwargs):
+    raise RuntimeError("tampered trace hook")
+
+def helper(value):
+    return value + 1
+
+def solve(values):
+    global TraceHooks, _TracecodeTraceHooks
     TraceHooks = None
+    _TracecodeTraceHooks.flush_completed_line = tampered_hook
+    _TracecodeTraceHooks.flush_callsite_line = tampered_hook
+    globals()["__tracecode_flush_completed_line"] = tampered_hook
+    globals()["__tracecode_flush_callsite_line"] = tampered_hook
     print("still tracing")
-    return sum(values)
+    return helper(sum(values))
 `;
 
   const deps = {
@@ -3423,7 +3443,7 @@ print(json.dumps({
     result: unknown;
     consoleOutput: string[];
   };
-  assertCondition(parsed.result === 9, `Python tracing should survive user TraceHooks shadowing, got ${JSON.stringify(parsed)}`);
+  assertCondition(parsed.result === 10, `Python tracing should survive user TraceHooks shadowing, got ${JSON.stringify(parsed)}`);
   assertCondition(
     parsed.consoleOutput.includes('still tracing'),
     `Python tracing should keep print hooked after TraceHooks shadowing, got ${JSON.stringify(parsed.consoleOutput)}`
