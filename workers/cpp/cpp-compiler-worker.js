@@ -152,8 +152,43 @@ function loadCompilerBundle(url) {
   return compilerBundlePromise;
 }
 
+const compilerPinnedFetchState = { active: 0, href: '', nativeFetch: null };
+
 function compilerSourceWithPinnedImportMetaUrl(source, href) {
   return source.replace(/\bimport\.meta\.url\b/g, JSON.stringify(href));
+}
+
+async function withPinnedCompilerFetch(href, callback) {
+  if (compilerPinnedFetchState.active === 0) {
+    compilerPinnedFetchState.nativeFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) => {
+      const requestUrl = input instanceof Request ? input.url : String(input);
+      const requestHref = new URL(requestUrl, compilerPinnedFetchState.href).href;
+      return fetchTrustedCompilerAssetResponse(requestHref, requestHref, init, compilerPinnedFetchState.nativeFetch);
+    };
+  }
+  compilerPinnedFetchState.active += 1;
+  compilerPinnedFetchState.href = href;
+  try {
+    return await callback();
+  } finally {
+    compilerPinnedFetchState.active -= 1;
+    if (compilerPinnedFetchState.active === 0) {
+      globalThis.fetch = compilerPinnedFetchState.nativeFetch;
+      compilerPinnedFetchState.nativeFetch = null;
+      compilerPinnedFetchState.href = '';
+    }
+  }
+}
+
+function wrapPinnedCompilerExports(bundle, href) {
+  return new Proxy(bundle, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      return (...args) => withPinnedCompilerFetch(href, () => value.apply(target, args));
+    },
+  });
 }
 
 async function importPinnedCompilerBundle(name, href) {
@@ -163,18 +198,10 @@ async function importPinnedCompilerBundle(name, href) {
   const response = await fetchTrustedCompilerAssetResponse(name, href);
   const source = compilerSourceWithPinnedImportMetaUrl(decodeUtf8(new Uint8Array(await response.arrayBuffer())), href);
   const blobUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-  const nativeFetch = globalThis.fetch;
-  globalThis.fetch = (input, init) => {
-    const requestUrl = input instanceof Request ? input.url : String(input);
-    const requestHref = new URL(requestUrl, href).href;
-    const requestIntegrity = compilerIntegrityEntryForHref(requestHref);
-    if (!requestIntegrity) return nativeFetch(input, init);
-    return fetchTrustedCompilerAssetResponse(requestHref, requestHref, init, nativeFetch);
-  };
   try {
-    return await import(blobUrl);
+    const bundle = await withPinnedCompilerFetch(href, () => import(blobUrl));
+    return wrapPinnedCompilerExports(bundle, href);
   } finally {
-    globalThis.fetch = nativeFetch;
     URL.revokeObjectURL(blobUrl);
   }
 }

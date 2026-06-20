@@ -592,8 +592,43 @@ function arrayBufferFromBytes(bytes) {
     : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
+const cppPinnedFetchState = { active: 0, href: '', nativeFetch: null };
+
 function cppSourceWithPinnedImportMetaUrl(source, href) {
   return source.replace(/\bimport\.meta\.url\b/g, JSON.stringify(href));
+}
+
+async function withPinnedCppFetch(href, callback) {
+  if (cppPinnedFetchState.active === 0) {
+    cppPinnedFetchState.nativeFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) => {
+      const requestUrl = input instanceof Request ? input.url : String(input);
+      const requestHref = new URL(requestUrl, cppPinnedFetchState.href).href;
+      return fetchTrustedCppAssetResponse(requestHref, requestHref, init, cppPinnedFetchState.nativeFetch);
+    };
+  }
+  cppPinnedFetchState.active += 1;
+  cppPinnedFetchState.href = href;
+  try {
+    return await callback();
+  } finally {
+    cppPinnedFetchState.active -= 1;
+    if (cppPinnedFetchState.active === 0) {
+      globalThis.fetch = cppPinnedFetchState.nativeFetch;
+      cppPinnedFetchState.nativeFetch = null;
+      cppPinnedFetchState.href = '';
+    }
+  }
+}
+
+function wrapPinnedCppExports(bundle, href) {
+  return new Proxy(bundle, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      return (...args) => withPinnedCppFetch(href, () => value.apply(target, args));
+    },
+  });
 }
 
 async function importCppCompilerBundle(name, url) {
@@ -607,18 +642,10 @@ async function importCppCompilerBundle(name, url) {
   const response = await fetchTrustedCppAssetResponse(name, href);
   const source = cppSourceWithPinnedImportMetaUrl(decodeUtf8(new Uint8Array(await response.arrayBuffer())), href);
   const blobUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-  const nativeFetch = globalThis.fetch;
-  globalThis.fetch = (input, init) => {
-    const requestUrl = input instanceof Request ? input.url : String(input);
-    const requestHref = new URL(requestUrl, href).href;
-    const requestIntegrity = cppIntegrityEntryForHref(requestHref);
-    if (!requestIntegrity) return nativeFetch(input, init);
-    return fetchTrustedCppAssetResponse(requestHref, requestHref, init, nativeFetch);
-  };
   try {
-    return await import(blobUrl);
+    const bundle = await withPinnedCppFetch(href, () => import(blobUrl));
+    return wrapPinnedCppExports(bundle, href);
   } finally {
-    globalThis.fetch = nativeFetch;
     URL.revokeObjectURL(blobUrl);
   }
 }

@@ -2239,6 +2239,72 @@ async function testCppWorkerProjectEventBudgets(): Promise<void> {
   assertCondition(fileChangeEvents.length === 0, `C++ worker should drop oversized live file-change payloads: ${JSON.stringify(projectEvents)}`);
 }
 
+
+async function testCppPinnedToolchainFetchesFailClosed(): Promise<void> {
+  const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
+    ''
+  );
+  const context = vm.createContext({
+    console,
+    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
+    location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+    postMessage: () => {},
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Headers,
+    Response,
+    Request,
+    Uint8Array,
+    ArrayBuffer,
+    WebAssembly,
+    BigInt,
+    Map,
+    Set,
+    Promise,
+    JSON,
+    Math,
+    Date,
+    performance: { now: () => 0 },
+    fetch: async () => new Response('unchecked', { status: 200 }),
+    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
+  });
+  vm.runInContext(source, context, { filename: 'cpp-worker.js' });
+  const result = await vm.runInContext(
+    `(async () => {
+      configuredAssets = {
+        toolchainIntegrity: {
+          assets: [{ url: 'https://toolchain.example/yowasp/bundle.js', sha256: '${'0'.repeat(64)}' }],
+        },
+      };
+      const bundleHref = 'https://toolchain.example/yowasp/bundle.js';
+      const topLevelResult = await withPinnedCppFetch(bundleHref, () => fetch('https://toolchain.example/yowasp/unmanifested-at-import.wasm'))
+        .then(() => 'allowed', (error) => String(error?.message || error));
+      const compilerBundle = wrapPinnedCppExports({
+        async runClang() {
+          await fetch(new URL('llvm.core.wasm', bundleHref).href);
+          return {};
+        },
+      }, bundleHref);
+      const lazyResult = await compilerBundle.runClang()
+        .then(() => 'allowed', (error) => String(error?.message || error));
+      return { topLevelResult, lazyResult };
+    })()`,
+    context
+  ) as { topLevelResult: string; lazyResult: string };
+
+  assertCondition(
+    result.topLevelResult.includes('exact pinned toolchain manifest URL'),
+    `Pinned C++ imports should reject unmanifested secondary assets during import: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.lazyResult.includes('exact pinned toolchain manifest URL'),
+    `Pinned C++ runClang should reject unmanifested lazy secondary assets: ${JSON.stringify(result)}`
+  );
+}
+
 async function testCppCompilerWorkersAreDisposable(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
@@ -3339,6 +3405,7 @@ async function main(): Promise<void> {
   testJavaTraceHeaderExpansionIsBounded();
   await testJavaWorkerTraceHeaderExpansionIsBounded();
   await testCppWorkerProjectEventBudgets();
+  await testCppPinnedToolchainFetchesFailClosed();
   await testCppCompilerWorkersAreDisposable();
   await testCppInheritedStdioRespectsKernelDevices();
   await testCppTraceIdsDoNotExposePointers();
