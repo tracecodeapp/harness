@@ -173,9 +173,7 @@ public final class BrowserCompileAndTraceLibrary {
     Path classesPath = Paths.get(classesDir);
     Files.createDirectories(classesPath);
 
-    String source = Files.readString(sourceFile, StandardCharsets.UTF_8);
     String compilerDebugArg = compilerDebugArgForProfile(compilerProfile);
-    String cacheKey = hashSource(source, compileClasspath, entryClass, compilerDebugArg);
     Path cacheKeyPath = classesPath.resolve(".tracecode-run-cache-key");
 
     StringWriter compilerStdout = new StringWriter();
@@ -186,21 +184,38 @@ public final class BrowserCompileAndTraceLibrary {
     long compileStart = System.nanoTime();
     boolean compiled;
     boolean compileCacheHit = false;
-    if (canReuseCompiledClasses(classesPath, cacheKeyPath, cacheKey, entryClass)) {
-      compiled = true;
-      compileCacheHit = true;
-    } else {
-      resetDirectory(classesPath);
-      compiled = compileSource(
-          sourcePath,
-          classesDir,
-          compileClasspath,
-          compilerDebugArg,
-          compilerStdoutWriter,
-          compilerStderrWriter);
-      if (compiled) {
-        writeCompileCacheMetadata(classesPath, cacheKeyPath, cacheKey);
+    try {
+      String source = Files.readString(sourceFile, StandardCharsets.UTF_8);
+      String cacheKey = hashSource(source, compileClasspath, entryClass, compilerDebugArg);
+      if (canReuseCompiledClasses(classesPath, cacheKeyPath, cacheKey, entryClass)) {
+        compiled = true;
+        compileCacheHit = true;
+      } else {
+        resetDirectory(classesPath);
+        compiled = compileSource(
+            sourcePath,
+            classesDir,
+            compileClasspath,
+            compilerDebugArg,
+            compilerStdoutWriter,
+            compilerStderrWriter);
+        if (compiled) {
+          writeCompileCacheMetadata(classesPath, cacheKeyPath, cacheKey);
+        }
       }
+    } catch (Throwable error) {
+      long compileEnd = System.nanoTime();
+      return buildRunReportJson(
+          false,
+          null,
+          compilerStdout.toString(),
+          compilerStderr.toString(),
+          stackTrace(error),
+          millisBetween(compileStart, compileEnd),
+          0,
+          0,
+          compileCacheHit,
+          compilerProfile);
     }
     long compileEnd = System.nanoTime();
 
