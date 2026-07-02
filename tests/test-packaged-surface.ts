@@ -111,6 +111,137 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       browserTypes.includes('getRuntimeProjectIoCapability'),
     'Browser declarations should expose the stable project I/O support helpers'
   );
+  const projectTypes = await readFile(join(packageDir, 'dist/project.d.ts'), 'utf8');
+  const projectNodeTypes = await readFile(join(packageDir, 'dist/project-node.d.ts'), 'utf8');
+  assertCondition(
+    projectTypes.includes('RuntimeProjectWorkspace') &&
+      projectTypes.includes('JustBashRuntimeWorkspace') &&
+      projectNodeTypes.includes('RuntimeProjectWorkspace') &&
+      projectNodeTypes.includes('JustBashRuntimeWorkspace'),
+    'Project declarations should expose RuntimeProjectWorkspace and the deprecated JustBashRuntimeWorkspace alias'
+  );
+  assertCondition(
+    projectTypes.includes('ProjectWorkspaceCommand = CustomCommand') &&
+      projectNodeTypes.includes('ProjectWorkspaceCommand') &&
+      !projectTypes.includes('ProjectWorkspaceCommand = unknown') &&
+      !projectNodeTypes.includes('ProjectWorkspaceCommand = unknown'),
+    'ProjectWorkspaceCommand declarations should be typed as CustomCommand, not unknown'
+  );
+  const projectNodeTypeSurface = [
+    'CreateRuntimeWorkspaceOptions',
+    'ProjectWorkspaceCommand',
+    'ProjectWorkspaceJavaScriptConfig',
+    'ProjectWorkspaceExecutionLimits',
+    'RuntimeTraceKernelControlOptions',
+    'RuntimePackageManagerName',
+    'RuntimePackageManifest',
+    'RuntimePackageInstallRequest',
+    'RuntimePackageDependencyProvider',
+    'RuntimePackageManagerConfig',
+    'PythonProjectCommandRequest',
+    'PythonProjectCommandRunner',
+    'JavaScriptProjectCommandRequest',
+    'JavaScriptProjectCommandRunner',
+    'TypeScriptProjectCommandRequest',
+    'TypeScriptProjectCommandRunner',
+    'JavaProjectCommandRequest',
+    'JavaProjectCommandRunner',
+    'CppProjectCommandRequest',
+    'CppProjectCommandRunner',
+    'CSharpProjectCommandRequest',
+    'CSharpProjectCommandRunner',
+    'RuntimeCommandOptions',
+    'RuntimeCommandResult',
+    'RuntimeCommandEvent',
+    'RuntimeCommandEventHandler',
+    'RuntimeCommandEventStream',
+    'RuntimeCommandFileChangeEvent',
+    'RuntimeCommandOutputEvent',
+    'RuntimeCommandStatusEvent',
+    'RuntimeFile',
+    'RuntimeFileChange',
+    'RuntimeFileEncoding',
+    'RuntimeKernelHostConfig',
+    'RuntimeKernelHostInfo',
+    'RuntimeKernelInfo',
+    'RuntimeKernelHttpBridge',
+    'RuntimeKernelHttpBodyInit',
+    'RuntimeKernelHttpBodyPayload',
+    'RuntimeKernelHttpHandler',
+    'RuntimeKernelHttpListenOptions',
+    'RuntimeKernelHttpListenerHandle',
+    'RuntimeKernelHttpListenerInfo',
+    'RuntimeKernelHttpRequest',
+    'RuntimeKernelHttpResponse',
+    'RuntimeKernelUserConfig',
+    'RuntimeKernelUserInfo',
+    'RuntimeKernelWorkspaceConfig',
+    'RuntimeKernelWorkspaceInfo',
+    'RuntimeTraceKernelSchedulerConfig',
+    'RuntimeKernelDevicePath',
+    'RuntimeFileMutationPhase',
+    'RuntimeTraceKernelConfig',
+    'RuntimeProjectCommandRequest',
+    'RuntimeProjectCommandRunner',
+    'RuntimeProjectTerminalPrompt',
+    'RuntimeProjectTerminalEvent',
+    'RuntimeProjectTerminalEventHandler',
+    'RuntimeProjectTerminalInputState',
+    'RuntimeProjectTerminalInputStateReason',
+    'RuntimeProjectTerminalRunOptions',
+    'RuntimeProjectTerminalSession',
+    'RuntimeProjectTerminalSessionOptions',
+    'RuntimeProjectSession',
+    'RuntimeProjectSessionCommand',
+    'RuntimeProjectSessionCommandDefinition',
+    'RuntimeProjectSessionFile',
+    'RuntimeProjectSessionInfo',
+    'RuntimeProjectIoBridge',
+    'RuntimeProjectPatch',
+    'RuntimeProjectPatchBase',
+    'RuntimeProjectPatchChange',
+    'RuntimeProjectPatchDirectoryCreate',
+    'RuntimeProjectPatchDirectoryDelete',
+    'RuntimeProjectPatchFileDelete',
+    'RuntimeProjectPatchFileWrite',
+    'RuntimeProjectPatchOptions',
+    'RuntimeProjectLiveIoControllerOptions',
+    'RuntimeProjectWorkerBridgeOptions',
+    'RuntimeProjectSnapshot',
+    'RuntimeWorkspace',
+    'RuntimeWorkspaceActor',
+    'RuntimeWorkspaceActorKind',
+    'RuntimeWorkspaceCapabilities',
+    'RuntimeWorkspaceEvent',
+    'RuntimeWorkspaceEventHandler',
+    'RuntimeWorkspaceHttpClient',
+    'RuntimeWorkspaceHttpJsonRequestOptions',
+    'RuntimeWorkspaceHttpJsonResponse',
+    'RuntimeWorkspaceHttpRequestOptions',
+    'RuntimeWorkspaceKernel',
+    'RuntimeWorkspaceRemoveOptions',
+    'RuntimeWorkspaceStat',
+    'RuntimeWorkspaceUnsubscribe',
+    'CreateNativeProjectWorkspaceOptions',
+  ];
+  for (const exportName of projectNodeTypeSurface) {
+    assertCondition(projectNodeTypes.includes(exportName), `Project-node declarations should include ${exportName}`);
+  }
+  for (const forbidden of [
+    'createRuntimeProjectIoBridge',
+    'runRuntimeProjectWorkerBridge',
+    'createPythonProjectCommands',
+    'createNodeProjectCommands',
+    'createTypeScriptProjectCommands',
+    'createJavaProjectCommands',
+    'createCppProjectCommands',
+    'createCSharpProjectCommands',
+    'createPackageManagerProjectCommands',
+    'class RuntimeProjectLiveIoController',
+    'RuntimeProjectLiveIoController,',
+  ]) {
+    assertCondition(!projectNodeTypes.includes(forbidden), `Project-node declarations should not expose ${forbidden}`);
+  }
 
   const appDir = join(tempRoot, 'app');
   const evalScript = `
@@ -191,6 +322,45 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
       if (typeof projectNode.createNativeProjectWorkspace !== 'function') {
         throw new Error('Missing root native project workspace subpath export');
+      }
+      const expectedProjectNodeRuntimeExports = [
+        'JustBashRuntimeWorkspace',
+        'RuntimeProjectWorkspace',
+        'createNativeProjectWorkspace',
+        'createRuntimeProjectHiddenCommandAccess',
+        'createRuntimeWorkspace',
+        'normalizeRuntimeProjectPath',
+        'runtimeHttpBodyBytes',
+        'runtimeHttpBodyFromBytes',
+        'runtimeHttpBodyFromText',
+        'runtimeHttpBodyText',
+        'runtimeHttpRequestBytes',
+        'runtimeHttpRequestText',
+        'runtimeHttpResponseBytes',
+        'runtimeHttpResponseText',
+      ];
+      const actualProjectNodeRuntimeExports = Object.keys(projectNode).sort();
+      if (actualProjectNodeRuntimeExports.join(',') !== expectedProjectNodeRuntimeExports.join(',')) {
+        throw new Error('Unexpected project-node runtime exports: ' + actualProjectNodeRuntimeExports.join(','));
+      }
+      if (projectNode.JustBashRuntimeWorkspace !== projectNode.RuntimeProjectWorkspace) {
+        throw new Error('Deprecated project-node workspace alias should point at RuntimeProjectWorkspace');
+      }
+      for (const exportName of [
+        'RuntimeProjectLiveIoController',
+        'createRuntimeProjectIoBridge',
+        'runRuntimeProjectWorkerBridge',
+        'createPythonProjectCommands',
+        'createNodeProjectCommands',
+        'createTypeScriptProjectCommands',
+        'createJavaProjectCommands',
+        'createCppProjectCommands',
+        'createCSharpProjectCommands',
+        'createPackageManagerProjectCommands',
+      ]) {
+        if (exportName in projectNode) {
+          throw new Error('Project-node should not expose ' + exportName);
+        }
       }
       if (typeof native.createNativeHarness !== 'function') {
         throw new Error('Missing root native harness subpath export');

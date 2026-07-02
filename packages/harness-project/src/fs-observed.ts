@@ -110,7 +110,7 @@ import { TRACEKERNEL_BIN_PATH, TRACEKERNEL_SKILLS_ROOT } from './constants';
 import { assertNoNul, dirname, isRuntimeSkillsNamespacePath, isWithinWorkspace, mapWorkspaceAlias, normalizeRuntimeProjectPath, normalizeRuntimeSkillPath, normalizeRuntimeSkillsVirtualPath, normalizeWorkspaceCwd, resolveWorkspaceCommandPath, toProjectDirectoryPath, toProjectPath, toWorkspaceEntryPath, toWorkspacePath } from './paths';
 import { RuntimeFileGenerationConflictError, RuntimeFileSystemLockCoordinator, fsMutationGenerationPaths, fsMutationLockRequests, normalizeFsLockPath, type RuntimeFileSystemLockRequest, type RuntimeFileSystemMutationKind } from './locks';
 import { RuntimeKernelInterruptedError } from './scheduler';
-import type { JustBashRuntimeWorkspace } from './index';
+import type { RuntimeProjectWorkspace } from './index';
 
 export interface RuntimeDynamicProcEntry {
   name: string;
@@ -715,7 +715,7 @@ export async function withSuspendedFsNotifications<T>(fs: CommandContext['fs'], 
 
 
 export async function applyWorkspaceCommandResultFiles(
-  workspace: JustBashRuntimeWorkspace,
+  workspace: RuntimeProjectWorkspace,
   result: RuntimeCommandResult
 ): Promise<RuntimeCommandResult> {
   return workspace.applyFinalDiffResultFiles(result);

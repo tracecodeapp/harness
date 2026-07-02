@@ -340,7 +340,7 @@ import {
 } from './terminal-session';
 
 
-export type ProjectWorkspaceCommand = unknown;
+export type ProjectWorkspaceCommand = CustomCommand;
 
 export interface ProjectWorkspaceJavaScriptConfig {
   bootstrap?: string;
@@ -631,7 +631,7 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
   };
 }
 
-export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
+export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
   readonly projectSession?: RuntimeProjectSessionInfo;
   readonly cwd: string;
@@ -766,7 +766,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       });
     };
     const includeHiddenFilesForCurrentCommand = (ctx?: CommandContext) => this.resolveCommandContext(ctx)?.includeHiddenFiles === true;
-    const customCommands = [
+    const customCommands: CustomCommand[] = [
       ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
       ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
@@ -809,9 +809,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       cwd: this.cwd,
       env: options.env,
       commands: options.commands as never,
-      customCommands: customCommands.length > 0 ? customCommands as never : undefined,
+      customCommands: customCommands.length > 0 ? customCommands : undefined,
       python: options.python,
-      javascript: options.javascript as never,
+      javascript: options.javascript,
       executionLimits: options.executionLimits as never,
     };
     this.bash = this.createBash();
@@ -3918,7 +3918,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       return {
         stdout: '',
         stderr: `Project command is hidden: ${name}\n`,
-        exitCode: 403,
+        exitCode: 126,
       };
     }
     const runStep = (
@@ -4679,9 +4679,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
 export async function createRuntimeWorkspace(
   options: CreateRuntimeWorkspaceOptions = {}
-): Promise<JustBashRuntimeWorkspace> {
+): Promise<RuntimeProjectWorkspace> {
   options = normalizeRuntimeWorkspaceOptions(options);
-  const workspace = new JustBashRuntimeWorkspace(options);
+  const workspace = new RuntimeProjectWorkspace(options);
   await workspace.ensureReady();
   if (options.skills) {
     await workspace.writeSkillFiles(options.skills);
@@ -4696,6 +4696,9 @@ export async function createRuntimeWorkspace(
   }
   return workspace;
 }
+
+/** @deprecated Use RuntimeProjectWorkspace. */
+export { RuntimeProjectWorkspace as JustBashRuntimeWorkspace };
 
 export type {
   RuntimeCommandOptions,

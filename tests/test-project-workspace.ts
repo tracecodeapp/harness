@@ -12261,13 +12261,13 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   );
   const hiddenGateBlocked = await workspace.runProjectCommand('hiddenGate');
   assertCondition(
-    hiddenGateBlocked.exitCode === 403 &&
+    hiddenGateBlocked.exitCode === 126 &&
       hiddenGateBlocked.stderr === 'Project command is hidden: hiddenGate\n',
     `hidden project session commands should be blocked unless explicitly allowed: ${JSON.stringify(hiddenGateBlocked)}`
   );
   const hiddenGateBooleanBypass = await workspace.runProjectCommand('hiddenGate', { allowHidden: true });
   assertCondition(
-    hiddenGateBooleanBypass.exitCode === 403 &&
+    hiddenGateBooleanBypass.exitCode === 126 &&
       hiddenGateBooleanBypass.stderr === 'Project command is hidden: hiddenGate\n',
     `hidden project session commands should reject public boolean bypasses: ${JSON.stringify(hiddenGateBooleanBypass)}`
   );
