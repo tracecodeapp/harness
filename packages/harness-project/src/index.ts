@@ -6810,6 +6810,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private nextEphemeralHttpPort = 49152;
   private activeHttpRequests = 0;
   private destroyed = false;
+  private expirationDestroyScheduled = false;
   private terminalVerbose = false;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
@@ -8939,6 +8940,42 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return Boolean(this.projectSession?.lifecycle.expiredAt);
   }
 
+  private transitionExpiredIfDue(nowMs: number): boolean {
+    const session = this.projectSession;
+    if (!session) return false;
+    const lifecycle = session.lifecycle;
+    if (!lifecycle?.expiresAt) return false;
+    if (lifecycle.expiredAt) return true;
+    const expiresTime = new Date(lifecycle.expiresAt).getTime();
+    if (Number.isNaN(nowMs) || Number.isNaN(expiresTime) || nowMs < expiresTime) return false;
+    lifecycle.expiredAt = new Date(nowMs).toISOString();
+    this.emitRuntimeEvent({
+      type: 'lifecycle',
+      phase: 'session-expired',
+      message: 'Project session expired',
+      detail: {
+        sessionId: session.id,
+        expiresAt: lifecycle.expiresAt,
+        expiredAt: lifecycle.expiredAt,
+        expirationBehavior: lifecycle.expirationBehavior,
+      },
+      actor: SYSTEM_ACTOR,
+    });
+    return true;
+  }
+
+  private scheduleDestroyAfterExpiration(): void {
+    if (this.expirationDestroyScheduled) return;
+    this.expirationDestroyScheduled = true;
+    queueMicrotask(() => {
+      void this.destroy({ reason: 'expired', clearStorage: true }).catch(() => undefined);
+    });
+  }
+
+  private expiredCommandResult(command: string): RuntimeCommandResult {
+    return { stdout: '', stderr: `project session expired; command not run: ${command}\n`, exitCode: 1 };
+  }
+
   private assertNotDestroyed(): void {
     if (!this.destroyed) return;
     throw Object.assign(new Error('EINVAL: tracekernel session has been destroyed'), { code: 'EINVAL' });
@@ -8946,8 +8983,19 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private assertWorkspaceUsableForMutation(operation: string): void {
     this.assertNotDestroyed();
+    const lifecycle = this.projectSession?.lifecycle;
+    if (lifecycle?.expiresAt && !lifecycle.expiredAt) {
+      this.transitionExpiredIfDue(Date.now());
+    }
     if (this.isReadonlyPolicySuspended()) return;
-    if (!this.isSessionExpired() || this.projectSession?.lifecycle.expirationBehavior !== 'readonly') return;
+    if (!this.isSessionExpired()) return;
+    const expirationBehavior = this.projectSession?.lifecycle.expirationBehavior;
+    if (expirationBehavior === 'none') return;
+    if (expirationBehavior === 'destroy') {
+      this.scheduleDestroyAfterExpiration();
+    } else if (expirationBehavior !== 'readonly') {
+      return;
+    }
     throw Object.assign(
       new Error(`EROFS: project session expired, ${operation} '${this.cwd}'`),
       { code: 'EROFS' }
@@ -8966,8 +9014,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (this.destroyed) {
       return { stdout: '', stderr: 'tracekernel session has been destroyed\n', exitCode: 1 };
     }
-    if (this.isSessionExpired() && this.projectSession?.lifecycle.expirationBehavior === 'readonly') {
-      return { stdout: '', stderr: `project session expired; command not run: ${command}\n`, exitCode: 1 };
+    const lifecycle = this.projectSession?.lifecycle;
+    if (lifecycle?.expiresAt && !lifecycle.expiredAt) {
+      this.transitionExpiredIfDue(Date.now());
+    }
+    if (this.isSessionExpired()) {
+      if (this.projectSession?.lifecycle.expirationBehavior === 'readonly') {
+        return this.expiredCommandResult(command);
+      }
+      if (this.projectSession?.lifecycle.expirationBehavior === 'destroy') {
+        this.scheduleDestroyAfterExpiration();
+        return this.expiredCommandResult(command);
+      }
     }
     return null;
   }
@@ -10176,26 +10234,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async checkExpiration(now: Date | string | number = new Date()): Promise<RuntimeProjectSessionLifecycle | null> {
     this.assertNotDestroyed();
     if (!this.projectSession?.lifecycle.expiresAt) return this.projectSession?.lifecycle ?? null;
-    if (this.projectSession.lifecycle.expiredAt) return this.projectSession.lifecycle;
+    const wasExpired = Boolean(this.projectSession.lifecycle.expiredAt);
     const nowTime = now instanceof Date ? now.getTime() : new Date(now).getTime();
-    const expiresTime = new Date(this.projectSession.lifecycle.expiresAt).getTime();
-    if (Number.isNaN(nowTime) || Number.isNaN(expiresTime) || nowTime < expiresTime) {
-      return this.projectSession.lifecycle;
-    }
-    this.projectSession.lifecycle.expiredAt = new Date(nowTime).toISOString();
-    this.emitRuntimeEvent({
-      type: 'lifecycle',
-      phase: 'session-expired',
-      message: 'Project session expired',
-      detail: {
-        sessionId: this.projectSession.id,
-        expiresAt: this.projectSession.lifecycle.expiresAt,
-        expiredAt: this.projectSession.lifecycle.expiredAt,
-        expirationBehavior: this.projectSession.lifecycle.expirationBehavior,
-      },
-      actor: SYSTEM_ACTOR,
-    });
-    if (this.projectSession.lifecycle.expirationBehavior === 'destroy') {
+    const expired = this.transitionExpiredIfDue(nowTime);
+    if (expired && !wasExpired && this.projectSession.lifecycle.expirationBehavior === 'destroy') {
       await this.destroy({ reason: 'expired', clearStorage: true });
     }
     return this.projectSession.lifecycle;

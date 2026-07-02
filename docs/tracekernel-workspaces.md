@@ -177,11 +177,17 @@ mean the user intended to delete persisted state.
 workspace, and can clear browser storage when the browser factory supplied
 storage.
 
-`workspace.checkExpiration(...)` evaluates `projectSession.expiresAt`:
+`projectSession.expiresAt` is evaluated automatically the next time the
+workspace receives a mutation or command after the expiration time. That lazy
+transition stamps `expiredAt` and emits `session-expired` before applying the
+configured behavior:
 
 - `none`: mark lifecycle state only.
 - `readonly`: future mutations fail as read-only.
 - `destroy`: destroy the workspace and clear storage.
+
+`workspace.checkExpiration(...)` remains available when the host wants eager
+evaluation, for example to update idle UI before the next user action.
 
 Use lifecycle events and `projectSession.lifecycle` for UI state instead of
 guessing from command failures.

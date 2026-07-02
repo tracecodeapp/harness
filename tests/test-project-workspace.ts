@@ -399,6 +399,12 @@ async function assertRejectsAsync(fn: () => Promise<unknown>, message: string): 
   throw new Error(message);
 }
 
+async function waitForMacrotasks(count: number): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 async function processPidForCommand(workspace: RuntimeWorkspace, command: string): Promise<string> {
   const processes = await workspace.readFile('/proc/tracekernel/processes');
   const processLine = processes.split('\n').find((line) => line.endsWith(`\t${command}`));
@@ -13152,6 +13158,98 @@ async function testProjectSessionLifecycle(): Promise<void> {
   await assertRejectsAsync(() => controlWorkspace.readFile('main.txt'), 'tracekernelctl reset should destroy the workspace');
 }
 
+async function testExpiredReadonlySessionRejectsWithoutPolling(): Promise<void> {
+  const expiresAt = new Date(Date.now() - 1000).toISOString();
+  const workspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'lazy-readonly-expired',
+      expiresAt,
+      expirationBehavior: 'readonly',
+      files: [{ path: 'main.txt', contents: 'active\n' }],
+    },
+  });
+  const events: RuntimeWorkspaceEvent[] = [];
+  workspace.watch((event) => events.push(event));
+
+  let writeError: unknown;
+  try {
+    await workspace.writeFile('main.txt', 'blocked\n');
+  } catch (error) {
+    writeError = error;
+  }
+  const writeErrorCode = typeof writeError === 'object' && writeError !== null
+    ? (writeError as { code?: unknown }).code
+    : undefined;
+  assertCondition(writeErrorCode === 'EROFS', `expired readonly write should reject with EROFS: ${String(writeError)}`);
+
+  const result = await workspace.runCommand('echo hi');
+  assertCondition(
+    result.exitCode !== 0 && result.stderr.includes('project session expired'),
+    `expired readonly command should return the expired result without polling: ${JSON.stringify(result)}`
+  );
+  const expiredEvents = events.filter((event) => event.type === 'lifecycle' && event.phase === 'session-expired');
+  assertCondition(expiredEvents.length === 1, `lazy readonly expiration should emit once: ${JSON.stringify(events)}`);
+  assertCondition(await workspace.readFile('main.txt') === 'active\n', 'expired readonly sessions should still allow reads');
+  workspace.dispose();
+}
+
+async function testExpiredDestroySessionDestroysWithoutPolling(): Promise<void> {
+  const expiresAt = new Date(Date.now() - 1000).toISOString();
+  const workspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'lazy-destroy-expired',
+      expiresAt,
+      expirationBehavior: 'destroy',
+      files: [{ path: 'main.txt', contents: 'active\n' }],
+    },
+  });
+
+  const result = await workspace.runCommand('echo hi');
+  assertCondition(
+    result.exitCode !== 0 &&
+      result.stderr.includes('project session expired') &&
+      !result.stderr.includes('tracekernel session has been destroyed'),
+    `expired destroy command should reject as expired before async destroy runs: ${JSON.stringify(result)}`
+  );
+  await waitForMacrotasks(3);
+
+  let readError: unknown;
+  try {
+    await workspace.readFile('main.txt');
+  } catch (error) {
+    readError = error;
+  }
+  const readErrorMessage = readError instanceof Error ? readError.message : String(readError);
+  assertCondition(
+    readErrorMessage.includes('tracekernel session has been destroyed'),
+    `expired destroy session should reject reads after scheduled destroy: ${readErrorMessage}`
+  );
+  assertCondition(
+    Boolean(workspace.projectSession?.lifecycle.destroyedAt),
+    `expired destroy session should stamp destroyedAt: ${JSON.stringify(workspace.projectSession?.lifecycle)}`
+  );
+}
+
+async function testExpirationEmitsOnce(): Promise<void> {
+  const expiresAt = new Date(Date.now() - 1000).toISOString();
+  const workspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'lazy-readonly-expired-once',
+      expiresAt,
+      expirationBehavior: 'readonly',
+      files: [{ path: 'main.txt', contents: 'active\n' }],
+    },
+  });
+  const events: RuntimeWorkspaceEvent[] = [];
+  workspace.watch((event) => events.push(event));
+
+  await assertRejectsAsync(() => workspace.writeFile('main.txt', 'blocked once\n'), 'first expired mutation should reject');
+  await assertRejectsAsync(() => workspace.appendFile('main.txt', 'blocked twice\n'), 'second expired mutation should reject');
+  const expiredEvents = events.filter((event) => event.type === 'lifecycle' && event.phase === 'session-expired');
+  assertCondition(expiredEvents.length === 1, `expiration should emit once across repeated mutations: ${JSON.stringify(events)}`);
+  workspace.dispose();
+}
+
 async function testTraceKernelInfoConfig(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     kernel: {
@@ -13618,6 +13716,9 @@ async function main(): Promise<void> {
   await testTypeScriptProjectCommands();
   await testHardLanguageTakehomeMvpGate();
   await testProjectSessionLifecycle();
+  await testExpiredReadonlySessionRejectsWithoutPolling();
+  await testExpiredDestroySessionDestroysWithoutPolling();
+  await testExpirationEmitsOnce();
   await testTraceKernelInfoConfig();
   await testConfiguredKernelNativePythonAndNodeRunners();
   await testConfiguredKernelNativeCompiledRunners();
