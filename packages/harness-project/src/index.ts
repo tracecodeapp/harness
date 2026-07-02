@@ -640,6 +640,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly bash: Bash;
   private readonly bashOptions: BashOptions;
   private readonly fs: KernelObservedFileSystem;
+  // Cached RuntimeFile objects are immutable; consumers must shallow-copy arrays before filtering.
+  private snapshotCache: { version: number; files: RuntimeFile[]; directories: string[]; kernelFiles: RuntimeFile[] } | null = null;
   private readonly fsLocks = new RuntimeFileSystemLockCoordinator();
   private readonly commandScheduler: RuntimeCommandScheduler;
   private readonly entrypoint?: string;
@@ -766,12 +768,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       });
     };
     const includeHiddenFilesForCurrentCommand = (ctx?: CommandContext) => this.resolveCommandContext(ctx)?.includeHiddenFiles === true;
+    const snapshotProjectForCurrentCommand = (_ctx: CommandContext, includeHiddenFiles: boolean) =>
+      this.snapshotForCommand(includeHiddenFiles);
     const customCommands = [
-      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
-      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
-      ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
+      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
+      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
+      ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
-      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
+      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner), this.cwd, {
         recordExecutablePath: (path) => this.registerVirtualExecutable({ path, kind: 'cpp' }),
         entrypoint: this.entrypoint,
@@ -781,8 +785,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         readonlyFiles: this.projectSession?.readonlyFiles,
         hiddenFiles: this.projectSession?.hiddenFiles,
         includeHiddenFiles: includeHiddenFilesForCurrentCommand,
+        snapshotProject: snapshotProjectForCurrentCommand,
       }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
+      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
       defineCommand('bg', async (args, ctx) => this.runKernelJobPlacement(args, 'bg', ctx)),
       defineCommand('curl', async (args, ctx) => this.runKernelCurl(args, ctx)),
@@ -3317,6 +3322,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     this.skillFiles.clear();
     for (const [path, file] of nextFiles) this.skillFiles.set(path, file);
+    this.snapshotCache = null;
   }
 
   async appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
@@ -4215,12 +4221,19 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async snapshot(options: { entrypoint?: string; includeHidden?: boolean } = {}): Promise<RuntimeProjectSnapshot> {
     this.assertNotDestroyed();
-    const files: RuntimeFile[] = [];
-    const directories: string[] = [];
-    await this.collectFiles(this.cwd, files, directories);
-    files.sort((left, right) => left.path.localeCompare(right.path));
-    directories.sort((left, right) => left.localeCompare(right));
-    const kernelFiles = await snapshotRuntimeKernelVirtualFiles(this.bash.fs, this.kernelInfo);
+    return this.snapshotFromCachedFiles(options);
+  }
+
+  private async snapshotForCommand(includeHidden: boolean): Promise<RuntimeProjectSnapshot> {
+    this.assertNotDestroyed();
+    return this.snapshotFromCachedFiles({ includeHidden });
+  }
+
+  private async snapshotFromCachedFiles(options: { entrypoint?: string; includeHidden?: boolean } = {}): Promise<RuntimeProjectSnapshot> {
+    const cached = await this.collectWorkspaceFilesCached();
+    const files = [...cached.files];
+    const directories = [...cached.directories];
+    const kernelFiles = [...cached.kernelFiles];
     const publicKernel = publicRuntimeKernelInfo(this.kernelInfo);
     const snapshot: RuntimeProjectSnapshot = {
       cwd: this.cwd,
@@ -4666,6 +4679,30 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         deleted: true,
       })),
     ];
+  }
+
+  private async collectWorkspaceFilesCached(): Promise<{ files: RuntimeFile[]; directories: string[]; kernelFiles: RuntimeFile[] }> {
+    if (this.snapshotCache !== null && this.snapshotCache.version === this.fs.mutationVersion) {
+      return this.snapshotCache;
+    }
+
+    let lastWalk: { files: RuntimeFile[]; directories: string[]; kernelFiles: RuntimeFile[] } | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const version = this.fs.mutationVersion;
+      const files: RuntimeFile[] = [];
+      const directories: string[] = [];
+      await this.collectFiles(this.cwd, files, directories);
+      files.sort((left, right) => left.path.localeCompare(right.path));
+      directories.sort((left, right) => left.localeCompare(right));
+      const kernelFiles = await snapshotRuntimeKernelVirtualFiles(this.bash.fs, this.kernelInfo);
+      lastWalk = { files, directories, kernelFiles };
+      if (this.fs.mutationVersion === version) {
+        this.snapshotCache = { version, ...lastWalk };
+        return this.snapshotCache;
+      }
+    }
+
+    return lastWalk!;
   }
 
   private async collectFiles(absolutePath: string, files: RuntimeFile[], directories: string[]): Promise<void> {

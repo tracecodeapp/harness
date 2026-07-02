@@ -832,6 +832,10 @@ export class CommandBoundFileSystem implements IFileSystem {
     return this.inner.snapshotGenerations();
   }
 
+  get mutationVersion(): number {
+    return this.inner.mutationVersion;
+  }
+
   inodeForPath(path: string): number {
     return this.inner.inodeForPath(path);
   }
@@ -964,6 +968,7 @@ export class CommandBoundFileSystem implements IFileSystem {
 export class KernelObservedFileSystem implements IFileSystem {
   private suspendDepth = 0;
   private nextGeneration = 1;
+  private mutationCounter = 0;
   private nextInode = 10_000;
   private readonly generations = new Map<string, number>();
   private readonly inodes = new Map<string, number>();
@@ -995,6 +1000,10 @@ export class KernelObservedFileSystem implements IFileSystem {
 
   snapshotGenerations(): RuntimeFileSystemGenerationSnapshot {
     return new Map(this.generations);
+  }
+
+  get mutationVersion(): number {
+    return this.mutationCounter;
   }
 
   inodeForPath(path: string): number {
@@ -1483,6 +1492,7 @@ export class KernelObservedFileSystem implements IFileSystem {
   ): void {
     const generationPaths = [...new Set(this.mutationGenerationPaths(paths, kind))];
     if (generationPaths.length === 0) return;
+    this.mutationCounter += 1;
     const generation = this.nextGeneration++;
     for (const path of generationPaths) {
       this.generations.set(path, generation);

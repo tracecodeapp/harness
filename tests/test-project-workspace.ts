@@ -687,6 +687,86 @@ function comparableProjectSnapshot(snapshot: Awaited<ReturnType<RuntimeWorkspace
   };
 }
 
+async function testSnapshotCacheReusesUnchangedWorkspace(): Promise<void> {
+  const requests: JavaScriptProjectCommandRequest[] = [];
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'main.js', contents: 'console.log("main")\n' },
+      { path: 'src/value.txt', contents: 'one\n' },
+    ],
+    nodeRunner: async (request) => {
+      requests.push(request);
+      return { stdout: 'ok\n', stderr: '', exitCode: 0 };
+    },
+  });
+
+  await workspace.runCommand('node main.js');
+  await workspace.runCommand('node main.js');
+  const firstValue = requests[0]?.project.files.find((file) => file.path === 'src/value.txt');
+  const secondValue = requests[1]?.project.files.find((file) => file.path === 'src/value.txt');
+  assertCondition(firstValue !== undefined && secondValue !== undefined, 'snapshot cache test should capture the sampled file');
+  assertCondition(firstValue === secondValue, 'unchanged language command snapshots should reuse cached RuntimeFile objects');
+  assertCondition(requests[0]?.project.files !== requests[1]?.project.files, 'language command snapshots should still receive shallow-copied file arrays');
+
+  await workspace.writeFile('src/value.txt', 'two\n');
+  await workspace.runCommand('node main.js');
+  const thirdValue = requests[2]?.project.files.find((file) => file.path === 'src/value.txt');
+  assertCondition(thirdValue?.contents === 'two\n', `snapshot cache should invalidate after writeFile: ${JSON.stringify(thirdValue)}`);
+}
+
+async function testSnapshotCacheInvalidatesOnFinalDiff(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'main.js', contents: 'console.log("main")\n' },
+      { path: 'src/value.txt', contents: 'base\n' },
+    ],
+    nodeRunner: async (): Promise<RuntimeCommandResult> => ({
+      stdout: 'changed\n',
+      stderr: '',
+      exitCode: 0,
+      files: [{ path: 'src/value.txt', contents: 'from-final-diff\n' }],
+    }),
+  });
+
+  const primed = await workspace.snapshot();
+  assertCondition(
+    primed.files.find((file) => file.path === 'src/value.txt')?.contents === 'base\n',
+    'snapshot cache final-diff test should prime the original content'
+  );
+  const result = await workspace.runCommand('node main.js');
+  assertCondition(result.exitCode === 0, `final-diff command should succeed: ${JSON.stringify(result)}`);
+  const snapshot = await workspace.snapshot();
+  assertCondition(
+    snapshot.files.find((file) => file.path === 'src/value.txt')?.contents === 'from-final-diff\n',
+    `snapshot cache should invalidate for suspended final-diff writes: ${JSON.stringify(snapshot.files)}`
+  );
+}
+
+async function testSnapshotCacheRespectsHiddenFiltering(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'hidden-cache-test',
+      projectId: 'hidden-cache-project',
+      projectSlug: 'hidden-cache',
+      files: [
+        { path: 'src/main.js', contents: 'console.log("visible")\n' },
+        { path: '.trace/fixtures/input.txt', contents: 'hidden\n', hidden: true },
+      ],
+    },
+  });
+
+  const visible = await workspace.snapshot();
+  const hidden = await workspace.snapshot({ includeHidden: true });
+  assertCondition(!visible.files.some((file) => file.path === '.trace/fixtures/input.txt'), 'snapshot() should omit hidden files');
+  assertCondition(hidden.files.some((file) => file.path === '.trace/fixtures/input.txt'), 'snapshot({ includeHidden: true }) should include hidden files');
+  const visibleFile = visible.files.find((file) => file.path === 'src/main.js');
+  const hiddenVisibleFile = hidden.files.find((file) => file.path === 'src/main.js');
+  assertCondition(
+    visibleFile !== undefined && visibleFile === hiddenVisibleFile,
+    'visible and hidden-filtered snapshots should share cached RuntimeFile objects for the same generation'
+  );
+}
+
 async function testWorkspaceProjectPatchExportImport(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     entrypoint: 'src/main.txt',
@@ -13588,6 +13668,9 @@ function testPathValidation(): void {
 async function main(): Promise<void> {
   testPathValidation();
   await testWorkspaceFilesAndCommands();
+  await testSnapshotCacheReusesUnchangedWorkspace();
+  await testSnapshotCacheInvalidatesOnFinalDiff();
+  await testSnapshotCacheRespectsHiddenFiltering();
   await testWorkspaceProjectPatchExportImport();
   await testWorkspaceConcurrentAppendFile();
   await testWorkspaceConcurrentFilesystemMutations();

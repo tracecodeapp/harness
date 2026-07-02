@@ -114,6 +114,11 @@ import type { NormalizedRuntimePackageManagerConfig } from './package-manager';
 
 export type TraceKernelCommandKind = 'control' | 'runtime' | 'package-manager' | 'tool' | 'virtual-executable';
 
+export type RuntimeProjectSnapshotProvider = (
+  ctx: CommandContext,
+  includeHiddenFiles: boolean
+) => Promise<RuntimeProjectSnapshot>;
+
 
 export interface TraceKernelCommandInfo {
   name: string;
@@ -164,6 +169,21 @@ function runWithCommandContext<Request extends RuntimeProjectCommandRequest<stri
   ctx: CommandContext
 ): Promise<RuntimeCommandResult> {
   return (runner as (request: Request, ctx: CommandContext) => Promise<RuntimeCommandResult>)(request, ctx);
+}
+
+
+function snapshotProjectProvider(
+  workspaceRoot: string,
+  entrypoint?: string,
+  workspaceAlias?: string,
+  kernel?: RuntimeKernelInfo,
+  readonlyFiles?: readonly string[],
+  hiddenFiles?: readonly string[],
+  snapshotProject?: RuntimeProjectSnapshotProvider
+): RuntimeProjectSnapshotProvider {
+  return snapshotProject ?? ((ctx, includeHiddenFiles) =>
+    snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles)
+  );
 }
 
 
@@ -303,7 +323,8 @@ export function createPythonProjectCommands(
   kernel?: RuntimeKernelInfo,
   readonlyFiles?: readonly string[],
   hiddenFiles?: readonly string[],
-  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false
+  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false,
+  snapshotProject = snapshotProjectProvider(workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles)
 ): ProjectWorkspaceCommand[] {
   const runPython = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parsePythonInvocation(args);
@@ -377,7 +398,7 @@ export function createPythonProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles(ctx)),
+      project: await snapshotProject(ctx, includeHiddenFiles(ctx)),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
     }, ctx), onFileChange);
   };
@@ -398,7 +419,8 @@ export function createNodeProjectCommands(
   kernel?: RuntimeKernelInfo,
   readonlyFiles?: readonly string[],
   hiddenFiles?: readonly string[],
-  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false
+  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false,
+  snapshotProject = snapshotProjectProvider(workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles)
 ): ProjectWorkspaceCommand[] {
   const runNode = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parseNodeInvocation(args);
@@ -473,7 +495,7 @@ export function createNodeProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles(ctx)),
+      project: await snapshotProject(ctx, includeHiddenFiles(ctx)),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       ...(
         parsed.inputType || parsed.requireModules.length > 0
@@ -503,7 +525,8 @@ export function createTypeScriptProjectCommands(
   kernel?: RuntimeKernelInfo,
   readonlyFiles?: readonly string[],
   hiddenFiles?: readonly string[],
-  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false
+  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false,
+  snapshotProject = snapshotProjectProvider(workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles)
 ): ProjectWorkspaceCommand[] {
   const runTsc = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parseTscInvocation(args);
@@ -518,7 +541,7 @@ export function createTypeScriptProjectCommands(
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles(ctx)),
+      project: await snapshotProject(ctx, includeHiddenFiles(ctx)),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
     }, ctx), onFileChange);
   };
@@ -538,7 +561,8 @@ export function createJavaProjectCommands(
   kernel?: RuntimeKernelInfo,
   readonlyFiles?: readonly string[],
   hiddenFiles?: readonly string[],
-  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false
+  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false,
+  snapshotProject = snapshotProjectProvider(workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles)
 ): ProjectWorkspaceCommand[] {
   const runJavac = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -567,7 +591,7 @@ export function createJavaProjectCommands(
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles(ctx)),
+      project: await snapshotProject(ctx, includeHiddenFiles(ctx)),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
     }, ctx), onFileChange);
   };
@@ -618,7 +642,7 @@ export function createJavaProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles(ctx)),
+      project: await snapshotProject(ctx, includeHiddenFiles(ctx)),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       options: {
         ...(jarPath ? { jarPath, classpath: jarPath } : parsed.classpath ? { classpath: parsed.classpath } : {}),
@@ -649,8 +673,17 @@ export function createCppProjectCommands(
     readonlyFiles?: readonly string[];
     hiddenFiles?: readonly string[];
     includeHiddenFiles?: (ctx?: CommandContext) => boolean;
+    snapshotProject?: RuntimeProjectSnapshotProvider;
   } = {}
 ): ProjectWorkspaceCommand[] {
+  const snapshotProject = options.snapshotProject ?? snapshotProjectProvider(
+    workspaceRoot,
+    options.entrypoint,
+    options.workspaceAlias,
+    options.kernel,
+    options.readonlyFiles,
+    options.hiddenFiles
+  );
   const runCompiler = (compilerCommand: string) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
     try {
@@ -672,7 +705,7 @@ export function createCppProjectCommands(
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles, options.hiddenFiles, options.includeHiddenFiles?.(ctx) ?? false),
+      project: await snapshotProject(ctx, options.includeHiddenFiles?.(ctx) ?? false),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       options: { compilerCommand },
     }, ctx);
@@ -699,7 +732,7 @@ export function createCppProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
-      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles, options.hiddenFiles, options.includeHiddenFiles?.(ctx) ?? false),
+      project: await snapshotProject(ctx, options.includeHiddenFiles?.(ctx) ?? false),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
     }, ctx), options.onFileChange);
   };
@@ -726,7 +759,8 @@ export function createCSharpProjectCommands(
   kernel?: RuntimeKernelInfo,
   readonlyFiles?: readonly string[],
   hiddenFiles?: readonly string[],
-  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false
+  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false,
+  snapshotProject = snapshotProjectProvider(workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles)
 ): ProjectWorkspaceCommand[] {
   const runDotnet = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -743,7 +777,7 @@ export function createCSharpProjectCommands(
     }
 
     const project = filterReadonlySnapshotFiles(
-      await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles(ctx)),
+      await snapshotProject(ctx, includeHiddenFiles(ctx)),
       readonlyFiles,
       hiddenFiles
     );
