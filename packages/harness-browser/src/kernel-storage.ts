@@ -11,6 +11,8 @@ const ENCRYPTED_STORAGE_VERSION = 2;
 const MAX_STORAGE_OPTION_LENGTH = 256;
 const STORAGE_ENCRYPTION_ALGORITHM = 'AES-GCM';
 const STORAGE_ENCRYPTION_IV_BYTES = 12;
+const PERSIST_DEBOUNCE_MS = 250;
+const PERSIST_MAX_STALENESS_MS = 2000;
 const storageTextEncoder = new TextEncoder();
 const storageTextDecoder = new TextDecoder();
 
@@ -257,24 +259,67 @@ export function bindBrowserKernelStorage(
   }
 
   let pendingPersist: Promise<void> = Promise.resolve();
-  const persist = (): void => {
+  let persistQueued = false;
+  let dirty = false;
+  let lastCompletedPersistAt = Date.now();
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const cancelDebounceTimer = (): void => {
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+  };
+
+  const queuePersist = (): void => {
+    if (persistQueued) return;
+    persistQueued = true;
     pendingPersist = pendingPersist
       .catch(() => undefined)
       .then(async () => {
-        await storage.save(await workspace.snapshot());
+        persistQueued = false;
+        if (!dirty) return;
+        dirty = false;
+        let snapshot: RuntimeProjectSnapshot;
+        try {
+          snapshot = await workspace.snapshot();
+        } catch {
+          return;
+        }
+        await storage.save(snapshot);
+        lastCompletedPersistAt = Date.now();
       });
   };
 
+  const schedulePersist = (): void => {
+    cancelDebounceTimer();
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      if (dirty) queuePersist();
+    }, PERSIST_DEBOUNCE_MS);
+  };
+
   const unsubscribe: RuntimeWorkspaceUnsubscribe = workspace.watch((event) => {
-    if (event.type === 'file-change') persist();
+    if (event.type !== 'file-change') return;
+    dirty = true;
+    if (Date.now() - lastCompletedPersistAt >= PERSIST_MAX_STALENESS_MS) {
+      cancelDebounceTimer();
+      queuePersist();
+      return;
+    }
+    schedulePersist();
   });
 
   return {
     async flush(): Promise<void> {
+      cancelDebounceTimer();
+      if (dirty) queuePersist();
       await pendingPersist;
       await storage.flush?.();
     },
     dispose(): void {
+      cancelDebounceTimer();
+      if (dirty) queuePersist();
       unsubscribe();
     },
   };

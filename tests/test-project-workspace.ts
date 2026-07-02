@@ -35,7 +35,11 @@ import {
   createBrowserPythonProjectRunner,
   createPyodidePythonProjectRunner,
 } from '../packages/harness-python/src/project-browser';
-import { createBrowserProjectWorkspace, createIndexedDbKernelStorage } from '../packages/harness-browser/src/project';
+import {
+  type CreateBrowserProjectWorkspaceOptions,
+  createBrowserProjectWorkspace,
+  createIndexedDbKernelStorage,
+} from '../packages/harness-browser/src/project';
 import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../packages/harness-javascript/src/project-node';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
@@ -52,11 +56,48 @@ const testTextDecoder = new TextDecoder();
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);
 const expectedTraceKernelVersion = projectPackageJson.version;
+type TestRuntimeProjectSnapshot = Awaited<ReturnType<RuntimeWorkspace['snapshot']>>;
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function cloneProjectSnapshot(snapshot: TestRuntimeProjectSnapshot): TestRuntimeProjectSnapshot {
+  return JSON.parse(JSON.stringify(snapshot)) as TestRuntimeProjectSnapshot;
+}
+
+function throwingBrowserWorkerClients(): Pick<
+  CreateBrowserProjectWorkspaceOptions,
+  'pythonWorkerClient' | 'javaWorkerClient' | 'csharpWorkerClient' | 'cppWorkerClient'
+> {
+  return {
+    pythonWorkerClient: {
+      async executeProjectPython() {
+        throw new Error('unexpected Python runner call');
+      },
+      terminate() {},
+    },
+    javaWorkerClient: {
+      async executeProjectJava() {
+        throw new Error('unexpected Java runner call');
+      },
+      terminate() {},
+    },
+    csharpWorkerClient: {
+      async executeProjectCSharp() {
+        throw new Error('unexpected C# runner call');
+      },
+      terminate() {},
+    },
+    cppWorkerClient: {
+      async executeProjectCpp() {
+        throw new Error('unexpected C++ runner call');
+      },
+      terminate() {},
+    },
+  };
 }
 
 function stdinPipe(text: string) {
@@ -10056,6 +10097,84 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   }
 }
 
+async function testBrowserKernelStorageCoalescesPersistence(): Promise<void> {
+  const savedSnapshots: TestRuntimeProjectSnapshot[] = [];
+  const workspace = await createBrowserProjectWorkspace({
+    files: [],
+    kernelStorage: {
+      async load() {
+        return null;
+      },
+      async save(snapshot) {
+        savedSnapshots.push(cloneProjectSnapshot(snapshot));
+      },
+      async clear() {},
+      async flush() {},
+    },
+    ...throwingBrowserWorkerClients(),
+  });
+  try {
+    const files = Array.from({ length: 20 }, (_, index) => ({
+      path: `coalesced-${index}.txt`,
+      contents: `coalesced ${index}\n`,
+    }));
+    await workspace.writeFiles(files);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+
+    assertCondition(
+      savedSnapshots.length <= 3,
+      `browser kernel storage should coalesce tight file-change bursts: ${savedSnapshots.length} saves`
+    );
+    const lastSnapshot = savedSnapshots[savedSnapshots.length - 1];
+    if (!lastSnapshot) {
+      throw new Error('browser kernel storage should save at least one snapshot');
+    }
+    for (const file of files) {
+      assertCondition(
+        lastSnapshot.files.some((savedFile) => savedFile.path === file.path && savedFile.contents === file.contents),
+        `browser kernel storage last snapshot should include ${file.path}: ${JSON.stringify(lastSnapshot.files)}`
+      );
+    }
+  } finally {
+    await workspace.destroy({ reason: 'test' });
+  }
+}
+
+async function testBrowserKernelStorageFlushPersistsDirtyState(): Promise<void> {
+  const storageEvents: string[] = [];
+  const workspace = await createBrowserProjectWorkspace({
+    files: [],
+    kernelStorage: {
+      async load() {
+        return null;
+      },
+      async save(snapshot) {
+        const savedDirtyFile = snapshot.files.some((file) =>
+          file.path === 'dirty.txt' && file.contents === 'dirty\n'
+        );
+        storageEvents.push(savedDirtyFile ? 'save:dirty' : `save:${snapshot.files.length}`);
+      },
+      async clear() {
+        storageEvents.push('clear');
+      },
+      async flush() {
+        storageEvents.push('flush');
+      },
+    },
+    ...throwingBrowserWorkerClients(),
+  });
+
+  await workspace.writeFile('dirty.txt', 'dirty\n');
+  await workspace.destroy({ reason: 'test', clearStorage: true });
+
+  const dirtySaveIndex = storageEvents.indexOf('save:dirty');
+  const clearIndex = storageEvents.indexOf('clear');
+  assertCondition(
+    dirtySaveIndex >= 0 && clearIndex > dirtySaveIndex,
+    `browser kernel storage destroy should flush dirty state before clearing storage: ${JSON.stringify(storageEvents)}`
+  );
+}
+
 async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
   const events: RuntimeWorkspaceEvent[] = [];
   const pythonRequests: PythonProjectCommandRequest[] = [];
@@ -13394,6 +13513,8 @@ async function main(): Promise<void> {
   await testBrowserCSharpProjectRunnerAdapter();
   await testBrowserCppProjectRunnerAdapter();
   await testBrowserProjectWorkspaceFactory();
+  await testBrowserKernelStorageCoalescesPersistence();
+  await testBrowserKernelStorageFlushPersistsDirtyState();
   await testBrowserProjectWorkspaceTraceKernelConfig();
   await testBrowserProjectWorkspaceAdvancedCommandTranslation();
   await testNativeProjectWorkspaceFactory();
