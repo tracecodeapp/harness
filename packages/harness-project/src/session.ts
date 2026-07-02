@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   defineCommand,
 } from 'just-bash/browser';

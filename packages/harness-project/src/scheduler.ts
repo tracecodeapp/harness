@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   defineCommand,
 } from 'just-bash/browser';
@@ -104,20 +103,8 @@ import type {
 } from './index';
 
 
-
-export function isBrowserAsyncLocalStorageSingleFlight(): boolean {
-  return (AsyncLocalStorage as typeof AsyncLocalStorage & { __tracecodeBrowserSingleFlight?: unknown })
-    .__tracecodeBrowserSingleFlight === true;
-}
-
-
 export function normalizeRuntimeSchedulerConfig(config: RuntimeTraceKernelSchedulerConfig | undefined): RuntimeCommandSchedulerOptions {
-  const forceSingleFlight = isBrowserAsyncLocalStorageSingleFlight();
-  const defaultMaxConcurrentCommands = forceSingleFlight
-    ? 1
-    : typeof (globalThis as { process?: unknown }).process === 'object'
-      ? 32
-      : 1;
+  const defaultMaxConcurrentCommands = typeof (globalThis as { process?: unknown }).process === 'object' ? 32 : 4;
   const configuredMaxConcurrentCommands = Number.isFinite(config?.maxConcurrentCommands)
     ? Math.max(1, Math.floor(config?.maxConcurrentCommands ?? 0))
     : defaultMaxConcurrentCommands;
@@ -125,7 +112,7 @@ export function normalizeRuntimeSchedulerConfig(config: RuntimeTraceKernelSchedu
     ? undefined
     : Math.max(0, Math.floor(config.maxQueuedCommands));
   return {
-    maxConcurrentCommands: forceSingleFlight ? 1 : configuredMaxConcurrentCommands,
+    maxConcurrentCommands: configuredMaxConcurrentCommands,
     ...(maxQueuedCommands !== undefined ? { maxQueuedCommands } : {}),
   };
 }

@@ -24,8 +24,6 @@
     "tracecode-harness": "./dist/cli.cjs"
   },
   "browser": {
-    "async_hooks": "./dist/async-hooks-browser-shim.js",
-    "node:async_hooks": "./dist/async-hooks-browser-shim.js",
     "zlib": "./dist/zlib-browser-shim.js",
     "node:zlib": "./dist/zlib-browser-shim.js"
   },

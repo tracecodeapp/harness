@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   Bash,
   defineCommand,
@@ -243,6 +242,7 @@ import {
 } from './patches';
 import {
   KernelObservedFileSystem,
+  CommandBoundFileSystem,
   applyWorkspaceCommandResultFiles,
   assertSupportedEncoding,
   base64FromBytes,
@@ -281,11 +281,14 @@ import {
   snapshotRuntimeKernelVirtualFiles,
   textToByteString,
   withSuspendedFsNotifications,
+  commandContextForFs,
+  registerCommandContext,
   throwKernelMutationTargetError,
   throwKernelReadTargetError,
   throwKernelWriteTargetError,
   type RuntimeDynamicProcEntry,
   type RuntimeDynamicProcProvider,
+  type RuntimeCommandExecutionContext,
   type RuntimeFileChangeObserver,
   type RuntimeFileSystemCommandGenerationContext,
   type RuntimeFileSystemGenerationSnapshot,
@@ -484,23 +487,6 @@ function traceKernelTsv(value: unknown): string {
   return String(value ?? '').replace(/[\t\r\n]+/g, ' ');
 }
 
-interface RuntimeCommandExecutionContext {
-  readonly eventHandler?: RuntimeCommandEventHandler;
-  readonly actor: RuntimeWorkspaceActor;
-  readonly process: RuntimeKernelProcessRecord;
-  readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
-  readonly includeHiddenFiles?: boolean;
-  readonly runtimeIo: RuntimeProjectLiveIoController;
-  readonly generationBaseline: RuntimeFileSystemGenerationSnapshot;
-  readonly mutatedGenerationPaths: Set<string>;
-  kernelError?: RuntimeCommandError;
-  executableTransformCwd?: string;
-  deviceStdout: string;
-  deviceStderr: string;
-  outputBytes: Record<RuntimeCommandEventStream, number>;
-  truncatedOutputStreams: Set<RuntimeCommandEventStream>;
-}
-
 type RuntimeKernelProcessState = 'queued' | 'running' | 'signaled' | 'zombie' | 'exited';
 type RuntimeKernelTtyName = RuntimeKernelDevicePath | '?';
 
@@ -665,7 +651,6 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly traceKernelCommandNames: ReadonlySet<string>;
   private readonly skillFiles = new Map<string, RuntimeFile>();
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
-  private readonly commandExecutionContexts = new AsyncLocalStorage<RuntimeCommandExecutionContext>();
   private readonly processTable = new Map<number, RuntimeKernelProcessRecord>();
   private readonly zombieProcessTable = new Map<number, RuntimeKernelZombieRecord>();
   private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
@@ -715,35 +700,20 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       () => this.kernelInfo,
       (absolutePath, operation) => this.assertWorkspacePathWritable(absolutePath, operation),
       (absolutePath, operation) => this.assertWorkspaceSubtreeWritable(absolutePath, operation),
-      () => this.currentCommandContext()?.generationBaseline,
-      () => {
-        const context = this.currentCommandContext();
-        return context
-          ? {
-              baseline: context.generationBaseline,
-              mutatedPaths: context.mutatedGenerationPaths,
-              pid: context.process.pid,
-              signal: context.process.abortController!.signal,
-              setError: (error) => {
-                context.kernelError = error;
-              },
-            }
-          : undefined;
-      },
       (event) => this.recordKernelEvent(event.type, event.pid, event.detail),
       this.createDynamicProcProvider(),
-      (change) => {
-        if (!this.currentCommandContext()) return;
-        this.emitLocalRuntimeEvent({ type: 'file-change', change, phase: 'live' });
+      (context, change) => {
+        if (!context) return;
+        this.emitLocalRuntimeEvent({ type: 'file-change', change, phase: 'live' }, context);
       },
-      (device) => this.readDevice(device),
-      (device, data) => this.writeDevice(device, data)
+      (context, device) => this.readDevice(device, context),
+      (context, device, data) => this.writeDevice(device, data, context)
     );
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>
     ): RuntimeProjectCommandRunner<Request> => (
-      async (request) => {
-        const commandContext = this.currentCommandContext();
+      async (request, ctx?: CommandContext) => {
+        const commandContext = this.resolveCommandContext(ctx);
         const activeStdinPipe = request.source !== 'compile' && request.source !== 'stdin'
           ? commandContext?.stdinPipe
           : undefined;
@@ -757,13 +727,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
             ...request,
             ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
             ...(signal ? { signal } : {}),
-            kernelHttp: this.createKernelHttpBridge(),
+            kernelHttp: this.createKernelHttpBridge(commandContext),
             onEvent: (event) => {
               if (!acceptingRunnerEvents || signal?.aborted) return;
               if (runtimeIo) {
                 runtimeIo.handleRuntimeEvent(event);
               } else {
-                this.handleRuntimeCommandEvent(event);
+                this.handleRuntimeCommandEvent(event, commandContext);
               }
             },
           } as Request);
@@ -777,9 +747,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         await this.flushRuntimeEventQueue();
         return result;
       }
-    );
-    const observeFileChange: RuntimeFileChangeObserver = (change, phase) => {
-      this.emitLocalRuntimeEvent({ type: 'file-change', change, phase });
+    ) as RuntimeProjectCommandRunner<Request>;
+    const observeFileChange: RuntimeFileChangeObserver = (change, phase, context) => {
+      this.emitLocalRuntimeEvent({ type: 'file-change', change, phase }, context);
     };
     const packageManagerConfig = normalizePackageManagerConfig(
       options.packageManager,
@@ -795,7 +765,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         data,
       });
     };
-    const includeHiddenFilesForCurrentCommand = () => this.currentCommandContext()?.includeHiddenFiles === true;
+    const includeHiddenFilesForCurrentCommand = (ctx?: CommandContext) => this.resolveCommandContext(ctx)?.includeHiddenFiles === true;
     const customCommands = [
       ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
       ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
@@ -814,25 +784,25 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       }) : []),
       ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
       defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
-      defineCommand('bg', async (args) => this.runKernelJobPlacement(args, 'bg')),
+      defineCommand('bg', async (args, ctx) => this.runKernelJobPlacement(args, 'bg', ctx)),
       defineCommand('curl', async (args, ctx) => this.runKernelCurl(args, ctx)),
-      defineCommand('fg', async (args) => this.runKernelJobPlacement(args, 'fg')),
-      defineCommand('kill', async (args) => this.runKernelKill(args, 'kill')),
-      defineCommand('jobs', async (args) => this.runKernelJobs(args)),
+      defineCommand('fg', async (args, ctx) => this.runKernelJobPlacement(args, 'fg', ctx)),
+      defineCommand('kill', async (args, ctx) => this.runKernelKill(args, 'kill', ctx)),
+      defineCommand('jobs', async (args, ctx) => this.runKernelJobs(args, ctx)),
       defineCommand('ls', async (args, ctx) => this.runKernelAwareLs(args, ctx)),
-      defineCommand('ps', async (args) => this.runKernelPs(args)),
-      defineCommand('tracekernelctl', (args) => this.runTraceKernelCtl(args)),
-      defineCommand('wait', (args) => this.runKernelWait(args, 'wait')),
-      defineCommand('which', async (args) => this.runTraceKernelWhich(args, 'which')),
-      defineCommand('command', async (args) => this.runTraceKernelCommandBuiltin(args)),
+      defineCommand('ps', async (args, ctx) => this.runKernelPs(args, ctx)),
+      defineCommand('tracekernelctl', (args, ctx) => this.runTraceKernelCtl(args, ctx)),
+      defineCommand('wait', (args, ctx) => this.runKernelWait(args, 'wait', ctx)),
+      defineCommand('which', async (args, ctx) => this.runTraceKernelWhich(args, 'which', ctx)),
+      defineCommand('command', async (args, ctx) => this.runTraceKernelCommandBuiltin(args, ctx)),
       ...(options.customCommands ?? []),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}bg`, async (args) => this.runKernelJobPlacement(args, 'bg')),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}command`, async (args) => this.runTraceKernelCommandBuiltin(args)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}fg`, async (args) => this.runKernelJobPlacement(args, 'fg')),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}kill`, async (args) => this.runKernelKill(args, 'kill')),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}jobs`, async (args) => this.runKernelJobs(args)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}ps`, async (args) => this.runKernelPs(args)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`, (args) => this.runKernelWait(args, 'wait')),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}bg`, async (args, ctx) => this.runKernelJobPlacement(args, 'bg', ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}command`, async (args, ctx) => this.runTraceKernelCommandBuiltin(args, ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}fg`, async (args, ctx) => this.runKernelJobPlacement(args, 'fg', ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}kill`, async (args, ctx) => this.runKernelKill(args, 'kill', ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}jobs`, async (args, ctx) => this.runKernelJobs(args, ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}ps`, async (args, ctx) => this.runKernelPs(args, ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`, (args, ctx) => this.runKernelWait(args, 'wait', ctx)),
     ].map((command) => this.withKernelCommandSignal(command as CustomCommand));
     this.bashOptions = {
       fs: this.fs,
@@ -864,13 +834,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private withCurrentKernelSignal(ctx: CommandContext): CommandContext {
-    const signal = this.currentCommandContext()?.process.abortController?.signal;
+    const signal = this.resolveCommandContext(ctx)?.process.abortController?.signal;
     return signal && signal !== ctx.signal ? { ...ctx, signal } : ctx;
   }
 
-  private createBash(executionLimits?: RuntimeCommandExecutionLimits): Bash {
+  private createBash(
+    executionLimits?: RuntimeCommandExecutionLimits,
+    commandContext?: RuntimeCommandExecutionContext,
+    fs?: IFileSystem
+  ): Bash {
     const bash = new Bash({
       ...this.bashOptions,
+      ...(fs ? { fs } : {}),
       ...(executionLimits ? { executionLimits: executionLimits as never } : {}),
     });
     bash.registerTransformPlugin({
@@ -878,7 +853,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       transform: ({ ast }: { ast: unknown }) => {
         rewriteTraceKernelBinInvocationsInAst(ast, this.traceKernelCommandNames);
         rewriteKernelShellCommandInvocationsInAst(ast);
-        const executableTransformCwd = this.currentCommandContext()?.executableTransformCwd;
+        const executableTransformCwd = commandContext?.executableTransformCwd;
         if (this.hasVirtualExecutableLoaders() && executableTransformCwd) {
           rewriteVirtualExecutableInvocationsInAst(
             ast,
@@ -894,16 +869,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return bash;
   }
 
-  private currentCommandContext(): RuntimeCommandExecutionContext | undefined {
-    return this.commandExecutionContexts.getStore();
-  }
-
-  private currentCommandActor(): RuntimeWorkspaceActor | undefined {
-    return this.currentCommandContext()?.actor;
-  }
-
-  private currentRuntimeIo(): RuntimeProjectLiveIoController | undefined {
-    return this.currentCommandContext()?.runtimeIo;
+  private resolveCommandContext(ctx?: CommandContext): RuntimeCommandExecutionContext | undefined {
+    return ctx?.fs ? commandContextForFs(ctx.fs) : undefined;
   }
 
   private hasHttpCapability(actor: RuntimeWorkspaceActor, capability: keyof NonNullable<RuntimeWorkspaceCapabilities['http']>): boolean {
@@ -921,9 +888,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     );
   }
 
-  private createKernelHttpBridge(): RuntimeKernelHttpBridge {
-    const actor = this.currentCommandActor() ?? SYSTEM_ACTOR;
-    const context = this.currentCommandContext();
+  private createKernelHttpBridge(context?: RuntimeCommandExecutionContext): RuntimeKernelHttpBridge {
+    const actor = context?.actor ?? SYSTEM_ACTOR;
     const owner = context
       ? { pid: context.process.pid, idPrefix: 'http', actor }
       : { pid: 0, idPrefix: 'http-system', actor };
@@ -1251,12 +1217,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     handler: RuntimeKernelHttpHandler,
     owner?: RuntimeKernelHttpListenerOwner
   ): RuntimeKernelHttpListenerHandle {
-    const context = this.currentCommandContext();
-    const actor = owner?.actor ?? context?.actor ?? SYSTEM_ACTOR;
+    const actor = owner?.actor ?? SYSTEM_ACTOR;
     this.assertHttpCapability(actor, 'listen');
-    const listenerOwner = owner ?? (context
-      ? { pid: context.process.pid, idPrefix: 'http', actor }
-      : undefined);
+    const listenerOwner = owner;
     if (!listenerOwner) {
       throw Object.assign(new Error('EINVAL: listen requires an active tracekernel process'), { code: 'EINVAL' });
     }
@@ -1355,7 +1318,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       actor?: RuntimeWorkspaceActor;
     } = {}
   ): Promise<RuntimeKernelHttpResponse> {
-    const actor = options.actor ?? this.currentCommandActor() ?? SYSTEM_ACTOR;
+    const actor = options.actor ?? SYSTEM_ACTOR;
     try {
       this.assertHttpCapability(actor, 'dispatch');
     } catch (error) {
@@ -1519,16 +1482,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   recordKernelCommandError(error: unknown): void {
     const commandError = runtimeCommandError(error);
-    const context = this.currentCommandContext();
-    if (commandError && context) context.kernelError = commandError;
+    if (!commandError) return;
   }
 
   private createDynamicProcProvider(): RuntimeDynamicProcProvider {
     return {
-      readFile: (path) => this.readDynamicVirtualFile(path),
-      readDir: (path) => this.readDynamicVirtualDir(path),
-      entryKind: (path) => this.dynamicVirtualEntryKind(path),
-      stat: (path) => this.dynamicVirtualStat(path),
+      readFile: (path, context) => this.readDynamicVirtualFile(path, context),
+      readDir: (path, context) => this.readDynamicVirtualDir(path, context),
+      entryKind: (path, context) => this.dynamicVirtualEntryKind(path, context),
+      stat: (path, context) => this.dynamicVirtualStat(path, context),
       readonlyNamespace: (path) =>
         Boolean(normalizeRuntimeProcPath(path)) ||
         isTraceKernelVirtualNamespacePath(path) ||
@@ -1553,8 +1515,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private currentProcSelfRecord(): RuntimeKernelProcessRecord {
-    return this.currentCommandContext()?.process ?? this.principalProcessRecord();
+  private currentProcSelfRecord(context?: RuntimeCommandExecutionContext): RuntimeKernelProcessRecord {
+    return (context?.process as RuntimeKernelProcessRecord | undefined) ?? this.principalProcessRecord();
   }
 
   private standardProcessFileDescriptors(): readonly RuntimeKernelFileDescriptorRecord[] {
@@ -1646,8 +1608,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return true;
   }
 
-  private signalProcessGroup(pgid: number, signalName = 'SIGTERM'): number {
-    const currentPid = this.currentCommandContext()?.process.pid;
+  private signalProcessGroup(pgid: number, signalName = 'SIGTERM', currentPid?: number): number {
     let signaled = 0;
     for (const process of this.activeProcessRecords()) {
       if (process.pgid !== pgid || process.pid === currentPid || process.pid === 1 || process.state === 'exited') continue;
@@ -1665,8 +1626,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private async reapZombieProcess(pid?: number, commandName = 'tracekernelctl'): Promise<RuntimeCommandResult> {
-    const process = await this.waitForZombieProcess(pid);
+  private async reapZombieProcess(pid?: number, commandName = 'tracekernelctl', currentPid?: number): Promise<RuntimeCommandResult> {
+    const process = await this.waitForZombieProcess(pid, currentPid);
     if (!process) {
       return { stdout: '', stderr: `${commandName}: no child process${pid === undefined ? '' : `: ${pid}`}\n`, exitCode: 10 };
     }
@@ -1685,9 +1646,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private waitForZombieProcess(pid?: number): Promise<RuntimeKernelProcessRecord | undefined> {
+  private waitForZombieProcess(pid?: number, currentPid?: number): Promise<RuntimeKernelProcessRecord | undefined> {
     this.purgeZombieProcessTable();
-    const currentPid = this.currentCommandContext()?.process.pid;
     const zombie = pid === undefined ? this.firstZombieProcessRecord() : this.zombieProcessTable.get(pid)?.process;
     if (zombie?.state === 'zombie') return Promise.resolve(zombie);
     if (pid !== undefined && (pid === currentPid || !this.processTable.has(pid))) return Promise.resolve(undefined);
@@ -1861,36 +1821,36 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private readDynamicVirtualFile(path: string): string | null {
+  private readDynamicVirtualFile(path: string, context?: RuntimeCommandExecutionContext): string | null {
     const skillFile = this.readDynamicSkillsFile(path);
     if (skillFile !== null) return skillFile;
     const traceKernelFile = this.readDynamicTraceKernelFile(path);
     if (traceKernelFile !== null) return traceKernelFile;
-    return this.readDynamicProcFile(path);
+    return this.readDynamicProcFile(path, context);
   }
 
-  private readDynamicVirtualDir(path: string): RuntimeDynamicProcEntry[] | null {
-    return this.readDynamicSkillsDir(path) ?? this.readDynamicTraceKernelDir(path) ?? this.readDynamicProcDir(path);
+  private readDynamicVirtualDir(path: string, context?: RuntimeCommandExecutionContext): RuntimeDynamicProcEntry[] | null {
+    return this.readDynamicSkillsDir(path) ?? this.readDynamicTraceKernelDir(path) ?? this.readDynamicProcDir(path, context);
   }
 
-  private dynamicVirtualEntryKind(path: string): 'file' | 'directory' | null {
-    return this.dynamicSkillsEntryKind(path) ?? this.dynamicTraceKernelEntryKind(path) ?? this.dynamicProcEntryKind(path);
+  private dynamicVirtualEntryKind(path: string, context?: RuntimeCommandExecutionContext): 'file' | 'directory' | null {
+    return this.dynamicSkillsEntryKind(path) ?? this.dynamicTraceKernelEntryKind(path) ?? this.dynamicProcEntryKind(path, context);
   }
 
-  private dynamicVirtualStat(path: string): RuntimeKernelVirtualStat | null {
-    return this.dynamicSkillsStat(path) ?? this.dynamicTraceKernelStat(path) ?? this.dynamicProcStat(path);
+  private dynamicVirtualStat(path: string, context?: RuntimeCommandExecutionContext): RuntimeKernelVirtualStat | null {
+    return this.dynamicSkillsStat(path) ?? this.dynamicTraceKernelStat(path) ?? this.dynamicProcStat(path, context);
   }
 
-  private readDynamicProcFile(path: string): string | null {
+  private readDynamicProcFile(path: string, context?: RuntimeCommandExecutionContext): string | null {
     const procPath = normalizeRuntimeProcPath(path);
     if (!procPath) return null;
-    if (procPath === '/proc/self/status') return this.renderProcStatus(this.currentProcSelfRecord());
-    if (procPath === '/proc/self/cmdline') return `${this.currentProcSelfRecord().command}\0`;
+    if (procPath === '/proc/self/status') return this.renderProcStatus(this.currentProcSelfRecord(context));
+    if (procPath === '/proc/self/cmdline') return `${this.currentProcSelfRecord(context).command}\0`;
     {
       const selfFd = procPath.match(/^\/proc\/self\/fd\/([0-9]+)$/);
-      if (selfFd) return this.renderProcFd(this.currentProcSelfRecord(), Number(selfFd[1]));
+      if (selfFd) return this.renderProcFd(this.currentProcSelfRecord(context), Number(selfFd[1]));
       const selfFdInfo = procPath.match(/^\/proc\/self\/fdinfo\/([0-9]+)$/);
-      if (selfFdInfo) return this.renderProcFdInfo(this.currentProcSelfRecord(), Number(selfFdInfo[1]));
+      if (selfFdInfo) return this.renderProcFdInfo(this.currentProcSelfRecord(context), Number(selfFdInfo[1]));
     }
     if (procPath === '/proc/tracekernel/commands') return this.renderProcCommands();
     if (procPath === '/proc/tracekernel/events') return this.renderProcEvents();
@@ -1913,7 +1873,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return file.startsWith('fdinfo/') ? this.renderProcFdInfo(process, fd) : this.renderProcFd(process, fd);
   }
 
-  private readDynamicProcDir(path: string): RuntimeDynamicProcEntry[] | null {
+  private readDynamicProcDir(path: string, context?: RuntimeCommandExecutionContext): RuntimeDynamicProcEntry[] | null {
     const procPath = normalizeRuntimeProcPath(path);
     if (!procPath) return null;
     if (procPath === '/proc') {
@@ -1934,10 +1894,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ];
     }
     if (procPath === '/proc/self/fd') {
-      return this.currentProcSelfRecord().fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
+      return this.currentProcSelfRecord(context).fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
     }
     if (procPath === '/proc/self/fdinfo') {
-      return this.currentProcSelfRecord().fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
+      return this.currentProcSelfRecord(context).fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
     }
     if (procPath === '/proc/tracekernel') {
       return [
@@ -1975,17 +1935,17 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     ];
   }
 
-  private dynamicProcEntryKind(path: string): 'file' | 'directory' | null {
+  private dynamicProcEntryKind(path: string, context?: RuntimeCommandExecutionContext): 'file' | 'directory' | null {
     const procPath = normalizeRuntimeProcPath(path);
     if (!procPath) return null;
-    if (this.readDynamicProcDir(procPath)) return 'directory';
-    return this.readDynamicProcFile(procPath) !== null ? 'file' : null;
+    if (this.readDynamicProcDir(procPath, context)) return 'directory';
+    return this.readDynamicProcFile(procPath, context) !== null ? 'file' : null;
   }
 
-  private dynamicProcStat(path: string): RuntimeKernelVirtualStat | null {
-    const kind = this.dynamicProcEntryKind(path);
+  private dynamicProcStat(path: string, context?: RuntimeCommandExecutionContext): RuntimeKernelVirtualStat | null {
+    const kind = this.dynamicProcEntryKind(path, context);
     if (!kind) return null;
-    const content = kind === 'file' ? this.readDynamicProcFile(path) ?? '' : '';
+    const content = kind === 'file' ? this.readDynamicProcFile(path, context) ?? '' : '';
     return {
       isFile: kind === 'file',
       isDirectory: kind === 'directory',
@@ -2177,13 +2137,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (!expandedInvocation.scriptFile) {
       return { stdout: '', stderr: `${TRACEKERNEL_EXEC_COMMAND}: missing executable path\n`, exitCode: 2 };
     }
+    const commandContext = this.resolveCommandContext(ctx);
+    if (!commandContext) {
+      return { stdout: '', stderr: `${TRACEKERNEL_EXEC_COMMAND}: missing command context\n`, exitCode: 1 };
+    }
     const result = await this.executeVirtualExecutable({
       executable: expandedInvocation.scriptFile,
       args: expandedInvocation.scriptArgs,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdinPipe: this.currentCommandContext()?.stdinPipe,
+      stdinPipe: commandContext.stdinPipe,
       preserveScriptPath: true,
+      commandContext,
     });
     return result ?? { stdout: '', stderr: `bash: ${expandedInvocation.scriptFile}: Exec format error\n`, exitCode: 126 };
   }
@@ -2355,12 +2320,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
       ...(body !== undefined ? { body } : {}),
     };
+    const commandContext = this.resolveCommandContext(ctx);
     const response = await this.dispatchHttpRequest(request, {
       ...(timeoutMs !== undefined ? {
         timeoutMs,
         timeoutBody: `curl: (28) Operation timed out after ${timeoutMs} milliseconds\n`,
       } : {}),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
+      ...(commandContext?.actor ? { actor: commandContext.actor } : {}),
     });
     if (response.status === 0 && response.body?.startsWith('curl: (28)')) {
       return { stdout: '', stderr: response.body ?? 'curl: (28) Operation timed out\n', exitCode: 28 };
@@ -2403,7 +2370,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private runTraceKernelWhich(args: string[], commandName: string): RuntimeCommandResult {
+  private runTraceKernelWhich(args: string[], commandName: string, _ctx: CommandContext): RuntimeCommandResult {
     const names: string[] = [];
     let endOfOptions = false;
     for (const arg of args) {
@@ -2436,10 +2403,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return { stdout, stderr, exitCode };
   }
 
-  private runTraceKernelCommandBuiltin(args: string[]): RuntimeCommandResult {
+  private runTraceKernelCommandBuiltin(args: string[], ctx: CommandContext): RuntimeCommandResult {
     const option = args[0];
     if (option === '-v' || option === '-V') {
-      return this.runTraceKernelWhich(args.slice(1), 'command');
+      return this.runTraceKernelWhich(args.slice(1), 'command', ctx);
     }
     return {
       stdout: '',
@@ -2448,7 +2415,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private async runTraceKernelCtl(args: string[]): Promise<RuntimeCommandResult> {
+  private async runTraceKernelCtl(args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
     const command = args[0] ?? 'status';
     if (command === 'status') {
       const scheduler = this.commandScheduler.snapshot();
@@ -2507,7 +2474,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       }
       if (target < 0) {
         const pgid = Math.abs(target);
-        const count = this.signalProcessGroup(pgid, signal.name);
+        const count = this.signalProcessGroup(pgid, signal.name, this.resolveCommandContext(ctx)?.process.pid);
         if (count === 0) return { stdout: '', stderr: `tracekernelctl: no such process group: ${pgid}\n`, exitCode: 3 };
         return { stdout: `tracekernelctl: sent ${signal.name} to process group ${pgid} (${count} process${count === 1 ? '' : 'es'})\n`, stderr: '', exitCode: 0 };
       }
@@ -2525,13 +2492,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         return { stdout: '', stderr: 'usage: tracekernelctl wait [pid]\n', exitCode: 2 };
       }
       if (args[1] === undefined) {
-        return this.reapZombieProcess(undefined, 'tracekernelctl');
+        return this.reapZombieProcess(undefined, 'tracekernelctl', this.resolveCommandContext(ctx)?.process.pid);
       }
       const pid = Number(args[1]);
       if (!Number.isInteger(pid) || pid <= 0) {
         return { stdout: '', stderr: `tracekernelctl: invalid pid: ${args[1]}\n`, exitCode: 22 };
       }
-      return this.reapZombieProcess(pid, 'tracekernelctl');
+      return this.reapZombieProcess(pid, 'tracekernelctl', this.resolveCommandContext(ctx)?.process.pid);
     }
     return {
       stdout: '',
@@ -2642,7 +2609,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return { stdout, stderr, exitCode };
   }
 
-  private runKernelPs(args: string[]): RuntimeCommandResult {
+  private runKernelPs(args: string[], _ctx: CommandContext): RuntimeCommandResult {
     const supported = new Set(['', '-e', '-f', '-ef', 'aux']);
     const mode = args.join('');
     if (!supported.has(mode)) {
@@ -2667,11 +2634,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private runKernelJobs(args: string[]): RuntimeCommandResult {
+  private runKernelJobs(args: string[], ctx: CommandContext): RuntimeCommandResult {
     if (args.length > 1 || (args[0] !== undefined && args[0] !== '-l')) {
       return { stdout: '', stderr: 'usage: jobs [-l]\n', exitCode: 2 };
     }
-    const currentPid = this.currentCommandContext()?.process.pid;
+    const currentPid = this.resolveCommandContext(ctx)?.process.pid;
     const rows = this.kernelJobRecords(currentPid)
       .map((process, index) => {
         const marker = process.foreground ? '+' : '-';
@@ -2692,29 +2659,29 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }));
   }
 
-  private kernelJobRecords(currentPid = this.currentCommandContext()?.process.pid): RuntimeKernelProcessRecord[] {
+  private kernelJobRecords(currentPid?: number): RuntimeKernelProcessRecord[] {
     return this.activeProcessRecords().filter((process) => process.pid !== currentPid && process.pid !== 1);
   }
 
-  private resolveKernelJobTarget(target: string | undefined): RuntimeKernelProcessRecord | undefined {
-    const jobs = this.kernelJobRecords();
+  private resolveKernelJobTarget(target: string | undefined, currentPid?: number): RuntimeKernelProcessRecord | undefined {
+    const jobs = this.kernelJobRecords(currentPid);
     if (target === undefined) return jobs[0];
     const jobMatch = target.match(/^%([1-9][0-9]*)$/);
     if (jobMatch) return jobs[Number(jobMatch[1]) - 1];
     const pid = Number(target);
     if (!Number.isInteger(pid) || pid <= 0) return undefined;
     const process = this.findProcessRecord(pid);
-    if (!process || process.pid === 1 || process.pid === this.currentCommandContext()?.process.pid || process.state === 'exited') {
+    if (!process || process.pid === 1 || process.pid === currentPid || process.state === 'exited') {
       return undefined;
     }
     return process;
   }
 
-  private runKernelJobPlacement(args: string[], commandName: 'bg' | 'fg'): RuntimeCommandResult {
+  private runKernelJobPlacement(args: string[], commandName: 'bg' | 'fg', ctx: CommandContext): RuntimeCommandResult {
     if (args.length > 1) {
       return { stdout: '', stderr: `usage: ${commandName} [pid|%job]\n`, exitCode: 2 };
     }
-    const process = this.resolveKernelJobTarget(args[0]);
+    const process = this.resolveKernelJobTarget(args[0], this.resolveCommandContext(ctx)?.process.pid);
     if (!process) {
       return { stdout: '', stderr: `${commandName}: no such job${args[0] === undefined ? '' : `: ${args[0]}`}\n`, exitCode: 10 };
     }
@@ -2732,7 +2699,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private runKernelKill(args: string[], commandName: string): RuntimeCommandResult {
+  private runKernelKill(args: string[], commandName: string, ctx: CommandContext): RuntimeCommandResult {
     if (args.length === 0) {
       return { stdout: '', stderr: `usage: ${commandName} [-SIGNAL] <pid>...\n`, exitCode: 2 };
     }
@@ -2754,7 +2721,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       }
       if (target < 0) {
         const pgid = Math.abs(target);
-        if (this.signalProcessGroup(pgid, signal.name) === 0) {
+        if (this.signalProcessGroup(pgid, signal.name, this.resolveCommandContext(ctx)?.process.pid) === 0) {
           return { stdout: '', stderr: `${commandName}: no such process group: ${pgid}\n`, exitCode: 3 };
         }
         continue;
@@ -2768,16 +2735,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return { stdout: '', stderr: '', exitCode: 0 };
   }
 
-  private runKernelWait(args: string[], commandName: string): Promise<RuntimeCommandResult> {
+  private runKernelWait(args: string[], commandName: string, _ctx: CommandContext): Promise<RuntimeCommandResult> {
     if (args.length > 1) {
       return Promise.resolve({ stdout: '', stderr: `usage: ${commandName} [pid]\n`, exitCode: 2 });
     }
-    if (args[0] === undefined) return this.reapZombieProcess(undefined, commandName);
+    if (args[0] === undefined) return this.reapZombieProcess(undefined, commandName, this.resolveCommandContext(_ctx)?.process.pid);
     const pid = Number(args[0]);
     if (!Number.isInteger(pid) || pid <= 0) {
       return Promise.resolve({ stdout: '', stderr: `${commandName}: invalid pid: ${args[0]}\n`, exitCode: 22 });
     }
-    return this.reapZombieProcess(pid, commandName);
+    return this.reapZombieProcess(pid, commandName, this.resolveCommandContext(_ctx)?.process.pid);
   }
 
   async ensureReady(): Promise<void> {
@@ -3189,9 +3156,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return this.readDevice(readTarget.path);
   }
 
-  private readDevice(device: RuntimeKernelDevicePath): string {
+  private readDevice(device: RuntimeKernelDevicePath, context?: RuntimeCommandExecutionContext): string {
     if (!runtimeKernelDeviceInputRoute(undefined, device)) return '';
-    const stdinPipe = this.currentCommandContext()?.stdinPipe;
+    const stdinPipe = context?.stdinPipe;
     if (stdinPipe) {
       let text = '';
       while (true) {
@@ -3208,13 +3175,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return '';
   }
 
-  private writeDevice(device: RuntimeKernelDevicePath, data: string, actor?: RuntimeWorkspaceActor): void {
+  private writeDevice(
+    device: RuntimeKernelDevicePath,
+    data: string,
+    contextOrActor?: RuntimeCommandExecutionContext | RuntimeWorkspaceActor
+  ): void {
     const route = runtimeKernelDeviceOutputRoute(undefined, device);
     if (!route) {
       if (runtimeDeviceOutputTarget(device) === '/dev/null') return;
       throw new Error(`Kernel device is read-only: ${device}`);
     }
-    const commandContext = this.currentCommandContext();
+    const commandContext = contextOrActor && 'process' in contextOrActor
+      ? contextOrActor
+      : undefined;
+    const actor = contextOrActor && 'kind' in contextOrActor
+      ? contextOrActor
+      : undefined;
     if (commandContext) {
       this.captureDeviceOutput(commandContext, route.stream, data);
     }
@@ -3225,7 +3201,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(route.sourceDevice ? { sourceDevice: route.sourceDevice } : {}),
       data,
       ...(actor ? { actor } : {}),
-    });
+    }, commandContext);
   }
 
   private captureDeviceOutput(
@@ -3675,15 +3651,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const stdinPipe = options.stdinPipe;
     const actor = this.createRuntimeActor();
     const abortController = new AbortController();
-    const parentProcess = this.currentCommandContext()?.process;
     const pid = this.nextPid++;
     const terminalPresentation = options.presentation === 'terminal';
     const foreground = options.foreground ?? terminalPresentation;
     const process: RuntimeKernelProcessRecord = {
       pid,
-      ppid: parentProcess?.pid ?? 1,
-      pgid: parentProcess?.pgid ?? pid,
-      sid: parentProcess?.sid ?? 1,
+      ppid: 1,
+      pgid: pid,
+      sid: 1,
       fds: this.standardProcessFileDescriptors(),
       tty: terminalPresentation ? '/dev/tty' : '?',
       command,
@@ -3694,13 +3669,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       state: 'queued',
       foreground,
     };
-    const commandContext: RuntimeCommandExecutionContext = {
+    let commandContext!: RuntimeCommandExecutionContext;
+    commandContext = {
       eventHandler: this.createCommandEventHandler(options),
       actor,
       process,
       stdinPipe,
       includeHiddenFiles: options.includeHiddenFiles,
-      runtimeIo: this.createRuntimeLiveIoController(actor, abortController.signal),
+      runtimeIo: this.createRuntimeLiveIoController(actor, abortController.signal, () => commandContext),
       generationBaseline: this.fs.snapshotGenerations(),
       mutatedGenerationPaths: new Set(),
       executableTransformCwd: commandCwd,
@@ -3709,6 +3685,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       outputBytes: { stdout: 0, stderr: 0 },
       truncatedOutputStreams: new Set(),
     };
+    const commandFs = new CommandBoundFileSystem(this.fs, commandContext);
+    registerCommandContext(commandFs, commandContext);
     this.processTable.set(process.pid, process);
     this.recordKernelEvent('process-queue', process.pid, {
       ppid: process.ppid,
@@ -3719,13 +3697,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     });
     const cleanupExternalSignal = this.attachExternalSignal(process, options.signal);
     let processExitCode = 1;
-    return this.commandScheduler.runCommand({ pid: process.pid, command, signal: abortController.signal }, () => this.commandExecutionContexts.run(commandContext, async () => {
+    return this.commandScheduler.runCommand({ pid: process.pid, command, signal: abortController.signal }, async () => {
       try {
         if (process.signal) {
           const result = this.signalCommandResult(process);
           const output = this.captureReturnedOutput(commandContext, result);
           processExitCode = result.exitCode;
-          this.emitReturnedOutputEvents(output);
+          this.emitReturnedOutputEvents(output, commandContext);
           return { ...result, ...output };
         }
         process.state = 'running';
@@ -3743,11 +3721,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           command,
           cwd: commandCwd,
         });
-        const directExecutableResult = await this.tryRunVirtualExecutable(command, { ...options, stdinPipe, signal: abortController.signal });
+        const directExecutableResult = await this.tryRunVirtualExecutable(command, { ...options, stdinPipe, signal: abortController.signal }, commandContext, commandFs);
         if (directExecutableResult) {
-          await this.flushRuntimeEventQueue();
+          await this.flushRuntimeEventQueue(commandContext);
           const output = this.captureReturnedOutput(commandContext, directExecutableResult);
-          this.emitReturnedOutputEvents(output);
+          this.emitReturnedOutputEvents(output, commandContext);
           processExitCode = directExecutableResult.exitCode;
           return {
             ...directExecutableResult,
@@ -3756,15 +3734,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           };
         }
 
-        const result = await this.createBash(options.executionLimits).exec(command, {
+        const result = await this.createBash(options.executionLimits, commandContext, commandFs).exec(command, {
           cwd: commandCwd,
           env: options.env,
           signal: abortController.signal,
           args: options.args,
         });
-        await this.flushRuntimeEventQueue();
+        await this.flushRuntimeEventQueue(commandContext);
         const output = this.captureReturnedOutput(commandContext, result);
-        this.emitReturnedOutputEvents(output);
+        this.emitReturnedOutputEvents(output, commandContext);
         processExitCode = result.exitCode;
         if (commandContext.kernelError?.code === 'EINTR' && process.signal) {
           const signalResult = this.signalCommandResult(process);
@@ -3787,18 +3765,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           const result = this.signalCommandResult(process);
           const output = this.captureReturnedOutput(commandContext, result);
           processExitCode = result.exitCode;
-          await this.flushRuntimeEventQueue();
-          this.emitReturnedOutputEvents(output);
+          await this.flushRuntimeEventQueue(commandContext);
+          this.emitReturnedOutputEvents(output, commandContext);
           return { ...result, ...output };
         }
         throw error;
       }
-    })).catch((error) => {
+    }).catch((error) => {
       if (process.signal) {
         const result = this.signalCommandResult(process);
         const output = this.captureReturnedOutput(commandContext, result);
         processExitCode = result.exitCode;
-        this.emitReturnedOutputEvents(output);
+        this.emitReturnedOutputEvents(output, commandContext);
         return { ...result, ...output };
       }
       if (error instanceof RuntimeKernelAdmissionRejectedError) {
@@ -4152,7 +4130,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private async tryRunVirtualExecutable(
     command: string,
-    options: RuntimeCommandOptions
+    options: RuntimeCommandOptions,
+    commandContext: RuntimeCommandExecutionContext,
+    commandFs: IFileSystem
   ): Promise<RuntimeCommandResult | null> {
     if (!this.hasVirtualExecutableLoaders() || options.args !== undefined) return null;
 
@@ -4167,7 +4147,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(options.env ?? {}),
     };
     const ctx = {
-      fs: this.bash.fs,
+      fs: commandFs,
       cwd,
       env: new Map(Object.entries(env)),
       stdin: '',
@@ -4189,6 +4169,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       env,
       stdinPipe: options.stdinPipe,
       preserveScriptPath: false,
+      commandContext,
     });
   }
 
@@ -4199,6 +4180,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     env: Record<string, string>;
     stdinPipe?: RuntimeCommandOptions['stdinPipe'];
     preserveScriptPath: boolean;
+    commandContext: RuntimeCommandExecutionContext;
   }): Promise<RuntimeCommandResult | null> {
     const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, request.cwd, request.executable, this.kernelInfo.workspaceAlias));
     const record = this.virtualExecutableRecords.get(executablePath);
@@ -4221,13 +4203,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(request.stdinPipe ? { stdinPipe: { buffer: request.stdinPipe.buffer } } : {}),
       project: await this.snapshot({ includeHidden: true }),
       onEvent: (event) => {
-        this.handleRuntimeCommandEvent(event);
+        this.handleRuntimeCommandEvent(event, request.commandContext);
       },
     });
-    await this.flushRuntimeEventQueue();
+    await this.flushRuntimeEventQueue(request.commandContext);
     return applyWorkspaceCommandResultFiles(
       this,
-      this.currentRuntimeIo()?.filterAppliedResultFiles(result) ?? result
+      request.commandContext.runtimeIo.filterAppliedResultFiles(result) ?? result
     );
   }
 
@@ -4327,7 +4309,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
     const changes = runtimeProjectPatchChangesToFileChanges(normalizedPatch.changes);
     if (changes.length === 0) return;
-    const actor = this.currentCommandActor() ?? SYSTEM_ACTOR;
+    const actor = SYSTEM_ACTOR;
     const committed = await this.fs.applyFinalDiffTransaction(changes, (change) =>
       prepareFinalDiffChange(this.cwd, change)
     );
@@ -4357,7 +4339,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async applyKernelFileChange(
     change: RuntimeFileChange,
     phase: RuntimeFileMutationPhase = 'final-diff',
-    actor: RuntimeWorkspaceActor = this.currentCommandActor() ?? SYSTEM_ACTOR
+    actor: RuntimeWorkspaceActor = SYSTEM_ACTOR
   ): Promise<void> {
     await this.kernel.applyFileChange(change, actor, phase);
   }
@@ -4365,7 +4347,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async applyFinalDiffResultFiles(result: RuntimeCommandResult): Promise<RuntimeCommandResult> {
     try {
       if (!result.files?.length) return result;
-      const actor = this.currentCommandActor() ?? SYSTEM_ACTOR;
+      const actor = SYSTEM_ACTOR;
       const committed = await this.fs.applyFinalDiffTransaction(result.files, (file) =>
         prepareFinalDiffChange(this.cwd, file)
       );
@@ -4395,7 +4377,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       writeFile: (path, contents, actor = PRINCIPAL_ACTOR, encoding) => this.writeFileAs(path, contents, actor, encoding, 'live'),
       writeSkillFiles: (files, actor = SYSTEM_ACTOR) => this.writeSkillFilesAs(files, actor),
       deleteFile: (path, actor = PRINCIPAL_ACTOR) => this.deleteFileAs(path, actor, 'live'),
-      applyFileChange: async (change, actor = this.currentCommandActor() ?? SYSTEM_ACTOR, phase = 'final-diff') => {
+      applyFileChange: async (change, actor = SYSTEM_ACTOR, phase = 'final-diff') => {
         await withSuspendedFsNotifications(this.bash.fs, async () => {
           await this.applyFileChangeAs(change, actor, phase);
         });
@@ -4449,11 +4431,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private createRuntimeLiveIoController(actor?: RuntimeWorkspaceActor, signal?: AbortSignal): RuntimeProjectLiveIoController {
+  private createRuntimeLiveIoController(
+    actor?: RuntimeWorkspaceActor,
+    signal?: AbortSignal,
+    context?: () => RuntimeCommandExecutionContext | undefined
+  ): RuntimeProjectLiveIoController {
     return new RuntimeProjectLiveIoController({
       actor: actor ?? SYSTEM_ACTOR,
       applyFileChange: (change, phase) => this.applyRuntimeFileChangeSilently(change, phase),
-      onEvent: (event) => this.emitRuntimeEvent(event),
+      onEvent: (event) => this.emitRuntimeEvent(event, context?.()),
       signal,
     });
   }
@@ -4477,22 +4463,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private handleRuntimeCommandEvent(event: RuntimeCommandEvent): void {
-    const runtimeIo = this.currentRuntimeIo();
+  private handleRuntimeCommandEvent(event: RuntimeCommandEvent, context?: RuntimeCommandExecutionContext): void {
+    const runtimeIo = context?.runtimeIo;
     if (runtimeIo) {
       runtimeIo.handleRuntimeEvent(event);
       return;
     }
-    this.emitRuntimeEvent(event);
+    this.emitRuntimeEvent(event, context);
   }
 
-  private async flushRuntimeEventQueue(): Promise<void> {
-    await this.currentRuntimeIo()?.flush();
+  private async flushRuntimeEventQueue(context?: RuntimeCommandExecutionContext): Promise<void> {
+    await context?.runtimeIo.flush();
   }
 
   private async applyRuntimeFileChangeSilently(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): Promise<void> {
     await withSuspendedFsNotifications(this.bash.fs, async () => {
-      await this.applyFileChangeToWorkspace(change, this.currentCommandActor() ?? SYSTEM_ACTOR, phase, false);
+      await this.applyFileChangeToWorkspace(change, SYSTEM_ACTOR, phase, false);
     });
   }
 
@@ -4588,17 +4574,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private emitLocalRuntimeEvent(event: RuntimeCommandEvent): void {
-    const runtimeIo = this.currentRuntimeIo();
+  private emitLocalRuntimeEvent(event: RuntimeCommandEvent, context?: RuntimeCommandExecutionContext): void {
+    const runtimeIo = context?.runtimeIo;
     if (runtimeIo) {
       runtimeIo.emit(event);
       return;
     }
-    this.emitRuntimeEvent(event);
+    this.emitRuntimeEvent(event, context);
   }
 
-  private emitRuntimeEvent(event: RuntimeCommandEvent): void {
-    const commandContext = this.currentCommandContext();
+  private emitRuntimeEvent(event: RuntimeCommandEvent, commandContext?: RuntimeCommandExecutionContext): void {
     const actor = 'actor' in event && event.actor ? event.actor : commandContext?.actor;
     const enriched = this.enrichRuntimeEvent(event, actor);
     commandContext?.eventHandler?.(enriched);
@@ -4607,14 +4592,17 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private emitReturnedOutputEvents(result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>): void {
-    this.currentRuntimeIo()?.emitMissingFinalOutput(result, (stream, data) => {
+  private emitReturnedOutputEvents(
+    result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>,
+    context?: RuntimeCommandExecutionContext
+  ): void {
+    context?.runtimeIo.emitMissingFinalOutput(result, (stream, data) => {
       this.emitLocalRuntimeEvent({
         type: 'output',
         stream,
         device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr',
         data,
-      });
+      }, context);
     });
   }
 

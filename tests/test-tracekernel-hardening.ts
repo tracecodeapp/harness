@@ -10,7 +10,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
-import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../packages/harness-project/src/async-hooks-browser-shim';
 import { assertRuntimeFinalDiffBudget, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 import { createIndexedDbKernelStorage } from '../packages/harness-browser/src/project';
 import {
@@ -69,44 +68,115 @@ function setTestGlobalProperty(name: string, value: unknown): () => void {
   };
 }
 
-async function testBrowserAsyncLocalStorageForcesSingleFlightScheduling(): Promise<void> {
-  assertCondition(
-    (BrowserAsyncLocalStorage as unknown as { __tracecodeBrowserSingleFlight?: boolean })
-      .__tracecodeBrowserSingleFlight === true,
-    'browser AsyncLocalStorage shim should force TraceKernel command scheduling into single-flight mode'
-  );
-  const storage = new BrowserAsyncLocalStorage<{ id: string }>();
-  let releaseLater!: () => void;
-  const laterReleased = new Promise<void>((resolve) => {
-    releaseLater = resolve;
+async function testConcurrentCommandsKeepChainLocalContext(): Promise<void> {
+  let releaseCommands!: () => void;
+  const commandsReleased = new Promise<void>((resolve) => {
+    releaseCommands = resolve;
+  });
+  let bothStarted!: () => void;
+  const bothStartedPromise = new Promise<void>((resolve) => {
+    bothStarted = resolve;
+  });
+  const started = new Set<string>();
+
+  const workspace = await createRuntimeWorkspace({
+    kernel: { scheduler: { maxConcurrentCommands: 2 } },
+    files: [
+      { path: 'a.js', contents: 'a\n' },
+      { path: 'b.js', contents: 'b\n' },
+      { path: 'a.out', contents: 'old-a\n' },
+      { path: 'b.out', contents: 'old-b\n' },
+    ],
+    nodeRunner: async (request) => {
+      const label = request.scriptPath.endsWith('a.js') ? 'a' : 'b';
+      started.add(label);
+      request.onEvent?.({ type: 'output', stream: 'stdout', data: `${label}:live\n` });
+      if (started.size === 2) bothStarted();
+      await commandsReleased;
+      return {
+        stdout: `${label}:done\n`,
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: `${label}.out`, contents: `${label}\n` }],
+      };
+    },
   });
 
-  const first = storage.run({ id: 'a' }, async () => {
-    await Promise.resolve();
-    return storage.getStore()?.id;
+  const fileChangeActors = new Map<string, string>();
+  const unsubscribe = workspace.watch((event) => {
+    if (event.type === 'file-change') {
+      fileChangeActors.set(event.change.path, event.actor?.id ?? '');
+    }
   });
-  const second = storage.run({ id: 'b' }, async () => {
-    await laterReleased;
-    return storage.getStore()?.id;
-  });
-  const firstStore = await first;
-  assertCondition(
-    firstStore === 'b',
-    `browser AsyncLocalStorage shim is stack-based and must not be used with overlapping commands: ${JSON.stringify({ firstStore })}`
-  );
-  releaseLater();
-  const secondStore = await second;
-  assertCondition(
-    secondStore === 'b' && storage.getStore() === undefined,
-    `browser AsyncLocalStorage shim should still restore completed frames: ${JSON.stringify({ secondStore, store: storage.getStore() })}`
-  );
+  try {
+    const commandOutput: Record<string, string[]> = { a: [], b: [] };
+    const a = workspace.runCommand('node a.js', {
+      onEvent: (event) => {
+        if (event.type === 'output') commandOutput.a.push(event.data);
+      },
+    });
+    const b = workspace.runCommand('node b.js', {
+      onEvent: (event) => {
+        if (event.type === 'output') commandOutput.b.push(event.data);
+      },
+    });
+    await bothStartedPromise;
+    releaseCommands();
+    const [aResult, bResult] = await Promise.all([a, b]);
 
-  const projectSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-project', 'src', 'scheduler.ts'), 'utf8');
-  assertCondition(
-    projectSource.includes('isBrowserAsyncLocalStorageSingleFlight') &&
-      projectSource.includes('forceSingleFlight ? 1 : configuredMaxConcurrentCommands'),
-    'TraceKernel scheduler should clamp browser builds to single-flight until the browser async context shim is chain-local'
-  );
+    assertCondition(aResult.stdout === 'a:done\n', `first command stdout should stay local: ${JSON.stringify(aResult)}`);
+    assertCondition(bResult.stdout === 'b:done\n', `second command stdout should stay local: ${JSON.stringify(bResult)}`);
+    assertCondition(commandOutput.a.join('') === 'a:live\n', `first command events should stay local: ${JSON.stringify(commandOutput)}`);
+    assertCondition(commandOutput.b.join('') === 'b:live\n', `second command events should stay local: ${JSON.stringify(commandOutput)}`);
+    assertCondition(await workspace.readFile('a.out') === 'a\n', 'first command file should be written');
+    assertCondition(await workspace.readFile('b.out') === 'b\n', 'second command file should be written');
+    const aActor = fileChangeActors.get('a.out');
+    const bActor = fileChangeActors.get('b.out');
+    assertCondition(Boolean(aActor) && Boolean(bActor) && aActor !== bActor, `file changes should keep distinct actors: ${JSON.stringify([...fileChangeActors])}`);
+  } finally {
+    unsubscribe();
+    workspace.dispose();
+  }
+}
+
+async function testBackgroundJobDoesNotBlockForegroundCommands(): Promise<void> {
+  let releaseBackground!: () => void;
+  const backgroundReleased = new Promise<void>((resolve) => {
+    releaseBackground = resolve;
+  });
+  let backgroundStarted!: () => void;
+  const backgroundStartedPromise = new Promise<void>((resolve) => {
+    backgroundStarted = resolve;
+  });
+  let backgroundComplete = false;
+
+  const workspace = await createRuntimeWorkspace({
+    kernel: { scheduler: { maxConcurrentCommands: 2 } },
+    files: [{ path: 'bg.js', contents: 'bg\n' }],
+    nodeRunner: async () => {
+      backgroundStarted();
+      await backgroundReleased;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      backgroundComplete = true;
+      return { stdout: 'bg done\n', stderr: '', exitCode: 0 };
+    },
+  });
+  const session = workspace.createTerminalSession();
+  try {
+    const backgroundSubmission = await session.run('node bg.js &');
+    const backgroundPid = Number(backgroundSubmission.stdout.match(/\[\d+\] ([0-9]+)/)?.[1]);
+    assertCondition(Number.isInteger(backgroundPid) && backgroundPid > 1, `background submission should report a pid: ${JSON.stringify(backgroundSubmission)}`);
+    await backgroundStartedPromise;
+    const foreground = await session.run('echo hi');
+    assertCondition(foreground.exitCode === 0 && foreground.stdout === 'hi\n', `foreground command should complete while background is running: ${JSON.stringify(foreground)}`);
+    assertCondition(!backgroundComplete, 'background job should still be running before latch release');
+    releaseBackground();
+    const wait = await session.run(`wait ${backgroundPid}`);
+    assertCondition(wait.exitCode === 0 && wait.stdout.includes(`pid\t${backgroundPid}\n`), `background job should be waitable after release: ${JSON.stringify(wait)}`);
+    assertCondition(backgroundComplete, 'background runner should complete after latch release');
+  } finally {
+    workspace.dispose();
+  }
 }
 
 class ProtocolTestWorker {
@@ -3369,7 +3439,8 @@ async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> 
 }
 
 async function main(): Promise<void> {
-  await testBrowserAsyncLocalStorageForcesSingleFlightScheduling();
+  await testConcurrentCommandsKeepChainLocalContext();
+  await testBackgroundJobDoesNotBlockForegroundCommands();
   await testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn();
   await testBrowserTypeScriptDomCompilerScriptPolicy();
   await testIndexedDbKernelStorageEncryptsSnapshots();

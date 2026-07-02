@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   defineCommand,
 } from 'just-bash/browser';
@@ -88,6 +87,9 @@ import type {
   RuntimeProjectPatchFileWrite,
   RuntimeProjectSnapshot,
   RuntimeWorkspaceActor,
+  RuntimeCommandEventHandler,
+  RuntimeCommandOptions,
+  RuntimeProjectLiveIoController,
 } from '../../harness-core/src/runtime-project';
 import type {
   CppProjectCommandRunner,
@@ -116,10 +118,10 @@ export interface RuntimeDynamicProcEntry {
 }
 
 export interface RuntimeDynamicProcProvider {
-  readFile(path: string): string | null;
-  readDir(path: string): RuntimeDynamicProcEntry[] | null;
-  entryKind(path: string): 'file' | 'directory' | null;
-  stat(path: string): RuntimeKernelVirtualStat | null;
+  readFile(path: string, context?: RuntimeCommandExecutionContext): string | null;
+  readDir(path: string, context?: RuntimeCommandExecutionContext): RuntimeDynamicProcEntry[] | null;
+  entryKind(path: string, context?: RuntimeCommandExecutionContext): 'file' | 'directory' | null;
+  stat(path: string, context?: RuntimeCommandExecutionContext): RuntimeKernelVirtualStat | null;
   readonlyNamespace(path: string): boolean;
 }
 
@@ -146,6 +148,41 @@ export interface RuntimeFileSystemSyscallEvent {
     | 'fs-transaction-abort';
   pid?: number;
   detail: Record<string, unknown>;
+}
+
+
+export interface RuntimeCommandExecutionContext {
+  readonly eventHandler?: RuntimeCommandEventHandler;
+  readonly actor: RuntimeWorkspaceActor;
+  readonly process: {
+    readonly pid: number;
+    readonly abortController?: AbortController;
+    [key: string]: any;
+  };
+  readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
+  readonly includeHiddenFiles?: boolean;
+  readonly runtimeIo: RuntimeProjectLiveIoController;
+  readonly generationBaseline: RuntimeFileSystemGenerationSnapshot;
+  readonly mutatedGenerationPaths: Set<string>;
+  kernelError?: RuntimeCommandError;
+  executableTransformCwd?: string;
+  deviceStdout: string;
+  deviceStderr: string;
+  outputBytes: Record<RuntimeCommandEventStream, number>;
+  truncatedOutputStreams: Set<RuntimeCommandEventStream>;
+}
+
+
+const commandContextByFs = new WeakMap<object, RuntimeCommandExecutionContext>();
+
+
+export function registerCommandContext(fs: object, context: RuntimeCommandExecutionContext): void {
+  commandContextByFs.set(fs, context);
+}
+
+
+export function commandContextForFs(fs: object): RuntimeCommandExecutionContext | undefined {
+  return commandContextByFs.get(fs);
 }
 
 
@@ -479,7 +516,11 @@ export function filterReadonlySnapshotDeletions(
 }
 
 
-export type RuntimeFileChangeObserver = (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => void;
+export type RuntimeFileChangeObserver = (
+  change: RuntimeFileChange,
+  phase: RuntimeFileMutationPhase,
+  context?: RuntimeCommandExecutionContext
+) => void;
 
 
 export interface RuntimeFinalDiffPreparedChange {
@@ -568,20 +609,24 @@ export async function applyCommandResultFiles(
 ): Promise<RuntimeCommandResult> {
   try {
     assertRuntimeFinalDiffBudget(result.files);
-    if (ctx.fs instanceof KernelObservedFileSystem && result.files?.length) {
-      const committed = await ctx.fs.applyFinalDiffTransaction(result.files, (file) =>
+    const commandContext = commandContextForFs(ctx.fs);
+    const observedFs = ctx.fs instanceof KernelObservedFileSystem || ctx.fs instanceof CommandBoundFileSystem
+      ? ctx.fs
+      : undefined;
+    if (observedFs && result.files?.length) {
+      const committed = await observedFs.applyFinalDiffTransaction(result.files, (file) =>
         prepareFinalDiffChange(workspaceRoot, file)
       );
       for (const file of committed) {
-        onFileChange?.(file, 'final-diff');
+        onFileChange?.(file, 'final-diff', commandContext);
       }
       const { files: _files, ...commandResult } = result;
       return commandResult;
     }
     return await applyRuntimeCommandResultFiles(result, async (file, phase) => {
       await withSuspendedFsNotifications(ctx.fs, async () => {
-        if (ctx.fs instanceof KernelObservedFileSystem) {
-          ctx.fs.assertFileChangeGenerationFresh(file, phase);
+        if (observedFs) {
+          observedFs.assertFileChangeGenerationFresh(file, phase);
         }
         const absolutePath = toWorkspacePath(workspaceRoot, file.path);
         if (isRuntimeDirectoryChange(file)) {
@@ -590,12 +635,12 @@ export async function applyCommandResultFiles(
           } else {
             await ctx.fs.mkdir(absolutePath, { recursive: true });
           }
-          onFileChange?.(file, phase);
+          onFileChange?.(file, phase, commandContext);
           return;
         }
         if ((file as { deleted?: boolean }).deleted === true) {
           await ctx.fs.rm(absolutePath, { force: true });
-          onFileChange?.(file, phase);
+          onFileChange?.(file, phase, commandContext);
           return;
         }
         const changedFile = file as RuntimeFile;
@@ -605,12 +650,15 @@ export async function applyCommandResultFiles(
         } else {
           await ctx.fs.writeFile(absolutePath, changedFile.contents);
         }
-        onFileChange?.(changedFile, phase);
+        onFileChange?.(changedFile, phase, commandContext);
       });
     });
   } catch (error) {
     if (isKernelReadonlyError(error) || isRuntimeFileGenerationConflict(error)) {
-      if (ctx.fs instanceof KernelObservedFileSystem) ctx.fs.recordCommandError(error);
+      const observedFs = ctx.fs instanceof KernelObservedFileSystem || ctx.fs instanceof CommandBoundFileSystem
+        ? ctx.fs
+        : undefined;
+      observedFs?.recordCommandError(error);
       return kernelCommandFailure(error);
     }
     throw error;
@@ -770,6 +818,149 @@ export type FsRmOptions = Parameters<IFileSystem['rm']>[1];
 export type FsCpOptions = Parameters<IFileSystem['cp']>[2];
 
 
+export class CommandBoundFileSystem implements IFileSystem {
+  constructor(
+    private readonly inner: KernelObservedFileSystem,
+    private readonly context: RuntimeCommandExecutionContext
+  ) {}
+
+  suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {
+    return this.inner.suspendNotifications(fn);
+  }
+
+  snapshotGenerations(): RuntimeFileSystemGenerationSnapshot {
+    return this.inner.snapshotGenerations();
+  }
+
+  inodeForPath(path: string): number {
+    return this.inner.inodeForPath(path);
+  }
+
+  moveInode(source: string, destination: string): void {
+    this.inner.moveInode(source, destination);
+  }
+
+  forgetInodePath(path: string): void {
+    this.inner.forgetInodePath(path);
+  }
+
+  renderInodes(): string {
+    return this.inner.renderInodes();
+  }
+
+  assertFileChangeGenerationFresh(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): void {
+    return this.inner.assertFileChangeGenerationFreshWithContext(this.context, change, phase);
+  }
+
+  applyFinalDiffTransaction(
+    changes: readonly RuntimeFileChange[],
+    prepare: (change: RuntimeFileChange) => RuntimeFinalDiffPreparedChange
+  ): Promise<RuntimeFileChange[]> {
+    return this.inner.applyFinalDiffTransactionWithContext(this.context, changes, prepare);
+  }
+
+  recordCommandError(error: unknown): void {
+    this.inner.recordCommandErrorWithContext(this.context, error);
+  }
+
+  withBaseMutation<T>(
+    paths: readonly string[],
+    fn: (base: IFileSystem) => Promise<T>,
+    kind: RuntimeFileSystemMutationKind = 'file-write'
+  ): Promise<T> {
+    return this.inner.withBaseMutationWithContext(this.context, paths, fn, kind);
+  }
+
+  readFile(path: string, options?: FsReadFileOptions): Promise<string> {
+    return this.inner.readFileWithContext(this.context, path, options);
+  }
+
+  readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
+    return this.inner.readFileBytesWithContext(this.context, path);
+  }
+
+  readFileBuffer(path: string): Promise<Uint8Array> {
+    return this.inner.readFileBufferWithContext(this.context, path);
+  }
+
+  writeFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    return this.inner.writeFileWithContext(this.context, path, content, options);
+  }
+
+  appendFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    return this.inner.appendFileWithContext(this.context, path, content, options);
+  }
+
+  exists(path: string): Promise<boolean> {
+    return this.inner.existsWithContext(this.context, path);
+  }
+
+  stat(path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
+    return this.inner.statWithContext(this.context, path);
+  }
+
+  mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
+    return this.inner.mkdirWithContext(this.context, path, options);
+  }
+
+  readdir(path: string): Promise<string[]> {
+    return this.inner.readdirWithContext(this.context, path);
+  }
+
+  readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
+    return this.inner.readdirWithFileTypesWithContext(this.context, path);
+  }
+
+  rm(path: string, options?: FsRmOptions): Promise<void> {
+    return this.inner.rmWithContext(this.context, path, options);
+  }
+
+  cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
+    return this.inner.cpWithContext(this.context, src, dest, options);
+  }
+
+  mv(src: string, dest: string): Promise<void> {
+    return this.inner.mvWithContext(this.context, src, dest);
+  }
+
+  resolvePath(base: string, path: string): string {
+    return this.inner.resolvePathWithContext(this.context, base, path);
+  }
+
+  getAllPaths(): string[] {
+    return this.inner.getAllPathsWithContext(this.context);
+  }
+
+  chmod(path: string, mode: number): Promise<void> {
+    return this.inner.chmodWithContext(this.context, path, mode);
+  }
+
+  symlink(target: string, linkPath: string): Promise<void> {
+    return this.inner.symlinkWithContext(this.context, target, linkPath);
+  }
+
+  link(existingPath: string, newPath: string): Promise<void> {
+    return this.inner.linkWithContext(this.context, existingPath, newPath);
+  }
+
+  readlink(path: string): Promise<string> {
+    return this.inner.readlinkWithContext(this.context, path);
+  }
+
+  lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
+    return this.inner.lstatWithContext(this.context, path);
+  }
+
+  realpath(path: string): Promise<string> {
+    return this.inner.realpathWithContext(this.context, path);
+  }
+
+  utimes(path: string, atime: Date, mtime: Date): Promise<void> {
+    return this.inner.utimesWithContext(this.context, path, atime, mtime);
+  }
+}
+
+
 export class KernelObservedFileSystem implements IFileSystem {
   private suspendDepth = 0;
   private nextGeneration = 1;
@@ -788,13 +979,11 @@ export class KernelObservedFileSystem implements IFileSystem {
     private readonly kernelInfo: () => RuntimeKernelInfo,
     private readonly assertWritable: (absolutePath: string, operation: string) => void,
     private readonly assertSubtreeWritable: (absolutePath: string, operation: string) => void,
-    private readonly generationBaseline: () => RuntimeFileSystemGenerationSnapshot | undefined,
-    private readonly commandGenerationContext: () => RuntimeFileSystemCommandGenerationContext | undefined,
     private readonly onSyscallEvent: (event: RuntimeFileSystemSyscallEvent) => void,
     private readonly dynamicProc: RuntimeDynamicProcProvider,
-    private readonly onFileChange: (change: RuntimeFileChange) => void,
-    private readonly readDevice: (device: RuntimeKernelDevicePath) => string,
-    private readonly writeDevice: (device: RuntimeKernelDevicePath, data: string) => void
+    private readonly onFileChange: (context: RuntimeCommandExecutionContext | undefined, change: RuntimeFileChange) => void,
+    private readonly readDevice: (context: RuntimeCommandExecutionContext | undefined, device: RuntimeKernelDevicePath) => string,
+    private readonly writeDevice: (context: RuntimeCommandExecutionContext | undefined, device: RuntimeKernelDevicePath, data: string) => void
   ) {}
 
   suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {
@@ -837,16 +1026,48 @@ export class KernelObservedFileSystem implements IFileSystem {
     return ['ino\tpath', ...rows].join('\n') + '\n';
   }
 
+  private commandGenerationContextFor(
+    context: RuntimeCommandExecutionContext | undefined
+  ): RuntimeFileSystemCommandGenerationContext | undefined {
+    return context
+      ? {
+          baseline: context.generationBaseline,
+          mutatedPaths: context.mutatedGenerationPaths,
+          pid: context.process.pid,
+          signal: context.process.abortController!.signal,
+          setError: (error) => {
+            context.kernelError = error;
+          },
+        }
+      : undefined;
+  }
+
   assertFileChangeGenerationFresh(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): void {
+    return this.assertFileChangeGenerationFreshWithContext(undefined, change, phase);
+  }
+
+  assertFileChangeGenerationFreshWithContext(
+    context: RuntimeCommandExecutionContext | undefined,
+    change: RuntimeFileChange,
+    phase: RuntimeFileMutationPhase
+  ): void {
     if (phase !== 'final-diff') return;
-    const baseline = this.generationBaseline();
+    const baseline = context?.generationBaseline;
     if (!baseline) return;
     const path = this.mapPath(runtimeFileChangePath(change));
     const kind = this.finalDiffMutationKind(change, path);
-    this.assertCommandMutationFresh([path], kind);
+    this.assertCommandMutationFresh(context, [path], kind);
   }
 
   async applyFinalDiffTransaction(
+    changes: readonly RuntimeFileChange[],
+    prepare: (change: RuntimeFileChange) => RuntimeFinalDiffPreparedChange
+  ): Promise<RuntimeFileChange[]> {
+    return this.applyFinalDiffTransactionWithContext(undefined, changes, prepare);
+  }
+
+  async applyFinalDiffTransactionWithContext(
+    context: RuntimeCommandExecutionContext | undefined,
     changes: readonly RuntimeFileChange[],
     prepare: (change: RuntimeFileChange) => RuntimeFinalDiffPreparedChange
   ): Promise<RuntimeFileChange[]> {
@@ -858,7 +1079,7 @@ export class KernelObservedFileSystem implements IFileSystem {
         kind: this.finalDiffMutationKind(preparedChange.change, preparedChange.absolutePath),
       };
     });
-    const generationContext = this.commandGenerationContext();
+    const generationContext = this.commandGenerationContextFor(context);
     const normalizedPaths = prepared.map((change) => normalizeFsLockPath(change.absolutePath));
     const detail = {
       kind: 'final-diff-transaction',
@@ -873,7 +1094,7 @@ export class KernelObservedFileSystem implements IFileSystem {
         prepared.flatMap((change) => this.mutationLockRequests([change.absolutePath], change.kind)),
         async () => {
           for (const change of prepared) {
-            this.assertCommandMutationFresh([change.absolutePath], change.kind);
+            this.assertCommandMutationFresh(context, [change.absolutePath], change.kind);
             await this.validateFinalDiffPreparedChange(change);
           }
           await this.validateFinalDiffDirectoryDeletes(prepared);
@@ -893,7 +1114,7 @@ export class KernelObservedFileSystem implements IFileSystem {
           }
           await this.recordFinalDiffInodeMutations(prepared, rollback);
           for (const change of prepared) {
-            this.recordMutation([change.absolutePath], change.kind);
+          this.recordMutation(context, [change.absolutePath], change.kind);
           }
           this.onSyscallEvent({ type: 'fs-transaction-commit', pid: generationContext?.pid, detail });
           return committed;
@@ -902,7 +1123,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       );
     } catch (error) {
       const commandError = runtimeCommandError(error);
-      this.recordCommandError(error);
+      this.recordCommandErrorWithContext(context, error);
       this.onSyscallEvent({
         type: 'fs-transaction-abort',
         pid: generationContext?.pid,
@@ -919,8 +1140,12 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   recordCommandError(error: unknown): void {
+    this.recordCommandErrorWithContext(undefined, error);
+  }
+
+  recordCommandErrorWithContext(context: RuntimeCommandExecutionContext | undefined, error: unknown): void {
     const commandError = runtimeCommandError(error);
-    if (commandError) this.commandGenerationContext()?.setError(commandError);
+    if (commandError) this.commandGenerationContextFor(context)?.setError(commandError);
   }
 
   private mutationGenerationPaths(
@@ -1172,24 +1397,30 @@ export class KernelObservedFileSystem implements IFileSystem {
     await this.base.rm(path, { force: true, recursive: true });
   }
 
-  private withReadLocks<T>(paths: readonly string[], reason: string, fn: () => Promise<T>): Promise<T> {
-    const generationContext = this.commandGenerationContext();
+  private withReadLocks<T>(
+    context: RuntimeCommandExecutionContext | undefined,
+    paths: readonly string[],
+    reason: string,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const generationContext = this.commandGenerationContextFor(context);
     return this.locks.withLocks(
       paths.map((path) => ({ path: normalizeFsLockPath(path), mode: 'shared', reason })),
       fn,
       generationContext?.signal
     ).catch((error) => {
-      this.recordCommandError(error);
+      this.recordCommandErrorWithContext(context, error);
       throw error;
     });
   }
 
   private withMutationLocks<T>(
+    context: RuntimeCommandExecutionContext | undefined,
     paths: readonly string[],
     kind: RuntimeFileSystemMutationKind,
     fn: () => Promise<T>
   ): Promise<T> {
-    const generationContext = this.commandGenerationContext();
+    const generationContext = this.commandGenerationContextFor(context);
     const normalizedPaths = paths.map((path) => normalizeFsLockPath(path));
     const detail = {
       kind,
@@ -1198,14 +1429,14 @@ export class KernelObservedFileSystem implements IFileSystem {
     };
     this.onSyscallEvent({ type: 'fs-syscall-start', pid: generationContext?.pid, detail });
     return this.locks.withLocks(this.mutationLockRequests(paths, kind), async () => {
-      this.assertCommandMutationFresh(paths, kind);
+      this.assertCommandMutationFresh(context, paths, kind);
       return fn();
     }, generationContext?.signal).then((result) => {
       this.onSyscallEvent({ type: 'fs-syscall-commit', pid: generationContext?.pid, detail });
       return result;
     }).catch((error) => {
       const commandError = runtimeCommandError(error);
-      this.recordCommandError(error);
+      this.recordCommandErrorWithContext(context, error);
       this.onSyscallEvent({
         type: 'fs-syscall-abort',
         pid: generationContext?.pid,
@@ -1225,9 +1456,18 @@ export class KernelObservedFileSystem implements IFileSystem {
     fn: (base: IFileSystem) => Promise<T>,
     kind: RuntimeFileSystemMutationKind = 'file-write'
   ): Promise<T> {
-    return this.withMutationLocks(paths, kind, async () => {
+    return this.withBaseMutationWithContext(undefined, paths, fn, kind);
+  }
+
+  withBaseMutationWithContext<T>(
+    context: RuntimeCommandExecutionContext | undefined,
+    paths: readonly string[],
+    fn: (base: IFileSystem) => Promise<T>,
+    kind: RuntimeFileSystemMutationKind = 'file-write'
+  ): Promise<T> {
+    return this.withMutationLocks(context, paths, kind, async () => {
       const result = await fn(this.base);
-      this.recordMutation(paths, kind);
+      this.recordMutation(context, paths, kind);
       return result;
     });
   }
@@ -1237,6 +1477,7 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   private recordMutation(
+    context: RuntimeCommandExecutionContext | undefined,
     paths: readonly string[],
     kind: RuntimeFileSystemMutationKind = 'file-write'
   ): void {
@@ -1246,7 +1487,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     for (const path of generationPaths) {
       this.generations.set(path, generation);
     }
-    this.recordCommandMutation(generationPaths);
+    this.recordCommandMutation(context, generationPaths);
   }
 
   private forgetInodes(paths: readonly string[]): void {
@@ -1270,10 +1511,11 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   private assertCommandMutationFresh(
+    context: RuntimeCommandExecutionContext | undefined,
     paths: readonly string[],
     kind: RuntimeFileSystemMutationKind
   ): void {
-    const generationContext = this.commandGenerationContext();
+    const generationContext = this.commandGenerationContextFor(context);
     if (!generationContext) return;
     const generationPaths = [...new Set(this.mutationGenerationPaths(paths, kind))];
     for (const path of generationPaths.map(normalizeFsLockPath)) {
@@ -1293,16 +1535,20 @@ export class KernelObservedFileSystem implements IFileSystem {
     }
   }
 
-  private recordCommandMutation(paths: readonly string[]): void {
-    const generationContext = this.commandGenerationContext();
+  private recordCommandMutation(context: RuntimeCommandExecutionContext | undefined, paths: readonly string[]): void {
+    const generationContext = this.commandGenerationContextFor(context);
     if (!generationContext) return;
     for (const path of paths) {
       generationContext.mutatedPaths.add(normalizeFsLockPath(path));
     }
   }
 
-  private readDynamicVirtualFile(path: string, options?: FsReadFileOptions): string | null {
-    const content = this.dynamicProc.readFile(this.mapPath(path));
+  private readDynamicVirtualFile(
+    context: RuntimeCommandExecutionContext | undefined,
+    path: string,
+    options?: FsReadFileOptions
+  ): string | null {
+    const content = this.dynamicProc.readFile(this.mapPath(path), context);
     if (content === null) return null;
     if ((options as { encoding?: unknown } | undefined)?.encoding === 'base64') {
       throw new Error(`Kernel virtual path does not support base64 reads: ${path}`);
@@ -1319,26 +1565,37 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   readFile(path: string, options?: FsReadFileOptions): Promise<string> {
-    const dynamicProcFile = this.readDynamicVirtualFile(path, options);
+    return this.readFileWithContext(undefined, path, options);
+  }
+
+  readFileWithContext(context: RuntimeCommandExecutionContext | undefined, path: string, options?: FsReadFileOptions): Promise<string> {
+    const dynamicProcFile = this.readDynamicVirtualFile(context, path, options);
     if (dynamicProcFile !== null) return Promise.resolve(dynamicProcFile);
     const readTarget = kernelReadTarget(path);
-    if (readTarget.kind === 'device-file') return Promise.resolve(this.readDeviceFile(readTarget.path, options));
+    if (readTarget.kind === 'device-file') return Promise.resolve(this.readDeviceFile(context, readTarget.path, options));
     if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
     if (readTarget.kind === 'proc-file') return Promise.resolve(this.readProcFile(readTarget.path, options));
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
     if (readTarget.kind === 'error') return Promise.reject(kernelReadTargetError(path, readTarget));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks([mappedPath], 'read-file', () => this.base.readFile(mappedPath, options));
+    return this.withReadLocks(context, [mappedPath], 'read-file', () => this.base.readFile(mappedPath, options));
   }
 
   readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
-    const dynamicProcFile = this.readDynamicVirtualFile(path);
+    return this.readFileBytesWithContext(undefined, path);
+  }
+
+  readFileBytesWithContext(
+    context: RuntimeCommandExecutionContext | undefined,
+    path: string
+  ): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
+    const dynamicProcFile = this.readDynamicVirtualFile(context, path);
     if (dynamicProcFile !== null) {
       return Promise.resolve(textToByteString(dynamicProcFile)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
     }
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'device-file') {
-      return Promise.resolve(textToByteString(this.readDeviceFile(readTarget.path))) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+      return Promise.resolve(textToByteString(this.readDeviceFile(context, readTarget.path))) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
     }
     if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
     if (readTarget.kind === 'proc-file') {
@@ -1348,35 +1605,48 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (readTarget.kind === 'error') return Promise.reject(kernelReadTargetError(path, readTarget));
     if (!this.base.readFileBytes) return Promise.reject(new Error('readFileBytes is not supported by this filesystem.'));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks([mappedPath], 'read-file', () =>
+    return this.withReadLocks(context, [mappedPath], 'read-file', () =>
       this.base.readFileBytes!(mappedPath) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>
     );
   }
 
   readFileBuffer(path: string): Promise<Uint8Array> {
-    const dynamicProcFile = this.readDynamicVirtualFile(path);
+    return this.readFileBufferWithContext(undefined, path);
+  }
+
+  readFileBufferWithContext(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<Uint8Array> {
+    const dynamicProcFile = this.readDynamicVirtualFile(context, path);
     if (dynamicProcFile !== null) return Promise.resolve(new TextEncoder().encode(dynamicProcFile));
     const readTarget = kernelReadTarget(path);
-    if (readTarget.kind === 'device-file') return Promise.resolve(new TextEncoder().encode(this.readDeviceFile(readTarget.path)));
+    if (readTarget.kind === 'device-file') return Promise.resolve(new TextEncoder().encode(this.readDeviceFile(context, readTarget.path)));
     if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
     if (readTarget.kind === 'proc-file') return Promise.resolve(new TextEncoder().encode(this.readProcFile(readTarget.path)));
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
     if (readTarget.kind === 'error') return Promise.reject(kernelReadTargetError(path, readTarget));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks([mappedPath], 'read-file', () => this.base.readFileBuffer(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'read-file', () => this.base.readFileBuffer(mappedPath));
   }
 
   async writeFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    return this.writeFileWithContext(undefined, path, content, options);
+  }
+
+  async writeFileWithContext(
+    context: RuntimeCommandExecutionContext | undefined,
+    path: string,
+    content: FileContent,
+    options?: FsWriteFileOptions
+  ): Promise<void> {
     this.assertDynamicVirtualWritable(path, 'write');
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.device, contentToText(content));
+      this.writeDevice(context, writeTarget.device, contentToText(content));
       return;
     }
     const mappedPath = this.mapPath(path);
     const mutationKind: RuntimeFileSystemMutationKind = await this.base.exists(mappedPath) ? 'file-write' : 'file-create';
-    await this.withMutationLocks([mappedPath], mutationKind, async () => {
+    await this.withMutationLocks(context, [mappedPath], mutationKind, async () => {
       try {
         this.assertWritable(mappedPath, 'write');
       } catch (error) {
@@ -1385,32 +1655,45 @@ export class KernelObservedFileSystem implements IFileSystem {
       }
       await this.base.writeFile(mappedPath, content, options);
       this.inodeForPath(mappedPath);
-      this.recordMutation([mappedPath], mutationKind);
-      await this.emitFileWrite(mappedPath);
+      this.recordMutation(context, [mappedPath], mutationKind);
+      await this.emitFileWrite(context, mappedPath);
     });
   }
 
   async appendFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    return this.appendFileWithContext(undefined, path, content, options);
+  }
+
+  async appendFileWithContext(
+    context: RuntimeCommandExecutionContext | undefined,
+    path: string,
+    content: FileContent,
+    options?: FsWriteFileOptions
+  ): Promise<void> {
     this.assertDynamicVirtualWritable(path, 'append');
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.device, contentToText(content));
+      this.writeDevice(context, writeTarget.device, contentToText(content));
       return;
     }
     const mappedPath = this.mapPath(path);
     const mutationKind: RuntimeFileSystemMutationKind = await this.base.exists(mappedPath) ? 'file-write' : 'file-create';
-    await this.withMutationLocks([mappedPath], mutationKind, async () => {
+    await this.withMutationLocks(context, [mappedPath], mutationKind, async () => {
       this.assertWritable(mappedPath, 'append');
       await this.base.appendFile(mappedPath, content, options);
       this.inodeForPath(mappedPath);
-      this.recordMutation([mappedPath], mutationKind);
-      await this.emitFileWrite(mappedPath);
+      this.recordMutation(context, [mappedPath], mutationKind);
+      await this.emitFileWrite(context, mappedPath);
     });
   }
 
   exists(path: string): Promise<boolean> {
-    if (this.dynamicProc.entryKind(this.mapPath(path)) !== null) return Promise.resolve(true);
+    return this.existsWithContext(undefined, path);
+  }
+
+  existsWithContext(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<boolean> {
+    if (this.dynamicProc.entryKind(this.mapPath(path), context) !== null) return Promise.resolve(true);
     const accessTarget = kernelAccessTarget(path);
     if (accessTarget.kind === 'allowed') return Promise.resolve(true);
     if (accessTarget.kind === 'denied') return Promise.resolve(false);
@@ -1418,19 +1701,27 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   stat(path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
-    const dynamicStat = this.dynamicProc.stat(this.mapPath(path));
+    return this.statWithContext(undefined, path);
+  }
+
+  statWithContext(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
+    const dynamicStat = this.dynamicProc.stat(this.mapPath(path), context);
     if (dynamicStat) return Promise.resolve(this.virtualStat(dynamicStat));
     const statTarget = kernelStatTarget(path, this.kernelInfo());
     if (statTarget.kind === 'stat') return Promise.resolve(this.virtualStat(statTarget.stat));
     if (statTarget.kind === 'error') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks([mappedPath], 'stat', () => this.base.stat(mappedPath)).then((stat) => {
+    return this.withReadLocks(context, [mappedPath], 'stat', () => this.base.stat(mappedPath)).then((stat) => {
       if (isWithinWorkspace(this.workspaceRoot(), mappedPath)) this.inodeForPath(mappedPath);
       return stat;
     });
   }
 
   async mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
+    return this.mkdirWithContext(undefined, path, options);
+  }
+
+  async mkdirWithContext(context: RuntimeCommandExecutionContext | undefined, path: string, options?: FsMkdirOptions): Promise<void> {
     this.assertDynamicVirtualWritable(path, 'mkdir');
     const mkdirTarget = kernelMkdirTarget(path);
     if (mkdirTarget.kind === 'error') return Promise.reject(new Error(
@@ -1439,22 +1730,26 @@ export class KernelObservedFileSystem implements IFileSystem {
         : `Kernel device namespace is read-only: ${path}`
     ));
     const mappedPath = this.mapPath(path);
-    await this.withMutationLocks([mappedPath], 'directory-create', async () => {
+    await this.withMutationLocks(context, [mappedPath], 'directory-create', async () => {
       const createdDirectories = await this.collectMissingDirectories(mappedPath);
       this.assertWritable(mappedPath, 'mkdir');
       await this.base.mkdir(mappedPath, options);
       for (const directoryPath of createdDirectories) {
         this.inodeForPath(directoryPath);
       }
-      if (createdDirectories.length > 0) this.recordMutation(createdDirectories, 'directory-create');
+      if (createdDirectories.length > 0) this.recordMutation(context, createdDirectories, 'directory-create');
       for (const directoryPath of createdDirectories) {
-        this.emitDirectoryCreate(directoryPath);
+        this.emitDirectoryCreate(context, directoryPath);
       }
     });
   }
 
   readdir(path: string): Promise<string[]> {
-    const dynamicEntries = this.dynamicProc.readDir(this.mapPath(path));
+    return this.readdirWithContext(undefined, path);
+  }
+
+  readdirWithContext(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<string[]> {
+    const dynamicEntries = this.dynamicProc.readDir(this.mapPath(path), context);
     if (dynamicEntries) return Promise.resolve(dynamicEntries.map((entry) => entry.name));
     const directoryTarget = kernelDirectoryTarget(path);
     if (directoryTarget.kind === 'directory') return Promise.resolve(directoryTarget.entries.map((entry) => entry.name));
@@ -1466,11 +1761,18 @@ export class KernelObservedFileSystem implements IFileSystem {
       ));
     }
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks([mappedPath], 'readdir', () => this.base.readdir(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'readdir', () => this.base.readdir(mappedPath));
   }
 
   readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
-    const dynamicEntries = this.dynamicProc.readDir(this.mapPath(path));
+    return this.readdirWithFileTypesWithContext(undefined, path);
+  }
+
+  readdirWithFileTypesWithContext(
+    context: RuntimeCommandExecutionContext | undefined,
+    path: string
+  ): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
+    const dynamicEntries = this.dynamicProc.readDir(this.mapPath(path), context);
     if (dynamicEntries) {
       return Promise.resolve(dynamicEntries.map((entry) => ({
         name: entry.name,
@@ -1497,41 +1799,49 @@ export class KernelObservedFileSystem implements IFileSystem {
     }
     if (!this.base.readdirWithFileTypes) return Promise.reject(new Error('readdirWithFileTypes is not supported by this filesystem.'));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks([mappedPath], 'readdir', () => this.base.readdirWithFileTypes!(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'readdir', () => this.base.readdirWithFileTypes!(mappedPath));
   }
 
   async rm(path: string, options?: FsRmOptions): Promise<void> {
+    return this.rmWithContext(undefined, path, options);
+  }
+
+  async rmWithContext(context: RuntimeCommandExecutionContext | undefined, path: string, options?: FsRmOptions): Promise<void> {
     this.assertDynamicVirtualWritable(path, options?.recursive ? 'recursive-delete' : 'delete');
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const mappedPath = this.mapPath(path);
-    await this.withMutationLocks([mappedPath], options?.recursive ? 'recursive-delete' : 'delete', async () => {
+    await this.withMutationLocks(context, [mappedPath], options?.recursive ? 'recursive-delete' : 'delete', async () => {
       const deletedFiles = await this.collectExistingFiles(mappedPath);
       const deletedDirectories = await this.collectExistingDirectories(mappedPath);
       this.assertWritable(mappedPath, 'remove');
       this.assertWritableFiles(deletedFiles, 'remove');
       await this.base.rm(mappedPath, options);
       this.forgetInodes([mappedPath, ...deletedFiles, ...deletedDirectories]);
-      this.recordMutation([mappedPath, ...deletedFiles, ...deletedDirectories], options?.recursive ? 'recursive-delete' : 'delete');
+      this.recordMutation(context, [mappedPath, ...deletedFiles, ...deletedDirectories], options?.recursive ? 'recursive-delete' : 'delete');
       for (const deletedPath of deletedFiles) {
-        this.emitFileDelete(deletedPath);
+        this.emitFileDelete(context, deletedPath);
       }
       for (const deletedPath of deletedDirectories) {
-        this.emitDirectoryDelete(deletedPath);
+        this.emitDirectoryDelete(context, deletedPath);
       }
     });
   }
 
   async cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
+    return this.cpWithContext(undefined, src, dest, options);
+  }
+
+  async cpWithContext(context: RuntimeCommandExecutionContext | undefined, src: string, dest: string, options?: FsCpOptions): Promise<void> {
     this.assertDynamicVirtualWritable(dest, 'copy');
-    const dynamicSourceFile = this.readDynamicVirtualFile(src);
+    const dynamicSourceFile = this.readDynamicVirtualFile(context, src);
     if (dynamicSourceFile !== null) {
-      await this.copyDynamicVirtualFile(dest, dynamicSourceFile);
+      await this.copyDynamicVirtualFile(context, dest, dynamicSourceFile);
       return;
     }
     const copyTarget = kernelFileCopyTarget(src, dest);
     if (copyTarget.kind === 'virtual-source' || copyTarget.kind === 'device-destination') {
-      await this.copyFileLike(src, dest, copyTarget);
+      await this.copyFileLike(context, src, dest, copyTarget);
       return;
     }
     if (copyTarget.kind === 'error') {
@@ -1545,61 +1855,67 @@ export class KernelObservedFileSystem implements IFileSystem {
     }
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
-    await this.withMutationLocks([mappedSource, mappedDestination], 'copy', async () => {
+    await this.withMutationLocks(context, [mappedSource, mappedDestination], 'copy', async () => {
       this.assertWritable(mappedDestination, 'copy');
       await this.base.cp(mappedSource, mappedDestination, options);
       this.inodeForPath(mappedDestination);
-      this.recordMutation([mappedSource, mappedDestination], 'copy');
-      await this.emitExistingDirectories(mappedDestination);
-      await this.emitExistingFiles(mappedDestination);
+      this.recordMutation(context, [mappedSource, mappedDestination], 'copy');
+      await this.emitExistingDirectories(context, mappedDestination);
+      await this.emitExistingFiles(context, mappedDestination);
     });
   }
 
   private async copyFileLike(
+    context: RuntimeCommandExecutionContext | undefined,
     src: string,
     dest: string,
     copyTarget: Exclude<ReturnType<typeof runtimeKernelFileCopyTarget>, { kind: 'workspace' | 'error' }>
   ): Promise<void> {
-    const sourceBytes = await this.readKernelCopySource(src, copyTarget.source);
+    const sourceBytes = await this.readKernelCopySource(context, src, copyTarget.source);
     if (copyTarget.kind === 'device-destination') {
-      this.writeDevice(copyTarget.device, contentToText(sourceBytes));
+      this.writeDevice(context, copyTarget.device, contentToText(sourceBytes));
       return;
     }
     const mappedDestination = this.mapPath(dest);
-    await this.withMutationLocks([mappedDestination], 'file-create', async () => {
+    await this.withMutationLocks(context, [mappedDestination], 'file-create', async () => {
       this.assertWritable(mappedDestination, 'copy');
       await this.base.writeFile(mappedDestination, sourceBytes);
       this.inodeForPath(mappedDestination);
-      this.recordMutation([mappedDestination], 'file-create');
-      await this.emitFileWrite(mappedDestination);
+      this.recordMutation(context, [mappedDestination], 'file-create');
+      await this.emitFileWrite(context, mappedDestination);
     });
   }
 
   private async readKernelCopySource(
+    context: RuntimeCommandExecutionContext | undefined,
     path: string,
     sourceTarget: ReturnType<typeof runtimeKernelFileReadTarget> = kernelFileReadTarget(path)
   ): Promise<FileContent> {
-    if (sourceTarget.kind === 'device-file') return this.readDeviceFile(sourceTarget.path);
+    if (sourceTarget.kind === 'device-file') return this.readDeviceFile(context, sourceTarget.path);
     if (sourceTarget.kind === 'proc-file') return readPublicRuntimeProcFile(sourceTarget.path, this.kernelInfo());
     if (sourceTarget.kind === 'error') throwKernelFileReadTargetError(path, sourceTarget);
     return this.base.readFileBuffer(this.mapPath(path));
   }
 
-  private async copyDynamicVirtualFile(dest: string, content: string): Promise<void> {
+  private async copyDynamicVirtualFile(
+    context: RuntimeCommandExecutionContext | undefined,
+    dest: string,
+    content: string
+  ): Promise<void> {
     const writeTarget = kernelWriteTarget(dest);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(dest, writeTarget);
     if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.device, content);
+      this.writeDevice(context, writeTarget.device, content);
       return;
     }
     const mappedDestination = this.mapPath(dest);
     const mutationKind: RuntimeFileSystemMutationKind = await this.base.exists(mappedDestination) ? 'file-write' : 'file-create';
-    await this.withMutationLocks([mappedDestination], mutationKind, async () => {
+    await this.withMutationLocks(context, [mappedDestination], mutationKind, async () => {
       this.assertWritable(mappedDestination, 'copy');
       await this.base.writeFile(mappedDestination, content);
       this.inodeForPath(mappedDestination);
-      this.recordMutation([mappedDestination], mutationKind);
-      await this.emitFileWrite(mappedDestination);
+      this.recordMutation(context, [mappedDestination], mutationKind);
+      await this.emitFileWrite(context, mappedDestination);
     });
   }
 
@@ -1618,6 +1934,10 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   async mv(src: string, dest: string): Promise<void> {
+    return this.mvWithContext(undefined, src, dest);
+  }
+
+  async mvWithContext(context: RuntimeCommandExecutionContext | undefined, src: string, dest: string): Promise<void> {
     this.assertDynamicVirtualWritable(src, 'move');
     this.assertDynamicVirtualWritable(dest, 'move');
     const sourceMutationTarget = kernelMutationTarget(src);
@@ -1626,7 +1946,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (destinationMutationTarget.kind === 'error') throwKernelMutationTargetError(dest, destinationMutationTarget, 'Kernel device namespace is read-only.');
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
-    await this.withMutationLocks([mappedSource, mappedDestination], 'rename', async () => {
+    await this.withMutationLocks(context, [mappedSource, mappedDestination], 'rename', async () => {
       const deletedFiles = await this.collectExistingFiles(mappedSource);
       const deletedDirectories = await this.collectExistingDirectories(mappedSource);
       const movedPaths = [...deletedDirectories, ...deletedFiles];
@@ -1635,22 +1955,26 @@ export class KernelObservedFileSystem implements IFileSystem {
       this.assertSubtreeWritable(mappedDestination, 'move');
       await this.base.mv(mappedSource, mappedDestination);
       this.moveInodeSubtree(mappedSource, mappedDestination, movedPaths.length > 0 ? movedPaths : [mappedSource]);
-      this.recordMutation([mappedSource, mappedDestination], 'rename');
+      this.recordMutation(context, [mappedSource, mappedDestination], 'rename');
       if (deletedFiles.length > 0 || deletedDirectories.length > 0) {
-        this.recordMutation([...deletedFiles, ...deletedDirectories], 'recursive-delete');
+        this.recordMutation(context, [...deletedFiles, ...deletedDirectories], 'recursive-delete');
       }
-      await this.emitExistingDirectories(mappedDestination);
-      await this.emitExistingFiles(mappedDestination);
+      await this.emitExistingDirectories(context, mappedDestination);
+      await this.emitExistingFiles(context, mappedDestination);
       for (const deletedPath of deletedFiles) {
-        this.emitFileDelete(deletedPath);
+        this.emitFileDelete(context, deletedPath);
       }
       for (const deletedPath of deletedDirectories) {
-        this.emitDirectoryDelete(deletedPath);
+        this.emitDirectoryDelete(context, deletedPath);
       }
     });
   }
 
   resolvePath(base: string, path: string): string {
+    return this.resolvePathWithContext(undefined, base, path);
+  }
+
+  resolvePathWithContext(_context: RuntimeCommandExecutionContext | undefined, base: string, path: string): string {
     if (isRuntimeKernelVirtualNamespacePath(path) || isRuntimeKernelVirtualNamespacePath(base)) {
       return this.base.resolvePath(base, path);
     }
@@ -1658,6 +1982,10 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   getAllPaths(): string[] {
+    return this.getAllPathsWithContext(undefined);
+  }
+
+  getAllPathsWithContext(context: RuntimeCommandExecutionContext | undefined): string[] {
     const paths = this.base.getAllPaths();
     const alias = this.workspaceAlias();
     const root = this.workspaceRoot();
@@ -1668,11 +1996,11 @@ export class KernelObservedFileSystem implements IFileSystem {
           if (path.startsWith(`${root}/`)) return [path, `${alias}${path.slice(root.length)}`];
           return [path];
         });
-    const traceKernelBinPaths = (this.dynamicProc.readDir(TRACEKERNEL_BIN_PATH) ?? [])
+    const traceKernelBinPaths = (this.dynamicProc.readDir(TRACEKERNEL_BIN_PATH, context) ?? [])
       .map((entry) => `${TRACEKERNEL_BIN_PATH}/${entry.name}`);
-    const skillPaths = this.dynamicProc.readDir(TRACEKERNEL_SKILLS_ROOT) === null
+    const skillPaths = this.dynamicProc.readDir(TRACEKERNEL_SKILLS_ROOT, context) === null
       ? []
-      : this.dynamicVirtualPaths(TRACEKERNEL_SKILLS_ROOT);
+      : this.dynamicVirtualPaths(TRACEKERNEL_SKILLS_ROOT, context);
     return Array.from(new Set([
       ...aliasPaths,
       ...runtimeKernelVirtualPaths(),
@@ -1685,93 +2013,130 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   chmod(path: string, mode: number): Promise<void> {
+    return this.chmodWithContext(undefined, path, mode);
+  }
+
+  chmodWithContext(context: RuntimeCommandExecutionContext | undefined, path: string, mode: number): Promise<void> {
     this.assertDynamicVirtualWritable(path, 'chmod');
     const metadataTarget = kernelMetadataTarget(path);
     if (metadataTarget.kind === 'ignored-device') return Promise.resolve();
     if (metadataTarget.kind === 'error') throwKernelMetadataTargetError(path, metadataTarget);
     const mappedPath = this.mapPath(path);
-    return this.withMutationLocks([mappedPath], 'file-write', async () => {
+    return this.withMutationLocks(context, [mappedPath], 'file-write', async () => {
       this.assertWritable(mappedPath, 'chmod');
       await this.base.chmod(mappedPath, mode);
-      this.recordMutation([mappedPath], 'file-write');
+      this.recordMutation(context, [mappedPath], 'file-write');
     });
   }
 
   symlink(target: string, linkPath: string): Promise<void> {
+    return this.symlinkWithContext(undefined, target, linkPath);
+  }
+
+  symlinkWithContext(context: RuntimeCommandExecutionContext | undefined, target: string, linkPath: string): Promise<void> {
     this.assertDynamicVirtualWritable(linkPath, 'symlink');
     const symlinkTarget = kernelSymlinkTarget(linkPath);
     if (symlinkTarget.kind === 'error') throwKernelMutationTargetError(linkPath, symlinkTarget);
     const mappedPath = this.mapPath(linkPath);
-    return this.withMutationLocks([mappedPath], 'file-create', async () => {
+    return this.withMutationLocks(context, [mappedPath], 'file-create', async () => {
       this.assertWritable(mappedPath, 'symlink');
       await this.base.symlink(target, mappedPath);
-      this.recordMutation([mappedPath], 'file-create');
+      this.recordMutation(context, [mappedPath], 'file-create');
     });
   }
 
   link(existingPath: string, newPath: string): Promise<void> {
+    return this.linkWithContext(undefined, existingPath, newPath);
+  }
+
+  linkWithContext(context: RuntimeCommandExecutionContext | undefined, existingPath: string, newPath: string): Promise<void> {
     this.assertDynamicVirtualWritable(existingPath, 'link');
     this.assertDynamicVirtualWritable(newPath, 'link');
     const linkTarget = kernelLinkTarget(existingPath, newPath);
     if (linkTarget.kind === 'error') throwKernelMutationTargetError(linkTarget.side === 'source' ? existingPath : newPath, linkTarget);
     const mappedNewPath = this.mapPath(newPath);
     const mappedExistingPath = this.mapPath(existingPath);
-    return this.withMutationLocks([mappedExistingPath, mappedNewPath], 'copy', async () => {
+    return this.withMutationLocks(context, [mappedExistingPath, mappedNewPath], 'copy', async () => {
       this.assertWritable(mappedNewPath, 'link');
       await this.base.link(mappedExistingPath, mappedNewPath);
-      this.recordMutation([mappedExistingPath, mappedNewPath], 'copy');
+      this.recordMutation(context, [mappedExistingPath, mappedNewPath], 'copy');
     });
   }
 
   readlink(path: string): Promise<string> {
-    if (this.dynamicProc.entryKind(this.mapPath(path)) !== null) {
+    return this.readlinkWithContext(undefined, path);
+  }
+
+  readlinkWithContext(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<string> {
+    if (this.dynamicProc.entryKind(this.mapPath(path), context) !== null) {
       return Promise.reject(new Error(`Kernel virtual path is not a symbolic link: ${path}`));
     }
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind !== 'workspace') return Promise.reject(new Error(`Kernel virtual path is not a symbolic link: ${path}`));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks([mappedPath], 'readlink', () => this.base.readlink(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'readlink', () => this.base.readlink(mappedPath));
   }
 
   lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
-    const dynamicStat = this.dynamicProc.stat(this.mapPath(path));
+    return this.lstatWithContext(undefined, path);
+  }
+
+  lstatWithContext(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
+    const dynamicStat = this.dynamicProc.stat(this.mapPath(path), context);
     if (dynamicStat) return Promise.resolve(this.virtualStat(dynamicStat));
     const statTarget = kernelStatTarget(path, this.kernelInfo());
     if (statTarget.kind === 'stat') return Promise.resolve(this.virtualStat(statTarget.stat));
     if (statTarget.kind === 'error') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks([mappedPath], 'stat', () => this.base.lstat(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'stat', () => this.base.lstat(mappedPath));
   }
 
   realpath(path: string): Promise<string> {
+    return this.realpathWithContext(undefined, path);
+  }
+
+  realpathWithContext(_context: RuntimeCommandExecutionContext | undefined, path: string): Promise<string> {
     assertNoNul(path, 'Kernel path');
-    if (this.dynamicProc.entryKind(this.mapPath(path)) !== null) return Promise.resolve(this.mapPath(path));
+    if (this.dynamicProc.entryKind(this.mapPath(path), _context) !== null) return Promise.resolve(this.mapPath(path));
     if (isRuntimeKernelVirtualNamespacePath(path)) return Promise.resolve(path);
     return this.base.realpath(this.mapPath(path));
   }
 
-  private dynamicVirtualPaths(path: string, seen = new Set<string>()): string[] {
+  private dynamicVirtualPaths(
+    path: string,
+    context: RuntimeCommandExecutionContext | undefined,
+    seen = new Set<string>()
+  ): string[] {
     if (seen.has(path)) return [];
     seen.add(path);
-    const kind = this.dynamicProc.entryKind(path);
+    const kind = this.dynamicProc.entryKind(path, context);
     if (!kind) return [];
     if (kind === 'file') return [path];
-    const entries = this.dynamicProc.readDir(path) ?? [];
+    const entries = this.dynamicProc.readDir(path, context) ?? [];
     return [
       path,
-      ...entries.flatMap((entry) => this.dynamicVirtualPaths(`${path}/${entry.name}`, seen)),
+      ...entries.flatMap((entry) => this.dynamicVirtualPaths(`${path}/${entry.name}`, context, seen)),
     ];
   }
 
   utimes(path: string, atime: Date, mtime: Date): Promise<void> {
+    return this.utimesWithContext(undefined, path, atime, mtime);
+  }
+
+  utimesWithContext(
+    context: RuntimeCommandExecutionContext | undefined,
+    path: string,
+    atime: Date,
+    mtime: Date
+  ): Promise<void> {
     this.assertDynamicVirtualWritable(path, 'utimes');
     const metadataTarget = kernelMetadataTarget(path);
     if (metadataTarget.kind === 'ignored-device') return Promise.resolve();
     if (metadataTarget.kind === 'error') throwKernelMetadataTargetError(path, metadataTarget);
     const mappedPath = this.mapPath(path);
-    return this.withMutationLocks([mappedPath], 'file-write', async () => {
+    return this.withMutationLocks(context, [mappedPath], 'file-write', async () => {
       await this.base.utimes(mappedPath, atime, mtime);
-      this.recordMutation([mappedPath], 'file-write');
+      this.recordMutation(context, [mappedPath], 'file-write');
     });
   }
 
@@ -1780,15 +2145,15 @@ export class KernelObservedFileSystem implements IFileSystem {
     return mapWorkspaceAlias(this.workspaceRoot(), this.workspaceAlias(), path);
   }
 
-  private async emitExistingFiles(path: string): Promise<void> {
+  private async emitExistingFiles(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<void> {
     for (const filePath of await this.collectExistingFiles(path)) {
-      await this.emitFileWrite(filePath);
+      await this.emitFileWrite(context, filePath);
     }
   }
 
-  private async emitExistingDirectories(path: string): Promise<void> {
+  private async emitExistingDirectories(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<void> {
     for (const directoryPath of await this.collectExistingDirectories(path)) {
-      this.emitDirectoryCreate(directoryPath);
+      this.emitDirectoryCreate(context, directoryPath);
     }
   }
 
@@ -1809,10 +2174,13 @@ export class KernelObservedFileSystem implements IFileSystem {
     return null;
   }
 
-  private tryReserveLiveFileChange(relativePath: string, contentBytes = 0): boolean {
-    const context = this.commandGenerationContext();
+  private tryReserveLiveFileChange(
+    context: RuntimeCommandExecutionContext | undefined,
+    relativePath: string,
+    contentBytes = 0
+  ): boolean {
     if (!context) return false;
-    this.resetLiveFileChangeBudgetFor(context.pid);
+    this.resetLiveFileChangeBudgetFor(context.process.pid);
     const eventBytes = runtimeProjectUtf8Bytes(relativePath) + contentBytes;
     if (this.liveFileChangeCount + 1 > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES) return false;
     if (eventBytes > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) return false;
@@ -1860,48 +2228,52 @@ export class KernelObservedFileSystem implements IFileSystem {
     return directories.filter((directoryPath) => directoryPath !== this.workspaceRoot());
   }
 
-  private async emitFileWrite(path: string): Promise<void> {
+  private async emitFileWrite(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<void> {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
     const projectPath = toProjectPath(this.workspaceRoot(), path);
     const stat = await this.base.stat(path).catch(() => null);
     if (!stat?.isFile) return;
     const contentBytes = this.liveFileChangeContentBytes(stat);
-    if (contentBytes === null || !this.tryReserveLiveFileChange(projectPath, contentBytes)) return;
+    if (contentBytes === null || !this.tryReserveLiveFileChange(context, projectPath, contentBytes)) return;
     const bytes = await this.base.readFileBuffer(path);
     const text = decodeUtf8(bytes);
-    this.onFileChange({
+    this.onFileChange(context, {
       path: projectPath,
       contents: text ?? base64FromBytes(bytes),
       ...(text === null ? { encoding: 'base64' as const } : {}),
     });
   }
 
-  private emitFileDelete(path: string): void {
+  private emitFileDelete(context: RuntimeCommandExecutionContext | undefined, path: string): void {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
     const projectPath = toProjectPath(this.workspaceRoot(), path);
-    if (!this.tryReserveLiveFileChange(projectPath)) return;
-    this.onFileChange({ path: projectPath, deleted: true });
+    if (!this.tryReserveLiveFileChange(context, projectPath)) return;
+    this.onFileChange(context, { path: projectPath, deleted: true });
   }
 
-  private emitDirectoryCreate(path: string): void {
+  private emitDirectoryCreate(context: RuntimeCommandExecutionContext | undefined, path: string): void {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path) || path === this.workspaceRoot()) return;
     const projectPath = toProjectPath(this.workspaceRoot(), path);
-    if (!this.tryReserveLiveFileChange(projectPath)) return;
-    this.onFileChange({ path: projectPath, directory: true });
+    if (!this.tryReserveLiveFileChange(context, projectPath)) return;
+    this.onFileChange(context, { path: projectPath, directory: true });
   }
 
-  private emitDirectoryDelete(path: string): void {
+  private emitDirectoryDelete(context: RuntimeCommandExecutionContext | undefined, path: string): void {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path) || path === this.workspaceRoot()) return;
     const projectPath = toProjectPath(this.workspaceRoot(), path);
-    if (!this.tryReserveLiveFileChange(projectPath)) return;
-    this.onFileChange({ path: projectPath, directory: true, deleted: true });
+    if (!this.tryReserveLiveFileChange(context, projectPath)) return;
+    this.onFileChange(context, { path: projectPath, directory: true, deleted: true });
   }
 
-  private readDeviceFile(device: '/dev' | RuntimeKernelDevicePath, options?: FsReadFileOptions): string {
+  private readDeviceFile(
+    context: RuntimeCommandExecutionContext | undefined,
+    device: '/dev' | RuntimeKernelDevicePath,
+    options?: FsReadFileOptions
+  ): string {
     if (device === '/dev') throw new Error('Kernel device path is a directory: /dev');
     const inputDevice = runtimeDeviceInputSource(device);
     if (!inputDevice) throw new Error(`Kernel device is not readable: ${device}`);
-    const content = this.readDevice(inputDevice);
+    const content = this.readDevice(context, inputDevice);
     if (options === 'base64' || (typeof options === 'object' && options?.encoding === 'base64')) {
       return base64FromBytes(new TextEncoder().encode(content));
     }
@@ -1920,7 +2292,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (device === '/dev') throw new Error('Kernel device path is a directory: /dev');
     const outputDevice = runtimeDeviceOutputTarget(device);
     if (!outputDevice) throw new Error(`Kernel device is read-only: ${device}`);
-    this.writeDevice(device, contentToText(content));
+    this.writeDevice(undefined, outputDevice, contentToText(content));
   }
 
   private virtualStat(stat: RuntimeKernelVirtualStat): Awaited<ReturnType<IFileSystem['stat']>> {

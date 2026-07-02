@@ -9660,7 +9660,7 @@ workerScope.onmessage = (event) => {
   const options = {
     allowDynamicEval: runnerOptions?.allowDynamicEval
   };
-  const executionState = { cancelled: false };
+  const executionState = { cancelled: false, abortController: new AbortController() };
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
     postCommandMessage(postToHost, id, protocolToken, message.type, message);
   });

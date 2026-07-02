@@ -101,7 +101,7 @@ Useful command knobs:
 - `executionLimits`: command count, loop, call-depth, output, and timeout
   limits.
 - `kernel.scheduler.maxConcurrentCommands`: concurrent admitted commands,
-  defaulting to 32.
+  defaulting to 32 in Node runtimes and 4 in browser runtimes.
 - `kernel.scheduler.maxQueuedCommands`: maximum queued commands; omitted means
   unlimited.
 

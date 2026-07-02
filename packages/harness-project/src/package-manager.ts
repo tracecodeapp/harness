@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   defineCommand,
 } from 'just-bash/browser';
@@ -816,7 +815,7 @@ export async function runPackageInstall(
   kernel: RuntimeKernelInfo | undefined,
   readonlyFiles: readonly string[] | undefined,
   hiddenFiles: readonly string[] | undefined,
-  includeHiddenFiles: () => boolean,
+  includeHiddenFiles: (ctx?: CommandContext) => boolean,
   onFileChange: RuntimeFileChangeObserver | undefined
 ): Promise<RuntimeCommandResult> {
   if (!options.dependencyProvider) {
@@ -837,7 +836,7 @@ export async function runPackageInstall(
     cwd: manifest.directory,
     env: commandEnv(ctx),
     manifest,
-    project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles()),
+    project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles, hiddenFiles, includeHiddenFiles(ctx)),
     ...(ctx.signal ? { signal: ctx.signal } : {}),
   }), onFileChange);
   if (result.exitCode === 0 && options.autoLinkBins) {
@@ -858,7 +857,7 @@ export async function runPackageManagerCommand(
   kernel: RuntimeKernelInfo | undefined,
   readonlyFiles: readonly string[] | undefined,
   hiddenFiles: readonly string[] | undefined,
-  includeHiddenFiles: () => boolean,
+  includeHiddenFiles: (ctx?: CommandContext) => boolean,
   onFileChange: RuntimeFileChangeObserver | undefined,
   emitOutput?: PackageManagerOutputEmitter
 ): Promise<RuntimeCommandResult> {
@@ -914,7 +913,7 @@ export function createPackageManagerProjectCommands(
   readonlyFiles?: readonly string[],
   emitOutput?: PackageManagerOutputEmitter,
   hiddenFiles?: readonly string[],
-  includeHiddenFiles: () => boolean = () => false
+  includeHiddenFiles: (ctx?: CommandContext) => boolean = () => false
 ): ProjectWorkspaceCommand[] {
   const normalized = normalizePackageManagerConfig(config, true);
   if (!normalized) return [];
