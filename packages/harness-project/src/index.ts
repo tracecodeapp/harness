@@ -679,6 +679,21 @@ function normalizeTraceKernelSignal(value: string | undefined): { name: string; 
   return code === undefined ? null : { name, code };
 }
 
+function runtimeCommandEnvChanges(
+  baselineEnv: Record<string, string>,
+  finalEnv: Record<string, string> | undefined
+): Record<string, string | undefined> {
+  const changes: Record<string, string | undefined> = {};
+  if (!finalEnv) return changes;
+  for (const [key, value] of Object.entries(finalEnv)) {
+    if (baselineEnv[key] !== value) changes[key] = value;
+  }
+  for (const key of Object.keys(baselineEnv)) {
+    if (!(key in finalEnv)) changes[key] = undefined;
+  }
+  return changes;
+}
+
 function isRuntimeCommand(command: CustomCommand): command is Command {
   return typeof (command as Command).execute === 'function';
 }
@@ -4026,12 +4041,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           };
         }
 
-        const result = await this.createBash(options.executionLimits, commandContext, commandFs).exec(command, {
+        const bash = this.createBash(options.executionLimits, commandContext, commandFs);
+        const baselineEnv = options.onEnvChanges ? { ...bash.getEnv(), ...(options.env ?? {}) } : undefined;
+        const result = await bash.exec(command, {
           cwd: commandCwd,
           env: options.env,
           signal: abortController.signal,
           args: options.args,
         });
+        if (baselineEnv && options.onEnvChanges) {
+          options.onEnvChanges(runtimeCommandEnvChanges(baselineEnv, result.env));
+        }
         await this.flushRuntimeEventQueue(commandContext);
         const output = this.captureReturnedOutput(commandContext, result);
         this.emitReturnedOutputEvents(output, commandContext);

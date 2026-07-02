@@ -120,6 +120,15 @@ import {
 
 
 
+const TERMINAL_SESSION_TRANSIENT_ENV_KEYS = new Set([
+  'PWD',
+  'OLDPWD',
+  'OPTIND',
+  'SHELLOPTS',
+  'BASHOPTS',
+  '_',
+]);
+
 export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTerminalSession {
   private currentCwd: string;
   private readonly env: Record<string, string>;
@@ -385,11 +394,26 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         PWD: this.currentCwd,
       },
       onEvent: handleCommandEvent,
+      onEnvChanges: (changes) => this.applySessionEnvChanges(changes),
     });
     if (nextCwd) {
       this.currentCwd = nextCwd;
     }
     return result;
+  }
+
+  // Persist shell variable changes (export FOO=…, FOO=…, unset FOO) onto the
+  // session so later submissions observe them, like an interactive shell.
+  // Path-state bookkeeping stays owned by the terminal's own cwd tracking.
+  private applySessionEnvChanges(changes: Record<string, string | undefined>): void {
+    for (const [key, value] of Object.entries(changes)) {
+      if (TERMINAL_SESSION_TRANSIENT_ENV_KEYS.has(key)) continue;
+      if (value === undefined) {
+        delete this.env[key];
+      } else {
+        this.env[key] = value;
+      }
+    }
   }
 
   private startTerminalBackgroundCommand(

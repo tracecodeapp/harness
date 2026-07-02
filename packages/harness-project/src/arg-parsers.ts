@@ -1,4 +1,5 @@
 import {
+  Bash,
   defineCommand,
 } from 'just-bash/browser';
 import {
@@ -682,93 +683,127 @@ export function cppOutputPathFromArgs(args: string[]): string {
 }
 
 
-export function parseSimpleCommandWords(command: string): string[] | null {
-  const words: string[] = [];
-  let current = '';
-  let quote: string | null = null;
-  let escaping = false;
-  let sawWord = false;
+// Terminal submissions are parsed with just-bash's own parser (via
+// Bash.transform, which is exported from the browser entry) so the terminal
+// layer never disagrees with the interpreter about quoting, comments,
+// subshells, or separators. These helpers only inspect the AST statically;
+// nothing is executed.
 
-  for (const ch of command) {
-    if (escaping) {
-      current += ch;
-      sawWord = true;
-      escaping = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaping = true;
-      sawWord = true;
-      continue;
-    }
-    if (quote !== null) {
-      if (ch === quote) {
-        quote = null;
-      } else {
-        current += ch;
-      }
-      sawWord = true;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      sawWord = true;
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (sawWord) {
-        words.push(current);
-        current = '';
-        sawWord = false;
-      }
-      continue;
-    }
-    if ('|&;<>(){}~`$!#'.includes(ch)) {
-      return null;
-    }
-    current += ch;
-    sawWord = true;
+interface TerminalAstStatement {
+  type?: unknown;
+  pipelines?: TerminalAstPipeline[];
+  operators?: unknown[];
+  background?: boolean;
+  sourceText?: string;
+}
+
+interface TerminalAstPipeline {
+  commands?: TerminalAstSimpleCommand[];
+  negated?: boolean;
+}
+
+interface TerminalAstSimpleCommand {
+  type?: unknown;
+  name?: unknown;
+  args?: unknown[];
+  assignments?: unknown[];
+  redirections?: unknown[];
+}
+
+let terminalCommandParser: Bash | null = null;
+
+function parseTerminalStatements(command: string): TerminalAstStatement[] | null {
+  terminalCommandParser ??= new Bash();
+  try {
+    const script = terminalCommandParser.transform(command).ast as {
+      type?: unknown;
+      statements?: TerminalAstStatement[];
+    };
+    if (script?.type !== 'Script' || !Array.isArray(script.statements)) return null;
+    return script.statements;
+  } catch {
+    return null;
   }
+}
 
-  if (escaping || quote !== null) return null;
-  if (sawWord) words.push(current);
-  return words.length > 0 ? words : null;
+// Static value of a word that needs no expansion at runtime: literals,
+// single-quoted text, and double-quoted text without substitutions.
+function terminalStaticWordValue(word: unknown): string | null {
+  const candidate = word as {
+    type?: unknown;
+    parts?: Array<{ type?: unknown; value?: unknown; parts?: unknown[] }>;
+  };
+  if (candidate?.type !== 'Word' || !Array.isArray(candidate.parts)) return null;
+  let value = '';
+  for (const part of candidate.parts) {
+    if (part?.type === 'Literal' && typeof part.value === 'string') {
+      value += part.value;
+      continue;
+    }
+    if (part?.type === 'SingleQuoted' && typeof part.value === 'string') {
+      value += part.value;
+      continue;
+    }
+    if (part?.type === 'DoubleQuoted' && Array.isArray(part.parts)) {
+      for (const inner of part.parts as Array<{ type?: unknown; value?: unknown }>) {
+        if (inner?.type !== 'Literal' || typeof inner.value !== 'string') return null;
+        value += inner.value;
+      }
+      continue;
+    }
+    return null;
+  }
+  return value;
+}
+
+function terminalLoneSimpleCommand(statement: TerminalAstStatement | undefined): TerminalAstSimpleCommand | null {
+  if (!statement || statement.background === true) return null;
+  const pipelines = statement.pipelines ?? [];
+  const pipeline = pipelines[0];
+  if (!pipeline || pipeline.negated === true) return null;
+  const commands = pipeline.commands ?? [];
+  if (commands.length !== 1) return null;
+  const command = commands[0];
+  if (command?.type !== 'SimpleCommand') return null;
+  if ((command.assignments?.length ?? 0) > 0 || (command.redirections?.length ?? 0) > 0) return null;
+  return command;
+}
+
+export function parseSimpleCommandWords(command: string): string[] | null {
+  const statements = parseTerminalStatements(command);
+  if (!statements || statements.length !== 1) return null;
+  const statement = statements[0];
+  if ((statement?.pipelines?.length ?? 0) !== 1) return null;
+  const simpleCommand = terminalLoneSimpleCommand(statement);
+  if (!simpleCommand) return null;
+  const name = terminalStaticWordValue(simpleCommand.name);
+  if (name === null || name.length === 0) return null;
+  const words = [name];
+  for (const arg of simpleCommand.args ?? []) {
+    const value = terminalStaticWordValue(arg);
+    if (value === null) return null;
+    words.push(value);
+  }
+  return words;
 }
 
 
 export function leadingPersistentCdTarget(command: string): string | undefined | null {
-  let quote: string | null = null;
-  let escaping = false;
-
-  for (let index = 0; index < command.length; index += 1) {
-    const ch = command[index];
-    if (escaping) {
-      escaping = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaping = true;
-      continue;
-    }
-    if (quote !== null) {
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
-
-    const next = command[index + 1];
-    const isPersistentSeparator = ch === ';' || (ch === '&' && next === '&') || (ch === '|' && next === '|');
-    if (!isPersistentSeparator) continue;
-
-    const words = parseSimpleCommandWords(command.slice(0, index).trim());
-    if (words?.[0] !== 'cd' || words.length > 2) return null;
-    return words[1];
-  }
-
-  return null;
+  const statements = parseTerminalStatements(command);
+  if (!statements || statements.length === 0) return null;
+  const first = statements[0];
+  const pipelines = first?.pipelines ?? [];
+  // Only `cd …` followed by more work in the same submission persists; a bare
+  // `cd …` is handled directly by the terminal session.
+  if (statements.length === 1 && pipelines.length <= 1) return null;
+  const headCommand = terminalLoneSimpleCommand(first);
+  if (!headCommand) return null;
+  if (terminalStaticWordValue(headCommand.name) !== 'cd') return null;
+  const args = headCommand.args ?? [];
+  if (args.length > 1) return null;
+  if (args.length === 0) return undefined;
+  const target = terminalStaticWordValue(args[0]);
+  return target === null ? null : target;
 }
 
 
@@ -779,48 +814,25 @@ export interface TerminalCommandListSegment {
 
 
 export function parseTerminalCommandList(command: string): TerminalCommandListSegment[] {
+  const wholeSubmission: TerminalCommandListSegment[] = [{ command, background: false }];
+  // Here-doc bodies are not part of a statement's sourceText, so reconstructed
+  // segments would lose them; run those submissions unsplit.
+  if (command.includes('<<')) return wholeSubmission;
+  const statements = parseTerminalStatements(command);
+  if (!statements || statements.length === 0) return wholeSubmission;
   const segments: TerminalCommandListSegment[] = [];
-  let quote: string | null = null;
-  let escaping = false;
-  let segmentStart = 0;
-
-  const pushSegment = (end: number, background: boolean): void => {
-    const segment = command.slice(segmentStart, end).trim();
-    if (segment) segments.push({ command: segment, background });
-    segmentStart = end + 1;
-  };
-
-  for (let index = 0; index < command.length; index += 1) {
-    const ch = command[index];
-    if (escaping) {
-      escaping = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaping = true;
-      continue;
-    }
-    if (quote !== null) {
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
-    if (ch === ';') {
-      pushSegment(index, false);
-      continue;
-    }
-    if (ch === '&') {
-      if (command[index - 1] === '&' || command[index + 1] === '&') continue;
-      pushSegment(index, true);
+  for (const statement of statements) {
+    const sourceText = typeof statement.sourceText === 'string' ? statement.sourceText.trim() : '';
+    if (!sourceText) return wholeSubmission;
+    if (statement.background === true) {
+      const background = sourceText.replace(/\s*&$/, '').trim();
+      if (!background) return wholeSubmission;
+      segments.push({ command: background, background: true });
+    } else {
+      segments.push({ command: sourceText, background: false });
     }
   }
-
-  const trailingSegment = command.slice(segmentStart).trim();
-  if (trailingSegment) segments.push({ command: trailingSegment, background: false });
-  return segments.length > 0 ? segments : [{ command, background: false }];
+  return segments.length > 0 ? segments : wholeSubmission;
 }
 
 

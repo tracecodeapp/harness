@@ -569,6 +569,14 @@ export interface RuntimeCommandOptions {
   includeHiddenFiles?: boolean;
   executionLimits?: RuntimeCommandExecutionLimits;
   onEvent?: RuntimeCommandEventHandler;
+  /**
+   * Receives the shell variable changes the command produced relative to the
+   * environment it started with: assignments/exports map to their final
+   * value, `unset` variables map to `undefined`. Terminal sessions use this
+   * to persist `export FOO=…` across submissions. Not called for commands
+   * that bypass the shell (virtual executables).
+   */
+  onEnvChanges?: (changes: Record<string, string | undefined>) => void;
 }
 
 export interface RuntimeCommandCompletionMatch {

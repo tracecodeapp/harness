@@ -30,6 +30,11 @@ import {
   readRuntimeCommandStdinPipeBytes,
 } from '../packages/harness-core/src/runtime-project';
 import { getLanguageRuntimeInfo } from '../packages/harness-core/src/runtime-language-info';
+import {
+  leadingPersistentCdTarget,
+  parseSimpleCommandWords,
+  parseTerminalCommandList,
+} from '../packages/harness-project/src/arg-parsers';
 import { createNativePythonProjectRunner } from '../packages/harness-python/src/project-node';
 import {
   createBrowserPythonProjectRunner,
@@ -11792,6 +11797,34 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
       session.cwd === '/home/obi/weather-api',
     `terminal compound cd .. should update session cwd after command completion: ${JSON.stringify({ compoundCdBack, cwd: session.cwd })}`
   );
+  const exportSet = await session.run('export TRACE_TERM_ENV=alpha');
+  assertCondition(exportSet.exitCode === 0, `terminal export should succeed: ${JSON.stringify(exportSet)}`);
+  const exportEcho = await session.run('echo "$TRACE_TERM_ENV"');
+  assertCondition(exportEcho.stdout === 'alpha\n', `terminal export should persist across submissions: ${JSON.stringify(exportEcho)}`);
+  const plainAssign = await session.run('PLAIN_TERM_VAR=beta');
+  assertCondition(plainAssign.exitCode === 0, `terminal assignment should succeed: ${JSON.stringify(plainAssign)}`);
+  const plainEcho = await session.run('echo "$PLAIN_TERM_VAR"');
+  assertCondition(plainEcho.stdout === 'beta\n', `terminal shell assignments should persist across submissions: ${JSON.stringify(plainEcho)}`);
+  const mutateEnv = await session.run('export TRACE_TERM_ENV=delta; unset PLAIN_TERM_VAR');
+  assertCondition(mutateEnv.exitCode === 0, `terminal export overwrite should succeed: ${JSON.stringify(mutateEnv)}`);
+  const mutatedEcho = await session.run('echo "$TRACE_TERM_ENV:${PLAIN_TERM_VAR-unset}"');
+  assertCondition(
+    mutatedEcho.stdout === 'delta:unset\n',
+    `terminal export overwrite and unset should persist across submissions: ${JSON.stringify(mutatedEcho)}`
+  );
+  const overlayEcho = await session.run('echo "$OVERLAY_ONCE"', { env: { OVERLAY_ONCE: 'once' } });
+  assertCondition(overlayEcho.stdout === 'once\n', `terminal per-run env overlays should apply: ${JSON.stringify(overlayEcho)}`);
+  const overlayGone = await session.run('echo "${OVERLAY_ONCE-gone}"');
+  assertCondition(
+    overlayGone.stdout === 'gone\n',
+    `terminal per-run env overlays should not persist onto the session: ${JSON.stringify(overlayGone)}`
+  );
+  const envPwd = await session.run('pwd');
+  assertCondition(
+    envPwd.stdout === '/home/obi/weather-api\n',
+    `terminal env persistence should not disturb session cwd: ${JSON.stringify(envPwd)}`
+  );
+
   const cdHome = await session.run('cd ..');
   assertCondition(cdHome.exitCode === 0 && session.cwd === '/home/obi', `terminal cd .. should allow read-only home navigation: ${session.cwd}`);
   assertCondition(session.prompt.text === 'obi@tracevm ~ %', `terminal prompt should label home cwd: ${session.prompt.text}`);
@@ -13712,7 +13745,74 @@ function testPathValidation(): void {
   );
 }
 
+function testTerminalCommandParsingParity(): void {
+  const assertSegments = (command: string, expected: Array<{ command: string; background: boolean }>): void => {
+    const actual = parseTerminalCommandList(command);
+    assertCondition(
+      JSON.stringify(actual) === JSON.stringify(expected),
+      `terminal command list mismatch for ${JSON.stringify(command)}: ${JSON.stringify(actual)}`
+    );
+  };
+
+  assertSegments('a; b & c', [
+    { command: 'a', background: false },
+    { command: 'b', background: true },
+    { command: 'c', background: false },
+  ]);
+  assertSegments('node a.js && node b.js &', [{ command: 'node a.js && node b.js', background: true }]);
+  // Quoted separators and subshell contents must not split — the terminal
+  // layer now parses with the same just-bash parser that executes commands.
+  assertSegments('echo "a & b; c"', [{ command: 'echo "a & b; c"', background: false }]);
+  assertSegments('(sleep 1 & echo sub)', [{ command: '(sleep 1 & echo sub)', background: false }]);
+  assertSegments('echo start; (sleep 1 & echo sub)', [
+    { command: 'echo start', background: false },
+    { command: '(sleep 1 & echo sub)', background: false },
+  ]);
+  // Here-doc bodies are not reconstructable per statement; keep unsplit.
+  assertSegments('cat <<EOF &\nhello\nEOF', [{ command: 'cat <<EOF &\nhello\nEOF', background: false }]);
+  // Unparseable submissions run unsplit so the interpreter reports the error.
+  assertSegments('echo "unterminated', [{ command: 'echo "unterminated', background: false }]);
+
+  const assertWords = (command: string, expected: string[] | null): void => {
+    const actual = parseSimpleCommandWords(command);
+    assertCondition(
+      JSON.stringify(actual) === JSON.stringify(expected),
+      `simple command words mismatch for ${JSON.stringify(command)}: ${JSON.stringify(actual)}`
+    );
+  };
+  assertWords('cd src', ['cd', 'src']);
+  assertWords('cd "my dir"', ['cd', 'my dir']);
+  assertWords("cd 'a b'", ['cd', 'a b']);
+  assertWords('pwd # trailing comment', ['pwd']);
+  assertWords('cd $HOME', null);
+  assertWords('cd ~/x', null);
+  assertWords('cd a | b', null);
+  assertWords('cd a > out', null);
+  assertWords('FOO=1 cd a', null);
+  assertWords('cd a; cd b', null);
+
+  const assertLeadingCd = (command: string, expected: string | undefined | null): void => {
+    const actual = leadingPersistentCdTarget(command);
+    assertCondition(
+      JSON.stringify(actual) === JSON.stringify(expected),
+      `leading cd target mismatch for ${JSON.stringify(command)}: ${JSON.stringify(actual)}`
+    );
+  };
+  assertLeadingCd('cd src && make', 'src');
+  assertLeadingCd('cd "my dir" && make', 'my dir');
+  assertLeadingCd('cd src; make', 'src');
+  assertLeadingCd('cd || echo fail', undefined);
+  assertLeadingCd('cd $(pwd)/x && make', null);
+  assertLeadingCd('cd a b && make', null);
+  assertLeadingCd('cd src', null);
+  assertLeadingCd('make && cd src', null);
+  assertLeadingCd('cd src > log && make', null);
+
+  console.log('PASS: terminal command parsing matches the just-bash parser');
+}
+
 async function main(): Promise<void> {
+  testTerminalCommandParsingParity();
   testPathValidation();
   await testWorkspaceFilesAndCommands();
   await testSnapshotCacheReusesUnchangedWorkspace();
