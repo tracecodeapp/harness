@@ -10,6 +10,11 @@
     "skipLibCheck": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@tracecode/harness-core": ["packages/harness-core/src/index.ts"],
+      "@tracecode/harness-core/*": ["packages/harness-core/src/*"]
+    },
     "resolveJsonModule": true,
     "isolatedModules": true,
     "esModuleInterop": true,

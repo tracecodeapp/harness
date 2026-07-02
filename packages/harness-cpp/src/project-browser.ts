@@ -9,8 +9,8 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
-} from '../../harness-core/src/runtime-project';
-import { runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
+import { runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
 import type { CppWorkerClient } from '../../harness-browser/src/cpp-worker-client';
 
 export type CppProjectFileEncoding = RuntimeFileEncoding;

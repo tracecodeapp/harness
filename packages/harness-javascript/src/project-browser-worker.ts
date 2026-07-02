@@ -10,7 +10,7 @@ import type {
   RuntimeKernelHttpProtocolMessage,
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import {
   runBrowserJavaScriptProjectRequest,
   type BrowserJavaScriptProjectRunnerOptions,

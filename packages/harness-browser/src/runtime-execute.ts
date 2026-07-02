@@ -6,9 +6,9 @@ import type {
   RuntimeExecuteResult,
   RuntimeExecutionStyle,
   TraceExecutionOptions,
-} from '../../harness-core/src/runtime-types';
-import type { RuntimeCommandResult } from '../../harness-core/src/runtime-project';
-import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+} from '@tracecode/harness-core';
+import type { RuntimeCommandResult } from '@tracecode/harness-core';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
 
 type RuntimeExecuteHandlers = {
   defaultExecutionStyle: RuntimeExecutionStyle;

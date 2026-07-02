@@ -1,7 +1,7 @@
 import type {
   LanguageRuntimeProfile,
   RuntimeExecutionStyle,
-} from '../../harness-core/src/runtime-types';
+} from '@tracecode/harness-core';
 
 type RuntimeRequestKind = 'execute' | 'trace' | 'interview';
 

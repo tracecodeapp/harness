@@ -10,7 +10,7 @@ import {
   runtimeAbortSignalName,
   runtimeCommandStdinPipeClosed,
   runtimeSignalExitCode,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -21,7 +21,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
   RuntimeCommandStdinSharedBuffer,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 
 export type JavaProjectFileEncoding = RuntimeFileEncoding;
 export type JavaProjectFile = RuntimeFile;

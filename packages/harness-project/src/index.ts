@@ -9,6 +9,7 @@ import {
   canCreateRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
+  createRuntimeProjectHiddenCommandAccess,
   createRuntimeProjectIoBridge,
   readRuntimeCommandStdinPipeBytes,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES,
@@ -30,14 +31,15 @@ import {
   RuntimeProjectLiveIoController,
   runtimeFileChangePath,
   runRuntimeProjectWorkerBridge,
-} from '../../harness-core/src/runtime-project';
+  isRuntimeProjectHiddenCommandAccess,
+} from '@tracecode/harness-core';
 import {
   createDefaultExternalHttpFetch,
   isBlockedExternalHttpHost,
   RUNTIME_EXTERNAL_HTTP_MAX_BODY_BYTES,
   type RuntimeExternalHttpConfig,
   type RuntimeExternalHttpRequest,
-} from '../../harness-core/src/runtime-external-http';
+} from '@tracecode/harness-core';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -75,9 +77,9 @@ import {
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
-} from '../../harness-core/src/runtime-kernel';
-import { getLanguageRuntimeInfo } from '../../harness-core/src/runtime-language-info';
-import type { Language } from '../../harness-core/src/runtime-types';
+} from '@tracecode/harness-core';
+import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
+import type { Language } from '@tracecode/harness-core';
 import type {
   BashOptions,
   Command,
@@ -172,7 +174,7 @@ import type {
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
   RuntimeWorkspaceUnsubscribe,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import {
   CPP_COMPILER_COMMANDS,
   DEFAULT_CWD,
@@ -444,18 +446,6 @@ export interface CreateRuntimeWorkspaceOptions {
   kernelControl?: RuntimeTraceKernelControlOptions;
 }
 
-const runtimeProjectHiddenCommandAccesses = new WeakSet<RuntimeProjectHiddenCommandAccess>();
-
-export function createRuntimeProjectHiddenCommandAccess(): RuntimeProjectHiddenCommandAccess {
-  const access = {};
-  runtimeProjectHiddenCommandAccesses.add(access);
-  return access;
-}
-
-function isRuntimeProjectHiddenCommandAccess(value: unknown): value is RuntimeProjectHiddenCommandAccess {
-  return typeof value === 'object' && value !== null &&
-    runtimeProjectHiddenCommandAccesses.has(value as RuntimeProjectHiddenCommandAccess);
-}
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('system');
 const TRACEKERNEL_EVENT_LOG_LIMIT = 256;
@@ -5111,7 +5101,7 @@ export type {
 export type {
   RuntimeExternalHttpConfig,
   RuntimeExternalHttpRequest,
-} from '../../harness-core/src/runtime-external-http';
+} from '@tracecode/harness-core';
 
 export { normalizeRuntimeProjectPath } from './paths';
 export { RuntimeProjectWorkspaceTerminalSession } from './terminal-session';
@@ -5127,6 +5117,7 @@ export {
 
 export {
   RuntimeProjectLiveIoController,
+  createRuntimeProjectHiddenCommandAccess,
   createRuntimeProjectIoBridge,
   createDefaultExternalHttpFetch,
   isBlockedExternalHttpHost,

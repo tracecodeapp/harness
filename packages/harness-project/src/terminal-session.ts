@@ -14,7 +14,7 @@ import {
   runtimeFileChangePath,
   runtimeProjectTruncateUtf8,
   runtimeProjectUtf8Bytes,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -51,9 +51,9 @@ import {
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
-} from '../../harness-core/src/runtime-kernel';
-import { getLanguageRuntimeInfo } from '../../harness-core/src/runtime-language-info';
-import type { Language } from '../../harness-core/src/runtime-types';
+} from '@tracecode/harness-core';
+import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
+import type { Language } from '@tracecode/harness-core';
 import type {
   CommandContext,
   FileContent,
@@ -94,7 +94,7 @@ import type {
   RuntimeProjectTerminalSession,
   RuntimeProjectTerminalSessionOptions,
   RuntimeWorkspaceActor,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import type {
   CppProjectCommandRunner,
   CSharpProjectCommandRunner,

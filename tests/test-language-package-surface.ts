@@ -379,12 +379,27 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectDeclarations.includes('RuntimeProjectLiveIoControllerOptions'),
         '@tracecode/harness-project declarations should re-export the shared live project I/O controller'
       );
+      // harness-project references the shared HTTP client type from harness-core
+      // rather than inlining it, so the project declarations expose the name while
+      // the abortable method signature is asserted in harness-core's declarations.
       assertCondition(
-        projectDeclarations.includes('RuntimeWorkspaceHttpClient') &&
-          projectDeclarations.includes('listen(options: RuntimeKernelHttpListenOptions') &&
-          projectDeclarations.includes('timeoutMs?: number') &&
-          projectDeclarations.includes('signal?: AbortSignal'),
-        '@tracecode/harness-project declarations should expose the abortable workspace HTTP API'
+        projectDeclarations.includes('RuntimeWorkspaceHttpClient'),
+        '@tracecode/harness-project declarations should expose the shared workspace HTTP client type'
+      );
+      const coreCheckForHttp = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/harness-core');
+      if (!coreCheckForHttp) {
+        throw new Error('@tracecode/harness-core package check is required to verify the workspace HTTP API surface');
+      }
+      const coreDeclarations = await readFile(
+        join(packageNodeModulesDir(appDir, coreCheckForHttp.name), 'dist/index.d.ts'),
+        'utf8'
+      );
+      assertCondition(
+        coreDeclarations.includes('RuntimeWorkspaceHttpClient') &&
+          coreDeclarations.includes('listen(options: RuntimeKernelHttpListenOptions') &&
+          coreDeclarations.includes('timeoutMs?: number') &&
+          coreDeclarations.includes('signal?: AbortSignal'),
+        '@tracecode/harness-core declarations should expose the abortable workspace HTTP API'
       );
       assertCondition(
         projectDist.includes('function isRuntimeDirectoryChange(') &&
@@ -504,10 +519,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     if (packageCheck.name === '@tracecode/harness-javascript') {
       const projectBrowser = await readFile(join(packageDir, 'dist/project-browser.js'), 'utf8');
       const projectWorker = await readFile(join(packageDir, 'workers/javascript-project-worker.js'), 'utf8');
+      // The routed-device output bridge is core code (createRuntimeProjectIoBridge);
+      // the externalized project-browser bundle imports it rather than inlining it,
+      // so its body is asserted in the fully-bundled worker artifact that runs it.
       assertCondition(
-        projectBrowser.includes('sourceDevice') &&
-          projectBrowser.includes('io.output(stream, data, device, sourceDevice)') &&
-          projectBrowser.includes('device !== outputDevice ? { sourceDevice: device } :'),
+        projectWorker.includes('sourceDevice') &&
+          projectWorker.includes('io.output(stream, data, device, sourceDevice)') &&
+          projectWorker.includes('device !== outputDevice ? { sourceDevice: device } :'),
         '@tracecode/harness-javascript browser project runner should ship routed source device output events'
       );
       assertCondition(
@@ -867,6 +885,35 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       });
       if (browserOnlyExtract.status !== 0) {
         throw new Error(browserOnlyExtract.stderr || browserOnlyExtract.stdout || '@tracecode/harness-browser isolated extraction failed');
+      }
+      // harness-browser declares a runtime dependency on @tracecode/harness-core,
+      // so an isolated consumer install must resolve it too (npm would install it
+      // transitively). Extract it alongside into the browser-only app.
+      const coreCheck = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/harness-core');
+      if (!coreCheck) {
+        throw new Error('@tracecode/harness-core package check is required to satisfy harness-browser isolated imports');
+      }
+      const browserOnlyCoreDir = packageNodeModulesDir(browserOnlyAppDir, coreCheck.name);
+      await mkdir(browserOnlyCoreDir, { recursive: true });
+      const coreOnlyPack = spawnSync(pnpmCommand, ['pack', '--pack-destination', tempRoot], {
+        cwd: join(process.cwd(), coreCheck.dir),
+        encoding: 'utf8',
+      });
+      if (coreOnlyPack.status !== 0) {
+        throw new Error(spawnFailure(coreOnlyPack, '@tracecode/harness-core pack for browser-only app failed'));
+      }
+      const coreOnlyTarballName = String(coreOnlyPack.stdout || '')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .at(-1);
+      assertCondition(Boolean(coreOnlyTarballName), '@tracecode/harness-core pack should print a tarball for the browser-only app');
+      const coreOnlyTarballPath = isAbsolute(coreOnlyTarballName!) ? coreOnlyTarballName! : join(tempRoot, coreOnlyTarballName!);
+      const browserOnlyCoreExtract = spawnSync('tar', ['-xf', coreOnlyTarballPath, '-C', browserOnlyCoreDir, '--strip-components=1'], {
+        encoding: 'utf8',
+      });
+      if (browserOnlyCoreExtract.status !== 0) {
+        throw new Error(browserOnlyCoreExtract.stderr || browserOnlyCoreExtract.stdout || '@tracecode/harness-core isolated extraction failed');
       }
       const browserOnlyImportScript = `
         (async () => {

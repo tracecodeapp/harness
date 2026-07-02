@@ -1,6 +1,6 @@
-import type { RuntimeExecutionStyle } from '../../harness-core/src/runtime-types';
-import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
-import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
+import type { RuntimeExecutionStyle } from '@tracecode/harness-core';
+import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
+import { createEmptyRuntimeTrace } from '@tracecode/harness-core';
 import { withTypeScriptRuntimeDeclarations } from './typescript-runtime-declarations';
 
 type TypeScriptModule = typeof import('typescript');

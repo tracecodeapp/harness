@@ -18,7 +18,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import {
   RuntimeProjectLiveIoController,
   createRuntimeProjectIoBridge,
@@ -28,8 +28,8 @@ import {
   runtimeCommandStdinPipeClosed,
   runtimeCommandStdinPipeRemainingBytes,
   runtimeSignalExitCode,
-} from '../../harness-core/src/runtime-project';
-import { getLanguageRuntimeInfo } from '../../harness-core/src/runtime-language-info';
+} from '@tracecode/harness-core';
+import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
 import {
   createTypeScriptProjectRunner,
   type TypeScriptProjectCompiler,
@@ -93,7 +93,7 @@ import {
   runtimeProcDirEntries as procDirEntries,
   type RuntimeKernelDirectoryEntry,
   type RuntimeKernelVirtualStat,
-} from '../../harness-core/src/runtime-kernel';
+} from '@tracecode/harness-core';
 import * as fflateModule from 'fflate/browser';
 import packageJson from '../package.json' with { type: 'json' };
 

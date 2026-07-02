@@ -2,12 +2,12 @@ import type {
   Language,
   LanguageRuntimeProfile,
   RuntimeClient,
-} from '../../harness-core/src/runtime-types';
-import type { LanguageRuntimeInfo } from '../../harness-core/src/runtime-language-info';
+} from '@tracecode/harness-core';
+import type { LanguageRuntimeInfo } from '@tracecode/harness-core';
 import {
   getLanguageRuntimeInfo,
   getSupportedLanguageRuntimeInfos,
-} from '../../harness-core/src/runtime-language-info';
+} from '@tracecode/harness-core';
 import { JavaScriptWorkerClient } from './javascript-worker-client';
 import { createJavaScriptRuntimeClient } from './javascript-runtime-client';
 import { createBrowserJavaScriptProjectRunner } from '../../harness-javascript/src/project-browser';

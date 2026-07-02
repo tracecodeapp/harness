@@ -9,8 +9,8 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
-} from '../../harness-core/src/runtime-project';
-import { runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
+import { runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
 import type { PythonWorkerClient } from '../../harness-browser/src/pyodide-worker-client';
 
 export type PythonProjectFileEncoding = RuntimeFileEncoding;

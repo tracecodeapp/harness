@@ -9,8 +9,8 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
-} from '../../harness-core/src/runtime-project';
-import { createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
+import { createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
 import type { CSharpWorkerClient } from '../../harness-browser/src/csharp-worker-client';
 
 export type CSharpProjectFileEncoding = RuntimeFileEncoding;

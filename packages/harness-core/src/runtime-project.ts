@@ -1414,6 +1414,27 @@ export interface RuntimeProjectHiddenCommandAccess {
   readonly __runtimeProjectHiddenCommandAccessBrand?: never;
 }
 
+const RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY = Symbol.for(
+  '@tracecode/harness-core/runtimeProjectHiddenCommandAccesses'
+);
+
+const runtimeProjectHiddenCommandAccesses = (() => {
+  const globalRegistry = globalThis as typeof globalThis & Record<symbol, WeakSet<RuntimeProjectHiddenCommandAccess> | undefined>;
+  globalRegistry[RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY] ??= new WeakSet<RuntimeProjectHiddenCommandAccess>();
+  return globalRegistry[RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY];
+})();
+
+export function createRuntimeProjectHiddenCommandAccess(): RuntimeProjectHiddenCommandAccess {
+  const access = {};
+  runtimeProjectHiddenCommandAccesses.add(access);
+  return access;
+}
+
+export function isRuntimeProjectHiddenCommandAccess(value: unknown): value is RuntimeProjectHiddenCommandAccess {
+  return typeof value === 'object' && value !== null &&
+    runtimeProjectHiddenCommandAccesses.has(value as RuntimeProjectHiddenCommandAccess);
+}
+
 export interface RuntimeProjectCommandOptions extends RuntimeCommandOptions {
   hiddenCommandAccess?: RuntimeProjectHiddenCommandAccess;
   /** @deprecated Hidden project commands require a workspace-specific hiddenCommandAccess token. */

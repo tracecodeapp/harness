@@ -1,4 +1,4 @@
-import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 import { createWorkerProtocolToken } from './worker-protocol';
 

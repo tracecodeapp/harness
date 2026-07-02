@@ -3,7 +3,7 @@ import type {
   RuntimeProjectSnapshot,
   RuntimeWorkspace,
   RuntimeWorkspaceUnsubscribe,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import { normalizeRuntimeProjectPath } from '../../harness-project/src/index';
 
 const STORAGE_VERSION = 1;

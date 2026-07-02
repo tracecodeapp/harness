@@ -172,15 +172,31 @@ importers:
         specifier: ^7.3.2
         version: 7.3.2(@types/node@20.19.37)(tsx@4.21.0)(yaml@2.9.0)
 
-  packages/harness-browser: {}
+  packages/harness-browser:
+    dependencies:
+      '@tracecode/harness-core':
+        specifier: workspace:*
+        version: link:../harness-core
 
   packages/harness-core: {}
 
-  packages/harness-cpp: {}
+  packages/harness-cpp:
+    dependencies:
+      '@tracecode/harness-core':
+        specifier: workspace:*
+        version: link:../harness-core
 
-  packages/harness-csharp: {}
+  packages/harness-csharp:
+    dependencies:
+      '@tracecode/harness-core':
+        specifier: workspace:*
+        version: link:../harness-core
 
-  packages/harness-java: {}
+  packages/harness-java:
+    dependencies:
+      '@tracecode/harness-core':
+        specifier: workspace:*
+        version: link:../harness-core
 
   packages/harness-javascript:
     dependencies:
@@ -214,6 +230,9 @@ importers:
       '@datastructures-js/trie':
         specifier: 4.2.3
         version: 4.2.3
+      '@tracecode/harness-core':
+        specifier: workspace:*
+        version: link:../harness-core
       lodash:
         specifier: 4.17.21
         version: 4.17.21
@@ -253,6 +272,9 @@ importers:
       '@datastructures-js/trie':
         specifier: 4.2.3
         version: 4.2.3
+      '@tracecode/harness-core':
+        specifier: workspace:*
+        version: link:../harness-core
       lodash:
         specifier: 4.17.21
         version: 4.17.21
@@ -262,11 +284,18 @@ importers:
 
   packages/harness-project:
     dependencies:
+      '@tracecode/harness-core':
+        specifier: workspace:*
+        version: link:../harness-core
       just-bash:
         specifier: 3.0.1
         version: 3.0.1
 
-  packages/harness-python: {}
+  packages/harness-python:
+    dependencies:
+      '@tracecode/harness-core':
+        specifier: workspace:*
+        version: link:../harness-core
 
   packages/harness-sql: {}
 

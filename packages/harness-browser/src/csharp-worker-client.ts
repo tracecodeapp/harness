@@ -3,20 +3,20 @@ import {
   withRuntimeTraceOptions,
   type RuntimeTrace,
   type RuntimeTraceEvent,
-} from '../../harness-core/src/runtime-trace';
-import type { TraceExecutionOptions } from '../../harness-core/src/runtime-types';
+} from '@tracecode/harness-core';
+import type { TraceExecutionOptions } from '@tracecode/harness-core';
 import type {
   CodeExecutionResult,
   CodeExecutionBatchResult,
   ExecutionResult,
   RuntimeExecutionTimings,
-} from '../../harness-core/src/types';
+} from '@tracecode/harness-core';
 import type {
   RuntimeCommandEvent,
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeProjectCommandRequest,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 import { createWorkerProtocolToken } from './worker-protocol';
 

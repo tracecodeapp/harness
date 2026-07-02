@@ -8,9 +8,9 @@ import type {
   RuntimeExecuteResult,
   RuntimeExecutionStyle,
   TraceExecutionOptions,
-} from '../../harness-core/src/runtime-types';
-import type { RuntimeCommandResult } from '../../harness-core/src/runtime-project';
-import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+} from '@tracecode/harness-core';
+import type { RuntimeCommandResult } from '@tracecode/harness-core';
+import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   createEmptyRuntimeTrace,
@@ -20,7 +20,7 @@ import {
   type RuntimeTraceEventKind,
   type RuntimeTraceSourceSpan,
   type RuntimeTraceTarget,
-} from '../../harness-core/src/runtime-trace';
+} from '@tracecode/harness-core';
 import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 import { batchCodeResultToExecuteResult, executeRuntimeRequest, isRuntimeProjectExecuteRequest } from './runtime-execute';

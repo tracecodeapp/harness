@@ -1,4 +1,4 @@
-import { emitRuntimeCommandFileChanges } from '../../harness-core/src/runtime-project';
+import { emitRuntimeCommandFileChanges } from '@tracecode/harness-core';
 import type {
   RuntimeCommandResult,
   RuntimeFile,
@@ -7,7 +7,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import {
   TYPESCRIPT_PROJECT_DEFAULT_LIB_FILE,
   TYPESCRIPT_PROJECT_LIB_FILES,

@@ -34,6 +34,7 @@
   },
   "sideEffects": false,
   "dependencies": {
+    "@tracecode/harness-core": "workspace:*",
     "just-bash": "3.0.1"
   }
 }

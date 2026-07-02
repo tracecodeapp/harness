@@ -1,4 +1,4 @@
-import type { CodeExecutionBatchResult, CodeExecutionResult, RuntimeExecutionTimings } from '../../harness-core/src/types';
+import type { CodeExecutionBatchResult, CodeExecutionResult, RuntimeExecutionTimings } from '@tracecode/harness-core';
 import type {
   RuntimeCommandEvent,
   RuntimeCommandEventHandler,
@@ -9,9 +9,9 @@ import type {
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
   RuntimeProjectCommandRequest,
-} from '../../harness-core/src/runtime-project';
-import { javaTraceHooksEventsToRuntimeTrace } from '../../harness-core/src/trace-adapters/java';
-import { createEmptyRuntimeTrace, type RuntimeTrace } from '../../harness-core/src/runtime-trace';
+} from '@tracecode/harness-core';
+import { javaTraceHooksEventsToRuntimeTrace } from '@tracecode/harness-core';
+import { createEmptyRuntimeTrace, type RuntimeTrace } from '@tracecode/harness-core';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 import { createWorkerProtocolToken } from './worker-protocol';
 

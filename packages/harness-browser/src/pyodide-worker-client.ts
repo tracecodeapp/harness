@@ -5,8 +5,8 @@
  * Provides a promise-based API for executing Python code off the main thread.
  */
 
-import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
-import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
+import { createEmptyRuntimeTrace } from '@tracecode/harness-core';
 import type {
   RuntimeCommandEvent,
   RuntimeCommandEventHandler,
@@ -19,7 +19,7 @@ import type {
   RuntimeKernelHttpResponse,
   RuntimeProjectCommandRequest,
   RuntimeProjectSnapshot,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 import { createWorkerProtocolToken } from './worker-protocol';
 

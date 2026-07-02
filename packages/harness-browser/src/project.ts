@@ -3,7 +3,7 @@ import type {
   RuntimeFileChange,
   RuntimeFileDeletion,
   RuntimeWorkspace,
-} from '../../harness-core/src/runtime-project';
+} from '@tracecode/harness-core';
 import {
   createRuntimeWorkspace,
   normalizeRuntimeProjectPath,

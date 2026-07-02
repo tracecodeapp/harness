@@ -21,9 +21,19 @@ const commonConfig = {
   external: ['typescript'],
 } as const;
 
+const libraryConfig = {
+  ...commonConfig,
+  external: [...commonConfig.external, '@tracecode/harness-core'],
+};
+
 export default defineConfig([
   {
     ...commonConfig,
+    // The root @tracecode/harness bundle stays self-contained: inline harness-core
+    // rather than leaving a bare @tracecode/harness-core import the packed tarball
+    // cannot resolve. Cross-copy token identity is preserved by the globalThis
+    // Symbol.for registry in harness-core.
+    noExternal: [...commonConfig.noExternal, '@tracecode/harness-core'],
     entry: {
       index: 'src/index.ts',
       browser: 'packages/harness-browser/src/index.ts',
@@ -51,7 +61,7 @@ export default defineConfig([
     outDir: 'packages/harness-core/dist',
   },
   {
-    ...commonConfig,
+    ...libraryConfig,
     entry: {
       index: 'packages/harness-browser/src/index.ts',
       internal: 'packages/harness-browser/src/internal.ts',
@@ -61,7 +71,7 @@ export default defineConfig([
     outDir: 'packages/harness-browser/dist',
   },
   {
-    ...commonConfig,
+    ...libraryConfig,
     entry: {
       index: 'packages/harness-python/src/index.ts',
       'project-node': 'packages/harness-python/src/project-node.ts',
@@ -70,7 +80,7 @@ export default defineConfig([
     outDir: 'packages/harness-python/dist',
   },
   {
-    ...commonConfig,
+    ...libraryConfig,
     entry: {
       index: 'packages/harness-javascript/src/index.ts',
       'project-node': 'packages/harness-javascript/src/project-node.ts',
@@ -79,7 +89,7 @@ export default defineConfig([
     outDir: 'packages/harness-javascript/dist',
   },
   {
-    ...commonConfig,
+    ...libraryConfig,
     entry: {
       index: 'packages/harness-java/src/index.ts',
       'project-node': 'packages/harness-java/src/project-node.ts',
@@ -88,7 +98,7 @@ export default defineConfig([
     outDir: 'packages/harness-java/dist',
   },
   {
-    ...commonConfig,
+    ...libraryConfig,
     entry: {
       index: 'packages/harness-csharp/src/index.ts',
       'project-node': 'packages/harness-csharp/src/project-node.ts',
@@ -97,7 +107,7 @@ export default defineConfig([
     outDir: 'packages/harness-csharp/dist',
   },
   {
-    ...commonConfig,
+    ...libraryConfig,
     entry: {
       index: 'packages/harness-cpp/src/index.ts',
       'project-node': 'packages/harness-cpp/src/project-node.ts',
@@ -106,7 +116,7 @@ export default defineConfig([
     outDir: 'packages/harness-cpp/dist',
   },
   {
-    ...commonConfig,
+    ...libraryConfig,
     entry: {
       index: 'packages/harness-project/src/index.ts',
       'zlib-browser-shim': 'packages/harness-project/src/zlib-browser-shim.ts',
@@ -114,7 +124,7 @@ export default defineConfig([
     outDir: 'packages/harness-project/dist',
   },
   {
-    ...commonConfig,
+    ...libraryConfig,
     entry: {
       index: 'packages/harness-native/src/index.ts',
     },

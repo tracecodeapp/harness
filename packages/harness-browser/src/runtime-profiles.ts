@@ -4,7 +4,7 @@ import type {
   RuntimeProjectIoCapabilityRow,
   RuntimeProjectIoSupport,
   RuntimeProjectIoTier,
-} from '../../harness-core/src/runtime-types';
+} from '@tracecode/harness-core';
 
 const LIVE_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['project'] = {
   workspace: {

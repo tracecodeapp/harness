@@ -2,13 +2,44 @@
 
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+async function testHiddenCommandAccessTokenRoundTripsAcrossEntrypoints(): Promise<void> {
+  // Exercised at the harness-core ESM<->CJS boundary rather than through a full
+  // workspace: the hidden-command token brand lives in harness-core (a
+  // globalThis Symbol.for-keyed WeakSet), so if the ESM and CJS builds shared no
+  // identity this cross-recognition would fail. We deliberately avoid importing
+  // the harness-project workspace bundle here because its ESM output
+  // dynamic-requires turndown/@mixmark-io/domino, a pre-existing packaging
+  // limitation unrelated to token identity.
+  const coreEsm = await import(pathToFileURL(join(process.cwd(), 'packages/harness-core/dist/index.js')).href);
+  const require = createRequire(import.meta.url);
+  const coreCjs = require(join(process.cwd(), 'packages/harness-core/dist/index.cjs'));
+
+  const cjsToken = coreCjs.createRuntimeProjectHiddenCommandAccess();
+  const esmToken = coreEsm.createRuntimeProjectHiddenCommandAccess();
+  assertCondition(
+    coreEsm.isRuntimeProjectHiddenCommandAccess(cjsToken) === true,
+    'Hidden command token minted from the CJS core build should be recognized by the ESM core build'
+  );
+  assertCondition(
+    coreCjs.isRuntimeProjectHiddenCommandAccess(esmToken) === true,
+    'Hidden command token minted from the ESM core build should be recognized by the CJS core build'
+  );
+  assertCondition(
+    coreEsm.isRuntimeProjectHiddenCommandAccess({}) === false &&
+      coreCjs.isRuntimeProjectHiddenCommandAccess({}) === false,
+    'Hidden command token guard should reject plain objects across both core builds'
+  );
 }
 
 async function runWithTempRoot(tempRoot: string): Promise<void> {
@@ -851,6 +882,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await testHiddenCommandAccessTokenRoundTripsAcrossEntrypoints();
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-pack-'));
   try {
     await runWithTempRoot(tempRoot);

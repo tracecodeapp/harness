@@ -16,14 +16,14 @@ import type {
   RuntimeExecuteResult,
   RuntimeExecutionStyle,
   TraceExecutionOptions,
-} from '../../harness-core/src/runtime-types';
-import type { RuntimeCommandResult } from '../../harness-core/src/runtime-project';
-import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+} from '@tracecode/harness-core';
+import type { RuntimeCommandResult } from '@tracecode/harness-core';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
 import {
   createEmptyRuntimeTrace,
   type RuntimeTrace,
-} from '../../harness-core/src/runtime-trace';
-import { javaTraceHooksEventsToRuntimeTrace } from '../../harness-core/src/trace-adapters/java';
+} from '@tracecode/harness-core';
+import { javaTraceHooksEventsToRuntimeTrace } from '@tracecode/harness-core';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,
@@ -38,7 +38,7 @@ import {
 import {
   getLanguageRuntimeInfo,
   getSupportedLanguageRuntimeInfos,
-} from '../../harness-core/src/runtime-language-info';
+} from '@tracecode/harness-core';
 import {
   getLanguageRuntimeProfile,
   getSupportedLanguageProfiles,
