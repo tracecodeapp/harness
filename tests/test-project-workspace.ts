@@ -10056,6 +10056,96 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   }
 }
 
+async function testBrowserKernelStorageRehydrationPreservesReadonlyPolicy(): Promise<void> {
+  const workspace = await createBrowserProjectWorkspace({
+    projectSession: {
+      id: 'readonly-rehydrate-test',
+      files: [
+        { path: 'locked.txt', contents: 'locked\n', readonly: true },
+        { path: 'secret.txt', contents: 'secret\n', hidden: true },
+        { path: 'scratch.txt', contents: 'scratch\n' },
+      ],
+    },
+    kernelStorage: {
+      async load() {
+        return {
+          version: 1,
+          savedAt: new Date().toISOString(),
+          snapshot: {
+            files: [{ path: 'locked.txt', contents: 'locked\n' }],
+          },
+        };
+      },
+      async save() {},
+      async flush() {},
+    },
+    pythonWorkerClient: {
+      async executeProjectPython() {
+        throw new Error('unexpected Python runner call');
+      },
+      terminate() {},
+    },
+    javaWorkerClient: {
+      async executeProjectJava() {
+        throw new Error('unexpected Java runner call');
+      },
+      terminate() {},
+    },
+    csharpWorkerClient: {
+      async executeProjectCSharp() {
+        throw new Error('unexpected C# runner call');
+      },
+      terminate() {},
+    },
+    cppWorkerClient: {
+      async executeProjectCpp() {
+        throw new Error('unexpected C++ runner call');
+      },
+      terminate() {},
+    },
+  });
+
+  try {
+    assertCondition(workspace.isReadOnly('locked.txt') === true, 'rehydrated readonly session file should preserve readonly policy');
+    let writeError: unknown;
+    try {
+      await workspace.writeFile('locked.txt', 'pwned\n');
+    } catch (error) {
+      writeError = error;
+    }
+    assertCondition(
+      (writeError as { code?: unknown } | undefined)?.code === 'EROFS',
+      `workspace.writeFile should reject readonly rehydrated session files with EROFS: ${String(writeError)}`
+    );
+
+    const overwrite = await workspace.runCommand('echo pwned > locked.txt');
+    assertCondition(
+      overwrite.exitCode !== 0,
+      `shell redirection should fail against readonly rehydrated session files: ${JSON.stringify(overwrite)}`
+    );
+    assertCondition(await workspace.readFile('locked.txt') === 'locked\n', 'readonly rehydrated session file contents should survive failed overwrite');
+
+    const remove = await workspace.runCommand('rm locked.txt');
+    assertCondition(
+      remove.exitCode !== 0,
+      `shell rm should fail against readonly rehydrated session files: ${JSON.stringify(remove)}`
+    );
+    assertCondition(await workspace.exists('locked.txt'), 'readonly rehydrated session file should survive failed rm');
+    assertCondition(await workspace.readFile('locked.txt') === 'locked\n', 'readonly rehydrated session file contents should survive failed rm');
+
+    assertCondition(!(await workspace.exists('scratch.txt')), 'stored workspace rehydration should not resurrect deleted editable session files');
+
+    const snapshot = await workspace.snapshot();
+    assertCondition(
+      !snapshot.files.some((file) => file.path === 'secret.txt'),
+      `hidden session files should remain absent from visible snapshots after rehydration: ${JSON.stringify(snapshot)}`
+    );
+    assertCondition(workspace.isReadOnly('secret.txt') === true, 'hidden session files should remain readonly after rehydration');
+  } finally {
+    workspace.dispose();
+  }
+}
+
 async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
   const events: RuntimeWorkspaceEvent[] = [];
   const pythonRequests: PythonProjectCommandRequest[] = [];
@@ -13394,6 +13484,7 @@ async function main(): Promise<void> {
   await testBrowserCSharpProjectRunnerAdapter();
   await testBrowserCppProjectRunnerAdapter();
   await testBrowserProjectWorkspaceFactory();
+  await testBrowserKernelStorageRehydrationPreservesReadonlyPolicy();
   await testBrowserProjectWorkspaceTraceKernelConfig();
   await testBrowserProjectWorkspaceAdvancedCommandTranslation();
   await testNativeProjectWorkspaceFactory();
