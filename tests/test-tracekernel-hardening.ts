@@ -101,7 +101,7 @@ async function testBrowserAsyncLocalStorageForcesSingleFlightScheduling(): Promi
     `browser AsyncLocalStorage shim should still restore completed frames: ${JSON.stringify({ secondStore, store: storage.getStore() })}`
   );
 
-  const projectSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-project', 'src', 'index.ts'), 'utf8');
+  const projectSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-project', 'src', 'scheduler.ts'), 'utf8');
   assertCondition(
     projectSource.includes('isBrowserAsyncLocalStorageSingleFlight') &&
       projectSource.includes('forceSingleFlight ? 1 : configuredMaxConcurrentCommands'),
