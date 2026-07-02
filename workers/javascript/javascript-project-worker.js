@@ -9,7 +9,6 @@ var RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS = {
   workspace: {
     listen: true,
     dispatch: true,
-    externalFetch: false,
     readDiagnostics: true
   },
   system: {
