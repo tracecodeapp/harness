@@ -105,6 +105,11 @@ TraceKernel HTTP is an in-workspace transport. It is designed for endpoint
 tests, mock upstream APIs, and project servers that should be visible to the
 workspace but not to the host network.
 
+Allowlisted external egress is a deliberate exfiltration channel and should stay
+off for graded/interview surfaces. When a product enables `externalHttp`, the
+app-owned delegate and allowlist become part of the security boundary, and
+server-side proxy delegates must perform their own post-resolution IP checks.
+
 The built-in clients and server shims route through TraceKernel when they use
 supported APIs such as `curl`, JavaScript `fetch`, Node `http`, Python
 `requests`/`urllib`/`http.client`, Python `http.server`/FastAPI shims, and Java

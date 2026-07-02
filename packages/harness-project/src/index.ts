@@ -32,6 +32,13 @@ import {
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
 import {
+  createDefaultExternalHttpFetch,
+  isBlockedExternalHttpHost,
+  RUNTIME_EXTERNAL_HTTP_MAX_BODY_BYTES,
+  type RuntimeExternalHttpConfig,
+  type RuntimeExternalHttpRequest,
+} from '../../harness-core/src/runtime-external-http';
+import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
   runtimeDeviceDirEntries,
@@ -432,6 +439,7 @@ export interface CreateRuntimeWorkspaceOptions {
   python?: boolean;
   javascript?: boolean | ProjectWorkspaceJavaScriptConfig;
   executionLimits?: ProjectWorkspaceExecutionLimits;
+  externalHttp?: RuntimeExternalHttpConfig;
   kernel?: RuntimeTraceKernelConfig;
   kernelControl?: RuntimeTraceKernelControlOptions;
 }
@@ -458,6 +466,25 @@ const TRACEKERNEL_HTTP_MAX_BODY_BYTES = 4 * 1024 * 1024;
 const TRACEKERNEL_HTTP_MAX_HEADER_COUNT = 128;
 const TRACEKERNEL_HTTP_MAX_HEADER_BYTES = 64 * 1024;
 const TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH = 4096;
+const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_TIMEOUT_MS = 10_000;
+const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_CONCURRENT_REQUESTS = 8;
+const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_REQUESTS_PER_COMMAND = 64;
+const TRACEKERNEL_EXTERNAL_HTTP_MAX_TIMEOUT_MS = 60_000;
+
+interface NormalizedRuntimeExternalHttpHostRule {
+  hostname: string;
+  wildcardSubdomains: boolean;
+  port?: number;
+}
+
+interface NormalizedRuntimeExternalHttpConfig {
+  fetch: RuntimeExternalHttpConfig['fetch'];
+  hosts: readonly NormalizedRuntimeExternalHttpHostRule[] | ((url: URL) => boolean);
+  allowHttp: boolean;
+  timeoutMs: number;
+  maxConcurrentRequests: number;
+  maxRequestsPerCommand: number;
+}
 const TRACEKERNEL_ZOMBIE_RETENTION_MS = 30_000;
 const TRACEKERNEL_SIGNAL_NUMBERS = new Map<string, number>([
   ['SIGHUP', 1],
@@ -550,6 +577,7 @@ interface RuntimeKernelHttpRequestRecord {
   url: string;
   status?: number;
   error?: string;
+  external?: true;
 }
 
 function redactRuntimeDiagnosticUrl(value: string): string {
@@ -566,6 +594,81 @@ function redactRuntimeDiagnosticUrl(value: string): string {
   } catch {
     return value.replace(/([?&](?:access_token|api_key|apikey|auth|authorization|code|key|password|secret|session|sig|signature|token)=)[^&#\s]*/gi, '$1redacted');
   }
+}
+
+function clampRuntimeExternalHttpPositiveInteger(value: unknown, fallback: number, max: number): number {
+  if (value === undefined) return fallback;
+  const normalized = Math.trunc(Number(value));
+  if (!Number.isFinite(normalized)) return fallback;
+  return Math.min(max, Math.max(1, normalized));
+}
+
+function defaultRuntimeExternalHttpPort(protocol: string): number {
+  return protocol === 'http:' ? 80 : 443;
+}
+
+function normalizeRuntimeExternalHttpHostEntry(entry: string): NormalizedRuntimeExternalHttpHostRule {
+  const raw = entry.trim();
+  if (!raw || raw === '*') {
+    throw new TypeError('Runtime external HTTP host entries must not be empty or "*". Use a predicate for full-wildcard egress.');
+  }
+  const wildcardSubdomains = raw.startsWith('*.');
+  const hostAndPort = wildcardSubdomains ? raw.slice(2) : raw;
+  const lastColon = hostAndPort.lastIndexOf(':');
+  const hasPort = lastColon > -1 && /^[0-9]+$/.test(hostAndPort.slice(lastColon + 1));
+  const hostname = (hasPort ? hostAndPort.slice(0, lastColon) : hostAndPort).toLowerCase();
+  if (!hostname || hostname.includes('/') || hostname.includes('@') || hostname.includes('*')) {
+    throw new TypeError(`Invalid Runtime external HTTP host entry "${entry}".`);
+  }
+  let port: number | undefined;
+  if (hasPort) {
+    port = Math.trunc(Number(hostAndPort.slice(lastColon + 1)));
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+      throw new TypeError(`Invalid Runtime external HTTP host port in "${entry}".`);
+    }
+  }
+  return {
+    hostname,
+    wildcardSubdomains,
+    ...(port !== undefined ? { port } : {}),
+  };
+}
+
+function normalizeRuntimeExternalHttpConfig(
+  config: RuntimeExternalHttpConfig | undefined
+): NormalizedRuntimeExternalHttpConfig | undefined {
+  if (config === undefined) return undefined;
+  if (typeof config.fetch !== 'function') {
+    throw new TypeError('Runtime external HTTP config requires a fetch delegate.');
+  }
+  const hosts = typeof config.hosts === 'function'
+    ? config.hosts
+    : Array.isArray(config.hosts)
+      ? config.hosts.map(normalizeRuntimeExternalHttpHostEntry)
+      : undefined;
+  if (!hosts) {
+    throw new TypeError('Runtime external HTTP config requires a hosts allowlist or predicate.');
+  }
+  return {
+    fetch: config.fetch,
+    hosts,
+    allowHttp: config.allowHttp === true,
+    timeoutMs: clampRuntimeExternalHttpPositiveInteger(
+      config.timeoutMs,
+      TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_TIMEOUT_MS,
+      TRACEKERNEL_EXTERNAL_HTTP_MAX_TIMEOUT_MS
+    ),
+    maxConcurrentRequests: clampRuntimeExternalHttpPositiveInteger(
+      config.maxConcurrentRequests,
+      TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_CONCURRENT_REQUESTS,
+      Number.MAX_SAFE_INTEGER
+    ),
+    maxRequestsPerCommand: clampRuntimeExternalHttpPositiveInteger(
+      config.maxRequestsPerCommand,
+      TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_REQUESTS_PER_COMMAND,
+      Number.MAX_SAFE_INTEGER
+    ),
+  };
 }
 
 interface RuntimeLazyCommand {
@@ -644,6 +747,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private snapshotCache: { version: number; files: RuntimeFile[]; directories: string[]; kernelFiles: RuntimeFile[] } | null = null;
   private readonly fsLocks = new RuntimeFileSystemLockCoordinator();
   private readonly commandScheduler: RuntimeCommandScheduler;
+  private readonly externalHttp?: NormalizedRuntimeExternalHttpConfig;
   private readonly entrypoint?: string;
   private readonly kernelControl?: RuntimeTraceKernelControlOptions;
   private readonly cppRunner?: CppProjectCommandRunner;
@@ -670,12 +774,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private nextHttpRequestSeq = 1;
   private nextEphemeralHttpPort = 49152;
   private activeHttpRequests = 0;
+  private activeExternalHttpRequests = 0;
+  private workspaceExternalHttpRequestCount = 0;
   private destroyed = false;
   private expirationDestroyScheduled = false;
   private terminalVerbose = false;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
+    this.externalHttp = normalizeRuntimeExternalHttpConfig(options.externalHttp);
     this.http = {
       request: (requestOptions) => this.requestHttp(requestOptions),
       json: (requestOptions) => this.requestHttpJson(requestOptions),
@@ -902,7 +1009,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       listen: (options, handler) => {
         return this.registerHttpListener(options, handler, owner);
       },
-      dispatch: (request, options) => this.dispatchHttpRequest(request, { ...options, actor }),
+      dispatch: (request, options) => this.dispatchHttpRequest(request, { ...options, actor, commandContext: context }),
     };
   }
 
@@ -1316,11 +1423,229 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return `${message}\n`;
   }
 
+  private runtimeExternalHttpAllowlistReason(config: NormalizedRuntimeExternalHttpConfig, url: URL): string | null {
+    if (typeof config.hosts === 'function') {
+      try {
+        return config.hosts(url) ? null : `host ${url.hostname} is not allowlisted`;
+      } catch (error) {
+        return `host allowlist predicate failed: ${this.sanitizeHttpDiagnosticField(error instanceof Error ? error.message : String(error))}`;
+      }
+    }
+    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    const port = url.port ? Number(url.port) : defaultRuntimeExternalHttpPort(url.protocol);
+    const defaultPort = defaultRuntimeExternalHttpPort(url.protocol);
+    for (const rule of config.hosts) {
+      if (rule.port !== undefined) {
+        if (port !== rule.port) continue;
+      } else if (port !== defaultPort) {
+        continue;
+      }
+      if (rule.wildcardSubdomains) {
+        if (hostname !== rule.hostname && hostname.endsWith(`.${rule.hostname}`)) return null;
+      } else if (hostname === rule.hostname) {
+        return null;
+      }
+    }
+    return `host ${url.hostname} is not allowlisted`;
+  }
+
+  private consumeExternalHttpBudget(
+    config: NormalizedRuntimeExternalHttpConfig,
+    context: RuntimeCommandExecutionContext | undefined
+  ): boolean {
+    if (context) {
+      const count = context.externalHttpRequestCount ?? 0;
+      if (count >= config.maxRequestsPerCommand) return false;
+      context.externalHttpRequestCount = count + 1;
+      return true;
+    }
+    if (this.workspaceExternalHttpRequestCount >= config.maxRequestsPerCommand) return false;
+    this.workspaceExternalHttpRequestCount += 1;
+    return true;
+  }
+
+  private async runHttpDispatchWithAbortRace(
+    options: RuntimeKernelHttpDispatchOptions & { timeoutBody?: string },
+    timeoutMs: number | undefined,
+    invoke: (signal: AbortSignal) => Promise<RuntimeKernelHttpResponse>,
+    settleFailure: (error: string, body: string) => RuntimeKernelHttpResponse
+  ): Promise<RuntimeKernelHttpResponse> {
+    const signal = options.signal;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
+    const requestAbortController = new AbortController();
+    const abortHandlerRequest = (): void => {
+      if (!requestAbortController.signal.aborted) requestAbortController.abort();
+    };
+    const handlerResponse = invoke(requestAbortController.signal);
+    const races: Array<Promise<RuntimeKernelHttpResponse>> = [handlerResponse];
+    if (timeoutMs !== undefined) {
+      races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          abortHandlerRequest();
+          resolve(settleFailure(
+            'ETIMEDOUT',
+            options.timeoutBody ?? `TraceKernel HTTP request timed out after ${timeoutMs} milliseconds\n`
+          ));
+        }, timeoutMs);
+      }));
+    }
+    if (signal) {
+      races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
+        abortListener = () => {
+          abortHandlerRequest();
+          resolve(settleFailure('EINTR', 'TraceKernel HTTP request aborted\n'));
+        };
+        signal.addEventListener('abort', abortListener, { once: true });
+      }));
+    }
+    try {
+      return await Promise.race(races);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+      if (abortListener) signal?.removeEventListener('abort', abortListener);
+    }
+  }
+
+  private externalHttpBlockedResponse(
+    normalizedRequest: RuntimeKernelHttpRequest,
+    status: 403 | 429,
+    error: string,
+    reason: string
+  ): RuntimeKernelHttpResponse {
+    this.recordHttpRequest({
+      method: normalizedRequest.method,
+      url: normalizedRequest.url,
+      error,
+      external: true,
+    });
+    return { status, body: `tracekernel: external fetch blocked: ${reason}\n` };
+  }
+
+  private async dispatchExternalHttpRequest(
+    config: NormalizedRuntimeExternalHttpConfig,
+    normalizedRequest: RuntimeKernelHttpRequest,
+    url: URL,
+    actor: RuntimeWorkspaceActor,
+    options: RuntimeKernelHttpDispatchOptions & {
+      timeoutBody?: string;
+      commandContext?: RuntimeCommandExecutionContext;
+    }
+  ): Promise<RuntimeKernelHttpResponse> {
+    if (actor.capabilities?.http?.externalFetch === false) {
+      return this.externalHttpBlockedResponse(
+        normalizedRequest,
+        403,
+        'EACCES',
+        `external fetch is not allowed for actor ${actor.kind}:${actor.id}`
+      );
+    }
+    if (url.protocol !== 'https:' && !(config.allowHttp && url.protocol === 'http:')) {
+      return this.externalHttpBlockedResponse(
+        normalizedRequest,
+        403,
+        'EPROTONOSUPPORT',
+        url.protocol === 'http:' ? 'http URLs require allowHttp' : `unsupported URL scheme ${url.protocol}`
+      );
+    }
+    const blocklistReason = isBlockedExternalHttpHost(url);
+    if (blocklistReason) {
+      return this.externalHttpBlockedResponse(normalizedRequest, 403, 'EHOSTBLOCKED', blocklistReason);
+    }
+    const allowlistReason = this.runtimeExternalHttpAllowlistReason(config, url);
+    if (allowlistReason) {
+      return this.externalHttpBlockedResponse(normalizedRequest, 403, 'EHOSTUNREACH', allowlistReason);
+    }
+    if (!this.consumeExternalHttpBudget(config, options.commandContext)) {
+      return this.externalHttpBlockedResponse(
+        normalizedRequest,
+        429,
+        'ERATELIMIT',
+        `external fetch request budget exceeded (${config.maxRequestsPerCommand})`
+      );
+    }
+    if (this.activeExternalHttpRequests >= config.maxConcurrentRequests) {
+      return this.externalHttpBlockedResponse(
+        normalizedRequest,
+        429,
+        'EAGAIN',
+        `external fetch concurrency limit reached (${config.maxConcurrentRequests})`
+      );
+    }
+    const timeoutMs = options.timeoutMs === undefined ? config.timeoutMs : Math.max(1, Math.ceil(Number(options.timeoutMs)));
+    if (!Number.isFinite(timeoutMs)) {
+      return { status: 400, body: `TraceKernel HTTP timeout rejected: ${options.timeoutMs}\n` };
+    }
+    if (options.signal?.aborted) {
+      this.recordHttpRequest({
+        method: normalizedRequest.method,
+        url: normalizedRequest.url,
+        error: 'EINTR',
+        external: true,
+      });
+      return { status: 0, body: 'TraceKernel HTTP request aborted\n' };
+    }
+    let settled = false;
+    const settleFailure = (error: string, body: string): RuntimeKernelHttpResponse => {
+      if (!settled) {
+        settled = true;
+        this.recordHttpRequest({
+          method: normalizedRequest.method,
+          url: normalizedRequest.url,
+          error,
+          external: true,
+        });
+      }
+      return { status: 0, body };
+    };
+    this.activeExternalHttpRequests += 1;
+    try {
+      const response = await this.runHttpDispatchWithAbortRace(options, timeoutMs, async (signal) => {
+        const externalRequest: RuntimeExternalHttpRequest = {
+          method: normalizedRequest.method,
+          url: normalizedRequest.url,
+          headers: normalizedRequest.headers ?? {},
+          ...(normalizedRequest.body !== undefined ? { body: normalizedRequest.body } : {}),
+          ...(normalizedRequest.bodyEncoding ? { bodyEncoding: normalizedRequest.bodyEncoding } : {}),
+          signal,
+        };
+        try {
+          const normalizedResponse = this.normalizeHttpResponse(await config.fetch(externalRequest));
+          if (!settled) {
+            this.recordHttpRequest({
+              method: normalizedRequest.method,
+              url: normalizedRequest.url,
+              status: normalizedResponse.status,
+              external: true,
+            });
+          }
+          return normalizedResponse;
+        } catch (error) {
+          const message = this.sanitizeHttpDiagnosticField(error instanceof Error ? error.message : String(error));
+          if (!settled) {
+            this.recordHttpRequest({
+              method: normalizedRequest.method,
+              url: normalizedRequest.url,
+              error: message,
+              external: true,
+            });
+          }
+          return { status: 502, body: `tracekernel: external fetch failed: ${message}\n` };
+        }
+      }, settleFailure);
+      settled = true;
+      return response;
+    } finally {
+      this.activeExternalHttpRequests = Math.max(0, this.activeExternalHttpRequests - 1);
+    }
+  }
+
   private async dispatchHttpRequest(
     request: RuntimeKernelHttpRequest,
     options: RuntimeKernelHttpDispatchOptions & {
       timeoutBody?: string;
       actor?: RuntimeWorkspaceActor;
+      commandContext?: RuntimeCommandExecutionContext;
     } = {}
   ): Promise<RuntimeKernelHttpResponse> {
     const actor = options.actor ?? SYSTEM_ACTOR;
@@ -1353,6 +1678,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { status: 400, body: `${error instanceof Error ? error.message : String(error)}\n` };
     }
     if (!listener) {
+      if (this.externalHttp) {
+        return this.dispatchExternalHttpRequest(this.externalHttp, normalizedRequest, url, actor, options);
+      }
       this.recordHttpRequest({
         method: normalizedRequest.method,
         url: normalizedRequest.url,
@@ -1387,12 +1715,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
 
     let settled = false;
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    let abortListener: (() => void) | undefined;
-    const requestAbortController = new AbortController();
-    const abortHandlerRequest = (): void => {
-      if (!requestAbortController.signal.aborted) requestAbortController.abort();
-    };
     const settleFailure = (error: string, body: string): RuntimeKernelHttpResponse => {
       if (!settled) {
         settled = true;
@@ -1407,11 +1729,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { status: 0, body };
     };
     this.activeHttpRequests += 1;
-    const handlerResponse = (async (): Promise<RuntimeKernelHttpResponse> => {
+    const response = await this.runHttpDispatchWithAbortRace(options, timeoutMs, async (handlerSignal) => {
       try {
         const response = this.normalizeHttpResponse(await listener.handler({
           ...normalizedRequest,
-          signal: requestAbortController.signal,
+          signal: handlerSignal,
         }));
         const status = response.status;
         if (!settled) {
@@ -1451,38 +1773,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       } finally {
         this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
       }
-    })();
-
-    const races: Array<Promise<RuntimeKernelHttpResponse>> = [handlerResponse];
-    if (timeoutMs !== undefined) {
-      races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
-        timeoutHandle = setTimeout(() => {
-          abortHandlerRequest();
-          resolve(settleFailure(
-            'ETIMEDOUT',
-            options.timeoutBody ?? `TraceKernel HTTP request timed out after ${timeoutMs} milliseconds\n`
-          ));
-        }, timeoutMs);
-      }));
-    }
-    if (signal) {
-      races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
-        abortListener = () => {
-          abortHandlerRequest();
-          resolve(settleFailure('EINTR', 'TraceKernel HTTP request aborted\n'));
-        };
-        signal.addEventListener('abort', abortListener, { once: true });
-      }));
-    }
-
-    try {
-      const response = await Promise.race(races);
-      settled = true;
-      return response;
-    } finally {
-      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-      if (abortListener) signal?.removeEventListener('abort', abortListener);
-    }
+    }, settleFailure);
+    settled = true;
+    return response;
   }
 
   recordKernelCommandError(error: unknown): void {
@@ -2096,8 +2389,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.sanitizeHttpDiagnosticField(request.url),
       request.status ?? '',
       this.sanitizeHttpDiagnosticField(request.error ?? ''),
+      request.external ? 'external' : '',
     ].join('\t'));
-    return ['seq\ttime\tlistener\tpid\tmethod\turl\tstatus\terror', ...rows].join('\n') + '\n';
+    return ['seq\ttime\tlistener\tpid\tmethod\turl\tstatus\terror\texternal', ...rows].join('\n') + '\n';
   }
 
   private renderProcScheduler(): string {
@@ -2333,6 +2627,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       } : {}),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       ...(commandContext?.actor ? { actor: commandContext.actor } : {}),
+      ...(commandContext ? { commandContext } : {}),
     });
     if (response.status === 0 && response.body?.startsWith('curl: (28)')) {
       return { stdout: '', stderr: response.body ?? 'curl: (28) Operation timed out\n', exitCode: 28 };
@@ -3690,6 +3985,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       deviceStderr: '',
       outputBytes: { stdout: 0, stderr: 0 },
       truncatedOutputStreams: new Set(),
+      externalHttpRequestCount: 0,
     };
     const commandFs = new CommandBoundFileSystem(this.fs, commandContext);
     registerCommandContext(commandFs, commandContext);
@@ -4812,6 +5108,11 @@ export type {
   RuntimeWorkspaceUnsubscribe,
 };
 
+export type {
+  RuntimeExternalHttpConfig,
+  RuntimeExternalHttpRequest,
+} from '../../harness-core/src/runtime-external-http';
+
 export { normalizeRuntimeProjectPath } from './paths';
 export { RuntimeProjectWorkspaceTerminalSession } from './terminal-session';
 export { createPackageManagerProjectCommands } from './package-manager';
@@ -4827,6 +5128,9 @@ export {
 export {
   RuntimeProjectLiveIoController,
   createRuntimeProjectIoBridge,
+  createDefaultExternalHttpFetch,
+  isBlockedExternalHttpHost,
+  RUNTIME_EXTERNAL_HTTP_MAX_BODY_BYTES,
   runRuntimeProjectWorkerBridge,
   runtimeHttpBodyBytes,
   runtimeHttpBodyFromBytes,

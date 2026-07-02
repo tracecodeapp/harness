@@ -170,6 +170,7 @@ export interface RuntimeCommandExecutionContext {
   deviceStderr: string;
   outputBytes: Record<RuntimeCommandEventStream, number>;
   truncatedOutputStreams: Set<RuntimeCommandEventStream>;
+  externalHttpRequestCount?: number;
 }
 
 
