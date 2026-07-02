@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [Unreleased]
+
+### Added
+
+- Added app-mediated external HTTP egress: workspaces accept an `externalHttp` capability (host allowlist, plain-http opt-in, per-command budgets, concurrency cap, timeout, delegate `fetch`) so non-loopback requests from project code can be routed through the embedding application, with hardened blocklists for loopback/private/metadata hosts and `/proc/tracekernel/net/requests` logging.
+- Added C++ in-workspace HTTP support: project code can `#include "tracecode_http.hpp"` (injected into every C++ project compile) to `tracecode::http::fetch(...)` loopback listeners or app-mediated external hosts, and serve requests with `tracecode::http::Server::listen(...)`. The header wraps a new `tracecode_kernel` wasm import module backed by a synchronous SharedArrayBuffer bridge between the C++ worker and the TraceKernel HTTP bridge, mirroring the Java worker protocol.
+- Added terminal session environment persistence: `export FOO=…`, plain shell assignments, and `unset` now persist across terminal submissions (per-run `env` overlays still apply once), backed by a new `RuntimeCommandOptions.onEnvChanges` hook that reports shell variable deltas per command.
+
+### Changed
+
+- Split the `@tracecode/harness-project` monolith into focused modules (paths, session, locks, scheduler, patches, observed fs, arg parsers, package manager, language commands, ls, terminal session).
+- Replaced the browser `AsyncLocalStorage` shim with explicit command-context threading (`CommandBoundFileSystem`), lifting browser TraceKernel command concurrency from one to the configured limit.
+- Made `@tracecode/harness-core` a real workspace dependency shared as a single copy across published packages.
+- Unified terminal command parsing onto the just-bash parser: background/`;` splitting, bare `cd`/`pwd` detection, and persistent leading `cd` are now derived from the interpreter's own AST, so quoting, comments, and subshells behave identically in the terminal layer and command execution (quoted `&`/`;` and subshell-internal `&` no longer split submissions; here-doc submissions run unsplit).
+- Factored the Java worker client's synchronous TraceKernel HTTP bridge into a shared module now used by both the Java and C++ worker clients.
+- Debounced and coalesced browser kernel-storage persistence, cached workspace snapshots keyed by filesystem mutation version, and enforced project session expiration lazily on mutation and run.
+
+### Fixed
+
+- Fixed a synchronous TraceKernel HTTP bridge race shared by the Java and C++ workers where a program that responded to an in-flight request and immediately closed its listener (or exited) could overwrite the unread response with the closed state, turning a real response into a 503.
+- Preserved readonly session file policy across kernel-storage rehydration and restored the abort controller in JS project worker execution state.
+- Kept compiler diagnostics that mention the public `tracecode::http` API visible in C++ project stderr instead of redacting them as harness internals.
+
 ## [0.9.7] - 2026-06-19
 
 ### Added
