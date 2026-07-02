@@ -861,12 +861,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       const browserProjectDist = await readFile(join(packageDir, 'dist/project.js'), 'utf8');
       assertCondition(
-        browserProjectDist.includes('enqueueJavaHttpServerRequest(bridge, request)') &&
-          browserProjectDist.includes('drainJavaHttpServerQueue(bridge)') &&
-          browserProjectDist.includes('dispatchJavaHttpServerRequest(bridge, request)') &&
-          browserProjectDist.includes('Java TraceKernel HTTP server queue is full') &&
-          browserProjectDist.includes('pending.kernelHttp.listen(options, (request) => this.enqueueJavaHttpServerRequest(bridge, request))'),
-        '@tracecode/harness-browser project bundle should ship queued Java HttpServer request bridge support'
+        browserProjectDist.includes('enqueueKernelHttpSyncServerRequest(bridge, request, runtimeLabel)') &&
+          browserProjectDist.includes('drainKernelHttpSyncServerQueue(bridge, runtimeLabel)') &&
+          browserProjectDist.includes('dispatchKernelHttpSyncServerRequest(bridge, entry.request, runtimeLabel)') &&
+          browserProjectDist.includes('TraceKernel HTTP server queue is full'),
+        '@tracecode/harness-browser project bundle should ship the shared queued sync HTTP server bridge'
       );
       const browserOnlyAppDir = join(tempRoot, 'browser-only-app');
       const browserOnlyPackageDir = packageNodeModulesDir(browserOnlyAppDir, packageCheck.name);

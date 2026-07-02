@@ -8,14 +8,24 @@ import type {
   RuntimeCommandEvent,
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
+  RuntimeKernelHttpBridge,
   RuntimeProjectCommandRequest,
 } from '@tracecode/harness-core';
 import { createEmptyRuntimeTrace } from '@tracecode/harness-core';
 import type { TraceExecutionOptions } from '@tracecode/harness-core';
+import {
+  closeKernelHttpSyncServers,
+  handleKernelHttpCloseMessage,
+  handleKernelHttpDispatchSyncMessage,
+  handleKernelHttpListenSyncMessage,
+  type KernelHttpSyncServerBridge,
+} from './kernel-http-sync';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 import { createWorkerProtocolToken } from './worker-protocol';
 
 type MessageId = string;
+
+const CPP_KERNEL_HTTP_RUNTIME_LABEL = 'C++';
 
 export type CppExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 export type CppProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
@@ -60,6 +70,8 @@ interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
+  kernelHttp?: RuntimeKernelHttpBridge;
+  httpServers?: Map<string, KernelHttpSyncServerBridge>;
   timeoutId?: ReturnType<typeof setTimeout>;
   lastProgress?: CppRuntimeProgress;
 }
@@ -242,8 +254,21 @@ export class CppWorkerClient {
         this.lastRuntimeProgress = progress;
         return;
       }
+      if (type === 'kernel-http-dispatch-sync') {
+        handleKernelHttpDispatchSyncMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
+        return;
+      }
+      if (type === 'kernel-http-listen-sync') {
+        handleKernelHttpListenSyncMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
+        return;
+      }
+      if (type === 'kernel-http-close') {
+        handleKernelHttpCloseMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
+        return;
+      }
       this.pendingMessages.delete(id);
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
+      closeKernelHttpSyncServers(pending, CPP_KERNEL_HTTP_RUNTIME_LABEL);
 
       if (type === 'error') {
         pending.reject(new Error((payload as { error: string }).error));
@@ -319,7 +344,8 @@ export class CppWorkerClient {
     type: string,
     payload?: unknown,
     timeoutMs = MESSAGE_TIMEOUT_MS,
-    onEvent?: RuntimeCommandEventHandler
+    onEvent?: RuntimeCommandEventHandler,
+    kernelHttp?: RuntimeKernelHttpBridge
   ): Promise<T> {
     const worker = this.getWorker();
     await this.waitForWorkerReady();
@@ -332,12 +358,15 @@ export class CppWorkerClient {
         resolve: resolve as (value: unknown) => void,
         reject,
         ...(onEvent ? { onEvent } : {}),
+        ...(kernelHttp ? { kernelHttp } : {}),
+        httpServers: new Map(),
       });
 
       const timeoutId = globalThis.setTimeout(() => {
         const pending = this.pendingMessages.get(id);
         if (!pending) return;
         this.pendingMessages.delete(id);
+        closeKernelHttpSyncServers(pending, CPP_KERNEL_HTTP_RUNTIME_LABEL);
         logRuntimeDiagnostic('warn', {
           component: 'CppWorkerClient',
           runtime: 'cpp',
@@ -533,6 +562,7 @@ export class CppWorkerClient {
 
     for (const [, pending] of this.pendingMessages) {
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
+      closeKernelHttpSyncServers(pending, CPP_KERNEL_HTTP_RUNTIME_LABEL);
       pending.reject(reason);
     }
     this.pendingMessages.clear();
@@ -990,7 +1020,7 @@ export class CppWorkerClient {
     } finally {
       signal?.removeEventListener('abort', abortInit);
     }
-    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp: _kernelHttp, ...workerRequest } = request;
+    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
     return this.executeWithTimeout(
       () =>
         this.sendMessage<CppProjectCommandResult>(
@@ -1000,7 +1030,8 @@ export class CppWorkerClient {
             ...this.workerOptionsPayload(),
           },
           timeoutMs + 5_000,
-          onEvent
+          onEvent,
+          kernelHttp
         ),
       timeoutMs,
       'compile-run',

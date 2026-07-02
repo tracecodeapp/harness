@@ -1041,6 +1041,9 @@ class WasiProcess {
     this.stdoutChunks = [];
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
+    this.kernelHttp = options.kernelHttp || null;
+    this.kernelHttpResults = new Map();
+    this.nextKernelHttpResultToken = 1;
     this.kernelDevices = wasiKernelDevices(options);
     this.knownKernelDevices = new Set(this.kernelDevices.keys());
     this.filestatSizeOffset = options.filestatSizeOffset || 32;
@@ -1071,6 +1074,70 @@ class WasiProcess {
   bind(name) {
     if (typeof this[name] === 'function') return this[name].bind(this);
     return () => ENOTSUP;
+  }
+
+  storeKernelHttpResult(bytes) {
+    const token = this.nextKernelHttpResultToken++;
+    this.kernelHttpResults.set(token, bytes);
+    return token;
+  }
+
+  kernelHttpErrorResultToken(message) {
+    return this.storeKernelHttpResult(encodeUtf8(cppKernelHttpErrorManifest(message)));
+  }
+
+  // Host functions imported by C++ user code through the `tracecode_kernel`
+  // wasm import module (declared in tracecode_http.hpp). Variable-length
+  // results are handed back through integer tokens: the program asks for the
+  // length, allocates, then reads (which consumes the token).
+  tracecodeKernelImports() {
+    const requireBridge = () => {
+      if (!this.kernelHttp) {
+        return this.kernelHttpErrorResultToken('TraceKernel HTTP is only available while running C++ project commands');
+      }
+      return 0;
+    };
+    return {
+      http_dispatch: (requestPtr, requestLen, timeoutMs) => {
+        const unavailable = requireBridge();
+        if (unavailable) return unavailable;
+        const manifest = this.mem.readBytes(requestPtr, requestLen >>> 0);
+        return this.storeKernelHttpResult(this.kernelHttp.dispatch(manifest, Number(timeoutMs)));
+      },
+      http_result_length: (token) => {
+        const bytes = this.kernelHttpResults.get(Number(token));
+        return bytes ? bytes.byteLength : -1;
+      },
+      http_result_read: (token, bufferPtr, bufferLen) => {
+        const bytes = this.kernelHttpResults.get(Number(token));
+        if (!bytes) return -1;
+        this.kernelHttpResults.delete(Number(token));
+        const written = bytes.subarray(0, Math.min(bytes.byteLength, bufferLen >>> 0));
+        this.mem.writeBytes(bufferPtr, written);
+        return written.byteLength;
+      },
+      http_listen: (optionsPtr, optionsLen) => {
+        const unavailable = requireBridge();
+        if (unavailable) return unavailable;
+        const manifest = this.mem.readBytes(optionsPtr, optionsLen >>> 0);
+        return this.storeKernelHttpResult(this.kernelHttp.listen(manifest));
+      },
+      http_next_request: (serverId, timeoutMs) => {
+        const unavailable = requireBridge();
+        if (unavailable) return unavailable;
+        return this.storeKernelHttpResult(this.kernelHttp.nextRequest(Number(serverId), Number(timeoutMs)));
+      },
+      http_respond: (serverId, responsePtr, responseLen) => {
+        if (!this.kernelHttp) return -1;
+        const manifest = this.mem.readBytes(responsePtr, responseLen >>> 0);
+        return this.kernelHttp.respond(Number(serverId), manifest);
+      },
+      http_close: (serverId) => {
+        if (!this.kernelHttp) return -1;
+        this.kernelHttp.close(Number(serverId));
+        return 0;
+      },
+    };
   }
 
   resolveFdPath(fd, pathPtr, pathLen) {
@@ -1715,6 +1782,250 @@ class WasiProcess {
   }
 }
 
+// Synchronous TraceKernel HTTP bridge. Mirrors the Java worker protocol: the
+// worker thread posts kernel-http-*-sync messages carrying SharedArrayBuffers
+// and blocks on Atomics.wait while the client services them through the
+// command's RuntimeKernelHttpBridge. Manifests are newline-delimited with
+// base64 fields so the C++ side can parse them without a JSON library.
+const CPP_KERNEL_HTTP_SYNC_HEADER_BYTES = 8;
+const CPP_KERNEL_HTTP_SYNC_STATE_INDEX = 0;
+const CPP_KERNEL_HTTP_SYNC_LENGTH_INDEX = 1;
+const CPP_KERNEL_HTTP_SYNC_IDLE = 0;
+const CPP_KERNEL_HTTP_SYNC_REQUEST = 1;
+const CPP_KERNEL_HTTP_SYNC_RESPONSE = 2;
+const CPP_KERNEL_HTTP_SYNC_CLOSED = 3;
+const CPP_KERNEL_HTTP_SYNC_BUFFER_BYTES = 4 * 1024 * 1024;
+const CPP_KERNEL_HTTP_SYNC_CONTROL_BYTES = 16 * 1024;
+const CPP_KERNEL_HTTP_SYNC_WAIT_MS = 30_000;
+
+function cppKernelHttpBase64FromString(value) {
+  return encodeBase64(encodeUtf8(String(value ?? '')));
+}
+
+function cppKernelHttpStringFromBase64(value) {
+  return decodeUtf8(decodeBase64(String(value ?? '')));
+}
+
+function cppKernelHttpErrorManifest(message) {
+  return `ERROR\n${cppKernelHttpBase64FromString(message || 'TraceKernel HTTP request failed')}`;
+}
+
+function cppKernelHttpSyncSupported() {
+  return typeof SharedArrayBuffer !== 'undefined' && typeof Atomics !== 'undefined' && typeof Atomics.wait === 'function';
+}
+
+function parseCppKernelHttpRequestManifest(manifestBytes) {
+  const lines = decodeUtf8(manifestBytes).split('\n');
+  if (lines[0] !== 'REQUEST' || lines.length < 6) return null;
+  const method = cppKernelHttpStringFromBase64(lines[1]) || 'GET';
+  const url = cppKernelHttpStringFromBase64(lines[2]);
+  if (!url) return null;
+  let path = cppKernelHttpStringFromBase64(lines[3]);
+  if (!path) {
+    try {
+      const parsed = new URL(url, 'http://localhost');
+      path = `${parsed.pathname}${parsed.search}`;
+    } catch {
+      path = '/';
+    }
+  }
+  const headerCount = Number.parseInt(lines[4] ?? '', 10);
+  if (!Number.isFinite(headerCount) || headerCount < 0 || lines.length < 5 + headerCount) return null;
+  const rawHeaders = [];
+  const headers = {};
+  for (let index = 0; index < headerCount; index += 1) {
+    const [encodedName, encodedValue] = (lines[5 + index] ?? '').split('\t');
+    if (!encodedName || encodedValue === undefined) continue;
+    const name = cppKernelHttpStringFromBase64(encodedName);
+    const value = cppKernelHttpStringFromBase64(encodedValue);
+    rawHeaders.push([name, value]);
+    headers[name] = value;
+  }
+  const bodyBase64 = lines[5 + headerCount] ?? '';
+  return {
+    method,
+    url,
+    path,
+    headers,
+    rawHeaders,
+    ...(bodyBase64 ? { body: bodyBase64, bodyEncoding: 'base64' } : {}),
+  };
+}
+
+function parseCppKernelHttpListenManifest(manifestBytes) {
+  const lines = decodeUtf8(manifestBytes).split('\n');
+  if (lines[0] !== 'LISTEN' || lines.length < 3) return null;
+  const host = cppKernelHttpStringFromBase64(lines[1]) || '127.0.0.1';
+  const port = Number.parseInt(lines[2] ?? '', 10);
+  if (!Number.isFinite(port) || port < 0) return null;
+  return { host, port };
+}
+
+class CppKernelHttpSyncBridge {
+  constructor(messageId) {
+    this.messageId = messageId;
+    this.servers = new Map();
+    this.nextServerId = 1;
+  }
+
+  post(type, payload) {
+    postMessage({
+      id: this.messageId,
+      type,
+      payload,
+      ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
+    });
+  }
+
+  errorManifestBytes(message) {
+    return encodeUtf8(cppKernelHttpErrorManifest(message));
+  }
+
+  waitForSyncManifest(buffer, timeoutMs) {
+    const header = new Int32Array(buffer, 0, 2);
+    const waitResult = Atomics.wait(header, CPP_KERNEL_HTTP_SYNC_STATE_INDEX, CPP_KERNEL_HTTP_SYNC_IDLE, timeoutMs);
+    if (waitResult === 'timed-out') return null;
+    const length = Atomics.load(header, CPP_KERNEL_HTTP_SYNC_LENGTH_INDEX);
+    const capacity = buffer.byteLength - CPP_KERNEL_HTTP_SYNC_HEADER_BYTES;
+    if (!Number.isFinite(length) || length < 0 || length > capacity) return null;
+    return cloneBytes(new Uint8Array(buffer, CPP_KERNEL_HTTP_SYNC_HEADER_BYTES, length));
+  }
+
+  dispatch(requestManifestBytes, timeoutMs) {
+    if (!cppKernelHttpSyncSupported()) {
+      return this.errorManifestBytes('SharedArrayBuffer support is required for C++ TraceKernel HTTP');
+    }
+    const request = parseCppKernelHttpRequestManifest(requestManifestBytes);
+    if (!request) {
+      return this.errorManifestBytes('Invalid C++ TraceKernel HTTP request');
+    }
+    const buffer = new SharedArrayBuffer(CPP_KERNEL_HTTP_SYNC_HEADER_BYTES + CPP_KERNEL_HTTP_SYNC_BUFFER_BYTES);
+    this.post('kernel-http-dispatch-sync', {
+      request,
+      buffer,
+      ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs: Math.ceil(timeoutMs) } : {}),
+    });
+    const manifest = this.waitForSyncManifest(buffer, CPP_KERNEL_HTTP_SYNC_WAIT_MS);
+    return manifest ?? this.errorManifestBytes('TraceKernel HTTP request timed out');
+  }
+
+  listen(optionsManifestBytes) {
+    if (!cppKernelHttpSyncSupported()) {
+      return this.errorManifestBytes('SharedArrayBuffer support is required for C++ TraceKernel HTTP listeners');
+    }
+    const options = parseCppKernelHttpListenManifest(optionsManifestBytes);
+    if (!options) {
+      return this.errorManifestBytes('Invalid C++ TraceKernel HTTP listener registration');
+    }
+    const serverId = this.nextServerId++;
+    const clientServerId = `cpp-http-${serverId}`;
+    const requestBuffer = new SharedArrayBuffer(CPP_KERNEL_HTTP_SYNC_HEADER_BYTES + CPP_KERNEL_HTTP_SYNC_BUFFER_BYTES);
+    const controlBuffer = new SharedArrayBuffer(CPP_KERNEL_HTTP_SYNC_HEADER_BYTES + CPP_KERNEL_HTTP_SYNC_CONTROL_BYTES);
+    this.servers.set(serverId, { clientServerId, requestBuffer, closed: false });
+    this.post('kernel-http-listen-sync', {
+      serverId: clientServerId,
+      options,
+      requestBuffer,
+      controlBuffer,
+    });
+    const controlManifest = this.waitForSyncManifest(controlBuffer, CPP_KERNEL_HTTP_SYNC_WAIT_MS);
+    if (!controlManifest) {
+      this.servers.delete(serverId);
+      return this.errorManifestBytes('TraceKernel HTTP listener registration timed out');
+    }
+    const lines = decodeUtf8(controlManifest).split('\n');
+    if (lines[0] !== 'OK' || !lines[1]) {
+      this.servers.delete(serverId);
+      return controlManifest;
+    }
+    let info;
+    try {
+      info = JSON.parse(cppKernelHttpStringFromBase64(lines[1]));
+    } catch {
+      this.servers.delete(serverId);
+      return this.errorManifestBytes('TraceKernel HTTP listener registration returned invalid metadata');
+    }
+    const port = Number(info?.port);
+    const host = String(info?.host || options.host);
+    return encodeUtf8([
+      'OK',
+      String(serverId),
+      String(Number.isFinite(port) ? port : options.port),
+      cppKernelHttpBase64FromString(host),
+    ].join('\n'));
+  }
+
+  nextRequest(serverId, timeoutMs) {
+    const server = this.servers.get(serverId);
+    if (!server || server.closed) {
+      return this.errorManifestBytes('TraceKernel HTTP listener is closed');
+    }
+    const header = new Int32Array(server.requestBuffer, 0, 2);
+    const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : null;
+    while (true) {
+      const state = Atomics.load(header, CPP_KERNEL_HTTP_SYNC_STATE_INDEX);
+      if (state === CPP_KERNEL_HTTP_SYNC_REQUEST) {
+        const length = Atomics.load(header, CPP_KERNEL_HTTP_SYNC_LENGTH_INDEX);
+        const capacity = server.requestBuffer.byteLength - CPP_KERNEL_HTTP_SYNC_HEADER_BYTES;
+        const safeLength = Math.max(0, Math.min(length, capacity));
+        return cloneBytes(new Uint8Array(server.requestBuffer, CPP_KERNEL_HTTP_SYNC_HEADER_BYTES, safeLength));
+      }
+      if (state === CPP_KERNEL_HTTP_SYNC_CLOSED) {
+        return this.errorManifestBytes('TraceKernel HTTP listener is closed');
+      }
+      const remainingMs = deadline === null ? CPP_KERNEL_HTTP_SYNC_WAIT_MS : deadline - Date.now();
+      if (remainingMs <= 0) {
+        return this.errorManifestBytes('TraceKernel HTTP listener timed out waiting for a request');
+      }
+      Atomics.wait(
+        header,
+        CPP_KERNEL_HTTP_SYNC_STATE_INDEX,
+        CPP_KERNEL_HTTP_SYNC_IDLE,
+        Math.min(remainingMs, CPP_KERNEL_HTTP_SYNC_WAIT_MS)
+      );
+    }
+  }
+
+  respond(serverId, responseManifestBytes) {
+    const server = this.servers.get(serverId);
+    if (!server || server.closed) return -1;
+    const header = new Int32Array(server.requestBuffer, 0, 2);
+    if (Atomics.load(header, CPP_KERNEL_HTTP_SYNC_STATE_INDEX) !== CPP_KERNEL_HTTP_SYNC_REQUEST) return -1;
+    const bytes = new Uint8Array(server.requestBuffer, CPP_KERNEL_HTTP_SYNC_HEADER_BYTES);
+    const written = responseManifestBytes.byteLength > bytes.byteLength
+      ? encodeUtf8(cppKernelHttpErrorManifest('TraceKernel HTTP response exceeded C++ bridge buffer capacity'))
+      : responseManifestBytes;
+    bytes.set(written.subarray(0, bytes.byteLength));
+    Atomics.store(header, CPP_KERNEL_HTTP_SYNC_LENGTH_INDEX, Math.min(written.byteLength, bytes.byteLength));
+    Atomics.store(header, CPP_KERNEL_HTTP_SYNC_STATE_INDEX, CPP_KERNEL_HTTP_SYNC_RESPONSE);
+    Atomics.notify(header, CPP_KERNEL_HTTP_SYNC_STATE_INDEX);
+    return 0;
+  }
+
+  close(serverId) {
+    const server = this.servers.get(serverId);
+    if (!server) return;
+    this.servers.delete(serverId);
+    server.closed = true;
+    // Do not overwrite an unread RESPONSE: the client's in-flight dispatch
+    // still has to consume it. The client finishes the close once drained.
+    const header = new Int32Array(server.requestBuffer, 0, 2);
+    Atomics.compareExchange(header, CPP_KERNEL_HTTP_SYNC_STATE_INDEX, CPP_KERNEL_HTTP_SYNC_IDLE, CPP_KERNEL_HTTP_SYNC_CLOSED);
+    Atomics.compareExchange(header, CPP_KERNEL_HTTP_SYNC_STATE_INDEX, CPP_KERNEL_HTTP_SYNC_REQUEST, CPP_KERNEL_HTTP_SYNC_CLOSED);
+    Atomics.notify(header, CPP_KERNEL_HTTP_SYNC_STATE_INDEX);
+    this.post('kernel-http-close', {
+      serverId: server.clientServerId,
+      requestBuffer: server.requestBuffer,
+    });
+  }
+
+  closeAll() {
+    for (const serverId of Array.from(this.servers.keys())) {
+      this.close(serverId);
+    }
+  }
+}
+
 async function instantiateWasi(module, process) {
   const imports = {};
   const wasiNames = [
@@ -1757,11 +2068,15 @@ async function instantiateWasi(module, process) {
   ];
   const wasi = Object.fromEntries(wasiNames.map((name) => [name, process.bind(name)]));
 
+  const tracecodeKernelImports = process.tracecodeKernelImports();
   for (const item of WebAssembly.Module.imports(module)) {
     if (item.kind !== 'function') continue;
     if (item.module === 'wasi_snapshot_preview1' || item.module === 'wasi_unstable') {
       imports[item.module] ??= {};
       imports[item.module][item.name] = wasi[item.name] || (() => ENOTSUP);
+    } else if (item.module === 'tracecode_kernel') {
+      imports[item.module] ??= {};
+      imports[item.module][item.name] = tracecodeKernelImports[item.name] || (() => -1);
     } else if (item.module === 'env') {
       imports.env ??= {};
       imports.env[item.name] =
@@ -1795,6 +2110,7 @@ async function runWasi(module, args, fs, options = {}) {
     stdinText: options.stdinText,
     env: options.env || { USER: 'tracecode' },
     kernelDevices: options.kernelDevices,
+    kernelHttp: options.kernelHttp,
     filestatSizeOffset: options.filestatSizeOffset,
     outputBudget: options.outputBudget,
     onOutput: options.onOutput,
@@ -8096,10 +8412,507 @@ function compileDriverOutsideMainWorker(driverSource) {
   return runCompilerWorker(driverSource);
 }
 
+// C++ API for the TraceKernel HTTP bridge. Injected into project compile
+// payloads (next to every source directory, so quoted includes resolve from
+// any includer) rather than shipped as a toolchain asset: the header is pure
+// declarations plus inline wrappers around the `tracecode_kernel` wasm import
+// module, so it needs no linker support and works with every compile backend
+// (nested compiler worker, compiler frame, external compile service).
+const CPP_KERNEL_HTTP_HEADER_FILENAME = 'tracecode_http.hpp';
+const CPP_KERNEL_HTTP_HEADER_SOURCE = String.raw`#pragma once
+
+// TraceCode in-workspace HTTP for C++ programs.
+//
+//   #include "tracecode_http.hpp"
+//
+//   auto response = tracecode::http::get("http://localhost:3300/data");
+//   if (response.ok()) std::printf("%s", response.body.c_str());
+//
+//   auto server = tracecode::http::Server::listen(8080);
+//   while (auto request = server.next()) {
+//     server.respond(200, "hello from C++\n");
+//   }
+//
+// Requests are routed through the TraceKernel HTTP bridge: loopback hosts
+// reach in-workspace listeners; other hosts use the app-mediated external
+// fetch capability when the host application enables it. HTTP is available
+// while running project commands; outside project mode every call reports an
+// error through the Response/IncomingRequest error field.
+
+#include <cctype>
+#include <cstddef>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
+extern "C" {
+__attribute__((import_module("tracecode_kernel"), import_name("http_dispatch")))
+int __tracecode_kernel_http_dispatch(const char* request_manifest, unsigned request_length, int timeout_ms);
+__attribute__((import_module("tracecode_kernel"), import_name("http_result_length")))
+int __tracecode_kernel_http_result_length(int token);
+__attribute__((import_module("tracecode_kernel"), import_name("http_result_read")))
+int __tracecode_kernel_http_result_read(int token, char* buffer, unsigned buffer_length);
+__attribute__((import_module("tracecode_kernel"), import_name("http_listen")))
+int __tracecode_kernel_http_listen(const char* options_manifest, unsigned options_length);
+__attribute__((import_module("tracecode_kernel"), import_name("http_next_request")))
+int __tracecode_kernel_http_next_request(int server_id, int timeout_ms);
+__attribute__((import_module("tracecode_kernel"), import_name("http_respond")))
+int __tracecode_kernel_http_respond(int server_id, const char* response_manifest, unsigned response_length);
+__attribute__((import_module("tracecode_kernel"), import_name("http_close")))
+int __tracecode_kernel_http_close(int server_id);
+}
+
+namespace tracecode {
+namespace http {
+
+struct Header {
+  std::string name;
+  std::string value;
+};
+
+namespace detail {
+
+inline const char* base64_alphabet() {
+  return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+}
+
+inline std::string base64_encode(const std::string& input) {
+  const char* alphabet = base64_alphabet();
+  std::string output;
+  output.reserve(((input.size() + 2) / 3) * 4);
+  unsigned buffer = 0;
+  int bits = 0;
+  for (unsigned char byte : input) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 6) {
+      bits -= 6;
+      output.push_back(alphabet[(buffer >> bits) & 0x3f]);
+    }
+  }
+  if (bits > 0) {
+    output.push_back(alphabet[(buffer << (6 - bits)) & 0x3f]);
+  }
+  while (output.size() % 4 != 0) {
+    output.push_back('=');
+  }
+  return output;
+}
+
+inline int base64_value(char symbol) {
+  if (symbol >= 'A' && symbol <= 'Z') return symbol - 'A';
+  if (symbol >= 'a' && symbol <= 'z') return symbol - 'a' + 26;
+  if (symbol >= '0' && symbol <= '9') return symbol - '0' + 52;
+  if (symbol == '+') return 62;
+  if (symbol == '/') return 63;
+  return -1;
+}
+
+inline bool base64_decode(const std::string& input, std::string& output) {
+  output.clear();
+  output.reserve((input.size() / 4) * 3);
+  unsigned buffer = 0;
+  int bits = 0;
+  for (char symbol : input) {
+    if (symbol == '=') break;
+    int value = base64_value(symbol);
+    if (value < 0) return false;
+    buffer = (buffer << 6) | static_cast<unsigned>(value);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output.push_back(static_cast<char>((buffer >> bits) & 0xff));
+    }
+  }
+  return true;
+}
+
+inline void split_lines(const std::string& text, std::vector<std::string>& lines) {
+  lines.clear();
+  std::size_t start = 0;
+  while (start <= text.size()) {
+    std::size_t end = text.find('\n', start);
+    if (end == std::string::npos) {
+      lines.push_back(text.substr(start));
+      break;
+    }
+    lines.push_back(text.substr(start, end - start));
+    start = end + 1;
+  }
+}
+
+inline long parse_long(const std::string& text, long fallback) {
+  if (text.empty()) return fallback;
+  char* end = nullptr;
+  long value = std::strtol(text.c_str(), &end, 10);
+  if (end == nullptr || *end != '\0') return fallback;
+  return value;
+}
+
+inline bool read_result(int token, std::string& output) {
+  output.clear();
+  if (token <= 0) return false;
+  int length = __tracecode_kernel_http_result_length(token);
+  if (length < 0) return false;
+  output.resize(static_cast<std::size_t>(length));
+  int written = __tracecode_kernel_http_result_read(token, length > 0 ? &output[0] : nullptr, static_cast<unsigned>(length));
+  if (written < 0) return false;
+  output.resize(static_cast<std::size_t>(written));
+  return true;
+}
+
+inline bool equals_ignore_case(const std::string& left, const std::string& right) {
+  if (left.size() != right.size()) return false;
+  for (std::size_t index = 0; index < left.size(); index += 1) {
+    if (std::tolower(static_cast<unsigned char>(left[index])) != std::tolower(static_cast<unsigned char>(right[index]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline std::string header_lines(const std::vector<Header>& headers) {
+  std::string lines;
+  for (const Header& header : headers) {
+    lines.push_back('\n');
+    lines += base64_encode(header.name);
+    lines.push_back('\t');
+    lines += base64_encode(header.value);
+  }
+  return lines;
+}
+
+inline bool parse_header_line(const std::string& line, Header& header) {
+  std::size_t tab = line.find('\t');
+  if (tab == std::string::npos) return false;
+  return base64_decode(line.substr(0, tab), header.name) && base64_decode(line.substr(tab + 1), header.value);
+}
+
+}  // namespace detail
+
+struct Request {
+  std::string method{"GET"};
+  std::string url;
+  std::string path;
+  std::vector<Header> headers;
+  std::string body;
+  long timeout_ms{0};
+};
+
+struct Response {
+  int status{0};
+  std::vector<Header> headers;
+  std::string body;
+  std::string error;
+
+  bool ok() const { return error.empty() && status >= 200 && status < 300; }
+
+  std::string header(const std::string& name) const {
+    for (const Header& entry : headers) {
+      if (detail::equals_ignore_case(entry.name, name)) return entry.value;
+    }
+    return std::string();
+  }
+};
+
+namespace detail {
+
+inline Response error_response(const std::string& message) {
+  Response response;
+  response.error = message;
+  return response;
+}
+
+inline std::string request_manifest(const Request& request) {
+  std::string manifest = "REQUEST\n";
+  manifest += base64_encode(request.method.empty() ? std::string("GET") : request.method);
+  manifest.push_back('\n');
+  manifest += base64_encode(request.url);
+  manifest.push_back('\n');
+  manifest += base64_encode(request.path);
+  manifest.push_back('\n');
+  manifest += std::to_string(request.headers.size());
+  manifest += header_lines(request.headers);
+  manifest.push_back('\n');
+  manifest += base64_encode(request.body);
+  return manifest;
+}
+
+inline std::string response_manifest(const Response& response) {
+  std::string manifest = "OK\n";
+  manifest += std::to_string(response.status);
+  manifest.push_back('\n');
+  manifest += std::to_string(response.headers.size());
+  manifest += header_lines(response.headers);
+  manifest.push_back('\n');
+  manifest += base64_encode(response.body);
+  return manifest;
+}
+
+inline Response response_from_manifest(const std::string& manifest) {
+  std::vector<std::string> lines;
+  split_lines(manifest, lines);
+  if (!lines.empty() && lines[0] == "ERROR") {
+    std::string message;
+    if (lines.size() < 2 || !base64_decode(lines[1], message) || message.empty()) {
+      message = "TraceKernel HTTP request failed";
+    }
+    return error_response(message);
+  }
+  if (lines.size() < 4 || lines[0] != "OK") {
+    return error_response("Invalid TraceKernel HTTP response");
+  }
+  Response response;
+  response.status = static_cast<int>(parse_long(lines[1], 0));
+  long header_count = parse_long(lines[2], -1);
+  if (header_count < 0 || lines.size() < static_cast<std::size_t>(4 + header_count)) {
+    return error_response("Invalid TraceKernel HTTP response");
+  }
+  for (long index = 0; index < header_count; index += 1) {
+    Header header;
+    if (parse_header_line(lines[static_cast<std::size_t>(3 + index)], header)) {
+      response.headers.push_back(header);
+    }
+  }
+  if (!base64_decode(lines[static_cast<std::size_t>(3 + header_count)], response.body)) {
+    return error_response("Invalid TraceKernel HTTP response body");
+  }
+  return response;
+}
+
+}  // namespace detail
+
+inline Response fetch(const Request& request) {
+  std::string manifest = detail::request_manifest(request);
+  int token = __tracecode_kernel_http_dispatch(
+    manifest.c_str(),
+    static_cast<unsigned>(manifest.size()),
+    static_cast<int>(request.timeout_ms)
+  );
+  std::string result;
+  if (!detail::read_result(token, result)) {
+    return detail::error_response("TraceKernel HTTP bridge is unavailable");
+  }
+  return detail::response_from_manifest(result);
+}
+
+inline Response get(const std::string& url) {
+  Request request;
+  request.url = url;
+  return fetch(request);
+}
+
+inline Response post(const std::string& url, const std::string& body, const std::string& content_type = "application/json") {
+  Request request;
+  request.method = "POST";
+  request.url = url;
+  request.body = body;
+  request.headers.push_back(Header{"content-type", content_type});
+  return fetch(request);
+}
+
+struct IncomingRequest {
+  std::string method;
+  std::string url;
+  std::string path;
+  std::vector<Header> headers;
+  std::string body;
+  bool valid{false};
+  std::string error;
+
+  explicit operator bool() const { return valid; }
+
+  std::string header(const std::string& name) const {
+    for (const Header& entry : headers) {
+      if (detail::equals_ignore_case(entry.name, name)) return entry.value;
+    }
+    return std::string();
+  }
+};
+
+class Server {
+ public:
+  Server() = default;
+  Server(const Server&) = delete;
+  Server& operator=(const Server&) = delete;
+
+  Server(Server&& other) noexcept { move_from(other); }
+
+  Server& operator=(Server&& other) noexcept {
+    if (this != &other) {
+      close();
+      move_from(other);
+    }
+    return *this;
+  }
+
+  ~Server() { close(); }
+
+  // Registers an in-workspace listener. Port 0 requests an ephemeral port;
+  // the bound port is available through port() afterwards.
+  static Server listen(int port, const std::string& host = "127.0.0.1") {
+    Server server;
+    std::string manifest = "LISTEN\n";
+    manifest += detail::base64_encode(host);
+    manifest.push_back('\n');
+    manifest += std::to_string(port);
+    int token = __tracecode_kernel_http_listen(manifest.c_str(), static_cast<unsigned>(manifest.size()));
+    std::string result;
+    if (!detail::read_result(token, result)) {
+      server.error_ = "TraceKernel HTTP bridge is unavailable";
+      return server;
+    }
+    std::vector<std::string> lines;
+    detail::split_lines(result, lines);
+    if (lines.size() >= 2 && lines[0] == "ERROR") {
+      std::string message;
+      if (!detail::base64_decode(lines[1], message) || message.empty()) {
+        message = "TraceKernel HTTP listener registration failed";
+      }
+      server.error_ = message;
+      return server;
+    }
+    if (lines.size() < 4 || lines[0] != "OK") {
+      server.error_ = "TraceKernel HTTP listener registration failed";
+      return server;
+    }
+    server.server_id_ = static_cast<int>(detail::parse_long(lines[1], 0));
+    server.port_ = static_cast<int>(detail::parse_long(lines[2], port));
+    detail::base64_decode(lines[3], server.host_);
+    if (server.server_id_ <= 0) {
+      server.error_ = "TraceKernel HTTP listener registration failed";
+    }
+    return server;
+  }
+
+  bool valid() const { return server_id_ > 0; }
+  explicit operator bool() const { return valid(); }
+  int port() const { return port_; }
+  const std::string& host() const { return host_; }
+  const std::string& error() const { return error_; }
+
+  // Blocks until the next request arrives. timeout_ms of 0 waits without a
+  // deadline. Returns an invalid IncomingRequest once the listener closes or
+  // the wait times out; the reason is in the error field.
+  IncomingRequest next(long timeout_ms = 0) {
+    IncomingRequest request;
+    if (!valid()) {
+      request.error = error_.empty() ? "TraceKernel HTTP listener is closed" : error_;
+      return request;
+    }
+    int token = __tracecode_kernel_http_next_request(server_id_, static_cast<int>(timeout_ms));
+    std::string result;
+    if (!detail::read_result(token, result)) {
+      request.error = "TraceKernel HTTP bridge is unavailable";
+      return request;
+    }
+    std::vector<std::string> lines;
+    detail::split_lines(result, lines);
+    if (lines.size() >= 2 && lines[0] == "ERROR") {
+      std::string message;
+      if (!detail::base64_decode(lines[1], message) || message.empty()) {
+        message = "TraceKernel HTTP listener failed";
+      }
+      request.error = message;
+      return request;
+    }
+    if (lines.size() < 6 || lines[0] != "REQUEST") {
+      request.error = "Invalid TraceKernel HTTP request";
+      return request;
+    }
+    detail::base64_decode(lines[1], request.method);
+    detail::base64_decode(lines[2], request.url);
+    detail::base64_decode(lines[3], request.path);
+    long header_count = detail::parse_long(lines[4], -1);
+    if (header_count < 0 || lines.size() < static_cast<std::size_t>(6 + header_count)) {
+      request.error = "Invalid TraceKernel HTTP request";
+      return request;
+    }
+    for (long index = 0; index < header_count; index += 1) {
+      Header header;
+      if (detail::parse_header_line(lines[static_cast<std::size_t>(5 + index)], header)) {
+        request.headers.push_back(header);
+      }
+    }
+    if (!detail::base64_decode(lines[static_cast<std::size_t>(5 + header_count)], request.body)) {
+      request.error = "Invalid TraceKernel HTTP request body";
+      return request;
+    }
+    request.valid = true;
+    return request;
+  }
+
+  // Answers the request most recently returned by next().
+  bool respond(const Response& response) {
+    if (!valid()) return false;
+    std::string manifest = detail::response_manifest(response);
+    return __tracecode_kernel_http_respond(server_id_, manifest.c_str(), static_cast<unsigned>(manifest.size())) == 0;
+  }
+
+  bool respond(int status, const std::string& body, const std::string& content_type = "text/plain") {
+    Response response;
+    response.status = status;
+    response.body = body;
+    response.headers.push_back(Header{"content-type", content_type});
+    return respond(response);
+  }
+
+  void close() {
+    if (server_id_ > 0) {
+      __tracecode_kernel_http_close(server_id_);
+      server_id_ = 0;
+    }
+  }
+
+ private:
+  void move_from(Server& other) {
+    server_id_ = other.server_id_;
+    port_ = other.port_;
+    host_ = other.host_;
+    error_ = other.error_;
+    other.server_id_ = 0;
+  }
+
+  int server_id_{0};
+  int port_{0};
+  std::string host_;
+  std::string error_;
+};
+
+}  // namespace http
+}  // namespace tracecode
+`;
+
+function projectWithCppKernelHttpHeader(project) {
+  const files = Array.isArray(project?.files) ? project.files : [];
+  const hasUserHeader = files.some((file) => {
+    const path = String(file?.path || '').replace(/\\/g, '/');
+    return path === CPP_KERNEL_HTTP_HEADER_FILENAME || path.endsWith(`/${CPP_KERNEL_HTTP_HEADER_FILENAME}`);
+  });
+  if (hasUserHeader) return project;
+  const headerDirectories = new Set(['']);
+  for (const file of files) {
+    const path = String(file?.path || '').replace(/\\/g, '/');
+    if (!/\.(?:c|cc|cpp|cxx)$/i.test(path)) continue;
+    const slash = path.lastIndexOf('/');
+    if (slash > 0) headerDirectories.add(path.slice(0, slash + 1));
+  }
+  return {
+    ...(project && typeof project === 'object' ? project : {}),
+    files: [
+      ...files,
+      ...[...headerDirectories].map((directory) => ({
+        path: `${directory}${CPP_KERNEL_HTTP_HEADER_FILENAME}`,
+        contents: CPP_KERNEL_HTTP_HEADER_SOURCE,
+      })),
+    ],
+  };
+}
+
 function compileProjectOutsideMainWorker(request) {
   const payload = {
     assets: configuredAssets,
-    project: request.project,
+    project: projectWithCppKernelHttpHeader(request.project),
     cwd: requestCwdRelative(request),
     args: projectCompileArgs(request),
     compilerCommand: projectCompilerCommand(request),
@@ -8559,7 +9372,10 @@ function sanitizeCppProjectDiagnostics(value, request) {
     .split('\n')
     .filter((line) => {
       const lowered = line.toLowerCase();
-      return !(
+      // tracecode::http (tracecode_http.hpp) is a public API for project code;
+      // diagnostics that mention it must stay visible to the user.
+      const mentionsPublicHttpApi = lowered.includes('tracecode::http') || lowered.includes('tracecode_http.hpp');
+      return mentionsPublicHttpApi || !(
         lowered.includes('tracecode_runtime.hpp') ||
         lowered.includes('tracecode_statvfs.c') ||
         lowered.includes('/tracecode_runtime.hpp') ||
@@ -8689,14 +9505,21 @@ async function handleProjectCpp(request, messageId) {
   }
   const startedAt = now();
   const module = await WebAssembly.compile(fs.readFile(executablePath));
-  const program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], fs, {
-    cwd: `/${requestCwdRelative(request)}`,
-    stdinPipe: request?.stdinPipe,
-    env: request?.env || { USER: 'tracecode' },
-    kernelDevices: projectKernelDevices(request?.project),
-    outputBudget: createProjectOutputByteBudget(),
-    onOutput: (stream, data, device, outputDevice) => events.output(stream, data, device, outputDevice),
-  });
+  const kernelHttp = new CppKernelHttpSyncBridge(messageId);
+  let program;
+  try {
+    program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], fs, {
+      cwd: `/${requestCwdRelative(request)}`,
+      stdinPipe: request?.stdinPipe,
+      env: request?.env || { USER: 'tracecode' },
+      kernelDevices: projectKernelDevices(request?.project),
+      kernelHttp,
+      outputBudget: createProjectOutputByteBudget(),
+      onOutput: (stream, data, device, outputDevice) => events.output(stream, data, device, outputDevice),
+    });
+  } finally {
+    kernelHttp.closeAll();
+  }
   const result = {
     stdout: program.stdout,
     stderr: sanitizeCppProjectDiagnostics(program.stderr, request),

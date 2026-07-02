@@ -150,7 +150,11 @@ class MockWorker {
           };
           return;
         }
-        if (type === 'execute-project-java' && (payload as { scriptPath?: string } | undefined)?.scriptPath === 'HttpClient.java') {
+        const projectScriptPath = (payload as { scriptPath?: string } | undefined)?.scriptPath;
+        const isSyncHttpClientScript =
+          (type === 'execute-project-java' && projectScriptPath === 'HttpClient.java') ||
+          (type === 'execute-project-cpp' && projectScriptPath === './http-client');
+        if (isSyncHttpClientScript) {
           const buffer = new SharedArrayBuffer(4096);
           this.onmessage?.({
             data: {
@@ -187,7 +191,10 @@ class MockWorker {
           });
           return;
         }
-        if (type === 'execute-project-java' && (payload as { scriptPath?: string } | undefined)?.scriptPath === 'HttpServer.java') {
+        const isSyncHttpServerScript =
+          (type === 'execute-project-java' && projectScriptPath === 'HttpServer.java') ||
+          (type === 'execute-project-cpp' && projectScriptPath === './http-server');
+        if (isSyncHttpServerScript) {
           const requestBuffer = new SharedArrayBuffer(4096);
           const controlBuffer = new SharedArrayBuffer(4096);
           const requestHeader = new Int32Array(requestBuffer, 0, 2);
@@ -271,7 +278,10 @@ class MockWorker {
           void serveRequests();
           return;
         }
-        if (type === 'execute-project-java' && (payload as { scriptPath?: string } | undefined)?.scriptPath === 'HttpServerTimeout.java') {
+        const isSyncHttpServerTimeoutScript =
+          (type === 'execute-project-java' && projectScriptPath === 'HttpServerTimeout.java') ||
+          (type === 'execute-project-cpp' && projectScriptPath === './http-server-timeout');
+        if (isSyncHttpServerTimeoutScript) {
           const requestBuffer = new SharedArrayBuffer(4096);
           const controlBuffer = new SharedArrayBuffer(4096);
           javaHttpTimeoutRequestBuffer = requestBuffer;
@@ -801,6 +811,184 @@ async function main(): Promise<void> {
       'C++ warmLanguage should send the C++ warmup worker request'
     );
     console.log('PASS: browser harness warms C++ runtime on demand');
+
+    const cppWorkerAssets = {
+      clangWasmUrl: '/instance-a/vendor/cpp/clang.wasm',
+      lldWasmUrl: '/instance-a/vendor/cpp/lld.wasm',
+      sysrootUrl: '/instance-a/vendor/cpp/sysroot.tar',
+      runtimeHeaderUrl: '/instance-a/vendor/cpp/tracecode_runtime.hpp',
+      compilerBundleUrl: '/instance-a/vendor/cpp/yowasp/bundle.js',
+    };
+    let cppHttpDispatchPath = '';
+    const cppHttpClient = new CppWorkerClient({ workerUrl: '/instance-a/cpp-worker.js', ...cppWorkerAssets });
+    const cppHttpResult = await cppHttpClient.executeProjectCpp({
+      code: '',
+      source: 'run',
+      scriptPath: './http-client',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        files: [{ path: 'http-client', contents: '' }],
+      },
+      kernelHttp: {
+        listen() {
+          throw new Error('C++ client-side HTTP test should not open listeners');
+        },
+        async dispatch(request) {
+          cppHttpDispatchPath = request.path;
+          return {
+            status: 201,
+            headers: { 'content-type': 'text/plain' },
+            body: 'queued',
+          };
+        },
+      },
+    });
+    cppHttpClient.terminate();
+    assertCondition(cppHttpDispatchPath === '/queue?limit=1', 'C++ worker client should dispatch TraceKernel HTTP requests');
+    assertCondition(
+      cppHttpResult.stdout.startsWith('OK\n201\n') && cppHttpResult.stdout.endsWith('\ncXVldWVk'),
+      'C++ worker client should write TraceKernel HTTP responses into the sync bridge buffer'
+    );
+    const cppHttpWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/cpp-worker.js'));
+    assertCondition(
+      !('kernelHttp' in ((cppHttpWorker?.messages.at(-1)?.payload ?? {}) as Record<string, unknown>)),
+      'C++ worker payload should omit the non-cloneable kernel HTTP bridge'
+    );
+    console.log('PASS: C++ worker client bridges synchronous TraceKernel HTTP dispatch');
+
+    let cppListenClosed = false;
+    let cppListenPort = 0;
+    let cppServerExternalResponse: { status?: number; body?: string; bodyEncoding?: string; headers?: Record<string, string> } | undefined;
+    let cppServerQueuedResponse: { status?: number; body?: string; bodyEncoding?: string; headers?: Record<string, string> } | undefined;
+    const cppServerClient = new CppWorkerClient({ workerUrl: '/instance-a/cpp-worker.js', ...cppWorkerAssets });
+    const cppServerResult = await cppServerClient.executeProjectCpp({
+      code: '',
+      source: 'run',
+      scriptPath: './http-server',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        files: [{ path: 'http-server', contents: '' }],
+      },
+      kernelHttp: {
+        listen(options, handler) {
+          cppListenPort = options.port ?? 0;
+          void handler({
+            method: 'POST',
+            url: 'http://127.0.0.1:3210/queue?id=7',
+            path: '/queue?id=7',
+            headers: { 'content-type': 'text/plain' },
+            body: 'work',
+          }).then((response) => {
+            cppServerExternalResponse = response;
+          });
+          void handler({
+            method: 'GET',
+            url: 'http://127.0.0.1:3210/busy',
+            path: '/busy',
+          }).then((response) => {
+            cppServerQueuedResponse = response;
+          });
+          return {
+            id: 'cpp-http-test',
+            info: { id: 'cpp-http-test', host: options.host ?? '127.0.0.1', port: cppListenPort, url: `http://127.0.0.1:${cppListenPort}` },
+            close() {
+              cppListenClosed = true;
+            },
+          };
+        },
+        async dispatch() {
+          throw new Error('C++ server listener registration test should not dispatch outbound requests');
+        },
+      },
+    });
+    await Promise.resolve();
+    cppServerClient.terminate();
+    assertCondition(cppServerResult.stdout.startsWith('server-listened\nREQUEST\n'), 'C++ worker client should complete after C++ HTTP server request lifecycle');
+    assertCondition(cppListenPort === 3210, 'C++ worker client should register C++ HTTP server listeners with TraceKernel HTTP');
+    assertCondition(
+      cppServerResult.stdout.includes(testBase64('POST')) &&
+        cppServerResult.stdout.includes(testBase64('/queue?id=7')) &&
+        cppServerResult.stdout.includes(testBase64('GET')) &&
+        cppServerResult.stdout.includes(testBase64('/busy')),
+      `C++ worker client should write queued external TraceKernel HTTP requests into the C++ server buffer: ${cppServerResult.stdout}`
+    );
+    assertCondition(
+      cppServerExternalResponse?.status === 208 &&
+        cppServerExternalResponse.bodyEncoding === 'base64' &&
+        cppServerExternalResponse.body === testBase64('server-body') &&
+        cppServerExternalResponse.headers?.['x-java-server'] === 'ok',
+      'C++ worker client should read C++ server responses from the shared buffer'
+    );
+    assertCondition(
+      cppServerQueuedResponse?.status === 208 &&
+        cppServerQueuedResponse.bodyEncoding === 'base64' &&
+        cppServerQueuedResponse.body === testBase64('queued-body'),
+      'C++ worker client should queue concurrent C++ HTTP server requests behind the shared bridge buffer'
+    );
+    assertCondition(cppListenClosed, 'C++ worker client should close C++ HTTP server listeners when the worker closes them');
+    console.log('PASS: C++ worker client bridges TraceKernel HTTP server listeners');
+
+    let cppTimeoutListenClosed = false;
+    javaHttpTimeoutRequestBuffer = undefined;
+    const cppTimeoutServerStarted = new Promise<void>((resolve) => {
+      javaHttpTimeoutServerStarted = resolve;
+    });
+    const cppTimeoutClient = new CppWorkerClient({ workerUrl: '/instance-a/cpp-worker.js', ...cppWorkerAssets });
+    const cppTimeoutRun = cppTimeoutClient.executeProjectCpp({
+      code: '',
+      source: 'run',
+      scriptPath: './http-server-timeout',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: {
+        files: [{ path: 'http-server-timeout', contents: '' }],
+      },
+      kernelHttp: {
+        listen(options) {
+          return {
+            id: 'cpp-http-timeout-test',
+            info: {
+              id: 'cpp-http-timeout-test',
+              host: options.host ?? '127.0.0.1',
+              port: options.port ?? 0,
+              url: `http://127.0.0.1:${options.port ?? 0}`,
+            },
+            close() {
+              cppTimeoutListenClosed = true;
+            },
+          };
+        },
+        async dispatch() {
+          throw new Error('C++ server timeout test should not dispatch outbound requests');
+        },
+      },
+    }, 25);
+    await cppTimeoutServerStarted;
+    let cppTimeoutError = '';
+    try {
+      await cppTimeoutRun;
+    } catch (error) {
+      cppTimeoutError = error instanceof Error ? error.message : String(error);
+    } finally {
+      javaHttpTimeoutServerStarted = undefined;
+      cppTimeoutClient.terminate();
+    }
+    assertCondition(
+      cppTimeoutError.includes('C++ compile/run timed out'),
+      `C++ server timeout should reject command execution: ${cppTimeoutError}`
+    );
+    assertCondition(cppTimeoutListenClosed, 'C++ worker client should close C++ HTTP server listeners when a command times out');
+    assertCondition(Boolean(javaHttpTimeoutRequestBuffer), 'C++ server timeout test should expose the listener request buffer');
+    assertCondition(
+      Atomics.load(new Int32Array(javaHttpTimeoutRequestBuffer!, 0, 2), JAVA_HTTP_SYNC_STATE_INDEX) === JAVA_HTTP_SYNC_CLOSED,
+      'C++ worker client should wake C++ HTTP server bridge waits when a command times out'
+    );
+    console.log('PASS: C++ worker client closes TraceKernel HTTP listeners on timeout');
 
     const csharpWarmupResult = await harnessA.warmLanguage('csharp');
     const csharpWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/csharp-worker.js'));

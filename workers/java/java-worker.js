@@ -455,8 +455,11 @@ function closeJavaProjectHttpServer(serverId) {
   const server = javaHttpServers.get(String(serverId || ''));
   if (!server) return;
   javaHttpServers.delete(String(serverId || ''));
+  // Do not overwrite an unread RESPONSE: the client's in-flight dispatch
+  // still has to consume it. The client finishes the close once drained.
   const header = new Int32Array(server.requestBuffer, 0, 2);
-  Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_CLOSED);
+  Atomics.compareExchange(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_IDLE, JAVA_HTTP_SYNC_CLOSED);
+  Atomics.compareExchange(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_REQUEST, JAVA_HTTP_SYNC_CLOSED);
   Atomics.notify(header, JAVA_HTTP_SYNC_STATE_INDEX);
   postMessageResponse({
     id: activeJavaProjectIo?.messageId,
