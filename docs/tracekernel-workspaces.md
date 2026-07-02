@@ -134,9 +134,10 @@ Workspace operations can run as actors:
 
 Actors can carry filesystem and HTTP capabilities. The built-in HTTP presets are:
 
-- `workspace`: simulated `listen`, simulated `dispatch`, diagnostics reads, no
-  external fetch.
-- `system`: simulated HTTP plus external fetch.
+- `workspace`: simulated `listen`, simulated `dispatch`, diagnostics reads, and
+  external fetch that follows workspace egress config.
+- `system`: simulated HTTP plus external fetch capability regardless of the
+  config default.
 - `none`: no HTTP capabilities.
 
 TraceKernel HTTP is an in-workspace transport, not host networking. See

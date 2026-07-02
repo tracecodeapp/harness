@@ -14,8 +14,9 @@ network-facing behavior inside the simulated system.
 
 TraceKernel HTTP is a browser-side simulation. It should be treated as a
 deterministic workspace boundary, not as a host-network firewall. Browser
-project code can call only listeners registered inside the same workspace unless
-the consuming app explicitly grants an actor an external-fetch capability.
+project code calls listeners registered inside the same workspace by default.
+Consuming apps may opt into app-mediated external HTTP by supplying
+`externalHttp` when creating the workspace.
 
 HTTP operations are checked against workspace actor capabilities:
 
@@ -28,8 +29,34 @@ The exported `RUNTIME_WORKSPACE_ACTOR_PRESETS`,
 `runtimeWorkspaceActorPreset(...)`, and
 `runtimeWorkspaceHttpCapabilitiesPreset(...)` helpers provide the default
 browser policies. The default non-system HTTP policy allows simulated
-`listen`, simulated `dispatch`, and diagnostics reads, while leaving
-`externalFetch` disabled.
+`listen`, simulated `dispatch`, and diagnostics reads. For workspace actors,
+external fetch follows the workspace `externalHttp` configuration unless the
+actor explicitly sets `http.externalFetch: false`; system actors remain
+egress-capable when a delegate is configured.
+
+External egress is never a native worker fetch. The kernel dispatch path first
+serves matching in-workspace listeners; only unresolved absolute URLs can reach
+the configured delegate. The delegate configuration requires:
+
+- `fetch(request)`: the app-owned function that performs or proxies egress.
+- `hosts`: an allowlist, either hostname strings or a predicate. String entries
+  match exact hostnames case-insensitively; leading `*.` matches subdomains but
+  not the apex; `host:port` pins a port; unpinned entries allow only the
+  scheme-default port. The string `*` is rejected.
+- `allowHttp`: opt-in for `http:` URLs. The default is HTTPS only.
+- `timeoutMs`, `maxConcurrentRequests`, and `maxRequestsPerCommand`: bounded
+  defaults for delegate calls.
+
+The non-overridable blocklist is evaluated before the allowlist and before the
+delegate is invoked. It blocks loopback, private, link-local, unspecified, and
+local/internal metadata hosts such as `localhost`, `*.local`, `*.internal`, and
+`metadata.google.internal`. Policy failures are logged in
+`/proc/tracekernel/net/requests` with an `external` marker and return a
+TraceKernel HTTP error response instead of calling the delegate.
+
+The harness validates hostname strings; it cannot resolve DNS. In-browser direct
+egress relies on browser CORS/PNA as the network boundary. Server-side proxy
+delegates must perform post-resolution IP checks.
 
 For JavaScript, prefer the worker-backed browser runner for any hardening-sensitive
 surface. `createBrowserJavaScriptProjectRunner({ hardened: true, workerUrl })`

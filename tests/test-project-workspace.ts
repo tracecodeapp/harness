@@ -6556,6 +6556,53 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
   }
 }
 
+async function testExternalFetchFromJavaScriptWorker(): Promise<void> {
+  const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = FakeModuleWorker;
+  const seen: Array<{ method: string; url: string; body?: string }> = [];
+  try {
+    const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/src/project-browser-worker.ts')).href}?tracekernel-external-http=${Date.now()}`;
+    const workspace = await createRuntimeWorkspace({
+      files: [{
+        path: 'external-fetch.js',
+        contents: [
+          '(async () => {',
+          '  const response = await fetch("https://allowed.example/x", {',
+          '    method: "POST",',
+          '    headers: { "x-worker": "yes" },',
+          '    body: "worker-body",',
+          '  });',
+          '  console.log(response.status + ":" + response.headers.get("x-echo"));',
+          '  console.log(await response.text());',
+          '})().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      }],
+      externalHttp: {
+        hosts: ['allowed.example'],
+        fetch: async (request) => {
+          seen.push({ method: request.method, url: request.url, ...(request.body !== undefined ? { body: request.body } : {}) });
+          return { status: 209, headers: { 'x-echo': request.headers['x-worker'] ?? '' }, body: `${request.method}:${request.body ?? ''}\n` };
+        },
+      },
+      nodeRunner: createBrowserJavaScriptProjectRunner({ workerUrl }),
+    });
+    try {
+      const result = await workspace.runCommand('node external-fetch.js');
+      assertCondition(result.exitCode === 0, `browser JS worker fetch should succeed through kernel bridge: ${JSON.stringify(result)}`);
+      assertCondition(result.stdout === '209:yes\nPOST:worker-body\n', `browser JS worker external fetch response mismatch: ${result.stdout}`);
+      assertCondition(
+        seen.length === 1 && seen[0]?.method === 'POST' && seen[0]?.url === 'https://allowed.example/x' && seen[0]?.body === 'worker-body',
+        `browser JS worker fetch should reach host delegate: ${JSON.stringify(seen)}`
+      );
+    } finally {
+      workspace.dispose();
+    }
+  } finally {
+    (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
+  }
+}
+
 async function testTraceKernelHttpBindSemantics(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     files: [
@@ -13650,6 +13697,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptProjectRunner();
   await testTraceKernelHttpNodeServer();
   await testTraceKernelHttpNodeServerWorkerBridge();
+  await testExternalFetchFromJavaScriptWorker();
   await testTraceKernelHttpBindSemantics();
   await testTraceKernelHttpPythonRunnerBridge();
   await testTraceKernelHttpPythonRunnerClientBridge();

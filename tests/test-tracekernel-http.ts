@@ -2,11 +2,15 @@
 
 import {
   createRuntimeWorkspace,
+  isBlockedExternalHttpHost,
   runtimeHttpBodyBytes,
   runtimeHttpBodyFromBytes,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
+  type RuntimeKernelHttpRequest,
+  type RuntimeKernelHttpResponse,
 } from '../packages/harness-project/src/index';
+import { commandContextForFs } from '../packages/harness-project/src/fs-observed';
 import {
   createBrowserJavaScriptProjectRunner,
   createBrowserTypeScriptProjectRunner,
@@ -26,7 +30,357 @@ async function waitForListener(workspace: Awaited<ReturnType<typeof createRuntim
   throw new Error(`TraceKernel HTTP listener did not start on ${port}:\n${listeners}`);
 }
 
+type RuntimeWorkspaceWithPrivateDispatch = Awaited<ReturnType<typeof createRuntimeWorkspace>> & {
+  dispatchHttpRequest(
+    request: RuntimeKernelHttpRequest,
+    options?: {
+      actor?: unknown;
+      commandContext?: unknown;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    }
+  ): Promise<RuntimeKernelHttpResponse>;
+};
+
+async function testExternalFetchUnconfiguredKeepsRefusedBehavior(): Promise<void> {
+  const workspace = await createRuntimeWorkspace();
+  try {
+    const response = await workspace.http.request({ url: 'https://api.example.com/path' });
+    assertCondition(response.status === 0, `unconfigured external fetch should keep refused status: ${JSON.stringify(response)}`);
+    assertCondition(
+      response.body === 'curl: (7) Failed to connect to api.example.com port 80: Connection refused\n',
+      `unconfigured external fetch should keep refused body byte-identical: ${JSON.stringify(response)}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
+async function testExternalFetchRoutesThroughDelegate(): Promise<void> {
+  const calls: RuntimeKernelHttpRequest[] = [];
+  const workspace = await createRuntimeWorkspace({
+    externalHttp: {
+      hosts: ['allowed.example'],
+      fetch: async (request) => {
+        calls.push({
+          method: request.method,
+          url: request.url,
+          path: new URL(request.url).pathname,
+          headers: request.headers,
+          ...(request.body !== undefined ? { body: request.body } : {}),
+          ...(request.bodyEncoding ? { bodyEncoding: request.bodyEncoding } : {}),
+        });
+        if (new URL(request.url).pathname === '/binary') {
+          assertCondition(request.bodyEncoding === 'base64', `delegate should receive base64 request body: ${JSON.stringify(request)}`);
+          assertCondition(
+            Array.from(runtimeHttpBodyBytes(request)).join(',') === '0,255,1',
+            `delegate should receive binary request bytes: ${JSON.stringify(request)}`
+          );
+          return { status: 206, headers: { 'x-delegate': 'binary' }, ...runtimeHttpBodyFromBytes(new Uint8Array([0, 255, 2])) };
+        }
+        return { status: 202, headers: { 'content-type': 'text/plain' }, body: `${request.method} ${new URL(request.url).pathname}\n` };
+      },
+    },
+  });
+  try {
+    const curl = await workspace.runCommand('curl -s https://allowed.example/from-curl');
+    assertCondition(curl.exitCode === 0, `curl should route through external delegate: ${JSON.stringify(curl)}`);
+    assertCondition(curl.stdout === 'GET /from-curl\n', `curl external response mismatch: ${JSON.stringify(curl)}`);
+
+    const binary = await workspace.http.request({
+      method: 'POST',
+      url: 'https://allowed.example/binary',
+      ...runtimeHttpBodyFromBytes(new Uint8Array([0, 255, 1])),
+    });
+    assertCondition(binary.status === 206, `workspace external binary response should succeed: ${JSON.stringify(binary)}`);
+    assertCondition(binary.bodyEncoding === 'base64', `external binary response should use base64: ${JSON.stringify(binary)}`);
+    assertCondition(
+      Array.from(runtimeHttpResponseBytes(binary)).join(',') === '0,255,2',
+      `external binary response bytes mismatch: ${JSON.stringify(binary)}`
+    );
+    const requests = await workspace.readFile('/proc/tracekernel/net/requests');
+    assertCondition(
+      requests.includes('GET\thttps://allowed.example/from-curl\t202\t\texternal') &&
+        requests.includes('POST\thttps://allowed.example/binary\t206\t\texternal'),
+      `external request log entries should include marker: ${requests}`
+    );
+    assertCondition(calls.length === 2, `delegate should be called twice: ${JSON.stringify(calls)}`);
+  } finally {
+    workspace.dispose();
+  }
+}
+
+async function testExternalFetchBlocklistWinsOverAllowlist(): Promise<void> {
+  let calls = 0;
+  const workspace = await createRuntimeWorkspace({
+    externalHttp: {
+      allowHttp: true,
+      hosts: () => true,
+      fetch: async () => {
+        calls += 1;
+        return { status: 200, body: 'unexpected\n' };
+      },
+    },
+  });
+  try {
+    for (const url of [
+      'http://169.254.169.254/',
+      'https://localhost/',
+      'https://10.0.0.1/',
+      'https://foo.internal/',
+      'https://[::1]/',
+    ]) {
+      const response = await workspace.http.request({ url });
+      assertCondition(response.status === 403, `blocked URL should return 403 for ${url}: ${JSON.stringify(response)}`);
+      assertCondition(response.body?.startsWith('tracekernel: external fetch blocked:'), `blocked body mismatch for ${url}: ${JSON.stringify(response)}`);
+      assertCondition(calls === 0, `delegate should not be called for blocked URL ${url}`);
+    }
+  } finally {
+    workspace.dispose();
+  }
+}
+
+async function testExternalFetchAllowlistSemantics(): Promise<void> {
+  let calls = 0;
+  const workspace = await createRuntimeWorkspace({
+    externalHttp: {
+      hosts: ['api.example.com', '*.example.org', 'SERVICE.EXAMPLE.net:8443'],
+      fetch: async (request) => {
+        calls += 1;
+        return { status: 200, body: `${new URL(request.url).host}\n` };
+      },
+    },
+  });
+  try {
+    assertCondition((await workspace.http.request({ url: 'https://api.example.com/' })).status === 200, 'exact allowlist host should pass');
+    assertCondition((await workspace.http.request({ url: 'https://API.EXAMPLE.COM/' })).status === 200, 'allowlist matching should be case-insensitive');
+    assertCondition((await workspace.http.request({ url: 'https://child.example.org/' })).status === 200, 'wildcard subdomain should pass');
+    assertCondition((await workspace.http.request({ url: 'https://example.org/' })).status === 403, 'wildcard should not match apex');
+    assertCondition((await workspace.http.request({ url: 'https://service.example.net:8443/' })).status === 200, 'pinned port should pass');
+    assertCondition((await workspace.http.request({ url: 'https://service.example.net/' })).status === 403, 'pinned host should reject default port');
+    assertCondition((await workspace.http.request({ url: 'https://api.example.com:8443/' })).status === 403, 'unpinned host should only allow scheme-default port');
+    assertCondition((await workspace.http.request({ url: 'http://api.example.com/' })).status === 403, 'http should be denied by default');
+    assertCondition(calls === 4, `only allowed URLs should call delegate: ${calls}`);
+  } finally {
+    workspace.dispose();
+  }
+
+  const httpWorkspace = await createRuntimeWorkspace({
+    externalHttp: {
+      allowHttp: true,
+      hosts: ['clear.example.com'],
+      fetch: async () => ({ status: 204 }),
+    },
+  });
+  try {
+    assertCondition((await httpWorkspace.http.request({ url: 'http://clear.example.com/' })).status === 204, 'allowHttp should permit http');
+  } finally {
+    httpWorkspace.dispose();
+  }
+
+  let rejectedWildcard = false;
+  try {
+    await createRuntimeWorkspace({
+      externalHttp: {
+        hosts: ['*'],
+        fetch: async () => ({ status: 200 }),
+      },
+    });
+  } catch (error) {
+    rejectedWildcard = error instanceof TypeError;
+  }
+  assertCondition(rejectedWildcard, 'string host entry "*" should be rejected at workspace creation');
+}
+
+async function testExternalFetchBudgets(): Promise<void> {
+  let workspace!: Awaited<ReturnType<typeof createRuntimeWorkspace>>;
+  workspace = await createRuntimeWorkspace({
+    externalHttp: {
+      hosts: ['allowed.example'],
+      fetch: async () => ({ status: 200, body: 'ok\n' }),
+    },
+    customCommands: [{
+      name: 'budget-probe',
+      execute: async (_args: string[], ctx: { fs: object }) => {
+        const commandContext = commandContextForFs(ctx.fs);
+        const statuses: number[] = [];
+        for (let index = 0; index < 65; index += 1) {
+          const response = await (workspace as RuntimeWorkspaceWithPrivateDispatch).dispatchHttpRequest({
+            method: 'GET',
+            url: `https://allowed.example/${index}`,
+            path: `/${index}`,
+            headers: {},
+          }, {
+            actor: commandContext?.actor,
+            commandContext,
+          });
+          statuses.push(response.status);
+        }
+        return { stdout: `${statuses.slice(0, 64).every((status) => status === 200)}:${statuses[64]}\n`, stderr: '', exitCode: 0 };
+      },
+    }],
+  });
+  try {
+    const budget = await workspace.runCommand('budget-probe');
+    assertCondition(budget.exitCode === 0, `budget command should finish: ${JSON.stringify(budget)}`);
+    assertCondition(budget.stdout === 'true:429\n', `65th external request in one command should be budgeted: ${budget.stdout}`);
+  } finally {
+    workspace.dispose();
+  }
+
+  let releaseFirst!: () => void;
+  let firstStarted!: () => void;
+  const firstStartedPromise = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  const releaseFirstPromise = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const concurrencyWorkspace = await createRuntimeWorkspace({
+    externalHttp: {
+      hosts: ['allowed.example'],
+      maxConcurrentRequests: 1,
+      fetch: async () => {
+        firstStarted();
+        await releaseFirstPromise;
+        return { status: 200, body: 'released\n' };
+      },
+    },
+  });
+  try {
+    const first = concurrencyWorkspace.http.request({ url: 'https://allowed.example/hang' });
+    await firstStartedPromise;
+    const second = await concurrencyWorkspace.http.request({ url: 'https://allowed.example/second' });
+    assertCondition(second.status === 429, `concurrency cap should return 429: ${JSON.stringify(second)}`);
+    releaseFirst();
+    assertCondition((await first).status === 200, 'first hanging request should complete after release');
+  } finally {
+    concurrencyWorkspace.dispose();
+  }
+
+  let aborted = false;
+  const timeoutWorkspace = await createRuntimeWorkspace({
+    externalHttp: {
+      hosts: ['allowed.example'],
+      timeoutMs: 5,
+      fetch: async (request) => {
+        request.signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+        return new Promise(() => {});
+      },
+    },
+  });
+  try {
+    const response = await timeoutWorkspace.http.request({ url: 'https://allowed.example/timeout' });
+    assertCondition(response.status === 0, `external timeout should use timeout response: ${JSON.stringify(response)}`);
+    assertCondition(response.body === 'TraceKernel HTTP request timed out after 5 milliseconds\n', `external timeout body mismatch: ${JSON.stringify(response)}`);
+    assertCondition(aborted, 'external timeout should abort delegate signal');
+  } finally {
+    timeoutWorkspace.dispose();
+  }
+}
+
+async function testExternalFetchActorOptOut(): Promise<void> {
+  let workspace!: Awaited<ReturnType<typeof createRuntimeWorkspace>>;
+  let delegateCalled = false;
+  workspace = await createRuntimeWorkspace({
+    externalHttp: {
+      hosts: ['allowed.example'],
+      fetch: async () => {
+        delegateCalled = true;
+        return { status: 200, body: 'unexpected\n' };
+      },
+    },
+    customCommands: [{
+      name: 'actor-opt-out',
+      execute: async (_args: string[], ctx: { fs: object }) => {
+        const commandContext = commandContextForFs(ctx.fs);
+        const actor = commandContext?.actor;
+        if (actor?.capabilities?.http) actor.capabilities.http.externalFetch = false;
+        const response = await (workspace as RuntimeWorkspaceWithPrivateDispatch).dispatchHttpRequest({
+          method: 'GET',
+          url: 'https://allowed.example/denied',
+          path: '/denied',
+          headers: {},
+        }, {
+          actor,
+          commandContext,
+        });
+        return { stdout: `${response.status}:${response.body ?? ''}`, stderr: '', exitCode: 0 };
+      },
+    }],
+  });
+  try {
+    const result = await workspace.runCommand('actor-opt-out');
+    assertCondition(result.exitCode === 0, `actor opt-out command should finish: ${JSON.stringify(result)}`);
+    assertCondition(result.stdout.startsWith('403:tracekernel: external fetch blocked:'), `actor opt-out should return 403: ${result.stdout}`);
+    assertCondition(!delegateCalled, 'actor opt-out should not invoke delegate');
+  } finally {
+    workspace.dispose();
+  }
+}
+
+async function testLoopbackListenerShadowsExternalHost(): Promise<void> {
+  let delegateCalled = false;
+  const workspace = await createRuntimeWorkspace({
+    externalHttp: {
+      allowHttp: true,
+      hosts: () => true,
+      fetch: async () => {
+        delegateCalled = true;
+        return { status: 502, body: 'unexpected\n' };
+      },
+    },
+  });
+  const listener = workspace.http.listen({ host: '127.0.0.1', port: 3660 }, () => ({ status: 200, body: 'loopback\n' }));
+  try {
+    const response = await workspace.http.request({ url: 'http://localhost:3660/shadow' });
+    assertCondition(response.status === 200 && response.body === 'loopback\n', `loopback listener should answer: ${JSON.stringify(response)}`);
+    assertCondition(!delegateCalled, 'loopback listener should shadow external delegate');
+  } finally {
+    listener.close();
+    workspace.dispose();
+  }
+}
+
+async function testIsBlockedExternalHttpHost(): Promise<void> {
+  for (const url of [
+    'http://127.0.0.1/',
+    'http://10.0.0.1/',
+    'http://172.16.0.1/',
+    'http://172.31.255.255/',
+    'http://192.168.1.1/',
+    'http://169.254.1.1/',
+    'http://0.0.0.0/',
+    'http://[::1]/',
+    'http://[fc00::1]/',
+    'http://[fdff::1]/',
+    'http://[fe80::1]/',
+    'http://localhost/',
+    'http://api.localhost/',
+    'http://printer.local/',
+    'http://svc.internal/',
+    'http://metadata.google.internal/',
+    'http://0.1.2.3/',
+    'http://[::ffff:169.254.169.254]/',
+    'http://[::ffff:127.0.0.1]/',
+  ]) {
+    assertCondition(isBlockedExternalHttpHost(new URL(url)) !== null, `URL should be blocked: ${url}`);
+  }
+  for (const url of ['https://example.com/', 'https://8.8.8.8/', 'https://[2001:4860:4860::8888]/']) {
+    assertCondition(isBlockedExternalHttpHost(new URL(url)) === null, `URL should not be blocked: ${url}`);
+  }
+}
+
 async function main(): Promise<void> {
+  await testExternalFetchUnconfiguredKeepsRefusedBehavior();
+  await testExternalFetchRoutesThroughDelegate();
+  await testExternalFetchBlocklistWinsOverAllowlist();
+  await testExternalFetchAllowlistSemantics();
+  await testExternalFetchBudgets();
+  await testExternalFetchActorOptOut();
+  await testLoopbackListenerShadowsExternalHost();
+  await testIsBlockedExternalHttpHost();
+
   const workspace = await createRuntimeWorkspace({
     files: [
       {
