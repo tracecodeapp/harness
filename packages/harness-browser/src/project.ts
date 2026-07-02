@@ -64,8 +64,9 @@ function readonlySessionFiles(options: CreateRuntimeWorkspaceOptions): string[] 
     .map((file) => normalizeRuntimeProjectPath(file.path)))];
 }
 
-function hiddenSessionFiles(options: CreateRuntimeWorkspaceOptions): NonNullable<CreateRuntimeWorkspaceOptions['projectSession']>['files'] {
-  return (options.projectSession?.files ?? []).filter((file) => file.hidden === true);
+function policySessionFiles(options: CreateRuntimeWorkspaceOptions): NonNullable<CreateRuntimeWorkspaceOptions['projectSession']>['files'] {
+  return (options.projectSession?.files ?? [])
+    .filter((file) => file.hidden === true || file.readonly === true);
 }
 
 function isReadonlyDeletion(change: RuntimeFileChange, readonlyFiles: readonly string[]): boolean {
@@ -292,11 +293,11 @@ export async function createBrowserProjectWorkspace(
     storedSnapshot.files.length > 0 ||
     (storedSnapshot.directories?.length ?? 0) > 0
   );
-  const hiddenFiles = hiddenSessionFiles(workspaceOptions);
+  const policyFiles = policySessionFiles(workspaceOptions);
   const projectSession = hasStoredWorkspace && workspaceOptions.projectSession
     ? {
         ...workspaceOptions.projectSession,
-        files: hiddenFiles,
+        files: policyFiles,
         directories: [],
       }
     : workspaceOptions.projectSession;
