@@ -990,7 +990,7 @@ export class CppWorkerClient {
     } finally {
       signal?.removeEventListener('abort', abortInit);
     }
-    const { signal: _signal, onEvent: _requestOnEvent, ...workerRequest } = request;
+    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp: _kernelHttp, ...workerRequest } = request;
     return this.executeWithTimeout(
       () =>
         this.sendMessage<CppProjectCommandResult>(
