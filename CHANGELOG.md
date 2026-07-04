@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
-## [Unreleased]
+## [0.9.8] - 2026-07-04
 
 ### Added
 
@@ -23,6 +23,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Fixed C# tracing so loop conditions and enumerable headers emit one source-line frame with reads, writes, and snapshots attached instead of a duplicate same-line microframe.
 - Fixed a synchronous TraceKernel HTTP bridge race shared by the Java and C++ workers where a program that responded to an in-flight request and immediately closed its listener (or exited) could overwrite the unread response with the closed state, turning a real response into a 503.
 - Preserved readonly session file policy across kernel-storage rehydration and restored the abort controller in JS project worker execution state.
 
