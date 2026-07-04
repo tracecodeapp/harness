@@ -214,42 +214,146 @@ async function createCompileHost(): Promise<CompileHost> {
   return { compileProject };
 }
 
+// Plain POSIX sockets only — no TraceCode-specific API. The program performs
+// a loopback HTTP request, a named-host request through getaddrinfo, and then
+// serves two HTTP requests from a hand-rolled socket server.
 const CPP_HTTP_PROGRAM = [
-  '#include "tracecode_http.hpp"',
+  '#include <arpa/inet.h>',
+  '#include <netdb.h>',
+  '#include <netinet/in.h>',
+  '#include <sys/socket.h>',
+  '#include <unistd.h>',
   '#include <cstdio>',
+  '#include <cstdlib>',
+  '#include <cstring>',
+  '#include <string>',
+  '',
+  'static std::string http_exchange(int fd, const std::string& request) {',
+  '  const char* data = request.c_str();',
+  '  size_t remaining = request.size();',
+  '  while (remaining > 0) {',
+  '    ssize_t sent = send(fd, data, remaining, 0);',
+  '    if (sent <= 0) return "";',
+  '    data += sent;',
+  '    remaining -= (size_t)sent;',
+  '  }',
+  '  std::string response;',
+  '  char buffer[512];',
+  '  while (true) {',
+  '    ssize_t got = recv(fd, buffer, sizeof(buffer), 0);',
+  '    if (got <= 0) break;',
+  '    response.append(buffer, (size_t)got);',
+  '  }',
+  '  return response;',
+  '}',
+  '',
+  'static std::string status_line(const std::string& response) {',
+  '  size_t end = response.find("\\r\\n");',
+  '  return end == std::string::npos ? response : response.substr(0, end);',
+  '}',
+  '',
+  'static std::string body_of(const std::string& response) {',
+  '  size_t split = response.find("\\r\\n\\r\\n");',
+  '  return split == std::string::npos ? std::string() : response.substr(split + 4);',
+  '}',
   '',
   'int main() {',
-  '  tracecode::http::Request request;',
-  '  request.method = "POST";',
-  '  request.url = "http://localhost:3300/echo?x=1";',
-  '  request.headers.push_back(tracecode::http::Header{"x-cpp", "yes"});',
-  '  request.body = "cpp-body";',
-  '  auto response = tracecode::http::fetch(request);',
-  '  std::printf("fetch:%d:%s:%s\\n", response.status, response.header("X-Echo").c_str(), response.body.c_str());',
-  '',
-  '  auto server = tracecode::http::Server::listen(3999);',
-  '  if (!server) {',
-  '    std::printf("listen-error:%s\\n", server.error().c_str());',
+  '  int fd = socket(AF_INET, SOCK_STREAM, 0);',
+  '  sockaddr_in loopback {};',
+  '  loopback.sin_family = AF_INET;',
+  '  loopback.sin_port = htons(3300);',
+  '  loopback.sin_addr.s_addr = inet_addr("127.0.0.1");',
+  '  if (connect(fd, reinterpret_cast<sockaddr*>(&loopback), sizeof(loopback)) != 0) {',
+  '    std::printf("connect-failed\\n");',
   '    return 1;',
   '  }',
-  '  std::printf("listening:%d:%s\\n", server.port(), server.host().c_str());',
-  '  for (int index = 0; index < 2; index += 1) {',
-  '    auto incoming = server.next(20000);',
-  '    if (!incoming) {',
-  '      std::printf("next-error:%s\\n", incoming.error.c_str());',
-  '      return 1;',
-  '    }',
-  '    std::printf("request:%s:%s:%s\\n", incoming.method.c_str(), incoming.path.c_str(), incoming.body.c_str());',
-  '    tracecode::http::Response reply;',
-  '    reply.status = 200 + index;',
-  '    reply.headers.push_back(tracecode::http::Header{"x-cpp-server", "ok"});',
-  '    reply.body = "reply-" + std::to_string(index) + ":" + incoming.header("x-req");',
-  '    if (!server.respond(reply)) {',
-  '      std::printf("respond-error\\n");',
-  '      return 1;',
-  '    }',
+  '  std::string response = http_exchange(fd,',
+  '    "POST /echo?x=1 HTTP/1.1\\r\\n"',
+  '    "Host: localhost:3300\\r\\n"',
+  '    "X-Cpp: yes\\r\\n"',
+  '    "Content-Length: 8\\r\\n"',
+  '    "\\r\\n"',
+  '    "cpp-body");',
+  '  close(fd);',
+  '  std::printf("loopback:%s:%s\\n", status_line(response).c_str(), body_of(response).c_str());',
+  '',
+  '  addrinfo hints {};',
+  '  hints.ai_family = AF_INET;',
+  '  hints.ai_socktype = SOCK_STREAM;',
+  '  addrinfo* resolved = nullptr;',
+  '  if (getaddrinfo("api.example.com", "http", &hints, &resolved) != 0 || resolved == nullptr) {',
+  '    std::printf("resolve-failed\\n");',
+  '    return 1;',
   '  }',
-  '  server.close();',
+  '  int external = socket(resolved->ai_family, resolved->ai_socktype, 0);',
+  '  if (connect(external, resolved->ai_addr, resolved->ai_addrlen) != 0) {',
+  '    std::printf("external-connect-failed\\n");',
+  '    return 1;',
+  '  }',
+  '  freeaddrinfo(resolved);',
+  '  std::string externalResponse = http_exchange(external,',
+  '    "GET /status HTTP/1.1\\r\\nHost: api.example.com\\r\\n\\r\\n");',
+  '  close(external);',
+  '  std::printf("external:%s:%s\\n", status_line(externalResponse).c_str(), body_of(externalResponse).c_str());',
+  '',
+  '  int server = socket(AF_INET, SOCK_STREAM, 0);',
+  '  sockaddr_in bindAddress {};',
+  '  bindAddress.sin_family = AF_INET;',
+  '  bindAddress.sin_port = htons(3999);',
+  '  bindAddress.sin_addr.s_addr = htonl(INADDR_ANY);',
+  '  if (bind(server, reinterpret_cast<sockaddr*>(&bindAddress), sizeof(bindAddress)) != 0) {',
+  '    std::printf("bind-failed\\n");',
+  '    return 1;',
+  '  }',
+  '  if (listen(server, 4) != 0) {',
+  '    std::printf("listen-failed\\n");',
+  '    return 1;',
+  '  }',
+  '  sockaddr_in boundAddress {};',
+  '  unsigned int boundLength = sizeof(boundAddress);',
+  '  getsockname(server, reinterpret_cast<sockaddr*>(&boundAddress), &boundLength);',
+  '  std::printf("listening:%d\\n", (int)ntohs(boundAddress.sin_port));',
+  '',
+  '  for (int index = 0; index < 2; index += 1) {',
+  '    int conn = accept(server, nullptr, nullptr);',
+  '    if (conn < 0) {',
+  '      std::printf("accept-failed\\n");',
+  '      return 1;',
+  '    }',
+  '    std::string request;',
+  '    char buffer[512];',
+  '    while (true) {',
+  '      size_t headEnd = request.find("\\r\\n\\r\\n");',
+  '      if (headEnd != std::string::npos) {',
+  '        size_t contentLength = 0;',
+  '        size_t marker = request.find("Content-Length:");',
+  '        if (marker == std::string::npos) marker = request.find("content-length:");',
+  '        if (marker != std::string::npos) contentLength = (size_t)atoi(request.c_str() + marker + 15);',
+  '        if (request.size() >= headEnd + 4 + contentLength) break;',
+  '      }',
+  '      ssize_t got = recv(conn, buffer, sizeof(buffer), 0);',
+  '      if (got <= 0) break;',
+  '      request.append(buffer, (size_t)got);',
+  '    }',
+  '    std::string requestLine = request.substr(0, request.find("\\r\\n"));',
+  '    std::string xreq;',
+  '    size_t xreqAt = request.find("x-req: ");',
+  '    if (xreqAt != std::string::npos) {',
+  '      size_t lineEnd = request.find("\\r\\n", xreqAt);',
+  '      xreq = request.substr(xreqAt + 7, lineEnd - xreqAt - 7);',
+  '    }',
+  '    std::string requestBody = body_of(request);',
+  '    std::printf("request:%s:%s:%s\\n", requestLine.c_str(), xreq.c_str(), requestBody.c_str());',
+  '    std::string responseBody = "reply-" + std::to_string(index) + ":" + xreq;',
+  '    char head[256];',
+  '    std::snprintf(head, sizeof(head),',
+  '      "HTTP/1.1 %d OK\\r\\nContent-Type: text/plain\\r\\nX-Cpp-Server: ok\\r\\nContent-Length: %d\\r\\n\\r\\n",',
+  '      200 + index, (int)responseBody.size());',
+  '    std::string reply = std::string(head) + responseBody;',
+  '    send(conn, reply.c_str(), reply.size(), 0);',
+  '    close(conn);',
+  '  }',
+  '  close(server);',
   '  std::printf("done\\n");',
   '  return 0;',
   '}',
@@ -348,7 +452,7 @@ async function main(): Promise<void> {
     }, 300_000);
     assertCondition(
       compileResult.exitCode === 0,
-      `C++ HTTP program should compile against the injected tracecode_http.hpp: ${JSON.stringify({
+      `plain BSD-socket C++ program should compile against the wasi sysroot with injected shims: ${JSON.stringify({
         exitCode: compileResult.exitCode,
         stdout: compileResult.stdout,
         stderr: compileResult.stderr,
@@ -357,9 +461,9 @@ async function main(): Promise<void> {
     const compiledFiles = compileResult.files ?? [];
     assertCondition(
       compiledFiles.some((file) => file.path === 'a.out'),
-      `C++ HTTP compile should emit a.out: ${JSON.stringify(compiledFiles.map((file) => file.path))}`
+      `C++ socket compile should emit a.out: ${JSON.stringify(compiledFiles.map((file) => file.path))}`
     );
-    console.log('PASS: tracecode_http.hpp is injected into C++ project compiles and compiles cleanly');
+    console.log('PASS: plain POSIX socket code compiles in C++ project mode without any TraceCode API');
 
     const dispatched: Array<RuntimeKernelHttpRequest & { timeoutMs?: number }> = [];
     let listenerHandler: RuntimeKernelHttpHandler | undefined;
@@ -436,31 +540,41 @@ async function main(): Promise<void> {
       `C++ HTTP program should exit cleanly: ${JSON.stringify({ exitCode: runResult.exitCode, stdout: runResult.stdout, stderr: runResult.stderr })}`
     );
     const expectedStdout = [
-      'fetch:209:yes:dispatch:POST:/echo?x=1:cpp-body',
-      'listening:3999:127.0.0.1',
-      'request:POST:/task?id=1:payload-1',
-      'request:GET:/status:',
+      'loopback:HTTP/1.1 209:dispatch:POST:/echo?x=1:cpp-body',
+      'external:HTTP/1.1 209:dispatch:GET:/status:',
+      'listening:3999',
+      'request:POST /task?id=1 HTTP/1.1:one:payload-1',
+      'request:GET /status HTTP/1.1:two:',
       'done',
       '',
     ].join('\n');
     assertCondition(
       runResult.stdout === expectedStdout,
-      `C++ HTTP program stdout mismatch:\n--- expected ---\n${expectedStdout}\n--- actual ---\n${runResult.stdout}\n--- stderr ---\n${runResult.stderr}`
+      `C++ socket program stdout mismatch:\n--- expected ---\n${expectedStdout}\n--- actual ---\n${runResult.stdout}\n--- stderr ---\n${runResult.stderr}`
     );
-    console.log('PASS: C++ program dispatches TraceKernel HTTP requests and observes host responses');
+    console.log('PASS: C++ programs speak HTTP over plain sockets and observe host responses');
 
-    assertCondition(dispatched.length === 1, `C++ program should dispatch exactly one outbound request: ${JSON.stringify(dispatched)}`);
-    const outbound = dispatched[0]!;
+    assertCondition(dispatched.length === 2, `C++ program should dispatch two outbound requests: ${JSON.stringify(dispatched)}`);
+    const loopbackRequest = dispatched[0]!;
     assertCondition(
-      outbound.method === 'POST' &&
-        outbound.url === 'http://localhost:3300/echo?x=1' &&
-        outbound.path === '/echo?x=1' &&
-        outbound.headers?.['x-cpp'] === 'yes' &&
-        outbound.bodyEncoding === 'base64' &&
-        outbound.body === base64FromString('cpp-body'),
-      `C++ outbound request should carry method/url/headers/body through the bridge: ${JSON.stringify(outbound)}`
+      loopbackRequest.method === 'POST' &&
+        loopbackRequest.url === 'http://127.0.0.1:3300/echo?x=1' &&
+        loopbackRequest.path === '/echo?x=1' &&
+        loopbackRequest.headers?.['x-cpp'] === 'yes' &&
+        loopbackRequest.headers?.['host'] === 'localhost:3300' &&
+        loopbackRequest.bodyEncoding === 'base64' &&
+        loopbackRequest.body === base64FromString('cpp-body'),
+      `C++ loopback socket request should carry method/url/headers/body through the bridge: ${JSON.stringify(loopbackRequest)}`
     );
-    console.log('PASS: C++ outbound requests reach the host RuntimeKernelHttpBridge intact');
+    const externalRequest = dispatched[1]!;
+    assertCondition(
+      externalRequest.method === 'GET' &&
+        externalRequest.url === 'http://api.example.com/status' &&
+        externalRequest.path === '/status' &&
+        externalRequest.body === undefined,
+      `getaddrinfo-resolved request should carry the hostname into the bridge URL: ${JSON.stringify(externalRequest)}`
+    );
+    console.log('PASS: BSD-socket requests reach the host RuntimeKernelHttpBridge intact (loopback and named hosts)');
 
     assertCondition(
       listenerOptions?.port === 3999 && (listenerOptions?.host ?? '127.0.0.1') === '127.0.0.1',
@@ -470,7 +584,7 @@ async function main(): Promise<void> {
       firstResponse.status === 200 &&
         firstResponse.bodyEncoding === 'base64' &&
         firstResponse.body === base64FromString('reply-0:one') &&
-        firstResponse.headers?.['x-cpp-server'] === 'ok',
+        firstResponse.rawHeaders?.some(([name, value]) => name.toLowerCase() === 'x-cpp-server' && value === 'ok') === true,
       `first C++ server response mismatch: ${JSON.stringify(firstResponse)}`
     );
     assertCondition(
@@ -479,8 +593,8 @@ async function main(): Promise<void> {
         secondResponse.body === base64FromString('reply-1:two'),
       `second C++ server response mismatch: ${JSON.stringify(secondResponse)}`
     );
-    assertCondition(listenerClosed, 'C++ Server::close should close the host listener handle');
-    console.log('PASS: C++ in-workspace HTTP listener serves sequential requests over the sync bridge');
+    assertCondition(listenerClosed, 'closing the C++ server socket should close the host listener handle');
+    console.log('PASS: hand-rolled C++ socket server serves sequential requests over the sync bridge');
   } finally {
     client.terminate();
     globalThis.fetch = originalFetch;
