@@ -1,5 +1,5 @@
 import type { Language } from './runtime-types';
-import type { RuntimeTrace } from './runtime-trace';
+import type { RuntimeTrace, RuntimeTraceEvent } from './runtime-trace';
 
 export type RuntimeRawEmissionKind =
   | 'line'
@@ -17,6 +17,15 @@ export interface RuntimeRawEmissionSummary {
   language: Language;
   kinds: RuntimeRawEmissionKind[];
   unsupported: string[];
+}
+
+export interface RuntimeSameLineMicroFrame {
+  previousLineEventIndex: number;
+  lineEventIndex: number;
+  line: number;
+  file?: string;
+  function?: string;
+  statementId?: string;
 }
 
 function sortedUnique<T extends string>(values: T[]): T[] {
@@ -188,6 +197,72 @@ export function assertSupportedRawEmissions(summary: RuntimeRawEmissionSummary, 
       `${label} emitted unsupported raw runtime payloads:\n${summary.unsupported.slice(0, 20).join('\n')}`
     );
   }
+}
+
+function runtimeLineFunction(event: RuntimeTraceEvent): string | undefined {
+  if ('function' in event && typeof event.function === 'string') return event.function;
+  const topFrame = event.callStack?.[event.callStack.length - 1];
+  return typeof topFrame?.function === 'string' ? topFrame.function : undefined;
+}
+
+function sameRuntimeLineFrame(left: RuntimeTraceEvent, right: RuntimeTraceEvent): boolean {
+  if (left.kind !== 'line' || right.kind !== 'line') return false;
+  return (
+    left.line === right.line &&
+    (left.file ?? '') === (right.file ?? '') &&
+    (left.statementId ?? '') === (right.statementId ?? '') &&
+    (runtimeLineFunction(left) ?? '') === (runtimeLineFunction(right) ?? '')
+  );
+}
+
+export function findSameLineMicroFrames(trace: RuntimeTrace): RuntimeSameLineMicroFrame[] {
+  const microFrames: RuntimeSameLineMicroFrame[] = [];
+  let previousLineEvent: { event: RuntimeTraceEvent; index: number } | null = null;
+  let eventsSincePreviousLine = 0;
+
+  for (const [index, event] of trace.events.entries()) {
+    if (event.kind === 'line') {
+      if (
+        previousLineEvent &&
+        eventsSincePreviousLine === 0 &&
+        sameRuntimeLineFrame(previousLineEvent.event, event)
+      ) {
+        microFrames.push({
+          previousLineEventIndex: previousLineEvent.index,
+          lineEventIndex: index,
+          line: event.line,
+          ...(event.file ? { file: event.file } : {}),
+          ...(runtimeLineFunction(event) ? { function: runtimeLineFunction(event) } : {}),
+          ...(event.statementId ? { statementId: event.statementId } : {}),
+        });
+      }
+      previousLineEvent = { event, index };
+      eventsSincePreviousLine = 0;
+      continue;
+    }
+
+    if (previousLineEvent) {
+      eventsSincePreviousLine++;
+    }
+  }
+
+  return microFrames;
+}
+
+export function assertNoSameLineMicroFrames(trace: RuntimeTrace, label: string): void {
+  const microFrames = findSameLineMicroFrames(trace);
+  if (microFrames.length === 0) return;
+  throw new Error(
+    `${label} emitted same-line microframe(s); line visits must attach reads/writes/snapshots to one frame:\n` +
+      microFrames
+        .slice(0, 20)
+        .map((frame) =>
+          `line ${frame.line} at events ${frame.previousLineEventIndex}->${frame.lineEventIndex}` +
+          `${frame.function ? ` function ${frame.function}` : ''}` +
+          `${frame.statementId ? ` statement ${frame.statementId}` : ''}`
+        )
+        .join('\n')
+  );
 }
 
 export interface RuntimeRawEmissionParityMismatch {

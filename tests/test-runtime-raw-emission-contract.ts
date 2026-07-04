@@ -2,6 +2,7 @@
 
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 import {
+  assertNoSameLineMicroFrames,
   assertSupportedRawEmissions,
   compareRawEmissionParity,
   summarizeJavaRawEmissions,
@@ -311,6 +312,28 @@ function testRawParityComparison(): void {
   console.log('PASS: raw emission parity comparison reports category mismatches');
 }
 
+function testSameLineMicroFrameRejection(): void {
+  const splitFrameTrace = trace('csharp', [
+    { kind: 'line', runId: 'csharp:test', file: 'solution.cs', line: 4, function: 'Solve' },
+    { kind: 'line', runId: 'csharp:test', file: 'solution.cs', line: 4, function: 'Solve' },
+    { kind: 'read', runId: 'csharp:test', file: 'solution.cs', line: 4, target: { variable: 'nums', path: [0] }, value: 1 },
+  ]);
+  assertThrows(
+    () => assertNoSameLineMicroFrames(splitFrameTrace, 'csharp:split-frame'),
+    /same-line microframe.*line 4 at events 0->1/s,
+    'raw contract should reject line-only same-line microframes'
+  );
+
+  const repeatedVisitTrace = trace('csharp', [
+    { kind: 'line', runId: 'csharp:test', file: 'solution.cs', line: 4, function: 'Solve' },
+    { kind: 'read', runId: 'csharp:test', file: 'solution.cs', line: 4, target: { variable: 'nums', path: [0] }, value: 1 },
+    { kind: 'line', runId: 'csharp:test', file: 'solution.cs', line: 4, function: 'Solve' },
+    { kind: 'read', runId: 'csharp:test', file: 'solution.cs', line: 4, target: { variable: 'nums', path: [1] }, value: 2 },
+  ]);
+  assertNoSameLineMicroFrames(repeatedVisitTrace, 'csharp:repeated-visit');
+  console.log('PASS: raw emission contract rejects same-line microframes without rejecting repeated line visits');
+}
+
 testJavaUnknownPayloadRejection();
 testJavaKnownPayloads();
 testForbiddenRuntimeTracePayloadRejection();
@@ -318,5 +341,6 @@ testCppKnownRuntimeTracePayloads();
 testRuntimeTraceIndexSourceProvenancePayloads();
 testUnsupportedRuntimeTraceKindRejection();
 testRawParityComparison();
+testSameLineMicroFrameRejection();
 
 console.log('\nRuntime raw emission contract tests passed.');

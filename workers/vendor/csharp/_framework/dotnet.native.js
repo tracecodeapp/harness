@@ -30,11 +30,11 @@ Module['ready'] = new Promise((resolve, reject) => {
 
 // --pre-jses are emitted after the Module integration code, so that they can
 // refer to Module (if they choose; they can also define Module)
-// include: /Users/obinnanwachukwu/.codex/worktrees/65ca/harness/.dotnet/home/.dotnet/packs/Microsoft.NETCore.App.Runtime.Mono.browser-wasm/10.0.9/runtimes/browser-wasm/native/src/es6/dotnet.es6.pre.js
+// include: /Users/obinnanwachukwu/Code/tracecodeapp/harness/.dotnet/csharp-wasm/packs/Microsoft.NETCore.App.Runtime.Mono.browser-wasm/10.0.9/runtimes/browser-wasm/native/src/es6/dotnet.es6.pre.js
 if (_nativeModuleLoaded) throw new Error("Native module already loaded");
 _nativeModuleLoaded = true;
 createDotnetRuntime = Module = moduleArg(Module);
-// end include: /Users/obinnanwachukwu/.codex/worktrees/65ca/harness/.dotnet/home/.dotnet/packs/Microsoft.NETCore.App.Runtime.Mono.browser-wasm/10.0.9/runtimes/browser-wasm/native/src/es6/dotnet.es6.pre.js
+// end include: /Users/obinnanwachukwu/Code/tracecodeapp/harness/.dotnet/csharp-wasm/packs/Microsoft.NETCore.App.Runtime.Mono.browser-wasm/10.0.9/runtimes/browser-wasm/native/src/es6/dotnet.es6.pre.js
 
 
 // Sometimes an existing Module object exists with properties

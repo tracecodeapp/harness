@@ -4619,13 +4619,11 @@ public class TreeNode
 
         public static bool LoopCondition(int line, string? function, Func<bool> action)
         {
-            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, function);
             return WithSourceLine(line, action);
         }
 
         public static bool LoopCondition(int line, string? function, Func<bool> action, Action snapshot)
         {
-            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, function);
             bool result = WithSourceLine(line, action);
             snapshot();
             return result;
@@ -4633,13 +4631,11 @@ public class TreeNode
 
         public static IEnumerable<T> EnumerableSource<T>(int line, string? function, Func<IEnumerable<T>> action)
         {
-            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, function);
             return WithSourceLine(line, action);
         }
 
         public static IEnumerable<T> EnumerableSource<T>(int line, string? function, Func<IEnumerable<T>> action, Action snapshot)
         {
-            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, function);
             IEnumerable<T> result = WithSourceLine(line, action);
             snapshot();
             return result;

@@ -11,6 +11,8 @@ import { CSharpWorkerClient } from '../packages/harness-browser/src/csharp-worke
 import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
 import { createRuntimeCommandStdinPipeFromText, readRuntimeCommandStdinPipeBytes } from '../packages/harness-core/src/runtime-project';
 import type { RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
+import { assertNoSameLineMicroFrames } from '../packages/harness-core/src/runtime-raw-emission-contract';
+import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../packages/harness-core/src/runtime-trace';
 
 interface CSharpWorkerResponse {
   success: boolean;
@@ -190,6 +192,21 @@ function firstProjectEventIndex(
   predicate: (event: NonNullable<CSharpProjectWorkerResponse['events']>[number]) => boolean
 ): number {
   return events?.findIndex(predicate) ?? -1;
+}
+
+function assertWorkerTraceHasNoSameLineMicroFrames(result: CSharpWorkerResponse, label: string): void {
+  const events = (result.events ?? []) as RuntimeTrace['events'];
+  assertNoSameLineMicroFrames(
+    {
+      schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+      language: 'csharp',
+      runId: label,
+      events,
+      lineEventCount: events.filter((event) => event.kind === 'line').length,
+      traceStepCount: events.length,
+    },
+    label
+  );
 }
 
 async function testBrowserCSharpProjectBridgeFinalDiffApplication(): Promise<void> {
@@ -1125,6 +1142,7 @@ async function main(): Promise<void> {
       unbracedLoopBodyLine.success && unbracedLoopBodyLine.output === 2,
       `C# worker unbraced loop body line case should succeed, received ${JSON.stringify(unbracedLoopBodyLine)}`
     );
+    assertWorkerTraceHasNoSameLineMicroFrames(unbracedLoopBodyLine, 'csharp:unbraced-loop-body-line');
     assertCondition(
       unbracedLoopBodyLine.events?.some((event) =>
         event.kind === 'write'
@@ -1151,12 +1169,12 @@ async function main(): Promise<void> {
       `C# worker unbraced indexed writes should not fall back to generated method line, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
     );
     assertCondition(
-      (unbracedLoopBodyLine.events?.filter((event) => event.kind === 'line' && event.line === 4).length ?? 0) >= 4,
-      `C# worker for loop should emit header line for each condition evaluation including loop exit, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
+      (unbracedLoopBodyLine.events?.filter((event) => event.kind === 'line' && event.line === 4).length ?? 0) === 4,
+      `C# worker for loop should emit exactly one header frame per condition evaluation including loop exit, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
     );
     assertCondition(
-      (unbracedLoopBodyLine.events?.filter((event) => event.kind === 'line' && event.line === 7).length ?? 0) >= 2,
-      `C# worker while loop should emit header line for true and false condition evaluations, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
+      (unbracedLoopBodyLine.events?.filter((event) => event.kind === 'line' && event.line === 7).length ?? 0) === 2,
+      `C# worker while loop should emit exactly one header frame for true and false condition evaluations, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
     );
     const countSnapshotsAfterLastLine = (events: CSharpWorkerResponse['events'], line: number): number => {
       const traceEvents = events ?? [];
