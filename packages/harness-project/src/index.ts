@@ -480,6 +480,11 @@ interface NormalizedRuntimeExternalHttpConfig {
   maxConcurrentRequests: number;
   maxRequestsPerCommand: number;
 }
+
+export type HostResolution =
+  | { reachable: true; via: 'loopback' | 'listener' | 'external'; ip: string; latencyMs: number }
+  | { reachable: false; reason: 'unknown-host' };
+
 const TRACEKERNEL_ZOMBIE_RETENTION_MS = 30_000;
 const TRACEKERNEL_SIGNAL_NUMBERS = new Map<string, number>([
   ['SIGHUP', 1],
@@ -608,6 +613,33 @@ function clampRuntimeExternalHttpPositiveInteger(value: unknown, fallback: numbe
 
 function defaultRuntimeExternalHttpPort(protocol: string): number {
   return protocol === 'http:' ? 80 : 443;
+}
+
+function stableHostnameHash(hostname: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < hostname.length; index += 1) {
+    hash ^= hostname.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+export function syntheticIp(hostname: string): string {
+  const hash = stableHostnameHash(hostname.toLowerCase());
+  return `192.0.2.${(hash % 254) + 1}`;
+}
+
+export function syntheticLatency(hostname: string): number {
+  const hash = stableHostnameHash(hostname.toLowerCase());
+  return Number((0.1 + (hash % 291) / 100).toFixed(2));
+}
+
+function formatPingLatency(latencyMs: number): string {
+  return latencyMs.toFixed(2);
+}
+
+function isBareHostnameForExternalResolution(hostname: string): boolean {
+  return !!hostname && !/[\u0000-\u0020\u007f:/@[\]]/.test(hostname);
 }
 
 function normalizeRuntimeExternalHttpHostEntry(entry: string): NormalizedRuntimeExternalHttpHostRule {
@@ -920,6 +952,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       defineCommand('kill', async (args, ctx) => this.runKernelKill(args, 'kill', ctx)),
       defineCommand('jobs', async (args, ctx) => this.runKernelJobs(args, ctx)),
       defineCommand('ls', async (args, ctx) => this.runKernelAwareLs(args, ctx)),
+      defineCommand('ping', async (args, ctx) => this.runKernelPing(args, ctx)),
       defineCommand('ps', async (args, ctx) => this.runKernelPs(args, ctx)),
       defineCommand('tracekernelctl', (args, ctx) => this.runTraceKernelCtl(args, ctx)),
       defineCommand('wait', (args, ctx) => this.runKernelWait(args, 'wait', ctx)),
@@ -1118,6 +1151,22 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private httpErrorResponse(status: number, error: RuntimeKernelHttpError, body = `${error.message}\n`): RuntimeKernelHttpResponse {
     return { status, body, error };
+  }
+
+  public resolveHost(hostname: string): HostResolution {
+    const host = String(hostname).trim().toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+      return { reachable: true, via: 'loopback', ip: '127.0.0.1', latencyMs: 0.05 };
+    }
+    for (const listener of this.httpListeners.values()) {
+      if (listener.info.host === host) {
+        return { reachable: true, via: 'listener', ip: syntheticIp(host), latencyMs: syntheticLatency(host) };
+      }
+    }
+    if (this.externalHttp && this.isExternalHttpHostReachable(this.externalHttp, host)) {
+      return { reachable: true, via: 'external', ip: syntheticIp(host), latencyMs: syntheticLatency(host) };
+    }
+    return { reachable: false, reason: 'unknown-host' };
   }
 
   private normalizeHttpHost(host: string, kind: 'connect' | 'listen'): string {
@@ -1506,6 +1555,22 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
     }
     return `host ${url.hostname} is not allowlisted`;
+  }
+
+  private isExternalHttpHostReachable(config: NormalizedRuntimeExternalHttpConfig, hostname: string): boolean {
+    if (!isBareHostnameForExternalResolution(hostname)) return false;
+    const protocols = config.allowHttp ? ['https:', 'http:'] : ['https:'];
+    for (const protocol of protocols) {
+      let url: URL;
+      try {
+        url = new URL(`${protocol}//${hostname}/`);
+      } catch {
+        continue;
+      }
+      if (isBlockedExternalHttpHost(url)) continue;
+      if (!this.runtimeExternalHttpAllowlistReason(config, url)) return true;
+    }
+    return false;
   }
 
   private consumeExternalHttpBudget(
@@ -2784,6 +2849,60 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       stderr: '',
       exitCode: 0,
     };
+  }
+
+  private runKernelPing(args: string[], _ctx: CommandContext): RuntimeCommandResult {
+    let count = 3;
+    const hosts: string[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index] ?? '';
+      if (arg === '-c') {
+        const next = args[++index];
+        if (!next) return { stdout: '', stderr: 'ping: option requires an argument -- c\n', exitCode: 2 };
+        const parsed = Number(next);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          return { stdout: '', stderr: `ping: invalid count: ${next}\n`, exitCode: 2 };
+        }
+        count = parsed;
+        continue;
+      }
+      if (arg.startsWith('-c') && arg.length > 2) {
+        const value = arg.slice(2);
+        const parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          return { stdout: '', stderr: `ping: invalid count: ${value}\n`, exitCode: 2 };
+        }
+        count = parsed;
+        continue;
+      }
+      if (arg.startsWith('-')) {
+        return { stdout: '', stderr: `ping: unsupported option: ${arg}\n`, exitCode: 2 };
+      }
+      hosts.push(arg);
+    }
+    if (hosts.length !== 1) {
+      return {
+        stdout: '',
+        stderr: hosts.length === 0 ? 'ping: missing host operand\n' : 'ping: multiple hosts are not supported by tracekernel ping\n',
+        exitCode: 2,
+      };
+    }
+    const host = hosts[0]!;
+    const resolution = this.resolveHost(host);
+    if (!resolution.reachable) {
+      return { stdout: '', stderr: `ping: cannot resolve ${host}: Unknown host\n`, exitCode: 68 };
+    }
+    const latency = formatPingLatency(resolution.latencyMs);
+    const lines = [
+      `PING ${host} (${resolution.ip}): 56 data bytes`,
+      ...Array.from({ length: count }, (_value, seq) =>
+        `64 bytes from ${resolution.ip}: icmp_seq=${seq} ttl=64 time=${latency} ms`
+      ),
+      `--- ${host} ping statistics ---`,
+      `${count} packets transmitted, ${count} received, 0% packet loss`,
+      `round-trip min/avg/max = ${latency}/${latency}/${latency} ms`,
+    ];
+    return { stdout: `${lines.join('\n')}\n`, stderr: '', exitCode: 0 };
   }
 
   private runTraceKernelWhich(args: string[], commandName: string, _ctx: CommandContext): RuntimeCommandResult {

@@ -231,6 +231,7 @@ export function createTraceKernelCommandRegistry(
     commandInfo('jobs', 'control', 'tracekernel job control'),
     commandInfo('kill', 'control', 'tracekernel process control'),
     commandInfo('ls', 'tool', 'tracekernel-aware directory listing'),
+    commandInfo('ping', 'tool', 'tracekernel reachability probe'),
     commandInfo('ps', 'control', 'tracekernel process table'),
     commandInfo('tracekernelctl', 'control', 'tracekernel control plane'),
     commandInfo(TRACEKERNEL_EXEC_COMMAND, 'control', 'tracekernel virtual executable dispatcher'),
