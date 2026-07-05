@@ -842,6 +842,18 @@ export type KernelJournalRecord = { seq: number; ts?: string } & (
       authFingerprint?: string;
       annotation?: unknown;
       error?: string;
+      meta?: {
+        idempotencyKeyFingerprint?: string;
+        requestBodyFingerprint?: string;
+        responseBodyFingerprint?: string;
+        contentType?: string;
+        retryAfter?: string;
+        rateLimit?: {
+          limit?: string;
+          remaining?: string;
+          reset?: string;
+        };
+      };
     }
 );
 

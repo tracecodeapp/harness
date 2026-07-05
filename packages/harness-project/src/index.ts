@@ -899,11 +899,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             kernelHttp: this.createKernelHttpBridge(commandContext),
             onEvent: (event) => {
               if (!acceptingRunnerEvents || signal?.aborted) return;
-              if (runtimeIo) {
-                runtimeIo.handleRuntimeEvent(event);
-              } else {
-                this.handleRuntimeCommandEvent(event, commandContext);
-              }
+              this.handleRuntimeCommandEvent(event, commandContext);
             },
           } as Request);
         } finally {
@@ -1161,6 +1157,25 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private httpErrorResponse(status: number, error: RuntimeKernelHttpError, body = `${error.message}\n`): RuntimeKernelHttpResponse {
     return { status, body, error };
+  }
+
+  private httpHostUnreachableResponse(
+    normalizedRequest: RuntimeKernelHttpRequest,
+    url: URL,
+    reason: string
+  ): RuntimeKernelHttpResponse {
+    const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+    const message = `EHOSTUNREACH: host ${url.hostname} is unreachable (${reason})`;
+    this.recordHttpRequest({
+      method: normalizedRequest.method,
+      url: normalizedRequest.url,
+      error: 'EHOSTUNREACH',
+    });
+    return {
+      status: 0,
+      body: `curl: (7) Failed to connect to ${url.hostname} port ${port}: Host unreachable\n`,
+      error: this.createHttpError('EHOSTUNREACH', message),
+    };
   }
 
   public resolveHost(hostname: string): HostResolution {
@@ -1571,6 +1586,26 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private isExternalHttpHostReachable(config: NormalizedRuntimeExternalHttpConfig, hostname: string): boolean {
     if (!isBareHostnameForExternalResolution(hostname)) return false;
     const protocols = config.allowHttp ? ['https:', 'http:'] : ['https:'];
+    if (typeof config.hosts !== 'function') {
+      let routable = false;
+      for (const protocol of protocols) {
+        try {
+          if (!isBlockedExternalHttpHost(new URL(`${protocol}//${hostname}/`))) routable = true;
+        } catch {
+          continue;
+        }
+      }
+      if (!routable) return false;
+      const normalized = hostname.toLowerCase();
+      for (const rule of config.hosts) {
+        if (rule.wildcardSubdomains) {
+          if (normalized !== rule.hostname && normalized.endsWith(`.${rule.hostname}`)) return true;
+        } else if (normalized === rule.hostname) {
+          return true;
+        }
+      }
+      return false;
+    }
     for (const protocol of protocols) {
       let url: URL;
       try {
@@ -1691,6 +1726,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (blocklistReason) {
       return this.externalHttpBlockedResponse(normalizedRequest, 403, 'EHOSTBLOCKED', blocklistReason);
     }
+    const hostResolution = this.resolveHost(url.hostname.replace(/^\[|\]$/g, ''));
+    if (!hostResolution.reachable) {
+      const allowlistReason = this.runtimeExternalHttpAllowlistReason(config, url);
+      return this.externalHttpBlockedResponse(
+        normalizedRequest,
+        403,
+        'EHOSTUNREACH',
+        allowlistReason ?? `host ${url.hostname} is unreachable (${hostResolution.reason})`
+      );
+    }
     const allowlistReason = this.runtimeExternalHttpAllowlistReason(config, url);
     if (allowlistReason) {
       return this.externalHttpBlockedResponse(normalizedRequest, 403, 'EHOSTUNREACH', allowlistReason);
@@ -1769,6 +1814,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, {
               status: normalizedResponse.status,
               ...(normalizedResponse.annotation !== undefined ? { annotation: normalizedResponse.annotation } : {}),
+              response: normalizedResponse,
             });
           }
           return normalizedResponse;
@@ -1832,6 +1878,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!listener) {
       if (this.externalHttp) {
         return this.dispatchExternalHttpRequest(this.externalHttp, normalizedRequest, url, actor, options);
+      }
+      const hostResolution = this.resolveHost(url.hostname.replace(/^\[|\]$/g, ''));
+      if (!hostResolution.reachable) {
+        return this.httpHostUnreachableResponse(normalizedRequest, url, hostResolution.reason);
       }
       this.recordHttpRequest({
         method: normalizedRequest.method,
@@ -1919,7 +1969,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             url: redactRuntimeDiagnosticUrl(normalizedRequest.url),
             status,
           });
-          this.recordHttpJournal(normalizedRequest, url, 'listener', actor, options.commandContext, { status });
+          this.recordHttpJournal(normalizedRequest, url, 'listener', actor, options.commandContext, {
+            status,
+            response,
+          });
         }
         return {
           status,
@@ -2054,7 +2107,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (this.kernelJournalLog.length > TRACEKERNEL_EVENT_LOG_LIMIT) {
       this.kernelJournalLog.splice(0, this.kernelJournalLog.length - TRACEKERNEL_EVENT_LOG_LIMIT);
     }
-    this.dispatchRuntimeEvent({
+    this.handleRuntimeCommandEvent({
       type: 'kernel-journal',
       record,
       ...(actor ? { actor } : {}),
@@ -2099,14 +2152,52 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return message;
   }
 
+  private httpHeaderValue(headers: Record<string, string> | undefined, name: string): string | undefined {
+    if (!headers) return undefined;
+    const needle = name.toLowerCase();
+    for (const [headerName, value] of Object.entries(headers)) {
+      if (headerName.toLowerCase() === needle) return value;
+    }
+    return undefined;
+  }
+
+  private journalHttpMeta(
+    normalizedRequest: RuntimeKernelHttpRequest,
+    normalizedResponse?: RuntimeKernelHttpResponse
+  ): Extract<KernelJournalRecord, { kind: 'http' }>['meta'] | undefined {
+    const meta: NonNullable<Extract<KernelJournalRecord, { kind: 'http' }>['meta']> = {};
+    const idempotencyKey = this.httpHeaderValue(normalizedRequest.headers, 'idempotency-key');
+    const contentType = this.httpHeaderValue(normalizedRequest.headers, 'content-type');
+    const retryAfter = this.httpHeaderValue(normalizedResponse?.headers, 'retry-after');
+    const rateLimitLimit = this.httpHeaderValue(normalizedResponse?.headers, 'x-ratelimit-limit');
+    const rateLimitRemaining = this.httpHeaderValue(normalizedResponse?.headers, 'x-ratelimit-remaining');
+    const rateLimitReset = this.httpHeaderValue(normalizedResponse?.headers, 'x-ratelimit-reset');
+    if (idempotencyKey !== undefined) meta.idempotencyKeyFingerprint = stableKernelJournalFingerprint(idempotencyKey);
+    if (normalizedRequest.body !== undefined) {
+      meta.requestBodyFingerprint = stableKernelJournalFingerprint(runtimeHttpRequestText(normalizedRequest));
+    }
+    if (normalizedResponse?.body !== undefined && (idempotencyKey !== undefined || normalizedRequest.body !== undefined)) {
+      meta.responseBodyFingerprint = stableKernelJournalFingerprint(runtimeHttpResponseText(normalizedResponse));
+    }
+    if (contentType !== undefined) meta.contentType = contentType;
+    if (retryAfter !== undefined) meta.retryAfter = retryAfter;
+    const rateLimit: NonNullable<NonNullable<Extract<KernelJournalRecord, { kind: 'http' }>['meta']>['rateLimit']> = {};
+    if (rateLimitLimit !== undefined) rateLimit.limit = rateLimitLimit;
+    if (rateLimitRemaining !== undefined) rateLimit.remaining = rateLimitRemaining;
+    if (rateLimitReset !== undefined) rateLimit.reset = rateLimitReset;
+    if (Object.keys(rateLimit).length > 0) meta.rateLimit = rateLimit;
+    return Object.keys(meta).length > 0 ? meta : undefined;
+  }
+
   private recordHttpJournal(
     normalizedRequest: RuntimeKernelHttpRequest,
     url: URL,
     via: Extract<KernelJournalRecord, { kind: 'http' }>['via'],
     actor: RuntimeWorkspaceActor,
     commandContext: RuntimeCommandExecutionContext | undefined,
-    result: { status?: number; annotation?: unknown; error?: string }
+    result: { status?: number; annotation?: unknown; error?: string; response?: RuntimeKernelHttpResponse }
   ): void {
+    const meta = this.journalHttpMeta(normalizedRequest, result.response);
     this.recordJournal({
       kind: 'http',
       op: 'request',
@@ -2120,6 +2211,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ...this.journalHttpAuth(normalizedRequest.headers),
       ...(result.annotation !== undefined ? { annotation: result.annotation } : {}),
       ...(result.error !== undefined ? { error: this.journalHttpError(result.error, normalizedRequest.headers) } : {}),
+      ...(meta ? { meta } : {}),
     }, commandContext, actor);
   }
 
@@ -5158,6 +5250,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private handleRuntimeCommandEvent(event: RuntimeCommandEvent, context?: RuntimeCommandExecutionContext): void {
     const runtimeIo = context?.runtimeIo;
     if (runtimeIo) {
+      if (event.type === 'file-change') {
+        const actor = event.actor ?? context?.actor;
+        const enriched = this.enrichRuntimeEvent(event, actor) as RuntimeCommandFileChangeEvent;
+        this.recordFileChangeJournal(enriched, context);
+        event = enriched;
+      }
       runtimeIo.handleRuntimeEvent(event);
       return;
     }
@@ -5267,6 +5365,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private emitLocalRuntimeEvent(event: RuntimeCommandEvent, context?: RuntimeCommandExecutionContext): void {
+    if (event.type === 'file-change') {
+      const actor = event.actor ?? context?.actor;
+      const enriched = this.enrichRuntimeEvent(event, actor) as RuntimeCommandFileChangeEvent;
+      this.recordFileChangeJournal(enriched, context);
+      event = enriched;
+    }
     const runtimeIo = context?.runtimeIo;
     if (runtimeIo) {
       runtimeIo.emit(event);
@@ -5278,9 +5382,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private emitRuntimeEvent(event: RuntimeCommandEvent, commandContext?: RuntimeCommandExecutionContext): void {
     const actor = 'actor' in event && event.actor ? event.actor : commandContext?.actor;
     const enriched = this.enrichRuntimeEvent(event, actor);
-    if (enriched.type === 'file-change') {
-      this.recordFileChangeJournal(enriched, commandContext);
-    }
     this.dispatchRuntimeEvent(enriched, commandContext);
   }
 

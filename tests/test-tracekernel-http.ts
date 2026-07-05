@@ -42,14 +42,15 @@ type RuntimeWorkspaceWithPrivateDispatch = Awaited<ReturnType<typeof createRunti
   ): Promise<RuntimeKernelHttpResponse>;
 };
 
-async function testExternalFetchUnconfiguredKeepsRefusedBehavior(): Promise<void> {
+async function testExternalFetchUnconfiguredReturnsHostUnreachable(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
   try {
     const response = await workspace.http.request({ url: 'https://api.example.com/path' });
-    assertCondition(response.status === 0, `unconfigured external fetch should keep refused status: ${JSON.stringify(response)}`);
+    assertCondition(response.status === 0, `unconfigured external fetch should keep failed-connect status: ${JSON.stringify(response)}`);
+    assertCondition(response.error?.code === 'EHOSTUNREACH', `unconfigured external fetch should be typed EHOSTUNREACH: ${JSON.stringify(response)}`);
     assertCondition(
-      response.body === 'curl: (7) Failed to connect to api.example.com port 80: Connection refused\n',
-      `unconfigured external fetch should keep refused body byte-identical: ${JSON.stringify(response)}`
+      response.body === 'curl: (7) Failed to connect to api.example.com port 443: Host unreachable\n',
+      `unconfigured external fetch should return host-unreachable body byte-identical: ${JSON.stringify(response)}`
     );
   } finally {
     workspace.dispose();
@@ -372,7 +373,7 @@ async function testIsBlockedExternalHttpHost(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await testExternalFetchUnconfiguredKeepsRefusedBehavior();
+  await testExternalFetchUnconfiguredReturnsHostUnreachable();
   await testExternalFetchRoutesThroughDelegate();
   await testExternalFetchBlocklistWinsOverAllowlist();
   await testExternalFetchAllowlistSemantics();
