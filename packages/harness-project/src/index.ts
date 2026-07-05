@@ -103,6 +103,7 @@ import type {
   RuntimeCommandFileChangeEvent,
   RuntimeCommandOutputEvent,
   RuntimeCommandStatusEvent,
+  KernelJournalRecord,
   RuntimeKernelDevicePath,
   RuntimeFileMutationPhase,
   RuntimeFile,
@@ -588,6 +589,9 @@ type RuntimeKernelHttpRequestResult =
   | { ok: true; request: RuntimeKernelHttpRequest }
   | { ok: false; error: RuntimeKernelHttpError };
 
+type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
+type KernelJournalEntry = DistributiveOmit<KernelJournalRecord, 'seq' | 'ts'>;
+
 function redactRuntimeDiagnosticUrl(value: string): string {
   try {
     const url = new URL(value);
@@ -622,6 +626,10 @@ function stableHostnameHash(hostname: string): number {
     hash = Math.imul(hash, 0x01000193);
   }
   return hash >>> 0;
+}
+
+function stableKernelJournalFingerprint(value: string): string {
+  return stableHostnameHash(value).toString(16).padStart(8, '0').slice(0, 8);
 }
 
 export function syntheticIp(hostname: string): string {
@@ -812,6 +820,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
   private readonly anyProcessWaiters: Array<(process: RuntimeKernelProcessRecord) => void> = [];
   private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
+  private readonly kernelJournalLog: KernelJournalRecord[] = [];
   private readonly httpListeners = new Map<string, RuntimeKernelHttpListenerRecord>();
   private readonly httpRequestLog: RuntimeKernelHttpRequestRecord[] = [];
   private readonly readonlyFiles = new Set<string>();
@@ -820,6 +829,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private nextCommandId = 1;
   private nextPid = 100;
   private nextKernelEventSeq = 1;
+  private nextJournalSeq = 1;
   private nextHttpListenerSeq = 1;
   private nextHttpRequestSeq = 1;
   private nextEphemeralHttpPort = 49152;
@@ -1344,6 +1354,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     if (response.body !== undefined) normalized.body = String(response.body);
     if (response.bodyEncoding) normalized.bodyEncoding = response.bodyEncoding;
+    if (response.annotation !== undefined) normalized.annotation = response.annotation;
     this.assertHttpBodyLimit(normalized, 'response');
     return normalized;
   }
@@ -1714,6 +1725,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         error: 'EINTR',
         external: true,
       });
+      this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: 'EINTR' });
       return {
         status: 0,
         body: 'TraceKernel HTTP request aborted\n',
@@ -1730,6 +1742,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           error,
           external: true,
         });
+        this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error });
       }
       return { status: 0, body, error: this.createHttpError(error, body.trim()) };
     };
@@ -1753,6 +1766,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               status: normalizedResponse.status,
               external: true,
             });
+            this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, {
+              status: normalizedResponse.status,
+              ...(normalizedResponse.annotation !== undefined ? { annotation: normalizedResponse.annotation } : {}),
+            });
           }
           return normalizedResponse;
         } catch (error) {
@@ -1764,6 +1781,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               error: message,
               external: true,
             });
+            this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: message });
           }
           return { status: 502, body: `tracekernel: external fetch failed: ${message}\n` };
         }
@@ -1856,6 +1874,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         url: normalizedRequest.url,
         error: 'EINTR',
       });
+      this.recordHttpJournal(normalizedRequest, url, 'listener', actor, options.commandContext, { error: 'EINTR' });
       return {
         status: 0,
         body: 'TraceKernel HTTP request aborted\n',
@@ -1874,6 +1893,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           url: normalizedRequest.url,
           error,
         });
+        this.recordHttpJournal(normalizedRequest, url, 'listener', actor, options.commandContext, { error });
       }
       return { status: 0, body, error: this.createHttpError(error, body.trim()) };
     };
@@ -1899,6 +1919,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             url: redactRuntimeDiagnosticUrl(normalizedRequest.url),
             status,
           });
+          this.recordHttpJournal(normalizedRequest, url, 'listener', actor, options.commandContext, { status });
         }
         return {
           status,
@@ -1917,6 +1938,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             url: normalizedRequest.url,
             error: message,
           });
+          this.recordHttpJournal(normalizedRequest, url, 'listener', actor, options.commandContext, { error: message });
         }
         return { status: 500, body: this.httpListenerErrorBody(listener, actor, message) };
       } finally {
@@ -2006,6 +2028,104 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (this.kernelEventLog.length > TRACEKERNEL_EVENT_LOG_LIMIT) {
       this.kernelEventLog.splice(0, this.kernelEventLog.length - TRACEKERNEL_EVENT_LOG_LIMIT);
     }
+  }
+
+  private dispatchRuntimeEvent(event: RuntimeCommandEvent, commandContext?: RuntimeCommandExecutionContext): void {
+    commandContext?.eventHandler?.(event);
+    for (const watcher of this.eventWatchers) {
+      watcher(event);
+    }
+  }
+
+  private journalActorId(actor: RuntimeWorkspaceActor | undefined): string | undefined {
+    return actor ? `${actor.kind}:${actor.id}` : undefined;
+  }
+
+  private recordJournal(
+    entry: KernelJournalEntry,
+    commandContext?: RuntimeCommandExecutionContext,
+    actor?: RuntimeWorkspaceActor
+  ): KernelJournalRecord {
+    const record = {
+      seq: this.nextJournalSeq++,
+      ...entry,
+    } as KernelJournalRecord;
+    this.kernelJournalLog.push(record);
+    if (this.kernelJournalLog.length > TRACEKERNEL_EVENT_LOG_LIMIT) {
+      this.kernelJournalLog.splice(0, this.kernelJournalLog.length - TRACEKERNEL_EVENT_LOG_LIMIT);
+    }
+    this.dispatchRuntimeEvent({
+      type: 'kernel-journal',
+      record,
+      ...(actor ? { actor } : {}),
+    }, commandContext);
+    return record;
+  }
+
+  private recordFileChangeJournal(
+    event: RuntimeCommandFileChangeEvent,
+    commandContext?: RuntimeCommandExecutionContext
+  ): void {
+    const actor = event.actor ?? commandContext?.actor ?? SYSTEM_ACTOR;
+    const change = event.change;
+    const op = isRuntimeDirectoryChange(change)
+      ? change.deleted === true ? 'rmdir' : 'mkdir'
+      : (change as RuntimeFileDeletion).deleted === true ? 'delete' : 'write';
+    this.recordJournal({
+      kind: 'fs',
+      op,
+      path: change.path,
+      actor: this.journalActorId(actor) ?? 'system:system',
+      ...(commandContext?.process.pid !== undefined ? { pid: commandContext.process.pid } : {}),
+      ...(event.phase ? { phase: event.phase } : {}),
+    }, commandContext, actor);
+  }
+
+  private journalHttpAuth(headers: Record<string, string> | undefined): Pick<Extract<KernelJournalRecord, { kind: 'http' }>, 'authPresent' | 'authFingerprint'> {
+    const authorization = headers?.authorization;
+    if (!authorization) return { authPresent: false };
+    return {
+      authPresent: true,
+      authFingerprint: stableKernelJournalFingerprint(authorization),
+    };
+  }
+
+  private journalHttpError(error: string, headers: Record<string, string> | undefined): string {
+    let message = this.sanitizeHttpDiagnosticField(error);
+    const authorization = headers?.authorization;
+    if (authorization) {
+      message = message.split(authorization).join('redacted');
+    }
+    return message;
+  }
+
+  private recordHttpJournal(
+    normalizedRequest: RuntimeKernelHttpRequest,
+    url: URL,
+    via: Extract<KernelJournalRecord, { kind: 'http' }>['via'],
+    actor: RuntimeWorkspaceActor,
+    commandContext: RuntimeCommandExecutionContext | undefined,
+    result: { status?: number; annotation?: unknown; error?: string }
+  ): void {
+    this.recordJournal({
+      kind: 'http',
+      op: 'request',
+      method: normalizedRequest.method,
+      host: url.hostname.replace(/^\[|\]$/g, '').toLowerCase(),
+      path: normalizedRequest.path,
+      ...(result.status !== undefined ? { status: result.status } : {}),
+      via,
+      ...(this.journalActorId(actor) ? { actor: this.journalActorId(actor) } : {}),
+      ...(commandContext?.process.pid !== undefined ? { pid: commandContext.process.pid } : {}),
+      ...this.journalHttpAuth(normalizedRequest.headers),
+      ...(result.annotation !== undefined ? { annotation: result.annotation } : {}),
+      ...(result.error !== undefined ? { error: this.journalHttpError(result.error, normalizedRequest.headers) } : {}),
+    }, commandContext, actor);
+  }
+
+  journal(sinceSeq?: number): readonly KernelJournalRecord[] {
+    if (sinceSeq === undefined) return [...this.kernelJournalLog];
+    return this.kernelJournalLog.filter((record) => record.seq > sinceSeq);
   }
 
   private firstZombieProcessRecord(): RuntimeKernelProcessRecord | undefined {
@@ -4258,6 +4378,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           command,
           cwd: commandCwd,
         });
+        this.recordJournal({
+          kind: 'process',
+          op: 'exec',
+          pid: process.pid,
+          ppid: process.ppid,
+          argv: command,
+          cwd: commandCwd,
+          actor: this.journalActorId(process.actor),
+        }, commandContext, process.actor);
         const directExecutableResult = await this.tryRunVirtualExecutable(command, { ...options, stdinPipe, signal: abortController.signal }, commandContext, commandFs);
         if (directExecutableResult) {
           await this.flushRuntimeEventQueue(commandContext);
@@ -4354,9 +4483,23 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           signal: process.signal,
           signalCode: process.signalCode,
         });
+        this.recordJournal({
+          kind: 'process',
+          op: 'exit',
+          pid: process.pid,
+          exitCode: process.exitCode,
+          actor: this.journalActorId(process.actor),
+        }, commandContext, process.actor);
         this.notifyZombieProcess(process);
       } else {
         this.recordKernelEvent('process-exit', process.pid, { exitCode: process.exitCode });
+        this.recordJournal({
+          kind: 'process',
+          op: 'exit',
+          pid: process.pid,
+          exitCode: process.exitCode,
+          actor: this.journalActorId(process.actor),
+        }, commandContext, process.actor);
       }
     });
   }
@@ -5135,10 +5278,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private emitRuntimeEvent(event: RuntimeCommandEvent, commandContext?: RuntimeCommandExecutionContext): void {
     const actor = 'actor' in event && event.actor ? event.actor : commandContext?.actor;
     const enriched = this.enrichRuntimeEvent(event, actor);
-    commandContext?.eventHandler?.(enriched);
-    for (const watcher of this.eventWatchers) {
-      watcher(enriched);
+    if (enriched.type === 'file-change') {
+      this.recordFileChangeJournal(enriched, commandContext);
     }
+    this.dispatchRuntimeEvent(enriched, commandContext);
   }
 
   private emitReturnedOutputEvents(
@@ -5282,6 +5425,7 @@ export type {
   RuntimeCommandFileChangeEvent,
   RuntimeCommandOutputEvent,
   RuntimeCommandStatusEvent,
+  KernelJournalRecord,
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,

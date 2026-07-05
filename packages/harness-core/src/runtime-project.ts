@@ -294,6 +294,7 @@ export interface RuntimeKernelHttpResponse {
   rawHeaders?: readonly [string, string][];
   body?: string;
   bodyEncoding?: RuntimeFileEncoding;
+  annotation?: unknown;
   error?: RuntimeKernelHttpError;
 }
 
@@ -808,6 +809,48 @@ export interface RuntimeCommandFileChangeEvent {
   actor?: RuntimeWorkspaceActor;
 }
 
+export type KernelJournalRecord = { seq: number; ts?: string } & (
+  | {
+      kind: 'fs';
+      op: 'write' | 'delete' | 'mkdir' | 'rmdir' | 'rename' | 'copy';
+      path: string;
+      actor: string;
+      pid?: number;
+      phase?: string;
+    }
+  | {
+      kind: 'process';
+      op: 'exec' | 'exit';
+      pid: number;
+      ppid?: number;
+      argv?: string;
+      cwd?: string;
+      exitCode?: number;
+      actor?: string;
+    }
+  | {
+      kind: 'http';
+      op: 'request';
+      method: string;
+      host: string;
+      path: string;
+      status?: number;
+      via: 'listener' | 'external' | 'loopback';
+      actor?: string;
+      pid?: number;
+      authPresent: boolean;
+      authFingerprint?: string;
+      annotation?: unknown;
+      error?: string;
+    }
+);
+
+export interface RuntimeKernelJournalEvent {
+  type: 'kernel-journal';
+  record: KernelJournalRecord;
+  actor?: RuntimeWorkspaceActor;
+}
+
 export type RuntimeWorkspaceLifecyclePhase =
   | 'session-expired'
   | 'session-destroyed'
@@ -825,6 +868,7 @@ export type RuntimeCommandEvent =
   | RuntimeCommandOutputEvent
   | RuntimeCommandStatusEvent
   | RuntimeCommandFileChangeEvent
+  | RuntimeKernelJournalEvent
   | RuntimeWorkspaceLifecycleEvent;
 
 export type RuntimeCommandEventHandler = (event: RuntimeCommandEvent) => void;
@@ -1504,6 +1548,7 @@ export interface RuntimeWorkspace {
   checkExpiration(now?: Date | string | number): Promise<RuntimeProjectSessionLifecycle | null>;
   destroy(options?: { reason?: string; clearStorage?: boolean }): Promise<void>;
   snapshot(options?: { entrypoint?: string; includeHidden?: boolean }): Promise<RuntimeProjectSnapshot>;
+  journal(sinceSeq?: number): readonly KernelJournalRecord[];
   exportPatch(base: RuntimeProjectSnapshot, options?: RuntimeProjectPatchOptions): Promise<RuntimeProjectPatch>;
   importPatch(base: RuntimeProjectSnapshot, patch: RuntimeProjectPatch): Promise<void>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;

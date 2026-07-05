@@ -15,8 +15,12 @@ export interface RuntimeExternalHttpRequest {
   signal: AbortSignal;
 }
 
+export interface RuntimeExternalHttpResponse extends RuntimeKernelHttpResponse {
+  annotation?: unknown;
+}
+
 export interface RuntimeExternalHttpConfig {
-  fetch: (request: RuntimeExternalHttpRequest) => Promise<RuntimeKernelHttpResponse>;
+  fetch: (request: RuntimeExternalHttpRequest) => Promise<RuntimeExternalHttpResponse>;
   hosts: readonly string[] | ((url: URL) => boolean);
   allowHttp?: boolean;
   timeoutMs?: number;
