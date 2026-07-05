@@ -1807,11 +1807,173 @@ function indentCSharpSource(code, spaces = 4) {
     .join('\n');
 }
 
+function splitCSharpParameterList(source) {
+  const parameters = [];
+  let current = '';
+  let genericDepth = 0;
+  let bracketDepth = 0;
+  for (const char of String(source ?? '')) {
+    if (char === '<') genericDepth += 1;
+    else if (char === '>') genericDepth = Math.max(0, genericDepth - 1);
+    else if (char === '[') bracketDepth += 1;
+    else if (char === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+    if (char === ',' && genericDepth === 0 && bracketDepth === 0) {
+      parameters.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim()) parameters.push(current.trim());
+  return parameters;
+}
+
+function parseCSharpBatchParameter(source, index) {
+  let withoutDefault = String(source ?? '').replace(/=.*/, '').trim();
+  while (/^\s*\[[^\]]+\]\s*/.test(withoutDefault)) {
+    withoutDefault = withoutDefault.replace(/^\s*\[[^\]]+\]\s*/, '').trim();
+  }
+  if (!withoutDefault) return null;
+  const parts = withoutDefault.split(/\s+/).filter(Boolean);
+  let modifier = '';
+  while (parts.length > 0 && ['this', 'params', 'ref', 'out', 'in'].includes(parts[0])) {
+    const next = parts.shift();
+    if (next === 'ref' || next === 'out' || next === 'in') modifier = next;
+  }
+  const name = csharpIdentifier(parts.pop());
+  const type = parts.join(' ').trim();
+  if (!name || !type) return null;
+  return { name, type, modifier, index };
+}
+
+function parseCSharpBatchCallableSignature(code, functionName) {
+  const requestedMethodName = csharpIdentifier(functionName);
+  if (!requestedMethodName) return null;
+  const escapedName = requestedMethodName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `((?:(?:public|private|protected|internal|static|virtual|override|sealed|new|async|extern|partial)\\s+)*)` +
+      `([A-Za-z_][A-Za-z0-9_<>.,?\\[\\]\\s]*?)\\s+(${escapedName})\\s*\\(([^)]*)\\)`,
+    'im'
+  );
+  const match = pattern.exec(String(code ?? ''));
+  if (!match) return null;
+  const methodName = csharpIdentifier(match[3]) ?? requestedMethodName;
+  const parameters = splitCSharpParameterList(match[4])
+    .map((parameter, index) => parseCSharpBatchParameter(parameter, index));
+  if (parameters.some((parameter) => !parameter)) return null;
+  return {
+    methodName,
+    returnType: match[2].trim(),
+    isStatic: /\bstatic\b/.test(match[1] || ''),
+    parameters,
+  };
+}
+
+function buildCSharpDirectBatchScriptSource(payload) {
+  const code = String(payload?.code ?? '');
+  const executionStyle = payload?.executionStyle ?? 'solution-method';
+  const functionName = String(payload?.functionName ?? '');
+  if (!functionName.trim() || executionStyle === 'ops-class') return null;
+  const signature = parseCSharpBatchCallableSignature(code, functionName);
+  if (!signature) return null;
+  const declarations = [];
+  const argumentsList = [];
+  for (const parameter of signature.parameters) {
+    const localName = `__tracecodeArg${parameter.index}`;
+    if (parameter.modifier === 'out') {
+      declarations.push(`    ${parameter.type} ${localName} = default!;`);
+    } else {
+      declarations.push(`    var ${localName} = TraceCode.Internal.TraceCodeJsonInput.Read<${parameter.type}>(${csharpStringLiteral(parameter.name)}, ${parameter.index});`);
+    }
+    argumentsList.push(`${parameter.modifier ? `${parameter.modifier} ` : ''}${localName}`);
+  }
+  const receiver = executionStyle === 'function'
+    ? ''
+    : signature.isStatic
+      ? 'Solution.'
+      : '__tracecodeSolution.';
+  const solutionDeclaration = executionStyle === 'function' || signature.isStatic
+    ? ''
+    : '    var __tracecodeSolution = new Solution();\n';
+  const callExpression = `${receiver}${signature.methodName}(${argumentsList.join(', ')})`;
+  const returnsVoid = signature.returnType === 'void';
+  const invocation = returnsVoid
+    ? `    ${callExpression};\n    return ${signature.parameters.length > 0 ? '__tracecodeArg0' : 'null'};`
+    : `    return ${callExpression};`;
+
+  return `${code}
+
+object? result;
+{
+    var __tracecodeBatchCases = TraceCode.Internal.TraceCodeJsonInput.Read<System.Text.Json.JsonElement[]>("__tracecodeBatchInputs", 0) ?? System.Array.Empty<System.Text.Json.JsonElement>();
+    var __tracecodeBatchResults = new System.Collections.Generic.List<object?>();
+
+    foreach (var __tracecodeBatchCase in __tracecodeBatchCases)
+    {
+        var __tracecodeBatchClock = System.Diagnostics.Stopwatch.StartNew();
+        var __tracecodeOriginalOut = System.Console.Out;
+        using var __tracecodeCaseOut = new System.IO.StringWriter();
+        try
+        {
+            System.Console.SetOut(__tracecodeCaseOut);
+            __TraceCodeSetCurrentInputsJson(__tracecodeBatchCase.GetRawText());
+            object? __tracecodeOutput = __TraceCodeRunBatchCase();
+            __tracecodeBatchClock.Stop();
+            __tracecodeBatchResults.Add(new System.Collections.Generic.Dictionary<string, object?>
+            {
+                ["success"] = true,
+                ["output"] = __tracecodeOutput,
+                ["consoleOutput"] = __TraceCodeSplitConsole(__tracecodeCaseOut.ToString()),
+                ["timings"] = new System.Collections.Generic.Dictionary<string, object?> { ["runMs"] = __tracecodeBatchClock.Elapsed.TotalMilliseconds },
+            });
+        }
+        catch (System.Exception __tracecodeError)
+        {
+            __tracecodeBatchClock.Stop();
+            __tracecodeBatchResults.Add(new System.Collections.Generic.Dictionary<string, object?>
+            {
+                ["success"] = false,
+                ["error"] = __tracecodeError.GetBaseException().Message,
+                ["output"] = null,
+                ["consoleOutput"] = __TraceCodeSplitConsole(__tracecodeCaseOut.ToString()),
+                ["timings"] = new System.Collections.Generic.Dictionary<string, object?> { ["runMs"] = __tracecodeBatchClock.Elapsed.TotalMilliseconds },
+            });
+        }
+        finally
+        {
+            System.Console.SetOut(__tracecodeOriginalOut);
+        }
+    }
+
+    result = __tracecodeBatchResults;
+}
+
+object? __TraceCodeRunBatchCase()
+{
+${solutionDeclaration}${declarations.join('\n')}
+${invocation}
+}
+
+void __TraceCodeSetCurrentInputsJson(string __tracecodeInputsJson)
+{
+    var __tracecodeField = typeof(TraceCode.CSharpHost.CompilerHost).GetField(
+        "currentInputsJson",
+        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+    __tracecodeField?.SetValue(null, __tracecodeInputsJson);
+}
+
+string[] __TraceCodeSplitConsole(string __tracecodeText) =>
+    __tracecodeText.Replace("\\r\\n", "\\n", System.StringComparison.Ordinal).Split('\\n', System.StringSplitOptions.RemoveEmptyEntries);
+`;
+}
+
 function buildCSharpBatchScriptSource(payload) {
   const code = String(payload?.code ?? '');
   const executionStyle = payload?.executionStyle ?? 'solution-method';
   const functionName = String(payload?.functionName ?? '');
   const functionNameLiteral = csharpStringLiteral(functionName);
+  const directBatchSource = buildCSharpDirectBatchScriptSource(payload);
+  if (directBatchSource) return directBatchSource;
 
   if (executionStyle === 'ops-class') {
     const className = csharpIdentifier(functionName);
@@ -2243,6 +2405,17 @@ function normalizeCSharpBatchEntry(entry, timings = {}) {
   };
 }
 
+function csharpBatchIsolationReason(payload) {
+  if (payload?.executionStyle === 'ops-class') {
+    return 'ops-class-reflection';
+  }
+  const code = String(payload?.code ?? '');
+  if (/\bstatic\b/.test(code)) {
+    return 'static-storage';
+  }
+  return '';
+}
+
 async function executeCSharpCodePayload(payload, messageType = 'execute-code') {
   const startedAt = now();
   const request = {
@@ -2315,21 +2488,63 @@ async function executeCSharpCodeBatch(message) {
     };
   }
 
-  const results = [];
-  for (const inputs of inputBatch) {
-    const result = await executeCSharpCodePayload({ ...message.payload, inputs }, 'execute-code');
-    results.push(normalizeCSharpBatchEntry(result, result.timings));
+  const isolationReason = csharpBatchIsolationReason(message.payload ?? {});
+  if (isolationReason) {
+    const results = [];
+    for (const inputs of inputBatch) {
+      const result = await executeCSharpCodePayload({ ...message.payload, inputs }, 'execute-code');
+      results.push(normalizeCSharpBatchEntry(result, result.timings));
+    }
+    const consoleOutput = results.flatMap((entry) => entry.consoleOutput ?? []);
+    const success = results.every((entry) => entry.success === true);
+    return {
+      success,
+      results,
+      consoleOutput,
+      ...(success ? {} : { error: results.find((entry) => entry.success !== true)?.error ?? 'C# batch execution failed.' }),
+      timings: {
+        totalMs: elapsedMs(startedAt),
+        batchMode: 'per-case-fallback',
+        batchCaseCount: inputBatch.length,
+        batchFallbackReason: isolationReason,
+        runMs: results.reduce((sum, entry) => sum + (entry.timings?.runMs ?? 0), 0),
+      },
+    };
   }
+
+  let batchSource;
+  try {
+    batchSource = buildCSharpBatchScriptSource(message.payload ?? {});
+  } catch (error) {
+    return {
+      success: false,
+      results: [],
+      error: error instanceof Error ? error.message : String(error),
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+
+  const result = await executeCSharpCodePayload({
+    ...message.payload,
+    code: batchSource,
+    functionName: '',
+    executionStyle: 'function',
+    inputs: { __tracecodeBatchInputs: inputBatch },
+  }, 'execute-code');
+  const batchEntries = Array.isArray(result?.output) ? result.output : [];
+  const results = batchEntries.map((entry) => normalizeCSharpBatchEntry(entry));
   const consoleOutput = results.flatMap((entry) => entry.consoleOutput ?? []);
   const success = results.length === inputBatch.length && results.every((entry) => entry.success === true);
   return {
     success,
     results,
     consoleOutput,
-    ...(success ? {} : { error: results.find((entry) => entry.success !== true)?.error ?? 'C# batch execution failed.' }),
+    ...(success ? {} : { error: result?.error ?? results.find((entry) => entry.success !== true)?.error ?? 'C# batch execution failed.' }),
     timings: {
+      ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
       totalMs: elapsedMs(startedAt),
-      batchMode: 'per-case-isolated',
+      batchMode: 'compile-once',
       batchCaseCount: inputBatch.length,
       runMs: results.reduce((sum, entry) => sum + (entry.timings?.runMs ?? 0), 0),
     },

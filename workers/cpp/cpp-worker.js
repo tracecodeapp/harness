@@ -10518,6 +10518,80 @@ async function handleCompileRun(payload) {
   }
 }
 
+function cppBatchIsolationReason(source) {
+  const text = stripComments(String(source ?? ''));
+  if (/\b(?:static|thread_local)\b/.test(text)) {
+    return 'static-storage';
+  }
+  if (cppHasFileScopeMutableDeclaration(text)) {
+    return 'file-scope-state';
+  }
+  return '';
+}
+
+function cppHasFileScopeMutableDeclaration(source) {
+  let depth = 0;
+  let statement = '';
+
+  const considerStatement = (rawStatement) => {
+    const normalized = rawStatement
+      .replace(/#[^\n]*(?:\n|$)/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized) return false;
+    if (/^(?:using|typedef|template|class|struct|enum|namespace|extern\s+"C")\b/.test(normalized)) return false;
+    if (/\b(?:const|constexpr)\b/.test(normalized)) return false;
+    if (/\(/.test(normalized)) return false;
+    if (/^(?:return|if|for|while|switch|do|break|continue)\b/.test(normalized)) return false;
+    return /^(?:inline\s+|volatile\s+|mutable\s+|unsigned\s+|signed\s+|long\s+|short\s+)*[A-Za-z_:][A-Za-z0-9_:<>,\s*&]*\s+[*&\s]*[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:=|,|\[|;))/.test(normalized);
+  };
+
+  for (const char of source) {
+    if (depth === 0) {
+      statement += char;
+    }
+    if (char === '{') {
+      depth += 1;
+      continue;
+    }
+    if (char === '}') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth === 0 && char === ';') {
+      if (considerStatement(statement)) return true;
+      statement = '';
+    }
+  }
+
+  return false;
+}
+
+function cppOpsClassBatchIsolationReason(inputBatch) {
+  if (!Array.isArray(inputBatch) || inputBatch.length <= 1) return '';
+  const firstOperations = Array.isArray(inputBatch[0]?.operations)
+    ? inputBatch[0].operations
+    : Array.isArray(inputBatch[0]?.ops)
+      ? inputBatch[0].ops
+      : [];
+  for (let caseIndex = 1; caseIndex < inputBatch.length; caseIndex += 1) {
+    const operations = Array.isArray(inputBatch[caseIndex]?.operations)
+      ? inputBatch[caseIndex].operations
+      : Array.isArray(inputBatch[caseIndex]?.ops)
+        ? inputBatch[caseIndex].ops
+        : [];
+    if (operations.length !== firstOperations.length) {
+      return 'heterogeneous-ops-class';
+    }
+    for (let operationIndex = 0; operationIndex < operations.length; operationIndex += 1) {
+      if (operations[operationIndex] !== firstOperations[operationIndex]) {
+        return 'heterogeneous-ops-class';
+      }
+    }
+  }
+  return '';
+}
+
 async function handleCompileRunBatch(payload) {
   const startedAt = now();
   const source = payload && typeof payload.code === 'string' ? payload.code : '';
@@ -10562,17 +10636,94 @@ async function handleCompileRunBatch(payload) {
     };
   }
 
-  const results = [];
-  for (const inputs of inputBatch) {
-    results.push(await handleCompileRun({ ...payload, inputs, executionStyle }));
+  const isolationReason = executionStyle === 'ops-class'
+    ? (cppOpsClassBatchIsolationReason(inputBatch) || cppBatchIsolationReason(source))
+    : cppBatchIsolationReason(source);
+  if (isolationReason) {
+    const results = [];
+    for (const inputs of inputBatch) {
+      results.push(await handleCompileRun({ ...payload, inputs, executionStyle }));
+    }
+    const success = results.every((result) => result.success === true);
+    return {
+      success,
+      results,
+      consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+      ...(success ? {} : { error: results.find((result) => result.success !== true)?.error ?? 'C++ batch execution failed.' }),
+      timings: {
+        ...baseTimings(),
+        batchMode: 'per-case-fallback',
+        batchCaseCount: inputBatch.length,
+        batchFallbackReason: isolationReason,
+      },
+    };
   }
-  const success = results.every((result) => result.success === true);
+
+  let preparedDriverSource;
+  try {
+    preparedDriverSource = executionStyle === 'ops-class'
+      ? buildOpsClassBatchDriverSource(source, functionName, inputBatch, { executionStyle })
+      : buildBatchDriverSource(source, functionName, inputBatch, { executionStyle });
+  } catch (error) {
+    return failedBatchResult(error instanceof Error ? error.message : String(error));
+  }
+
+  const batchTimings = (timings = {}) => ({
+    ...timings,
+    totalMs: elapsedMs(startedAt),
+    batchMode: 'compile-once',
+    batchCaseCount: inputBatch.length,
+  });
+
+  const failedBatchEntries = (result) => inputBatch.map(() => ({
+    success: false,
+    output: null,
+    error: result?.error ?? 'C++ batch execution failed.',
+    consoleOutput: result?.consoleOutput ?? [],
+    timings: result?.timings ?? {},
+  }));
+
+  const result = await compileAndRun(source, functionName, {}, {
+    executionStyle,
+    preparedDriverSource,
+    stdinText: JSON.stringify(inputBatch),
+  });
+
+  if (!result?.success) {
+    return {
+      success: false,
+      results: failedBatchEntries(result),
+      consoleOutput: result?.consoleOutput ?? [],
+      error: result?.error ?? 'C++ batch execution failed.',
+      timings: batchTimings(result?.timings),
+    };
+  }
+
+  if (!Array.isArray(result.output) || result.output.length !== inputBatch.length) {
+    const error = `C++ batch driver returned ${Array.isArray(result.output) ? result.output.length : 'non-array'} results for ${inputBatch.length} cases.`;
+    return {
+      success: false,
+      results: failedBatchEntries({ ...result, error }),
+      consoleOutput: result.consoleOutput ?? [],
+      error,
+      timings: batchTimings(result.timings),
+    };
+  }
+
+  const results = result.output.map((output, index) => ({
+    success: true,
+    output,
+    consoleOutput: index === 0 ? (result.consoleOutput ?? []) : [],
+    executionTimeMs: index === 0 ? result.executionTimeMs : 0,
+    timings: index === 0
+      ? { ...(result.timings ?? {}), batchCaseIndex: index }
+      : { runMs: 0, totalMs: 0, compileCacheHit: true, batchCaseIndex: index },
+  }));
   return {
-    success,
+    success: true,
     results,
-    consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
-    ...(success ? {} : { error: results.find((result) => result.success !== true)?.error ?? 'C++ batch execution failed.' }),
-    timings: { ...baseTimings(), batchMode: 'per-case-isolated', batchCaseCount: inputBatch.length },
+    consoleOutput: result.consoleOutput ?? [],
+    timings: batchTimings(result.timings),
   };
 }
 

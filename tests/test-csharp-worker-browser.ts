@@ -937,8 +937,62 @@ async function main(): Promise<void> {
       `C# worker batch should isolate static fields per case, received ${JSON.stringify(staticStateBatch.results)}`
     );
     assertCondition(
-      staticStateBatch.timings?.batchMode === 'per-case-isolated' && staticStateBatch.timings?.batchCaseCount === 2,
-      `C# worker batch should report per-case isolated timings, received ${JSON.stringify(staticStateBatch.timings)}`
+      staticStateBatch.timings?.batchMode === 'per-case-fallback' &&
+        staticStateBatch.timings?.batchFallbackReason === 'static-storage' &&
+        staticStateBatch.timings?.batchCaseCount === 2,
+      `C# worker batch should report static-storage fallback timings, received ${JSON.stringify(staticStateBatch.timings)}`
+    );
+
+    const lowerCamelBatch = await runWorkerBatchCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int addOne(int value) {',
+        '    return value + 1;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'AddOne',
+      [{ value: 1 }, { value: 4 }],
+      assetBaseUrl
+    );
+    assertCondition(lowerCamelBatch.success, `C# worker lower-camel batch should succeed: ${lowerCamelBatch.error ?? 'unknown error'}`);
+    assertCondition(
+      JSON.stringify(lowerCamelBatch.results.map((entry) => entry.output)) === JSON.stringify([2, 5]),
+      `C# worker lower-camel batch should call the source method casing, received ${JSON.stringify(lowerCamelBatch.results)}`
+    );
+    assertCondition(
+      lowerCamelBatch.timings?.batchMode === 'compile-once' && lowerCamelBatch.timings?.batchCaseCount === 2,
+      `C# worker lower-camel batch should report compile-once timings, received ${JSON.stringify(lowerCamelBatch.timings)}`
+    );
+
+    const opsClassFallbackBatch = await runWorkerBatchCase(
+      page,
+      [
+        'public class Counter {',
+        '  private int value;',
+        '  public Counter(int start) { value = start; }',
+        '  public int Add(int delta) { value += delta; return value; }',
+        '  public int Get() { return value; }',
+        '}',
+      ].join('\n'),
+      'Counter',
+      [
+        { operations: ['Counter', 'Add'], arguments: [[0], [1]] },
+        { operations: ['Counter', 'Add', 'Get'], arguments: [[5], [2], []] },
+      ],
+      assetBaseUrl,
+      { executionStyle: 'ops-class' }
+    );
+    assertCondition(opsClassFallbackBatch.success, `C# worker ops-class fallback batch should succeed: ${opsClassFallbackBatch.error ?? 'unknown error'}`);
+    assertCondition(
+      JSON.stringify(opsClassFallbackBatch.results.map((entry) => entry.output)) === JSON.stringify([[null, 1], [null, 7, 7]]),
+      `C# worker ops-class fallback batch should preserve outputs, received ${JSON.stringify(opsClassFallbackBatch.results)}`
+    );
+    assertCondition(
+      opsClassFallbackBatch.timings?.batchMode === 'per-case-fallback' &&
+        opsClassFallbackBatch.timings?.batchFallbackReason === 'ops-class-reflection',
+      `C# worker ops-class fallback batch should report fallback timings, received ${JSON.stringify(opsClassFallbackBatch.timings)}`
     );
 
     const tracedScriptStyle = await runWorkerCase(
@@ -5208,6 +5262,10 @@ async function main(): Promise<void> {
       listNodeBatch.consoleOutput?.filter((line) => line === 'sum 6').length === 2 &&
         listNodeBatch.consoleOutput?.includes('sum 9'),
       `C# worker ListNode batch should preserve per-case stdout, received ${JSON.stringify(listNodeBatch.consoleOutput)}`
+    );
+    assertCondition(
+      listNodeBatch.timings?.batchMode === 'compile-once' && listNodeBatch.timings?.batchCaseCount === 3,
+      `C# worker ListNode batch should report compile-once timings, received ${JSON.stringify(listNodeBatch.timings)}`
     );
 
     const requiredConstructorListNodeInput = await runWorkerCase(

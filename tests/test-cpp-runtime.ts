@@ -464,8 +464,8 @@ if (
 ) {
   throw new Error('C++ true batch should hydrate independent vector inputs, received ' + JSON.stringify(mutableVectorBatch));
 }
-if (mutableVectorBatch.timings?.batchMode !== 'per-case-isolated' || mutableVectorBatch.timings?.batchCaseCount !== 3) {
-  throw new Error('C++ batch should report per-case isolated timings, received ' + JSON.stringify(mutableVectorBatch.timings));
+if (mutableVectorBatch.timings?.batchMode !== 'compile-once' || mutableVectorBatch.timings?.batchCaseCount !== 3) {
+  throw new Error('C++ batch should report compile-once timings, received ' + JSON.stringify(mutableVectorBatch.timings));
 }
 
 const globalStateBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch({
@@ -489,6 +489,13 @@ const globalStateBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch(
 });
 if (!globalStateBatch.success || JSON.stringify(globalStateBatch.results?.map((result) => result.output)) !== JSON.stringify([0, 0])) {
   throw new Error('C++ batch should isolate file-scope globals per case, received ' + JSON.stringify(globalStateBatch));
+}
+if (
+  globalStateBatch.timings?.batchMode !== 'per-case-fallback' ||
+  globalStateBatch.timings?.batchFallbackReason !== 'file-scope-state' ||
+  globalStateBatch.timings?.batchCaseCount !== 2
+) {
+  throw new Error('C++ global-state batch should report fallback timings, received ' + JSON.stringify(globalStateBatch.timings));
 }
 
 const mutableListBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch({
@@ -538,8 +545,41 @@ if (
 ) {
   throw new Error('C++ batch ops-class failed: ' + JSON.stringify(opsClassBatch));
 }
-if (opsClassBatch.timings?.batchMode !== 'per-case-isolated' || opsClassBatch.timings?.batchCaseCount !== 2) {
-  throw new Error('C++ ops-class batch should report per-case isolated timings, received ' + JSON.stringify(opsClassBatch.timings));
+if (opsClassBatch.timings?.batchMode !== 'compile-once' || opsClassBatch.timings?.batchCaseCount !== 2) {
+  throw new Error('C++ ops-class batch should report compile-once timings, received ' + JSON.stringify(opsClassBatch.timings));
+}
+
+const heterogeneousOpsClassBatch = await sandbox.__tracecodeCppTest.handleCompileRunBatch({
+  name: 'batch heterogeneous ops-class fallback',
+  code: [
+    'class Counter {',
+    '  int value;',
+    'public:',
+    '  Counter(int start) : value(start) {}',
+    '  int add(int delta) { value += delta; return value; }',
+    '  int get() { return value; }',
+    '};',
+  ].join('\n'),
+  functionName: 'Counter',
+  executionStyle: 'ops-class',
+  inputBatch: [
+    { operations: ['Counter', 'add'], arguments: [[0], [1]] },
+    { operations: ['Counter', 'add', 'get'], arguments: [[5], [2], []] },
+  ],
+});
+if (
+  !heterogeneousOpsClassBatch.success ||
+  JSON.stringify(heterogeneousOpsClassBatch.results?.map((result) => result.output)) !==
+    JSON.stringify([[null, 1], [null, 7, 7]])
+) {
+  throw new Error('C++ heterogeneous ops-class batch fallback failed: ' + JSON.stringify(heterogeneousOpsClassBatch));
+}
+if (
+  heterogeneousOpsClassBatch.timings?.batchMode !== 'per-case-fallback' ||
+  heterogeneousOpsClassBatch.timings?.batchFallbackReason !== 'heterogeneous-ops-class' ||
+  heterogeneousOpsClassBatch.timings?.batchCaseCount !== 2
+) {
+  throw new Error('C++ heterogeneous ops-class batch should report fallback timings, received ' + JSON.stringify(heterogeneousOpsClassBatch.timings));
 }
 
 const nestedCustomMapTracingResult = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
