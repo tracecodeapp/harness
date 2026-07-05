@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
@@ -115,6 +115,7 @@
     }
   },
   "scripts": {
+    "prepublishOnly": "pnpm build",
     "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm sync:package-assets && pnpm exec tsup",
     "generate:runtime-info": "pnpm exec tsx scripts/generate-runtime-language-info.ts",
     "generate:python-harness": "pnpm exec tsx scripts/generate-python-harness-artifacts.ts",

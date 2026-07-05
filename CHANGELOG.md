@@ -4,7 +4,9 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
-## [0.9.9] - 2026-07-05
+## [0.9.10] - 2026-07-05
+
+Re-release of the 0.9.9 changes with a correctly built `dist`. (0.9.9 was published from a stale `dist` and shipped none of the code below; a `prepublishOnly` build guard now prevents this.)
 
 ### Added
 
@@ -19,6 +21,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 ### Fixed
 
 - Fixed `curl` URL scheme resolution and replaced raw kernel HTTP errors with typed ones so nothing leaks to the terminal: bare hostnames, `host:port`, and `localhost:3000` now resolve correctly, unsupported schemes return a proper `curl` protocol error, and malformed requests surface as graceful `curl` diagnostics instead of a raw `EINVAL`.
+
+## [0.9.9] - 2026-07-05
+
+Broken publish — shipped a stale `dist` with none of the intended changes. Superseded by [0.9.10]. Do not use.
 
 ## [0.9.8] - 2026-07-04
 
