@@ -294,11 +294,17 @@ export interface RuntimeKernelHttpResponse {
   rawHeaders?: readonly [string, string][];
   body?: string;
   bodyEncoding?: RuntimeFileEncoding;
+  error?: RuntimeKernelHttpError;
 }
 
 export interface RuntimeKernelHttpBodyPayload {
   body?: string;
   bodyEncoding?: RuntimeFileEncoding;
+}
+
+export interface RuntimeKernelHttpError {
+  code: string;
+  message: string;
 }
 
 export interface RuntimeKernelHttpBodyInit {

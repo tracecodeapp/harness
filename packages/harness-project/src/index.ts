@@ -117,6 +117,7 @@ import type {
   RuntimeKernelHttpBodyInit,
   RuntimeKernelHttpBodyPayload,
   RuntimeKernelHttpDispatchOptions,
+  RuntimeKernelHttpError,
   RuntimeKernelHttpHandler,
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpListenerHandle,
@@ -185,6 +186,10 @@ import {
   TRACEKERNEL_SHELL_COMMAND_PREFIX,
   TRACEKERNEL_SKILLS_ROOT,
 } from './constants';
+import {
+  CURL_PROTOCOLS,
+  resolveCurlUrl,
+} from './curl-url';
 import {
   assertNoNul,
   dirname,
@@ -569,6 +574,14 @@ interface RuntimeKernelHttpRequestRecord {
   error?: string;
   external?: true;
 }
+
+type RuntimeKernelHttpPathResult =
+  | { ok: true; path: string }
+  | { ok: false; error: RuntimeKernelHttpError };
+
+type RuntimeKernelHttpRequestResult =
+  | { ok: true; request: RuntimeKernelHttpRequest }
+  | { ok: false; error: RuntimeKernelHttpError };
 
 function redactRuntimeDiagnosticUrl(value: string): string {
   try {
@@ -1036,7 +1049,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     try {
       url = new URL(options.url);
     } catch {
-      return { status: 400, body: `TraceKernel HTTP URL rejected: ${options.url}\n` };
+      return this.httpErrorResponse(
+        400,
+        this.createHttpError('EINVAL', `TraceKernel HTTP URL rejected: ${options.url}`)
+      );
     }
     return this.dispatchHttpRequest({
       method: String(options.method ?? 'GET').toUpperCase(),
@@ -1085,6 +1101,23 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return escaped.length > TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH
       ? `${escaped.slice(0, TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH)}...`
       : escaped;
+  }
+
+  private createHttpError(code: string, message: string): RuntimeKernelHttpError {
+    return { code, message };
+  }
+
+  private httpErrorFromThrown(error: unknown, fallbackCode: string): RuntimeKernelHttpError {
+    const message = error instanceof Error ? error.message : String(error);
+    const taggedCode = typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+    const parsedCode = /^([A-Z][A-Z0-9_]*):/.exec(message)?.[1] ?? '';
+    return this.createHttpError(taggedCode || parsedCode || fallbackCode, message);
+  }
+
+  private httpErrorResponse(status: number, error: RuntimeKernelHttpError, body = `${error.message}\n`): RuntimeKernelHttpResponse {
+    return { status, body, error };
   }
 
   private normalizeHttpHost(host: string, kind: 'connect' | 'listen'): string {
@@ -1170,15 +1203,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return normalized;
   }
 
-  private normalizeHttpRequestPath(path: unknown, url: URL): string {
+  private normalizeHttpRequestPath(path: unknown, url: URL): RuntimeKernelHttpPathResult {
     const fallback = `${url.pathname || '/'}${url.search}`;
     const normalized = String(path ?? fallback) || fallback;
     if (!normalized.startsWith('/') || normalized.length > 8192 || /[\r\n\u0000]/.test(normalized)) {
-      throw Object.assign(new Error(`EINVAL: invalid HTTP request path '${this.sanitizeHttpDiagnosticField(normalized)}'`), {
-        code: 'EINVAL',
-      });
+      return {
+        ok: false,
+        error: this.createHttpError('EINVAL', `EINVAL: invalid HTTP request path '${this.sanitizeHttpDiagnosticField(normalized)}'`),
+      };
     }
-    return normalized;
+    return { ok: true, path: normalized };
   }
 
   private assertHttpBodyLimit(message: RuntimeKernelHttpBodyPayload, direction: 'request' | 'response'): void {
@@ -1193,20 +1227,36 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private normalizeHttpRequest(request: RuntimeKernelHttpRequest): RuntimeKernelHttpRequest {
+  private normalizeHttpRequest(request: RuntimeKernelHttpRequest): RuntimeKernelHttpRequestResult {
     let url: URL;
     try {
       url = new URL(String(request.url));
     } catch {
-      throw Object.assign(new Error('EINVAL: invalid TraceKernel HTTP request URL'), { code: 'EINVAL' });
+      return { ok: false, error: this.createHttpError('EINVAL', 'EINVAL: invalid TraceKernel HTTP request URL') };
     }
-    const rawHeaders = this.normalizeHttpRawHeaders(request.rawHeaders);
-    const explicitHeaders = this.normalizeHttpHeaders(request.headers);
+    let rawHeaders: readonly [string, string][] | undefined;
+    let explicitHeaders: Record<string, string> | undefined;
+    try {
+      rawHeaders = this.normalizeHttpRawHeaders(request.rawHeaders);
+      explicitHeaders = this.normalizeHttpHeaders(request.headers);
+    } catch (error) {
+      return { ok: false, error: this.httpErrorFromThrown(error, 'EINVAL') };
+    }
     const headers = explicitHeaders ?? (rawHeaders ? this.httpHeadersFromRawHeaders(rawHeaders) : undefined);
+    const path = this.normalizeHttpRequestPath(request.path, url);
+    if (!path.ok) {
+      return { ok: false, error: path.error };
+    }
+    let method: string;
+    try {
+      method = this.normalizeHttpMethod(request.method);
+    } catch (error) {
+      return { ok: false, error: this.httpErrorFromThrown(error, 'EINVAL') };
+    }
     const normalized: RuntimeKernelHttpRequest = {
-      method: this.normalizeHttpMethod(request.method),
+      method,
       url: url.toString(),
-      path: this.normalizeHttpRequestPath(request.path, url),
+      path: path.path,
     };
     if (headers) normalized.headers = headers;
     if (explicitHeaders) {
@@ -1217,8 +1267,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (request.body !== undefined) normalized.body = String(request.body);
     if (request.bodyEncoding) normalized.bodyEncoding = request.bodyEncoding;
     if (request.signal) normalized.signal = request.signal;
-    this.assertHttpBodyLimit(normalized, 'request');
-    return normalized;
+    try {
+      this.assertHttpBodyLimit(normalized, 'request');
+    } catch (error) {
+      return { ok: false, error: this.httpErrorFromThrown(error, 'EINVAL') };
+    }
+    return { ok: true, request: normalized };
   }
 
   private normalizeHttpResponse(response: RuntimeKernelHttpResponse): RuntimeKernelHttpResponse {
@@ -1524,7 +1578,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       error,
       external: true,
     });
-    return { status, body: `tracekernel: external fetch blocked: ${reason}\n` };
+    return {
+      status,
+      body: `tracekernel: external fetch blocked: ${reason}\n`,
+      error: this.createHttpError(error, `tracekernel: external fetch blocked: ${reason}`),
+    };
   }
 
   private async dispatchExternalHttpRequest(
@@ -1579,7 +1637,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     const timeoutMs = options.timeoutMs === undefined ? config.timeoutMs : Math.max(1, Math.ceil(Number(options.timeoutMs)));
     if (!Number.isFinite(timeoutMs)) {
-      return { status: 400, body: `TraceKernel HTTP timeout rejected: ${options.timeoutMs}\n` };
+      return this.httpErrorResponse(
+        400,
+        this.createHttpError('EINVAL', `TraceKernel HTTP timeout rejected: ${options.timeoutMs}`)
+      );
     }
     if (options.signal?.aborted) {
       this.recordHttpRequest({
@@ -1588,7 +1649,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         error: 'EINTR',
         external: true,
       });
-      return { status: 0, body: 'TraceKernel HTTP request aborted\n' };
+      return {
+        status: 0,
+        body: 'TraceKernel HTTP request aborted\n',
+        error: this.createHttpError('EINTR', 'TraceKernel HTTP request aborted'),
+      };
     }
     let settled = false;
     const settleFailure = (error: string, body: string): RuntimeKernelHttpResponse => {
@@ -1601,7 +1666,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           external: true,
         });
       }
-      return { status: 0, body };
+      return { status: 0, body, error: this.createHttpError(error, body.trim()) };
     };
     this.activeExternalHttpRequests += 1;
     try {
@@ -1657,19 +1722,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     try {
       this.assertHttpCapability(actor, 'dispatch');
     } catch (error) {
-      return { status: 403, body: `${error instanceof Error ? error.message : String(error)}\n` };
+      return this.httpErrorResponse(403, this.httpErrorFromThrown(error, 'EACCES'));
     }
-    let normalizedRequest: RuntimeKernelHttpRequest;
-    try {
-      normalizedRequest = this.normalizeHttpRequest(request);
-    } catch (error) {
-      return { status: 400, body: `${error instanceof Error ? error.message : String(error)}\n` };
+    const normalizedResult = this.normalizeHttpRequest(request);
+    if (!normalizedResult.ok) {
+      return this.httpErrorResponse(400, normalizedResult.error);
     }
+    const normalizedRequest = normalizedResult.request;
     let url: URL;
     try {
       url = new URL(normalizedRequest.url);
     } catch {
-      return { status: 400, body: 'curl: invalid URL\n' };
+      return this.httpErrorResponse(400, this.createHttpError('EINVAL', 'curl: invalid URL'));
     }
     let listener: RuntimeKernelHttpListenerRecord | undefined;
     try {
@@ -1680,7 +1744,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         url: normalizedRequest.url,
         error: error instanceof Error ? error.message : String(error),
       });
-      return { status: 400, body: `${error instanceof Error ? error.message : String(error)}\n` };
+      return this.httpErrorResponse(400, this.httpErrorFromThrown(error, 'EINVAL'));
     }
     if (!listener) {
       if (this.externalHttp) {
@@ -1691,7 +1755,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         url: normalizedRequest.url,
         error: 'ECONNREFUSED',
       });
-      return { status: 0, body: `curl: (7) Failed to connect to ${url.hostname} port ${url.port || '80'}: Connection refused\n` };
+      return {
+        status: 0,
+        body: `curl: (7) Failed to connect to ${url.hostname} port ${url.port || '80'}: Connection refused\n`,
+        error: this.createHttpError('ECONNREFUSED', `ECONNREFUSED: Failed to connect to ${url.hostname} port ${url.port || '80'}`),
+      };
     }
     if (this.activeHttpRequests >= TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS) {
       this.recordHttpRequest({
@@ -1701,11 +1769,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         url: normalizedRequest.url,
         error: 'EAGAIN',
       });
-      return { status: 503, body: 'TraceKernel HTTP request limit reached\n' };
+      return {
+        status: 503,
+        body: 'TraceKernel HTTP request limit reached\n',
+        error: this.createHttpError('EAGAIN', 'TraceKernel HTTP request limit reached'),
+      };
     }
     const timeoutMs = options.timeoutMs === undefined ? undefined : Math.max(1, Math.ceil(Number(options.timeoutMs)));
     if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) {
-      return { status: 400, body: `TraceKernel HTTP timeout rejected: ${options.timeoutMs}\n` };
+      return this.httpErrorResponse(
+        400,
+        this.createHttpError('EINVAL', `TraceKernel HTTP timeout rejected: ${options.timeoutMs}`)
+      );
     }
     const signal = options.signal;
     if (signal?.aborted) {
@@ -1716,7 +1791,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         url: normalizedRequest.url,
         error: 'EINTR',
       });
-      return { status: 0, body: 'TraceKernel HTTP request aborted\n' };
+      return {
+        status: 0,
+        body: 'TraceKernel HTTP request aborted\n',
+        error: this.createHttpError('EINTR', 'TraceKernel HTTP request aborted'),
+      };
     }
 
     let settled = false;
@@ -1731,7 +1810,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           error,
         });
       }
-      return { status: 0, body };
+      return { status: 0, body, error: this.createHttpError(error, body.trim()) };
     };
     this.activeHttpRequests += 1;
     const response = await this.runHttpDispatchWithAbortRace(options, timeoutMs, async (handlerSignal) => {
@@ -2457,6 +2536,32 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return result ?? { stdout: '', stderr: `bash: ${expandedInvocation.scriptFile}: Exec format error\n`, exitCode: 126 };
   }
 
+  private kernelCurlErrorResult(response: RuntimeKernelHttpResponse): RuntimeCommandResult | undefined {
+    const error = response.error;
+    if (!error) return undefined;
+    if (error.code === 'EINVAL') {
+      return { stdout: '', stderr: 'curl: (3) URL malformed\n', exitCode: 3 };
+    }
+    if (error.code === 'EPROTONOSUPPORT') {
+      const protocol = /Protocol "([^"]+)"/.exec(error.message)?.[1] ?? /'([^']+)'/.exec(error.message)?.[1] ?? 'unknown';
+      return { stdout: '', stderr: `curl: (1) Protocol "${protocol}" not supported\n`, exitCode: 1 };
+    }
+    if (error.code === 'ETIMEDOUT') {
+      return { stdout: '', stderr: response.body?.startsWith('curl: (28)') ? response.body : 'curl: (28) Operation timed out\n', exitCode: 28 };
+    }
+    if (
+      error.code === 'EACCES' ||
+      error.code === 'EHOSTBLOCKED' ||
+      error.code === 'EHOSTUNREACH' ||
+      error.code === 'ECONNREFUSED'
+    ) {
+      if (response.body?.startsWith('curl: (7)')) return { stdout: '', stderr: response.body, exitCode: 7 };
+      const message = error.message.replace(/^[A-Z][A-Z0-9_]*:\s*/, '').replace(/^tracekernel:\s*/, '');
+      return { stdout: '', stderr: `curl: (7) ${message}\n`, exitCode: 7 };
+    }
+    return undefined;
+  }
+
   private async runKernelCurl(args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
     let method: string | undefined;
     let body: string | undefined;
@@ -2604,9 +2709,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         exitCode: 2,
       };
     }
+    const resolved = resolveCurlUrl(urls[0]!);
+    if (!(resolved.scheme in CURL_PROTOCOLS)) {
+      return { stdout: '', stderr: `curl: (1) Protocol "${resolved.scheme}" not supported\n`, exitCode: 1 };
+    }
     let url: URL;
     try {
-      url = new URL(urls[0]!);
+      url = new URL(resolved.url);
     } catch {
       return { stdout: '', stderr: `curl: (3) URL rejected: ${urls[0]}\n`, exitCode: 3 };
     }
@@ -2634,6 +2743,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ...(commandContext?.actor ? { actor: commandContext.actor } : {}),
       ...(commandContext ? { commandContext } : {}),
     });
+    const kernelError = this.kernelCurlErrorResult(response);
+    if (kernelError) return kernelError;
     if (response.status === 0 && response.body?.startsWith('curl: (28)')) {
       return { stdout: '', stderr: response.body ?? 'curl: (28) Operation timed out\n', exitCode: 28 };
     }
@@ -5061,6 +5172,7 @@ export type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpBodyInit,
   RuntimeKernelHttpBodyPayload,
+  RuntimeKernelHttpError,
   RuntimeKernelHttpHandler,
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpListenerHandle,
