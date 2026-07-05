@@ -17,6 +17,7 @@ Re-release of the 0.9.9 changes with a correctly built `dist`. (0.9.9 was publis
 
 - Unified host reachability across `curl`, `ping`, and `workspace.http.request` through `resolveHost`: an unknown host now returns a typed `EHOSTUNREACH` (rendered by `curl` as exit 7, "Host unreachable") rather than leaking a raw kernel error, while a known host with a closed port still returns `ECONNREFUSED`; host allowlist/blocklist policy is unchanged. Also corrected the diagnostic port reported for failed HTTPS connections.
 - Optimized C++ and C# batch execution: test cases that are safe to co-execute now share a single compile-and-run pass, with an automatic per-case fallback when a batch requires isolation.
+- Added true C++ browser trace batching: multi-case trace requests now compile once, run the traced batch driver once, and split trace events back into per-case runtime traces. Benchmarks showed trace batching stays in the same compile-bound envelope as plain C++ batch execution instead of paying one compile per case.
 
 ### Fixed
 
