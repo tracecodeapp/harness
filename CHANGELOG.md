@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.9.9] - 2026-07-05
+
+### Added
+
+- Added a unified kernel journal: one append-only, absolutely-ordered log (a single sequence counter) of every kernel-observed transaction — filesystem writes, process `exec`/`exit`, and HTTP requests — emitted only from kernel-internal observation points, so in-workspace code cannot forge entries and every event is attributed by actor/pid. `Authorization` is stored as a non-reversible fingerprint (never the raw value), and `externalHttp` responses may attach an opaque `annotation`. The journal is exposed both live on the workspace event stream (`kernel-journal` events, ordered consistently with buffered output) and as a queryable `journal(sinceSeq?)` snapshot. HTTP journal records additionally carry redacted grading metadata: idempotency-key and request/response body fingerprints, plus `Content-Type`, `Retry-After`, and `X-RateLimit-*` values.
+- Added a virtual-network host registry (`resolveHost`) and a `ping` reachability command: loopback, in-workspace HTTP listeners, and `externalHttp`-allowlisted hosts all resolve through one primitive with deterministic, hash-derived synthetic IP and latency (no wall clock or RNG). `ping` produces ping-shaped output and fails gracefully with an unknown-host error instead of a raw kernel throw.
+
+### Changed
+
+- Unified host reachability across `curl`, `ping`, and `workspace.http.request` through `resolveHost`: an unknown host now returns a typed `EHOSTUNREACH` (rendered by `curl` as exit 7, "Host unreachable") rather than leaking a raw kernel error, while a known host with a closed port still returns `ECONNREFUSED`; host allowlist/blocklist policy is unchanged. Also corrected the diagnostic port reported for failed HTTPS connections.
+- Optimized C++ and C# batch execution: test cases that are safe to co-execute now share a single compile-and-run pass, with an automatic per-case fallback when a batch requires isolation.
+
+### Fixed
+
+- Fixed `curl` URL scheme resolution and replaced raw kernel HTTP errors with typed ones so nothing leaks to the terminal: bare hostnames, `host:port`, and `localhost:3000` now resolve correctly, unsupported schemes return a proper `curl` protocol error, and malformed requests surface as graceful `curl` diagnostics instead of a raw `EINVAL`.
+
 ## [0.9.8] - 2026-07-04
 
 ### Added
