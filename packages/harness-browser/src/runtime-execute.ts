@@ -96,6 +96,28 @@ export function traceResultToExecuteCase(
   };
 }
 
+export function batchTraceResultToExecuteResult(
+  request: RuntimeExecuteCodeRequest,
+  result: { success: boolean; results: readonly ExecutionResult[]; timings?: RuntimeExecuteResult['timings']; error?: string }
+): RuntimeExecuteResult {
+  const cases = request.cases.map((testCase, index) =>
+    traceResultToExecuteCase(
+      testCase,
+      result.results[index] ?? {
+        success: false,
+        output: undefined,
+        error: result.error ?? 'Batch trace execution did not return a result for this case',
+        consoleOutput: [],
+      }
+    )
+  );
+  return {
+    success: result.success && cases.every((testCase) => testCase.success),
+    cases,
+    timings: result.timings,
+  };
+}
+
 export function batchCodeResultToExecuteResult(
   request: RuntimeExecuteCodeRequest,
   result: CodeExecutionBatchResult

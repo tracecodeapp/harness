@@ -9,7 +9,7 @@ import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
 
 type Language = 'csharp' | 'cpp' | 'java';
-type Mode = 'execute' | 'trace' | 'interview' | 'execute-batch';
+type Mode = 'execute' | 'trace' | 'interview' | 'execute-batch' | 'trace-batch';
 
 interface BenchmarkArgs {
   languages: Language[];
@@ -79,7 +79,7 @@ interface SummaryRecord {
 }
 
 const ALL_LANGUAGES: Language[] = ['csharp', 'cpp', 'java'];
-const ALL_MODES: Mode[] = ['execute', 'trace', 'interview', 'execute-batch'];
+const ALL_MODES: Mode[] = ['execute', 'trace', 'interview', 'execute-batch', 'trace-batch'];
 const DEFAULT_MODES: Mode[] = ['execute', 'trace', 'interview'];
 
 const addCases: TestCase[] = [
@@ -120,7 +120,7 @@ const WORKLOADS: Workload[] = [
   {
     id: 'add',
     label: 'Add',
-    modes: ['execute', 'execute-batch', 'trace', 'interview'],
+    modes: ['execute', 'execute-batch', 'trace', 'trace-batch', 'interview'],
     functionNames: { csharp: 'Sum', cpp: 'sum', java: 'sum' },
     executionStyles: { csharp: 'solution-method', cpp: 'solution-method', java: 'solution-method' },
     sources: {
@@ -146,7 +146,7 @@ const WORKLOADS: Workload[] = [
   {
     id: 'two-sum',
     label: 'Two Sum',
-    modes: ['execute', 'execute-batch', 'trace'],
+    modes: ['execute', 'execute-batch', 'trace', 'trace-batch'],
     functionNames: { csharp: 'TwoSum', cpp: 'twoSum', java: 'twoSum' },
     executionStyles: { csharp: 'solution-method', cpp: 'solution-method', java: 'solution-method' },
     sources: {
@@ -198,7 +198,7 @@ const WORKLOADS: Workload[] = [
   {
     id: 'loop-walk',
     label: 'Loop Walk',
-    modes: ['execute', 'execute-batch', 'trace'],
+    modes: ['execute', 'execute-batch', 'trace', 'trace-batch'],
     functionNames: { csharp: 'Walk', cpp: 'walk', java: 'walk' },
     executionStyles: { csharp: 'solution-method', cpp: 'solution-method', java: 'solution-method' },
     sources: {
@@ -252,7 +252,7 @@ function usage(): string {
     '  --languages=csharp,cpp,java     Languages to benchmark. Default: all.',
     '  --workloads=add,two-sum         Workloads to run. Default: all.',
     '  --modes=execute,trace,interview Modes to run where supported by each workload. Default: execute,trace,interview.',
-    '                                  Also supports java-only execute-batch.',
+    '                                  Also supports execute-batch and cpp trace-batch.',
     '  --iterations=2                  Repeat every workload case. Default: 1.',
     '  --case-limit=2                  Run only the first N cases per workload for quick checks.',
     '  --request-timeout-ms=180000     Per worker request timeout. Default: 180000.',
@@ -574,7 +574,7 @@ async function main(): Promise<void> {
   try {
     const page = await browser.newPage();
     page.on('console', (message) => {
-      if (message.type() === 'error' || message.type() === 'warning') {
+      if (process.env.TRACECODE_BENCH_DEBUG === '1' || message.type() === 'error' || message.type() === 'warning') {
         console.error(`[browser ${message.type()}] ${message.text()}`);
       }
     });
@@ -585,7 +585,7 @@ async function main(): Promise<void> {
     await page.goto(server.origin);
     await page.evaluate('globalThis.__name = (fn) => fn');
     const report = await page.evaluate(
-      async ({ languages, workloads, iterations, requestTimeoutMs }) => {
+      async ({ languages, workloads, iterations, requestTimeoutMs, debug }) => {
         const workerPaths = {
           csharp: '/workers/csharp-worker.js',
           cpp: '/workers/cpp-worker.js',
@@ -602,10 +602,12 @@ async function main(): Promise<void> {
           function compileInFrame(payload) {
             return new Promise((resolve, reject) => {
               const iframe = document.createElement('iframe');
-              iframe.src = '/workers/cpp-compiler-frame.html';
+              const frameToken = `frame-token-${++nextId}-${Date.now()}-${Math.random()}`;
+              iframe.src = `/workers/cpp-compiler-frame.html?tracecodeFrameToken=${encodeURIComponent(frameToken)}`;
               iframe.style.display = 'none';
               document.body.appendChild(iframe);
               const requestId = `frame-${++nextId}`;
+              const protocolToken = `frame-protocol-${requestId}-${Date.now()}-${Math.random()}`;
               const timeoutId = setTimeout(() => {
                 cleanup();
                 reject(new Error('C++ compiler frame timed out'));
@@ -620,10 +622,12 @@ async function main(): Promise<void> {
               function onFrameMessage(event) {
                 if (event.source !== iframe.contentWindow) return;
                 if (event.data?.type === 'frame-ready') {
-                  iframe.contentWindow.postMessage({ id: requestId, type: 'compile', payload }, location.origin);
+                  if (event.data.frameToken !== frameToken) return;
+                  iframe.contentWindow.postMessage({ id: requestId, type: 'compile', frameToken, protocolToken, payload }, location.origin);
                   return;
                 }
                 if (event.data?.id !== requestId) return;
+                if (event.data?.protocolToken !== protocolToken) return;
                 cleanup();
                 resolve(event.data.payload);
               }
@@ -636,18 +640,21 @@ async function main(): Promise<void> {
             const { id, type, payload, requestId } = event.data || {};
             if (type === 'worker-ready' || type === 'idle-timeout') return;
             if (type === 'compile-request') {
+              const compileProtocolToken = event.data?.protocolToken;
               compileInFrame(payload).then((result) => {
                 const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
-                worker.postMessage({ type: 'compile-response', requestId, payload: result }, transfer);
+                worker.postMessage({ type: 'compile-response', requestId, protocolToken: compileProtocolToken, payload: result }, transfer);
               }).catch((error) => {
                 worker.postMessage({
                   type: 'compile-response',
                   requestId,
+                  protocolToken: compileProtocolToken,
                   payload: { success: false, error: error instanceof Error ? error.message : String(error) },
                 });
               });
               return;
             }
+            if (type === 'runtime-progress' || type === 'project-event') return;
             if (!id || !pending.has(id)) return;
             const request = pending.get(id);
             pending.delete(id);
@@ -670,12 +677,13 @@ async function main(): Promise<void> {
           function send(type, payload) {
             return new Promise((resolve, reject) => {
               const id = String(++nextId);
+              const protocolToken = `${language}-${id}-${Date.now()}-${Math.random()}`;
               const timeoutId = setTimeout(() => {
                 pending.delete(id);
                 reject(new Error(`${language} worker request timed out: ${type}`));
               }, requestTimeoutMs);
               pending.set(id, { resolve, reject, timeoutId });
-              worker.postMessage({ id, type, payload });
+              worker.postMessage({ id, type, payload, protocolToken });
             });
           }
 
@@ -759,7 +767,7 @@ async function main(): Promise<void> {
                 executionStyle: workload.executionStyles[language],
               };
               const startedAt = performance.now();
-              const result = await send('execute-code-batch', payload);
+              const result = await send(language === 'cpp' ? 'compile-run-batch' : 'execute-code-batch', payload);
               const wallMs = performance.now() - startedAt;
               const results = Array.isArray(result?.results) ? result.results : [];
               const perCaseWallMs = workload.cases.length > 0 ? wallMs / workload.cases.length : wallMs;
@@ -801,6 +809,73 @@ async function main(): Promise<void> {
                 };
               });
             },
+            async runBatchTrace(workload, iteration) {
+              const payload = {
+                code: workload.sources[language],
+                functionName: workload.functionNames[language],
+                inputBatch: workload.cases.map((testCase) => testCase.inputs),
+                executionStyle: workload.executionStyles[language],
+                options: {
+                  maxTraceSteps: 50_000,
+                  maxStoredEvents: 50_000,
+                },
+              };
+              const startedAt = performance.now();
+              const result = await send('execute-trace-batch', payload);
+              if (debug) {
+                console.log(`trace-batch raw ${language}/${workload.id}: ${JSON.stringify(result).slice(0, 8000)}`);
+              }
+              const wallMs = performance.now() - startedAt;
+              const results = Array.isArray(result?.results) ? result.results : [];
+              const perCaseWallMs = workload.cases.length > 0 ? wallMs / workload.cases.length : wallMs;
+              const batchTimings = result?.timings || {};
+              return workload.cases.map((testCase, caseIndex) => {
+                const caseResult = results[caseIndex] || {};
+                const caseTimings = caseResult.timings || {};
+                const traceEvents = Array.isArray(caseResult?.events)
+                  ? caseResult.events.length
+                  : Array.isArray(caseResult?.trace?.events)
+                    ? caseResult.trace.events.length
+                    : undefined;
+                return {
+                  language,
+                  workloadId: workload.id,
+                  workloadLabel: workload.label,
+                  mode: 'trace-batch',
+                  iteration,
+                  caseName: testCase.name,
+                  caseIndex,
+                  wallMs: perCaseWallMs,
+                  success: Boolean(result?.success && caseResult.success),
+                  output: caseResult.output,
+                  expected: testCase.expected,
+                  error: caseResult.error || result?.error,
+                  timings: {
+                    ...caseTimings,
+                    compileMs: typeof batchTimings.compileMs === 'number'
+                      ? batchTimings.compileMs / workload.cases.length
+                      : caseTimings.compileMs,
+                    hostCallMs: typeof batchTimings.hostCallMs === 'number'
+                      ? batchTimings.hostCallMs / workload.cases.length
+                      : caseTimings.hostCallMs,
+                    totalMs: typeof batchTimings.totalMs === 'number'
+                      ? batchTimings.totalMs / workload.cases.length
+                      : caseTimings.totalMs,
+                    compileCacheHit: batchTimings.compileCacheHit ?? caseTimings.compileCacheHit,
+                    batchMode: batchTimings.batchMode,
+                    batchCaseCount: batchTimings.batchCaseCount,
+                    batchCaseIndex: caseTimings.batchCaseIndex ?? caseIndex,
+                  },
+                  executionTimeMs: caseResult?.executionTimeMs,
+                  traceEventCount: traceEvents,
+                  lineEventCount: caseResult?.lineEventCount ?? caseResult?.trace?.lineEventCount,
+                  traceStepCount: caseResult?.traceStepCount ?? caseResult?.trace?.traceStepCount,
+                  consoleOutputCount: Array.isArray(caseResult?.consoleOutput) ? caseResult.consoleOutput.length : undefined,
+                  batchWallMs: wallMs,
+                  batchSize: workload.cases.length,
+                };
+              });
+            },
             terminate() {
               worker.terminate();
             },
@@ -818,8 +893,14 @@ async function main(): Promise<void> {
               for (const workload of workloads) {
                 for (const mode of workload.modes) {
                   if (mode === 'execute-batch') {
-                    if (language === 'java') {
+                    if (language === 'java' || language === 'cpp') {
                       records.push(...await runner.runBatchExecute(workload, iteration));
+                    }
+                    continue;
+                  }
+                  if (mode === 'trace-batch') {
+                    if (language === 'cpp') {
+                      records.push(...await runner.runBatchTrace(workload, iteration));
                     }
                     continue;
                   }
@@ -845,6 +926,7 @@ async function main(): Promise<void> {
         workloads: selectedWorkloads,
         iterations: args.iterations,
         requestTimeoutMs: args.requestTimeoutMs,
+        debug: process.env.TRACECODE_BENCH_DEBUG === '1',
       }
     );
 

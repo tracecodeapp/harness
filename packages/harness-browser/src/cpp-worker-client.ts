@@ -942,6 +942,40 @@ export class CppWorkerClient {
     }
   }
 
+  async executeTraceBatch(
+    code: string,
+    functionName: string,
+    inputBatch: Record<string, unknown>[],
+    options: TraceExecutionOptions | undefined,
+    executionStyle: CppExecutionStyle,
+    signal?: AbortSignal
+  ): Promise<{ success: boolean; results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
+    await this.init();
+    try {
+      return await this.executeWithTimeout(
+        () =>
+          this.sendMessage<{ success: boolean; results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }>(
+            'execute-trace-batch',
+            { code, functionName, inputBatch, options, executionStyle },
+            this.tracingTimeoutMs + 5_000
+          ),
+        this.tracingTimeoutMs,
+        'trace',
+        signal
+      );
+    } catch (error) {
+      if (!this.isClientTimeout(error)) throw error;
+      const timeout = this.timeoutTraceResult(error);
+      return {
+        success: false,
+        results: inputBatch.map(() => timeout),
+        error: timeout.error,
+        consoleOutput: timeout.consoleOutput,
+        timings: timeout.timings,
+      };
+    }
+  }
+
   async executeWithTracing(
     code: string,
     functionName: string,

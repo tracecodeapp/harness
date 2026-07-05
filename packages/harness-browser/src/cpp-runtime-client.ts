@@ -13,7 +13,12 @@ import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-co
 import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 import type { CppExecutionStyle, CppProjectCommandRequest, CppWorkerClient } from './cpp-worker-client';
-import { batchCodeResultToExecuteResult, executeRuntimeRequest, isRuntimeProjectExecuteRequest } from './runtime-execute';
+import {
+  batchCodeResultToExecuteResult,
+  batchTraceResultToExecuteResult,
+  executeRuntimeRequest,
+  isRuntimeProjectExecuteRequest,
+} from './runtime-execute';
 
 class CppRuntimeClient implements RuntimeClient {
   constructor(private readonly workerClient: CppWorkerClient) {}
@@ -38,6 +43,23 @@ class CppRuntimeClient implements RuntimeClient {
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'solution-method';
+    if (codeRequest.trace && !codeRequest.interview && codeRequest.cases.length > 1) {
+      assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
+        request: 'trace',
+        executionStyle,
+        functionName: codeRequest.functionName ?? '',
+      });
+      const result = await this.workerClient.executeTraceBatch(
+        codeRequest.code,
+        codeRequest.functionName ?? '',
+        codeRequest.cases.map((testCase) => testCase.inputs),
+        codeRequest.traceOptions,
+        executionStyle as CppExecutionStyle,
+        codeRequest.signal
+      );
+      return batchTraceResultToExecuteResult(codeRequest, result);
+    }
+
     if (!codeRequest.trace && !codeRequest.interview && codeRequest.cases.length > 1) {
       assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
         request: 'execute',

@@ -14,6 +14,7 @@ const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 const CPP_USER_SOURCE_FILE = 'solution.cpp';
 const CPP_STANDARD = 'c++23';
 const CPP_SCRIPT_FUNCTION_NAME = '__tracecode_script_main';
+const CPP_BATCH_TRACE_CASE_MARKER_FUNCTION = '__tracecode_batch_case';
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const DEFAULT_INTERVIEW_MAX_TRACE_STEPS = 10_000;
 const DEFAULT_INTERVIEW_MAX_LINE_EVENTS = 12_000;
@@ -7925,13 +7926,20 @@ function buildBatchDriverSource(userCode, functionName, inputBatch, options = {}
     : buildCppDriverTypeContext(userCode, functionName, signature, aliases);
   const driverSignature = qualifyCppSignatureForDriver(signature, typeContext, aliases);
   const usesSolutionClass = options.executionStyle !== 'function' || sourceDeclaresSolutionClass(userCode);
+  const traced = options.tracing === true;
+  const sourceForDriver = traced ? instrumentCppSourceForTracing(userCode, functionName) : userCode;
   const declarations = [];
   const argumentNames = [];
 
   driverSignature.parameters.forEach((parameter, index) => {
     const localName = `__tc_arg_${index}`;
-    const type = materializedCppType(parameter.type, aliases);
-    declarations.push(`    ${type} ${localName} = tracecode::read_json_input<${type}>(__tc_case, ${cppStringLiteral(parameter.name)}, ${index});`);
+    const materializedType = materializedCppType(parameter.type, aliases);
+    const shouldTraceParameter = traced && shouldTraceWrapCppParameter(parameter, signature, aliases, userCode);
+    const declarationType = shouldTraceParameter ? cppTraceType(parameter.type, aliases) : materializedType;
+    const value = `tracecode::read_json_input<${materializedType}>(__tc_case, ${cppStringLiteral(parameter.name)}, ${index})`;
+    declarations.push(shouldTraceParameter
+      ? `    ${declarationType} ${localName}(${materializedType}(${value}), ${cppStringLiteral(parameter.name)}, ${signature.line});`
+      : `    ${declarationType} ${localName} = ${value};`);
     argumentNames.push(localName);
   });
 
@@ -7950,13 +7958,16 @@ function buildBatchDriverSource(userCode, functionName, inputBatch, options = {}
     : cppJsonExpressionForValue('__tc_result', driverSignature.returnType, userCode);
   const callExpression = `${usesSolutionClass ? `solution.${functionName}` : functionName}(${argumentNames.join(', ')})`;
   const invokeAndStore = noStoredResult ? `    ${callExpression};` : `    auto __tc_result = ${callExpression};`;
+  const traceCaseSetup = traced
+    ? `    ${configureTraceBudgetCall(options)}\n    tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"call","line":1,"function":"${CPP_BATCH_TRACE_CASE_MARKER_FUNCTION}","args":{"index":`)}) + std::to_string(__tc_case_index) + "}}", 1);`
+    : '';
 
 return `${buildGeneratedIncludes(userCode, driverSignature)}
 using namespace std;
 ${buildTracecodeFallbackAliases(userCode)}
 
 #line 1 "${CPP_USER_SOURCE_FILE}"
-${userCode}
+${sourceForDriver}
 ${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
@@ -7970,6 +7981,7 @@ int main() {
   for (std::size_t __tc_case_index = 0; __tc_case_index < __tc_cases.array_values.size(); ++__tc_case_index) {
     const tracecode::JsonValue& __tc_case = __tc_cases.array_values[__tc_case_index];
     if (__tc_case_index > 0) __tc_results += ",";
+${traceCaseSetup}
 ${usesSolutionClass ? '    Solution solution;\n' : ''}${declarations.join('\n')}
 ${invokeAndStore}
     __tc_results += ${resultJsonExpression};
@@ -8576,6 +8588,86 @@ function finalizeRuntimeTrace(events, options = {}) {
     },
     traceLimitExceeded,
     droppedEventCount: traceLimitExceeded ? Math.max(0, normalizedEvents.length - storedEvents.length) : 0,
+  };
+}
+
+function splitCppBatchTraceEvents(events, caseCount) {
+  const batches = Array.from({ length: Math.max(0, caseCount) }, () => []);
+  let currentCaseIndex = -1;
+
+  for (const event of Array.isArray(events) ? events : []) {
+    if (
+      event?.kind === 'call' &&
+      event.function === CPP_BATCH_TRACE_CASE_MARKER_FUNCTION &&
+      event.args &&
+      Number.isInteger(Number(event.args.index))
+    ) {
+      const nextIndex = Number(event.args.index);
+      currentCaseIndex = nextIndex >= 0 && nextIndex < batches.length ? nextIndex : -1;
+      continue;
+    }
+
+    if (currentCaseIndex >= 0) {
+      batches[currentCaseIndex].push(event);
+    }
+  }
+
+  return batches;
+}
+
+function cppBatchTraceResultsFromParsedOutput(parsed, source, inputBatch, timings, startedAt, options = {}) {
+  if (!Array.isArray(parsed?.output) || parsed.output.length !== inputBatch.length) {
+    const error = `C++ trace batch driver returned ${Array.isArray(parsed?.output) ? parsed.output.length : 'non-array'} results for ${inputBatch.length} cases.`;
+    return {
+      success: false,
+      results: inputBatch.map(() => ({
+        success: false,
+        output: null,
+        error,
+        trace: finalizeRuntimeTrace([{ kind: 'exception', line: 1, message: error }], { ...(options.traceOptions || {}), sourceCode: source }).trace,
+        consoleOutput: [],
+        executionTimeMs: elapsedMs(startedAt),
+        timings: { ...timings, totalMs: elapsedMs(startedAt) },
+      })),
+      error,
+      consoleOutput: parsed?.consoleOutput ?? [],
+      timings: { ...timings, totalMs: elapsedMs(startedAt), batchMode: 'compile-once-trace', batchCaseCount: inputBatch.length },
+    };
+  }
+
+  const traceBatches = splitCppBatchTraceEvents(parsed.events, inputBatch.length);
+  const results = parsed.output.map((output, index) => {
+    const finalizedTrace = finalizeRuntimeTrace(traceBatches[index] ?? [], {
+      ...(options.traceOptions || {}),
+      sourceCode: source,
+    });
+    return {
+      success: true,
+      output,
+      trace: finalizedTrace.trace,
+      consoleOutput: index === 0 ? (parsed.consoleOutput ?? []) : [],
+      executionTimeMs: index === 0 ? elapsedMs(startedAt) : 0,
+      lineEventCount: finalizedTrace.trace.lineEventCount,
+      traceStepCount: finalizedTrace.trace.traceStepCount,
+      traceLimitExceeded: finalizedTrace.traceLimitExceeded,
+      ...(finalizedTrace.traceLimitExceeded ? { timeoutReason: timeoutReasonForParsedTrace(parsed) } : {}),
+      ...(finalizedTrace.traceLimitExceeded ? { droppedEventCount: finalizedTrace.droppedEventCount } : {}),
+      timings: index === 0
+        ? { ...timings, totalMs: elapsedMs(startedAt), batchCaseIndex: index }
+        : { runMs: 0, totalMs: 0, compileCacheHit: true, batchCaseIndex: index },
+    };
+  });
+
+  return {
+    success: true,
+    results,
+    consoleOutput: parsed.consoleOutput ?? [],
+    timings: {
+      ...timings,
+      totalMs: elapsedMs(startedAt),
+      batchMode: 'compile-once-trace',
+      batchCaseCount: inputBatch.length,
+    },
   };
 }
 
@@ -9997,6 +10089,18 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
       ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
+    if (options.batchTrace === true) {
+      const inputBatch = Array.isArray(options.inputBatch) ? options.inputBatch : [];
+      const batchTraceResult = cppBatchTraceResultsFromParsedOutput(parsed, source, inputBatch, timings, start, options);
+      if (program.exitCode !== 0 || programTimedOut) {
+        return {
+          ...batchTraceResult,
+          success: false,
+          error: programTimedOut ? 'C++ trace budget exceeded.' : (program.stderr || `C++ program exited with code ${program.exitCode}`),
+        };
+      }
+      return batchTraceResult;
+    }
     const finalizedTrace = finalizeRuntimeTrace(parsed.events, { ...(options.traceOptions || {}), sourceCode: source });
     const { trace } = finalizedTrace;
     const runtimeTraceLimitExceeded = finalizedTrace.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded) || programTimedOut;
@@ -10176,6 +10280,18 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
       ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
+    if (options.batchTrace === true) {
+      const inputBatch = Array.isArray(options.inputBatch) ? options.inputBatch : [];
+      const batchTraceResult = cppBatchTraceResultsFromParsedOutput(parsed, source, inputBatch, timings, start, options);
+      if (program.exitCode !== 0 || programTimedOut) {
+        return {
+          ...batchTraceResult,
+          success: false,
+          error: programTimedOut ? 'C++ trace budget exceeded.' : (program.stderr || `C++ program exited with code ${program.exitCode}`),
+        };
+      }
+      return batchTraceResult;
+    }
     const finalizedTrace = finalizeRuntimeTrace(parsed.events, { ...(options.traceOptions || {}), sourceCode: source });
     const { trace } = finalizedTrace;
     const runtimeTraceLimitExceeded = finalizedTrace.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded) || programTimedOut;
@@ -10727,6 +10843,158 @@ async function handleCompileRunBatch(payload) {
   };
 }
 
+async function handleExecuteTraceBatch(payload) {
+  const startedAt = now();
+  const source = payload && typeof payload.code === 'string' ? payload.code : '';
+  const functionName = payload && typeof payload.functionName === 'string' ? payload.functionName : '';
+  const executionStyle = payload?.executionStyle || 'solution-method';
+  const inputBatch = Array.isArray(payload?.inputBatch)
+    ? payload.inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
+    : [];
+  const baseTimings = () => ({ totalMs: elapsedMs(startedAt), batchMode: 'per-case-fallback', batchCaseCount: inputBatch.length });
+  const failedTrace = (message) => {
+    const trace = finalizeRuntimeTrace([{ kind: 'exception', line: 1, message }]).trace;
+    return {
+      success: false,
+      output: null,
+      error: message,
+      trace,
+      executionTimeMs: 0,
+      consoleOutput: [],
+      lineEventCount: trace.lineEventCount,
+      traceStepCount: trace.traceStepCount,
+    };
+  };
+  const failedBatchResult = (message) => ({
+    success: false,
+    results: inputBatch.map(() => failedTrace(message)),
+    error: message,
+    consoleOutput: [],
+    timings: baseTimings(),
+  });
+
+  if (!source.trim()) {
+    return failedBatchResult('C++ source is empty.');
+  }
+
+  if (inputBatch.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'C++ trace batch execution requires a non-empty inputBatch array.',
+      consoleOutput: [],
+      timings: baseTimings(),
+    };
+  }
+
+  if (!functionName.trim() && executionStyle !== 'function') {
+    return failedBatchResult('C++ named tracing requires a function name.');
+  }
+
+  const fallbackPerCase = async (reason) => {
+    const results = [];
+    for (const inputs of inputBatch) {
+      results.push(await handleExecuteWithTracing({
+        ...payload,
+        inputs,
+        executionStyle,
+      }));
+    }
+    const success = results.every((result) => result.success === true);
+    return {
+      success,
+      results,
+      consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+      ...(success ? {} : { error: results.find((result) => result.success !== true)?.error ?? 'C++ trace batch execution failed.' }),
+      timings: {
+        ...baseTimings(),
+        batchFallbackReason: reason,
+      },
+    };
+  };
+
+  if (!functionName.trim() && executionStyle === 'function') {
+    return fallbackPerCase('script-without-function-name');
+  }
+
+  if (executionStyle === 'ops-class') {
+    return fallbackPerCase('ops-class-trace-batch-unsupported');
+  }
+
+  const isolationReason = cppBatchIsolationReason(source);
+  if (isolationReason) {
+    return fallbackPerCase(isolationReason);
+  }
+
+  let preparedDriverSource;
+  try {
+    preparedDriverSource = buildBatchDriverSource(source, functionName, inputBatch, {
+      executionStyle,
+      tracing: true,
+      traceOptions: payload?.options || {},
+    });
+  } catch (error) {
+    return failedBatchResult(error instanceof Error ? error.message : String(error));
+  }
+
+  const result = await compileAndRun(source, functionName, {}, {
+    executionStyle,
+    tracing: true,
+    traceOptions: payload?.options || {},
+    preparedDriverSource,
+    stdinText: JSON.stringify(inputBatch),
+    batchTrace: true,
+    inputBatch,
+  });
+
+  if (!Array.isArray(result?.results)) {
+    const diagnostics = [
+      result?.error,
+      ...(Array.isArray(result?.consoleOutput) ? result.consoleOutput : []),
+      ...(Array.isArray(result?.trace?.events)
+        ? result.trace.events.map((event) => event?.message || event?.reason).filter(Boolean)
+        : []),
+    ].filter((line) => typeof line === 'string' && line.trim().length > 0);
+    const message = diagnostics[0] ?? `C++ trace batch execution failed (${result ? `result keys: ${Object.keys(result).join(', ')}` : 'no result'}).`;
+    const trace = result?.trace ?? finalizeRuntimeTrace([{ kind: 'exception', line: 1, message }], {
+      ...(payload?.options || {}),
+      sourceCode: source,
+    }).trace;
+    return {
+      success: false,
+      results: inputBatch.map((_, index) => ({
+        success: false,
+        output: null,
+        error: message,
+        trace,
+        consoleOutput: index === 0 ? (result?.consoleOutput ?? []) : [],
+        executionTimeMs: index === 0 ? (result?.executionTimeMs ?? elapsedMs(startedAt)) : 0,
+        lineEventCount: trace.lineEventCount,
+        traceStepCount: trace.traceStepCount,
+        timings: index === 0 ? (result?.timings ?? baseTimings()) : { runMs: 0, totalMs: 0, compileCacheHit: true, batchCaseIndex: index },
+      })),
+      error: message,
+      consoleOutput: result?.consoleOutput ?? [],
+      timings: {
+        ...(result?.timings ?? {}),
+        totalMs: elapsedMs(startedAt),
+        batchMode: 'compile-once-trace',
+        batchCaseCount: inputBatch.length,
+      },
+    };
+  }
+
+  return {
+    ...result,
+    timings: {
+      ...(result.timings ?? {}),
+      totalMs: elapsedMs(startedAt),
+      batchMode: result.timings?.batchMode ?? 'compile-once-trace',
+      batchCaseCount: inputBatch.length,
+    },
+  };
+}
+
 async function handleExecuteWithTracing(payload) {
   const source = payload && typeof payload.code === 'string' ? payload.code : '';
   const functionName = payload && typeof payload.functionName === 'string' ? payload.functionName : '';
@@ -10947,6 +11215,8 @@ self.onmessage = (event) => {
                 ? await handleProjectCpp(payload, id)
               : type === 'execute-with-tracing'
                 ? await handleExecuteWithTracing(payload)
+                : type === 'execute-trace-batch'
+                  ? await handleExecuteTraceBatch(payload)
                 : type === 'execute-code-interview'
                   ? await handleExecuteCodeInterview(payload)
                   : await Promise.reject(new Error(`Unknown C++ worker message: ${type}`));
