@@ -22,15 +22,21 @@ jobs:
         run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync
       - name: Typecheck
         run: pnpm typecheck
-      - name: Test core runtimes
+      - name: Test trace adapters and Python runtime
         run: |
           pnpm test:trace-adapters
           pnpm test:python-sync
           pnpm test:python-runtime
+      - name: Test Java runtime
+        run: |
           pnpm test:java-sync
           pnpm test:java-runtime
-          pnpm test:csharp-runtime
-          pnpm test:js-runtime
+      - name: Test C# runtime
+        run: pnpm test:csharp-runtime
+      - name: Test JavaScript runtime
+        run: timeout 5m pnpm test:js-runtime
+      - name: Test project and shared runtime contracts
+        run: |
           pnpm test:project
           pnpm test:runtime-contract
           pnpm test:standalone-boundary
