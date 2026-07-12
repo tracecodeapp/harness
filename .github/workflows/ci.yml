@@ -18,6 +18,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile=false
+      - name: Install browser test runtime
+        run: pnpm exec playwright install --with-deps chromium
       - name: Check generated runtime metadata
         run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync
       - name: Typecheck

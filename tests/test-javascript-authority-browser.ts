@@ -97,8 +97,9 @@ async function main(): Promise<void> {
   assertCondition(address && typeof address === 'object', 'Browser test server did not expose an address');
   const origin = `http://127.0.0.1:${address.port}`;
 
-  const browser = await chromium.launch({ headless: true });
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
+    browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
     page.setDefaultTimeout(120_000);
     await page.goto(origin);
@@ -318,7 +319,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ exposure, classic, project: { outcomes, probeNames: project.probeNames } }, null, 2));
     console.log('PASS: public Classic and project browser paths deny ambient authority in real Chromium');
   } finally {
-    await browser.close();
+    await browser?.close();
     await new Promise<void>((resolveClose) => {
       server.close(() => resolveClose());
       server.closeAllConnections();
