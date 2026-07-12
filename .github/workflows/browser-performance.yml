@@ -1,0 +1,48 @@
+name: Browser project performance
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 8 * * *"
+
+jobs:
+  project-provider-performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - name: Install ${{ matrix.engine }}
+        run: pnpm exec playwright install --with-deps ${{ matrix.engine }}
+      - name: Measure ${{ matrix.engine }} project providers
+        run: >-
+          pnpm bench:browser-project-runtimes
+          --engine=${{ matrix.engine }}
+          --languages=python,javascript,typescript,java,csharp,cpp
+          --iterations=5
+          --cache-assets
+          --execution-host
+          --runtime-manifests=tests/fixtures/browser-project-java-cheerpj-4.2.json
+          --request-timeout-ms=180000
+          --report=reports/browser-project-runtime-${{ matrix.engine }}.json
+      - name: Check ${{ matrix.engine }} regression budget
+        run: >-
+          pnpm check:browser-project-performance
+          --report=reports/browser-project-runtime-${{ matrix.engine }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-project-runtime-${{ matrix.engine }}
+          path: reports/browser-project-runtime-${{ matrix.engine }}.json
+          if-no-files-found: error

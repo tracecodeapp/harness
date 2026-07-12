@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "tracecode-browser-project-performance-baseline-v1",
+  "recordedAt": "2026-07-12",
+  "samplesPerCell": 5,
+  "browserContexts": "fresh",
+  "runtimeDownloads": "excluded from repeated command phases with immutable local asset delivery",
+  "tolerance": {
+    "relative": 1.5,
+    "absoluteMsByPhase": {
+      "workspace-construction": 100,
+      "first-command": 500,
+      "second-fresh-command": 250
+    }
+  },
+  "p50Ms": {
+    "chromium": {
+      "python": { "workspace-construction": 14.1, "first-command": 2038.4, "second-fresh-command": 1414.4 },
+      "javascript": { "workspace-construction": 14.0, "first-command": 24.5, "second-fresh-command": 14.5 },
+      "typescript": { "workspace-construction": 14.4, "first-command": 197.0, "second-fresh-command": 41.0 },
+      "java": { "workspace-construction": 25.6, "first-command": 9623.6, "second-fresh-command": 882.1 },
+      "csharp": { "workspace-construction": 13.8, "first-command": 3672.2, "second-fresh-command": 3594.3 },
+      "cpp": { "workspace-construction": 14.2, "first-command": 2074.6, "second-fresh-command": 2006.1 }
+    },
+    "firefox": {
+      "python": { "workspace-construction": 8.0, "first-command": 8040.7, "second-fresh-command": 7615.1 },
+      "javascript": { "workspace-construction": 8.4, "first-command": 33.8, "second-fresh-command": 26.5 },
+      "typescript": { "workspace-construction": 8.9, "first-command": 399.9, "second-fresh-command": 81.2 },
+      "java": { "workspace-construction": 21.6, "first-command": 10528.2, "second-fresh-command": 1952.9 },
+      "csharp": { "workspace-construction": 8.8, "first-command": 13412.6, "second-fresh-command": 13435.2 },
+      "cpp": { "workspace-construction": 8.3, "first-command": 7648.0, "second-fresh-command": 6951.9 }
+    },
+    "webkit": {
+      "python": { "workspace-construction": 16.6, "first-command": 1967.3, "second-fresh-command": 1774.2 },
+      "javascript": { "workspace-construction": 15.2, "first-command": 40.3, "second-fresh-command": 18.5 },
+      "typescript": { "workspace-construction": 17.0, "first-command": 297.9, "second-fresh-command": 49.9 },
+      "java": { "workspace-construction": 30.1, "first-command": 7386.0, "second-fresh-command": 867.6 },
+      "csharp": { "workspace-construction": 18.9, "first-command": 3635.9, "second-fresh-command": 4492.0 },
+      "cpp": { "workspace-construction": 16.2, "first-command": 2693.1, "second-fresh-command": 2689.6 }
+    }
+  }
+}

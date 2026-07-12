@@ -4,7 +4,8 @@
  * End-to-end benchmark for the public project-browser workspace API.
  *
  * Node.js/tsx is only the Playwright orchestration process. Every measured
- * project command executes inside Chromium through createBrowserProjectWorkspace().
+ * project command executes inside the selected browser engine through
+ * createBrowserProjectWorkspace().
  * In particular, `node main.js` is the public browser JavaScript command syntax;
  * this benchmark does not assess or invoke a host Node.js project runtime.
  */
@@ -17,19 +18,24 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { build } from 'esbuild';
-import { chromium, type BrowserContext, type Request } from 'playwright';
+import { chromium, firefox, webkit, type Browser, type BrowserContext, type Request } from 'playwright';
 
 type Language = 'python' | 'javascript' | 'typescript' | 'java' | 'csharp' | 'cpp';
+type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
 type Phase =
   | 'workspace-construction'
   | 'first-command'
   | 'second-fresh-command'
   | 'filesystem'
   | 'policy-denials'
-  | 'http-bridge';
+  | 'http-bridge'
+  | 'process-io'
+  | 'cancellation'
+  | 'disposal';
 type PhaseStatus = 'passed' | 'failed' | 'skipped';
 
 interface BenchmarkArgs {
+  engine: BrowserEngine;
   languages: Language[];
   iterations: number;
   requestTimeoutMs: number;
@@ -166,6 +172,7 @@ interface SummaryRecord {
 }
 
 const ALL_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
+const ALL_ENGINES: BrowserEngine[] = ['chromium', 'firefox', 'webkit'];
 const PREWARM_LANGUAGES = ['python', 'java', 'csharp'] as const;
 const ALL_PHASES: Phase[] = [
   'workspace-construction',
@@ -174,6 +181,9 @@ const ALL_PHASES: Phase[] = [
   'filesystem',
   'policy-denials',
   'http-bridge',
+  'process-io',
+  'cancellation',
+  'disposal',
 ];
 const DEFAULT_SEED = 20_260_711;
 const EMPTY_RESOURCE_TIMING: ResourceTimingSummary = {
@@ -281,10 +291,11 @@ const FIXTURES: Record<Language, ProjectFixture> = {
 function usage(): string {
   return [
     '',
-    'Benchmarks the public createBrowserProjectWorkspace() API in Chromium.',
+    'Benchmarks the public createBrowserProjectWorkspace() API in a real browser engine.',
     'The Playwright Node.js process is orchestration only and is not benchmarked.',
     '',
     'Options:',
+    '  --engine=chromium|firefox|webkit Browser engine. Default: chromium.',
     '  --languages=python,javascript,typescript,java,csharp,cpp',
     '                                  Project-browser runtimes. Default: all.',
     '  --iterations=5                  Fresh BrowserContext/workspace samples. Default: 5 (smoke: 1).',
@@ -297,7 +308,7 @@ function usage(): string {
     '  --no-report                     Do not write a JSON report.',
     '  --cache-assets                  Serve immutable cache headers so repeated commands exclude downloads.',
     '  --execution-host               Run Java through a dedicated cross-origin session host.',
-    '  --headful                       Run Chromium with a visible window.',
+    '  --headful                       Run the selected browser with a visible window.',
   ].join('\n');
 }
 
@@ -357,6 +368,7 @@ function parsePrewarm(raw: string): ProjectWorkerPrewarm {
 
 function parseArgs(argv: string[]): BenchmarkArgs {
   const args: BenchmarkArgs = {
+    engine: 'chromium',
     languages: ALL_LANGUAGES,
     iterations: 5,
     requestTimeoutMs: 180_000,
@@ -395,6 +407,12 @@ function parseArgs(argv: string[]): BenchmarkArgs {
     }
     if (arg === '--execution-host') {
       args.executionHost = true;
+      continue;
+    }
+    if (arg.startsWith('--engine=')) {
+      const engines = parseCsv(arg.slice('--engine='.length), ALL_ENGINES, 'browser engine');
+      if (engines.length !== 1) throw new Error('--engine accepts exactly one browser engine.');
+      args.engine = engines[0]!;
       continue;
     }
     if (arg.startsWith('--languages=')) {
@@ -829,7 +847,7 @@ function skippedRecord(item: RunPlanItem, phase: Phase, reason: string): PhaseRe
 
 async function runBrowserPlanItem(
   browserOrigin: string,
-  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  browser: Browser,
   item: RunPlanItem,
   args: BenchmarkArgs,
   networkRecords: NetworkResourceRecord[],
@@ -916,6 +934,9 @@ async function runBrowserPlanItem(
           'filesystem',
           'policy-denials',
           'http-bridge',
+          'process-io',
+          'cancellation',
+          'disposal',
         ];
         const encoder = new TextEncoder();
         const records: PhaseRecord[] = [];
@@ -1284,6 +1305,95 @@ async function runBrowserPlanItem(
               details: { listenerPort: value.port, transport: 'public workspace.http.listen -> public shell curl' },
             })
           );
+
+          await measurePhase(
+            'process-io',
+            () => runProjectCommand(
+              'process stdio contract',
+              "printf 'stdin-ok\\n' | cat && printf 'stdout-ok\\n' && printf 'stderr-ok\\n' >&2"
+            ),
+            (result) => {
+              const errors: string[] = [];
+              if (result.exitCode !== 0) errors.push(`stdio command exit code ${result.exitCode}`);
+              if (result.stdout !== 'stdin-ok\nstdout-ok\n') {
+                errors.push(`stdio stdout mismatch: ${JSON.stringify(result.stdout)}`);
+              }
+              if (result.stderr !== 'stderr-ok\n') {
+                errors.push(`stdio stderr mismatch: ${JSON.stringify(result.stderr)}`);
+              }
+              return errors;
+            },
+            (result) => ({
+              command: "printf 'stdin-ok\\n' | cat && printf 'stdout-ok\\n' && printf 'stderr-ok\\n' >&2",
+              exitCode: result.exitCode,
+              stdout: result.stdout,
+              stderr: result.stderr,
+              serializedResultBytes: serializedBytes(result),
+            })
+          );
+
+          await measurePhase(
+            'cancellation',
+            async () => {
+              const controller = new AbortController();
+              const startedAt = performance.now();
+              const timer = setTimeout(() => controller.abort(), 25);
+              try {
+                const result = await workspace.runCommand('sleep 30', { signal: controller.signal });
+                return { result, wallMs: performance.now() - startedAt };
+              } catch (error) {
+                return {
+                  error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+                  wallMs: performance.now() - startedAt,
+                };
+              } finally {
+                clearTimeout(timer);
+              }
+            },
+            (value) => {
+              const errors: string[] = [];
+              const resultError = value.result && 'error' in value.result ? value.result.error : undefined;
+              const cancelled = value.error !== undefined || resultError !== undefined || value.result?.exitCode !== 0;
+              if (!cancelled) errors.push(`cancelled command unexpectedly completed: ${JSON.stringify(value.result)}`);
+              if (value.wallMs > 5_000) errors.push(`cancelled command took ${value.wallMs.toFixed(1)}ms to settle`);
+              return errors;
+            },
+            (value) => ({
+              command: 'sleep 30',
+              exitCode: value.result?.exitCode,
+              stdout: value.result?.stdout,
+              stderr: value.result?.stderr,
+              details: {
+                cancellationError: value.error,
+                resultError: value.result && 'error' in value.result ? value.result.error : undefined,
+                cancellationWallMs: value.wallMs,
+              },
+              serializedResultBytes: serializedBytes(value),
+            })
+          );
+
+          await measurePhase(
+            'disposal',
+            async () => {
+              const iframeCountBefore = document.querySelectorAll('iframe').length;
+              workspace.dispose();
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              const iframeCountAfter = document.querySelectorAll('iframe').length;
+              workspace.dispose();
+              return { iframeCountBefore, iframeCountAfter };
+            },
+            (value) => {
+              const errors: string[] = [];
+              if (value.iframeCountAfter !== 0) {
+                errors.push(`workspace disposal left ${value.iframeCountAfter} execution iframe(s)`);
+              }
+              if (language === 'java' && executionHostUrl && value.iframeCountBefore !== 1) {
+                errors.push(`Java execution-host workspace expected one iframe before disposal, found ${value.iframeCountBefore}`);
+              }
+              return errors;
+            },
+            (value) => ({ details: value, serializedResultBytes: serializedBytes(value) })
+          );
         } finally {
           workspace.dispose();
         }
@@ -1455,9 +1565,9 @@ function formatMs(value: number | null | undefined): string {
   return String(Math.round(value));
 }
 
-function printSummary(summaries: readonly SummaryRecord[]): void {
+function printSummary(summaries: readonly SummaryRecord[], engine: BrowserEngine): void {
   console.log('\nPublic project-browser runtime benchmark');
-  console.log('Measured boundary: Chromium project workspaces only; host Node.js is orchestration and excluded.');
+  console.log(`Measured boundary: ${engine} project workspaces only; host Node.js is orchestration and excluded.`);
   console.log('\nlanguage    phase                    pass       p50 ms  p95 ms  avg ms  stddev');
   for (const item of summaries) {
     const pass = `${item.passed}/${item.attempted}${item.skipped ? ` (+${item.skipped}s)` : ''}`;
@@ -1473,7 +1583,11 @@ function printSummary(summaries: readonly SummaryRecord[]): void {
   }
 }
 
-function metricCoverage(records: readonly PhaseRecord[], networkRecords: readonly NetworkResourceRecord[]) {
+function metricCoverage(
+  records: readonly PhaseRecord[],
+  networkRecords: readonly NetworkResourceRecord[],
+  engine: BrowserEngine
+) {
   const attempted = records.filter((record) => record.status !== 'skipped');
   return {
     operationWallTime: {
@@ -1489,13 +1603,15 @@ function metricCoverage(records: readonly PhaseRecord[], networkRecords: readonl
     memory: {
       supportedRecords: attempted.filter((record) => record.memoryBefore && record.memoryAfter).length,
       records: attempted.length,
-      source: 'Chromium performance.memory with --enable-precise-memory-info when exposed',
+      source: engine === 'chromium'
+        ? 'Chromium performance.memory with --enable-precise-memory-info when exposed'
+        : `${engine} performance.memory when exposed`,
     },
     network: {
       completedResources: networkRecords.filter((record) => !record.failed).length,
       failedResources: networkRecords.filter((record) => record.failed).length,
       encodedSizeResources: networkRecords.filter((record) => record.encodedBodyBytes !== undefined).length,
-      source: 'Playwright BrowserContext request sizes, including worker and CDN requests reported by Chromium',
+      source: `Playwright BrowserContext request sizes, including worker and CDN requests reported by ${engine}`,
     },
     cdp: {
       source: 'Chrome DevTools Protocol Performance.getMetrics before and after each complete browser sample',
@@ -1511,7 +1627,7 @@ async function main(): Promise<void> {
   const workersRoot = join(tempRoot, 'workers');
   let server: Awaited<ReturnType<typeof startStaticServer>> | undefined;
   let executionServer: Awaited<ReturnType<typeof startStaticServer>> | undefined;
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  let browser: Browser | undefined;
 
   try {
     await runAssetSync(workersRoot, args.languages);
@@ -1542,9 +1658,14 @@ async function main(): Promise<void> {
         '</script>',
       ].join('\n'), 'utf8');
     }
-    browser = await chromium.launch({
+    const browserType = args.engine === 'firefox'
+      ? firefox
+      : args.engine === 'webkit'
+        ? webkit
+        : chromium;
+    browser = await browserType.launch({
       headless: !args.headful,
-      args: ['--enable-precise-memory-info'],
+      ...(args.engine === 'chromium' ? { args: ['--enable-precise-memory-info'] } : {}),
     });
 
     const samples: BrowserSampleResult[] = [];
@@ -1604,7 +1725,7 @@ async function main(): Promise<void> {
 
     const summaries = summarize(records);
     const networkSummaries = summarizeNetwork(networkRecords);
-    printSummary(summaries);
+    printSummary(summaries, args.engine);
     for (const diagnostic of runDiagnostics) {
       console.warn(`Network warning ${diagnostic.language}#${diagnostic.runOrdinal}: ${diagnostic.warning}`);
     }
@@ -1615,7 +1736,7 @@ async function main(): Promise<void> {
       measuredBoundary: {
         productSurface: 'project-browser',
         publicApi: 'createBrowserProjectWorkspace -> RuntimeWorkspace public methods',
-        executionLocation: 'Chromium page, Web Workers, and browser-hosted WebAssembly runtimes',
+        executionLocation: `${args.engine} page, Web Workers, and browser-hosted WebAssembly runtimes`,
         hostNodeRuntimeAssessed: false,
         hostDriver: 'Node.js/tsx launches Playwright, serves static assets, and writes JSON only; its timings are excluded',
         javascriptCommandNote: '`node` is the public browser-project CLI spelling backed by javascript-project-worker.js',
@@ -1640,9 +1761,13 @@ async function main(): Promise<void> {
           filesystem: 'public writeFile/readFile plus public shell write/read command',
           'policy-denials': 'ordinary shell attempts to read hidden and overwrite readonly session files',
           'http-bridge': 'public workspace.http.listen reached from public shell curl through TraceKernel',
+          'process-io': 'shell pipeline plus distinct stdout and stderr streams',
+          cancellation: 'AbortSignal cancellation of an active shell command with bounded settlement',
+          disposal: 'idempotent workspace disposal and execution-host iframe removal',
         },
       },
       options: {
+        engine: args.engine,
         languages: args.languages,
         iterations: args.iterations,
         requestTimeoutMs: args.requestTimeoutMs,
@@ -1661,6 +1786,7 @@ async function main(): Promise<void> {
         buildMs: bundle.buildMs,
       },
       browser: {
+        engine: args.engine,
         userAgents: [...new Set(samples.map((sample) => sample.userAgent))],
         crossOriginIsolatedValues: [...new Set(samples.map((sample) => sample.crossOriginIsolated))],
         longTaskSupport: samples.some((sample) => sample.longTaskSupport),
@@ -1669,7 +1795,7 @@ async function main(): Promise<void> {
           userAgentSpecificMemory: samples.some((sample) => sample.memorySupport.userAgentSpecificMemory),
         },
       },
-      metricCoverage: metricCoverage(records, networkRecords),
+      metricCoverage: metricCoverage(records, networkRecords, args.engine),
       fixtures: Object.fromEntries(args.languages.map((language) => [language, {
         entrypoint: FIXTURES[language].entrypoint,
         command: FIXTURES[language].command,

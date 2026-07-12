@@ -11,7 +11,7 @@ The measured product surface is **project-browser only**. Node.js/tsx launches
 Playwright, serves the temporary static files, and writes the report; none of
 that host-driver time is included. The JavaScript command is spelled
 `node main.js` because that is the public project shell syntax, but it is
-implemented by `javascript-project-worker.js` in Chromium. It does not invoke
+implemented by `javascript-project-worker.js` in the selected browser. It does not invoke
 or benchmark a host Node.js runtime.
 
 This benchmark is independent from the Classic browser benchmark documented in
@@ -37,11 +37,26 @@ Useful overrides include:
 
 ```bash
 pnpm bench:browser-project-runtimes --languages=python,typescript,cpp --iterations=10 --seed=20260711
+pnpm bench:browser-project-runtimes --engine=firefox --languages=python,csharp,cpp --iterations=5
 pnpm bench:browser-project-runtimes --languages=python,java,csharp --prewarm=python:1,java:1,csharp:1
 pnpm bench:browser-project-runtimes --runtime-manifests=./runtime-assets.json
 pnpm bench:browser-project-runtimes --languages=java --prewarm=java:1 --execution-host --cache-assets
 pnpm bench:browser-project-runtimes --report=reports/project-browser-before.json
 ```
+
+`--engine` accepts exactly one of `chromium`, `firefox`, or `webkit` and
+defaults to Chromium. Performance reports from different engines are separate
+workloads and must not be merged into one latency distribution.
+
+The correctness matrix runs all six providers against all three engines:
+
+```bash
+pnpm test:project-browser-matrix
+```
+
+`TRACECODE_PROJECT_MATRIX_ENGINES` and `TRACECODE_PROJECT_MATRIX_LANGUAGES`
+can select a strict subset for local diagnosis. CI installs and runs all three
+engines so browser compatibility cannot silently collapse back to Chromium.
 
 `--runtime-manifests` accepts either a runtime map directly or an object with a
 `runtimeManifests` property. `TRACECODE_BENCH_RUNTIME_MANIFESTS` is the CI
@@ -105,6 +120,9 @@ workspace-construction records.
 | `filesystem` | Public `writeFile`/`readFile`, then shell write/read | Host and shell contents persist exactly |
 | `policy-denials` | Ordinary shell reads a hidden file and overwrites a readonly file | Both actions are denied, the secret is not emitted, and readonly content is unchanged |
 | `http-bridge` | Public `workspace.http.listen()` reached through public shell `curl` | Exact loopback status/body path |
+| `process-io` | Shell pipeline plus distinct stdout/stderr writes | Exact stdin pipeline output and separate stderr |
+| `cancellation` | Abort an active `sleep` command | Command settles as interrupted within five seconds |
+| `disposal` | Dispose twice and inspect hosted frames | Disposal is idempotent and removes the execution-host iframe |
 
 Filesystem records also retain the separate host-write, host-read, and shell
 subtimings. No private worker message or test-only protocol is used.
@@ -117,14 +135,15 @@ The default JSON report is
 as aggregates, including:
 
 - Per-phase wall time, output, status, correctness errors, resource timing,
-  window Long Tasks, and `performance.memory` snapshots when Chromium exposes
+  window Long Tasks, and `performance.memory` snapshots when the engine exposes
   them.
 - Playwright network request sizes for page, worker, WebAssembly/toolchain, and
-  consumer-CDN requests Chromium reports. `Content-Length` is the fallback when
+  consumer-CDN requests Playwright reports. `Content-Length` is the fallback when
   worker body-size counters are zero. Credentials and sensitive signed-URL query
   parameters are redacted from the stored URLs without changing byte counters.
 - Raw Chrome DevTools Protocol `Performance.getMetrics` snapshots and deltas for
-  each complete browser sample.
+  Chromium samples. Firefox and WebKit report that metric surface as unsupported
+  instead of fabricating equivalent values.
 - Bundle raw/gzip size, deterministic run plan, runtime-manifest runtimes,
   skipped phases, infrastructure errors, and metric-support coverage.
 
@@ -134,6 +153,34 @@ fields as unavailable; it is a browser integration check, not performance
 evidence. Increase `--iterations` on noisy CI hosts and compare the raw samples,
 standard deviation, pass counts, network ledger, and CDP deltas before drawing
 conclusions from aggregate latency.
+
+## Regression baseline
+
+The compact five-sample baseline is stored in
+`tests/fixtures/browser-project-performance-baseline.json`. It records p50 for
+workspace construction, first command, and second fresh command independently
+for every provider/engine pair. The raw multi-megabyte reports remain ignored
+benchmark artifacts rather than source-controlled fixtures.
+
+Check a compatible report with:
+
+```bash
+pnpm check:browser-project-performance \
+  --report=reports/browser-project-runtime-chromium.json
+```
+
+The gate requires five passing samples per cell and applies both relative and
+absolute tolerance. It is deliberately a broad regression detector, not a
+promise that CI hardware reproduces a developer laptop to the millisecond.
+`.github/workflows/browser-performance.yml` runs Chromium, Firefox, and WebKit
+as separate nightly/manual jobs and retains each raw report as an artifact.
+
+The 2026-07-12 baseline also establishes an important engine distinction:
+Firefox passed the full contract but was substantially slower for Python, C#,
+and C++ than Chromium or WebKit. Capability remains green; performance is
+reported and budgeted per engine instead of being flattened into a single
+provider number. The measured table is in
+`docs/browser-project-cross-engine-baseline-2026-07-12.md`.
 
 ## Excluding runtime downloads
 
