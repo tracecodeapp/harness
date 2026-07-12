@@ -3780,6 +3780,13 @@ async function getCompileLibraryClass() {
   return compileLibraryClassPromise;
 }
 
+async function deleteJavaRuntimeRequestTree(compileLibraryClass, compileId) {
+  if (typeof compileLibraryClass?.deleteRuntimeRequestTree !== 'function') {
+    throw new Error('Java helper does not expose request-scoped runtime storage cleanup.');
+  }
+  await compileLibraryClass.deleteRuntimeRequestTree(`/files/java-worker/${compileId}`);
+}
+
 async function getRewriteLibraryClass() {
   if (!rewriteLibraryClassPromise) {
     rewriteLibraryClassPromise = (async () => {
@@ -6136,6 +6143,8 @@ async function runJavaProjectRequest(payload, requestId) {
     ),
   };
   let reportText;
+  let projectExecutionError;
+  let storageCleanupError;
   try {
     activeJavaProjectIo = projectIo;
     reportText = explicitClasspath
@@ -6211,10 +6220,21 @@ async function runJavaProjectRequest(payload, requestId) {
             DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
           );
   } catch (error) {
-    throw makeWorkerStageError('project compile and run', error);
+    projectExecutionError = error;
   } finally {
     closeAllJavaProjectHttpServers();
     activeJavaProjectIo = null;
+    try {
+      await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId);
+    } catch (error) {
+      storageCleanupError = error;
+    }
+  }
+  if (storageCleanupError) {
+    throw makeWorkerStageError('project runtime storage cleanup', storageCleanupError);
+  }
+  if (projectExecutionError) {
+    throw makeWorkerStageError('project compile and run', projectExecutionError);
   }
   const libraryCallEnd = performance.now();
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { execFileSync } from 'node:child_process';
 import { access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
@@ -38,6 +39,15 @@ async function main(): Promise<void> {
   const helperSource = await readFile(
     join(root, 'workers', 'java', 'src', 'tracecode', 'browser', 'BrowserCompileAndTraceLibrary.java'),
     'utf8'
+  );
+  const helperApi = execFileSync(
+    'javap',
+    ['-classpath', helperJarPath, 'tracecode.browser.BrowserCompileAndTraceLibrary'],
+    { encoding: 'utf8' }
+  );
+  assertCondition(
+    helperApi.includes('deleteRuntimeRequestTree(java.lang.String)'),
+    'Java helper jar must expose request-scoped runtime storage cleanup'
   );
   const projectEventsSource = await readFile(
     join(root, 'workers', 'java', 'src', 'tracecode', 'browser', 'ProjectEvents.java'),
@@ -82,6 +92,8 @@ async function main(): Promise<void> {
     'augmentJavaProjectFileMutations',
     'projectChangedFiles(report)',
     'runJavaProjectRequest',
+    'deleteJavaRuntimeRequestTree',
+    "makeWorkerStageError('project runtime storage cleanup'",
     'buildProjectJavaRunnableSource',
     'Project cwd must stay inside the workspace',
     "postMessageResponse({ type: 'worker-ready' })",
@@ -109,6 +121,8 @@ async function main(): Promise<void> {
   const helperMarkers = [
     'compileAndRunProjectSourcesWithWorkspace',
     'compileAndRunProjectClassFilesWithWorkspace',
+    'deleteRuntimeRequestTree',
+    'Refusing to delete non-request Java runtime tree',
     'collectChangedProjectFilesJson',
     'System.setProperty("user.dir"',
     'changedFiles',

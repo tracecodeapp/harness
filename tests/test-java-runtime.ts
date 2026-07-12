@@ -2807,6 +2807,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
     compilerProfile: string;
   }> = [];
   const runLibraryClasspaths: string[] = [];
+  const runtimeRequestCleanupRoots: string[] = [];
   const httpDispatches: Array<{ request: Record<string, unknown>; timeoutMs?: number }> = [];
   let cheerpjInitOptions: { natives?: Record<string, (...args: unknown[]) => unknown> } | undefined;
   let activeProjectBridgeRunId = '';
@@ -2917,6 +2918,9 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
       tracecode: {
         browser: {
           BrowserCompileAndTraceLibrary: {
+            deleteRuntimeRequestTree: async (root: string) => {
+              runtimeRequestCleanupRoots.push(root);
+            },
             compileAndTrace: async (_sourcePath: string, _classesDir: string, mainClassName: string) => {
               if (mainClassName.includes('warmup')) {
                 return JSON.stringify({ success: true, output: '0', events: [] });
@@ -4278,6 +4282,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
     projectCompileCalls,
     rewriteCalls,
     runLibraryClasspaths,
+    runtimeRequestCleanupRoots,
     sendMessage,
     stringFiles,
     terminate,
@@ -5388,6 +5393,10 @@ async function main(): Promise<void> {
             event.change.deleted === true
         ) === true,
       `Java execute-project-java should emit final-diff file events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
+      /^\/files\/java-worker\/[a-z0-9]+$/.test(harness.runtimeRequestCleanupRoots.at(-1) ?? ''),
+      `Java project execution should clean its request-scoped runtime tree: ${JSON.stringify(harness.runtimeRequestCleanupRoots)}`
     );
     const defaultProjectManifest = harness.projectCompileCalls.at(-1)?.sourcePaths ?? '';
     const defaultWorkspaceManifest = harness.projectCompileCalls.at(-1)?.workspaceManifest ?? '';

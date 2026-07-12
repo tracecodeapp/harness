@@ -29,6 +29,30 @@ public final class BrowserCompileAndTraceLibrary {
 
   private BrowserCompileAndTraceLibrary() {}
 
+  /**
+   * Removes one request-scoped browser compilation tree without touching the
+   * session VM warmup or any CheerpJ runtime files outside TraceCode's root.
+   */
+  public static void deleteRuntimeRequestTree(String root) throws IOException {
+    Path runtimeRoot = Paths.get("/files/java-worker").normalize();
+    Path requestRoot = Paths.get(root).normalize();
+    if (
+        !requestRoot.startsWith(runtimeRoot) ||
+        requestRoot.equals(runtimeRoot) ||
+        requestRoot.equals(runtimeRoot.resolve("__warm_run__")) ||
+        requestRoot.getNameCount() != runtimeRoot.getNameCount() + 1
+    ) {
+      throw new IOException("Refusing to delete non-request Java runtime tree: " + root);
+    }
+    if (!Files.exists(requestRoot)) return;
+    try (Stream<Path> stream = Files.walk(requestRoot)) {
+      List<Path> paths = stream
+          .sorted((left, right) -> right.getNameCount() - left.getNameCount())
+          .collect(Collectors.toList());
+      for (Path path : paths) Files.deleteIfExists(path);
+    }
+  }
+
   public static String compileAndTrace(
       String sourcePath,
       String classesDir,

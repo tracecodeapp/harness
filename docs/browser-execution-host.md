@@ -97,8 +97,13 @@ influence a later command. Hidden-test and multi-principal workloads should use
 the per-command profile until the compiler and execution VMs are separated.
 
 Destroying or disposing the workspace terminates hosted workers, closes the
-MessagePort, and removes the iframe. Execution-origin storage should also have
-server/product-level quota and expiration cleanup.
+MessagePort, and removes the iframe. Each Java command also deletes its unique
+`/files/java-worker/<compileId>` request tree after the result and file changes
+have been materialized. The session VM warmup tree remains available for the
+owning workspace, so cleanup does not turn every command into a cold JDK start.
+Execution-origin storage should still have server/product-level quota and
+expiration cleanup as defense in depth for browser crashes or abrupt process
+termination before request cleanup completes.
 
 In a three-context Chromium measurement with the official CheerpJ 4.2 loader,
 `java:1` prewarm averaged 14.03 s during workspace construction, then 1.45 s
