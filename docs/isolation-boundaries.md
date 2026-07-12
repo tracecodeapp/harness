@@ -41,6 +41,9 @@ possible, and it avoids direct host filesystem access.
 Browser mode still depends on the embedding app's web security posture:
 
 - Serve workers from origins you control.
+- Keep the default per-command worker lifecycle for untrusted commands. Shared
+  worker reuse is a trusted throughput capability and requires an explicit
+  opt-in.
 - Serve browser project consumers with cross-origin isolation headers when using
   `SharedArrayBuffer`:
 
@@ -63,6 +66,22 @@ Cross-Origin-Embedder-Policy: require-corp
 Browser mode is much closer to an isolated harness than native mode, but it is
 still an application-level sandbox. It should not be documented or sold as a
 browser security boundary for malicious code.
+
+A dedicated worker separates JavaScript realms; it does **not** create a new
+origin. A same-origin worker can otherwise inherit origin-scoped capabilities
+such as IndexedDB, Cache Storage, nested workers, and cross-context channels.
+The built-in JavaScript project path routes supported network APIs through
+TraceKernel and denies those ambient capabilities while user code is active,
+and the other language workers should receive the same treatment at their
+JavaScript interop boundary. This is defense in depth, not a substitute for an
+origin boundary: hostile workloads that coexist with browser-held secrets must
+run in an opaque/cross-origin sandboxed frame with a narrow message broker, or
+on a remote/OS-backed runner.
+
+Temporal API guards also cannot prove that every runtime has cancelled all
+deferred user work before host globals are restored. The default project path
+therefore retires each user-command worker; persistent Classic workers remain a
+trusted-throughput mode, not a hostile-code security boundary.
 
 The JavaScript project runner should use its worker-backed path in browser
 project mode. The same-realm JavaScript fallback exists for constrained
@@ -118,6 +137,79 @@ HTTP shims in browser project mode.
 Unsupported APIs, native host networking, browser APIs outside the TraceKernel
 bridge, and app-provided worker clients may have different behavior. Consumers
 should test the exact execution path they expose.
+
+The default browser external-HTTP delegate rejects literal non-public address
+space and revalidates every exposed redirect, but browser `fetch` does not expose
+the resolved peer address. It therefore cannot independently defeat DNS
+rebinding. Use exact host allowlists for ordinary deployments; workloads that
+need a strong egress boundary should use a consumer-controlled proxy that
+resolves and pins public addresses on every hop.
+
+## Runtime Assets And CDNs
+
+Runtime delivery is consumer-owned configuration. The harness accepts
+provider-neutral, versioned runtime manifests for every browser language; it
+does not require a TraceCode-operated CDN. A first-party TraceCode application
+may publish its own manifest, but that is application configuration rather than
+an open-source harness dependency.
+
+Dependent runtime artifacts may be hosted on a consumer CDN when their origin,
+media type, decoded size, and integrity metadata satisfy the manifest policy.
+The Worker wrapper URL itself remains subject to browser Worker-origin and CSP
+rules and may need to be served or reverse-proxied from the application origin.
+Manifest `integrity` verifies the harness's credential-free preflight response;
+it is not execution-bound SRI for loaders that subsequently request the URL
+again. Declare an immutable `delivery` policy with a `content` or `versioned`
+address only when the publisher guarantees that contract. Successful
+preflights are cached only for such assets. Use immutable, preferably
+content-addressed URLs: preflight verification cannot universally force every
+browser runtime loader to execute the exact response body that was previously
+inspected, and a malicious CDN or Service Worker is outside this assurance.
+
+Python manifests are authoritative for their loader and runtime index: once a
+Python manifest is active, the harness never falls back to its legacy public
+CDNs. Self-hosting publishers can additionally declare `assets.distribution`,
+keyed by normalized paths beneath `runtimeIndex`, to preflight the lockfile,
+stdlib, WASM/module files, package metadata, and other transitive distribution
+artifacts. This is a complete preflight inventory, not execution-bound SRI.
+
+CheerpJ is not vendored. The owned browser project Java runner requires a
+complete Java manifest (`worker`, `loader`, `helperJar`, `compilerJar`,
+`rewriterJar`, and `parserJar`) or a consumer-provided `javaWorkerClient`.
+Validation is lazy for ordinary workspaces, so non-Java projects do not pay for
+or configure Java. An explicitly prewarmed Java lane validates immediately;
+otherwise the first Java command fails before Worker construction when the
+manifest is missing or partial. The Java client preflights declared runtime
+assets before its `init` message can import CheerpJ.
+
+Asset descriptors may declare a runtimePath when a runtime consumes a
+different identifier from the browser delivery url. Java JARs are the
+canonical case: url is the fetch/preflight location, while runtimePath is
+CheerpJ's /app/... virtual-filesystem classpath. Origin policy, metadata, and
+integrity always apply to url; runtimePath is passed only to the runtime
+adapter. The Java authority boundary leaves arbitrary fetch denied and
+substitutes a guarded fetch that permits only GET/HEAD requests under the
+configured CheerpJ loader directory or to declared Java runtime artifacts.
+CheerpJ's /files mount is IndexedDB-backed. The default permanent project
+authority boundary therefore cannot safely expose it on an application origin:
+granting the native IndexedDB factory would also expose unrelated same-origin
+databases. Java project deployments that require /files must use a dedicated
+execution origin or a broker restricted to a CheerpJ-owned database namespace.
+The built-in browser execution host implements the dedicated-origin option with
+an exact-origin, token-bound MessagePort broker. Its `workspace-session` Java
+profile reuses one CheerpJ VM only within the owning workspace; the host must be
+credential-free and CSP-restricted. Adversarial or multi-principal evaluation
+must retain `per-command`, which permanently removes ambient worker authority
+and retires the Java worker after the command.
+
+C++ manifests retain an additional exact-binding boundary. The compiler frame
+and compiler worker must share an origin. Compiler resources hosted on another
+origin must declare an unambiguous `sha256-...` SRI token; the harness converts
+that token and optional decoded `size` into the compiler worker's exact pin
+manifest. List lazy compiler resources such as YoWASP `llvm.core*.wasm` and
+`llvm-resources.tar` under `assets.toolchain`. Missing or incompatible pins fail
+closed before compilation, and any lazy compiler fetch omitted from that map is
+still rejected by the compiler worker.
 
 ## Consumer Checklist
 

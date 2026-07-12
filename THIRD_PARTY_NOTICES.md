@@ -13,11 +13,16 @@ sources.
 ### Pyodide
 
 - Use: Python runtime loaded by `workers/python/pyodide-worker.js`.
-- Version: the worker currently loads Pyodide `0.29.0` from public CDNs; the
-  workspace package resolves `pyodide` `0.29.3`.
+- Version: the compatibility fallback currently loads Pyodide `0.29.0`, and
+  the workspace package resolves `pyodide` `0.29.3`. Consumer-owned runtime
+  manifests can instead select a module-worker distribution; the adapter is
+  verified against the current stable Pyodide `314.0.2` release.
 - License: MPL-2.0.
 - Source: https://github.com/pyodide/pyodide
 - Deployment docs: https://pyodide.org/en/stable/usage/downloading-and-deploying.html
+- Redistribution note: a full Pyodide distribution contains CPython and Python
+  packages with their own licenses. Preserve the release's package metadata,
+  license texts, and notices when mirroring those artifacts on a consumer CDN.
 
 ### CPython and Python Standard Library
 
@@ -69,8 +74,9 @@ sources.
 ### CheerpJ Core
 
 - Use: browser-hosted JVM runtime loaded by the Java worker.
-- Runtime loader path: `/app/workers/vendor/cheerpj-loader.js` by default,
-  or another same-origin `/app/` asset path supplied by the host application.
+- Runtime loader: consumer-supplied. The direct legacy client retains
+  `/app/workers/vendor/cheerpj-loader.js` as its same-origin fallback; owned
+  browser project runners require an explicit, complete Java runtime manifest.
 - Provider: Leaning Technologies.
 - Terms: CheerpJ Community License or CheerpJ Commercial License depending on
   the user's use case.
@@ -80,7 +86,7 @@ sources.
 CheerpJ is not vendored in this package. This package redistributes the
 TraceCode-authored Java worker and Java helper assets, but does not redistribute
 CheerpJ itself. Host applications that enable the Java lane must provide the
-CheerpJ loader through their own same-origin asset pipeline.
+CheerpJ loader through their own licensed asset pipeline or approved CDN.
 
 The CheerpJ Community License currently covers individuals, one-person
 companies, FOSS projects, and technical evaluations. That is expected to cover
@@ -89,10 +95,12 @@ that scope, and especially self-hosting, OEM distribution, or bundling CheerpJ
 with redistributed assets, can require a CheerpJ Commercial License.
 
 Supply-chain note: browser worker `importScripts()` does not provide
-browser-enforced subresource integrity, so the Java worker rejects remote
-CheerpJ loader URLs and only imports same-origin `/app/` asset paths. Treat the
-host application's CheerpJ asset pipeline as trusted third-party runtime code
-and maintain explicit hashes/allowlists for that deployment.
+browser-enforced subresource integrity. Consumer runtime manifests may
+authorize HTTP(S) loader and JAR URLs under an explicit origin policy, while
+the legacy `cheerpjLoaderUrl` override remains restricted to same-origin
+`/app/` paths. Manifest integrity is a credential-free preflight, not
+execution-bound SRI, so use immutable URLs and maintain deployment hashes and
+allowlists for this trusted third-party runtime code.
 
 ### JavaParser
 

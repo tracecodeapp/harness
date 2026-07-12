@@ -82,8 +82,9 @@ const trace = await client.executeWithTracing(
 );
 ```
 
-Use `harness.warmLanguage('java' | 'csharp' | 'cpp')` when a compiled runtime is
-selected so the heavier compiler path can load before first execution.
+Use `harness.warmLanguage(language)` when Python, TypeScript, Java, C#, or C++
+is selected so runtime/compiler startup happens before the first latency-sensitive
+execution. JavaScript `init()` prepares a clean one-shot executor directly.
 
 ## Packages
 
@@ -114,6 +115,25 @@ Standalone language packages publish their own `workers/` directories with the
 same target layout, so consumers can distribute only the runtime assets they
 install. Advanced consumers can override individual asset URLs through
 `createBrowserHarness({ assets })`.
+
+Runtime delivery is consumer-owned. Browser consumers may pass versioned
+`assets.runtimeManifests` (or a `runtimeAssetProvider`) for Python, JavaScript,
+TypeScript, Java, C#, and C++ without depending on a TraceCode-operated CDN. A
+first-party TraceCode application can publish one such manifest as application
+configuration; it is not embedded as a harness product dependency. See
+[Isolation Boundaries](./docs/isolation-boundaries.md#runtime-assets-and-cdns)
+for integrity, origin, and immutable-URL requirements.
+
+For untrusted project execution, host heavy browser runtimes on a dedicated
+credential-free origin through the
+[browser execution host](./docs/browser-execution-host.md). This is the
+TraceCode-recommended Java project profile because CheerpJ's /files mount is
+IndexedDB-backed and must not share the application origin.
+
+CheerpJ is not redistributed. An owned browser project Java runner therefore
+requires a complete `assets.runtimeManifests.java` asset set before its first
+Java command (or a consumer-provided `javaWorkerClient`). Non-Java workspaces
+remain lazy and do not need Java assets.
 
 ## Project Workspaces
 
@@ -165,6 +185,9 @@ pnpm test:runtime-info-sync
 The C# runtime updater reads the host under
 `runtimes/csharp/TraceCode.CSharpHost`, publishes the browser-WASM bundle,
 replaces `workers/vendor/csharp`, and regenerates runtime language info.
+It publishes the browser-oriented minimal compiler reference pack by default;
+asset publishers that need the broader BCL surface can set
+`TRACECODE_CSHARP_REFERENCE_PACK=Compatibility` for that bundle.
 
 ## Releases And Notices
 
