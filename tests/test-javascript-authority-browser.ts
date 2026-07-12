@@ -319,7 +319,10 @@ async function main(): Promise<void> {
     console.log('PASS: public Classic and project browser paths deny ambient authority in real Chromium');
   } finally {
     await browser.close();
-    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await new Promise<void>((resolveClose) => {
+      server.close(() => resolveClose());
+      server.closeAllConnections();
+    });
   }
 }
 
