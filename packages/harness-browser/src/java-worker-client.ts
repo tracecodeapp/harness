@@ -16,7 +16,9 @@ import {
   type KernelHttpSyncServerBridge,
 } from './kernel-http-sync';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
 import { createWorkerProtocolToken } from './worker-protocol';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
 
 type MessageId = string;
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -29,6 +31,20 @@ export interface JavaWorkerClientOptions {
   workerIdleTimeoutMs?: number;
   externalCompilerUrl?: string;
   cheerpjLoaderUrl?: string;
+  assetPreflight?: () => Promise<void>;
+  runtimeAssetPreflight?: () => Promise<void>;
+  workerFactory?: BrowserWorkerFactory;
+  /** Enables runtime-owned IndexedDB only when the worker runs on a dedicated execution origin. */
+  isolatedRuntimeStorage?: boolean;
+  /** Permanent mode is only safe when this worker is retired after its project command. */
+  projectUserAuthorityMode?: 'temporary' | 'permanent' | 'isolated-origin';
+  runtimeAssets?: {
+    loaderUrl?: string;
+    helperJarUrl?: string;
+    compilerJarUrl?: string;
+    rewriterJarUrl?: string;
+    parserJarUrl?: string;
+  };
 }
 
 interface PendingMessage {
@@ -114,7 +130,7 @@ const WORKER_READY_TIMEOUT_MS = 10_000;
 const JAVA_DEFAULT_FILE = 'solution.java';
 
 export class JavaWorkerClient {
-  private worker: Worker | null = null;
+  private worker: BrowserWorkerLike | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
   private isInitializing = false;
@@ -131,10 +147,10 @@ export class JavaWorkerClient {
   }
 
   isSupported(): boolean {
-    return typeof Worker !== 'undefined';
+    return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
-  private getWorker(): Worker {
+  private getWorker(): BrowserWorkerLike {
     if (this.worker) return this.worker;
 
     if (!this.isSupported()) {
@@ -151,7 +167,9 @@ export class JavaWorkerClient {
         ? `${this.options.workerUrl}?dev=${Date.now()}`
         : this.options.workerUrl;
 
-    this.worker = new Worker(workerUrl);
+    this.worker = this.options.workerFactory
+      ? this.options.workerFactory(workerUrl)
+      : new Worker(workerUrl);
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const { id, type, payload, protocolToken } = event.data;
 
@@ -222,7 +240,11 @@ export class JavaWorkerClient {
         return;
       }
 
-      pending.resolve(payload);
+      try {
+        pending.resolve(restoreTransferredTraceEvents(payload));
+      } catch (error) {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      }
     };
 
     this.worker.onerror = (error) => {
@@ -300,6 +322,10 @@ export class JavaWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge
   ): Promise<T> {
+    await this.options.assetPreflight?.();
+    if (type !== 'status') {
+      await this.options.runtimeAssetPreflight?.();
+    }
     const worker = this.getWorker();
     await this.waitForWorkerReady();
     const id = String(++this.messageId);
@@ -577,11 +603,19 @@ export class JavaWorkerClient {
     }
   }
 
-  private workerOptionsPayload(): { idleTimeoutMs?: number; externalCompilerEnabled?: boolean; cheerpjLoaderUrl?: string } {
+  private workerOptionsPayload(): {
+    idleTimeoutMs?: number;
+    externalCompilerEnabled?: boolean;
+    cheerpjLoaderUrl?: string;
+    runtimeAssets?: JavaWorkerClientOptions['runtimeAssets'];
+    allowIsolatedRuntimeStorage?: boolean;
+  } {
     return {
       ...(this.options.workerIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
       ...(this.options.externalCompilerUrl ? { externalCompilerEnabled: true } : {}),
       ...(this.options.cheerpjLoaderUrl ? { cheerpjLoaderUrl: this.options.cheerpjLoaderUrl } : {}),
+      ...(this.options.runtimeAssets ? { runtimeAssets: this.options.runtimeAssets } : {}),
+      ...(this.options.isolatedRuntimeStorage ? { allowIsolatedRuntimeStorage: true } : {}),
     };
   }
 
@@ -616,7 +650,15 @@ export class JavaWorkerClient {
       () =>
         this.sendMessage<JavaWorkerRawTraceResult>(
           'execute-with-tracing',
-          { code, functionName, inputs, options, executionStyle, ...this.workerOptionsPayload() },
+          {
+            code,
+            functionName,
+            inputs,
+            options,
+            executionStyle,
+            traceEventTransport: traceEventTransferRequest(),
+            ...this.workerOptionsPayload(),
+          },
           TRACING_TIMEOUT_MS + 5_000
         ),
       TRACING_TIMEOUT_MS,
@@ -738,7 +780,12 @@ export class JavaWorkerClient {
       () =>
         this.sendMessage<JavaWorkerProjectResult>(
           'execute-project-java',
-          workerRequest,
+          {
+            ...workerRequest,
+            ...(this.options.projectUserAuthorityMode
+              ? { projectUserAuthorityMode: this.options.projectUserAuthorityMode }
+              : {}),
+          },
           timeoutMs + 5_000,
           onEvent,
           kernelHttp

@@ -14,6 +14,112 @@ const WORKER_DEBUG = (() => {
   }
 })();
 const postWorkerMessage = self.postMessage.bind(self);
+const WORKER_ROLE = (() => {
+  try {
+    const search = typeof self.location?.search === 'string' ? self.location.search : '';
+    const match = /(?:^|[?&])tracecodeRole=(coordinator|executor)(?:&|$)/.exec(search);
+    return match?.[1] ?? 'legacy';
+  } catch {
+    return 'legacy';
+  }
+})();
+const PREPARED_EXECUTION_SCHEMA = 'tracecode.javascript.prepared.v1';
+const SHARED_KERNEL_POLICY_CLASSIC_PATHS = [
+  './shared/runtime-kernel-policy-classic.js',
+  '../shared/runtime-kernel-policy-classic.js',
+];
+let trustedJavaScriptUserAuthorityLockdown = null;
+const TRACE_EVENT_TRANSFER_SCHEMA = 'tracecode.trace-events.transfer.v1';
+const TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES = 64 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES = 256 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_BYTES = 64 * 1024 * 1024;
+const TRACE_EVENT_TRANSFER_MIN_EVENTS = 128;
+
+function ensureJavaScriptUserAuthorityLockdown() {
+  if (trustedJavaScriptUserAuthorityLockdown) return trustedJavaScriptUserAuthorityLockdown;
+  const existing = self?.TraceRuntimeKernelPolicy?.withRuntimeUserAuthorityLockdown;
+  if (typeof existing === 'function') {
+    trustedJavaScriptUserAuthorityLockdown = existing;
+    return existing;
+  }
+  if (typeof importScripts !== 'function') {
+    throw new Error('JavaScript user execution requires the shared runtime authority lockdown policy.');
+  }
+  const errors = [];
+  for (const policyUrl of SHARED_KERNEL_POLICY_CLASSIC_PATHS) {
+    try {
+      importScripts(policyUrl);
+      const lockdown = self?.TraceRuntimeKernelPolicy?.withRuntimeUserAuthorityLockdown;
+      if (typeof lockdown === 'function') {
+        trustedJavaScriptUserAuthorityLockdown = lockdown;
+        return lockdown;
+      }
+      errors.push(`${policyUrl} (loaded but policy binding was missing)`);
+    } catch (error) {
+      errors.push(`${policyUrl} (${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
+  throw new Error(`JavaScript user execution requires the shared runtime authority lockdown policy: ${errors.join(' | ')}`);
+}
+
+function withJavaScriptUserAuthorityLockdown(callback) {
+  const lockdown = ensureJavaScriptUserAuthorityLockdown();
+  return lockdown(callback, {
+    scope: self,
+    mode: WORKER_ROLE === 'executor' ? 'permanent' : 'temporary',
+  });
+}
+
+function prepareTraceEventTransfer(result, request, path) {
+  if (
+    request?.schema !== TRACE_EVENT_TRANSFER_SCHEMA ||
+    request?.encoding !== 'json-utf8' ||
+    typeof TextEncoder === 'undefined'
+  ) {
+    return null;
+  }
+  const events = path === 'trace.events' ? result?.trace?.events : result?.events;
+  const requestedMinEvents = Number(request.minEventCount);
+  const minEventCount = Number.isSafeInteger(requestedMinEvents)
+    ? Math.max(TRACE_EVENT_TRANSFER_MIN_EVENTS, requestedMinEvents)
+    : TRACE_EVENT_TRANSFER_MIN_EVENTS;
+  if (!Array.isArray(events) || events.length < minEventCount) return null;
+
+  let encoded;
+  try {
+    encoded = new TextEncoder().encode(JSON.stringify(events));
+  } catch {
+    return null;
+  }
+  const requestedMinBytes = Number(request.minTransferBytes);
+  const minTransferBytes = Number.isSafeInteger(requestedMinBytes)
+    ? Math.max(0, requestedMinBytes)
+    : 64 * 1024;
+  if (encoded.byteLength < minTransferBytes || encoded.byteLength > TRACE_EVENT_TRANSFER_MAX_BYTES) {
+    return null;
+  }
+
+  const requestedChunkBytes = Number(request.maxChunkBytes);
+  const chunkBytes = Number.isSafeInteger(requestedChunkBytes)
+    ? Math.max(16 * 1024, Math.min(TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES, requestedChunkBytes))
+    : TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES;
+  const chunks = [];
+  for (let offset = 0; offset < encoded.byteLength; offset += chunkBytes) {
+    chunks.push(encoded.slice(offset, Math.min(encoded.byteLength, offset + chunkBytes)).buffer);
+  }
+  const payload = path === 'trace.events'
+    ? { ...result, trace: { ...result.trace, events: [] } }
+    : { ...result, events: [] };
+  payload.__traceEventTransport = {
+    schema: TRACE_EVENT_TRANSFER_SCHEMA,
+    encoding: 'json-utf8',
+    path,
+    eventCount: events.length,
+    byteLength: encoded.byteLength,
+    chunks,
+  };
+  return { payload, transfer: chunks };
+}
 
 function emitRuntimeDiagnostic(level, phase, message, detail) {
   if (!WORKER_DEBUG && level !== 'error') return;
@@ -43,10 +149,37 @@ const TYPESCRIPT_COMPILER_URLS = [
   'https://cdn.jsdelivr.net/npm/typescript@5.9.2/lib/typescript.js',
   'https://unpkg.com/typescript@5.9.2/lib/typescript.js',
 ];
+let configuredTypeScriptCompilerUrl = null;
+
+function configureTypeScriptCompilerUrl(value) {
+  if (value === undefined || value === null || value === '') return;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('JavaScript worker typescriptCompilerUrl must be a non-empty string when provided.');
+  }
+  if (configuredTypeScriptCompilerUrl && configuredTypeScriptCompilerUrl !== value) {
+    throw new Error('TypeScript compiler URL cannot be changed after the coordinator is configured.');
+  }
+  configuredTypeScriptCompilerUrl = value;
+}
 const JAVASCRIPT_LIBRARY_URLS = [
   './vendor/javascript-libraries.js',
 ];
+let configuredJavaScriptLibrariesUrl = null;
 let javascriptLibrariesLoadAttempted = false;
+
+function configureJavaScriptLibrariesUrl(value) {
+  if (value === undefined || value === null || value === '') return;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('JavaScript worker javascriptLibrariesUrl must be a non-empty string when provided.');
+  }
+  if (configuredJavaScriptLibrariesUrl && configuredJavaScriptLibrariesUrl !== value) {
+    throw new Error('JavaScript libraries URL cannot be changed after the worker is configured.');
+  }
+  if (javascriptLibrariesLoadAttempted && !configuredJavaScriptLibrariesUrl) {
+    throw new Error('JavaScript libraries URL must be configured before library loading begins.');
+  }
+  configuredJavaScriptLibrariesUrl = value;
+}
 
 const JAVASCRIPT_RUNTIME_PRELUDE = `
 if (typeof globalThis.module === 'undefined') {
@@ -89,7 +222,10 @@ function ensureJavaScriptLibraries() {
   if (typeof importScripts !== 'function') return;
 
   const errors = [];
-  for (const libraryUrl of JAVASCRIPT_LIBRARY_URLS) {
+  const libraryUrls = configuredJavaScriptLibrariesUrl
+    ? [configuredJavaScriptLibrariesUrl]
+    : JAVASCRIPT_LIBRARY_URLS;
+  for (const libraryUrl of libraryUrls) {
     try {
       importScripts(libraryUrl);
       if (
@@ -1683,6 +1819,7 @@ function createTraceRecorder(options = {}) {
   const maxSingleLineHits = getNumericOption(options.maxSingleLineHits, 1000);
   const maxCallDepth = getNumericOption(options.maxCallDepth, 2000);
   const maxPathDepth = getMaxPathDepthOption(options.maxPathDepth);
+  const minimalTrace = options.minimalTrace === true;
   const statementSourceMap = options.statementSourceMap instanceof Map ? options.statementSourceMap : new Map();
 
   let lineEventCount = 0;
@@ -2048,6 +2185,8 @@ function createTraceRecorder(options = {}) {
         text: String(step.returnValue ?? ''),
       });
     }
+
+    if (minimalTrace) return;
 
     if (step.event !== '__merge_only__') {
       for (const [variable, value] of Object.entries(step.variables ?? {})) {
@@ -2828,7 +2967,10 @@ async function ensureTypeScriptCompiler() {
     }
 
     const errors = [];
-    for (const compilerUrl of TYPESCRIPT_COMPILER_URLS) {
+    const compilerUrls = configuredTypeScriptCompilerUrl
+      ? [configuredTypeScriptCompilerUrl]
+      : TYPESCRIPT_COMPILER_URLS;
+    for (const compilerUrl of compilerUrls) {
       try {
         importScripts(compilerUrl);
         if (getTypeScriptCompiler()) {
@@ -2900,7 +3042,9 @@ function stripJavaScriptModuleExports(sourceCode) {
 }
 
 async function prepareExecutableCode(sourceCode, language) {
-  ensureJavaScriptLibraries();
+  if (WORKER_ROLE !== 'coordinator') {
+    ensureJavaScriptLibraries();
+  }
   if (language === 'typescript') {
     await ensureTypeScriptCompiler();
     return transpileTypeScript(sourceCode);
@@ -6748,7 +6892,130 @@ function getOpsClassInputs(inputs) {
   return { operations, argumentsList };
 }
 
+function preparedExecutionFromPayload(payload) {
+  const prepared = payload?.preparedExecution;
+  if (
+    !prepared ||
+    typeof prepared !== 'object' ||
+    prepared.schema !== PREPARED_EXECUTION_SCHEMA ||
+    typeof prepared.sourceCode !== 'string' ||
+    typeof prepared.executableCode !== 'string'
+  ) {
+    return null;
+  }
+  return prepared;
+}
+
+async function prepareExecutionRequest(payload) {
+  const operation = payload?.operation;
+  const request = payload?.request;
+  if (!['execute-code', 'execute-code-batch', 'execute-with-tracing', 'execute-code-interview'].includes(operation)) {
+    throw new Error(`Unsupported JavaScript preparation operation: ${String(operation)}`);
+  }
+  if (!request || typeof request !== 'object') {
+    throw new Error('JavaScript preparation requires a request payload.');
+  }
+
+  const {
+    code,
+    functionName,
+    inputs,
+    inputBatch,
+    options,
+    executionStyle = 'function',
+    language = 'javascript',
+  } = request;
+  if (typeof code !== 'string') {
+    throw new Error('`code` must be a string');
+  }
+  if (language !== 'javascript' && language !== 'typescript') {
+    throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
+  }
+
+  const executableCode = await prepareExecutableCode(code, language);
+  const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+  const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
+  const targetName = hasNamedFunction
+    ? assertJavaScriptRuntimeSelectorAllowed(
+      functionName,
+      executionStyle === 'ops-class'
+        ? 'Class name'
+        : executionStyle === 'solution-method'
+          ? 'Solution method name'
+          : 'Function name'
+    )
+    : '';
+
+  let inputArguments = [];
+  if (hasNamedFunction && executionStyle !== 'ops-class') {
+    const signatureInputs = operation === 'execute-code-batch'
+      ? batchSignatureSampleInput(Array.isArray(inputBatch) ? inputBatch : [])
+      : normalizeInputs(inputs);
+    const materializedSignatureInputs = applyInputMaterializers(
+      normalizeInputs(signatureInputs),
+      materializers
+    );
+    inputArguments = await resolveOrderedInputArguments(
+      code,
+      targetName,
+      materializedSignatureInputs,
+      executionStyle,
+      language
+    );
+  }
+
+  let instrumentedCode;
+  let traceLineBounds;
+  if (operation === 'execute-with-tracing' || operation === 'execute-code-interview') {
+    const traceFunctionName = hasNamedFunction ? targetName : '<module>';
+    const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
+    traceLineBounds = determineTraceLineBounds(code, targetName, executionStyle);
+    try {
+      if (language === 'typescript') {
+        const instrumentedTypeScript = await instrumentCodeForTracing(
+          code,
+          language,
+          traceFunctionName,
+          maxPathDepth
+        );
+        instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
+      } else {
+        instrumentedCode = await instrumentCodeForTracing(
+          executableCode,
+          language,
+          traceFunctionName,
+          maxPathDepth
+        );
+      }
+    } catch (instrumentationError) {
+      const message = instrumentationError instanceof Error
+        ? instrumentationError.message
+        : String(instrumentationError);
+      emitRuntimeDiagnostic(
+        'warn',
+        'trace-instrumentation-fallback',
+        'Trace instrumentation failed during trusted preparation; using synthetic fallback.',
+        { message }
+      );
+      instrumentedCode = null;
+    }
+  }
+
+  return {
+    preparedExecution: {
+      schema: PREPARED_EXECUTION_SCHEMA,
+      sourceCode: code,
+      executableCode,
+      materializers,
+      inputArguments,
+      ...(instrumentedCode === undefined ? {} : { instrumentedCode }),
+      ...(traceLineBounds === undefined ? {} : { traceLineBounds }),
+    },
+  };
+}
+
 async function executeCode(payload) {
+  const startedAt = performanceNow();
   const {
     code,
     functionName,
@@ -6758,7 +7025,9 @@ async function executeCode(payload) {
   } = payload ?? {};
   const consoleOutput = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
+  ensureJavaScriptLibraries();
   const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
+  const prepared = preparedExecutionFromPayload(payload);
 
   try {
     if (typeof code !== 'string') {
@@ -6768,8 +7037,8 @@ async function executeCode(payload) {
       throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
     }
 
-    const executableCode = await prepareExecutableCode(code, language);
-    const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+    const executableCode = prepared?.executableCode ?? await prepareExecutableCode(code, language);
+    const materializers = prepared?.materializers ?? await resolveInputMaterializers(code, functionName, executionStyle, language);
     const normalizedInputs = normalizeInputs(inputs);
     const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
     const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
@@ -6789,16 +7058,26 @@ async function executeCode(payload) {
       if (executionStyle === 'ops-class') {
         const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
         const runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code, targetName);
-        output = await Promise.resolve(runner(consoleProxy, operations, argumentsList, runtimeGlobal));
+        output = await withJavaScriptUserAuthorityLockdown(() =>
+          Promise.resolve(runner(consoleProxy, operations, argumentsList, runtimeGlobal))
+        );
       } else {
-        const inputArguments = await resolveOrderedInputArguments(code, targetName, materializedInputs, executionStyle, language);
+        const inputArguments = prepared?.inputArguments ?? await resolveOrderedInputArguments(
+          code,
+          targetName,
+          materializedInputs,
+          executionStyle,
+          language
+        );
         const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
         const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
         const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code, targetName);
-        output = executionStyle === 'solution-method'
-          ? await Promise.resolve(runner(consoleProxy, targetName, ...argValues, runtimeGlobal))
-          : await Promise.resolve(runner(consoleProxy, ...argValues, runtimeGlobal));
+        output = await withJavaScriptUserAuthorityLockdown(() =>
+          executionStyle === 'solution-method'
+            ? Promise.resolve(runner(consoleProxy, targetName, ...argValues, runtimeGlobal))
+            : Promise.resolve(runner(consoleProxy, ...argValues, runtimeGlobal))
+        );
       }
     } else {
       if (executionStyle !== 'function') {
@@ -6806,7 +7085,9 @@ async function executeCode(payload) {
       }
       const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
       const runner = buildScriptExecutionRunner(executableCode, code);
-      output = await Promise.resolve(runner(consoleProxy, scriptStdin, runtimeGlobal));
+      output = await withJavaScriptUserAuthorityLockdown(() =>
+        Promise.resolve(runner(consoleProxy, scriptStdin, runtimeGlobal))
+      );
       if (scriptStdin !== undefined && output === null) {
         output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
       }
@@ -6816,6 +7097,7 @@ async function executeCode(payload) {
       success: true,
       output: serializeOutputValue(output),
       consoleOutput,
+      timings: { totalMs: performanceNow() - startedAt },
     };
   } catch (error) {
     const message = formatRuntimeErrorMessage(error);
@@ -6825,6 +7107,7 @@ async function executeCode(payload) {
       error: message,
       errorLine: extractUserErrorLine(error),
       consoleOutput,
+      timings: { totalMs: performanceNow() - startedAt },
     };
   }
 }
@@ -6844,6 +7127,7 @@ function batchSignatureSampleInput(inputBatch) {
 
 async function executeCodeBatch(payload) {
   const startedAt = performanceNow();
+  ensureJavaScriptLibraries();
   const inputBatch = Array.isArray(payload?.inputBatch)
     ? payload.inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
     : [];
@@ -6865,6 +7149,7 @@ async function executeCodeBatch(payload) {
   } = payload ?? {};
 
   const results = [];
+  const prepared = preparedExecutionFromPayload(payload);
   try {
     if (typeof code !== 'string') {
       throw new Error('`code` must be a string');
@@ -6873,8 +7158,8 @@ async function executeCodeBatch(payload) {
       throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
     }
 
-    const executableCode = await prepareExecutableCode(code, language);
-    const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+    const executableCode = prepared?.executableCode ?? await prepareExecutableCode(code, language);
+    const materializers = prepared?.materializers ?? await resolveInputMaterializers(code, functionName, executionStyle, language);
     const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
     const targetName = hasNamedFunction
       ? assertJavaScriptRuntimeSelectorAllowed(
@@ -6896,7 +7181,13 @@ async function executeCodeBatch(payload) {
         runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code, targetName);
       } else {
         const sampleInputs = applyInputMaterializers(normalizeInputs(batchSignatureSampleInput(inputBatch)), materializers);
-        inputArguments = await resolveOrderedInputArguments(code, targetName, sampleInputs, executionStyle, language);
+        inputArguments = prepared?.inputArguments ?? await resolveOrderedInputArguments(
+          code,
+          targetName,
+          sampleInputs,
+          executionStyle,
+          language
+        );
         argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
         runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code, targetName);
@@ -6908,6 +7199,7 @@ async function executeCodeBatch(payload) {
       runner = buildScriptExecutionRunner(executableCode, code);
     }
 
+    await withJavaScriptUserAuthorityLockdown(async () => {
     for (const inputs of inputBatch) {
       const consoleOutput = [];
       const consoleProxy = createConsoleProxy(consoleOutput);
@@ -6947,6 +7239,7 @@ async function executeCodeBatch(payload) {
         });
       }
     }
+    });
   } catch (error) {
     const message = formatRuntimeErrorMessage(error);
     for (let index = 0; index < inputBatch.length; index += 1) {
@@ -6980,9 +7273,16 @@ async function executeWithTracing(payload) {
   } = payload ?? {};
   const consoleOutput = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
+  ensureJavaScriptLibraries();
   const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
+  const prepared = preparedExecutionFromPayload(payload);
   const normalizedInputs = normalizeInputs(inputs);
-  const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+  const materializers = prepared?.materializers ?? await resolveInputMaterializers(
+    code,
+    functionName,
+    executionStyle,
+    language
+  );
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
   let targetName = hasNamedFunction ? functionName : '';
@@ -7011,23 +7311,27 @@ async function executeWithTracing(payload) {
       );
     }
 
-    const executableCode = await prepareExecutableCode(code, language);
-    traceLineBounds = determineTraceLineBounds(code, targetName, executionStyle);
+    const executableCode = prepared?.executableCode ?? await prepareExecutableCode(code, language);
+    traceLineBounds = prepared?.traceLineBounds ?? determineTraceLineBounds(code, targetName, executionStyle);
 
     let instrumentedCode = null;
-    try {
-      if (language === 'typescript') {
-        const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
-        instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
-      } else {
-        instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName, maxPathDepth);
+    if (prepared && Object.prototype.hasOwnProperty.call(prepared, 'instrumentedCode')) {
+      instrumentedCode = prepared.instrumentedCode;
+    } else {
+      try {
+        if (language === 'typescript') {
+          const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
+          instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
+        } else {
+          instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName, maxPathDepth);
+        }
+      } catch (instrumentationError) {
+        const message =
+          instrumentationError instanceof Error ? instrumentationError.message : String(instrumentationError);
+        emitRuntimeDiagnostic('warn', 'trace-instrumentation-fallback', 'Trace instrumentation failed; using synthetic fallback.', {
+          message,
+        });
       }
-    } catch (instrumentationError) {
-      const message =
-        instrumentationError instanceof Error ? instrumentationError.message : String(instrumentationError);
-      emitRuntimeDiagnostic('warn', 'trace-instrumentation-fallback', 'Trace instrumentation failed; using synthetic fallback.', {
-        message,
-      });
     }
 
     if (!instrumentedCode) {
@@ -7070,27 +7374,33 @@ async function executeWithTracing(payload) {
       if (executionStyle === 'ops-class') {
         const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
         const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth, [], code, targetName);
-        output = await Promise.resolve(
-          runner(
+        output = await withJavaScriptUserAuthorityLockdown(() =>
+          Promise.resolve(runner(
             consoleProxy,
             traceRecorder,
             { functionName: traceFunctionName },
             operations,
             argumentsList,
             runtimeGlobal
-          )
+          ))
         );
       } else {
-        const inputArguments = await resolveOrderedInputArguments(code, targetName, materializedInputs, executionStyle, language);
+        const inputArguments = prepared?.inputArguments ?? await resolveOrderedInputArguments(
+          code,
+          targetName,
+          materializedInputs,
+          executionStyle,
+          language
+        );
         const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
         const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
         const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers, code, targetName);
-        output = await Promise.resolve(
+        output = await withJavaScriptUserAuthorityLockdown(() => Promise.resolve(
           executionStyle === 'solution-method'
             ? runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, targetName, ...argValues, runtimeGlobal)
             : runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, ...argValues, runtimeGlobal)
-        );
+        ));
       }
     } else {
       if (executionStyle !== 'function') {
@@ -7098,9 +7408,9 @@ async function executeWithTracing(payload) {
       }
       const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
       const runner = buildScriptTracingRunner(instrumentedCode, maxPathDepth, code);
-      output = await Promise.resolve(
+      output = await withJavaScriptUserAuthorityLockdown(() => Promise.resolve(
         runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, scriptStdin, runtimeGlobal)
-      );
+      ));
       if (scriptStdin !== undefined && output === null) {
         output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
       }
@@ -7217,14 +7527,18 @@ async function executeCodeInterview(payload) {
   };
 }
 
-async function initRuntime() {
+async function initRuntime(payload = {}) {
+  configureTypeScriptCompilerUrl(payload?.typescriptCompilerUrl);
+  configureJavaScriptLibrariesUrl(payload?.javascriptLibrariesUrl);
   if (isInitialized) {
     return { success: true, loadTimeMs: 0 };
   }
 
   isLoading = true;
   const startedAt = performanceNow();
-  ensureJavaScriptLibraries();
+  if (WORKER_ROLE !== 'coordinator') {
+    ensureJavaScriptLibraries();
+  }
   isInitialized = true;
   isLoading = false;
   return { success: true, loadTimeMs: performanceNow() - startedAt };
@@ -7233,13 +7547,17 @@ async function initRuntime() {
 async function warmRuntime(payload = {}) {
   const startedAt = performanceNow();
   const initStartedAt = performanceNow();
-  await initRuntime();
+  await initRuntime(payload);
   const initMs = performanceNow() - initStartedAt;
   let compilerWarmupMs = 0;
 
   if (payload?.language === 'typescript' || payload?.preloadTypeScriptCompiler === true) {
     const compilerStartedAt = performanceNow();
     await ensureTypeScriptCompiler();
+    // Loading the compiler script is not enough to pay its parser/emitter JIT
+    // cost. Exercise the same transpile path used by the first real command so
+    // warmLanguage('typescript') leaves the runtime genuinely command-ready.
+    transpileTypeScript('const __tracecodeWarmupValue: number = 1;');
     compilerWarmupMs = performanceNow() - compilerStartedAt;
   }
 
@@ -7259,6 +7577,18 @@ function postProtocolMessage(id, protocolToken, type, payload) {
   postWorkerMessage({ id, type, payload, protocolToken });
 }
 
+function postTraceResultProtocolMessage(id, protocolToken, type, payload, request, path) {
+  const transported = prepareTraceEventTransfer(payload, request, path);
+  if (!transported) {
+    postProtocolMessage(id, protocolToken, type, payload);
+    return;
+  }
+  postWorkerMessage(
+    { id, type, payload: transported.payload, protocolToken },
+    transported.transfer
+  );
+}
+
 async function processMessage(data) {
   const { id, type, payload, protocolToken } = data;
 
@@ -7271,10 +7601,23 @@ async function processMessage(data) {
       });
       return;
     }
+    configureJavaScriptLibrariesUrl(
+      payload?.javascriptLibrariesUrl ?? payload?.runtimeAssets?.javascriptLibrariesUrl
+    );
 
     switch (type) {
+      case 'prewarm-executor': {
+        if (WORKER_ROLE === 'coordinator') {
+          throw new Error('Trusted JavaScript coordinator workers cannot be used as standby executors.');
+        }
+        ensureJavaScriptLibraries();
+        ensureJavaScriptUserAuthorityLockdown();
+        postProtocolMessage(id, protocolToken, 'prewarm-result', { success: true });
+        break;
+      }
+
       case 'init': {
-        const result = await initRuntime();
+        const result = await initRuntime(payload);
         postProtocolMessage(id, protocolToken, 'init-result', result);
         break;
       }
@@ -7285,25 +7628,53 @@ async function processMessage(data) {
         break;
       }
 
+      case 'prepare-execution': {
+        if (WORKER_ROLE === 'executor') {
+          throw new Error('Disposable JavaScript execution workers cannot prepare trusted compiler artifacts.');
+        }
+        const result = await prepareExecutionRequest(payload);
+        postProtocolMessage(id, protocolToken, 'prepare-result', result);
+        break;
+      }
+
       case 'execute-with-tracing': {
+        if (WORKER_ROLE === 'coordinator') {
+          throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
+        }
         const result = await executeWithTracing(payload);
-        postProtocolMessage(id, protocolToken, 'execute-result', result);
+        postTraceResultProtocolMessage(
+          id,
+          protocolToken,
+          'execute-result',
+          result,
+          payload?.traceEventTransport,
+          'trace.events'
+        );
         break;
       }
 
       case 'execute-code': {
+        if (WORKER_ROLE === 'coordinator') {
+          throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
+        }
         const result = await executeCode(payload);
         postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;
       }
 
       case 'execute-code-batch': {
+        if (WORKER_ROLE === 'coordinator') {
+          throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
+        }
         const result = await executeCodeBatch(payload);
         postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;
       }
 
       case 'execute-code-interview': {
+        if (WORKER_ROLE === 'coordinator') {
+          throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
+        }
         const result = await executeCodeInterview(payload);
         postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;

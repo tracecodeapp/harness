@@ -21,6 +21,7 @@ Environment:
   TRACECODE_DOTNET_CLI_HOME            Local .NET CLI home. Defaults to .dotnet/home.
   TRACECODE_DOTNET_SKIP_INSTALL=1      Reuse the existing SDK in TRACECODE_DOTNET_INSTALL_DIR.
   TRACECODE_DOTNET_SKIP_WORKLOAD=1     Skip wasm-tools workload installation.
+  TRACECODE_CSHARP_REFERENCE_PACK      Compiler reference pack: Minimal (default) or Compatibility.
 EOF
 }
 
@@ -49,6 +50,7 @@ dotnet_channel="${TRACECODE_DOTNET_CHANNEL:-$target_major.0}"
 dotnet_quality="${TRACECODE_DOTNET_QUALITY:-GA}"
 dotnet_version="${TRACECODE_DOTNET_VERSION:-}"
 dotnet_install_url="${TRACECODE_DOTNET_INSTALL_SCRIPT_URL:-https://dot.net/v1/dotnet-install.sh}"
+csharp_reference_pack="${TRACECODE_CSHARP_REFERENCE_PACK:-Minimal}"
 
 mkdir -p "$dotnet_install_dir" "$dotnet_cli_home"
 
@@ -87,7 +89,8 @@ if [[ "${TRACECODE_DOTNET_SKIP_WORKLOAD:-0}" != "1" ]]; then
   "$DOTNET_ROOT/dotnet" workload install wasm-tools
 fi
 
-"$DOTNET_ROOT/dotnet" publish "$PROJECT_FILE" -c Release
+"$DOTNET_ROOT/dotnet" publish "$PROJECT_FILE" -c Release \
+  -p:TraceCodeCompilerReferencePack="$csharp_reference_pack"
 
 publish_dir="$ROOT_DIR/runtimes/csharp/TraceCode.CSharpHost/bin/Release/$target_framework/browser-wasm/AppBundle"
 if [[ ! -f "$publish_dir/_framework/dotnet.js" ]]; then

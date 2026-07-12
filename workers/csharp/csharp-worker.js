@@ -1,8 +1,11 @@
 let runtimePromise = null;
+const trustedCSharpWorkerPostMessage = self.postMessage.bind(self);
 let warmupPromise = null;
 let executeExport = null;
 let executeProjectExport = null;
 let configuredAssetBaseUrl = null;
+let configuredRuntimeDependenciesSignature = null;
+let trustedRuntimeUserAuthorityLockdown = null;
 let runtimeModule = null;
 let runtimeFsHooksInstalled = false;
 let activeProjectIo = null;
@@ -40,6 +43,11 @@ const CSHARP_MAX_INPUT_DEPTH = 128;
 const CSHARP_MAX_INPUT_COLLECTION_ITEMS = 200_000;
 const CSHARP_MAX_INPUT_OBJECT_PROPERTIES = 50_000;
 const CSHARP_MAX_INPUT_TRAVERSAL_NODES = 750_000;
+const TRACE_EVENT_TRANSFER_SCHEMA = 'tracecode.trace-events.transfer.v1';
+const TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES = 64 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES = 256 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_BYTES = 64 * 1024 * 1024;
+const TRACE_EVENT_TRANSFER_MIN_EVENTS = 128;
 const CSHARP_WARMUP_REQUEST = Object.freeze({
   source: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
   functionName: 'Add',
@@ -48,6 +56,61 @@ const CSHARP_WARMUP_REQUEST = Object.freeze({
   trace: false,
   timeoutMs: 1_000,
 });
+
+function prepareCSharpTraceEventTransfer(result, request) {
+  if (
+    request?.schema !== TRACE_EVENT_TRANSFER_SCHEMA ||
+    request?.encoding !== 'json-utf8' ||
+    typeof TextEncoder === 'undefined'
+  ) {
+    return null;
+  }
+  const events = result?.events;
+  const requestedMinEvents = Number(request.minEventCount);
+  const minEventCount = Number.isSafeInteger(requestedMinEvents)
+    ? Math.max(TRACE_EVENT_TRANSFER_MIN_EVENTS, requestedMinEvents)
+    : TRACE_EVENT_TRANSFER_MIN_EVENTS;
+  if (!Array.isArray(events) || events.length < minEventCount) return null;
+
+  let encoded;
+  try {
+    encoded = new TextEncoder().encode(JSON.stringify(events));
+  } catch {
+    return null;
+  }
+  const requestedMinBytes = Number(request.minTransferBytes);
+  const minTransferBytes = Number.isSafeInteger(requestedMinBytes)
+    ? Math.max(0, requestedMinBytes)
+    : 64 * 1024;
+  if (encoded.byteLength < minTransferBytes || encoded.byteLength > TRACE_EVENT_TRANSFER_MAX_BYTES) {
+    return null;
+  }
+
+  const requestedChunkBytes = Number(request.maxChunkBytes);
+  const chunkBytes = Number.isSafeInteger(requestedChunkBytes)
+    ? Math.max(16 * 1024, Math.min(TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES, requestedChunkBytes))
+    : TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES;
+  const chunks = [];
+  for (let offset = 0; offset < encoded.byteLength; offset += chunkBytes) {
+    chunks.push(encoded.slice(offset, Math.min(encoded.byteLength, offset + chunkBytes)).buffer);
+  }
+  const payload = {
+    ...result,
+    events: [],
+    ...(result?.trace && typeof result.trace === 'object' && Array.isArray(result.trace.events)
+      ? { trace: { ...result.trace, events: [] } }
+      : {}),
+    __traceEventTransport: {
+      schema: TRACE_EVENT_TRANSFER_SCHEMA,
+      encoding: 'json-utf8',
+      path: 'events',
+      eventCount: events.length,
+      byteLength: encoded.byteLength,
+      chunks,
+    },
+  };
+  return { payload, transfer: chunks };
+}
 
 function stdinPipeState(pipe) {
   const buffer = pipe?.buffer;
@@ -263,11 +326,27 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
   });
 }
 
+function formatCSharpWorkerError(error) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    const serialized = JSON.stringify(error, (_key, value) => value instanceof Error
+      ? { name: value.name, message: value.message, stack: value.stack }
+      : value);
+    if (serialized && serialized !== '{}') return serialized.slice(0, 64 * 1024);
+  } catch {
+    // Fall through to the platform string conversion for circular objects.
+  }
+  return String(error);
+}
+
 function installSharedKernelPolicy(policy, scriptPath) {
   if (typeof self === 'undefined' || self.TraceRuntimeKernelPolicy) return;
   Object.defineProperty(self, 'TraceRuntimeKernelPolicy', {
     value: Object.freeze({ ...policy }),
-    configurable: true,
+    configurable: false,
+    enumerable: false,
+    writable: false,
   });
   emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
 }
@@ -286,34 +365,55 @@ function csharpSharedKernelPolicyUrl(workerHref = self.location.href) {
 
 async function loadSharedKernelPolicy() {
   if (typeof self !== 'undefined' && self.TraceRuntimeKernelPolicy) return;
-  if (typeof importScripts !== 'function') {
-    const scriptPath = csharpSharedKernelPolicyUrl();
-    const policy = await import(scriptPath);
-    installSharedKernelPolicy(policy, scriptPath);
-    return;
-  }
-
-  for (const scriptPath of SHARED_KERNEL_POLICY_PATHS) {
-    try {
-      importScripts(scriptPath);
-      if (self.TraceRuntimeKernelPolicy) {
-        emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
+  if (typeof importScripts === 'function') {
+    for (const scriptPath of SHARED_KERNEL_POLICY_PATHS) {
+      try {
+        importScripts(scriptPath);
+        if (self.TraceRuntimeKernelPolicy) {
+          emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
+          return;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        emitRuntimeDiagnostic('warn', 'shared-kernel-policy-load-failed', 'Failed to load shared runtime kernel policy.', {
+          scriptPath,
+          message,
+        });
       }
-      break;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      emitRuntimeDiagnostic('warn', 'shared-kernel-policy-load-failed', 'Failed to load shared runtime kernel policy.', {
-        scriptPath,
-        message,
-      });
     }
   }
+
+  // Module workers still expose importScripts() in some browsers even though
+  // invoking it throws. Fall back to the ESM policy instead of treating the
+  // mere presence of importScripts as proof that this is a classic worker.
+  const scriptPath = csharpSharedKernelPolicyUrl();
+  const policy = await import(scriptPath);
+  installSharedKernelPolicy(policy, scriptPath);
 }
 
-const sharedKernelPolicyReady = loadSharedKernelPolicy();
+const sharedKernelPolicyReady = loadSharedKernelPolicy().then(() => {
+  const lockdown = self.TraceRuntimeKernelPolicy?.withRuntimeUserAuthorityLockdown;
+  if (typeof lockdown !== 'function') {
+    const policyKeys = self.TraceRuntimeKernelPolicy && typeof self.TraceRuntimeKernelPolicy === 'object'
+      ? Object.keys(self.TraceRuntimeKernelPolicy).sort().join(',')
+      : '<missing>';
+    throw new Error(`C# worker failed to capture the shared runtime authority lockdown policy (keys: ${policyKeys}).`);
+  }
+  trustedRuntimeUserAuthorityLockdown = lockdown;
+});
 
 function now() {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function withCSharpUserAuthorityLockdown(callback, mode = 'temporary') {
+  if (typeof trustedRuntimeUserAuthorityLockdown !== 'function') {
+    throw new Error('C# user execution requires the captured runtime authority lockdown policy.');
+  }
+  if (mode !== 'temporary' && mode !== 'permanent') {
+    throw new Error(`Unsupported C# user authority mode: ${String(mode)}.`);
+  }
+  return trustedRuntimeUserAuthorityLockdown(callback, { mode });
 }
 
 function elapsedMs(startedAt) {
@@ -556,6 +656,15 @@ function isReadableOpenFlags(flags) {
   return accessMode === 0 || accessMode === 2;
 }
 
+function isDirectoryOpenFlags(flags) {
+  if (typeof flags === 'string') return false;
+  const numericFlags = Number(flags);
+  if (!Number.isFinite(numericFlags)) return false;
+  // Emscripten uses the POSIX O_DIRECTORY bit when libc/.NET opens a
+  // directory descriptor before getdents/readdir.
+  return Boolean(numericFlags & 65_536);
+}
+
 function projectFsRoots(request = activeProjectIo?.request) {
   const roots = ['/workspace'];
   const project = request?.project;
@@ -785,7 +894,13 @@ function materializeKernelVirtualFiles(request) {
   for (const file of manifestFiles) {
     const filePath = normalizeKernelVirtualManifestPath(file?.path);
     if (!filePath) continue;
-    ensureRuntimeDirectory(fs, runtimeDirectoryName(filePath));
+    try {
+      ensureRuntimeDirectory(fs, runtimeDirectoryName(filePath));
+    } catch (error) {
+      throw new Error(
+        `Failed to prepare kernel directory ${runtimeDirectoryName(filePath)} for ${filePath}: ${formatCSharpWorkerError(error)}`
+      );
+    }
     const ancestors = runtimeAncestorDirectories(filePath);
     if (typeof fs.chmod === 'function') {
       for (const directory of ancestors) {
@@ -807,7 +922,11 @@ function materializeKernelVirtualFiles(request) {
     const contents = file.encoding === 'base64'
       ? Uint8Array.from(atob(String(file.contents || '')), (char) => char.charCodeAt(0))
       : String(file.contents ?? '');
-    fs.writeFile(filePath, contents);
+    try {
+      fs.writeFile(filePath, contents);
+    } catch (error) {
+      throw new Error(`Failed to write kernel virtual file ${filePath}: ${formatCSharpWorkerError(error)}`);
+    }
     if (typeof fs.chmod === 'function') {
       fs.chmod(filePath, 0o444);
     }
@@ -965,7 +1084,7 @@ function emitProjectEvent(payload) {
     const outputBuffer = budgetedPayload.stream === 'stderr' ? activeProjectIo.eventStderr : activeProjectIo.eventStdout;
     outputBuffer.push(budgetedPayload.data);
   }
-  self.postMessage({
+  trustedCSharpWorkerPostMessage({
     id: activeProjectIo.messageId,
     type: 'project-event',
     payload: budgetedPayload,
@@ -1293,6 +1412,15 @@ function installRuntimeFsHooks(runtime) {
         throwProjectWorkspaceEscapingMutationError(path, 'open');
         const openTarget = runtimeKernelVirtualOpenTarget(path, flags);
         if (openTarget.kind === 'error') {
+          const readOnlyDirectoryEnumeration =
+            openTarget.reason === 'is-directory' &&
+            isDirectoryOpenFlags(flags) &&
+            isReadableOpenFlags(flags) &&
+            !isWritableOpenFlags(flags) &&
+            !isCreateOrTruncateOpenFlags(flags);
+          if (readOnlyDirectoryEnumeration) {
+            return originalOpen.apply(this, arguments);
+          }
           const code = openTarget.reason === 'not-found' ? 'ENOENT' : openTarget.reason === 'is-directory' ? 'EISDIR' : 'EROFS';
           const reason = code === 'ENOENT' ? 'no such file or directory' : code === 'EISDIR' ? 'is a directory' : 'read-only file system';
           throwKernelFsError(path, 'open', code, reason);
@@ -1486,7 +1614,7 @@ function clearIdleTimer() {
 function resetIdleTimer() {
   clearIdleTimer();
   idleTimer = setTimeout(() => {
-    self.postMessage({ type: 'idle-timeout' });
+    trustedCSharpWorkerPostMessage({ type: 'idle-timeout' });
     self.close();
   }, idleTimeoutMs);
 }
@@ -1495,6 +1623,42 @@ function applyWorkerOptions(payload) {
   const requestedIdleTimeoutMs = Number(payload?.idleTimeoutMs);
   if (Number.isFinite(requestedIdleTimeoutMs) && requestedIdleTimeoutMs >= 1_000) {
     idleTimeoutMs = Math.round(requestedIdleTimeoutMs);
+  }
+  if (payload?.runtimeDependencies !== undefined) {
+    const dependencies = payload.runtimeDependencies;
+    if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+      throw new Error('C# worker runtimeDependencies must be an object.');
+    }
+    const assetBaseUrl = payload?.assetBaseUrl;
+    const normalized = {};
+    for (const [pathname, value] of Object.entries(dependencies)) {
+      const pathSegments = pathname.split('/');
+      if (
+        !pathname ||
+        pathname.startsWith('/') ||
+        pathname.includes('\\') ||
+        pathname.includes('?') ||
+        pathname.includes('#') ||
+        pathSegments.some((segment) => segment === '' || segment === '.' || segment === '..') ||
+        typeof value !== 'string' ||
+        !value.trim()
+      ) {
+        throw new Error('C# runtimeDependencies must map safe deployment-relative paths to non-empty URLs.');
+      }
+      const expected = new URL(resolveAssetUrl(assetBaseUrl, pathname), self.location?.href).href;
+      const actual = new URL(value, self.location?.href).href;
+      if (expected !== actual) {
+        throw new Error(
+          `C# runtime dependency ${pathname} must resolve beneath assetBaseUrl (expected ${expected}, received ${actual}).`
+        );
+      }
+      normalized[pathname] = actual;
+    }
+    const signature = JSON.stringify(normalized);
+    if (configuredRuntimeDependenciesSignature && configuredRuntimeDependenciesSignature !== signature) {
+      throw new Error('C# runtime dependencies cannot change after worker configuration.');
+    }
+    configuredRuntimeDependenciesSignature = signature;
   }
 }
 
@@ -2446,7 +2610,9 @@ async function executeCSharpCodePayload(payload, messageType = 'execute-code') {
   const runtimeResult = await loadRuntime(payload?.assetBaseUrl);
   const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
   const hostCallStartedAt = now();
-  const result = normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request);
+  const result = await withCSharpUserAuthorityLockdown(() =>
+    normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request)
+  );
   const hostCallMs = elapsedMs(hostCallStartedAt);
   return {
     ...result,
@@ -2577,9 +2743,19 @@ async function handleMessage(message) {
     const runtimeStartedAt = now();
     const runtimeResult = await loadRuntime(message.payload?.assetBaseUrl);
     const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
-    const { assetBaseUrl, idleTimeoutMs, timeoutMs, ...request } = message.payload ?? {};
+    const {
+      assetBaseUrl,
+      idleTimeoutMs,
+      timeoutMs,
+      projectUserAuthorityMode = 'temporary',
+      ...request
+    } = message.payload ?? {};
     const hostCallStartedAt = now();
-    materializeKernelVirtualFiles(request);
+    try {
+      materializeKernelVirtualFiles(request);
+    } catch (error) {
+      throw new Error(`C# project virtual-file setup failed: ${formatCSharpWorkerError(error)}`);
+    }
     const projectIo = {
       messageId: message.id,
       request,
@@ -2602,9 +2778,20 @@ async function handleMessage(message) {
     };
     let result;
     try {
-      materializeKernelDevices(request);
+      try {
+        materializeKernelDevices(request);
+      } catch (error) {
+        throw new Error(`C# project device setup failed: ${formatCSharpWorkerError(error)}`);
+      }
       activeProjectIo = projectIo;
-      result = JSON.parse(executeProjectExport(JSON.stringify(projectRuntimeRequest(request))));
+      try {
+        result = await withCSharpUserAuthorityLockdown(
+          () => JSON.parse(executeProjectExport(JSON.stringify(projectRuntimeRequest(request)))),
+          projectUserAuthorityMode
+        );
+      } catch (error) {
+        throw new Error(`C# project host call failed: ${formatCSharpWorkerError(error)}`);
+      }
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
       if (activeProjectIo.directDeviceOutput) {
@@ -2641,7 +2828,7 @@ self.addEventListener('message', (event) => {
   const { id, type, payload, protocolToken } = event.data || {};
   if (!id) return;
   if (typeof protocolToken !== 'string') {
-    self.postMessage({
+    trustedCSharpWorkerPostMessage({
       id,
       type: 'error',
       payload: { error: 'Missing C# worker protocol token.' },
@@ -2658,18 +2845,25 @@ self.addEventListener('message', (event) => {
     .then(async () => {
       await sharedKernelPolicyReady;
       const result = await handleMessage({ id, type, payload, protocolToken });
-      self.postMessage({ id, type, payload: result, protocolToken });
+      const transported = type === 'execute-with-tracing'
+        ? prepareCSharpTraceEventTransfer(result, payload?.traceEventTransport)
+        : null;
+      trustedCSharpWorkerPostMessage(
+        { id, type, payload: transported?.payload ?? result, protocolToken },
+        transported?.transfer ?? []
+      );
     })
     .catch((error) => {
+      const errorMessage = formatCSharpWorkerError(error);
       emitRuntimeDiagnostic('error', 'worker-request-failed', 'C# worker request failed.', {
         type,
-        message: error instanceof Error ? error.message : String(error),
+        message: errorMessage,
       });
-      self.postMessage({
+      trustedCSharpWorkerPostMessage({
         id,
         type: 'error',
         protocolToken,
-        payload: { error: error instanceof Error ? error.message : String(error) },
+        payload: { error: errorMessage },
       });
     })
     .finally(() => {
@@ -2682,14 +2876,14 @@ self.addEventListener('message', (event) => {
 sharedKernelPolicyReady
   .then(() => {
     emitRuntimeDiagnostic('info', 'worker-ready', 'C# worker is ready.');
-    self.postMessage({ type: 'worker-ready' });
+    trustedCSharpWorkerPostMessage({ type: 'worker-ready' });
   })
   .catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     emitRuntimeDiagnostic('error', 'shared-kernel-policy-load-failed', 'Failed to load shared runtime kernel policy.', {
       message,
     });
-    self.postMessage({
+    trustedCSharpWorkerPostMessage({
       type: 'worker-error',
       payload: { error: message },
     });

@@ -208,14 +208,13 @@ function buildPythonDescription(input: {
   pythonVersion: string;
   pyodideVersion: string;
   defaultImports: readonly string[];
-  sortedcontainersVersion: string;
 }): string {
   return [
     `Python ${input.pythonVersion} (Pyodide ${input.pyodideVersion}).`,
     '',
     `Common algorithm helpers are imported automatically, including ${input.defaultImports.slice(0, 6).join(', ')}. Other standard-library modules can be imported normally.`,
     '',
-    `sortedcontainers ${input.sortedcontainersVersion} is available for TreeMap, ordered-set, and sorted-list style workflows.`,
+    'Optional third-party packages are consumer-owned runtime assets and are available only when declared by the browser runtime manifest.',
   ].join('\n');
 }
 
@@ -254,7 +253,7 @@ function buildJavaDescription(input: {
 }): string {
   const runtimeDetail = input.cheerpjVersion
     ? `CheerpJ ${input.cheerpjVersion}`
-    : 'a same-origin CheerpJ runtime asset';
+    : 'consumer-configured CheerpJ runtime assets';
   return [
     `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed in the browser through ${runtimeDetail}.`,
     '',
@@ -301,9 +300,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   }>('node_modules', 'pyodide', 'pyodide-lock.json');
   const pyodideVersion = requireMatch(pythonWorkerSource, /pyodide[\/@]v?([0-9]+(?:\.[0-9]+){1,2})/i, 'Pyodide worker URL version')[1]!;
   const pythonVersion = pyodideLock.info?.python;
-  const sortedcontainersVersion = pyodideLock.packages?.sortedcontainers?.version;
   if (!pythonVersion) throw new Error('Unable to derive runtime info: missing Pyodide Python version');
-  if (!sortedcontainersVersion) throw new Error('Unable to derive runtime info: missing sortedcontainers version');
 
   const javascriptEntrySource = await readText('workers', 'javascript', 'javascript-libraries-entry.js');
   const javascriptWorkerSource = await readText('workers', 'javascript', 'javascript-worker.js');
@@ -381,7 +378,6 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
         pythonVersion,
         pyodideVersion,
         defaultImports: pythonDefaultImports,
-        sortedcontainersVersion,
       }),
       runtime: {
         name: 'Pyodide',
@@ -389,14 +385,6 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
         detail: `CPython ${pythonVersion} compiled to WebAssembly.`,
       },
       defaultImports: pythonDefaultImports,
-      libraries: [
-        {
-          name: 'sortedcontainers',
-          version: sortedcontainersVersion,
-          importName: 'sortedcontainers',
-          detail: 'SortedDict, SortedList, and SortedSet are loaded for tree-map/tree-set style use cases.',
-        },
-      ],
     },
     javascript: {
       language: 'javascript',
@@ -444,7 +432,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
         version: javaVersion,
         detail: cheerpjVersion
           ? `Loaded through CheerpJ ${cheerpjVersion}.`
-          : 'Loaded from a configured same-origin CheerpJ runtime asset.',
+          : 'Loaded from consumer-configured runtime assets (same-origin or an approved CDN).',
       },
       compiler: {
         name: 'javac',

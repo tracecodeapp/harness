@@ -22,7 +22,10 @@ interface WorkerMessage {
   type: string;
   payload?: unknown;
   protocolToken?: string;
-  runnerOptions?: Pick<BrowserJavaScriptProjectRunnerOptions, 'allowDynamicEval'>;
+  runnerOptions?: Pick<
+    BrowserJavaScriptProjectRunnerOptions,
+    'allowDynamicEval' | 'projectUserAuthorityMode'
+  >;
   port?: MessagePort;
 }
 
@@ -273,6 +276,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   const request = payload as JavaScriptProjectCommandRequest;
   const options: BrowserJavaScriptProjectRunnerOptions = {
     allowDynamicEval: runnerOptions?.allowDynamicEval,
+    projectUserAuthorityMode: runnerOptions?.projectUserAuthorityMode,
   };
   const executionState = { cancelled: false, abortController: new AbortController() };
   const kernelHttp = new WorkerKernelHttpBridge((message) => {

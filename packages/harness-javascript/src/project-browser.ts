@@ -109,6 +109,8 @@ export type BrowserJavaScriptProjectCommandRunner = JavaScriptProjectCommandRunn
 export type BrowserJavaScriptProjectWorkerIsolation = 'shared' | 'per-command';
 
 export interface BrowserJavaScriptProjectRunnerOptions {
+  /** Verifies the consumer-owned project worker before it is constructed. */
+  assetPreflight?: () => Promise<void>;
   applyFileChange?: (
     change: RuntimeFileChange,
     phase: RuntimeFileMutationPhase,
@@ -119,6 +121,8 @@ export interface BrowserJavaScriptProjectRunnerOptions {
   hardened?: boolean;
   trustedMainThreadExecution?: boolean;
   trustedReusableWorker?: boolean;
+  /** @internal Set by the worker-backed runner; disposable workers require permanent mode. */
+  projectUserAuthorityMode?: 'temporary' | 'permanent';
   timeoutMs?: number;
   workerIsolation?: BrowserJavaScriptProjectWorkerIsolation;
   workerUrl?: string;
@@ -128,6 +132,8 @@ export interface BrowserTypeScriptProjectRunnerOptions {
   allowDomCompilerScript?: boolean;
   allowExternalDomCompilerScript?: boolean;
   compiler?: TypeScriptProjectCompiler;
+  /** Verifies the consumer-owned compiler asset immediately before lazy loading. */
+  compilerPreflight?: () => Promise<void>;
   compilerUrl?: string;
 }
 
@@ -210,10 +216,13 @@ export function createBrowserTypeScriptProjectRunner(
 ) {
   return createTypeScriptProjectRunner({
     ...(options.compiler ? { compiler: options.compiler } : {}),
-    loadCompiler: () => loadBrowserTypeScriptCompiler(options.compilerUrl, {
-      allowDomCompilerScript: options.allowDomCompilerScript,
-      allowExternalDomCompilerScript: options.allowExternalDomCompilerScript,
-    }),
+    loadCompiler: async () => {
+      await options.compilerPreflight?.();
+      return loadBrowserTypeScriptCompiler(options.compilerUrl, {
+        allowDomCompilerScript: options.allowDomCompilerScript,
+        allowExternalDomCompilerScript: options.allowExternalDomCompilerScript,
+      });
+    },
   });
 }
 
@@ -247,6 +256,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const AsyncFunction = Object.getPrototypeOf(async function noop() {
   // Intentionally empty.
 }).constructor as typeof Function;
+const BrowserFunction = Function;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const streamInternalCloseListeners = new WeakMap<object, Set<() => void>>();
@@ -2570,19 +2580,220 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
   };
 }
 
-function installBrowserHttpGlobalLockdown(httpApi: ReturnType<typeof createHttpApi>): () => void {
+const permanentBrowserAuthorityDefineProperty = Object.defineProperty;
+const permanentBrowserAuthorityGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const permanentBrowserAuthorityGetPrototypeOf = Object.getPrototypeOf;
+const PERMANENT_BROWSER_WORKER_DENIED_GLOBALS = Object.freeze([
+  'XMLHttpRequest',
+  'WebSocket',
+  'WebSocketStream',
+  'WebTransport',
+  'EventSource',
+  'RTCPeerConnection',
+  'webkitRTCPeerConnection',
+  'RTCDataChannel',
+  'indexedDB',
+  'caches',
+  'Cache',
+  'CacheStorage',
+  'cookieStore',
+  'localStorage',
+  'sessionStorage',
+  'webkitRequestFileSystem',
+  'webkitRequestFileSystemSync',
+  'webkitResolveLocalFileSystemURL',
+  'webkitResolveLocalFileSystemSyncURL',
+  'Worker',
+  'SharedWorker',
+  'MessageChannel',
+  'MessagePort',
+  'BroadcastChannel',
+  'importScripts',
+  'postMessage',
+  'eval',
+  'Function',
+]);
+const PERMANENT_BROWSER_WORKER_DENIED_NAVIGATOR_MEMBERS = Object.freeze([
+  'sendBeacon',
+  'storage',
+  'locks',
+  'serviceWorker',
+]);
+const permanentBrowserDynamicConstructorPrototypes = Object.freeze([
+  BrowserFunction.prototype,
+  permanentBrowserAuthorityGetPrototypeOf(async function browserAsyncFunction() {}),
+  permanentBrowserAuthorityGetPrototypeOf(function* browserGeneratorFunction() {}),
+  permanentBrowserAuthorityGetPrototypeOf(async function* browserAsyncGeneratorFunction() {}),
+]);
+
+function permanentBrowserAuthorityError(name: string): Error {
+  return Object.assign(
+    new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`),
+    { code: 'EACCES' }
+  );
+}
+
+function permanentBrowserDeniedAuthority(name: string): unknown {
+  const deny = function deniedBrowserWorkerAuthority(): never {
+    throw permanentBrowserAuthorityError(name);
+  };
+  return typeof Proxy === 'function'
+    ? new Proxy(deny, {
+        apply: () => deny(),
+        construct: () => deny(),
+        get: (_target, property) => property === Symbol.toStringTag
+          ? 'TraceKernelDeniedCapability'
+          : permanentBrowserDeniedAuthority(`${name}.${String(property)}`),
+        set: () => {
+          throw permanentBrowserAuthorityError(name);
+        },
+      })
+    : deny;
+}
+
+function permanentBrowserPrototypeChain(value: unknown): object[] {
+  const targets: object[] = [];
+  const seen = new Set<object>();
+  let current = value;
+  while (
+    current &&
+    (typeof current === 'object' || typeof current === 'function') &&
+    !seen.has(current as object)
+  ) {
+    targets.push(current as object);
+    seen.add(current as object);
+    current = permanentBrowserAuthorityGetPrototypeOf(current);
+  }
+  return targets;
+}
+
+function sealPermanentBrowserProperty(target: object, name: PropertyKey, value: unknown): void {
+  const descriptor = permanentBrowserAuthorityGetOwnPropertyDescriptor(target, name);
+  if (
+    descriptor?.configurable === false &&
+    !('value' in descriptor && descriptor.writable === true)
+  ) {
+    if ('value' in descriptor && descriptor.value === value) return;
+    throw permanentBrowserAuthorityError(String(name));
+  }
+  permanentBrowserAuthorityDefineProperty(target, name, {
+    configurable: false,
+    enumerable: descriptor?.enumerable ?? false,
+    writable: false,
+    value,
+  });
+  if ((target as Record<PropertyKey, unknown>)[name] !== value) {
+    throw permanentBrowserAuthorityError(String(name));
+  }
+}
+
+function sealPermanentBrowserPropertyAcrossChain(
+  value: unknown,
+  name: string,
+  replacement: unknown,
+  options: { includeOwn?: boolean; ensureOwn?: boolean } = {}
+): void {
+  const targets = permanentBrowserPrototypeChain(value);
+  const includeOwn = options.includeOwn !== false;
+  let replacedOwn = false;
+  for (let index = includeOwn ? 0 : 1; index < targets.length; index += 1) {
+    const target = targets[index];
+    if (!permanentBrowserAuthorityGetOwnPropertyDescriptor(target, name)) continue;
+    sealPermanentBrowserProperty(target, name, replacement);
+    if (target === value) replacedOwn = true;
+  }
+  if (includeOwn && options.ensureOwn !== false && !replacedOwn) {
+    sealPermanentBrowserProperty(value as object, name, replacement);
+  }
+}
+
+function installPermanentBrowserWorkerAuthorityBoundary(
+  httpApi: ReturnType<typeof createHttpApi>
+): () => void {
+  if (typeof document !== 'undefined') {
+    throw new Error('Permanent browser authority denial is only valid inside a disposable worker.');
+  }
+  const scope = globalThis as typeof globalThis & Record<string, unknown>;
+  for (const name of PERMANENT_BROWSER_WORKER_DENIED_GLOBALS) {
+    sealPermanentBrowserPropertyAcrossChain(scope, name, permanentBrowserDeniedAuthority(name));
+  }
+  const deniedNativeFetch = permanentBrowserDeniedAuthority('native fetch');
+  sealPermanentBrowserPropertyAcrossChain(scope, 'fetch', deniedNativeFetch, {
+    includeOwn: false,
+    ensureOwn: false,
+  });
+  sealPermanentBrowserProperty(scope, 'fetch', httpApi.fetch);
+  sealPermanentBrowserProperty(scope, 'Headers', httpApi.Headers);
+  sealPermanentBrowserProperty(scope, 'Request', httpApi.Request);
+  sealPermanentBrowserProperty(scope, 'Response', httpApi.Response);
+
+  const navigatorValue = scope.navigator;
+  if (navigatorValue && (typeof navigatorValue === 'object' || typeof navigatorValue === 'function')) {
+    for (const name of PERMANENT_BROWSER_WORKER_DENIED_NAVIGATOR_MEMBERS) {
+      sealPermanentBrowserPropertyAcrossChain(
+        navigatorValue,
+        name,
+        permanentBrowserDeniedAuthority(`navigator.${name}`)
+      );
+    }
+    sealPermanentBrowserProperty(scope, 'navigator', navigatorValue);
+  }
+
+  const deniedConstructor = permanentBrowserDeniedAuthority('Function constructor');
+  for (const prototype of permanentBrowserDynamicConstructorPrototypes) {
+    sealPermanentBrowserProperty(prototype, 'constructor', deniedConstructor);
+  }
+  return () => {
+    // Disposable worker authority is intentionally non-restoring.
+  };
+}
+
+function installBrowserHttpGlobalLockdown(
+  httpApi: ReturnType<typeof createHttpApi>,
+  authorityMode: 'temporary' | 'permanent' = 'temporary'
+): () => void {
+  if (authorityMode === 'permanent') {
+    return installPermanentBrowserWorkerAuthorityBoundary(httpApi);
+  }
   const global = globalThis as typeof globalThis & Record<string, unknown>;
   const blockedNetworkApi = (name: string) => function blockedTraceKernelNetworkApi(): never {
     throw Object.assign(new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`), { code: 'EACCES' });
+  };
+  const blockedAuthorityObject = (name: string): unknown => {
+    const deny = blockedNetworkApi(name);
+    return typeof Proxy === 'function'
+      ? new Proxy(deny, {
+          apply: () => deny(),
+          construct: () => deny(),
+          get: (_target, property) => property === Symbol.toStringTag ? 'TraceKernelDeniedCapability' : deny,
+        })
+      : deny;
   };
   const replacements: Record<string, unknown> = {
     fetch: httpApi.fetch,
     Headers: httpApi.Headers,
     Request: httpApi.Request,
     Response: httpApi.Response,
-    XMLHttpRequest: blockedNetworkApi('XMLHttpRequest'),
-    WebSocket: blockedNetworkApi('WebSocket'),
-    EventSource: blockedNetworkApi('EventSource'),
+    XMLHttpRequest: blockedAuthorityObject('XMLHttpRequest'),
+    WebSocket: blockedAuthorityObject('WebSocket'),
+    WebSocketStream: blockedAuthorityObject('WebSocketStream'),
+    WebTransport: blockedAuthorityObject('WebTransport'),
+    EventSource: blockedAuthorityObject('EventSource'),
+    // A dedicated Worker is an execution boundary, not an origin boundary.
+    // User code must not bypass TraceKernel through same-origin persistence,
+    // cache, nested workers, or cross-context messaging. The worker bridge
+    // captures the host channel before this lockdown is installed.
+    ...(typeof document === 'undefined'
+      ? {
+          indexedDB: blockedAuthorityObject('indexedDB'),
+          caches: blockedAuthorityObject('caches'),
+          cookieStore: blockedAuthorityObject('cookieStore'),
+          Worker: blockedAuthorityObject('Worker'),
+          SharedWorker: blockedAuthorityObject('SharedWorker'),
+          BroadcastChannel: blockedAuthorityObject('BroadcastChannel'),
+          importScripts: blockedAuthorityObject('importScripts'),
+        }
+      : {}),
   };
   const previousDescriptors = new Map<string, PropertyDescriptor | undefined>();
   for (const [name, value] of Object.entries(replacements)) {
@@ -2599,19 +2810,30 @@ function installBrowserHttpGlobalLockdown(httpApi: ReturnType<typeof createHttpA
     }
   }
   const navigatorValue = global.navigator;
-  const sendBeaconDescriptor = navigatorValue && typeof navigatorValue === 'object'
-    ? Object.getOwnPropertyDescriptor(navigatorValue, 'sendBeacon')
-    : undefined;
+  const navigatorDescriptors = new Map<string, PropertyDescriptor | undefined>();
   if (navigatorValue && typeof navigatorValue === 'object') {
-    try {
-      Object.defineProperty(navigatorValue, 'sendBeacon', {
-        configurable: true,
-        enumerable: false,
-        writable: false,
-        value: blockedNetworkApi('navigator.sendBeacon'),
-      });
-    } catch {
-      // Ignore read-only host navigator implementations.
+    const navigatorReplacements: Record<string, unknown> = {
+      sendBeacon: blockedAuthorityObject('navigator.sendBeacon'),
+      ...(typeof document === 'undefined'
+        ? {
+            storage: blockedAuthorityObject('navigator.storage'),
+            locks: blockedAuthorityObject('navigator.locks'),
+            serviceWorker: blockedAuthorityObject('navigator.serviceWorker'),
+          }
+        : {}),
+    };
+    for (const [name, value] of Object.entries(navigatorReplacements)) {
+      navigatorDescriptors.set(name, Object.getOwnPropertyDescriptor(navigatorValue, name));
+      try {
+        Object.defineProperty(navigatorValue, name, {
+          configurable: true,
+          enumerable: false,
+          writable: false,
+          value,
+        });
+      } catch {
+        // Ignore read-only host navigator implementations.
+      }
     }
   }
   return () => {
@@ -2627,14 +2849,16 @@ function installBrowserHttpGlobalLockdown(httpApi: ReturnType<typeof createHttpA
       }
     }
     if (navigatorValue && typeof navigatorValue === 'object') {
-      try {
-        if (sendBeaconDescriptor) {
-          Object.defineProperty(navigatorValue, 'sendBeacon', sendBeaconDescriptor);
-        } else {
-          delete (navigatorValue as unknown as Record<string, unknown>).sendBeacon;
+      for (const [name, descriptor] of navigatorDescriptors) {
+        try {
+          if (descriptor) {
+            Object.defineProperty(navigatorValue, name, descriptor);
+          } else {
+            delete (navigatorValue as unknown as Record<string, unknown>)[name];
+          }
+        } catch {
+          // Ignore read-only host navigator implementations.
         }
-      } catch {
-        // Ignore read-only host navigator implementations.
       }
     }
   };
@@ -3238,7 +3462,10 @@ class BrowserJavaScriptProjectWorkerClient {
 
   constructor(
     private readonly workerUrl: string,
-    private readonly runnerOptions: Pick<BrowserJavaScriptProjectRunnerOptions, 'allowDynamicEval'> = {}
+    private readonly runnerOptions: Pick<
+      BrowserJavaScriptProjectRunnerOptions,
+      'allowDynamicEval' | 'projectUserAuthorityMode'
+    > = {}
   ) {}
 
   executeProject(
@@ -3587,8 +3814,10 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
         finishMessage: 'Browser Node exited',
         applyFileChange: options.applyFileChange,
         run: async (workerRequest, onEvent) => {
+          await options.assetPreflight?.();
           const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
             allowDynamicEval: options.allowDynamicEval,
+            projectUserAuthorityMode: 'permanent',
           });
           try {
             return await client.executeProject(workerRequest, timeoutMs, onEvent);
@@ -3600,6 +3829,7 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
   }
   const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
     allowDynamicEval: options.allowDynamicEval,
+    projectUserAuthorityMode: 'temporary',
   });
   return (request) =>
     runRuntimeProjectWorkerBridge({
@@ -3614,7 +3844,10 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
       finishPhase: 'process-exit',
       finishMessage: 'Browser Node exited',
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => client.executeProject(workerRequest, timeoutMs, onEvent),
+      run: async (workerRequest, onEvent) => {
+        await options.assetPreflight?.();
+        return client.executeProject(workerRequest, timeoutMs, onEvent);
+      },
     });
 }
 
@@ -6986,7 +7219,10 @@ export async function runBrowserJavaScriptProjectRequest(
     Object.assign(fsApi, { promises: fsPromisesApi });
     const zlibApi = createZlibApi();
     const httpApi = createHttpApi(request.kernelHttp, request.signal);
-    const restoreHttpGlobals = installBrowserHttpGlobalLockdown(httpApi);
+    const restoreHttpGlobals = installBrowserHttpGlobalLockdown(
+      httpApi,
+      options.projectUserAuthorityMode ?? 'temporary'
+    );
     const restoreTimerGlobals = installBrowserTimerGlobals(eventLoopApi);
     const builtins = new Map<string, unknown>([
       ['fs', fsApi],
@@ -7123,7 +7359,7 @@ export async function runBrowserJavaScriptProjectRequest(
         ? transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot))
         : code;
       try {
-        const fn = new Function(
+        const fn = new BrowserFunction(
           'require',
           '__import',
           'module',

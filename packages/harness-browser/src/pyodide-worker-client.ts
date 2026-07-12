@@ -21,6 +21,7 @@ import type {
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
 import { createWorkerProtocolToken } from './worker-protocol';
 
 type MessageId = string;
@@ -28,7 +29,21 @@ export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
 export interface PythonWorkerClientOptions {
   workerUrl: string;
+  /** Worker construction mode. Module Pyodide loaders require a module worker. */
+  workerFormat?: 'classic' | 'module';
   debug?: boolean;
+  assetPreflight?: () => Promise<void>;
+  runtimeAssetPreflight?: () => Promise<void>;
+  /** Permanent mode is only safe when this worker is retired after its project command. */
+  projectUserAuthorityMode?: 'temporary' | 'permanent';
+  runtimeAssets?: {
+    loaderUrl?: string;
+    indexUrl?: string;
+    loaderFormat?: 'classic-script' | 'module';
+    runtimeCoreUrl?: string;
+    snippetsUrl?: string;
+    packageUrls?: Readonly<Record<string, string>>;
+  };
 }
 
 interface PendingMessage {
@@ -100,6 +115,19 @@ const MESSAGE_TIMEOUT_MS = 20000;
 // Worker bootstrap timeout - prevents deadlock when worker never emits "worker-ready"
 const WORKER_READY_TIMEOUT_MS = 10000;
 
+function appendPythonWorkerQueryParameter(workerUrl: string, name: string, value: string): string {
+  const hashIndex = workerUrl.indexOf('#');
+  const beforeHash = hashIndex >= 0 ? workerUrl.slice(0, hashIndex) : workerUrl;
+  const hash = hashIndex >= 0 ? workerUrl.slice(hashIndex) : '';
+  const encodedName = encodeURIComponent(name);
+  const encodedValue = encodeURIComponent(value);
+  const existing = new RegExp(`([?&])${encodedName}=[^&#]*`);
+  if (existing.test(beforeHash)) {
+    return `${beforeHash.replace(existing, `$1${encodedName}=${encodedValue}`)}${hash}`;
+  }
+  return `${beforeHash}${beforeHash.includes('?') ? '&' : '?'}${encodedName}=${encodedValue}${hash}`;
+}
+
 export class PythonWorkerClient {
   private worker: Worker | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
@@ -112,9 +140,33 @@ export class PythonWorkerClient {
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
   private readonly debug: boolean;
+  private readonly workerFormat: 'classic' | 'module';
+  private readonly loaderFormat: 'classic-script' | 'module';
 
   constructor(private readonly options: PythonWorkerClientOptions) {
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
+    this.workerFormat = options.workerFormat ?? 'classic';
+    this.loaderFormat = options.runtimeAssets?.loaderFormat ?? 'classic-script';
+    const coherentFormatPair =
+      (this.workerFormat === 'classic' && this.loaderFormat === 'classic-script') ||
+      (this.workerFormat === 'module' && this.loaderFormat === 'module');
+    if (!coherentFormatPair) {
+      throw new TypeError(
+        `Python workerFormat "${this.workerFormat}" and loaderFormat "${this.loaderFormat}" are incompatible; ` +
+          'use classic + classic-script or module + module.'
+      );
+    }
+    if (
+      this.workerFormat === 'module' &&
+      (!options.runtimeAssets?.loaderUrl ||
+        !options.runtimeAssets.indexUrl ||
+        !options.runtimeAssets.runtimeCoreUrl ||
+        !options.runtimeAssets.snippetsUrl)
+    ) {
+      throw new TypeError(
+        'Module Python workers require consumer-supplied runtimeAssets.loaderUrl, indexUrl, runtimeCoreUrl, and snippetsUrl.'
+      );
+    }
   }
 
   /**
@@ -140,11 +192,24 @@ export class PythonWorkerClient {
       this.workerReadyReject = (error: Error) => reject(error);
     });
 
-    const workerUrl =
-      this.debug && !this.options.workerUrl.includes('?')
-        ? `${this.options.workerUrl}?dev=${Date.now()}`
-        : this.options.workerUrl;
-    this.worker = new Worker(workerUrl);
+    let workerUrl = this.options.workerUrl;
+    if (this.debug) {
+      workerUrl = appendPythonWorkerQueryParameter(workerUrl, 'dev', String(Date.now()));
+    }
+    if (this.workerFormat === 'classic' && this.options.runtimeAssets?.snippetsUrl) {
+      workerUrl = appendPythonWorkerQueryParameter(
+        workerUrl,
+        'tracecodePythonSnippets',
+        this.options.runtimeAssets.snippetsUrl
+      );
+    }
+    if (this.workerFormat === 'module') {
+      workerUrl = appendPythonWorkerQueryParameter(workerUrl, 'tracecodePythonWorkerFormat', 'module');
+    }
+    this.worker = new Worker(
+      workerUrl,
+      this.workerFormat === 'module' ? { type: 'module' } : undefined
+    );
     
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const { id, type, payload, protocolToken } = event.data;
@@ -207,7 +272,11 @@ export class PythonWorkerClient {
               message: 'Python worker response received.',
               detail: { id, type },
             }, { enabled: this.debug });
-            pending.resolve(payload);
+            try {
+              pending.resolve(restoreTransferredTraceEvents(payload));
+            } catch (error) {
+              pending.reject(error instanceof Error ? error : new Error(String(error)));
+            }
           }
         }
       }
@@ -298,6 +367,10 @@ export class PythonWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge
   ): Promise<T> {
+    await this.options.assetPreflight?.();
+    if (type !== 'status' && (type !== 'init' || this.loaderFormat === 'module')) {
+      await this.options.runtimeAssetPreflight?.();
+    }
     const worker = this.getWorker();
     
     // Wait for worker to be ready before sending messages
@@ -656,7 +729,7 @@ export class PythonWorkerClient {
 
     this.initPromise = (async () => {
       try {
-        return await this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);
+        return await this.sendMessage<InitResult>('init', this.runtimeAssetsPayload(), INIT_TIMEOUT_MS);
       } catch (error) {
         if (!this.shouldResetRuntimeLoadError(error)) {
           throw error;
@@ -672,7 +745,7 @@ export class PythonWorkerClient {
         }, { enabled: this.debug });
 
         this.terminateAndReset();
-        return this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);
+        return this.sendMessage<InitResult>('init', this.runtimeAssetsPayload(), INIT_TIMEOUT_MS);
       }
     })();
     
@@ -685,6 +758,10 @@ export class PythonWorkerClient {
     } finally {
       this.isInitializing = false;
     }
+  }
+
+  private runtimeAssetsPayload(): { runtimeAssets?: PythonWorkerClientOptions['runtimeAssets'] } {
+    return this.options.runtimeAssets ? { runtimeAssets: this.options.runtimeAssets } : {};
   }
 
   async warmup(): Promise<WarmupResult> {
@@ -735,6 +812,7 @@ export class PythonWorkerClient {
             inputs,
             executionStyle,
             options,
+            traceEventTransport: traceEventTransferRequest(),
           }, TRACING_TIMEOUT_MS + 5000); // Message timeout slightly longer than execution timeout
         },
         TRACING_TIMEOUT_MS,
@@ -898,7 +976,12 @@ export class PythonWorkerClient {
       async () => {
         return this.sendMessage<PythonProjectCommandResult>(
           'execute-project-python',
-          workerRequest,
+          {
+            ...workerRequest,
+            ...(this.options.projectUserAuthorityMode
+              ? { projectUserAuthorityMode: this.options.projectUserAuthorityMode }
+              : {}),
+          },
           timeoutMs + 5000,
           onEvent,
           kernelHttp

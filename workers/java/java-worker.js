@@ -1,14 +1,20 @@
 const DEFAULT_CHEERPJ_LOADER_URL = '/app/workers/vendor/cheerpj-loader.js';
-const HELPER_JAR_PATH = '/app/workers/vendor/java-browser-helper.jar';
-const JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
-const REWRITER_JAR_PATH = '/app/workers/vendor/java-rewriter.jar';
-const JAVAPARSER_JAR_PATH = '/app/workers/vendor/javaparser-core-3.25.10.jar';
-const FULL_CLASSPATH = [
-  REWRITER_JAR_PATH,
-  HELPER_JAR_PATH,
-  JDK17_COMPILER_JAR_PATH,
-  JAVAPARSER_JAR_PATH,
-].join(':');
+const trustedJavaWorkerPostMessage = self.postMessage.bind(self);
+const trustedJavaWorkerFetch = typeof self.fetch === 'function' ? self.fetch.bind(self) : null;
+const trustedJavaIndexedDB = self.indexedDB;
+let HELPER_JAR_PATH = '/app/workers/vendor/java-browser-helper.jar';
+let JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
+let REWRITER_JAR_PATH = '/app/workers/vendor/java-rewriter.jar';
+let JAVAPARSER_JAR_PATH = '/app/workers/vendor/javaparser-core-3.25.10.jar';
+
+const FULL_CLASSPATH = () => {
+  return [
+    REWRITER_JAR_PATH,
+    HELPER_JAR_PATH,
+    JDK17_COMPILER_JAR_PATH,
+    JAVAPARSER_JAR_PATH,
+  ].join(':');
+};
 const DEFAULT_COMPILER_DEBUG_PROFILE = 'full';
 const DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE = 'none';
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
@@ -70,7 +76,30 @@ function assertTrustedJavaAsset(name, url) {
   throw new Error(`${name} must reference a local /app/ asset path.`);
 }
 
+function assertConfiguredJavaAsset(name, url) {
+  if (typeof url !== 'string' || !url.trim()) {
+    throw new Error(`${name} must be a non-empty URL.`);
+  }
+  // CheerpJ's /app namespace is a virtual filesystem path, not an ordinary
+  // page-relative URL. Preserve it for JAR classpaths instead of converting it
+  // to an HTTP URL that CheerpJ cannot mount.
+  if (url.startsWith('/app/')) return url;
+  if (typeof URL !== 'function') {
+    if (/^https?:\/\//iu.test(url)) return url;
+    throw new Error(`${name} must use HTTP or HTTPS.`);
+  }
+  const parsed = new URL(url, javaWorkerHref());
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`${name} must use HTTP or HTTPS.`);
+  }
+  return parsed.href;
+}
+
 function resolveCheerpjLoaderUrl(payload) {
+  const manifestLoaderUrl = payload?.runtimeAssets?.loaderUrl;
+  if (manifestLoaderUrl !== undefined) {
+    return assertConfiguredJavaAsset('Configured CheerpJ loader', manifestLoaderUrl);
+  }
   const configuredUrl = payload?.cheerpjLoaderUrl;
   if (configuredUrl === undefined || configuredUrl === null || String(configuredUrl).trim().length === 0) {
     return DEFAULT_CHEERPJ_LOADER_URL;
@@ -114,6 +143,8 @@ if (typeof self.importScripts === 'function') {
   self.importScripts('java-source-augmentations.js');
 }
 
+const trustedJavaUserAuthorityLockdown = self.TraceRuntimeKernelPolicy?.withRuntimeUserAuthorityLockdown;
+
 let workerReadyPromise = null;
 let idleTimer = null;
 let queue = Promise.resolve();
@@ -124,7 +155,11 @@ let idleGeneration = 0;
 let initLoadTimeMs = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let cheerpjLoaderUrl = DEFAULT_CHEERPJ_LOADER_URL;
+let configuredJavaRuntimeAssetsSignature = null;
 let runWarmupPromise = null;
+let allowIsolatedRuntimeStorage = false;
+let cheerpjRuntimeFetchPrefixes = [];
+let cheerpjRuntimeFetchExactUrls = new Set();
 let activeJavaProjectIo = null;
 let javaCompileIsolationCounter = 0;
 let javaProjectBridgeRunCounter = 0;
@@ -151,8 +186,64 @@ const JAVA_MAX_DIAGNOSTIC_CHARS = 64 * 1024;
 const JAVA_MAX_DIAGNOSTIC_PATH_CHARS = 512;
 const JAVA_MAX_LOOP_HEADER_SYNTHETIC_EVENTS = 2048;
 const JAVA_MAX_LOOP_HEADER_SNAPSHOT_CACHE = 2048;
+const TRACE_EVENT_TRANSFER_SCHEMA = 'tracecode.trace-events.transfer.v1';
+const TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES = 64 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES = 256 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_BYTES = 64 * 1024 * 1024;
+const TRACE_EVENT_TRANSFER_MIN_EVENTS = 128;
 const javaHttpServers = new Map();
 let nextJavaHttpServerId = 1;
+
+function prepareTraceEventTransfer(result, request, path) {
+  if (
+    request?.schema !== TRACE_EVENT_TRANSFER_SCHEMA ||
+    request?.encoding !== 'json-utf8' ||
+    typeof TextEncoder === 'undefined'
+  ) {
+    return null;
+  }
+  const events = path === 'trace.events' ? result?.trace?.events : result?.events;
+  const requestedMinEvents = Number(request.minEventCount);
+  const minEventCount = Number.isSafeInteger(requestedMinEvents)
+    ? Math.max(TRACE_EVENT_TRANSFER_MIN_EVENTS, requestedMinEvents)
+    : TRACE_EVENT_TRANSFER_MIN_EVENTS;
+  if (!Array.isArray(events) || events.length < minEventCount) return null;
+
+  let encoded;
+  try {
+    encoded = new TextEncoder().encode(JSON.stringify(events));
+  } catch {
+    return null;
+  }
+  const requestedMinBytes = Number(request.minTransferBytes);
+  const minTransferBytes = Number.isSafeInteger(requestedMinBytes)
+    ? Math.max(0, requestedMinBytes)
+    : 64 * 1024;
+  if (encoded.byteLength < minTransferBytes || encoded.byteLength > TRACE_EVENT_TRANSFER_MAX_BYTES) {
+    return null;
+  }
+
+  const requestedChunkBytes = Number(request.maxChunkBytes);
+  const chunkBytes = Number.isSafeInteger(requestedChunkBytes)
+    ? Math.max(16 * 1024, Math.min(TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES, requestedChunkBytes))
+    : TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES;
+  const chunks = [];
+  for (let offset = 0; offset < encoded.byteLength; offset += chunkBytes) {
+    chunks.push(encoded.slice(offset, Math.min(encoded.byteLength, offset + chunkBytes)).buffer);
+  }
+  const payload = path === 'trace.events'
+    ? { ...result, trace: { ...result.trace, events: [] } }
+    : { ...result, events: [] };
+  payload.__traceEventTransport = {
+    schema: TRACE_EVENT_TRANSFER_SCHEMA,
+    encoding: 'json-utf8',
+    path,
+    eventCount: events.length,
+    byteLength: encoded.byteLength,
+    chunks,
+  };
+  return { payload, transfer: chunks };
+}
 
 function javaHttpEncodeUtf8(value) {
   if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(String(value ?? ''));
@@ -309,12 +400,18 @@ function javaProjectInputAvailable(device) {
   return stdinPipeAvailable(state, readIndex, writeIndex);
 }
 
-function postMessageResponse(message) {
+function postMessageResponse(message, options = {}) {
   const protocolToken = message?.protocolToken ?? (message?.id ? activeProtocolTokens.get(message.id) : undefined);
-  self.postMessage({
+  const transported = prepareTraceEventTransfer(
+    message?.payload,
+    options.traceEventTransport,
+    options.traceEventPath
+  );
+  trustedJavaWorkerPostMessage({
     ...message,
+    ...(transported ? { payload: transported.payload } : {}),
     ...(protocolToken ? { protocolToken } : {}),
-  });
+  }, transported?.transfer ?? []);
 }
 
 function javaHttpBase64FromString(value) {
@@ -723,6 +820,32 @@ function formatWorkerErrorMessage(error) {
   return 'Unknown Java worker error';
 }
 
+async function formatWorkerErrorMessageAsync(error) {
+  const synchronous = formatWorkerErrorMessage(error);
+  if (synchronous !== 'Unknown Java worker error') return synchronous;
+  if (!error || typeof error !== 'object') return synchronous;
+
+  // CheerpJ rejects Java calls with an asynchronous Java-object proxy. Its
+  // message is not an own JavaScript property, so the synchronous formatter
+  // cannot see it. Resolve the Java Throwable API before crossing the worker
+  // boundary; otherwise consumers only receive "Unknown Java worker error".
+  try {
+    if (typeof error.getMessage === 'function') {
+      const message = await error.getMessage();
+      if (typeof message === 'string' && message.length > 0) return message;
+    }
+  } catch {}
+  try {
+    if (typeof error.toString === 'function') {
+      const message = await error.toString();
+      if (typeof message === 'string' && message.length > 0 && message !== '[object Object]') {
+        return message;
+      }
+    }
+  } catch {}
+  return synchronous;
+}
+
 function makeWorkerStageError(stage, error) {
   return new Error(`Java worker ${stage} failed: ${formatWorkerErrorMessage(error)}`);
 }
@@ -745,7 +868,62 @@ function applyWorkerOptions(payload) {
   if (Number.isFinite(nextIdleTimeoutMs) && nextIdleTimeoutMs > 0) {
     idleTimeoutMs = Math.max(1_000, Math.floor(nextIdleTimeoutMs));
   }
+  if (payload?.allowIsolatedRuntimeStorage === true) {
+    if (!trustedJavaIndexedDB) {
+      throw new Error('Isolated Java runtime storage requires IndexedDB.');
+    }
+    allowIsolatedRuntimeStorage = true;
+  }
+  const runtimeAssets = payload?.runtimeAssets;
+  if (runtimeAssets !== undefined) {
+    if (!runtimeAssets || typeof runtimeAssets !== 'object' || Array.isArray(runtimeAssets)) {
+      throw new Error('Java worker runtimeAssets must be an object.');
+    }
+    const normalized = {
+      ...(runtimeAssets.loaderUrl ? {
+        loaderUrl: assertConfiguredJavaAsset('Configured CheerpJ loader', runtimeAssets.loaderUrl),
+      } : {}),
+      ...(runtimeAssets.helperJarUrl ? {
+        helperJarUrl: assertConfiguredJavaAsset('Configured Java helper jar', runtimeAssets.helperJarUrl),
+      } : {}),
+      ...(runtimeAssets.compilerJarUrl ? {
+        compilerJarUrl: assertConfiguredJavaAsset('Configured Java compiler jar', runtimeAssets.compilerJarUrl),
+      } : {}),
+      ...(runtimeAssets.rewriterJarUrl ? {
+        rewriterJarUrl: assertConfiguredJavaAsset('Configured Java rewriter jar', runtimeAssets.rewriterJarUrl),
+      } : {}),
+      ...(runtimeAssets.parserJarUrl ? {
+        parserJarUrl: assertConfiguredJavaAsset('Configured Java parser jar', runtimeAssets.parserJarUrl),
+      } : {}),
+    };
+    const signature = JSON.stringify(normalized);
+    if (configuredJavaRuntimeAssetsSignature && configuredJavaRuntimeAssetsSignature !== signature) {
+      throw new Error('Java runtime assets cannot be changed after the worker has been configured.');
+    }
+    if (helperLibraryPromise || workerReadyPromise) {
+      if (!configuredJavaRuntimeAssetsSignature) {
+        throw new Error('Java runtime assets must be configured before the runtime starts loading.');
+      }
+    }
+    configuredJavaRuntimeAssetsSignature = signature;
+    if (normalized.helperJarUrl) HELPER_JAR_PATH = normalized.helperJarUrl;
+    if (normalized.compilerJarUrl) JDK17_COMPILER_JAR_PATH = normalized.compilerJarUrl;
+    if (normalized.rewriterJarUrl) REWRITER_JAR_PATH = normalized.rewriterJarUrl;
+    if (normalized.parserJarUrl) JAVAPARSER_JAR_PATH = normalized.parserJarUrl;
+  }
   cheerpjLoaderUrl = resolveCheerpjLoaderUrl(payload);
+  if (typeof URL === 'function') {
+    const loaderUrl = new URL(cheerpjLoaderUrl, javaWorkerHref());
+    cheerpjRuntimeFetchPrefixes = [new URL('./', loaderUrl).href];
+    cheerpjRuntimeFetchExactUrls = new Set(
+      [HELPER_JAR_PATH, JDK17_COMPILER_JAR_PATH, REWRITER_JAR_PATH, JAVAPARSER_JAR_PATH]
+        .filter((value) => typeof value === 'string' && value.startsWith('/app/'))
+        .map((value) => new URL(value.slice('/app'.length), javaWorkerHref()).href)
+    );
+  } else {
+    cheerpjRuntimeFetchPrefixes = [];
+    cheerpjRuntimeFetchExactUrls = new Set();
+  }
 }
 
 function assertSupportedExecutionStyle(executionStyle) {
@@ -3527,9 +3705,67 @@ async function ensureReady() {
   await workerReadyPromise;
 }
 
+function withJavaUserAuthorityLockdown(callback, mode = 'temporary') {
+  if (typeof trustedJavaUserAuthorityLockdown !== 'function') {
+    throw new Error('Java user execution requires the captured runtime authority lockdown policy.');
+  }
+  if (mode === 'isolated-origin') {
+    if (!allowIsolatedRuntimeStorage) {
+      throw new Error('Java isolated-origin authority requires an explicit execution-origin host.');
+    }
+    // The credential-free, cross-origin host is the application-authority
+    // boundary. CheerpJ keeps its live runtime globals intact so a single VM
+    // can serve the owning workspace session without reloading the JDK.
+    return callback();
+  }
+  if (mode !== 'temporary' && mode !== 'permanent') {
+    throw new Error(`Unsupported Java user authority mode: ${String(mode)}.`);
+  }
+  return trustedJavaUserAuthorityLockdown(callback, {
+    mode,
+    // User Java receives no general JavaScript object bridge. Avoid replacing
+    // Object/Reflect intrinsics that CheerpJ's JIT and project VFS use heavily;
+    // ambient browser capabilities themselves remain replaced and guarded.
+    authorityOverrides: {
+      fetch: guardedCheerpjRuntimeFetch,
+      ...(allowIsolatedRuntimeStorage ? { indexedDB: trustedJavaIndexedDB } : {}),
+    },
+  });
+}
+
+function guardedCheerpjRuntimeFetch(input, init) {
+  if (!trustedJavaWorkerFetch) {
+    throw new Error('CheerpJ runtime fetch is unavailable.');
+  }
+  const requestUrl = new URL(
+    typeof input === 'string' || input instanceof URL ? String(input) : input?.url,
+    javaWorkerHref()
+  );
+  const method = String(init?.method ?? input?.method ?? 'GET').toUpperCase();
+  if (!isAllowedCheerpjRuntimeRequest(method, requestUrl.href)) {
+    throw new Error(`CheerpJ runtime fetch denied: ${method} ${requestUrl.href}`);
+  }
+  return trustedJavaWorkerFetch(input, {
+    ...(init ?? {}),
+    credentials: 'omit',
+    redirect: 'error',
+  });
+}
+
+function isAllowedCheerpjRuntimeRequest(method, href) {
+  return (
+    (method === 'GET' || method === 'HEAD') &&
+    (
+      cheerpjRuntimeFetchExactUrls.has(href) ||
+      cheerpjRuntimeFetchPrefixes.some((prefix) => href.startsWith(prefix))
+    )
+  );
+}
+
+
 async function getHelperLibrary() {
   if (!helperLibraryPromise) {
-    helperLibraryPromise = self.cheerpjRunLibrary(FULL_CLASSPATH);
+    helperLibraryPromise = self.cheerpjRunLibrary(FULL_CLASSPATH());
   }
   return helperLibraryPromise;
 }
@@ -4265,7 +4501,7 @@ async function compileJavaOutsideBrowser(payload, commandId) {
   const startedAt = performance.now();
   const result = await new Promise((resolve, reject) => {
     pendingExternalJavaCompiles.set(requestId, { resolve, reject, protocolToken });
-    self.postMessage({
+    trustedJavaWorkerPostMessage({
       type: 'java-compile-request',
       requestId,
       protocolToken,
@@ -6238,14 +6474,15 @@ self.onmessage = (event) => {
           },
         });
       } catch (error) {
+        const errorMessage = await formatWorkerErrorMessageAsync(error);
         emitRuntimeDiagnostic('error', 'worker-request-failed', 'Java worker init request failed.', {
           type: message.type,
-          message: formatWorkerErrorMessage(error),
+          message: errorMessage,
         });
         postMessageResponse({
           id: message.id,
           type: 'error',
-          payload: { error: formatWorkerErrorMessage(error) },
+          payload: { error: errorMessage },
         });
       } finally {
         activeProtocolTokens.delete(message.id);
@@ -6267,14 +6504,15 @@ self.onmessage = (event) => {
           payload: result,
         });
       } catch (error) {
+        const errorMessage = await formatWorkerErrorMessageAsync(error);
         emitRuntimeDiagnostic('error', 'worker-request-failed', 'Java worker warmup request failed.', {
           type: message.type,
-          message: formatWorkerErrorMessage(error),
+          message: errorMessage,
         });
         postMessageResponse({
           id: message.id,
           type: 'error',
-          payload: { error: formatWorkerErrorMessage(error) },
+          payload: { error: errorMessage },
         });
       } finally {
         activeProtocolTokens.delete(message.id);
@@ -6295,27 +6533,43 @@ self.onmessage = (event) => {
       try {
         applyWorkerOptions(message.payload);
         await ensureReady();
-        const result = message.type === 'execute-with-tracing'
-          ? await runJavaTraceRequest(message.payload, message.id)
-          : message.type === 'execute-code-batch'
-            ? await runJavaCodeBatchRequest(message.payload, message.id)
-            : message.type === 'execute-project-java'
-              ? await runJavaProjectRequest(message.payload, message.id)
-              : await runJavaCodeRequest(message.payload, message.id);
-        postMessageResponse({
-          id: message.id,
-          type: message.type,
-          payload: result,
-        });
+        // Complete trusted compiler/runtime loading before ambient browser
+        // authority is removed for the user-controlled invocation.
+        await warmRunHost();
+        const requestedAuthorityMode = message.type === 'execute-project-java'
+          ? message.payload?.projectUserAuthorityMode ?? 'temporary'
+          : 'temporary';
+        const executeUserRequest = () => message.type === 'execute-with-tracing'
+              ? runJavaTraceRequest(message.payload, message.id)
+              : message.type === 'execute-code-batch'
+                ? runJavaCodeBatchRequest(message.payload, message.id)
+                : message.type === 'execute-project-java'
+                  ? runJavaProjectRequest(message.payload, message.id)
+                  : runJavaCodeRequest(message.payload, message.id);
+        const postExecutionResult = (result) => postMessageResponse(
+          { id: message.id, type: message.type, payload: result },
+          message.type === 'execute-with-tracing'
+            ? {
+                traceEventTransport: message.payload?.traceEventTransport,
+                traceEventPath: 'events',
+              }
+            : undefined
+        );
+        const result = await withJavaUserAuthorityLockdown(
+          executeUserRequest,
+          requestedAuthorityMode
+        );
+        postExecutionResult(result);
       } catch (error) {
+        const errorMessage = await formatWorkerErrorMessageAsync(error);
         emitRuntimeDiagnostic('error', 'worker-request-failed', 'Java worker execution request failed.', {
           type: message.type,
-          message: formatWorkerErrorMessage(error),
+          message: errorMessage,
         });
         postMessageResponse({
           id: message.id,
           type: 'error',
-          payload: { error: formatWorkerErrorMessage(error) },
+          payload: { error: errorMessage },
         });
       } finally {
         activeProtocolTokens.delete(message.id);

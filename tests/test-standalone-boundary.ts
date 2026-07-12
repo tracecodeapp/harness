@@ -3,6 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { build } from 'esbuild';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCANNED_FILES = [
@@ -65,7 +66,6 @@ const FORBIDDEN_PATTERNS = [
   'tracecode:',
   'algoflow',
   'cloud-sync',
-  'localStorage',
   '/public/workers/',
   '/lib/execution/',
 ];
@@ -88,7 +88,32 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log('PASS: standalone boundary guard rejects app-coupled runtime strings');
+  const classicBrowserBundle = await build({
+    entryPoints: [join(ROOT, 'packages/harness-browser/src/index.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    external: ['typescript'],
+    metafile: true,
+    write: false,
+  });
+  const projectImplementationInputs = Object.keys(classicBrowserBundle.metafile?.inputs ?? {})
+    .filter((input) =>
+      input.includes('/harness-project/') ||
+      input.endsWith('/project-browser.ts') ||
+      input.endsWith('/harness-browser/src/project.ts')
+    );
+  assertCondition(
+    projectImplementationInputs.length === 0,
+    `Classic browser entry must not bundle project implementations; use the explicit browser/project entry instead. Found: ${projectImplementationInputs.join(', ')}`
+  );
+  const classicBrowserOutput = classicBrowserBundle.outputFiles.map((file) => file.text).join('\n');
+  assertCondition(
+    !classicBrowserOutput.includes('localStorage'),
+    'Classic browser entry must not bundle same-origin storage authority; project workers may explicitly deny it.'
+  );
+
+  console.log('PASS: standalone boundary guard rejects app coupling and keeps project code out of the Classic entry');
 }
 
 main().catch((error) => {

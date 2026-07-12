@@ -1,0 +1,418 @@
+#!/usr/bin/env npx tsx
+
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
+import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
+
+function assertCondition(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+const MINIMAL_WASM = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+interface WorkerMessage {
+  id?: string;
+  type: string;
+  requestId?: string;
+  protocolToken?: string;
+  payload?: Record<string, unknown>;
+}
+
+class CompilerBridgeWorker {
+  static instances: CompilerBridgeWorker[] = [];
+  static nextCompileRequest = 0;
+
+  onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  terminated = false;
+  poisoned = false;
+  observedPoisonAtCommandStart = false;
+  private pendingExecution: WorkerMessage | null = null;
+
+  constructor(readonly url: string | URL) {
+    CompilerBridgeWorker.instances.push(this);
+    queueMicrotask(() => this.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent<WorkerMessage>));
+  }
+
+  postMessage(message: WorkerMessage): void {
+    if (this.terminated) return;
+    if (message.type === 'init') {
+      queueMicrotask(() => this.onmessage?.({
+        data: {
+          id: message.id,
+          type: 'init',
+          protocolToken: message.protocolToken,
+          payload: { success: true, loadTimeMs: 0 },
+        },
+      } as MessageEvent<WorkerMessage>));
+      return;
+    }
+
+    if (message.type === 'compile-run') {
+      this.observedPoisonAtCommandStart = this.poisoned;
+      this.poisoned = true;
+      this.pendingExecution = message;
+      const requestId = `compile-${++CompilerBridgeWorker.nextCompileRequest}`;
+      const code = String(message.payload?.code ?? '');
+      queueMicrotask(() => this.onmessage?.({
+        data: {
+          type: 'compile-request',
+          requestId,
+          protocolToken: message.protocolToken,
+          payload: {
+            assets: {
+              compilerBundleUrl: 'https://assets.example/cpp/bundle.js',
+              toolchainIntegrity: {
+                assets: [{ url: 'https://assets.example/cpp/bundle.js', sha256: 'a'.repeat(64) }],
+              },
+            },
+            driverSource: `driver:${code}`,
+            standard: 'c++23',
+            stackSize: 8 * 1024 * 1024,
+          },
+        },
+      } as MessageEvent<WorkerMessage>));
+      return;
+    }
+
+    if (message.type === 'compile-response') {
+      const execution = this.pendingExecution;
+      this.pendingExecution = null;
+      if (!execution) return;
+      const compilation = message.payload ?? {};
+      const success = compilation.success === true;
+      queueMicrotask(() => this.onmessage?.({
+        data: {
+          id: execution.id,
+          type: execution.type,
+          protocolToken: execution.protocolToken,
+          payload: success
+            ? {
+                success: true,
+                output: compilation.timings?.artifactCacheHit === true ? 'cached' : 'compiled',
+                consoleOutput: [],
+                timings: compilation.timings,
+              }
+            : {
+                success: false,
+                output: null,
+                error: compilation.error,
+                consoleOutput: [],
+              },
+        },
+      } as MessageEvent<WorkerMessage>));
+    }
+  }
+
+  terminate(): void {
+    this.terminated = true;
+  }
+}
+
+function createClient(options: Partial<ConstructorParameters<typeof CppWorkerClient>[0]> = {}): CppWorkerClient {
+  return new CppWorkerClient({
+    workerUrl: '/workers/cpp-worker.js',
+    clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
+    lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
+    sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
+    runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
+    compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+    externalCompilerUrl: 'https://compiler.example/compile',
+    ...options,
+  });
+}
+
+async function testContentAddressedArtifactsAndDisposableExecution(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  const originalFetch = globalThis.fetch;
+  CompilerBridgeWorker.instances = [];
+  let fetchCount = 0;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = CompilerBridgeWorker;
+  globalThis.fetch = async (_input, init) => {
+    fetchCount += 1;
+    const body = JSON.parse(String(init?.body ?? '{}')) as { driverSource?: string };
+    assertCondition(body.driverSource?.startsWith('driver:'), 'external compiler should receive the generated driver source');
+    return new Response(MINIMAL_WASM.slice(), {
+      status: 200,
+      headers: {
+        'content-type': 'application/wasm',
+        'x-tracecode-compile-ms': '100',
+      },
+    });
+  };
+
+  const client = createClient();
+  let standbyWorker: CompilerBridgeWorker | undefined;
+  try {
+    const first = await client.executeCode('source-a', 'run', {}, 'function');
+    const exact = await client.executeCode('source-a', 'run', {}, 'function');
+    const edited = await client.executeCode('source-b', 'run', {}, 'function');
+
+    assertCondition(first.success && first.output === 'compiled', `first source should compile: ${JSON.stringify(first)}`);
+    assertCondition(exact.success && exact.output === 'cached', `exact source should use the artifact cache: ${JSON.stringify(exact)}`);
+    assertCondition(edited.success && edited.output === 'compiled', `edited source should recompile: ${JSON.stringify(edited)}`);
+    assertCondition(fetchCount === 2, `exact cache should avoid one compiler invocation while edited source recompiles: ${fetchCount}`);
+    const usedWorkers = CompilerBridgeWorker.instances.filter((worker) => worker.poisoned);
+    const standbyWorkers = CompilerBridgeWorker.instances.filter((worker) => !worker.poisoned);
+    assertCondition(
+      usedWorkers.length === 3 &&
+        usedWorkers.every((worker) => worker.terminated && !worker.observedPoisonAtCommandStart),
+      'execution workers must be retired after one command so worker-global state cannot poison the next command'
+    );
+    assertCondition(
+      standbyWorkers.length === 1 && !standbyWorkers[0].terminated,
+      'one clean C++ execution worker should be initialized for the next interactive command'
+    );
+    standbyWorker = standbyWorkers[0];
+  } finally {
+    const workerCountBeforeTerminate = CompilerBridgeWorker.instances.length;
+    client.terminate();
+    await Promise.resolve();
+    assertCondition(standbyWorker?.terminated, 'client termination should retire the clean C++ standby worker');
+    assertCondition(
+      CompilerBridgeWorker.instances.length === workerCountBeforeTerminate,
+      'an asynchronous C++ prewarm must not recreate a worker after client termination'
+    );
+    globalThis.fetch = originalFetch;
+    globalThis.Worker = originalWorker;
+  }
+}
+
+async function testInvalidArtifactsFailClosedAndAreNotCached(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  const originalFetch = globalThis.fetch;
+  CompilerBridgeWorker.instances = [];
+  let fetchCount = 0;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = CompilerBridgeWorker;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+  };
+  const client = createClient();
+  try {
+    const first = await client.executeCode('invalid-artifact', 'run', {}, 'function');
+    const second = await client.executeCode('invalid-artifact', 'run', {}, 'function');
+    assertCondition(
+      first.success === false && String(first.error).includes('invalid WebAssembly'),
+      `invalid compiler artifacts should fail closed: ${JSON.stringify(first)}`
+    );
+    assertCondition(second.success === false, 'invalid compiler artifacts should remain rejected');
+    assertCondition(fetchCount === 2, 'invalid compiler artifacts must never enter the content-addressed cache');
+  } finally {
+    client.terminate();
+    globalThis.fetch = originalFetch;
+    globalThis.Worker = originalWorker;
+  }
+}
+
+async function testTimeoutAbortsCompilerAndRetiresExecution(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  const originalFetch = globalThis.fetch;
+  CompilerBridgeWorker.instances = [];
+  let compilerAbortObserved = false;
+  let fetchCount = 0;
+  let resolveIgnoredAbort: ((response: Response) => void) | null = null;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = CompilerBridgeWorker;
+  globalThis.fetch = async (_input, init) => {
+    fetchCount += 1;
+    if (fetchCount > 1) return new Response(MINIMAL_WASM.slice(), { status: 200 });
+    return new Promise<Response>((resolve) => {
+      resolveIgnoredAbort = resolve;
+      init?.signal?.addEventListener('abort', () => {
+        compilerAbortObserved = true;
+        // Deliberately ignore cancellation to model a non-cooperative delegate.
+      }, { once: true });
+    });
+  };
+  const client = createClient({ executionTimeoutMs: 10 });
+  try {
+    const result = await client.executeCode('hang-compiler', 'run', {}, 'function');
+    assertCondition(result.success === false && result.timeoutReason === 'client-timeout', `timeout should be explicit: ${JSON.stringify(result)}`);
+    assertCondition(compilerAbortObserved, 'execution timeout should abort the in-flight compiler request');
+    assertCondition(
+      CompilerBridgeWorker.instances.length === 1 && CompilerBridgeWorker.instances[0].terminated,
+      'execution timeout should terminate the user execution worker'
+    );
+    assertCondition(resolveIgnoredAbort, 'timeout test should retain the ignored compiler response');
+    resolveIgnoredAbort(new Response(MINIMAL_WASM.slice(), { status: 200 }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const recovery = await client.executeCode('hang-compiler', 'run', {}, 'function');
+    assertCondition(
+      recovery.success === true && recovery.output === 'compiled' && fetchCount === 2,
+      `a late timed-out compiler response must not repopulate the artifact cache: ${JSON.stringify(recovery)}`
+    );
+  } finally {
+    client.terminate();
+    globalThis.fetch = originalFetch;
+    globalThis.Worker = originalWorker;
+  }
+}
+
+async function testCallerAbortResetsCompilerAndExecution(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  const originalFetch = globalThis.fetch;
+  CompilerBridgeWorker.instances = [];
+  let fetchStarted: (() => void) | null = null;
+  let compilerAbortObserved = false;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = CompilerBridgeWorker;
+  globalThis.fetch = async (_input, init) => new Promise<Response>((_resolve, reject) => {
+    fetchStarted?.();
+    init?.signal?.addEventListener('abort', () => {
+      compilerAbortObserved = true;
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    }, { once: true });
+  });
+  const client = createClient({ executionTimeoutMs: 30_000 });
+  const controller = new AbortController();
+  try {
+    const started = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    const execution = client.executeCode('caller-abort', 'run', {}, 'function', controller.signal);
+    await started;
+    controller.abort();
+    let error: unknown;
+    try {
+      await execution;
+    } catch (caught) {
+      error = caught;
+    }
+    assertCondition(error instanceof Error && error.name === 'AbortError', `caller abort should reject with AbortError: ${String(error)}`);
+    assertCondition(compilerAbortObserved, 'caller abort should cancel the in-flight compiler request');
+    assertCondition(
+      CompilerBridgeWorker.instances.length === 1 && CompilerBridgeWorker.instances[0].terminated,
+      'caller abort should retire the user execution worker'
+    );
+  } finally {
+    client.terminate();
+    globalThis.fetch = originalFetch;
+    globalThis.Worker = originalWorker;
+  }
+}
+
+async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
+  const testDirectory = dirname(fileURLToPath(import.meta.url));
+  const html = await readFile(join(testDirectory, '..', 'workers', 'cpp', 'cpp-compiler-frame.html'), 'utf8');
+  const source = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
+  assertCondition(source, 'compiler frame module source should be present');
+
+  const handlers = new Map<string, (event: Record<string, unknown>) => unknown>();
+  const compilerWorkers: FrameCompilerWorker[] = [];
+  class FrameCompilerWorker {
+    onmessage: ((event: { data: WorkerMessage }) => void) | null = null;
+    onerror: ((event: { message?: string }) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    terminated = false;
+    constructor(readonly url: string) {
+      compilerWorkers.push(this);
+    }
+    postMessage(message: WorkerMessage): void {
+      queueMicrotask(() => this.onmessage?.({
+        data: {
+          id: message.id,
+          type: 'compile-result',
+          protocolToken: message.protocolToken,
+          payload: { success: true, programBuffer: MINIMAL_WASM.slice().buffer },
+        },
+      }));
+    }
+    terminate(): void {
+      this.terminated = true;
+    }
+  }
+
+  const responses: WorkerMessage[] = [];
+  const parentSource = {
+    postMessage(message: WorkerMessage): void {
+      responses.push(message);
+    },
+  };
+  const context = vm.createContext({
+    console,
+    location: {
+      href: 'https://cdn.example/cpp/compiler-frame.html?tracecodeFrameToken=frame-token&tracecodeParentOrigin=https%3A%2F%2Fapp.example&tracecodeCompilerWorkerUrl=https%3A%2F%2Fcdn.example%2Fcpp%2Fcompiler-worker.js',
+      search: '?tracecodeFrameToken=frame-token&tracecodeParentOrigin=https%3A%2F%2Fapp.example&tracecodeCompilerWorkerUrl=https%3A%2F%2Fcdn.example%2Fcpp%2Fcompiler-worker.js',
+      origin: 'https://cdn.example',
+    },
+    parent: parentSource,
+    Worker: FrameCompilerWorker,
+    URL,
+    URLSearchParams,
+    Date,
+    Math,
+    Promise,
+    ArrayBuffer,
+    Uint8Array,
+    setTimeout,
+    clearTimeout,
+    addEventListener(type: string, handler: (event: Record<string, unknown>) => unknown) {
+      handlers.set(type, handler);
+    },
+  });
+  vm.runInContext(source, context, { filename: 'cpp-compiler-frame.html' });
+  const messageHandler = handlers.get('message');
+  assertCondition(messageHandler, 'compiler frame should install a message handler');
+
+  await messageHandler({
+    origin: 'https://app.example',
+    source: { postMessage() {} },
+    data: {
+      id: 'not-parent',
+      type: 'compile',
+      frameToken: 'frame-token',
+      protocolToken: 'protocol-not-parent',
+      payload: { driverSource: 'not-parent' },
+    },
+  });
+  assertCondition(
+    compilerWorkers.length === 0,
+    'compiler frame must reject same-origin messages that do not come from its parent window'
+  );
+
+  for (const id of ['one', 'two']) {
+    await messageHandler({
+      origin: 'https://app.example',
+      source: parentSource,
+      data: {
+        id,
+        type: 'compile',
+        frameToken: 'frame-token',
+        protocolToken: `protocol-${id}`,
+        payload: { driverSource: id },
+      },
+    });
+  }
+  assertCondition(
+    compilerWorkers.length === 1,
+    `edited source should reuse one trusted compiler/toolchain worker: ${compilerWorkers.length}; responses=${JSON.stringify(responses)}`
+  );
+  assertCondition(
+    compilerWorkers[0].url === 'https://cdn.example/cpp/compiler-worker.js',
+    `consumer CDN compiler worker URL should remain bound to the frame origin: ${compilerWorkers[0].url}`
+  );
+  assertCondition(!compilerWorkers[0].terminated, 'healthy compiler/toolchain worker should stay warm between edited sources');
+  assertCondition(responses.filter((message) => message.type === 'compile-result').length === 2, 'both compiles should complete');
+
+  handlers.get('pagehide')?.({});
+  assertCondition(compilerWorkers[0].terminated, 'page lifecycle teardown should terminate the trusted compiler worker');
+}
+
+async function main(): Promise<void> {
+  await testContentAddressedArtifactsAndDisposableExecution();
+  await testInvalidArtifactsFailClosedAndAreNotCached();
+  await testTimeoutAbortsCompilerAndRetiresExecution();
+  await testCallerAbortResetsCompilerAndExecution();
+  await testCompilerFrameKeepsOnlyTrustedCompilerWarm();
+  console.log('C++ compiler lifecycle tests passed');
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

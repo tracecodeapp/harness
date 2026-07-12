@@ -25,17 +25,117 @@
 
 // Worker version: 4
 
+const trustedPythonWorkerPostMessage = self.postMessage.bind(self);
+
 // Pyodide index URLs in fallback order
 const PYODIDE_INDEX_URLS = [
   'https://cdn.jsdelivr.net/pyodide/v0.29.0/full/',
   'https://unpkg.com/pyodide@0.29.0/',
 ];
-const GENERATED_HARNESS_SNIPPETS_PATHS = [
-  './generated-python-harness-snippets.js',
-];
-const SHARED_KERNEL_POLICY_PATHS = [
+const DECLARED_PYTHON_WORKER_FORMAT = (() => {
+  try {
+    const search = typeof self.location?.search === 'string' ? self.location.search : '';
+    return new URLSearchParams(search).get('tracecodePythonWorkerFormat') === 'module'
+      ? 'module'
+      : 'classic';
+  } catch {
+    return 'classic';
+  }
+})();
+const CONFIGURED_PYTHON_SNIPPETS_BOOTSTRAP_URL = (() => {
+  try {
+    const search = typeof self.location?.search === 'string' ? self.location.search : '';
+    const value = new URLSearchParams(search).get('tracecodePythonSnippets');
+    return value && value.trim() ? value : null;
+  } catch {
+    return null;
+  }
+})();
+const GENERATED_HARNESS_SNIPPETS_PATHS = CONFIGURED_PYTHON_SNIPPETS_BOOTSTRAP_URL
+  ? [CONFIGURED_PYTHON_SNIPPETS_BOOTSTRAP_URL]
+  : ['./generated-python-harness-snippets.js'];
+const SHARED_KERNEL_POLICY_CLASSIC_PATHS = [
   './shared/runtime-kernel-policy-classic.js',
+  '../shared/runtime-kernel-policy-classic.js',
 ];
+const SHARED_KERNEL_POLICY_MODULE_PATHS = [
+  './shared/runtime-kernel-policy.js',
+  '../shared/runtime-kernel-policy.js',
+];
+
+let configuredPythonRuntimeAssets = null;
+let configuredPythonRuntimeAssetsSignature = null;
+let configuredPythonSnippetsLoaded = false;
+let pythonModuleBootstrapPromise = null;
+let moduleLoadPyodide = null;
+let trustedPythonUserAuthorityLockdown = null;
+
+function configurePythonRuntimeAssets(value) {
+  if (value === undefined || value === null) return;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Python worker runtimeAssets must be an object.');
+  }
+  const loaderFormat = value.loaderFormat ?? 'classic-script';
+  if (loaderFormat !== 'classic-script' && loaderFormat !== 'module') {
+    throw new Error('Python worker runtimeAssets.loaderFormat must be "classic-script" or "module".');
+  }
+  const coherentFormatPair =
+    (DECLARED_PYTHON_WORKER_FORMAT === 'classic' && loaderFormat === 'classic-script') ||
+    (DECLARED_PYTHON_WORKER_FORMAT === 'module' && loaderFormat === 'module');
+  if (!coherentFormatPair) {
+    throw new Error(
+      `Python worker format "${DECLARED_PYTHON_WORKER_FORMAT}" is incompatible with loader format "${loaderFormat}".`
+    );
+  }
+  const normalized = {
+    loaderFormat,
+    ...(typeof value.loaderUrl === 'string' && value.loaderUrl.trim() ? { loaderUrl: value.loaderUrl } : {}),
+    ...(typeof value.indexUrl === 'string' && value.indexUrl.trim() ? { indexUrl: value.indexUrl } : {}),
+    ...(typeof value.runtimeCoreUrl === 'string' && value.runtimeCoreUrl.trim()
+      ? { runtimeCoreUrl: value.runtimeCoreUrl }
+      : {}),
+    ...(typeof value.snippetsUrl === 'string' && value.snippetsUrl.trim() ? { snippetsUrl: value.snippetsUrl } : {}),
+    ...(value.packageUrls && typeof value.packageUrls === 'object' && !Array.isArray(value.packageUrls)
+      ? {
+          packageUrls: Object.fromEntries(
+            Object.entries(value.packageUrls).map(([name, url]) => {
+              if (!name.trim() || typeof url !== 'string' || !url.trim()) {
+                throw new Error('Python worker runtimeAssets.packageUrls must contain non-empty names and URLs.');
+              }
+              return [name, url];
+            })
+          ),
+        }
+      : {}),
+  };
+  if (normalized.loaderUrl && !normalized.indexUrl) {
+    throw new Error('Python worker runtimeAssets.indexUrl is required when loaderUrl is configured.');
+  }
+  if (
+    loaderFormat === 'module' &&
+    (!normalized.loaderUrl || !normalized.indexUrl || !normalized.runtimeCoreUrl || !normalized.snippetsUrl)
+  ) {
+    throw new Error(
+      'Module Python workers require consumer-supplied loaderUrl, indexUrl, runtimeCoreUrl, and snippetsUrl assets.'
+    );
+  }
+  const signature = JSON.stringify(normalized);
+  if (configuredPythonRuntimeAssetsSignature && configuredPythonRuntimeAssetsSignature !== signature) {
+    throw new Error('Python runtime assets cannot be changed after the worker has been configured.');
+  }
+  configuredPythonRuntimeAssets = normalized;
+  configuredPythonRuntimeAssetsSignature = signature;
+
+  if (
+    loaderFormat === 'classic-script' &&
+    normalized.snippetsUrl &&
+    !configuredPythonSnippetsLoaded &&
+    typeof importScripts === 'function'
+  ) {
+    importScripts(normalized.snippetsUrl);
+    configuredPythonSnippetsLoaded = true;
+  }
+}
 
 let pyodide = null;
 let isLoading = false;
@@ -75,6 +175,74 @@ const INTERVIEW_GUARD_DEFAULTS = Object.freeze({
 const PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
 const PROJECT_MAX_LIVE_FILE_CHANGES = 1024;
 const PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = 4 * 1024 * 1024;
+const TRACE_EVENT_TRANSFER_SCHEMA = 'tracecode.trace-events.transfer.v1';
+const TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES = 64 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES = 256 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_BYTES = 64 * 1024 * 1024;
+const TRACE_EVENT_TRANSFER_MIN_EVENTS = 128;
+
+function prepareTraceEventTransfer(result, request, path) {
+  if (
+    request?.schema !== TRACE_EVENT_TRANSFER_SCHEMA ||
+    request?.encoding !== 'json-utf8' ||
+    typeof TextEncoder === 'undefined'
+  ) {
+    return null;
+  }
+  const events = path === 'trace.events' ? result?.trace?.events : result?.events;
+  const requestedMinEvents = Number(request.minEventCount);
+  const minEventCount = Number.isSafeInteger(requestedMinEvents)
+    ? Math.max(TRACE_EVENT_TRANSFER_MIN_EVENTS, requestedMinEvents)
+    : TRACE_EVENT_TRANSFER_MIN_EVENTS;
+  if (!Array.isArray(events) || events.length < minEventCount) return null;
+
+  let encoded;
+  try {
+    encoded = new TextEncoder().encode(JSON.stringify(events));
+  } catch {
+    return null;
+  }
+  const requestedMinBytes = Number(request.minTransferBytes);
+  const minTransferBytes = Number.isSafeInteger(requestedMinBytes)
+    ? Math.max(0, requestedMinBytes)
+    : 64 * 1024;
+  if (encoded.byteLength < minTransferBytes || encoded.byteLength > TRACE_EVENT_TRANSFER_MAX_BYTES) {
+    return null;
+  }
+
+  const requestedChunkBytes = Number(request.maxChunkBytes);
+  const chunkBytes = Number.isSafeInteger(requestedChunkBytes)
+    ? Math.max(16 * 1024, Math.min(TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES, requestedChunkBytes))
+    : TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES;
+  const chunks = [];
+  for (let offset = 0; offset < encoded.byteLength; offset += chunkBytes) {
+    chunks.push(encoded.slice(offset, Math.min(encoded.byteLength, offset + chunkBytes)).buffer);
+  }
+  const payload = path === 'trace.events'
+    ? { ...result, trace: { ...result.trace, events: [] } }
+    : { ...result, events: [] };
+  payload.__traceEventTransport = {
+    schema: TRACE_EVENT_TRANSFER_SCHEMA,
+    encoding: 'json-utf8',
+    path,
+    eventCount: events.length,
+    byteLength: encoded.byteLength,
+    chunks,
+  };
+  return { payload, transfer: chunks };
+}
+
+function postTraceResultMessage(id, protocolToken, result, request, path) {
+  const transported = prepareTraceEventTransfer(result, request, path);
+  if (!transported) {
+    trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
+    return;
+  }
+  trustedPythonWorkerPostMessage(
+    { id, type: 'execute-result', payload: transported.payload, protocolToken },
+    transported.transfer
+  );
+}
 
 function projectUtf8Bytes(value) {
   let bytes = 0;
@@ -170,10 +338,51 @@ function createProjectEventBudget() {
 async function ensurePythonLibraryPackages(runtime) {
   if (!runtime || typeof runtime.loadPackage !== 'function') return;
   if (!pythonPackageLoadPromise) {
-    pythonPackageLoadPromise = runtime.loadPackage(['sortedcontainers']).catch((error) => {
+    const configuredPackages = configuredPythonRuntimeAssets?.packageUrls
+      ? Object.values(configuredPythonRuntimeAssets.packageUrls)
+      : [];
+    if (configuredPackages.length === 0) return;
+    pythonPackageLoadPromise = (async () => {
+      const loadedPackageData = await runtime.loadPackage(configuredPackages);
+      // Pyodide intentionally logs individual download/install failures instead
+      // of rejecting loadPackage(). A consumer-declared package list is an
+      // authoritative startup contract, so verify that every requested wheel
+      // was actually installed before declaring the worker healthy.
+      const normalizeChannel = (value) => {
+        try {
+          return new URL(String(value), self.location?.href).href;
+        } catch {
+          return String(value);
+        }
+      };
+      const loadedChannels = new Set(
+        Object.values(runtime.loadedPackages ?? {}).map((value) => normalizeChannel(value))
+      );
+      const loadedFileNames = new Set(
+        (Array.isArray(loadedPackageData) ? loadedPackageData : [])
+          .map((entry) => entry?.fileName ?? entry?.file_name)
+          .filter((value) => typeof value === 'string' && value.length > 0)
+      );
+      const missingPackages = configuredPackages.filter((packageUrl) => {
+        const normalizedUrl = normalizeChannel(packageUrl);
+        if (loadedChannels.has(normalizedUrl)) return false;
+        try {
+          const fileName = decodeURIComponent(new URL(normalizedUrl).pathname.split('/').pop() ?? '');
+          return !loadedFileNames.has(fileName);
+        } catch {
+          return true;
+        }
+      });
+      if (missingPackages.length > 0) {
+        throw new Error(`Failed to preload configured Python packages: ${missingPackages.join(', ')}`);
+      }
+    })().catch((error) => {
       pythonPackageLoadPromise = null;
       const message = error instanceof Error ? error.message : String(error);
-      emitRuntimeDiagnostic('warn', 'package-preload-failed', 'Failed to preload Python packages.', { message });
+      emitRuntimeDiagnostic('error', 'package-preload-failed', 'Failed to preload configured Python packages.', {
+        message,
+      });
+      throw error;
     });
   }
   await pythonPackageLoadPromise;
@@ -181,8 +390,8 @@ async function ensurePythonLibraryPackages(runtime) {
 
 // Load generated shared harness snippets when available. Keep worker startup
 // resilient by falling back to embedded implementations if this import fails.
-if (typeof importScripts === 'function') {
-  for (const scriptPath of SHARED_KERNEL_POLICY_PATHS) {
+if (DECLARED_PYTHON_WORKER_FORMAT === 'classic' && typeof importScripts === 'function') {
+  for (const scriptPath of SHARED_KERNEL_POLICY_CLASSIC_PATHS) {
     try {
       importScripts(scriptPath);
       emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
@@ -199,16 +408,22 @@ if (typeof importScripts === 'function') {
   for (const scriptPath of GENERATED_HARNESS_SNIPPETS_PATHS) {
     try {
       importScripts(scriptPath);
+      if (CONFIGURED_PYTHON_SNIPPETS_BOOTSTRAP_URL) configuredPythonSnippetsLoaded = true;
       emitRuntimeDiagnostic('info', 'generated-snippets-loaded', 'Loaded generated harness snippets.', { scriptPath });
       break;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (CONFIGURED_PYTHON_SNIPPETS_BOOTSTRAP_URL) {
+        throw new Error(`Configured Python harness snippets failed to load: ${message}`);
+      }
       emitRuntimeDiagnostic('warn', 'generated-snippets-load-failed', 'Failed to load generated harness snippets.', {
         scriptPath,
         message,
       });
     }
   }
+
+  capturePythonUserAuthorityLockdown();
 }
 
 /**
@@ -252,23 +467,21 @@ function fallbackToPythonLiteral(value, seen = new WeakSet()) {
   return JSON.stringify(value);
 }
 
-const toPythonLiteralImpl =
-  typeof self !== 'undefined' && typeof self.__TRACECODE_toPythonLiteral === 'function'
-    ? self.__TRACECODE_toPythonLiteral
-    : fallbackToPythonLiteral;
-
 function toPythonLiteral(value) {
-  return toPythonLiteralImpl(value);
+  const configuredImplementation =
+    typeof self !== 'undefined' && typeof self.__TRACECODE_toPythonLiteral === 'function'
+      ? self.__TRACECODE_toPythonLiteral
+      : fallbackToPythonLiteral;
+  return configuredImplementation(value);
 }
 
-const sharedHarnessSnippets =
-  typeof self !== 'undefined' &&
-  self.__TRACECODE_PYTHON_HARNESS__ &&
-  typeof self.__TRACECODE_PYTHON_HARNESS__ === 'object'
-    ? self.__TRACECODE_PYTHON_HARNESS__
-    : null;
-
 function resolveSharedPythonSnippet(key, fallback) {
+  const sharedHarnessSnippets =
+    typeof self !== 'undefined' &&
+    self.__TRACECODE_PYTHON_HARNESS__ &&
+    typeof self.__TRACECODE_PYTHON_HARNESS__ === 'object'
+      ? self.__TRACECODE_PYTHON_HARNESS__
+      : null;
   if (!sharedHarnessSnippets) return fallback;
   const candidate = sharedHarnessSnippets[key];
   return typeof candidate === 'string' ? candidate : fallback;
@@ -683,31 +896,154 @@ def _serialize(obj, depth=0):
 `
 );
 
+function resolvePythonWorkerAssetUrl(value) {
+  return new URL(value, self.location.href).href;
+}
+
+async function importPythonWorkerModule(url, label) {
+  try {
+    return await import(url);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to import Python ${label} module from ${url}: ${message}`);
+  }
+}
+
+async function importPythonWorkerModuleCandidates(paths, label) {
+  const errors = [];
+  for (const path of paths) {
+    const url = resolvePythonWorkerAssetUrl(path);
+    try {
+      return { module: await import(url), url };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${url} (${message})`);
+    }
+  }
+  throw new Error(`Failed to import Python ${label} module. Tried: ${errors.join(' | ')}`);
+}
+
+function installPythonSharedKernelPolicy(policy, scriptPath) {
+  if (!self.TraceRuntimeKernelPolicy) {
+    Object.defineProperty(self, 'TraceRuntimeKernelPolicy', {
+      configurable: false,
+      value: Object.freeze({ ...policy }),
+    });
+  }
+  if (typeof self.TraceRuntimeKernelPolicy?.withRuntimeUserAuthorityLockdown !== 'function') {
+    throw new Error(`Python shared kernel policy ${scriptPath} does not export the user authority lockdown.`);
+  }
+  capturePythonUserAuthorityLockdown();
+}
+
+/**
+ * Load the module-worker bootstrap graph after the consumer manifest has been
+ * received. Keeping this behind the ordered init message lets the same worker
+ * source remain valid for the legacy classic worker path.
+ */
+async function ensurePythonModuleBootstrap() {
+  if (DECLARED_PYTHON_WORKER_FORMAT !== 'module') return;
+  if (pythonModuleBootstrapPromise) return pythonModuleBootstrapPromise;
+
+  pythonModuleBootstrapPromise = (async () => {
+    const assets = configuredPythonRuntimeAssets;
+    if (!assets || assets.loaderFormat !== 'module') {
+      throw new Error('Module Python worker bootstrap requires a module runtime asset configuration.');
+    }
+
+    const loaderUrl = resolvePythonWorkerAssetUrl(assets.loaderUrl);
+    const runtimeCoreUrl = resolvePythonWorkerAssetUrl(assets.runtimeCoreUrl);
+    const snippetsUrl = resolvePythonWorkerAssetUrl(assets.snippetsUrl);
+    const [loaderModule, , , sharedPolicyModule] = await Promise.all([
+      importPythonWorkerModule(loaderUrl, 'runtime loader'),
+      importPythonWorkerModule(runtimeCoreUrl, 'runtime core'),
+      importPythonWorkerModule(snippetsUrl, 'harness snippets'),
+      importPythonWorkerModuleCandidates(SHARED_KERNEL_POLICY_MODULE_PATHS, 'shared kernel policy'),
+    ]);
+    const sharedPolicyUrl = sharedPolicyModule.url;
+    installPythonSharedKernelPolicy(sharedPolicyModule.module, sharedPolicyUrl);
+
+    const loadPyodideExport =
+      typeof loaderModule?.loadPyodide === 'function'
+        ? loaderModule.loadPyodide
+        : typeof loaderModule?.default?.loadPyodide === 'function'
+          ? loaderModule.default.loadPyodide
+          : null;
+    if (!loadPyodideExport) {
+      throw new Error(`Python runtime loader module ${loaderUrl} does not export loadPyodide().`);
+    }
+    if (!self.__TRACECODE_PYODIDE_RUNTIME__ || typeof self.__TRACECODE_PYODIDE_RUNTIME__ !== 'object') {
+      throw new Error(`Python runtime core module ${runtimeCoreUrl} did not register its runtime API.`);
+    }
+    if (!self.__TRACECODE_PYTHON_HARNESS__ || typeof self.__TRACECODE_PYTHON_HARNESS__ !== 'object') {
+      throw new Error(`Python harness snippets module ${snippetsUrl} did not register its snippet API.`);
+    }
+    if (!self.TraceRuntimeKernelPolicy || typeof self.TraceRuntimeKernelPolicy !== 'object') {
+      throw new Error(`Python shared kernel policy module ${sharedPolicyUrl} did not register its policy API.`);
+    }
+
+    moduleLoadPyodide = loadPyodideExport;
+    configuredPythonSnippetsLoaded = true;
+    emitRuntimeDiagnostic('info', 'module-bootstrap-loaded', 'Loaded Python module-worker bootstrap graph.', {
+      loaderUrl,
+      runtimeCoreUrl,
+      snippetsUrl,
+      sharedPolicyUrl,
+    });
+  })().catch((error) => {
+    pythonModuleBootstrapPromise = null;
+    throw error;
+  });
+
+  return pythonModuleBootstrapPromise;
+}
+
 /**
  * Load Pyodide
  */
 async function loadPyodideInstance() {
-  if (pyodide) return pyodide;
+  if (pyodide) {
+    await ensurePythonLibraryPackages(pyodide);
+    return pyodide;
+  }
   if (loadPromise) return loadPromise;
 
   isLoading = true;
 
   loadPromise = (async () => {
     try {
+      if (DECLARED_PYTHON_WORKER_FORMAT === 'module') {
+        await ensurePythonModuleBootstrap();
+        if (typeof moduleLoadPyodide !== 'function') {
+          throw new Error('Python module runtime loader is unavailable after bootstrap.');
+        }
+        const indexURL = configuredPythonRuntimeAssets.indexUrl;
+        pyodide = await moduleLoadPyodide({ indexURL });
+        await ensurePythonLibraryPackages(pyodide);
+        emitRuntimeDiagnostic('info', 'runtime-initialized', 'Initialized Python module runtime.', { indexURL });
+        return pyodide;
+      }
+
       const bootstrapErrors = [];
+
+      const configuredLoaderUrl = configuredPythonRuntimeAssets?.loaderUrl;
+      const configuredIndexUrl = configuredPythonRuntimeAssets?.indexUrl;
+      const runtimeCandidates = configuredLoaderUrl && configuredIndexUrl
+        ? [{ loaderUrl: configuredLoaderUrl, indexURL: configuredIndexUrl }]
+        : PYODIDE_INDEX_URLS.map((indexURL) => ({ loaderUrl: `${indexURL}pyodide.js`, indexURL }));
 
       if (typeof self.loadPyodide !== 'function') {
         let loadedBootstrap = false;
 
-        for (const indexURL of PYODIDE_INDEX_URLS) {
+        for (const candidate of runtimeCandidates) {
           try {
-            importScripts(`${indexURL}pyodide.js`);
+            importScripts(candidate.loaderUrl);
             loadedBootstrap = true;
-            emitRuntimeDiagnostic('info', 'bootstrap-loaded', 'Loaded Python runtime bootstrap script.', { indexURL });
+            emitRuntimeDiagnostic('info', 'bootstrap-loaded', 'Loaded Python runtime bootstrap script.', candidate);
             break;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            bootstrapErrors.push(`${indexURL}pyodide.js (${message})`);
+            bootstrapErrors.push(`${candidate.loaderUrl} (${message})`);
           }
         }
 
@@ -719,7 +1055,7 @@ async function loadPyodideInstance() {
       }
 
       const initErrors = [];
-      for (const indexURL of PYODIDE_INDEX_URLS) {
+      for (const { indexURL } of runtimeCandidates) {
         try {
           pyodide = await self.loadPyodide({ indexURL });
           await ensurePythonLibraryPackages(pyodide);
@@ -733,6 +1069,11 @@ async function loadPyodideInstance() {
 
       throw new Error(`Unable to initialize Pyodide runtime. Tried: ${initErrors.join(' | ')}`);
     } catch (error) {
+      // A partially initialized interpreter must never turn a failed explicit
+      // package contract into a healthy retry. The client can retire this
+      // worker and create a clean runtime after correcting its manifest.
+      pyodide = null;
+      pythonPackageLoadPromise = null;
       loadPromise = null;
       throw error;
     } finally {
@@ -757,8 +1098,11 @@ function loadPyodideRuntimeCore() {
   if (!pyodideRuntimeCoreLoadAttempted) {
     pyodideRuntimeCoreLoadAttempted = true;
 
-    if (typeof importScripts === 'function') {
-      for (const scriptPath of PYODIDE_RUNTIME_CORE_PATHS) {
+    if (DECLARED_PYTHON_WORKER_FORMAT === 'classic' && typeof importScripts === 'function') {
+      const runtimeCorePaths = configuredPythonRuntimeAssets?.runtimeCoreUrl
+        ? [configuredPythonRuntimeAssets.runtimeCoreUrl]
+        : PYODIDE_RUNTIME_CORE_PATHS;
+      for (const scriptPath of runtimeCorePaths) {
         try {
           importScripts(scriptPath);
           emitRuntimeDiagnostic('info', 'runtime-core-loaded', 'Loaded Python runtime core.', { scriptPath });
@@ -789,13 +1133,44 @@ function loadPyodideRuntimeCore() {
   return pyodideRuntimeCore;
 }
 
+function capturePythonUserAuthorityLockdown() {
+  if (trustedPythonUserAuthorityLockdown) return;
+  const lockdown = self.TraceRuntimeKernelPolicy?.withRuntimeUserAuthorityLockdown;
+  if (typeof lockdown !== 'function') {
+    throw new Error('Python user execution requires the shared runtime authority lockdown policy.');
+  }
+  trustedPythonUserAuthorityLockdown = lockdown;
+}
+
+function withPythonUserAuthorityLockdown(callback, mode = 'temporary') {
+  if (typeof trustedPythonUserAuthorityLockdown !== 'function') {
+    throw new Error('Python user execution requires the captured runtime authority lockdown policy.');
+  }
+  if (mode !== 'temporary' && mode !== 'permanent') {
+    throw new Error(`Unsupported Python user authority mode: ${String(mode)}.`);
+  }
+  return trustedPythonUserAuthorityLockdown(callback, { scope: self, mode });
+}
+
 function buildRuntimeDeps() {
   return {
     toPythonLiteral,
-    PYTHON_CLASS_DEFINITIONS_SNIPPET,
-    PYTHON_CONVERSION_HELPERS_SNIPPET,
-    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET,
-    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET,
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: resolveSharedPythonSnippet(
+      'PYTHON_CLASS_DEFINITIONS',
+      PYTHON_CLASS_DEFINITIONS_SNIPPET
+    ),
+    PYTHON_CONVERSION_HELPERS_SNIPPET: resolveSharedPythonSnippet(
+      'PYTHON_CONVERSION_HELPERS',
+      PYTHON_CONVERSION_HELPERS_SNIPPET
+    ),
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: resolveSharedPythonSnippet(
+      'PYTHON_TRACE_SERIALIZE_FUNCTION',
+      PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET
+    ),
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: resolveSharedPythonSnippet(
+      'PYTHON_EXECUTE_SERIALIZE_FUNCTION',
+      PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET
+    ),
     INTERVIEW_GUARD_DEFAULTS,
     loadPyodideInstance,
     getPyodide: () => pyodide,
@@ -831,13 +1206,17 @@ function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
  * Delegates to the runtime core module.
  */
 async function executeWithTracing(code, functionName, inputs, executionStyle = 'function', options = {}) {
-  return loadPyodideRuntimeCore().executeWithTracing(
-    buildRuntimeDeps(),
-    code,
-    functionName,
-    inputs,
-    executionStyle,
-    options
+  await loadPyodideInstance();
+  const runtimeCore = loadPyodideRuntimeCore();
+  return withPythonUserAuthorityLockdown(() =>
+    runtimeCore.executeWithTracing(
+      buildRuntimeDeps(),
+      code,
+      functionName,
+      inputs,
+      executionStyle,
+      options
+    )
   );
 }
 
@@ -846,13 +1225,17 @@ async function executeWithTracing(code, functionName, inputs, executionStyle = '
  * Delegates to the runtime core module.
  */
 async function executeCode(code, functionName, inputs, executionStyle = 'function', options = {}) {
-  return loadPyodideRuntimeCore().executeCode(
-    buildRuntimeDeps(),
-    code,
-    functionName,
-    inputs,
-    executionStyle,
-    options
+  await loadPyodideInstance();
+  const runtimeCore = loadPyodideRuntimeCore();
+  return withPythonUserAuthorityLockdown(() =>
+    runtimeCore.executeCode(
+      buildRuntimeDeps(),
+      code,
+      functionName,
+      inputs,
+      executionStyle,
+      options
+    )
   );
 }
 
@@ -1459,7 +1842,6 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
 
   const devices = normalizeProjectKernelDevices(kernelDevices);
   const kernelPolicy = self.TraceRuntimeKernelPolicy;
-  const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
   const stdinPipeReader = stdinPipeState(stdinPipe);
   const previousReadProjectStdinByte = self.__tracecodeReadProjectStdinByte;
   delete self.__tracecodeProjectProviderOutput;
@@ -1468,12 +1850,6 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
       ? String(kernelPolicy.runtimeKernelDeviceInputSource(devices, device) || '')
       : String(devices[String(device)]?.inputDevice || (devices[String(device)]?.readable ? device : ''))
   );
-  const deviceOutputTarget = (device) => (
-    kernelPolicy && typeof kernelPolicy.runtimeKernelDeviceOutputTarget === 'function'
-      ? String(kernelPolicy.runtimeKernelDeviceOutputTarget(devices, device) || '')
-      : String(devices[String(device)]?.outputDevice || (devices[String(device)]?.writable ? device : ''))
-  );
-
   const readProjectStdinByte = (device = '/dev/stdin') => {
     const inputDevice = deviceInputSource(device);
     if (!inputDevice || inputDevice === '/dev/null') return -1;
@@ -1481,33 +1857,6 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
     return -1;
   };
   self.__tracecodeReadProjectStdinByte = readProjectStdinByte;
-
-  const emitProviderOutput = (stream, device, data, sourceDevice = '') => {
-    if (!data) return;
-    try {
-      if (typeof self.__tracecodeProjectEvent === 'function') {
-        self.__tracecodeProjectEvent({
-          type: 'output',
-          stream,
-          device,
-          ...(sourceDevice ? { sourceDevice } : {}),
-          data,
-        });
-      }
-    } catch {
-      // Provider stdio events are best-effort; Python-side capture remains authoritative where available.
-    }
-  };
-
-  const writeHandler = (stream, defaultDevice) => (buffer) => {
-    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-    const text = textDecoder ? textDecoder.decode(bytes) : String.fromCharCode(...bytes);
-    const outputDevice = deviceOutputTarget(defaultDevice);
-    if (!outputDevice) return bytes.byteLength;
-    if (outputDevice === '/dev/null') return bytes.byteLength;
-    emitProviderOutput(outputDevice === '/dev/stderr' ? 'stderr' : stream, outputDevice, text, defaultDevice !== outputDevice ? defaultDevice : '');
-    return bytes.byteLength;
-  };
 
   const restoreFns = [];
   if (typeof pyodide.setStdin === 'function' && devices['/dev/stdin']?.readable) {
@@ -1526,14 +1875,11 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
     });
     restoreFns.push(() => pyodide.setStdin({}));
   }
-  if (typeof pyodide.setStdout === 'function' && devices['/dev/stdout']?.writable) {
-    pyodide.setStdout({ write: writeHandler('stdout', '/dev/stdout'), isatty: false });
-    restoreFns.push(() => pyodide.setStdout({}));
-  }
-  if (typeof pyodide.setStderr === 'function' && devices['/dev/stderr']?.writable) {
-    pyodide.setStderr({ write: writeHandler('stderr', '/dev/stderr'), isatty: false });
-    restoreFns.push(() => pyodide.setStderr({}));
-  }
+  // Do not replace Pyodide's provider-level stdout/stderr callbacks while the
+  // user authority boundary is active. Re-entering the browser worker from a
+  // low-level WASM stream callback can deadlock the interpreter. The project
+  // wrapper below binds both sys.stdout/sys.stderr and their __stdout__/
+  // __stderr__ escape hatches to bounded TraceKernel streams instead.
 
   return () => {
     delete self.__tracecodeProjectProviderOutput;
@@ -1577,7 +1923,7 @@ class TraceKernelHttpBridge {
       protocol: options.protocol || 'http',
       startedAt: new Date().toISOString(),
     });
-    self.postMessage({
+    trustedPythonWorkerPostMessage({
       id: this.messageId,
       type: 'kernel-http-listen',
       protocolToken: this.protocolToken,
@@ -1604,7 +1950,7 @@ class TraceKernelHttpBridge {
         this.listenerInfo.delete(listenerId);
         this.listenerReady.delete(listenerId);
         this.listenerFailures.delete(listenerId);
-        self.postMessage({
+        trustedPythonWorkerPostMessage({
           id: this.messageId,
           type: 'kernel-http-close',
           protocolToken: this.protocolToken,
@@ -1622,7 +1968,7 @@ class TraceKernelHttpBridge {
     const requestId = `python-dispatch-${this.nextRequestId++}`;
     return new Promise((resolve, reject) => {
       this.dispatchRequests.set(requestId, { resolve, reject });
-      self.postMessage({
+      trustedPythonWorkerPostMessage({
         id: this.messageId,
         type: 'kernel-http-dispatch',
         protocolToken: this.protocolToken,
@@ -1669,7 +2015,7 @@ class TraceKernelHttpBridge {
   async handleRequest(listenerId, requestId, request) {
     const handler = this.listeners.get(listenerId);
     if (!handler) {
-      self.postMessage({
+      trustedPythonWorkerPostMessage({
         id: this.messageId,
         type: 'kernel-http-error',
         protocolToken: this.protocolToken,
@@ -1685,7 +2031,7 @@ class TraceKernelHttpBridge {
     try {
       const rawResponse = await handler(JSON.stringify(request));
       const response = typeof rawResponse === 'string' ? JSON.parse(rawResponse) : rawResponse;
-      self.postMessage({
+      trustedPythonWorkerPostMessage({
         id: this.messageId,
         type: 'kernel-http-response',
         protocolToken: this.protocolToken,
@@ -1696,7 +2042,7 @@ class TraceKernelHttpBridge {
         },
       });
     } catch (error) {
-      self.postMessage({
+      trustedPythonWorkerPostMessage({
         id: this.messageId,
         type: 'kernel-http-error',
         protocolToken: this.protocolToken,
@@ -1713,9 +2059,7 @@ class TraceKernelHttpBridge {
 
 const activeProjectHttpBridges = new Map();
 
-async function executeProjectPython(request, messageId, protocolToken) {
-  await loadPyodideInstance();
-
+async function executeProjectPythonUserCall(request, messageId, protocolToken) {
   const requestJson = JSON.stringify(request ?? {});
   const httpBridge = new TraceKernelHttpBridge(messageId, protocolToken);
   activeProjectHttpBridges.set(messageId, httpBridge);
@@ -1728,7 +2072,7 @@ async function executeProjectPython(request, messageId, protocolToken) {
     if (budgetedPayload?.type === 'output' && (budgetedPayload.stream === 'stdout' || budgetedPayload.stream === 'stderr')) {
       projectOutputEvents.push(budgetedPayload);
     }
-    self.postMessage({ id: messageId, type: 'project-event', payload: budgetedPayload, protocolToken });
+    trustedPythonWorkerPostMessage({ id: messageId, type: 'project-event', payload: budgetedPayload, protocolToken });
   };
   self.__tracecodeRuntimeKernelOpenTarget = (payload) => {
     const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
@@ -1900,6 +2244,8 @@ _stdout = io.StringIO()
 _stderr = io.StringIO()
 _previous_argv = sys.argv[:]
 _previous_stdin = sys.stdin
+_previous_dunder_stdout = sys.__stdout__
+_previous_dunder_stderr = sys.__stderr__
 _previous_cwd = os.getcwd()
 _previous_environ = os.environ.copy()
 _previous_path = sys.path[:]
@@ -4391,6 +4737,8 @@ try:
     _install_tracekernel_asgi_modules()
     sys.argv = _project_argv()
     sys.stdin = _TraceProjectInputStream()
+    sys.__stdout__ = _stdout
+    sys.__stderr__ = _stderr
     with contextlib.redirect_stdout(_stdout), contextlib.redirect_stderr(_stderr):
         try:
             if _source == "file":
@@ -4417,6 +4765,8 @@ finally:
     _restore_workspace_paths()
     sys.argv = _previous_argv
     sys.stdin = _previous_stdin
+    sys.__stdout__ = _previous_dunder_stdout
+    sys.__stderr__ = _previous_dunder_stderr
     os.environ.clear()
     os.environ.update(_previous_environ)
     sys.path[:] = _previous_path
@@ -4457,13 +4807,25 @@ json.dumps({
   }
 }
 
+async function executeProjectPython(request, messageId, protocolToken) {
+  await loadPyodideInstance();
+  return withPythonUserAuthorityLockdown(
+    () => executeProjectPythonUserCall(request, messageId, protocolToken),
+    request?.projectUserAuthorityMode ?? 'temporary'
+  );
+}
+
 async function executeCodeBatch(code, functionName, inputBatch, executionStyle = 'function') {
-  return loadPyodideRuntimeCore().executeCodeBatch(
-    buildRuntimeDeps(),
-    code,
-    functionName,
-    inputBatch,
-    executionStyle
+  await loadPyodideInstance();
+  const runtimeCore = loadPyodideRuntimeCore();
+  return withPythonUserAuthorityLockdown(() =>
+    runtimeCore.executeCodeBatch(
+      buildRuntimeDeps(),
+      code,
+      functionName,
+      inputBatch,
+      executionStyle
+    )
   );
 }
 
@@ -4471,22 +4833,25 @@ async function processMessage(data) {
   const { id, type, payload, protocolToken } = data;
   try {
     if (id && typeof protocolToken !== 'string') {
-      self.postMessage({ id, type: 'error', payload: { error: 'Missing Python worker protocol token.' } });
+      trustedPythonWorkerPostMessage({ id, type: 'error', payload: { error: 'Missing Python worker protocol token.' } });
       return;
     }
     switch (type) {
       case 'init': {
         const startTime = performance.now();
+        configurePythonRuntimeAssets(payload?.runtimeAssets);
+        await ensurePythonModuleBootstrap();
         const loadTimeMs = performance.now() - startTime;
-        self.postMessage({ id, type: 'init-result', payload: { success: true, loadTimeMs }, protocolToken });
+        trustedPythonWorkerPostMessage({ id, type: 'init-result', payload: { success: true, loadTimeMs }, protocolToken });
         break;
       }
 
       case 'warmup': {
         const startTime = performance.now();
         await loadPyodideInstance();
+        loadPyodideRuntimeCore();
         const loadTimeMs = performance.now() - startTime;
-        self.postMessage({ id, type: 'warmup-result', payload: { success: true, loadTimeMs }, protocolToken });
+        trustedPythonWorkerPostMessage({ id, type: 'warmup-result', payload: { success: true, loadTimeMs }, protocolToken });
         break;
       }
 
@@ -4494,7 +4859,13 @@ async function processMessage(data) {
         const { code, functionName, inputs, executionStyle, options } = payload;
         const result = await executeWithTracing(code, functionName, inputs, executionStyle ?? 'function', options);
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
+        postTraceResultMessage(
+          id,
+          protocolToken,
+          result,
+          payload?.traceEventTransport,
+          'trace.events'
+        );
         break;
       }
 
@@ -4502,7 +4873,7 @@ async function processMessage(data) {
         const { code, functionName, inputs, executionStyle } = payload;
         const result = await executeCode(code, functionName, inputs, executionStyle ?? 'function');
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
+        trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
       }
 
@@ -4510,7 +4881,7 @@ async function processMessage(data) {
         const { code, functionName, inputBatch, executionStyle } = payload;
         const result = await executeCodeBatch(code, functionName, inputBatch, executionStyle ?? 'function');
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
+        trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
       }
 
@@ -4520,19 +4891,19 @@ async function processMessage(data) {
           interviewGuard: true,
         });
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
+        trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
       }
 
       case 'execute-project-python': {
         const result = await executeProjectPython(payload, id, protocolToken);
         analyzerInitialized = false;
-        self.postMessage({ id, type: 'execute-result', payload: result, protocolToken });
+        trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
       }
 
       case 'status': {
-        self.postMessage({
+        trustedPythonWorkerPostMessage({
           id,
           type: 'status-result',
           protocolToken,
@@ -4547,12 +4918,12 @@ async function processMessage(data) {
       case 'analyze-code': {
         const { code } = payload;
         const result = await analyzeCodeAST(code);
-        self.postMessage({ id, type: 'analyze-result', payload: result, protocolToken });
+        trustedPythonWorkerPostMessage({ id, type: 'analyze-result', payload: result, protocolToken });
         break;
       }
 
       default:
-        self.postMessage({
+        trustedPythonWorkerPostMessage({
           id,
           type: 'error',
           protocolToken,
@@ -4560,7 +4931,7 @@ async function processMessage(data) {
         });
     }
   } catch (error) {
-    self.postMessage({
+    trustedPythonWorkerPostMessage({
       id,
       type: 'error',
       protocolToken,
@@ -4621,7 +4992,7 @@ self.onmessage = function(event) {
     .then(() => processMessage(messageData))
     .catch((error) => {
       const { id, protocolToken } = messageData;
-      self.postMessage({
+      trustedPythonWorkerPostMessage({
         id,
         type: 'error',
         protocolToken,
@@ -4632,7 +5003,7 @@ self.onmessage = function(event) {
 
 // Notify that worker is ready
 emitRuntimeDiagnostic('info', 'worker-ready', 'Python worker is ready.');
-self.postMessage({ type: 'worker-ready' });
+trustedPythonWorkerPostMessage({ type: 'worker-ready' });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AST CODE ANALYSIS
@@ -4660,7 +5031,7 @@ async function initAnalyzer() {
   const analyzerCode = `
 import ast
 import json
-${PYTHON_CLASS_DEFINITIONS_SNIPPET}
+${resolveSharedPythonSnippet('PYTHON_CLASS_DEFINITIONS', PYTHON_CLASS_DEFINITIONS_SNIPPET)}
 
 TRACKED_BUILTINS = frozenset([
     'max', 'min', 'len', 'sum', 'abs', 'sorted', 'reversed',

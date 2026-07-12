@@ -1,15 +1,33 @@
 #!/usr/bin/env npx tsx
 
-import { spawn } from 'node:child_process';
+/**
+ * End-to-end benchmark for the public Classic browser harness.
+ *
+ * This intentionally imports createBrowserHarness() in Chromium and only uses
+ * BrowserHarness/RuntimeClient methods. It does not speak private worker
+ * protocols, so changes to worker scheduling, cloning, and client adapters are
+ * represented in the measurements consumers actually see.
+ */
+
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
-import { chromium } from 'playwright';
+import { gzipSync } from 'node:zlib';
+import { build } from 'esbuild';
+import { chromium, type BrowserContext, type Page, type Request } from 'playwright';
 
-type Language = 'csharp' | 'cpp' | 'java';
-type Mode = 'execute' | 'trace' | 'interview' | 'execute-batch' | 'trace-batch';
+type Language = 'python' | 'javascript' | 'typescript' | 'java' | 'csharp' | 'cpp';
+type Mode = 'execute' | 'trace' | 'interview';
+type Phase =
+  | 'cold-first-execute'
+  | 'warm-exact-repeat'
+  | 'warm-edited-source'
+  | 'multiple-inputs'
+  | 'trace'
+  | 'interview';
 
 interface BenchmarkArgs {
   languages: Language[];
@@ -18,7 +36,13 @@ interface BenchmarkArgs {
   iterations: number;
   caseLimit: number | null;
   requestTimeoutMs: number;
+  seed: number;
   headful: boolean;
+  smoke: boolean;
+  cacheAssets: boolean;
+  phaseDelayMs: number;
+  prewarmRuntime: boolean;
+  runtimeManifestsPath: string | null;
   reportPath: string | null;
 }
 
@@ -31,39 +55,150 @@ interface TestCase {
 interface Workload {
   id: string;
   label: string;
-  modes: Mode[];
   sources: Record<Language, string>;
   functionNames: Record<Language, string>;
   executionStyles: Record<Language, 'function' | 'solution-method'>;
   cases: TestCase[];
 }
 
-interface CaseRecord {
+interface RuntimeTimingRecord {
+  totalMs?: number;
+  initMs?: number;
+  warmupMs?: number;
+  toolchainLoadMs?: number;
+  rewriteMs?: number;
+  driverBuildMs?: number;
+  compileMs?: number;
+  pchMs?: number;
+  linkMs?: number;
+  wasmCompileMs?: number;
+  classLoadMs?: number;
+  runMs?: number;
+  hostCallMs?: number;
+  compileCacheHit?: boolean;
+  pchCacheHit?: boolean;
+}
+
+interface BrowserMemorySnapshot {
+  source: 'performance.memory';
+  usedJSHeapSize: number;
+  totalJSHeapSize: number;
+  jsHeapSizeLimit: number;
+}
+
+interface ResourceTimingSummary {
+  entries: number;
+  transferBytes: number;
+  encodedBodyBytes: number;
+  decodedBodyBytes: number;
+  durationMs: number;
+}
+
+interface LongTaskSummary {
+  supported: boolean;
+  count?: number;
+  totalDurationMs?: number;
+  maxDurationMs?: number;
+}
+
+interface PhaseRecord {
   language: Language;
   workloadId: string;
   workloadLabel: string;
-  mode: Mode;
   iteration: number;
-  caseName: string;
-  caseIndex: number;
+  runOrdinal: number;
+  phase: Phase;
+  mode: Mode;
+  sourceVariant: 'base' | 'edited';
+  caseCount: number;
   wallMs: number;
   success: boolean;
-  output?: unknown;
-  expected: unknown;
-  error?: string;
-  timings?: Record<string, unknown>;
-  executionTimeMs?: number;
+  outputs: unknown[];
+  expected: unknown[];
+  errors: string[];
+  timings?: RuntimeTimingRecord;
+  caseTimings: RuntimeTimingRecord[];
+  responseSerializedBytes: number;
+  traceSerializedBytes?: number;
   traceEventCount?: number;
   lineEventCount?: number;
   traceStepCount?: number;
-  consoleOutputCount?: number;
+  resourceTiming: ResourceTimingSummary;
+  longTasks: LongTaskSummary;
+  memoryBefore?: BrowserMemorySnapshot;
+  memoryAfter?: BrowserMemorySnapshot;
+  unsupportedMetrics: string[];
+}
+
+interface InitRecord {
+  language: Language;
+  workloadId: string;
+  iteration: number;
+  runOrdinal: number;
+  harnessConstructionMs: number;
+  moduleImportMs: number;
+  wallMs: number;
+  runtimeLoadTimeMs?: number;
+  runtimeWarmupWallMs?: number;
+  runtimeWarmupLoadTimeMs?: number;
+  success: boolean;
+  error?: string;
+  resourceTiming: ResourceTimingSummary;
+  longTasks: LongTaskSummary;
+  memoryBefore?: BrowserMemorySnapshot;
+  memoryAfter?: BrowserMemorySnapshot;
+}
+
+interface BrowserRunResult {
+  userAgent: string;
+  crossOriginIsolated: boolean;
+  memorySupport: {
+    performanceMemory: boolean;
+    userAgentSpecificMemory: boolean;
+  };
+  longTaskSupport: boolean;
+  init: InitRecord;
+  records: PhaseRecord[];
+}
+
+interface NetworkResourceRecord {
+  runOrdinal: number;
+  language: Language;
+  workloadId: string;
+  phase: string;
+  url: string;
+  method: string;
+  resourceType: string;
+  status?: number;
+  protocol?: string;
+  contentType?: string;
+  contentLength?: number;
+  /** Encoded response body bytes, falling back to Content-Length for worker requests Chromium reports as zero. */
+  encodedBodyBytes?: number;
+  requestHeadersBytes?: number;
+  requestBodyBytes?: number;
+  responseHeadersBytes?: number;
+  responseBodyBytes?: number;
+  /** Request plus response headers/body bytes observed on the wire. */
+  totalTransferBytes?: number;
+  startTimeMs?: number;
+  responseStartMs?: number;
+  responseEndMs?: number;
+  failed?: string;
+}
+
+interface RunPlanItem {
+  language: Language;
+  workload: Workload;
+  iteration: number;
+  runOrdinal: number;
 }
 
 interface SummaryRecord {
   language: Language;
   workloadId: string;
-  mode: Mode;
-  cases: number;
+  phase: Phase;
+  samples: number;
   passed: number;
   wallP50Ms: number;
   wallP95Ms: number;
@@ -71,23 +206,25 @@ interface SummaryRecord {
   totalAvgMs?: number;
   compileAvgMs?: number;
   runAvgMs?: number;
-  hostCallAvgMs?: number;
-  rewriteAvgMs?: number;
-  classLoadAvgMs?: number;
+  traceEventsAvg?: number;
+  responseBytesAvg: number;
+  traceBytesAvg?: number;
+  longTaskTotalAvgMs?: number;
+  heapDeltaAvgBytes?: number;
   cacheHits?: number;
   cacheKnown?: number;
 }
 
-const ALL_LANGUAGES: Language[] = ['csharp', 'cpp', 'java'];
-const ALL_MODES: Mode[] = ['execute', 'trace', 'interview', 'execute-batch', 'trace-batch'];
-const DEFAULT_MODES: Mode[] = ['execute', 'trace', 'interview'];
+const ALL_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
+const ALL_MODES: Mode[] = ['execute', 'trace', 'interview'];
+const DEFAULT_SEED = 17_729;
 
 const addCases: TestCase[] = [
   { name: 'positive', inputs: { a: 2, b: 3 }, expected: 5 },
-  { name: 'different-values-cache-hit', inputs: { a: 5, b: 6 }, expected: 11 },
+  { name: 'different-values', inputs: { a: 5, b: 6 }, expected: 11 },
   { name: 'negative', inputs: { a: -4, b: 9 }, expected: 5 },
   { name: 'zero', inputs: { a: 0, b: 0 }, expected: 0 },
-  { name: 'large', inputs: { a: 12345, b: 67890 }, expected: 80235 },
+  { name: 'large', inputs: { a: 12_345, b: 67_890 }, expected: 80_235 },
 ];
 
 const twoSumCases: TestCase[] = [
@@ -120,19 +257,26 @@ const WORKLOADS: Workload[] = [
   {
     id: 'add',
     label: 'Add',
-    modes: ['execute', 'execute-batch', 'trace', 'trace-batch', 'interview'],
-    functionNames: { csharp: 'Sum', cpp: 'sum', java: 'sum' },
-    executionStyles: { csharp: 'solution-method', cpp: 'solution-method', java: 'solution-method' },
+    functionNames: {
+      python: 'add',
+      javascript: 'add',
+      typescript: 'add',
+      java: 'sum',
+      csharp: 'Sum',
+      cpp: 'sum',
+    },
+    executionStyles: {
+      python: 'function',
+      javascript: 'function',
+      typescript: 'function',
+      java: 'solution-method',
+      csharp: 'solution-method',
+      cpp: 'solution-method',
+    },
     sources: {
-      csharp: [
-        'using System;',
-        'public class Solution {',
-        '  public int Sum(int a, int b) {',
-        '    return a + b;',
-        '  }',
-        '}',
-      ].join('\n'),
-      cpp: 'class Solution { public: int sum(int a, int b) { return a + b; } };',
+      python: 'def add(a, b):\n    return a + b',
+      javascript: 'function add(a, b) { return a + b; }',
+      typescript: 'function add(a: number, b: number): number { return a + b; }',
       java: [
         'class Solution {',
         '  int sum(int a, int b) {',
@@ -140,16 +284,83 @@ const WORKLOADS: Workload[] = [
         '  }',
         '}',
       ].join('\n'),
+      csharp: [
+        'public class Solution {',
+        '  public int Sum(int a, int b) {',
+        '    return a + b;',
+        '  }',
+        '}',
+      ].join('\n'),
+      cpp: 'class Solution { public: int sum(int a, int b) { return a + b; } };',
     },
     cases: addCases,
   },
   {
     id: 'two-sum',
     label: 'Two Sum',
-    modes: ['execute', 'execute-batch', 'trace', 'trace-batch'],
-    functionNames: { csharp: 'TwoSum', cpp: 'twoSum', java: 'twoSum' },
-    executionStyles: { csharp: 'solution-method', cpp: 'solution-method', java: 'solution-method' },
+    functionNames: {
+      python: 'two_sum',
+      javascript: 'twoSum',
+      typescript: 'twoSum',
+      java: 'twoSum',
+      csharp: 'TwoSum',
+      cpp: 'twoSum',
+    },
+    executionStyles: {
+      python: 'function',
+      javascript: 'function',
+      typescript: 'function',
+      java: 'solution-method',
+      csharp: 'solution-method',
+      cpp: 'solution-method',
+    },
     sources: {
+      python: [
+        'def two_sum(nums, target):',
+        '    seen = {}',
+        '    for i, value in enumerate(nums):',
+        '        complement = target - value',
+        '        if complement in seen:',
+        '            return [seen[complement], i]',
+        '        seen[value] = i',
+        '    return []',
+      ].join('\n'),
+      javascript: [
+        'function twoSum(nums, target) {',
+        '  const seen = new Map();',
+        '  for (let i = 0; i < nums.length; i += 1) {',
+        '    const complement = target - nums[i];',
+        '    if (seen.has(complement)) return [seen.get(complement), i];',
+        '    seen.set(nums[i], i);',
+        '  }',
+        '  return [];',
+        '}',
+      ].join('\n'),
+      typescript: [
+        'function twoSum(nums: number[], target: number): number[] {',
+        '  const seen = new Map<number, number>();',
+        '  for (let i = 0; i < nums.length; i += 1) {',
+        '    const complement = target - nums[i];',
+        '    if (seen.has(complement)) return [seen.get(complement)!, i];',
+        '    seen.set(nums[i], i);',
+        '  }',
+        '  return [];',
+        '}',
+      ].join('\n'),
+      java: [
+        'import java.util.*;',
+        'class Solution {',
+        '  int[] twoSum(int[] nums, int target) {',
+        '    Map<Integer, Integer> seen = new HashMap<>();',
+        '    for (int i = 0; i < nums.length; i++) {',
+        '      int complement = target - nums[i];',
+        '      if (seen.containsKey(complement)) return new int[] { seen.get(complement), i };',
+        '      seen.put(nums[i], i);',
+        '    }',
+        '    return new int[0];',
+        '  }',
+        '}',
+      ].join('\n'),
       csharp: [
         'using System.Collections.Generic;',
         'public class Solution {',
@@ -178,30 +389,71 @@ const WORKLOADS: Workload[] = [
         '  }',
         '};',
       ].join('\n'),
-      java: [
-        'import java.util.*;',
-        'class Solution {',
-        '  int[] twoSum(int[] nums, int target) {',
-        '    Map<Integer, Integer> seen = new HashMap<>();',
-        '    for (int i = 0; i < nums.length; i++) {',
-        '      int complement = target - nums[i];',
-        '      if (seen.containsKey(complement)) return new int[] { seen.get(complement), i };',
-        '      seen.put(nums[i], i);',
-        '    }',
-        '    return new int[0];',
-        '  }',
-        '}',
-      ].join('\n'),
     },
     cases: twoSumCases,
   },
   {
     id: 'loop-walk',
     label: 'Loop Walk',
-    modes: ['execute', 'execute-batch', 'trace', 'trace-batch'],
-    functionNames: { csharp: 'Walk', cpp: 'walk', java: 'walk' },
-    executionStyles: { csharp: 'solution-method', cpp: 'solution-method', java: 'solution-method' },
+    functionNames: {
+      python: 'walk',
+      javascript: 'walk',
+      typescript: 'walk',
+      java: 'walk',
+      csharp: 'Walk',
+      cpp: 'walk',
+    },
+    executionStyles: {
+      python: 'function',
+      javascript: 'function',
+      typescript: 'function',
+      java: 'solution-method',
+      csharp: 'solution-method',
+      cpp: 'solution-method',
+    },
     sources: {
+      python: [
+        'def walk(nums):',
+        '    total = 0',
+        '    for i, value in enumerate(nums):',
+        '        if i % 2 == 0:',
+        '            total += value * (i + 1)',
+        '        else:',
+        '            total -= value * (i + 1)',
+        '    return total',
+      ].join('\n'),
+      javascript: [
+        'function walk(nums) {',
+        '  let total = 0;',
+        '  for (let i = 0; i < nums.length; i += 1) {',
+        '    if ((i & 1) === 0) total += nums[i] * (i + 1);',
+        '    else total -= nums[i] * (i + 1);',
+        '  }',
+        '  return total;',
+        '}',
+      ].join('\n'),
+      typescript: [
+        'function walk(nums: number[]): number {',
+        '  let total = 0;',
+        '  for (let i = 0; i < nums.length; i += 1) {',
+        '    if ((i & 1) === 0) total += nums[i] * (i + 1);',
+        '    else total -= nums[i] * (i + 1);',
+        '  }',
+        '  return total;',
+        '}',
+      ].join('\n'),
+      java: [
+        'class Solution {',
+        '  int walk(int[] nums) {',
+        '    int total = 0;',
+        '    for (int i = 0; i < nums.length; i++) {',
+        '      if ((i & 1) == 0) total += nums[i] * (i + 1);',
+        '      else total -= nums[i] * (i + 1);',
+        '    }',
+        '    return total;',
+        '  }',
+        '}',
+      ].join('\n'),
       csharp: [
         'public class Solution {',
         '  public int Walk(int[] nums) {',
@@ -227,18 +479,6 @@ const WORKLOADS: Workload[] = [
         '  }',
         '};',
       ].join('\n'),
-      java: [
-        'class Solution {',
-        '  int walk(int[] nums) {',
-        '    int total = 0;',
-        '    for (int i = 0; i < nums.length; i++) {',
-        '      if ((i & 1) == 0) total += nums[i] * (i + 1);',
-        '      else total -= nums[i] * (i + 1);',
-        '    }',
-        '    return total;',
-        '  }',
-        '}',
-      ].join('\n'),
     },
     cases: walkCases,
   },
@@ -248,16 +488,24 @@ function usage(): string {
   return [
     'Usage: pnpm bench:browser-runtimes [options]',
     '',
+    'Benchmarks the public createBrowserHarness() Classic API in Chromium.',
+    '',
     'Options:',
-    '  --languages=csharp,cpp,java     Languages to benchmark. Default: all.',
+    '  --languages=python,javascript,typescript,java,csharp,cpp',
+    '                                  Browser runtimes to benchmark. Default: all.',
     '  --workloads=add,two-sum         Workloads to run. Default: all.',
-    '  --modes=execute,trace,interview Modes to run where supported by each workload. Default: execute,trace,interview.',
-    '                                  Also supports execute-batch and cpp trace-batch.',
-    '  --iterations=2                  Repeat every workload case. Default: 1.',
-    '  --case-limit=2                  Run only the first N cases per workload for quick checks.',
-    '  --request-timeout-ms=180000     Per worker request timeout. Default: 180000.',
-    '  --report=reports/file.json      Report output path. Default: reports/browser-runtime-benchmark.json.',
+    '  --modes=execute,trace,interview Public request modes. Default: all.',
+    '  --iterations=5                  Fresh-context samples per language/workload. Default: 5 (smoke: 1).',
+    '  --case-limit=2                  Limit cases used by the multi-input phase.',
+    `  --seed=${DEFAULT_SEED}                 Deterministic run-order shuffle seed.`,
+    '  --request-timeout-ms=180000     Per public API operation timeout. Default: 180000.',
+    '  --runtime-manifests=file.json    Consumer-owned cross-runtime asset manifests.',
+    '  --smoke                         Quick JS/add/execute run unless explicitly overridden.',
+    '  --report=reports/file.json      JSON report path.',
     '  --no-report                     Do not write a JSON report.',
+    '  --cache-assets                  Serve immutable cache headers so warm phases exclude downloads.',
+    '  --phase-delay-ms=25             Delay between phases to model interactive think time. Default: 0.',
+    '  --prewarm-runtime               Call harness.warmLanguage() before the first measured execute.',
     '  --headful                       Run Chromium with a visible window.',
   ].join('\n');
 }
@@ -272,20 +520,50 @@ function parseCsv<T extends string>(raw: string, allowed: readonly T[], label: s
       throw new Error(`Unsupported ${label} "${value}". Expected one of: ${allowed.join(', ')}`);
     }
   }
+  if (values.length === 0) {
+    throw new Error(`Expected at least one ${label}.`);
+  }
   return [...new Set(values)];
+}
+
+function positiveInteger(raw: string, label: string): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Expected --${label} to be a positive integer, received "${raw}".`);
+  }
+  return value;
+}
+
+function nonNegativeInteger(raw: string, label: string): number {
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Expected --${label} to be a non-negative safe integer, received "${raw}".`);
+  }
+  return value;
 }
 
 function parseArgs(argv: string[]): BenchmarkArgs {
   const args: BenchmarkArgs = {
     languages: ALL_LANGUAGES,
     workloads: WORKLOADS.map((workload) => workload.id),
-    modes: DEFAULT_MODES,
-    iterations: 1,
+    modes: ALL_MODES,
+    iterations: 5,
     caseLimit: null,
     requestTimeoutMs: 180_000,
+    seed: DEFAULT_SEED,
     headful: false,
+    smoke: false,
+    cacheAssets: false,
+    phaseDelayMs: 0,
+    prewarmRuntime: false,
+    runtimeManifestsPath: process.env.TRACECODE_BENCH_RUNTIME_MANIFESTS?.trim() || null,
     reportPath: join('reports', 'browser-runtime-benchmark.json'),
   };
+  let explicitLanguages = false;
+  let explicitWorkloads = false;
+  let explicitModes = false;
+  let explicitIterations = false;
+  let explicitCaseLimit = false;
 
   for (const arg of argv) {
     if (arg === '--help' || arg === '-h') {
@@ -296,50 +574,108 @@ function parseArgs(argv: string[]): BenchmarkArgs {
       args.headful = true;
       continue;
     }
+    if (arg === '--smoke' || arg === '--quick') {
+      args.smoke = true;
+      continue;
+    }
     if (arg === '--no-report') {
       args.reportPath = null;
       continue;
     }
+    if (arg === '--cache-assets') {
+      args.cacheAssets = true;
+      continue;
+    }
+    if (arg === '--prewarm-runtime') {
+      args.prewarmRuntime = true;
+      continue;
+    }
     if (arg.startsWith('--languages=')) {
       args.languages = parseCsv(arg.slice('--languages='.length), ALL_LANGUAGES, 'language');
+      explicitLanguages = true;
       continue;
     }
     if (arg.startsWith('--workloads=')) {
       args.workloads = parseCsv(arg.slice('--workloads='.length), WORKLOADS.map((workload) => workload.id), 'workload');
+      explicitWorkloads = true;
       continue;
     }
     if (arg.startsWith('--modes=')) {
       args.modes = parseCsv(arg.slice('--modes='.length), ALL_MODES, 'mode');
+      explicitModes = true;
       continue;
     }
     if (arg.startsWith('--iterations=')) {
       args.iterations = positiveInteger(arg.slice('--iterations='.length), 'iterations');
+      explicitIterations = true;
       continue;
     }
     if (arg.startsWith('--case-limit=')) {
       args.caseLimit = positiveInteger(arg.slice('--case-limit='.length), 'case-limit');
+      explicitCaseLimit = true;
       continue;
     }
     if (arg.startsWith('--request-timeout-ms=')) {
       args.requestTimeoutMs = positiveInteger(arg.slice('--request-timeout-ms='.length), 'request-timeout-ms');
       continue;
     }
+    if (arg.startsWith('--phase-delay-ms=')) {
+      args.phaseDelayMs = nonNegativeInteger(arg.slice('--phase-delay-ms='.length), 'phase-delay-ms');
+      continue;
+    }
+    if (arg.startsWith('--seed=')) {
+      args.seed = nonNegativeInteger(arg.slice('--seed='.length), 'seed');
+      continue;
+    }
+    if (arg.startsWith('--runtime-manifests=')) {
+      const manifestPath = arg.slice('--runtime-manifests='.length).trim();
+      if (!manifestPath) throw new Error('--runtime-manifests requires a non-empty path.');
+      args.runtimeManifestsPath = manifestPath;
+      continue;
+    }
     if (arg.startsWith('--report=')) {
-      args.reportPath = arg.slice('--report='.length);
+      const reportPath = arg.slice('--report='.length).trim();
+      if (!reportPath) throw new Error('--report requires a non-empty path.');
+      args.reportPath = reportPath;
       continue;
     }
     throw new Error(`Unknown option "${arg}".\n${usage()}`);
   }
 
+  if (args.smoke) {
+    if (!explicitLanguages) args.languages = ['javascript'];
+    if (!explicitWorkloads) args.workloads = ['add'];
+    if (!explicitModes) args.modes = ['execute'];
+    if (!explicitIterations) args.iterations = 1;
+    if (!explicitCaseLimit) args.caseLimit = 2;
+  }
+
   return args;
 }
 
-function positiveInteger(raw: string, label: string): number {
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`Expected --${label} to be a positive integer, received "${raw}".`);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function loadRuntimeManifests(pathname: string | null): Promise<Record<string, unknown> | undefined> {
+  if (!pathname) return undefined;
+  const absolutePath = resolve(process.cwd(), pathname);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(absolutePath, 'utf8')) as unknown;
+  } catch (error) {
+    throw new Error(
+      `Unable to read browser runtime manifests from ${absolutePath}: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
-  return value;
+  if (!isRecord(parsed)) {
+    throw new Error(`Browser runtime manifest file ${absolutePath} must contain a JSON object.`);
+  }
+  const manifests = isRecord(parsed.runtimeManifests) ? parsed.runtimeManifests : parsed;
+  if (Object.keys(manifests).length === 0) {
+    throw new Error(`Browser runtime manifest file ${absolutePath} does not contain any runtime entries.`);
+  }
+  return manifests;
 }
 
 function contentType(pathname: string): string {
@@ -362,10 +698,19 @@ function contentType(pathname: string): string {
   }
 }
 
-async function runCommand(command: string, commandArgs: string[], cwd: string): Promise<void> {
+async function runAssetSync(targetDir: string, languages: readonly Language[]): Promise<void> {
+  const cliPath = resolve(process.cwd(), 'src/cli.ts');
+  const tsxCliPath = resolve(process.cwd(), 'node_modules/tsx/dist/cli.mjs');
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawn(command, commandArgs, {
-      cwd,
+    const child = spawn(process.execPath, [
+      tsxCliPath,
+      cliPath,
+      'sync-assets',
+      targetDir,
+      '--languages',
+      languages.join(','),
+    ], {
+      cwd: process.cwd(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stderr = '';
@@ -377,16 +722,44 @@ async function runCommand(command: string, commandArgs: string[], cwd: string): 
     });
     child.on('error', rejectPromise);
     child.on('close', (code) => {
-      if (code === 0) {
-        resolvePromise();
-      } else {
-        rejectPromise(new Error(`${command} ${commandArgs.join(' ')} exited with code ${code}\n${stderr}`));
-      }
+      if (code === 0) resolvePromise();
+      else rejectPromise(new Error(`Asset sync exited with code ${code}\n${stderr}`));
     });
   });
 }
 
-async function startStaticServer(root: string): Promise<{ origin: string; close(): Promise<void> }> {
+async function buildPublicHarnessBundle(tempRoot: string): Promise<{
+  path: string;
+  rawBytes: number;
+  gzipBytes: number;
+  buildMs: number;
+}> {
+  const outfile = join(tempRoot, 'benchmark-harness.mjs');
+  const startedAt = performance.now();
+  await build({
+    entryPoints: [resolve(process.cwd(), 'packages/harness-browser/src/index.ts')],
+    outfile,
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: ['es2022'],
+    sourcemap: false,
+    logLevel: 'warning',
+    define: {
+      'process.env.NODE_ENV': '"production"',
+    },
+  });
+  const buildMs = performance.now() - startedAt;
+  const source = await readFile(outfile);
+  return {
+    path: outfile,
+    rawBytes: source.byteLength,
+    gzipBytes: gzipSync(source).byteLength,
+    buildMs,
+  };
+}
+
+async function startStaticServer(root: string, cacheAssets: boolean): Promise<{ origin: string; close(): Promise<void> }> {
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
     const decodedPath = decodeURIComponent(requestUrl.pathname);
@@ -401,7 +774,10 @@ async function startStaticServer(root: string): Promise<{ origin: string; close(
       ? join(candidate, 'index.html')
       : candidate;
     if (!filePath || !existsSync(filePath)) {
-      response.writeHead(404);
+      response.writeHead(404, {
+        'Access-Control-Allow-Origin': '*',
+        'Timing-Allow-Origin': '*',
+      });
       response.end('Not found');
       return;
     }
@@ -410,7 +786,10 @@ async function startStaticServer(root: string): Promise<{ origin: string; close(
     const range = request.headers.range;
     const baseHeaders = {
       'Accept-Ranges': 'bytes',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': cacheAssets ? 'public, max-age=31536000, immutable' : 'no-store',
       'Content-Type': contentType(filePath),
+      'Timing-Allow-Origin': '*',
     };
 
     if (range) {
@@ -453,19 +832,672 @@ async function startStaticServer(root: string): Promise<{ origin: string; close(
 
   return {
     origin: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise<void>((resolvePromise) => server.close(() => resolvePromise())),
+    close: () => new Promise<void>((resolvePromise) => {
+      server.close(() => resolvePromise());
+      server.closeIdleConnections?.();
+      // Compiler workers and frames can leave HTTP keep-alive sockets open even
+      // after their BrowserContext is gone. The benchmark is finished here, so
+      // retaining those sockets only makes process shutdown nondeterministic.
+      server.closeAllConnections?.();
+    }),
   };
 }
 
-function deepEqualJson(actual: unknown, expected: unknown): boolean {
-  return JSON.stringify(actual) === JSON.stringify(expected);
+function createSeededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+function deterministicShuffle<T>(items: readonly T[], seed: number): T[] {
+  const random = createSeededRandom(seed);
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const target = Math.floor(random() * (index + 1));
+    [shuffled[index], shuffled[target]] = [shuffled[target]!, shuffled[index]!];
+  }
+  return shuffled;
+}
+
+function createRunPlan(args: BenchmarkArgs, workloads: readonly Workload[]): RunPlanItem[] {
+  const plan: Omit<RunPlanItem, 'runOrdinal'>[] = [];
+  for (let iteration = 0; iteration < args.iterations; iteration += 1) {
+    const iterationItems: Omit<RunPlanItem, 'runOrdinal'>[] = [];
+    for (const language of args.languages) {
+      for (const workload of workloads) {
+        iterationItems.push({ language, workload, iteration });
+      }
+    }
+    plan.push(...deterministicShuffle(iterationItems, args.seed + iteration));
+  }
+  return plan.map((item, runOrdinal) => ({ ...item, runOrdinal }));
+}
+
+function finiteNonNegative(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+async function settleBeforeDeadline(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true, () => true),
+      new Promise<false>((resolvePromise) => {
+        timeoutId = setTimeout(() => resolvePromise(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
+async function flushNetworkRecords(pending: readonly Promise<void>[]): Promise<boolean> {
+  return settleBeforeDeadline(Promise.allSettled([...pending]), 2_000);
+}
+
+function collectNetworkMetrics(
+  context: BrowserContext,
+  phaseRef: { current: string },
+  item: RunPlanItem,
+  records: NetworkResourceRecord[],
+  pending: Promise<void>[]
+): void {
+  const phases = new WeakMap<Request, string>();
+  context.on('request', (request) => {
+    phases.set(request, phaseRef.current);
+  });
+  context.on('requestfinished', (request) => {
+    const recordPromise = (async () => {
+      const response = await request.response();
+      const sizes = await request.sizes();
+      const headers = response?.headers() ?? {};
+      const timing = request.timing();
+      const requestHeadersBytes = finiteNonNegative(sizes.requestHeadersSize);
+      const requestBodyBytes = finiteNonNegative(sizes.requestBodySize);
+      const responseHeadersBytes = finiteNonNegative(sizes.responseHeadersSize);
+      const responseBodyBytes = finiteNonNegative(sizes.responseBodySize);
+      const contentLength = finiteNonNegative(Number(headers['content-length']));
+      const encodedBodyBytes = responseBodyBytes && responseBodyBytes > 0
+        ? responseBodyBytes
+        : contentLength;
+      records.push({
+        runOrdinal: item.runOrdinal,
+        language: item.language,
+        workloadId: item.workload.id,
+        phase: phases.get(request) ?? phaseRef.current,
+        url: request.url(),
+        method: request.method(),
+        resourceType: request.resourceType(),
+        status: response?.status(),
+        contentType: headers['content-type'],
+        contentLength,
+        encodedBodyBytes,
+        requestHeadersBytes,
+        requestBodyBytes,
+        responseHeadersBytes,
+        responseBodyBytes,
+        totalTransferBytes: [requestHeadersBytes, requestBodyBytes, responseHeadersBytes, encodedBodyBytes]
+          .filter((value): value is number => value !== undefined)
+          .reduce((sum, value) => sum + value, 0),
+        startTimeMs: finiteNonNegative(timing.startTime),
+        responseStartMs: finiteNonNegative(timing.responseStart),
+        responseEndMs: finiteNonNegative(timing.responseEnd),
+      });
+    })().catch((error) => {
+      records.push({
+        runOrdinal: item.runOrdinal,
+        language: item.language,
+        workloadId: item.workload.id,
+        phase: phases.get(request) ?? phaseRef.current,
+        url: request.url(),
+        method: request.method(),
+        resourceType: request.resourceType(),
+        failed: error instanceof Error ? error.message : String(error),
+      });
+    });
+    pending.push(recordPromise);
+  });
+  context.on('requestfailed', (request) => {
+    records.push({
+      runOrdinal: item.runOrdinal,
+      language: item.language,
+      workloadId: item.workload.id,
+      phase: phases.get(request) ?? phaseRef.current,
+      url: request.url(),
+      method: request.method(),
+      resourceType: request.resourceType(),
+      failed: request.failure()?.errorText ?? 'request failed',
+    });
+  });
+}
+
+function metricMap(metrics: Array<{ name: string; value: number }>): Record<string, number> {
+  return Object.fromEntries(metrics.map((metric) => [metric.name, metric.value]));
+}
+
+function metricDelta(before: Record<string, number>, after: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(after)
+      .filter(([name, value]) => Number.isFinite(value) && Number.isFinite(before[name]))
+      .map(([name, value]) => [name, value - before[name]!])
+  );
+}
+
+async function runBrowserPlanItem(
+  browserOrigin: string,
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  item: RunPlanItem,
+  args: BenchmarkArgs,
+  networkRecords: NetworkResourceRecord[],
+  runtimeManifests: Record<string, unknown> | undefined
+): Promise<{
+  result?: BrowserRunResult;
+  error?: string;
+  cdpMetrics?: {
+    before: Record<string, number>;
+    after: Record<string, number>;
+    delta: Record<string, number>;
+  };
+  cdpUnsupportedReason?: string;
+  networkFlushComplete: boolean;
+}> {
+  const context = await browser.newContext();
+  const phaseRef = { current: 'page-bootstrap' };
+  const pendingNetwork: Promise<void>[] = [];
+  let phaseWatchdog: ReturnType<typeof setTimeout> | undefined;
+  let phaseWatchdogError: string | undefined;
+  let rejectPhaseWatchdog: ((error: Error) => void) | undefined;
+  const phaseWatchdogFailure = new Promise<never>((_resolve, reject) => {
+    rejectPhaseWatchdog = reject;
+  });
+  collectNetworkMetrics(context, phaseRef, item, networkRecords, pendingNetwork);
+  const page = await context.newPage();
+  page.setDefaultTimeout(args.requestTimeoutMs + 30_000);
+  await page.exposeFunction('__tracecodeBenchPhase', (phase: string) => {
+    phaseRef.current = phase;
+    if (phaseWatchdog !== undefined) clearTimeout(phaseWatchdog);
+    phaseWatchdog = setTimeout(() => {
+      phaseWatchdogError = `${phase} blocked the browser renderer for more than ${args.requestTimeoutMs}ms`;
+      rejectPhaseWatchdog?.(new Error(phaseWatchdogError));
+      void context.close().catch(() => undefined);
+    }, args.requestTimeoutMs + 1_000);
+  });
+  page.on('console', (message) => {
+    if (process.env.TRACECODE_BENCH_DEBUG === '1' || message.type() === 'error' || message.type() === 'warning') {
+      console.error(`[browser ${item.language}/${item.workload.id} ${message.type()}] ${message.text()}`);
+    }
+  });
+  page.on('pageerror', (error) => {
+    console.error(`[browser ${item.language}/${item.workload.id} pageerror] ${error.message}`);
+  });
+
+  let cdpSession: Awaited<ReturnType<BrowserContext['newCDPSession']>> | undefined;
+  let cdpBefore: Record<string, number> | undefined;
+  let cdpUnsupportedReason: string | undefined;
+
+  try {
+    await page.goto(`${browserOrigin}/index.html?run=${item.runOrdinal}`, { waitUntil: 'load' });
+    await page.evaluate('globalThis.__name = (fn) => fn');
+    try {
+      cdpSession = await context.newCDPSession(page);
+      await cdpSession.send('Performance.enable');
+      cdpBefore = metricMap((await cdpSession.send('Performance.getMetrics')).metrics);
+    } catch (error) {
+      cdpUnsupportedReason = error instanceof Error ? error.message : String(error);
+    }
+
+    const evaluation = page.evaluate(
+      async ({ language, workload, iteration, runOrdinal, modes, requestTimeoutMs, phaseDelayMs, prewarmRuntime, runtimeManifests }) => {
+        const benchmarkPhase = (globalThis as typeof globalThis & {
+          __tracecodeBenchPhase?: (phase: string) => Promise<void>;
+        }).__tracecodeBenchPhase;
+        const encoder = new TextEncoder();
+        const longTaskEntries: Array<{ startTime: number; duration: number }> = [];
+        const longTaskSupported = typeof PerformanceObserver !== 'undefined'
+          && PerformanceObserver.supportedEntryTypes?.includes('longtask');
+        const longTaskObserver = longTaskSupported
+          ? new PerformanceObserver((list) => {
+              for (const entry of list.getEntries()) {
+                longTaskEntries.push({ startTime: entry.startTime, duration: entry.duration });
+              }
+            })
+          : null;
+        longTaskObserver?.observe({ type: 'longtask', buffered: true });
+
+        function memorySnapshot(): BrowserMemorySnapshot | undefined {
+          const memory = (performance as Performance & {
+            memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number; jsHeapSizeLimit?: number };
+          }).memory;
+          if (
+            typeof memory?.usedJSHeapSize !== 'number'
+            || typeof memory.totalJSHeapSize !== 'number'
+            || typeof memory.jsHeapSizeLimit !== 'number'
+          ) {
+            return undefined;
+          }
+          return {
+            source: 'performance.memory',
+            usedJSHeapSize: memory.usedJSHeapSize,
+            totalJSHeapSize: memory.totalJSHeapSize,
+            jsHeapSizeLimit: memory.jsHeapSizeLimit,
+          };
+        }
+
+        function resourceSummary(fromIndex: number): ResourceTimingSummary {
+          const entries = performance.getEntriesByType('resource').slice(fromIndex) as PerformanceResourceTiming[];
+          return {
+            entries: entries.length,
+            transferBytes: entries.reduce((sum, entry) => sum + (entry.transferSize || 0), 0),
+            encodedBodyBytes: entries.reduce((sum, entry) => sum + (entry.encodedBodySize || 0), 0),
+            decodedBodyBytes: entries.reduce((sum, entry) => sum + (entry.decodedBodySize || 0), 0),
+            durationMs: entries.reduce((sum, entry) => sum + (entry.duration || 0), 0),
+          };
+        }
+
+        async function settleInstrumentation(): Promise<void> {
+          await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 0));
+          for (const entry of longTaskObserver?.takeRecords() ?? []) {
+            longTaskEntries.push({ startTime: entry.startTime, duration: entry.duration });
+          }
+        }
+
+        function longTaskSummary(fromIndex: number): LongTaskSummary {
+          if (!longTaskSupported) return { supported: false };
+          const entries = longTaskEntries.slice(fromIndex);
+          return {
+            supported: true,
+            count: entries.length,
+            totalDurationMs: entries.reduce((sum, entry) => sum + entry.duration, 0),
+            maxDurationMs: entries.reduce((max, entry) => Math.max(max, entry.duration), 0),
+          };
+        }
+
+        function editedSource(source: string): string {
+          return `${source}\n${language === 'python' ? '#' : '//'} tracecode benchmark cache-key edit`;
+        }
+
+        function safeSerializedBytes(value: unknown): number {
+          try {
+            return encoder.encode(JSON.stringify(value, (_key, nested) => (
+              typeof nested === 'bigint' ? `${nested.toString()}n` : nested
+            )) ?? '').byteLength;
+          } catch {
+            return 0;
+          }
+        }
+
+        function numberOrUndefined(value: unknown): number | undefined {
+          return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+        }
+
+        function sanitizeTimings(value: unknown): RuntimeTimingRecord | undefined {
+          if (!value || typeof value !== 'object') return undefined;
+          const input = value as Record<string, unknown>;
+          const result: RuntimeTimingRecord = {};
+          for (const key of [
+            'totalMs',
+            'initMs',
+            'warmupMs',
+            'toolchainLoadMs',
+            'rewriteMs',
+            'driverBuildMs',
+            'compileMs',
+            'pchMs',
+            'linkMs',
+            'wasmCompileMs',
+            'classLoadMs',
+            'runMs',
+            'hostCallMs',
+          ] as const) {
+            const metric = numberOrUndefined(input[key]);
+            if (metric !== undefined) result[key] = metric;
+          }
+          if (typeof input.compileCacheHit === 'boolean') result.compileCacheHit = input.compileCacheHit;
+          if (typeof input.pchCacheHit === 'boolean') result.pchCacheHit = input.pchCacheHit;
+          return Object.keys(result).length > 0 ? result : undefined;
+        }
+
+        function traceMetrics(cases: Array<Record<string, any>>): {
+          traceSerializedBytes: number;
+          traceEventCount: number;
+          lineEventCount: number;
+          traceStepCount: number;
+        } {
+          let traceSerializedBytes = 0;
+          let traceEventCount = 0;
+          let lineEventCount = 0;
+          let traceStepCount = 0;
+          for (const testCase of cases) {
+            if (!testCase.trace) continue;
+            traceSerializedBytes += safeSerializedBytes(testCase.trace);
+            traceEventCount += Array.isArray(testCase.trace.events) ? testCase.trace.events.length : 0;
+            lineEventCount += numberOrUndefined(testCase.trace.lineEventCount) ?? 0;
+            traceStepCount += numberOrUndefined(testCase.trace.traceStepCount) ?? 0;
+          }
+          return { traceSerializedBytes, traceEventCount, lineEventCount, traceStepCount };
+        }
+
+        function deepEqual(left: unknown, right: unknown): boolean {
+          return JSON.stringify(left) === JSON.stringify(right);
+        }
+
+        function errorMessage(error: unknown): string {
+          return error instanceof Error ? error.message : String(error);
+        }
+
+        async function withTimeout<T>(label: string, operation: Promise<T>, controller?: AbortController): Promise<T> {
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          const timeout = new Promise<never>((_resolve, reject) => {
+            timeoutId = setTimeout(() => {
+              controller?.abort();
+              reject(new Error(`${label} timed out after ${requestTimeoutMs}ms`));
+            }, requestTimeoutMs);
+          });
+          try {
+            return await Promise.race([operation, timeout]);
+          } finally {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+          }
+        }
+
+        await benchmarkPhase?.('public-module-import');
+        const moduleStartedAt = performance.now();
+        const publicHarnessModuleUrl = '/benchmark-harness.mjs';
+        const publicHarnessModule = await import(publicHarnessModuleUrl) as {
+          createBrowserHarness(options: {
+            assetBaseUrl: string;
+            debug?: boolean;
+            assets?: { runtimeManifests: Record<string, unknown> };
+          }): any;
+        };
+        const moduleImportMs = performance.now() - moduleStartedAt;
+        await settleInstrumentation();
+
+        await benchmarkPhase?.('harness-construction');
+        const constructionStartedAt = performance.now();
+        const harness = publicHarnessModule.createBrowserHarness({
+          assetBaseUrl: '/workers',
+          debug: false,
+          ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
+        });
+        const harnessConstructionMs = performance.now() - constructionStartedAt;
+        const client = harness.getClient(language);
+        const records: PhaseRecord[] = [];
+
+        const initResourceIndex = performance.getEntriesByType('resource').length;
+        const initLongTaskIndex = longTaskEntries.length;
+        const initMemoryBefore = memorySnapshot();
+        let initResult: { success?: boolean; loadTimeMs?: number } | undefined;
+        let runtimeWarmupResult: { success?: boolean; loadTimeMs?: number } | undefined;
+        let initError: string | undefined;
+        let initWallMs = 0;
+        let runtimeWarmupWallMs: number | undefined;
+        await benchmarkPhase?.('runtime-init');
+        const initStartedAt = performance.now();
+        try {
+          initResult = await withTimeout('runtime init', client.init());
+        } catch (error) {
+          initError = errorMessage(error);
+        } finally {
+          initWallMs = performance.now() - initStartedAt;
+        }
+        if (initError === undefined && initResult?.success === true && prewarmRuntime) {
+          await benchmarkPhase?.('runtime-warmup');
+          const warmupStartedAt = performance.now();
+          try {
+            runtimeWarmupResult = await withTimeout('runtime warmup', harness.warmLanguage(language));
+            if (runtimeWarmupResult?.success !== true) {
+              initError = 'Runtime warmup returned an unsuccessful result.';
+            }
+          } catch (error) {
+            initError = errorMessage(error);
+          } finally {
+            runtimeWarmupWallMs = performance.now() - warmupStartedAt;
+          }
+        }
+        await settleInstrumentation();
+        const init: InitRecord = {
+          language,
+          workloadId: workload.id,
+          iteration,
+          runOrdinal,
+          harnessConstructionMs,
+          moduleImportMs,
+          wallMs: initWallMs,
+          runtimeLoadTimeMs: numberOrUndefined(initResult?.loadTimeMs),
+          runtimeWarmupWallMs,
+          runtimeWarmupLoadTimeMs: numberOrUndefined(runtimeWarmupResult?.loadTimeMs),
+          success: initError === undefined && initResult?.success === true,
+          error: initError,
+          resourceTiming: resourceSummary(initResourceIndex),
+          longTasks: longTaskSummary(initLongTaskIndex),
+          memoryBefore: initMemoryBefore,
+          memoryAfter: memorySnapshot(),
+        };
+
+        async function runPhase(
+          phase: Phase,
+          mode: Mode,
+          source: string,
+          sourceVariant: 'base' | 'edited',
+          cases: TestCase[]
+        ): Promise<boolean> {
+          if (records.length > 0 && phaseDelayMs > 0) {
+            await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, phaseDelayMs));
+          }
+          const controller = new AbortController();
+          const request = {
+            kind: 'code',
+            code: source,
+            functionName: workload.functionNames[language],
+            executionStyle: workload.executionStyles[language],
+            cases: cases.map((testCase) => ({
+              id: testCase.name,
+              inputs: testCase.inputs,
+              expected: testCase.expected,
+            })),
+            trace: mode === 'trace',
+            interview: mode === 'interview',
+            traceOptions: mode === 'trace'
+              ? {
+                  maxTraceSteps: 50_000,
+                  maxStoredEvents: 50_000,
+                  minimalTrace: false,
+                }
+              : undefined,
+            signal: controller.signal,
+          };
+          const resourceIndex = performance.getEntriesByType('resource').length;
+          const longTaskIndex = longTaskEntries.length;
+          const memoryBefore = memorySnapshot();
+          let response: any;
+          let operationError: string | undefined;
+          await benchmarkPhase?.(phase);
+          const startedAt = performance.now();
+          try {
+            response = await withTimeout(phase, client.execute(request), controller);
+          } catch (error) {
+            operationError = errorMessage(error);
+          }
+          const wallMs = performance.now() - startedAt;
+          await settleInstrumentation();
+          const resultCases = Array.isArray(response?.cases) ? response.cases : [];
+          const outputs = resultCases.map((testCase: any) => testCase.output);
+          const expected = cases.map((testCase) => testCase.expected);
+          const errors = [
+            ...(operationError ? [operationError] : []),
+            ...resultCases
+              .map((testCase: any) => typeof testCase.error === 'string' ? testCase.error : undefined)
+              .filter((error: string | undefined): error is string => error !== undefined),
+          ];
+          const successful = operationError === undefined
+            && response?.success === true
+            && resultCases.length === cases.length
+            && outputs.every((output: unknown, index: number) => deepEqual(output, expected[index]));
+          const traces = mode === 'trace' ? traceMetrics(resultCases) : undefined;
+          const timings = sanitizeTimings(response?.timings);
+          const caseTimings = resultCases
+            .map((testCase: any) => sanitizeTimings(testCase.timings))
+            .filter((value: RuntimeTimingRecord | undefined): value is RuntimeTimingRecord => value !== undefined);
+          const unsupportedMetrics: string[] = [];
+          const timingSources = [timings, ...caseTimings].filter(Boolean) as RuntimeTimingRecord[];
+          if (!timingSources.some((value) => typeof value.compileMs === 'number')) unsupportedMetrics.push('compileMs');
+          if (!timingSources.some((value) => typeof value.runMs === 'number')) unsupportedMetrics.push('runMs');
+          if (!longTaskSupported) unsupportedMetrics.push('longTasks');
+          if (!memoryBefore) unsupportedMetrics.push('jsHeap');
+          records.push({
+            language,
+            workloadId: workload.id,
+            workloadLabel: workload.label,
+            iteration,
+            runOrdinal,
+            phase,
+            mode,
+            sourceVariant,
+            caseCount: cases.length,
+            wallMs,
+            success: successful,
+            outputs,
+            expected,
+            errors,
+            timings,
+            caseTimings,
+            responseSerializedBytes: response === undefined ? 0 : safeSerializedBytes(response),
+            traceSerializedBytes: traces?.traceSerializedBytes,
+            traceEventCount: traces?.traceEventCount,
+            lineEventCount: traces?.lineEventCount,
+            traceStepCount: traces?.traceStepCount,
+            resourceTiming: resourceSummary(resourceIndex),
+            longTasks: longTaskSummary(longTaskIndex),
+            memoryBefore,
+            memoryAfter: memorySnapshot(),
+            unsupportedMetrics,
+          });
+          return successful;
+        }
+
+        try {
+          if (init.success) {
+            const firstCase = workload.cases[0]!;
+            const changedSource = editedSource(workload.sources[language]);
+            let runtimeHealthy = true;
+            if (modes.includes('execute')) {
+              runtimeHealthy = await runPhase(
+                'cold-first-execute',
+                'execute',
+                workload.sources[language],
+                'base',
+                [firstCase]
+              );
+              if (runtimeHealthy) {
+                runtimeHealthy = await runPhase(
+                  'warm-exact-repeat',
+                  'execute',
+                  workload.sources[language],
+                  'base',
+                  [firstCase]
+                );
+              }
+              if (runtimeHealthy) {
+                runtimeHealthy = await runPhase(
+                  'warm-edited-source',
+                  'execute',
+                  changedSource,
+                  'edited',
+                  [firstCase]
+                );
+              }
+              if (runtimeHealthy) {
+                runtimeHealthy = await runPhase(
+                  'multiple-inputs',
+                  'execute',
+                  changedSource,
+                  'edited',
+                  workload.cases
+                );
+              }
+            }
+            if (runtimeHealthy && modes.includes('trace')) {
+              runtimeHealthy = await runPhase('trace', 'trace', changedSource, 'edited', [firstCase]);
+            }
+            if (runtimeHealthy && modes.includes('interview')) {
+              await runPhase('interview', 'interview', changedSource, 'edited', [firstCase]);
+            }
+          }
+        } finally {
+          harness.dispose();
+          longTaskObserver?.disconnect();
+        }
+
+        return {
+          userAgent: navigator.userAgent,
+          crossOriginIsolated: globalThis.crossOriginIsolated,
+          memorySupport: {
+            performanceMemory: memorySnapshot() !== undefined,
+            userAgentSpecificMemory: typeof (performance as Performance & {
+              measureUserAgentSpecificMemory?: unknown;
+            }).measureUserAgentSpecificMemory === 'function',
+          },
+          longTaskSupport: longTaskSupported,
+          init,
+          records,
+        } as BrowserRunResult;
+      },
+      {
+        language: item.language,
+        workload: item.workload,
+        iteration: item.iteration,
+        runOrdinal: item.runOrdinal,
+        modes: args.modes,
+        requestTimeoutMs: args.requestTimeoutMs,
+        phaseDelayMs: args.phaseDelayMs,
+        prewarmRuntime: args.prewarmRuntime,
+        runtimeManifests,
+      }
+    );
+    const result = await Promise.race([evaluation, phaseWatchdogFailure]);
+    if (phaseWatchdog !== undefined) {
+      clearTimeout(phaseWatchdog);
+      phaseWatchdog = undefined;
+    }
+
+    let cdpMetrics: { before: Record<string, number>; after: Record<string, number>; delta: Record<string, number> } | undefined;
+    if (cdpSession && cdpBefore) {
+      const cdpAfter = metricMap((await cdpSession.send('Performance.getMetrics')).metrics);
+      cdpMetrics = { before: cdpBefore, after: cdpAfter, delta: metricDelta(cdpBefore, cdpAfter) };
+    }
+    await page.waitForTimeout(25);
+    const networkFlushComplete = await flushNetworkRecords(pendingNetwork);
+    return { result, cdpMetrics, cdpUnsupportedReason, networkFlushComplete };
+  } catch (error) {
+    if (phaseWatchdog !== undefined) {
+      clearTimeout(phaseWatchdog);
+      phaseWatchdog = undefined;
+    }
+    const networkFlushComplete = await flushNetworkRecords(pendingNetwork);
+    return {
+      error: phaseWatchdogError
+        ? `${phaseWatchdogError}. The context was terminated by the host watchdog because an in-page timer cannot fire while the renderer is blocked.`
+        : error instanceof Error ? error.stack ?? error.message : String(error),
+      cdpUnsupportedReason,
+      networkFlushComplete,
+    };
+  } finally {
+    if (phaseWatchdog !== undefined) clearTimeout(phaseWatchdog);
+    await settleBeforeDeadline(context.close(), 2_000);
+  }
 }
 
 function percentile(values: number[], quantile: number): number {
   if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
+  const sorted = [...values].sort((left, right) => left - right);
   const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * quantile) - 1);
-  return sorted[index];
+  return sorted[index]!;
 }
 
 function average(values: number[]): number | undefined {
@@ -474,480 +1506,292 @@ function average(values: number[]): number | undefined {
   return finite.reduce((sum, value) => sum + value, 0) / finite.length;
 }
 
-function timingNumber(record: CaseRecord, key: string): number | undefined {
-  const value = record.timings?.[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+function timingValue(record: PhaseRecord, key: keyof RuntimeTimingRecord): number | undefined {
+  const topLevel = record.timings?.[key];
+  if (typeof topLevel === 'number' && Number.isFinite(topLevel)) return topLevel;
+  const caseValues = record.caseTimings
+    .map((timings) => timings[key])
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  if (caseValues.length === 0) return undefined;
+  return caseValues.reduce((sum, value) => sum + value, 0);
 }
 
-function summarize(records: CaseRecord[]): SummaryRecord[] {
-  const groups = new Map<string, CaseRecord[]>();
+function compileCacheHit(record: PhaseRecord): boolean | undefined {
+  if (typeof record.timings?.compileCacheHit === 'boolean') return record.timings.compileCacheHit;
+  const values = record.caseTimings
+    .map((timings) => timings.compileCacheHit)
+    .filter((value): value is boolean => typeof value === 'boolean');
+  if (values.length === 0) return undefined;
+  return values.every(Boolean);
+}
+
+function summarize(records: PhaseRecord[]): SummaryRecord[] {
+  const groups = new Map<string, PhaseRecord[]>();
   for (const record of records) {
-    const key = `${record.language}\0${record.workloadId}\0${record.mode}`;
+    const key = `${record.language}\0${record.workloadId}\0${record.phase}`;
     groups.set(key, [...(groups.get(key) ?? []), record]);
   }
-
   return [...groups.values()].map((items) => {
     const first = items[0]!;
-    const cacheKnownItems = items.filter((item) => typeof item.timings?.compileCacheHit === 'boolean');
+    const cacheValues = items
+      .map(compileCacheHit)
+      .filter((value): value is boolean => value !== undefined);
     return {
       language: first.language,
       workloadId: first.workloadId,
-      mode: first.mode,
-      cases: items.length,
-      passed: items.filter((item) => item.success && deepEqualJson(item.output, item.expected)).length,
+      phase: first.phase,
+      samples: items.length,
+      passed: items.filter((item) => item.success).length,
       wallP50Ms: percentile(items.map((item) => item.wallMs), 0.5),
       wallP95Ms: percentile(items.map((item) => item.wallMs), 0.95),
       wallAvgMs: average(items.map((item) => item.wallMs)) ?? 0,
-      totalAvgMs: average(items.map((item) => timingNumber(item, 'totalMs')).filter((value): value is number => value !== undefined)),
-      compileAvgMs: average(items.map((item) => timingNumber(item, 'compileMs')).filter((value): value is number => value !== undefined)),
-      runAvgMs: average(items.map((item) => timingNumber(item, 'runMs')).filter((value): value is number => value !== undefined)),
-      hostCallAvgMs: average(items.map((item) => timingNumber(item, 'hostCallMs')).filter((value): value is number => value !== undefined)),
-      rewriteAvgMs: average(items.map((item) => timingNumber(item, 'rewriteMs')).filter((value): value is number => value !== undefined)),
-      classLoadAvgMs: average(items.map((item) => timingNumber(item, 'classLoadMs')).filter((value): value is number => value !== undefined)),
-      cacheHits: cacheKnownItems.filter((item) => item.timings?.compileCacheHit === true).length,
-      cacheKnown: cacheKnownItems.length,
+      totalAvgMs: average(items.map((item) => timingValue(item, 'totalMs')).filter((value): value is number => value !== undefined)),
+      compileAvgMs: average(items.map((item) => timingValue(item, 'compileMs')).filter((value): value is number => value !== undefined)),
+      runAvgMs: average(items.map((item) => timingValue(item, 'runMs')).filter((value): value is number => value !== undefined)),
+      traceEventsAvg: average(items.map((item) => item.traceEventCount).filter((value): value is number => value !== undefined)),
+      responseBytesAvg: average(items.map((item) => item.responseSerializedBytes)) ?? 0,
+      traceBytesAvg: average(items.map((item) => item.traceSerializedBytes).filter((value): value is number => value !== undefined)),
+      longTaskTotalAvgMs: average(items.map((item) => item.longTasks.totalDurationMs).filter((value): value is number => value !== undefined)),
+      heapDeltaAvgBytes: average(items.map((item) => {
+        if (!item.memoryBefore || !item.memoryAfter) return undefined;
+        return item.memoryAfter.usedJSHeapSize - item.memoryBefore.usedJSHeapSize;
+      }).filter((value): value is number => value !== undefined)),
+      cacheHits: cacheValues.filter(Boolean).length,
+      cacheKnown: cacheValues.length,
     };
   });
 }
 
 function formatMs(value: number | undefined): string {
   if (value === undefined) return '-';
-  if (value < 10) return value.toFixed(1);
+  if (Math.abs(value) < 10) return value.toFixed(1);
   return String(Math.round(value));
 }
 
-function printSummary(initResults: Record<string, unknown>, summaries: SummaryRecord[]): void {
-  console.log('\nBrowser runtime benchmark');
-  console.log('Init:');
-  for (const [language, init] of Object.entries(initResults)) {
-    const typed = init as { loadTimeMs?: number; timings?: Record<string, unknown> };
+function formatBytes(value: number | undefined): string {
+  if (value === undefined) return '-';
+  if (value < 1024) return `${Math.round(value)}B`;
+  return `${(value / 1024).toFixed(value < 10_240 ? 1 : 0)}K`;
+}
+
+function printSummary(initRecords: InitRecord[], summaries: SummaryRecord[]): void {
+  console.log('\nPublic Classic browser harness benchmark');
+  console.log('Cold init (fresh context per language/workload sample):');
+  for (const language of ALL_LANGUAGES) {
+    const records = initRecords.filter((record) => record.language === language);
+    if (records.length === 0) continue;
     console.log(
-      `  ${language}: load=${formatMs(typed.loadTimeMs)}ms total=${formatMs(typed.timings?.totalMs as number | undefined)}ms warmup=${formatMs(typed.timings?.warmupMs as number | undefined)}ms`
+      `  ${language.padEnd(10)} ${records.filter((record) => record.success).length}/${records.length} `
+      + `wall avg=${formatMs(average(records.map((record) => record.wallMs)))}ms `
+      + `runtime avg=${formatMs(average(records.map((record) => record.runtimeLoadTimeMs).filter((value): value is number => value !== undefined)))}ms `
+      + `warmup avg=${formatMs(average(records.map((record) => record.runtimeWarmupWallMs).filter((value): value is number => value !== undefined)))}ms`
     );
   }
 
-  console.log('\nlanguage  workload   mode       cases  wall p50  wall p95  avg total  avg compile  avg run  avg host  rewrite  classload  cache');
+  console.log('\nlanguage    workload   phase                 pass    p50 ms  p95 ms  compile  run ms  trace     response  cache');
   for (const item of summaries) {
-    const cache =
-      item.cacheKnown && item.cacheKnown > 0
-        ? `${item.cacheHits ?? 0}/${item.cacheKnown}`
-        : '-';
-    console.log(
-      [
-        item.language.padEnd(8),
-        item.workloadId.padEnd(10),
-        item.mode.padEnd(10),
-        `${item.passed}/${item.cases}`.padEnd(6),
-        formatMs(item.wallP50Ms).padStart(8),
-        formatMs(item.wallP95Ms).padStart(8),
-        formatMs(item.totalAvgMs).padStart(9),
-        formatMs(item.compileAvgMs).padStart(11),
-        formatMs(item.runAvgMs).padStart(7),
-        formatMs(item.hostCallAvgMs).padStart(8),
-        formatMs(item.rewriteAvgMs).padStart(7),
-        formatMs(item.classLoadAvgMs).padStart(9),
-        cache,
-      ].join('  ')
-    );
+    const cache = item.cacheKnown ? `${item.cacheHits ?? 0}/${item.cacheKnown}` : '-';
+    console.log([
+      item.language.padEnd(10),
+      item.workloadId.padEnd(10),
+      item.phase.padEnd(21),
+      `${item.passed}/${item.samples}`.padEnd(6),
+      formatMs(item.wallP50Ms).padStart(7),
+      formatMs(item.wallP95Ms).padStart(7),
+      formatMs(item.compileAvgMs).padStart(7),
+      formatMs(item.runAvgMs).padStart(6),
+      formatMs(item.traceEventsAvg).padStart(7),
+      formatBytes(item.responseBytesAvg).padStart(8),
+      cache,
+    ].join('  '));
   }
+}
+
+function metricCoverage(records: PhaseRecord[], networkRecords: NetworkResourceRecord[]) {
+  const count = records.length;
+  return {
+    operationWallTime: { supported: true, records: count, source: 'performance.now around RuntimeClient.execute' },
+    runtimeTotal: { supportedRecords: records.filter((record) => timingValue(record, 'totalMs') !== undefined).length, records: count },
+    compile: { supportedRecords: records.filter((record) => timingValue(record, 'compileMs') !== undefined).length, records: count },
+    run: { supportedRecords: records.filter((record) => timingValue(record, 'runMs') !== undefined).length, records: count },
+    tracePayload: {
+      supportedRecords: records.filter((record) => record.mode === 'trace' && record.traceSerializedBytes !== undefined).length,
+      traceRecords: records.filter((record) => record.mode === 'trace').length,
+    },
+    mainThreadLongTasks: {
+      supportedRecords: records.filter((record) => record.longTasks.supported).length,
+      records: count,
+      scope: 'window main thread only; worker CPU time is represented by operation wall/runtime timings',
+    },
+    memory: {
+      supportedRecords: records.filter((record) => record.memoryBefore && record.memoryAfter).length,
+      records: count,
+      source: 'Chromium performance.memory with --enable-precise-memory-info when exposed',
+    },
+    network: {
+      completedResources: networkRecords.filter((record) => !record.failed).length,
+      failedResources: networkRecords.filter((record) => record.failed).length,
+      encodedSizeResources: networkRecords.filter((record) => record.encodedBodyBytes !== undefined).length,
+      source: 'Playwright context request sizes, including worker and cross-origin resources where Chromium reports them',
+    },
+  };
+}
+
+function summarizeNetwork(records: NetworkResourceRecord[]) {
+  const groups = new Map<string, NetworkResourceRecord[]>();
+  for (const record of records) {
+    const key = `${record.language}\0${record.workloadId}\0${record.phase}`;
+    groups.set(key, [...(groups.get(key) ?? []), record]);
+  }
+  return [...groups.values()].map((items) => {
+    const first = items[0]!;
+    const runs = new Set(items.map((item) => item.runOrdinal)).size;
+    const encodedBodyBytes = items.reduce((sum, item) => sum + (item.encodedBodyBytes ?? 0), 0);
+    const totalTransferBytes = items.reduce((sum, item) => sum + (item.totalTransferBytes ?? 0), 0);
+    return {
+      language: first.language,
+      workloadId: first.workloadId,
+      phase: first.phase,
+      runs,
+      resources: items.length,
+      failedResources: items.filter((item) => item.failed).length,
+      encodedBodyBytes,
+      totalTransferBytes,
+      encodedBodyBytesPerRun: runs > 0 ? encodedBodyBytes / runs : 0,
+      totalTransferBytesPerRun: runs > 0 ? totalTransferBytes / runs : 0,
+    };
+  });
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  const runtimeManifests = await loadRuntimeManifests(args.runtimeManifestsPath);
   const selectedWorkloads = WORKLOADS
     .filter((workload) => args.workloads.includes(workload.id))
     .map((workload) => ({
       ...workload,
-      modes: workload.modes.filter((mode) => args.modes.includes(mode)),
       cases: args.caseLimit === null ? workload.cases : workload.cases.slice(0, args.caseLimit),
     }))
-    .filter((workload) => workload.modes.length > 0 && workload.cases.length > 0);
-
+    .filter((workload) => workload.cases.length > 0);
+  const runPlan = createRunPlan(args, selectedWorkloads);
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-browser-bench-'));
   const workersRoot = join(tempRoot, 'workers');
-  await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', workersRoot, '--languages', args.languages.join(',')], process.cwd());
-  await writeFile(join(tempRoot, 'index.html'), '<!doctype html><title>TraceCode browser runtime benchmark</title>', 'utf8');
-
-  const server = await startStaticServer(resolve(tempRoot));
-  const browser = await chromium.launch({ headless: !args.headful });
+  let server: Awaited<ReturnType<typeof startStaticServer>> | undefined;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 
   try {
-    const page = await browser.newPage();
-    page.on('console', (message) => {
-      if (process.env.TRACECODE_BENCH_DEBUG === '1' || message.type() === 'error' || message.type() === 'warning') {
-        console.error(`[browser ${message.type()}] ${message.text()}`);
-      }
+    await runAssetSync(workersRoot, args.languages);
+    const bundle = await buildPublicHarnessBundle(tempRoot);
+    await writeFile(join(tempRoot, 'index.html'), [
+      '<!doctype html>',
+      '<meta charset="utf-8">',
+      '<title>TraceCode public browser harness benchmark</title>',
+    ].join('\n'), 'utf8');
+    server = await startStaticServer(resolve(tempRoot), args.cacheAssets);
+    browser = await chromium.launch({
+      headless: !args.headful,
+      args: ['--enable-precise-memory-info'],
     });
-    page.on('pageerror', (error) => {
-      console.error(`[browser pageerror] ${error.message}`);
-    });
-    page.setDefaultTimeout(args.requestTimeoutMs + 30_000);
-    await page.goto(server.origin);
-    await page.evaluate('globalThis.__name = (fn) => fn');
-    const report = await page.evaluate(
-      async ({ languages, workloads, iterations, requestTimeoutMs, debug }) => {
-        const workerPaths = {
-          csharp: '/workers/csharp-worker.js',
-          cpp: '/workers/cpp-worker.js',
-          java: '/workers/java-worker.js',
-        };
 
-        function createRunner(language) {
-          const worker = language === 'java'
-            ? new Worker(workerPaths[language])
-            : new Worker(workerPaths[language], { type: 'module' });
-          let nextId = 0;
-          const pending = new Map();
+    const initRecords: InitRecord[] = [];
+    const records: PhaseRecord[] = [];
+    const runErrors: Array<{ runOrdinal: number; language: Language; workloadId: string; error: string }> = [];
+    const runDiagnostics: Array<{
+      runOrdinal: number;
+      language: Language;
+      workloadId: string;
+      warning: string;
+    }> = [];
+    const networkRecords: NetworkResourceRecord[] = [];
+    const cdpMetrics: Array<{
+      runOrdinal: number;
+      language: Language;
+      workloadId: string;
+      before?: Record<string, number>;
+      after?: Record<string, number>;
+      delta?: Record<string, number>;
+      unsupportedReason?: string;
+    }> = [];
+    let userAgent = '';
+    let crossOriginIsolated = false;
+    let memorySupport = { performanceMemory: false, userAgentSpecificMemory: false };
+    let longTaskSupport = false;
 
-          function compileInFrame(payload) {
-            return new Promise((resolve, reject) => {
-              const iframe = document.createElement('iframe');
-              const frameToken = `frame-token-${++nextId}-${Date.now()}-${Math.random()}`;
-              iframe.src = `/workers/cpp-compiler-frame.html?tracecodeFrameToken=${encodeURIComponent(frameToken)}`;
-              iframe.style.display = 'none';
-              document.body.appendChild(iframe);
-              const requestId = `frame-${++nextId}`;
-              const protocolToken = `frame-protocol-${requestId}-${Date.now()}-${Math.random()}`;
-              const timeoutId = setTimeout(() => {
-                cleanup();
-                reject(new Error('C++ compiler frame timed out'));
-              }, requestTimeoutMs);
-
-              function cleanup() {
-                clearTimeout(timeoutId);
-                window.removeEventListener('message', onFrameMessage);
-                iframe.remove();
-              }
-
-              function onFrameMessage(event) {
-                if (event.source !== iframe.contentWindow) return;
-                if (event.data?.type === 'frame-ready') {
-                  if (event.data.frameToken !== frameToken) return;
-                  iframe.contentWindow.postMessage({ id: requestId, type: 'compile', frameToken, protocolToken, payload }, location.origin);
-                  return;
-                }
-                if (event.data?.id !== requestId) return;
-                if (event.data?.protocolToken !== protocolToken) return;
-                cleanup();
-                resolve(event.data.payload);
-              }
-
-              window.addEventListener('message', onFrameMessage);
-            });
-          }
-
-          worker.onmessage = (event) => {
-            const { id, type, payload, requestId } = event.data || {};
-            if (type === 'worker-ready' || type === 'idle-timeout') return;
-            if (type === 'compile-request') {
-              const compileProtocolToken = event.data?.protocolToken;
-              compileInFrame(payload).then((result) => {
-                const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
-                worker.postMessage({ type: 'compile-response', requestId, protocolToken: compileProtocolToken, payload: result }, transfer);
-              }).catch((error) => {
-                worker.postMessage({
-                  type: 'compile-response',
-                  requestId,
-                  protocolToken: compileProtocolToken,
-                  payload: { success: false, error: error instanceof Error ? error.message : String(error) },
-                });
-              });
-              return;
-            }
-            if (type === 'runtime-progress' || type === 'project-event') return;
-            if (!id || !pending.has(id)) return;
-            const request = pending.get(id);
-            pending.delete(id);
-            clearTimeout(request.timeoutId);
-            if (type === 'error') {
-              request.reject(new Error(String((payload && payload.error) || `${language} worker error`)));
-              return;
-            }
-            request.resolve(payload);
-          };
-
-          worker.onerror = (event) => {
-            for (const request of pending.values()) {
-              clearTimeout(request.timeoutId);
-              request.reject(new Error(event.message || `${language} worker error`));
-            }
-            pending.clear();
-          };
-
-          function send(type, payload) {
-            return new Promise((resolve, reject) => {
-              const id = String(++nextId);
-              const protocolToken = `${language}-${id}-${Date.now()}-${Math.random()}`;
-              const timeoutId = setTimeout(() => {
-                pending.delete(id);
-                reject(new Error(`${language} worker request timed out: ${type}`));
-              }, requestTimeoutMs);
-              pending.set(id, { resolve, reject, timeoutId });
-              worker.postMessage({ id, type, payload, protocolToken });
-            });
-          }
-
-          return {
-            async init() {
-              const startedAt = performance.now();
-              const payload = language === 'csharp'
-                ? { assetBaseUrl: '/workers/vendor/csharp' }
-                : language === 'cpp'
-                  ? {
-                      assets: {
-                        compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
-                        compilerFrameEnabled: true,
-                        compilerWorkerUrl: '/workers/cpp-compiler-worker.js',
-                        clangWasmUrl: '',
-                        lldWasmUrl: '',
-                        sysrootUrl: '',
-                        runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-                      },
-                    }
-                  : undefined;
-              const result = await send('init', payload);
-              return { ...result, wallMs: performance.now() - startedAt };
-            },
-            async run(mode, workload, testCase, iteration, caseIndex) {
-              const type = language === 'cpp'
-                ? mode === 'execute'
-                  ? 'compile-run'
-                  : mode === 'trace'
-                    ? 'execute-with-tracing'
-                    : 'execute-code-interview'
-                : mode === 'execute'
-                  ? 'execute-code'
-                  : mode === 'trace'
-                    ? 'execute-with-tracing'
-                    : 'execute-code-interview';
-              const payload = {
-                code: workload.sources[language],
-                functionName: workload.functionNames[language],
-                inputs: testCase.inputs,
-                executionStyle: workload.executionStyles[language],
-                options: {
-                  maxTraceSteps: 50_000,
-                  maxStoredEvents: 50_000,
-                },
-              };
-              const startedAt = performance.now();
-              const result = await send(type, payload);
-              const wallMs = performance.now() - startedAt;
-              const traceEvents = Array.isArray(result?.events)
-                ? result.events.length
-                : Array.isArray(result?.trace?.events)
-                  ? result.trace.events.length
-                  : undefined;
-              return {
-                language,
-                workloadId: workload.id,
-                workloadLabel: workload.label,
-                mode,
-                iteration,
-                caseName: testCase.name,
-                caseIndex,
-                wallMs,
-                success: Boolean(result?.success),
-                output: result?.output,
-                expected: testCase.expected,
-                error: result?.error,
-                timings: result?.timings,
-                executionTimeMs: result?.executionTimeMs,
-                traceEventCount: traceEvents,
-                lineEventCount: result?.lineEventCount ?? result?.trace?.lineEventCount,
-                traceStepCount: result?.traceStepCount ?? result?.trace?.traceStepCount,
-                consoleOutputCount: Array.isArray(result?.consoleOutput) ? result.consoleOutput.length : undefined,
-              };
-            },
-            async runBatchExecute(workload, iteration) {
-              const payload = {
-                code: workload.sources[language],
-                functionName: workload.functionNames[language],
-                inputBatch: workload.cases.map((testCase) => testCase.inputs),
-                executionStyle: workload.executionStyles[language],
-              };
-              const startedAt = performance.now();
-              const result = await send(language === 'cpp' ? 'compile-run-batch' : 'execute-code-batch', payload);
-              const wallMs = performance.now() - startedAt;
-              const results = Array.isArray(result?.results) ? result.results : [];
-              const perCaseWallMs = workload.cases.length > 0 ? wallMs / workload.cases.length : wallMs;
-              const batchTimings = result?.timings || {};
-              return workload.cases.map((testCase, caseIndex) => {
-                const caseResult = results[caseIndex] || {};
-                const caseTimings = caseResult.timings || {};
-                return {
-                  language,
-                  workloadId: workload.id,
-                  workloadLabel: workload.label,
-                  mode: 'execute-batch',
-                  iteration,
-                  caseName: testCase.name,
-                  caseIndex,
-                  wallMs: perCaseWallMs,
-                  success: Boolean(result?.success && caseResult.success),
-                  output: caseResult.output,
-                  expected: testCase.expected,
-                  error: caseResult.error || result?.error,
-                  timings: {
-                    ...caseTimings,
-                    compileMs: typeof batchTimings.compileMs === 'number'
-                      ? batchTimings.compileMs / workload.cases.length
-                      : caseTimings.compileMs,
-                    hostCallMs: typeof batchTimings.hostCallMs === 'number'
-                      ? batchTimings.hostCallMs / workload.cases.length
-                      : caseTimings.hostCallMs,
-                    totalMs: typeof batchTimings.totalMs === 'number'
-                      ? batchTimings.totalMs / workload.cases.length
-                      : caseTimings.totalMs,
-                    compileCacheHit: batchTimings.compileCacheHit ?? caseTimings.compileCacheHit,
-                  },
-                  executionTimeMs: result?.executionTimeMs,
-                  traceEventCount: 0,
-                  consoleOutputCount: Array.isArray(result?.consoleOutput) ? result.consoleOutput.length : undefined,
-                  batchWallMs: wallMs,
-                  batchSize: workload.cases.length,
-                };
-              });
-            },
-            async runBatchTrace(workload, iteration) {
-              const payload = {
-                code: workload.sources[language],
-                functionName: workload.functionNames[language],
-                inputBatch: workload.cases.map((testCase) => testCase.inputs),
-                executionStyle: workload.executionStyles[language],
-                options: {
-                  maxTraceSteps: 50_000,
-                  maxStoredEvents: 50_000,
-                },
-              };
-              const startedAt = performance.now();
-              const result = await send('execute-trace-batch', payload);
-              if (debug) {
-                console.log(`trace-batch raw ${language}/${workload.id}: ${JSON.stringify(result).slice(0, 8000)}`);
-              }
-              const wallMs = performance.now() - startedAt;
-              const results = Array.isArray(result?.results) ? result.results : [];
-              const perCaseWallMs = workload.cases.length > 0 ? wallMs / workload.cases.length : wallMs;
-              const batchTimings = result?.timings || {};
-              return workload.cases.map((testCase, caseIndex) => {
-                const caseResult = results[caseIndex] || {};
-                const caseTimings = caseResult.timings || {};
-                const traceEvents = Array.isArray(caseResult?.events)
-                  ? caseResult.events.length
-                  : Array.isArray(caseResult?.trace?.events)
-                    ? caseResult.trace.events.length
-                    : undefined;
-                return {
-                  language,
-                  workloadId: workload.id,
-                  workloadLabel: workload.label,
-                  mode: 'trace-batch',
-                  iteration,
-                  caseName: testCase.name,
-                  caseIndex,
-                  wallMs: perCaseWallMs,
-                  success: Boolean(result?.success && caseResult.success),
-                  output: caseResult.output,
-                  expected: testCase.expected,
-                  error: caseResult.error || result?.error,
-                  timings: {
-                    ...caseTimings,
-                    compileMs: typeof batchTimings.compileMs === 'number'
-                      ? batchTimings.compileMs / workload.cases.length
-                      : caseTimings.compileMs,
-                    hostCallMs: typeof batchTimings.hostCallMs === 'number'
-                      ? batchTimings.hostCallMs / workload.cases.length
-                      : caseTimings.hostCallMs,
-                    totalMs: typeof batchTimings.totalMs === 'number'
-                      ? batchTimings.totalMs / workload.cases.length
-                      : caseTimings.totalMs,
-                    compileCacheHit: batchTimings.compileCacheHit ?? caseTimings.compileCacheHit,
-                    batchMode: batchTimings.batchMode,
-                    batchCaseCount: batchTimings.batchCaseCount,
-                    batchCaseIndex: caseTimings.batchCaseIndex ?? caseIndex,
-                  },
-                  executionTimeMs: caseResult?.executionTimeMs,
-                  traceEventCount: traceEvents,
-                  lineEventCount: caseResult?.lineEventCount ?? caseResult?.trace?.lineEventCount,
-                  traceStepCount: caseResult?.traceStepCount ?? caseResult?.trace?.traceStepCount,
-                  consoleOutputCount: Array.isArray(caseResult?.consoleOutput) ? caseResult.consoleOutput.length : undefined,
-                  batchWallMs: wallMs,
-                  batchSize: workload.cases.length,
-                };
-              });
-            },
-            terminate() {
-              worker.terminate();
-            },
-          };
-        }
-
-        const initResults = {};
-        const records = [];
-
-        for (const language of languages) {
-          const runner = createRunner(language);
-          try {
-            initResults[language] = await runner.init();
-            for (let iteration = 0; iteration < iterations; iteration += 1) {
-              for (const workload of workloads) {
-                for (const mode of workload.modes) {
-                  if (mode === 'execute-batch') {
-                    if (language === 'java' || language === 'cpp') {
-                      records.push(...await runner.runBatchExecute(workload, iteration));
-                    }
-                    continue;
-                  }
-                  if (mode === 'trace-batch') {
-                    if (language === 'cpp') {
-                      records.push(...await runner.runBatchTrace(workload, iteration));
-                    }
-                    continue;
-                  }
-                  for (let caseIndex = 0; caseIndex < workload.cases.length; caseIndex += 1) {
-                    records.push(await runner.run(mode, workload, workload.cases[caseIndex], iteration, caseIndex));
-                  }
-                }
-              }
-            }
-          } finally {
-            runner.terminate();
-          }
-        }
-
-        return {
-          userAgent: navigator.userAgent,
-          initResults,
-          records,
-        };
-      },
-      {
-        languages: args.languages,
-        workloads: selectedWorkloads,
-        iterations: args.iterations,
-        requestTimeoutMs: args.requestTimeoutMs,
-        debug: process.env.TRACECODE_BENCH_DEBUG === '1',
-      }
-    );
-
-    const records = report.records as CaseRecord[];
-    const failures = records.filter((record) => !record.success || !deepEqualJson(record.output, record.expected));
-    if (failures.length > 0) {
-      throw new Error(
-        [
-          `Browser runtime benchmark had ${failures.length} failing case(s).`,
-          ...failures.slice(0, 10).map((failure) =>
-            `${failure.language}/${failure.workloadId}/${failure.mode}/${failure.caseName}: output=${JSON.stringify(failure.output)} expected=${JSON.stringify(failure.expected)} error=${failure.error ?? ''}`
-          ),
-        ].join('\n')
+    console.log(`Run order seed ${args.seed}: ${runPlan.map((item) => `${item.language}/${item.workload.id}#${item.iteration}`).join(', ')}`);
+    for (const item of runPlan) {
+      console.log(`[${item.runOrdinal + 1}/${runPlan.length}] ${item.language}/${item.workload.id} iteration ${item.iteration + 1}`);
+      const run = await runBrowserPlanItem(
+        server.origin,
+        browser,
+        item,
+        args,
+        networkRecords,
+        runtimeManifests
       );
+      if (!run.networkFlushComplete) {
+        runDiagnostics.push({
+          runOrdinal: item.runOrdinal,
+          language: item.language,
+          workloadId: item.workload.id,
+          warning: 'Playwright request-size collection did not settle within 2000ms; raw network records may omit late worker entries.',
+        });
+      }
+      if (!run.result) {
+        runErrors.push({
+          runOrdinal: item.runOrdinal,
+          language: item.language,
+          workloadId: item.workload.id,
+          error: run.error ?? 'unknown browser run failure',
+        });
+      } else {
+        userAgent = run.result.userAgent;
+        crossOriginIsolated = run.result.crossOriginIsolated;
+        memorySupport = {
+          performanceMemory: memorySupport.performanceMemory || run.result.memorySupport.performanceMemory,
+          userAgentSpecificMemory: memorySupport.userAgentSpecificMemory || run.result.memorySupport.userAgentSpecificMemory,
+        };
+        longTaskSupport = longTaskSupport || run.result.longTaskSupport;
+        initRecords.push(run.result.init);
+        records.push(...run.result.records);
+      }
+      cdpMetrics.push({
+        runOrdinal: item.runOrdinal,
+        language: item.language,
+        workloadId: item.workload.id,
+        ...run.cdpMetrics,
+        unsupportedReason: run.cdpUnsupportedReason,
+      });
     }
 
     const summaries = summarize(records);
-    printSummary(report.initResults as Record<string, unknown>, summaries);
-
+    const networkSummaries = summarizeNetwork(networkRecords);
+    printSummary(initRecords, summaries);
+    for (const diagnostic of runDiagnostics) {
+      console.warn(
+        `Network warning ${diagnostic.language}/${diagnostic.workloadId}#${diagnostic.runOrdinal}: ${diagnostic.warning}`
+      );
+    }
+    const failedPhases = records.filter((record) => !record.success);
+    const failedInits = initRecords.filter((record) => !record.success);
     const fullReport = {
+      schemaVersion: 'tracecode-public-browser-benchmark-v2',
       createdAt: new Date().toISOString(),
+      methodology: {
+        apiBoundary: 'createBrowserHarness -> getClient -> init/execute/dispose',
+        isolation: 'fresh Playwright BrowserContext and fresh harness for every language/workload/iteration',
+        order: 'deterministic Fisher-Yates shuffle independently per iteration',
+        assetCaching: args.cacheAssets
+          ? 'immutable browser caching; warm phases run after the cold phase populated the same BrowserContext cache'
+          : 'disabled with Cache-Control: no-store',
+        phases: {
+          'cold-first-execute': 'first source/case after RuntimeClient.init',
+          'warm-exact-repeat': 'byte-identical source and input repeated on the same client',
+          'warm-edited-source': 'same behavior with a comment appended to force a new source cache key',
+          'multiple-inputs': 'edited source repeated with all selected cases in one public execute request',
+          trace: 'one selected case through the public trace request and canonical trace response',
+          interview: 'one selected case through the public interview request',
+        },
+      },
       options: {
         languages: args.languages,
         workloads: selectedWorkloads.map((workload) => workload.id),
@@ -955,11 +1799,40 @@ async function main(): Promise<void> {
         iterations: args.iterations,
         caseLimit: args.caseLimit,
         requestTimeoutMs: args.requestTimeoutMs,
+        phaseDelayMs: args.phaseDelayMs,
+        prewarmRuntime: args.prewarmRuntime,
+        seed: args.seed,
+        cacheAssets: args.cacheAssets,
+        smoke: args.smoke,
+        runtimeManifestRuntimes: runtimeManifests ? Object.keys(runtimeManifests).sort() : [],
       },
-      userAgent: report.userAgent,
-      initResults: report.initResults,
+      bundle: {
+        entrypoint: 'packages/harness-browser/src/index.ts',
+        rawBytes: bundle.rawBytes,
+        gzipBytes: bundle.gzipBytes,
+        buildMs: bundle.buildMs,
+      },
+      browser: {
+        userAgent,
+        crossOriginIsolated,
+        longTaskSupport,
+        memorySupport,
+      },
+      metricCoverage: metricCoverage(records, networkRecords),
+      runPlan: runPlan.map((item) => ({
+        runOrdinal: item.runOrdinal,
+        language: item.language,
+        workloadId: item.workload.id,
+        iteration: item.iteration,
+      })),
       summaries,
+      initRecords,
       records,
+      networkSummaries,
+      networkRecords,
+      cdpMetrics,
+      runDiagnostics,
+      runErrors,
     };
 
     if (args.reportPath) {
@@ -968,13 +1841,24 @@ async function main(): Promise<void> {
       await writeFile(outputPath, `${JSON.stringify(fullReport, null, 2)}\n`, 'utf8');
       console.log(`\nWrote ${outputPath}`);
     }
+
+    const failureCount = failedPhases.length + failedInits.length + runErrors.length;
+    if (failureCount > 0) {
+      const examples = [
+        ...failedInits.map((record) => `${record.language}/${record.workloadId}/init: ${record.error ?? 'failed'}`),
+        ...failedPhases.map((record) => `${record.language}/${record.workloadId}/${record.phase}: ${record.errors.join('; ') || 'wrong output'}`),
+        ...runErrors.map((record) => `${record.language}/${record.workloadId}/browser: ${record.error}`),
+      ].slice(0, 10);
+      throw new Error(`Browser runtime benchmark had ${failureCount} failing sample(s).\n${examples.join('\n')}`);
+    }
   } finally {
-    await browser.close();
-    await server.close();
+    await browser?.close();
+    await server?.close();
+    await rm(tempRoot, { recursive: true, force: true });
   }
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   process.exit(1);
 });

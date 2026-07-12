@@ -881,7 +881,14 @@ class NativeJavaScriptWorkerHarness {
       join(root, 'workers', 'javascript-worker.js'),
       join(root, '..', 'workers', 'javascript', 'javascript-worker.js'),
     ]);
-    const workerSource = await readFile(workerPath, 'utf8');
+    const runtimePolicyPath = resolveNativeAsset(undefined, (root) => [
+      join(root, 'workers', 'shared', 'runtime-kernel-policy-classic.js'),
+      join(root, '..', 'workers', 'shared', 'runtime-kernel-policy-classic.js'),
+    ]);
+    const [workerSource, runtimePolicySource] = await Promise.all([
+      readFile(workerPath, 'utf8'),
+      readFile(runtimePolicyPath, 'utf8'),
+    ]);
     const selfObject: {
       location: { search: string };
       postMessage: (message: NativeWorkerMessage) => void;
@@ -917,6 +924,7 @@ class NativeJavaScriptWorkerHarness {
       setTimeout,
       clearTimeout,
     });
+    vm.runInContext(runtimePolicySource, context, { filename: 'runtime-kernel-policy-classic.js' });
     vm.runInContext(workerSource, context, { filename: 'javascript-worker.js' });
     if (typeof selfObject.onmessage !== 'function') {
       throw new Error('JavaScript worker did not register onmessage.');

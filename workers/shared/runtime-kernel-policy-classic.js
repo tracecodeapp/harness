@@ -207,7 +207,286 @@
     return { kind: 'error', reason: 'read-only', path: target.path };
   }
 
-  globalThis.TraceRuntimeKernelPolicy = Object.freeze({
+  const RUNTIME_USER_AUTHORITY_GLOBALS = Object.freeze([
+    'fetch',
+    'XMLHttpRequest',
+    'WebSocket',
+    'WebSocketStream',
+    'EventSource',
+    'WebTransport',
+    'RTCPeerConnection',
+    'webkitRTCPeerConnection',
+    'RTCDataChannel',
+    'indexedDB',
+    'caches',
+    'Cache',
+    'CacheStorage',
+    'cookieStore',
+    'localStorage',
+    'sessionStorage',
+    'webkitRequestFileSystem',
+    'webkitRequestFileSystemSync',
+    'webkitResolveLocalFileSystemURL',
+    'webkitResolveLocalFileSystemSyncURL',
+    'Worker',
+    'SharedWorker',
+    'MessageChannel',
+    'MessagePort',
+    'BroadcastChannel',
+    'importScripts',
+  ]);
+  const RUNTIME_USER_PERMANENT_AUTHORITY_GLOBALS = Object.freeze([
+    'postMessage',
+  ]);
+  const RUNTIME_USER_AUTHORITY_NAVIGATOR_MEMBERS = Object.freeze([
+    'sendBeacon',
+    'storage',
+    'locks',
+    'serviceWorker',
+  ]);
+  const runtimeAuthorityNativeDefineProperty = Object.defineProperty;
+  const runtimeAuthorityNativeGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+  const runtimeAuthorityNativeGetPrototypeOf = Object.getPrototypeOf;
+  const runtimeAuthorityNativeDeleteProperty = Reflect.deleteProperty;
+  const runtimeAuthorityNativeObjectDefineProperties = Object.defineProperties;
+  const runtimeAuthorityNativeReflectDefineProperty = Reflect.defineProperty;
+  const runtimeAuthorityNativeReflectDeleteProperty = Reflect.deleteProperty;
+  const runtimeAuthorityNativeObjectSetPrototypeOf = Object.setPrototypeOf;
+  const runtimeAuthorityNativeReflectSetPrototypeOf = Reflect.setPrototypeOf;
+  const runtimeAuthorityNativeOwnKeys = Reflect.ownKeys;
+  const runtimeAuthorityActiveScopes = new WeakMap();
+
+  function runtimeAuthorityError(name) {
+    return Object.assign(
+      new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`),
+      { code: 'EACCES' }
+    );
+  }
+
+  function runtimeDeniedAuthority(name) {
+    const deny = function traceRuntimeDeniedAuthority() {
+      throw runtimeAuthorityError(name);
+    };
+    if (typeof Proxy !== 'function') return deny;
+    return new Proxy(deny, {
+      apply: () => deny(),
+      construct: () => deny(),
+      get: (_target, property) => property === Symbol.toStringTag
+        ? 'TraceRuntimeDeniedCapability'
+        : runtimeDeniedAuthority(`${name}.${String(property)}`),
+      set: () => {
+        throw runtimeAuthorityError(name);
+      },
+    });
+  }
+
+  function runtimeAuthorityRestoreDescriptors(records) {
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const { target, name, descriptor } = records[index];
+      if (descriptor) {
+        runtimeAuthorityNativeDefineProperty(target, name, descriptor);
+      } else {
+        runtimeAuthorityNativeDeleteProperty(target, name);
+      }
+    }
+  }
+
+  function runtimeAuthorityReplaceProperty(records, target, name, value, permanent = false) {
+    const descriptor = runtimeAuthorityNativeGetOwnPropertyDescriptor(target, name);
+    if (
+      descriptor?.configurable === false &&
+      !(permanent && 'value' in descriptor && descriptor.writable === true)
+    ) {
+      if ('value' in descriptor && descriptor.value === value) return;
+      throw runtimeAuthorityError(String(name));
+    }
+    records.push({ target, name, descriptor });
+    runtimeAuthorityNativeDefineProperty(target, name, {
+      configurable: permanent ? false : descriptor?.configurable ?? true,
+      enumerable: descriptor?.enumerable ?? false,
+      writable: false,
+      value,
+    });
+    if (target[name] !== value) throw runtimeAuthorityError(name);
+  }
+
+  function runtimeAuthorityPrototypeChain(value) {
+    const targets = [];
+    const seen = new Set();
+    let current = value;
+    while (
+      current &&
+      (typeof current === 'object' || typeof current === 'function') &&
+      !seen.has(current)
+    ) {
+      targets.push(current);
+      seen.add(current);
+      current = runtimeAuthorityNativeGetPrototypeOf(current);
+    }
+    return targets;
+  }
+
+  function runtimeAuthorityReplaceAcrossChain(state, value, name, replacement, ensureOwn = true) {
+    const targets = runtimeAuthorityPrototypeChain(value);
+    let replacedOwn = false;
+    for (const target of targets) {
+      if (!runtimeAuthorityNativeGetOwnPropertyDescriptor(target, name)) continue;
+      runtimeAuthorityReplaceProperty(state.records, target, name, replacement, state.permanent);
+      state.protectedProperties.push({ target, name: String(name) });
+      if (target === value) replacedOwn = true;
+    }
+    if (ensureOwn && !replacedOwn) {
+      runtimeAuthorityReplaceProperty(state.records, value, name, replacement, state.permanent);
+      state.protectedProperties.push({ target: value, name: String(name) });
+    }
+  }
+
+  function runtimeAuthorityProtectedMutation(state, target, property) {
+    const name = String(property);
+    for (const protectedProperty of state.protectedProperties) {
+      if (protectedProperty.target === target && protectedProperty.name === name) {
+        return name;
+      }
+    }
+    return '';
+  }
+
+  function runtimeAuthorityInstallMutationGuards(state, scope) {
+    const guardedDefineProperty = function guardedDefineProperty(target, property, descriptor) {
+      const protectedName = runtimeAuthorityProtectedMutation(state, target, property);
+      if (protectedName) throw runtimeAuthorityError(protectedName);
+      return runtimeAuthorityNativeDefineProperty(target, property, descriptor);
+    };
+    const guardedDefineProperties = function guardedDefineProperties(target, descriptors) {
+      for (const property of runtimeAuthorityNativeOwnKeys(Object(descriptors))) {
+        const protectedName = runtimeAuthorityProtectedMutation(state, target, property);
+        if (protectedName) throw runtimeAuthorityError(protectedName);
+      }
+      return runtimeAuthorityNativeObjectDefineProperties(target, descriptors);
+    };
+    const guardedReflectDefineProperty = function guardedReflectDefineProperty(target, property, descriptor) {
+      const protectedName = runtimeAuthorityProtectedMutation(state, target, property);
+      if (protectedName) throw runtimeAuthorityError(protectedName);
+      return runtimeAuthorityNativeReflectDefineProperty(target, property, descriptor);
+    };
+    const guardedReflectDeleteProperty = function guardedReflectDeleteProperty(target, property) {
+      const protectedName = runtimeAuthorityProtectedMutation(state, target, property);
+      if (protectedName) throw runtimeAuthorityError(protectedName);
+      return runtimeAuthorityNativeReflectDeleteProperty(target, property);
+    };
+    const guardedObjectSetPrototypeOf = function guardedObjectSetPrototypeOf(target, prototype) {
+      if (runtimeAuthorityPrototypeChain(scope).includes(target)) throw runtimeAuthorityError('global prototype mutation');
+      return runtimeAuthorityNativeObjectSetPrototypeOf(target, prototype);
+    };
+    const guardedReflectSetPrototypeOf = function guardedReflectSetPrototypeOf(target, prototype) {
+      if (runtimeAuthorityPrototypeChain(scope).includes(target)) throw runtimeAuthorityError('global prototype mutation');
+      return runtimeAuthorityNativeReflectSetPrototypeOf(target, prototype);
+    };
+
+    runtimeAuthorityReplaceProperty(state.records, Object, 'defineProperty', guardedDefineProperty, state.permanent);
+    runtimeAuthorityReplaceProperty(state.records, Object, 'defineProperties', guardedDefineProperties, state.permanent);
+    runtimeAuthorityReplaceProperty(state.records, Object, 'setPrototypeOf', guardedObjectSetPrototypeOf, state.permanent);
+    runtimeAuthorityReplaceProperty(state.records, Reflect, 'defineProperty', guardedReflectDefineProperty, state.permanent);
+    runtimeAuthorityReplaceProperty(state.records, Reflect, 'deleteProperty', guardedReflectDeleteProperty, state.permanent);
+    runtimeAuthorityReplaceProperty(state.records, Reflect, 'setPrototypeOf', guardedReflectSetPrototypeOf, state.permanent);
+    runtimeAuthorityReplaceAcrossChain(state, scope, 'Object', Object);
+    runtimeAuthorityReplaceAcrossChain(state, scope, 'Reflect', Reflect);
+  }
+
+  function runtimeAuthorityReleaseState(scope, state) {
+    state.depth -= 1;
+    if (state.depth !== 0) return;
+    if (state.permanent) return;
+    runtimeAuthorityRestoreDescriptors(state.records);
+    if (runtimeAuthorityActiveScopes.get(scope) === state) runtimeAuthorityActiveScopes.delete(scope);
+  }
+
+  /**
+   * Removes ambient browser authority after a trusted language runtime loads.
+   * Reusable trusted workers use temporal restoration by default. Disposable
+   * untrusted workers must request permanent mode: it seals every live
+   * global/navigator prototype descriptor and never restores authority, so a
+   * deferred callback cannot wait out the boundary. Neither mode is an origin-
+   * isolation primitive.
+   */
+  async function withRuntimeUserAuthorityLockdown(callback, options = {}) {
+    if (typeof callback !== 'function') {
+      throw new TypeError('Runtime user authority lockdown requires a callback.');
+    }
+    const scope = options.scope ?? globalThis;
+    if (!scope || (typeof scope !== 'object' && typeof scope !== 'function')) {
+      throw new TypeError('Runtime user authority lockdown requires a worker-like global scope.');
+    }
+    if (options.mode !== undefined && options.mode !== 'temporary' && options.mode !== 'permanent') {
+      throw new TypeError('Runtime user authority lockdown mode must be "temporary" or "permanent".');
+    }
+    const authorityOverrides = options.authorityOverrides ?? {};
+    if (!authorityOverrides || typeof authorityOverrides !== 'object' || Array.isArray(authorityOverrides)) {
+      throw new TypeError('Runtime user authority lockdown authorityOverrides must be an object.');
+    }
+    for (const name of Reflect.ownKeys(authorityOverrides)) {
+      if (typeof name !== 'string' || !RUNTIME_USER_AUTHORITY_GLOBALS.includes(name)) {
+        throw new TypeError(`Runtime user authority lockdown cannot override unsupported authority "${String(name)}".`);
+      }
+    }
+    const permanent = options.mode === 'permanent';
+    const activeState = runtimeAuthorityActiveScopes.get(scope);
+    if (activeState) {
+      if (permanent && activeState.permanent !== true) {
+        throw new Error('Runtime user authority lockdown cannot upgrade an active temporal boundary to permanent mode.');
+      }
+      activeState.depth += 1;
+      try {
+        return await callback();
+      } finally {
+        runtimeAuthorityReleaseState(scope, activeState);
+      }
+    }
+
+    const state = {
+      depth: 1,
+      records: [],
+      protectedProperties: [],
+      permanent,
+    };
+    runtimeAuthorityActiveScopes.set(scope, state);
+      try {
+        for (const name of RUNTIME_USER_AUTHORITY_GLOBALS) {
+        const replacement = Object.prototype.hasOwnProperty.call(authorityOverrides, name)
+          ? authorityOverrides[name]
+          : runtimeDeniedAuthority(name);
+        runtimeAuthorityReplaceAcrossChain(state, scope, name, replacement);
+      }
+      if (state.permanent) {
+        for (const name of RUNTIME_USER_PERMANENT_AUTHORITY_GLOBALS) {
+          runtimeAuthorityReplaceAcrossChain(state, scope, name, runtimeDeniedAuthority(name));
+        }
+      }
+      const navigatorValue = scope.navigator;
+      if (navigatorValue && (typeof navigatorValue === 'object' || typeof navigatorValue === 'function')) {
+        for (const name of RUNTIME_USER_AUTHORITY_NAVIGATOR_MEMBERS) {
+          runtimeAuthorityReplaceAcrossChain(
+            state,
+            navigatorValue,
+            name,
+            runtimeDeniedAuthority(`navigator.${name}`),
+            true
+          );
+        }
+        runtimeAuthorityReplaceAcrossChain(state, scope, 'navigator', navigatorValue);
+      }
+      runtimeAuthorityInstallMutationGuards(state, scope);
+      return await callback();
+    } finally {
+      runtimeAuthorityReleaseState(scope, state);
+    }
+  }
+
+  Object.defineProperty(globalThis, 'TraceRuntimeKernelPolicy', {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: Object.freeze({
     normalizeRuntimeKernelPath,
     isRuntimeKernelProcPath,
     isRuntimeKernelDeviceNamespacePath,
@@ -222,5 +501,7 @@
     runtimeKernelVirtualPathTarget,
     runtimeKernelVirtualMutationTarget,
     runtimeKernelVirtualOpenTarget,
+    withRuntimeUserAuthorityLockdown,
+    }),
   });
 })(typeof self !== 'undefined' ? self : globalThis);

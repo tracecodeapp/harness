@@ -1,0 +1,619 @@
+import {
+  BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+  createBrowserRuntimeAssetPreflight,
+  createBrowserHarness,
+  resolveBrowserRuntimeAssetManifests,
+  type BrowserRuntimeAssetManifests,
+} from '../packages/harness-browser/src';
+import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
+
+function assertCondition(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+interface PostedMessage {
+  id?: string;
+  type: string;
+  payload?: Record<string, unknown>;
+  protocolToken?: string;
+}
+
+class CapturingWorker {
+  static instances: CapturingWorker[] = [];
+  static fetches: string[] = [];
+
+  readonly messages: PostedMessage[] = [];
+  readonly fetchesAtMessage = new Map<string, string[]>();
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+
+  constructor(readonly url: string | URL, readonly options?: WorkerOptions) {
+    CapturingWorker.instances.push(this);
+    queueMicrotask(() => this.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
+  }
+
+  postMessage(message: PostedMessage): void {
+    this.messages.push(message);
+    this.fetchesAtMessage.set(message.type, [...CapturingWorker.fetches]);
+    const responseType = message.type === 'warmup' ? 'warmup-result' : `${message.type}-result`;
+    const payload = message.type.startsWith('execute-project-')
+      ? { stdout: '', stderr: '', exitCode: 0, files: [] }
+      : { success: true, loadTimeMs: 0 };
+    queueMicrotask(() => this.onmessage?.({
+      data: {
+        id: message.id,
+        protocolToken: message.protocolToken,
+        type: responseType,
+        payload,
+      },
+    } as MessageEvent));
+  }
+
+  terminate(): void {}
+}
+
+const originPolicy = {
+  mode: 'allow-list',
+  origins: ['https://cdn.consumer.example'],
+} as const;
+
+function descriptor(url: string) {
+  return { url };
+}
+
+function consumerManifests(): BrowserRuntimeAssetManifests {
+  const protocolVersion = BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION;
+  return {
+    python: {
+      runtime: 'python',
+      runtimeVersion: '0.29.4',
+      protocolVersion,
+      workerFormat: 'classic',
+      loaderFormat: 'classic-script',
+      assetBaseUrl: 'https://cdn.consumer.example/python/',
+      originPolicy,
+      assets: {
+        worker: descriptor('worker.js'),
+        runtimeCore: descriptor('runtime-core.js'),
+        snippets: descriptor('snippets.js'),
+        runtimeLoader: descriptor('pyodide.js'),
+        runtimeIndex: descriptor('./'),
+        packages: { sortedcontainers: descriptor('sortedcontainers.whl') },
+      },
+    },
+    javascript: {
+      runtime: 'javascript',
+      runtimeVersion: 'es2022',
+      protocolVersion,
+      workerFormat: 'classic',
+      assetBaseUrl: 'https://cdn.consumer.example/javascript/',
+      originPolicy,
+      assets: {
+        worker: descriptor('worker.js'),
+        projectWorker: descriptor('project-worker.js'),
+        libraries: descriptor('javascript-libraries.js'),
+      },
+    },
+    typescript: {
+      runtime: 'typescript',
+      runtimeVersion: '5.9.3',
+      protocolVersion,
+      loaderFormat: 'classic-script',
+      assetBaseUrl: 'https://cdn.consumer.example/typescript/',
+      originPolicy,
+      assets: { compiler: descriptor('typescript.js') },
+    },
+    java: {
+      runtime: 'java',
+      runtimeVersion: '17-browser',
+      protocolVersion,
+      workerFormat: 'classic',
+      loaderFormat: 'classic-script',
+      assetBaseUrl: 'https://cdn.consumer.example/java/',
+      originPolicy,
+      assets: {
+        worker: descriptor('worker.js'),
+        loader: descriptor('cheerpj-loader.js'),
+        helperJar: { ...descriptor('helper.jar'), runtimePath: '/app/workers/vendor/helper.jar' },
+        compilerJar: descriptor('compiler.jar'),
+        rewriterJar: descriptor('rewriter.jar'),
+        parserJar: descriptor('parser.jar'),
+      },
+    },
+    csharp: {
+      runtime: 'csharp',
+      runtimeVersion: 'dotnet-browser',
+      protocolVersion,
+      workerFormat: 'module',
+      loaderFormat: 'module',
+      assetBaseUrl: 'https://cdn.consumer.example/csharp/',
+      originPolicy,
+      assets: {
+        worker: descriptor('worker.js'),
+        assetBaseUrl: descriptor('runtime'),
+        dependencies: {
+          '_framework/dotnet.js': descriptor('runtime/_framework/dotnet.js'),
+          '_framework/dotnet.native.wasm': descriptor('runtime/_framework/dotnet.native.wasm'),
+        },
+      },
+    },
+  };
+}
+
+function findWorker(fragment: string): CapturingWorker {
+  const worker = CapturingWorker.instances.find((entry) => String(entry.url).includes(fragment));
+  assertCondition(worker, `Expected a worker URL containing ${JSON.stringify(fragment)}`);
+  return worker;
+}
+
+function initMessage(worker: CapturingWorker): PostedMessage {
+  const message = worker.messages.find((entry) => entry.type === 'init');
+  assertCondition(message, `Expected ${String(worker.url)} to receive an init message`);
+  return message;
+}
+
+function findInitializedWorker(fragment: string): CapturingWorker {
+  const worker = CapturingWorker.instances.find(
+    (entry) => String(entry.url).includes(fragment) && entry.messages.some((message) => message.type === 'init')
+  );
+  assertCondition(worker, `Expected an initialized worker URL containing ${JSON.stringify(fragment)}`);
+  return worker;
+}
+
+async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
+  CapturingWorker.instances = [];
+  const harness = createBrowserHarness({ assets: { runtimeManifests: consumerManifests() } });
+  await harness.getClient('python').init();
+  await harness.warmLanguage('typescript');
+  await harness.getClient('java').init();
+  await harness.getClient('csharp').init();
+
+  const pythonWorker = findWorker('/python/worker.js');
+  assertCondition(
+    String(pythonWorker.url).includes(
+      'tracecodePythonSnippets=https%3A%2F%2Fcdn.consumer.example%2Fpython%2Fsnippets.js'
+    ),
+    'Configured Python snippets must be available during classic worker bootstrap'
+  );
+  const pythonPayload = initMessage(pythonWorker).payload;
+  const pythonAssets = pythonPayload?.runtimeAssets as Record<string, unknown> | undefined;
+  assertCondition(
+    pythonAssets?.loaderUrl === 'https://cdn.consumer.example/python/pyodide.js',
+    'Python runtime loader must reach the worker init payload'
+  );
+  assertCondition(
+    (pythonAssets?.packageUrls as Record<string, string> | undefined)?.sortedcontainers ===
+      'https://cdn.consumer.example/python/sortedcontainers.whl',
+    'Python package artifacts must reach the worker init payload'
+  );
+
+  const javascriptPayload = initMessage(findInitializedWorker('/javascript/worker.js')).payload;
+  assertCondition(
+    javascriptPayload?.typescriptCompilerUrl === 'https://cdn.consumer.example/typescript/typescript.js',
+    'The persistent JS/TS coordinator must receive the consumer compiler URL'
+  );
+  assertCondition(
+    javascriptPayload?.javascriptLibrariesUrl ===
+      'https://cdn.consumer.example/javascript/javascript-libraries.js',
+    'The persistent JavaScript coordinator must receive consumer runtime libraries'
+  );
+
+  const javaPayload = initMessage(findWorker('/java/worker.js')).payload;
+  const javaAssets = javaPayload?.runtimeAssets as Record<string, unknown> | undefined;
+  assertCondition(
+    javaAssets?.loaderUrl === 'https://cdn.consumer.example/java/cheerpj-loader.js' &&
+      javaAssets.helperJarUrl === '/app/workers/vendor/helper.jar',
+    'Java loader and jars must reach the worker init payload'
+  );
+
+  const csharpWorker = findWorker('/csharp/worker.js');
+  const csharpPayload = initMessage(csharpWorker).payload;
+  assertCondition(csharpWorker.options?.type === 'module', 'C# manifest must retain the module-worker boundary');
+  assertCondition(
+    (csharpPayload?.runtimeDependencies as Record<string, string> | undefined)?.['_framework/dotnet.js'] ===
+      'https://cdn.consumer.example/csharp/runtime/_framework/dotnet.js',
+    'C# runtime dependencies must reach the worker init payload'
+  );
+  harness.dispose();
+}
+
+async function testMetadataMismatchStopsBeforeWorkerConstruction(): Promise<void> {
+  CapturingWorker.instances = [];
+  const manifests = consumerManifests();
+  manifests.typescript = {
+    ...manifests.typescript!,
+    assets: {
+      compiler: {
+        url: 'typescript.js',
+        mediaType: 'text/javascript',
+        size: 4,
+      },
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('bad', {
+    status: 200,
+    headers: { 'content-type': 'text/javascript; charset=utf-8' },
+  });
+  try {
+    const harness = createBrowserHarness({ assets: { runtimeManifests: manifests } });
+    let message = '';
+    try {
+      await harness.warmLanguage('typescript');
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(message.includes('decoded size 3 did not match declared size 4'), 'Size mismatch must be reported');
+    assertCondition(CapturingWorker.instances.length === 0, 'Metadata mismatch must fail before worker construction');
+    harness.dispose();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+async function sha256Integrity(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  let binary = '';
+  for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
+  return `sha256-${btoa(binary)}`;
+}
+
+async function testIntegrityAndMediaTypeVerification(): Promise<void> {
+  const body = 'compiler';
+  const manifests = consumerManifests();
+  manifests.typescript = {
+    ...manifests.typescript!,
+    assets: {
+      compiler: {
+        url: 'typescript.js',
+        integrity: await sha256Integrity(body),
+        mediaType: 'text/javascript',
+        size: new TextEncoder().encode(body).byteLength,
+      },
+    },
+  };
+  const resolved = resolveBrowserRuntimeAssetManifests({ manifests });
+  const verifier = createBrowserRuntimeAssetPreflight(resolved, {
+    fetch: async () => new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/javascript; charset=utf-8' },
+    }),
+  });
+  await verifier.preflight('typescript', ['compiler']);
+
+  const invalidManifests = consumerManifests();
+  invalidManifests.typescript = {
+    ...invalidManifests.typescript!,
+    assets: {
+      compiler: {
+        url: 'typescript.js',
+        integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        mediaType: 'application/javascript',
+        size: new TextEncoder().encode(body).byteLength,
+      },
+    },
+  };
+  const invalidVerifier = createBrowserRuntimeAssetPreflight(
+    resolveBrowserRuntimeAssetManifests({ manifests: invalidManifests }),
+    {
+      fetch: async () => new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'application/javascript' },
+      }),
+    }
+  );
+  let message = '';
+  try {
+    await invalidVerifier.preflight('typescript', ['compiler']);
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(message.includes('did not match the declared integrity'), 'Integrity mismatch must be enforced');
+}
+
+async function testPreflightRetriesFailuresAndSharesConcurrentWork(): Promise<void> {
+  const manifests = consumerManifests();
+  manifests.typescript = {
+    ...manifests.typescript!,
+    assets: {
+      compiler: {
+        url: 'typescript.js',
+        size: 8,
+        delivery: { mutability: 'immutable', address: 'versioned' },
+      },
+    },
+  };
+  let fetchCount = 0;
+  let releaseFetch: (() => void) | undefined;
+  const fetchGate = new Promise<void>((resolve) => {
+    releaseFetch = resolve;
+  });
+  const verifier = createBrowserRuntimeAssetPreflight(resolveBrowserRuntimeAssetManifests({ manifests }), {
+    fetch: async () => {
+      fetchCount += 1;
+      if (fetchCount === 1) throw new Error('temporary-cdn-failure');
+      await fetchGate;
+      return new Response('compiler', { status: 200 });
+    },
+  });
+
+  let firstFailure = '';
+  try {
+    await verifier.preflight('typescript', ['compiler']);
+  } catch (error) {
+    firstFailure = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(firstFailure.includes('temporary-cdn-failure'), 'The initial transient preflight failure must surface');
+
+  const retryA = verifier.preflight('typescript', ['compiler']);
+  const retryB = verifier.preflight('typescript', ['compiler']);
+  await Promise.resolve();
+  assertCondition(fetchCount === 2, `Concurrent retries must share one fetch, observed ${fetchCount}`);
+  releaseFetch?.();
+  await Promise.all([retryA, retryB]);
+  await verifier.preflight('typescript', ['compiler']);
+  assertCondition(fetchCount === 2, 'A successful immutable-asset preflight should remain cached');
+
+  const mutableManifests = consumerManifests();
+  mutableManifests.typescript = {
+    ...mutableManifests.typescript!,
+    assets: { compiler: { url: 'typescript.js', size: 8 } },
+  };
+  let mutableFetchCount = 0;
+  const mutableVerifier = createBrowserRuntimeAssetPreflight(
+    resolveBrowserRuntimeAssetManifests({ manifests: mutableManifests }),
+    {
+      fetch: async () => {
+        mutableFetchCount += 1;
+        return new Response('compiler', { status: 200 });
+      },
+    }
+  );
+  await mutableVerifier.preflight('typescript', ['compiler']);
+  await mutableVerifier.preflight('typescript', ['compiler']);
+  assertCondition(mutableFetchCount === 2, 'Mutable/unattested assets must be reverified on later preflights');
+}
+
+async function testProjectManifestAssetBinding(): Promise<void> {
+  const manifests = consumerManifests();
+  for (const [options, expected] of [
+    [
+      {
+        assets: { runtimeManifests: { javascript: manifests.javascript } },
+        nodeProject: { workerUrl: 'https://unverified.example/project-worker.js' },
+      },
+      'cannot override nodeProject.workerUrl while its runtime manifest is active',
+    ],
+    [
+      {
+        assets: { runtimeManifests: { typescript: manifests.typescript } },
+        typescriptProject: { compilerUrl: 'https://unverified.example/typescript.js' },
+      },
+      'cannot override typescriptProject.compilerUrl while its runtime manifest is active',
+    ],
+  ] as const) {
+    let message = '';
+    try {
+      await createBrowserProjectWorkspace(options);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      message.includes(expected),
+      `Project execution URL must stay bound to its verified manifest descriptor: ${JSON.stringify(message)}`
+    );
+  }
+
+  const legacy = await createBrowserProjectWorkspace({
+    nodeProject: { workerUrl: 'https://legacy.example/project-worker.js' },
+    typescriptProject: { compilerUrl: 'https://legacy.example/typescript.js' },
+  });
+  legacy.dispose();
+}
+
+async function testProjectJavaRequiresCompleteManifestBeforeWorkerConstruction(): Promise<void> {
+  const cases: Array<{ label: string; assets?: { runtimeManifests: BrowserRuntimeAssetManifests } }> = [
+    { label: 'missing manifest' },
+    {
+      label: 'partial manifest',
+      assets: {
+        runtimeManifests: {
+          java: {
+            runtime: 'java',
+            runtimeVersion: 'consumer-partial',
+            protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+            workerFormat: 'classic',
+            loaderFormat: 'classic-script',
+            assetBaseUrl: 'https://cdn.consumer.example/java/',
+            originPolicy,
+            assets: { worker: descriptor('worker.js') },
+          },
+        },
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    CapturingWorker.instances = [];
+    const workspace = await createBrowserProjectWorkspace({
+      ...(testCase.assets ? { assets: testCase.assets } : {}),
+      files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+    });
+    try {
+      const result = await workspace.runCommand('javac Main.java');
+      const output = `${result.stdout}\n${result.stderr}`;
+      assertCondition(
+        result.exitCode !== 0 &&
+          output.includes('Browser project Java is unavailable because CheerpJ is not vendored') &&
+          output.includes('assets.runtimeManifests.java') &&
+          output.includes('javaWorkerClient'),
+        `Project Java must fail with provider-neutral configuration guidance for ${testCase.label}: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        !CapturingWorker.instances.some((worker) => String(worker.url).includes('java')),
+        `Project Java must reject ${testCase.label} before constructing a worker`
+      );
+    } finally {
+      workspace.dispose();
+    }
+  }
+
+  let prewarmError = '';
+  try {
+    await createBrowserProjectWorkspace({ projectWorkerPrewarm: { java: 1 } });
+  } catch (error) {
+    prewarmError = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    prewarmError.includes('Browser project Java is unavailable because CheerpJ is not vendored'),
+    `Explicit Java prewarm must validate configuration immediately: ${JSON.stringify(prewarmError)}`
+  );
+}
+
+async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<void> {
+  CapturingWorker.instances = [];
+  CapturingWorker.fetches = [];
+  const manifests = consumerManifests();
+  const sized = (url: string) => ({ url, size: 5 });
+  manifests.javascript = {
+    ...manifests.javascript!,
+    assets: {
+      ...manifests.javascript!.assets,
+      projectWorker: sized('project-worker.js'),
+    },
+  };
+  manifests.typescript = {
+    ...manifests.typescript!,
+    assets: { compiler: sized('typescript.js') },
+  };
+  manifests.java = {
+    ...manifests.java!,
+    assets: {
+      worker: sized('worker.js'),
+      loader: sized('cheerpj-loader.js'),
+      helperJar: sized('helper.jar'),
+      compilerJar: sized('compiler.jar'),
+      rewriterJar: sized('rewriter.jar'),
+      parserJar: sized('parser.jar'),
+    },
+  };
+  manifests.csharp = {
+    ...manifests.csharp!,
+    assets: {
+      worker: sized('worker.js'),
+      assetBaseUrl: sized('runtime'),
+      dependencies: {
+        '_framework/dotnet.js': sized('runtime/_framework/dotnet.js'),
+        '_framework/dotnet.native.wasm': sized('runtime/_framework/dotnet.native.wasm'),
+      },
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    CapturingWorker.fetches.push(url);
+    return new Response('asset', { status: 200 });
+  };
+  const workspace = await createBrowserProjectWorkspace({
+    assets: { runtimeManifests: manifests },
+    files: [
+      { path: 'index.js', contents: 'console.log("project-js");\n' },
+      { path: 'main.ts', contents: 'const value: number = 1;\n' },
+      { path: 'Main.java', contents: 'class Main {}\n' },
+      { path: 'Program.cs', contents: 'Console.WriteLine("project-csharp");\n' },
+      {
+        path: 'Project.csproj',
+        contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>\n',
+      },
+    ],
+  });
+  try {
+    assertCondition((await workspace.runCommand('node index.js')).exitCode === 0, 'Project JavaScript should run');
+    assertCondition((await workspace.runCommand('tsc --noEmit main.ts')).exitCode === 0, 'Project TypeScript should compile');
+    assertCondition((await workspace.runCommand('javac Main.java')).exitCode === 0, 'Project Java should compile');
+    assertCondition((await workspace.runCommand('dotnet build Project.csproj')).exitCode === 0, 'Project C# should build');
+
+    const javascriptWorker = findWorker('/javascript/project-worker.js');
+    const javaWorker = findWorker('/java/worker.js');
+    const csharpWorker = findWorker('/csharp/worker.js');
+    const requiredBeforeExecution = {
+      javascript: ['https://cdn.consumer.example/javascript/project-worker.js'],
+      java: [
+        'https://cdn.consumer.example/java/worker.js',
+        'https://cdn.consumer.example/java/cheerpj-loader.js',
+        'https://cdn.consumer.example/java/helper.jar',
+        'https://cdn.consumer.example/java/compiler.jar',
+        'https://cdn.consumer.example/java/rewriter.jar',
+        'https://cdn.consumer.example/java/parser.jar',
+      ],
+      csharp: [
+        'https://cdn.consumer.example/csharp/worker.js',
+        'https://cdn.consumer.example/csharp/runtime',
+        'https://cdn.consumer.example/csharp/runtime/_framework/dotnet.js',
+        'https://cdn.consumer.example/csharp/runtime/_framework/dotnet.native.wasm',
+      ],
+    } as const;
+    for (const url of requiredBeforeExecution.javascript) {
+      assertCondition(
+        javascriptWorker.fetchesAtMessage.get('execute-project-javascript')?.includes(url),
+        `JavaScript project worker must be verified before execution: ${url}; ` +
+          `observed ${JSON.stringify(javascriptWorker.fetchesAtMessage.get('execute-project-javascript'))}`
+      );
+    }
+    for (const url of requiredBeforeExecution.java) {
+      assertCondition(
+        javaWorker.fetchesAtMessage.get('init')?.includes(url),
+        `Java project assets must be verified before worker initialization: ${url}`
+      );
+      assertCondition(
+        javaWorker.fetchesAtMessage.get('execute-project-java')?.includes(url),
+        `Java project assets must be verified before execution: ${url}`
+      );
+    }
+    for (const url of requiredBeforeExecution.csharp) {
+      assertCondition(
+        csharpWorker.fetchesAtMessage.get('execute-project-csharp')?.includes(url),
+        `C# project assets must be verified before execution: ${url}`
+      );
+    }
+    assertCondition(
+      CapturingWorker.fetches.includes('https://cdn.consumer.example/typescript/typescript.js'),
+      'TypeScript compiler must be verified before its lazy project load'
+    );
+
+    const javaAssets = initMessage(javaWorker).payload?.runtimeAssets as Record<string, string> | undefined;
+    assertCondition(
+      javaAssets?.loaderUrl === 'https://cdn.consumer.example/java/cheerpj-loader.js' &&
+        javaAssets.compilerJarUrl === 'https://cdn.consumer.example/java/compiler.jar',
+      'Java project worker init must receive manifest loader and jar URLs'
+    );
+    const csharpDependencies = initMessage(csharpWorker).payload?.runtimeDependencies as
+      | Record<string, string>
+      | undefined;
+    assertCondition(
+      csharpDependencies?.['_framework/dotnet.js'] ===
+        'https://cdn.consumer.example/csharp/runtime/_framework/dotnet.js',
+      'C# project worker init must receive manifest dependency URLs'
+    );
+  } finally {
+    workspace.dispose();
+    globalThis.fetch = originalFetch;
+  }
+}
+
+const originalWorker = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
+Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: CapturingWorker });
+try {
+  await testManifestAssetsReachWorkerInitialization();
+  await testMetadataMismatchStopsBeforeWorkerConstruction();
+  await testIntegrityAndMediaTypeVerification();
+  await testPreflightRetriesFailuresAndSharesConcurrentWork();
+  await testProjectManifestAssetBinding();
+  await testProjectJavaRequiresCompleteManifestBeforeWorkerConstruction();
+  await testProjectManifestAssetsArePreflightedAndForwarded();
+  console.log('PASS: browser runtime asset manifest plumbing and preflight');
+} finally {
+  if (originalWorker) Object.defineProperty(globalThis, 'Worker', originalWorker);
+  else Reflect.deleteProperty(globalThis, 'Worker');
+}

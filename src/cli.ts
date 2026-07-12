@@ -35,6 +35,11 @@ const ASSET_COPY_PLAN = [
     languages: ['python'],
   },
   {
+    source: ['workers', 'shared', 'runtime-kernel-policy.js'],
+    target: ['shared', 'runtime-kernel-policy.js'],
+    languages: ['python'],
+  },
+  {
     source: ['workers', 'javascript', 'javascript-worker.js'],
     target: ['javascript-worker.js'],
     languages: ['javascript'],
@@ -42,6 +47,11 @@ const ASSET_COPY_PLAN = [
   {
     source: ['workers', 'javascript', 'javascript-project-worker.js'],
     target: ['javascript-project-worker.js'],
+    languages: ['javascript'],
+  },
+  {
+    source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
+    target: ['shared', 'runtime-kernel-policy-classic.js'],
     languages: ['javascript'],
   },
   {

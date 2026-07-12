@@ -1,6 +1,10 @@
 #!/usr/bin/env npx tsx
 
-import { createBrowserHarness, resolveBrowserHarnessAssets } from '../packages/harness-browser/src';
+import {
+  BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+  createBrowserHarness,
+  resolveBrowserHarnessAssets,
+} from '../packages/harness-browser/src';
 import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
 import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
 import { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
@@ -42,6 +46,8 @@ let releaseHeldPythonProject: (() => void) | undefined;
 let holdPythonWarmupForUrlPrefix: string | undefined;
 let javaHttpTimeoutServerStarted: (() => void) | undefined;
 let javaHttpTimeoutRequestBuffer: SharedArrayBuffer | undefined;
+let failedWarmupUrlPrefix: string | undefined;
+let remainingFailedWarmups = 0;
 
 class MockWorker {
   public onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
@@ -74,7 +80,35 @@ class MockWorker {
         return;
       }
 
+      if (type === 'prewarm-executor') {
+        this.onmessage?.({
+          data: {
+            id,
+            type: 'prewarm-result',
+            protocolToken,
+            payload: { success: true },
+          },
+        } as MessageEvent<WorkerMessage>);
+        return;
+      }
+
       if (type === 'warmup') {
+        if (
+          failedWarmupUrlPrefix &&
+          remainingFailedWarmups > 0 &&
+          String(this.url).startsWith(failedWarmupUrlPrefix)
+        ) {
+          remainingFailedWarmups -= 1;
+          this.onmessage?.({
+            data: {
+              id,
+              type: 'error',
+              protocolToken,
+              payload: { error: 'synthetic prewarm failure' },
+            },
+          } as MessageEvent<WorkerMessage>);
+          return;
+        }
         if (
           holdPythonWarmupForUrlPrefix &&
           String(this.url).startsWith(holdPythonWarmupForUrlPrefix)
@@ -496,6 +530,204 @@ async function main(): Promise<void> {
     }
     console.log('PASS: browser project workspace isolates concurrent project runtime commands');
 
+    const beforeAuthorityWorkerCount = workerInstances.length;
+    const authorityProjectWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-authority',
+      assets: {
+        runtimeManifests: {
+          java: {
+            runtime: 'java',
+            runtimeVersion: 'test-java-project-assets',
+            protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+            workerFormat: 'classic',
+            loaderFormat: 'classic-script',
+            assetBaseUrl: '/project-authority/',
+            originPolicy: { mode: 'any' },
+            assets: {
+              worker: { url: 'java-worker.js' },
+              loader: { url: 'cheerpj-loader.js' },
+              helperJar: { url: 'helper.jar' },
+              compilerJar: { url: 'compiler.jar' },
+              rewriterJar: { url: 'rewriter.jar' },
+              parserJar: { url: 'parser.jar' },
+            },
+          },
+        },
+      },
+      projectWorkerPrewarm: { python: 1, java: 1, csharp: 1 },
+      files: [
+        { path: 'main.py', contents: 'print("python")\n' },
+        { path: 'Main.java', contents: 'class Main { public static void main(String[] args) {} }\n' },
+        { path: 'main.cpp', contents: 'int main() { return 0; }\n' },
+        {
+          path: 'App.csproj',
+          contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n',
+        },
+        { path: 'Program.cs', contents: 'Console.WriteLine("csharp");\n' },
+      ],
+    });
+    try {
+      await authorityProjectWorkspace.runCommand('python3 main.py');
+      await authorityProjectWorkspace.runCommand('java Main');
+      await authorityProjectWorkspace.runCommand('dotnet run --project App.csproj');
+      await authorityProjectWorkspace.runCommand('clang++ main.cpp -o app');
+      const authorityWorkers = workerInstances.slice(beforeAuthorityWorkerCount);
+      for (const [runtime, workerName, messageType] of [
+        ['Python', 'pyodide-worker.js', 'execute-project-python'],
+        ['Java', 'java-worker.js', 'execute-project-java'],
+        ['C#', 'csharp-worker.js', 'execute-project-csharp'],
+        ['C++', 'cpp-worker.js', 'execute-project-cpp'],
+      ] as const) {
+        const worker = authorityWorkers.find((candidate) =>
+          String(candidate.url).includes(workerName) &&
+          candidate.messages.some((message) => message.type === messageType)
+        );
+        const projectMessage = worker?.messages.find((message) => message.type === messageType);
+        assertCondition(
+          (projectMessage?.payload as { projectUserAuthorityMode?: unknown } | undefined)?.projectUserAuthorityMode === 'permanent',
+          `${runtime} default per-command project worker must request permanent user-authority denial: ` +
+            JSON.stringify(authorityWorkers.map((candidate) => ({ url: String(candidate.url), messages: candidate.messages })))
+        );
+        if (runtime !== 'C++') {
+          assertCondition(
+            (worker?.messages.findIndex((message) => message.type === 'warmup') ?? -1) >= 0 &&
+              (worker?.messages.findIndex((message) => message.type === 'warmup') ?? -1) <
+                (worker?.messages.findIndex((message) => message.type === messageType) ?? -1),
+            `${runtime} prewarmed worker must finish warmup before its one user lease`
+          );
+        }
+        assertCondition(worker?.terminated === true, `${runtime} one-shot project worker must be retired after the command`);
+      }
+    } finally {
+      authorityProjectWorkspace.dispose();
+    }
+
+    const trustedSharedProjectWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-authority-shared',
+      projectWorkerIsolation: 'shared',
+      trustedSharedWorkerReuse: true,
+      files: [{ path: 'main.py', contents: 'print("trusted")\n' }],
+    });
+    try {
+      await trustedSharedProjectWorkspace.runCommand('python3 main.py');
+      const trustedWorker = workerInstances.findLast((worker) =>
+        String(worker.url).startsWith('/project-authority-shared/pyodide-worker.js')
+      );
+      const projectMessage = trustedWorker?.messages.find((message) => message.type === 'execute-project-python');
+      assertCondition(
+        (projectMessage?.payload as { projectUserAuthorityMode?: unknown } | undefined)?.projectUserAuthorityMode === undefined,
+        'Explicit trusted shared project workers must keep the reversible authority boundary'
+      );
+      assertCondition(trustedWorker?.terminated === false, 'Trusted shared project worker should remain reusable until disposal');
+    } finally {
+      trustedSharedProjectWorkspace.dispose();
+    }
+    console.log('PASS: disposable project workers request permanent authority denial while trusted shared workers stay reusable');
+
+    let invalidPrewarmError = '';
+    try {
+      await createBrowserProjectWorkspace({ projectWorkerPrewarm: { python: 3 } });
+    } catch (error) {
+      invalidPrewarmError = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      invalidPrewarmError.includes('projectWorkerPrewarm.python must be an integer from 0 to 2'),
+      `Prewarm depth must fail closed at the documented bound: ${invalidPrewarmError}`
+    );
+
+    const beforePrewarmWorkerCount = workerInstances.length;
+    const prewarmedWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-prewarm',
+      projectWorkerPrewarm: { python: 1 },
+      files: [
+        { path: 'first.py', contents: 'print("first")\n' },
+        { path: 'second.py', contents: 'print("second")\n' },
+      ],
+    });
+    try {
+      const first = await prewarmedWorkspace.runCommand('python3 first.py');
+      const second = await prewarmedWorkspace.runCommand('python3 second.py');
+      assertCondition(first.exitCode === 0 && second.exitCode === 0, 'Prewarmed Python project commands should complete');
+      const poolWorkers = workerInstances
+        .slice(beforePrewarmWorkerCount)
+        .filter((worker) => String(worker.url).startsWith('/project-prewarm/pyodide-worker.js'));
+      const executedWorkers = poolWorkers.filter((worker) =>
+        worker.messages.some((message) => message.type === 'execute-project-python')
+      );
+      assertCondition(executedWorkers.length === 2, `Each command should lease one clean prewarmed worker: ${executedWorkers.length}`);
+      assertCondition(
+        executedWorkers.every((worker) =>
+          worker.messages.filter((message) => message.type === 'execute-project-python').length === 1 &&
+          worker.messages.findIndex((message) => message.type === 'warmup') <
+            worker.messages.findIndex((message) => message.type === 'execute-project-python') &&
+          worker.terminated
+        ),
+        'Prewarmed workers must warm before lease, execute once, and terminate without contaminated reuse'
+      );
+    } finally {
+      prewarmedWorkspace.dispose();
+    }
+    assertCondition(
+      workerInstances
+        .slice(beforePrewarmWorkerCount)
+        .filter((worker) => String(worker.url).startsWith('/project-prewarm/pyodide-worker.js'))
+        .every((worker) => worker.terminated),
+      'Disposing a prewarmed workspace must retire idle, warming, and leased workers'
+    );
+
+    failedWarmupUrlPrefix = '/project-prewarm-failure/pyodide-worker.js';
+    remainingFailedWarmups = 1;
+    const beforeFailedPrewarmCount = workerInstances.length;
+    const retryingPrewarmWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-prewarm-failure',
+      projectWorkerPrewarm: { python: 1 },
+      files: [{ path: 'retry.py', contents: 'print("retry")\n' }],
+    });
+    try {
+      const result = await retryingPrewarmWorkspace.runCommand('python3 retry.py');
+      assertCondition(result.exitCode === 0, `A failed prewarm should be evicted and retried: ${JSON.stringify(result)}`);
+      const retryWorkers = workerInstances
+        .slice(beforeFailedPrewarmCount)
+        .filter((worker) => String(worker.url).startsWith('/project-prewarm-failure/pyodide-worker.js'));
+      assertCondition(retryWorkers.length >= 2, 'A failed prewarm should create a fresh replacement worker');
+      assertCondition(
+        retryWorkers[0]?.terminated === true &&
+        !retryWorkers[0]?.messages.some((message) => message.type === 'execute-project-python'),
+        'A worker whose warmup failed must be retired before any user command'
+      );
+      assertCondition(
+        retryWorkers.some((worker) =>
+          worker.messages.filter((message) => message.type === 'execute-project-python').length === 1 && worker.terminated
+        ),
+        'The replacement prewarmed worker should execute once and retire'
+      );
+    } finally {
+      failedWarmupUrlPrefix = undefined;
+      remainingFailedWarmups = 0;
+      retryingPrewarmWorkspace.dispose();
+    }
+
+    const retiringPrewarmWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-prewarm-retire',
+      projectWorkerPrewarm: { python: 1 },
+      files: [{ path: 'hold.py', contents: 'print("hold")\n' }],
+    });
+    const retiringStarted = new Promise<void>((resolve) => {
+      heldPythonProjectStarted = resolve;
+    });
+    const retiringCommand = retiringPrewarmWorkspace.runCommand('python3 hold.py');
+    await retiringStarted;
+    const retiringWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/project-prewarm-retire/pyodide-worker.js') &&
+      worker.messages.some((message) => message.type === 'execute-project-python')
+    );
+    retiringPrewarmWorkspace.dispose();
+    await retiringCommand.catch(() => undefined);
+    assertCondition(retiringWorker?.terminated === true, 'Disposal must immediately retire an active one-shot lease');
+    heldPythonProjectStarted = undefined;
+    releaseHeldPythonProject = undefined;
+    console.log('PASS: opt-in one-shot prewarm pools warm before lease, never reuse user workers, and evict failures');
+
     const harnessA = createBrowserHarness({ assetBaseUrl: '/instance-a' });
     const harnessB = createBrowserHarness({ assetBaseUrl: '/instance-b', debug: true });
     assertCondition(harnessA.isLanguageSupported('java'), 'Browser harness should expose Java support');
@@ -804,10 +1036,14 @@ async function main(): Promise<void> {
     console.log('PASS: Java worker client closes TraceKernel HTTP listeners on timeout');
 
     const cppWarmupResult = await harnessA.warmLanguage('cpp');
-    const cppWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/cpp-worker.js'));
+    const cppWarmupWorker = workerInstances.findLast(
+      (worker) =>
+        String(worker.url).startsWith('/instance-a/cpp-worker.js') &&
+        worker.messages.some((message) => message.type === 'warmup')
+    );
     assertCondition(cppWarmupResult.success, 'C++ warmLanguage should resolve successfully');
     assertCondition(
-      cppWarmupWorker?.messages.at(-1)?.type === 'warmup',
+      cppWarmupWorker?.messages.some((message) => message.type === 'warmup') === true,
       'C++ warmLanguage should send the C++ warmup worker request'
     );
     console.log('PASS: browser harness warms C++ runtime on demand');
@@ -1060,14 +1296,22 @@ async function main(): Promise<void> {
       ],
     });
     assertCondition(javascriptBatchResult.success, 'JavaScript unified execute should route multi-case run requests');
-    const javascriptBatchWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-b/javascript-worker.js'));
+    const javascriptBatchWorker = workerInstances.findLast(
+      (worker) =>
+        String(worker.url).startsWith('/instance-b/javascript-worker.js') &&
+        worker.messages.some((message) => message.type === 'execute-code-batch')
+    );
     assertCondition(
       javascriptBatchWorker?.messages.at(-1)?.type === 'execute-code-batch',
       'JavaScript unified execute should send execute-code-batch for multi-case run requests'
     );
     assertCondition(Boolean(javascriptBatchWorker?.terminated), 'JavaScript worker should terminate after a code execution');
     const javascriptSingleResult = await harnessB.getClient('javascript').executeCode('function id(x) { return x; }', 'id', { x: 1 }, 'function');
-    const javascriptSingleWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-b/javascript-worker.js'));
+    const javascriptSingleWorker = workerInstances.findLast(
+      (worker) =>
+        String(worker.url).startsWith('/instance-b/javascript-worker.js') &&
+        worker.messages.some((message) => message.type === 'execute-code')
+    );
     assertCondition(javascriptSingleResult.success, 'JavaScript runtime should execute again after worker isolation reset');
     assertCondition(
       Boolean(javascriptSingleWorker && javascriptSingleWorker !== javascriptBatchWorker && javascriptSingleWorker.terminated),
@@ -1236,7 +1480,11 @@ async function main(): Promise<void> {
         ],
       });
     assertCondition(cppBatchResult.success, 'C++ unified execute should route multi-case run requests');
-    const activeCppWorker = [...workerInstances].reverse().find((worker) => String(worker.url).startsWith('/instance-a/cpp-worker.js'));
+    const activeCppWorker = [...workerInstances].reverse().find(
+      (worker) =>
+        String(worker.url).startsWith('/instance-a/cpp-worker.js') &&
+        worker.messages.some((message) => message.type === 'compile-run-batch')
+    );
     assertCondition(
       activeCppWorker?.messages.at(-1)?.type === 'compile-run-batch',
       'C++ unified execute should send compile-run-batch for multi-case run requests'

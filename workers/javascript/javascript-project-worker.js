@@ -11,7 +11,7 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
       "language": "python",
       "displayName": "Python",
       "versionLabel": "Python 3.13.2 (Pyodide 0.29.0)",
-      "description": "Python 3.13.2 (Pyodide 0.29.0).\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nsortedcontainers 2.4.0 is available for TreeMap, ordered-set, and sorted-list style workflows.",
+      "description": "Python 3.13.2 (Pyodide 0.29.0).\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nOptional third-party packages are consumer-owned runtime assets and are available only when declared by the browser runtime manifest.",
       "runtime": {
         "name": "Pyodide",
         "version": "0.29.0",
@@ -28,14 +28,6 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
         "re",
         "string",
         "typing"
-      ],
-      "libraries": [
-        {
-          "name": "sortedcontainers",
-          "version": "2.4.0",
-          "importName": "sortedcontainers",
-          "detail": "SortedDict, SortedList, and SortedSet are loaded for tree-map/tree-set style use cases."
-        }
       ]
     },
     "javascript": {
@@ -184,11 +176,11 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
       "language": "java",
       "displayName": "Java",
       "versionLabel": "Java 17",
-      "description": "Java 17 is compiled with javac 17 and executed in the browser through a same-origin CheerpJ runtime asset.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
+      "description": "Java 17 is compiled with javac 17 and executed in the browser through consumer-configured CheerpJ runtime assets.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
       "runtime": {
         "name": "CheerpJ browser-local OpenJDK runtime",
         "version": "17",
-        "detail": "Loaded from a configured same-origin CheerpJ runtime asset."
+        "detail": "Loaded from consumer-configured runtime assets (same-origin or an approved CDN)."
       },
       "compiler": {
         "name": "javac",
@@ -3779,6 +3771,7 @@ var package_default = {
 // packages/harness-javascript/src/project-browser.ts
 var AsyncFunction = Object.getPrototypeOf(async function noop() {
 }).constructor;
+var BrowserFunction = Function;
 var textEncoder = new TextEncoder();
 var textDecoder = new TextDecoder();
 var streamInternalCloseListeners = /* @__PURE__ */ new WeakMap();
@@ -5714,19 +5707,188 @@ function createHttpApi(kernelHttp, signal) {
     closeAll
   };
 }
-function installBrowserHttpGlobalLockdown(httpApi) {
+var permanentBrowserAuthorityDefineProperty = Object.defineProperty;
+var permanentBrowserAuthorityGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+var permanentBrowserAuthorityGetPrototypeOf = Object.getPrototypeOf;
+var PERMANENT_BROWSER_WORKER_DENIED_GLOBALS = Object.freeze([
+  "XMLHttpRequest",
+  "WebSocket",
+  "WebSocketStream",
+  "WebTransport",
+  "EventSource",
+  "RTCPeerConnection",
+  "webkitRTCPeerConnection",
+  "RTCDataChannel",
+  "indexedDB",
+  "caches",
+  "Cache",
+  "CacheStorage",
+  "cookieStore",
+  "localStorage",
+  "sessionStorage",
+  "webkitRequestFileSystem",
+  "webkitRequestFileSystemSync",
+  "webkitResolveLocalFileSystemURL",
+  "webkitResolveLocalFileSystemSyncURL",
+  "Worker",
+  "SharedWorker",
+  "MessageChannel",
+  "MessagePort",
+  "BroadcastChannel",
+  "importScripts",
+  "postMessage",
+  "eval",
+  "Function"
+]);
+var PERMANENT_BROWSER_WORKER_DENIED_NAVIGATOR_MEMBERS = Object.freeze([
+  "sendBeacon",
+  "storage",
+  "locks",
+  "serviceWorker"
+]);
+var permanentBrowserDynamicConstructorPrototypes = Object.freeze([
+  BrowserFunction.prototype,
+  permanentBrowserAuthorityGetPrototypeOf(async function browserAsyncFunction() {
+  }),
+  permanentBrowserAuthorityGetPrototypeOf(function* browserGeneratorFunction() {
+  }),
+  permanentBrowserAuthorityGetPrototypeOf(async function* browserAsyncGeneratorFunction() {
+  })
+]);
+function permanentBrowserAuthorityError(name) {
+  return Object.assign(
+    new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`),
+    { code: "EACCES" }
+  );
+}
+function permanentBrowserDeniedAuthority(name) {
+  const deny = function deniedBrowserWorkerAuthority() {
+    throw permanentBrowserAuthorityError(name);
+  };
+  return typeof Proxy === "function" ? new Proxy(deny, {
+    apply: () => deny(),
+    construct: () => deny(),
+    get: (_target, property) => property === Symbol.toStringTag ? "TraceKernelDeniedCapability" : permanentBrowserDeniedAuthority(`${name}.${String(property)}`),
+    set: () => {
+      throw permanentBrowserAuthorityError(name);
+    }
+  }) : deny;
+}
+function permanentBrowserPrototypeChain(value) {
+  const targets = [];
+  const seen = /* @__PURE__ */ new Set();
+  let current = value;
+  while (current && (typeof current === "object" || typeof current === "function") && !seen.has(current)) {
+    targets.push(current);
+    seen.add(current);
+    current = permanentBrowserAuthorityGetPrototypeOf(current);
+  }
+  return targets;
+}
+function sealPermanentBrowserProperty(target, name, value) {
+  const descriptor = permanentBrowserAuthorityGetOwnPropertyDescriptor(target, name);
+  if (descriptor?.configurable === false && !("value" in descriptor && descriptor.writable === true)) {
+    if ("value" in descriptor && descriptor.value === value) return;
+    throw permanentBrowserAuthorityError(String(name));
+  }
+  permanentBrowserAuthorityDefineProperty(target, name, {
+    configurable: false,
+    enumerable: descriptor?.enumerable ?? false,
+    writable: false,
+    value
+  });
+  if (target[name] !== value) {
+    throw permanentBrowserAuthorityError(String(name));
+  }
+}
+function sealPermanentBrowserPropertyAcrossChain(value, name, replacement, options = {}) {
+  const targets = permanentBrowserPrototypeChain(value);
+  const includeOwn = options.includeOwn !== false;
+  let replacedOwn = false;
+  for (let index = includeOwn ? 0 : 1; index < targets.length; index += 1) {
+    const target = targets[index];
+    if (!permanentBrowserAuthorityGetOwnPropertyDescriptor(target, name)) continue;
+    sealPermanentBrowserProperty(target, name, replacement);
+    if (target === value) replacedOwn = true;
+  }
+  if (includeOwn && options.ensureOwn !== false && !replacedOwn) {
+    sealPermanentBrowserProperty(value, name, replacement);
+  }
+}
+function installPermanentBrowserWorkerAuthorityBoundary(httpApi) {
+  if (typeof document !== "undefined") {
+    throw new Error("Permanent browser authority denial is only valid inside a disposable worker.");
+  }
+  const scope = globalThis;
+  for (const name of PERMANENT_BROWSER_WORKER_DENIED_GLOBALS) {
+    sealPermanentBrowserPropertyAcrossChain(scope, name, permanentBrowserDeniedAuthority(name));
+  }
+  const deniedNativeFetch = permanentBrowserDeniedAuthority("native fetch");
+  sealPermanentBrowserPropertyAcrossChain(scope, "fetch", deniedNativeFetch, {
+    includeOwn: false,
+    ensureOwn: false
+  });
+  sealPermanentBrowserProperty(scope, "fetch", httpApi.fetch);
+  sealPermanentBrowserProperty(scope, "Headers", httpApi.Headers);
+  sealPermanentBrowserProperty(scope, "Request", httpApi.Request);
+  sealPermanentBrowserProperty(scope, "Response", httpApi.Response);
+  const navigatorValue = scope.navigator;
+  if (navigatorValue && (typeof navigatorValue === "object" || typeof navigatorValue === "function")) {
+    for (const name of PERMANENT_BROWSER_WORKER_DENIED_NAVIGATOR_MEMBERS) {
+      sealPermanentBrowserPropertyAcrossChain(
+        navigatorValue,
+        name,
+        permanentBrowserDeniedAuthority(`navigator.${name}`)
+      );
+    }
+    sealPermanentBrowserProperty(scope, "navigator", navigatorValue);
+  }
+  const deniedConstructor = permanentBrowserDeniedAuthority("Function constructor");
+  for (const prototype of permanentBrowserDynamicConstructorPrototypes) {
+    sealPermanentBrowserProperty(prototype, "constructor", deniedConstructor);
+  }
+  return () => {
+  };
+}
+function installBrowserHttpGlobalLockdown(httpApi, authorityMode = "temporary") {
+  if (authorityMode === "permanent") {
+    return installPermanentBrowserWorkerAuthorityBoundary(httpApi);
+  }
   const global = globalThis;
   const blockedNetworkApi = (name) => function blockedTraceKernelNetworkApi() {
     throw Object.assign(new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`), { code: "EACCES" });
+  };
+  const blockedAuthorityObject = (name) => {
+    const deny = blockedNetworkApi(name);
+    return typeof Proxy === "function" ? new Proxy(deny, {
+      apply: () => deny(),
+      construct: () => deny(),
+      get: (_target, property) => property === Symbol.toStringTag ? "TraceKernelDeniedCapability" : deny
+    }) : deny;
   };
   const replacements = {
     fetch: httpApi.fetch,
     Headers: httpApi.Headers,
     Request: httpApi.Request,
     Response: httpApi.Response,
-    XMLHttpRequest: blockedNetworkApi("XMLHttpRequest"),
-    WebSocket: blockedNetworkApi("WebSocket"),
-    EventSource: blockedNetworkApi("EventSource")
+    XMLHttpRequest: blockedAuthorityObject("XMLHttpRequest"),
+    WebSocket: blockedAuthorityObject("WebSocket"),
+    WebSocketStream: blockedAuthorityObject("WebSocketStream"),
+    WebTransport: blockedAuthorityObject("WebTransport"),
+    EventSource: blockedAuthorityObject("EventSource"),
+    // A dedicated Worker is an execution boundary, not an origin boundary.
+    // User code must not bypass TraceKernel through same-origin persistence,
+    // cache, nested workers, or cross-context messaging. The worker bridge
+    // captures the host channel before this lockdown is installed.
+    ...typeof document === "undefined" ? {
+      indexedDB: blockedAuthorityObject("indexedDB"),
+      caches: blockedAuthorityObject("caches"),
+      cookieStore: blockedAuthorityObject("cookieStore"),
+      Worker: blockedAuthorityObject("Worker"),
+      SharedWorker: blockedAuthorityObject("SharedWorker"),
+      BroadcastChannel: blockedAuthorityObject("BroadcastChannel"),
+      importScripts: blockedAuthorityObject("importScripts")
+    } : {}
   };
   const previousDescriptors = /* @__PURE__ */ new Map();
   for (const [name, value] of Object.entries(replacements)) {
@@ -5742,16 +5904,27 @@ function installBrowserHttpGlobalLockdown(httpApi) {
     }
   }
   const navigatorValue = global.navigator;
-  const sendBeaconDescriptor = navigatorValue && typeof navigatorValue === "object" ? Object.getOwnPropertyDescriptor(navigatorValue, "sendBeacon") : void 0;
+  const navigatorDescriptors = /* @__PURE__ */ new Map();
   if (navigatorValue && typeof navigatorValue === "object") {
-    try {
-      Object.defineProperty(navigatorValue, "sendBeacon", {
-        configurable: true,
-        enumerable: false,
-        writable: false,
-        value: blockedNetworkApi("navigator.sendBeacon")
-      });
-    } catch {
+    const navigatorReplacements = {
+      sendBeacon: blockedAuthorityObject("navigator.sendBeacon"),
+      ...typeof document === "undefined" ? {
+        storage: blockedAuthorityObject("navigator.storage"),
+        locks: blockedAuthorityObject("navigator.locks"),
+        serviceWorker: blockedAuthorityObject("navigator.serviceWorker")
+      } : {}
+    };
+    for (const [name, value] of Object.entries(navigatorReplacements)) {
+      navigatorDescriptors.set(name, Object.getOwnPropertyDescriptor(navigatorValue, name));
+      try {
+        Object.defineProperty(navigatorValue, name, {
+          configurable: true,
+          enumerable: false,
+          writable: false,
+          value
+        });
+      } catch {
+      }
     }
   }
   return () => {
@@ -5766,13 +5939,15 @@ function installBrowserHttpGlobalLockdown(httpApi) {
       }
     }
     if (navigatorValue && typeof navigatorValue === "object") {
-      try {
-        if (sendBeaconDescriptor) {
-          Object.defineProperty(navigatorValue, "sendBeacon", sendBeaconDescriptor);
-        } else {
-          delete navigatorValue.sendBeacon;
+      for (const [name, descriptor] of navigatorDescriptors) {
+        try {
+          if (descriptor) {
+            Object.defineProperty(navigatorValue, name, descriptor);
+          } else {
+            delete navigatorValue[name];
+          }
+        } catch {
         }
-      } catch {
       }
     }
   };
@@ -9154,7 +9329,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   Object.assign(fsApi, { promises: fsPromisesApi });
   const zlibApi = createZlibApi();
   const httpApi = createHttpApi(request.kernelHttp, request.signal);
-  const restoreHttpGlobals = installBrowserHttpGlobalLockdown(httpApi);
+  const restoreHttpGlobals = installBrowserHttpGlobalLockdown(
+    httpApi,
+    options.projectUserAuthorityMode ?? "temporary"
+  );
   const restoreTimerGlobals = installBrowserTimerGlobals(eventLoopApi);
   const builtins = /* @__PURE__ */ new Map([
     ["fs", fsApi],
@@ -9264,7 +9442,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     const localImport = (specifier) => importModule(specifier, normalizedPath);
     const executableCode = isEsmModule(modules, normalizedPath) ? transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot)) : code;
     try {
-      const fn = new Function(
+      const fn = new BrowserFunction(
         "require",
         "__import",
         "module",
@@ -9666,7 +9844,8 @@ workerScope.onmessage = (event) => {
   }
   const request = payload;
   const options = {
-    allowDynamicEval: runnerOptions?.allowDynamicEval
+    allowDynamicEval: runnerOptions?.allowDynamicEval,
+    projectUserAuthorityMode: runnerOptions?.projectUserAuthorityMode
   };
   const executionState = { cancelled: false, abortController: new AbortController() };
   const kernelHttp = new WorkerKernelHttpBridge((message) => {

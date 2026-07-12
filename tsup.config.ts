@@ -1,30 +1,5 @@
 import { defineConfig } from 'tsup';
-
-const commonConfig = {
-  format: ['esm', 'cjs'],
-  dts: {
-    compilerOptions: {
-      module: 'esnext',
-      moduleResolution: 'bundler',
-    },
-  },
-  sourcemap: true,
-  clean: true,
-  target: 'es2022',
-  splitting: false,
-  bundle: true,
-  banner: {
-    js: 'var define = undefined;',
-  },
-  skipNodeModulesBundle: true,
-  noExternal: ['just-bash', 'balanced-match', 'brace-expansion', 'diff', 'fflate', 'minimatch', 'sprintf-js', 'turndown'],
-  external: ['typescript'],
-} as const;
-
-const libraryConfig = {
-  ...commonConfig,
-  external: [...commonConfig.external, '@tracecode/harness-core'],
-};
+import { commonConfig, libraryConfig } from './tsup.shared';
 
 export default defineConfig([
   {
@@ -52,13 +27,6 @@ export default defineConfig([
       sql: 'packages/harness-sql/src/index.ts',
       cli: 'src/cli.ts',
     },
-  },
-  {
-    ...commonConfig,
-    entry: {
-      index: 'packages/harness-core/src/index.ts',
-    },
-    outDir: 'packages/harness-core/dist',
   },
   {
     ...libraryConfig,

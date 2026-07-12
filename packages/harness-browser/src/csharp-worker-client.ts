@@ -15,9 +15,15 @@ import type {
   RuntimeCommandEvent,
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
+  RuntimeKernelHttpBridge,
+  RuntimeKernelHttpListenerHandle,
+  RuntimeKernelHttpProtocolMessage,
+  RuntimeKernelHttpRequest,
+  RuntimeKernelHttpResponse,
   RuntimeProjectCommandRequest,
 } from '@tracecode/harness-core';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
 import { createWorkerProtocolToken } from './worker-protocol';
 
 type MessageId = string;
@@ -32,6 +38,12 @@ export interface CSharpWorkerClientOptions {
   tracingTimeoutMs?: number;
   interviewTimeoutMs?: number;
   workerIdleTimeoutMs?: number;
+  assetPreflight?: () => Promise<void>;
+  runtimeAssetPreflight?: () => Promise<void>;
+  /** Permanent mode is only safe when this worker is retired after its project command. */
+  projectUserAuthorityMode?: 'temporary' | 'permanent';
+  /** Declared runtime files preflighted by the browser harness; dotnet still resolves them from assetBaseUrl. */
+  runtimeDependencies?: Readonly<Record<string, string>>;
 }
 
 interface PendingMessage {
@@ -39,11 +51,20 @@ interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
+  kernelHttp?: RuntimeKernelHttpBridge;
+  httpListeners?: Map<string, RuntimeKernelHttpListenerHandle>;
+  httpRequests?: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
+  httpDispatchAbortControllers?: Map<string, AbortController>;
   timeoutId?: ReturnType<typeof setTimeout>;
 }
 
 function createExecutionAbortError(): Error {
   return Object.assign(new Error('Execution aborted'), { name: 'AbortError' });
+}
+
+function serializableKernelHttpRequest(request: RuntimeKernelHttpRequest): RuntimeKernelHttpRequest {
+  const { signal: _signal, ...serializable } = request;
+  return serializable;
 }
 
 interface WorkerMessage {
@@ -116,6 +137,7 @@ export class CSharpWorkerClient {
   private worker: Worker | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
+  private httpRequestId = 0;
   private isInitializing = false;
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromise: Promise<WarmupResult> | null = null;
@@ -193,15 +215,31 @@ export class CSharpWorkerClient {
         pending.onEvent?.(payload as RuntimeCommandEvent);
         return;
       }
+      if (
+        type === 'kernel-http-listen' ||
+        type === 'kernel-http-close' ||
+        type === 'kernel-http-response' ||
+        type === 'kernel-http-dispatch' ||
+        type === 'kernel-http-abort-dispatch' ||
+        type === 'kernel-http-error'
+      ) {
+        this.handleKernelHttpProtocolMessage(id, type, payload);
+        return;
+      }
       this.pendingMessages.delete(id);
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
+      this.cleanupPendingKernelHttp(pending);
 
       if (type === 'error') {
         pending.reject(new Error((payload as { error: string }).error));
         return;
       }
 
-      pending.resolve(payload);
+      try {
+        pending.resolve(restoreTransferredTraceEvents(payload));
+      } catch (error) {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      }
     };
 
     this.worker.onerror = (error) => {
@@ -223,6 +261,7 @@ export class CSharpWorkerClient {
       this.workerReadyReject = null;
       for (const [, pending] of this.pendingMessages) {
         if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
+        this.cleanupPendingKernelHttp(pending);
         pending.reject(workerError);
       }
       this.pendingMessages.clear();
@@ -275,8 +314,13 @@ export class CSharpWorkerClient {
     type: string,
     payload?: unknown,
     timeoutMs = MESSAGE_TIMEOUT_MS,
-    onEvent?: RuntimeCommandEventHandler
+    onEvent?: RuntimeCommandEventHandler,
+    kernelHttp?: RuntimeKernelHttpBridge
   ): Promise<T> {
+    await this.options.assetPreflight?.();
+    if (type !== 'init' && type !== 'status') {
+      await this.options.runtimeAssetPreflight?.();
+    }
     const worker = this.getWorker();
     await this.waitForWorkerReady();
     const id = String(++this.messageId);
@@ -288,12 +332,17 @@ export class CSharpWorkerClient {
         resolve: resolve as (value: unknown) => void,
         reject,
         ...(onEvent ? { onEvent } : {}),
+        ...(kernelHttp ? { kernelHttp } : {}),
+        httpListeners: new Map(),
+        httpRequests: new Map(),
+        httpDispatchAbortControllers: new Map(),
       });
 
       const timeoutId = globalThis.setTimeout(() => {
         const pending = this.pendingMessages.get(id);
         if (!pending) return;
         this.pendingMessages.delete(id);
+        this.cleanupPendingKernelHttp(pending);
         const timeoutError = new Error(`Worker request timed out: ${type}`);
         logRuntimeDiagnostic('warn', {
           component: 'CSharpWorkerClient',
@@ -309,8 +358,196 @@ export class CSharpWorkerClient {
       const pending = this.pendingMessages.get(id);
       if (pending) pending.timeoutId = timeoutId;
 
-      worker.postMessage({ id, type, payload, protocolToken });
+      try {
+        worker.postMessage({ id, type, payload, protocolToken });
+      } catch (error) {
+        globalThis.clearTimeout(timeoutId);
+        const pending = this.pendingMessages.get(id);
+        this.pendingMessages.delete(id);
+        if (pending) this.cleanupPendingKernelHttp(pending);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
+  }
+
+  private postWorkerMessage(commandId: string, type: string, payload: RuntimeKernelHttpProtocolMessage): void {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending) return;
+    this.worker?.postMessage({
+      id: commandId,
+      type,
+      payload,
+      protocolToken: pending.protocolToken,
+    });
+  }
+
+  private handleKernelHttpProtocolMessage(commandId: string, type: string, payload: unknown): void {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending) return;
+    const message = payload as RuntimeKernelHttpProtocolMessage;
+
+    if (type === 'kernel-http-listen' && message.type === 'kernel-http-listen') {
+      if (!pending.kernelHttp) {
+        this.postKernelHttpError(commandId, {
+          listenerId: message.listenerId,
+          error: 'TraceKernel HTTP is not available.',
+        });
+        return;
+      }
+      try {
+        const previous = pending.httpListeners?.get(message.listenerId);
+        previous?.close();
+        const handle = pending.kernelHttp.listen(message.options, (request) =>
+          this.dispatchWorkerKernelHttpRequest(commandId, message.listenerId, request)
+        );
+        pending.httpListeners?.set(message.listenerId, handle);
+        this.postWorkerMessage(commandId, 'kernel-http-listen-result', {
+          type: 'kernel-http-listen-result',
+          listenerId: message.listenerId,
+          info: handle.info,
+        } satisfies RuntimeKernelHttpProtocolMessage);
+      } catch (error) {
+        this.postKernelHttpError(commandId, {
+          listenerId: message.listenerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+
+    if (type === 'kernel-http-close' && message.type === 'kernel-http-close') {
+      const listener = pending.httpListeners?.get(message.listenerId);
+      pending.httpListeners?.delete(message.listenerId);
+      try {
+        listener?.close();
+      } catch (error) {
+        this.postKernelHttpError(commandId, {
+          listenerId: message.listenerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+
+    if (type === 'kernel-http-response' && message.type === 'kernel-http-response') {
+      const request = pending.httpRequests?.get(message.requestId);
+      pending.httpRequests?.delete(message.requestId);
+      request?.resolve(message.response);
+      return;
+    }
+
+    if (type === 'kernel-http-dispatch' && message.type === 'kernel-http-dispatch') {
+      if (!pending.kernelHttp) {
+        this.postKernelHttpError(commandId, {
+          requestId: message.requestId,
+          error: 'TraceKernel HTTP is not available.',
+        });
+        return;
+      }
+      const abortController = new AbortController();
+      pending.httpDispatchAbortControllers?.set(message.requestId, abortController);
+      Promise.resolve().then(() => pending.kernelHttp!.dispatch(message.request, {
+        signal: abortController.signal,
+        ...(message.timeoutMs !== undefined ? { timeoutMs: message.timeoutMs } : {}),
+      })).then((response) => {
+        pending.httpDispatchAbortControllers?.delete(message.requestId);
+        this.postWorkerMessage(commandId, 'kernel-http-dispatch-result', {
+          type: 'kernel-http-dispatch-result',
+          requestId: message.requestId,
+          response,
+        } satisfies RuntimeKernelHttpProtocolMessage);
+      }, (error) => {
+        pending.httpDispatchAbortControllers?.delete(message.requestId);
+        this.postKernelHttpError(commandId, {
+          requestId: message.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      return;
+    }
+
+    if (type === 'kernel-http-abort-dispatch' && message.type === 'kernel-http-abort-dispatch') {
+      pending.httpDispatchAbortControllers?.get(message.requestId)?.abort();
+      pending.httpDispatchAbortControllers?.delete(message.requestId);
+      return;
+    }
+
+    if (type === 'kernel-http-error' && message.type === 'kernel-http-error' && message.requestId) {
+      const request = pending.httpRequests?.get(message.requestId);
+      pending.httpRequests?.delete(message.requestId);
+      request?.reject(new Error(message.error));
+    }
+  }
+
+  private dispatchWorkerKernelHttpRequest(
+    commandId: string,
+    listenerId: string,
+    request: RuntimeKernelHttpRequest
+  ): Promise<RuntimeKernelHttpResponse> {
+    const pending = this.pendingMessages.get(commandId);
+    if (!pending || !this.worker) return Promise.reject(new Error('C# worker is not running.'));
+    const requestId = `${commandId}:http:${++this.httpRequestId}`;
+    let abortListener: (() => void) | undefined;
+    return new Promise<RuntimeKernelHttpResponse>((resolve, reject) => {
+      const cleanup = (): void => {
+        if (abortListener) request.signal?.removeEventListener?.('abort', abortListener);
+      };
+      pending.httpRequests?.set(requestId, {
+        resolve: (response) => {
+          cleanup();
+          resolve(response);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
+      });
+      this.postWorkerMessage(commandId, 'kernel-http-request', {
+        type: 'kernel-http-request',
+        listenerId,
+        requestId,
+        request: serializableKernelHttpRequest(request),
+      } satisfies RuntimeKernelHttpProtocolMessage);
+      if (request.signal) {
+        abortListener = () => {
+          this.postWorkerMessage(commandId, 'kernel-http-abort-request', {
+            type: 'kernel-http-abort-request',
+            requestId,
+          } satisfies RuntimeKernelHttpProtocolMessage);
+        };
+        request.signal.addEventListener?.('abort', abortListener, { once: true });
+        if (request.signal.aborted) abortListener();
+      }
+    });
+  }
+
+  private postKernelHttpError(
+    commandId: string,
+    error: Omit<Extract<RuntimeKernelHttpProtocolMessage, { type: 'kernel-http-error' }>, 'type'>
+  ): void {
+    this.postWorkerMessage(commandId, 'kernel-http-error', {
+      type: 'kernel-http-error',
+      ...error,
+    } satisfies RuntimeKernelHttpProtocolMessage);
+  }
+
+  private cleanupPendingKernelHttp(pending: PendingMessage): void {
+    for (const listener of pending.httpListeners?.values() ?? []) {
+      try {
+        listener.close();
+      } catch {
+        // Cleanup must continue so requests and dispatches cannot outlive their command.
+      }
+    }
+    pending.httpListeners?.clear();
+    for (const request of pending.httpRequests?.values() ?? []) {
+      request.reject(new Error('C# worker finished before HTTP response.'));
+    }
+    pending.httpRequests?.clear();
+    for (const abortController of pending.httpDispatchAbortControllers?.values() ?? []) {
+      abortController.abort();
+    }
+    pending.httpDispatchAbortControllers?.clear();
   }
 
   private async executeWithTimeout<T>(executor: () => Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
@@ -382,6 +619,7 @@ export class CSharpWorkerClient {
 
     for (const [, pending] of this.pendingMessages) {
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
+      this.cleanupPendingKernelHttp(pending);
       pending.reject(reason);
     }
     this.pendingMessages.clear();
@@ -407,10 +645,18 @@ export class CSharpWorkerClient {
     );
   }
 
-  private workerOptionsPayload(): { idleTimeoutMs?: number } {
-    return this.options.workerIdleTimeoutMs === undefined
-      ? {}
-      : { idleTimeoutMs: this.options.workerIdleTimeoutMs };
+  private workerOptionsPayload(): {
+    idleTimeoutMs?: number;
+    runtimeDependencies?: Readonly<Record<string, string>>;
+  } {
+    return {
+      ...(this.options.workerIdleTimeoutMs === undefined
+        ? {}
+        : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
+      ...(this.options.runtimeDependencies
+        ? { runtimeDependencies: this.options.runtimeDependencies }
+        : {}),
+    };
   }
 
   async init(): Promise<InitResult> {
@@ -694,6 +940,7 @@ export class CSharpWorkerClient {
               maxStoredEvents: options?.maxStoredEvents,
               maxPathDepth: options?.maxPathDepth,
               minimalTrace: options?.minimalTrace,
+              traceEventTransport: traceEventTransferRequest(),
               ...this.workerOptionsPayload(),
             },
             tracingTimeoutMs + 5_000
@@ -788,7 +1035,7 @@ export class CSharpWorkerClient {
       this.terminateAndReset(abortError);
       throw abortError;
     }
-    const { signal: _signal, onEvent: _requestOnEvent, ...workerRequest } = request;
+    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
     return this.executeAfterWarmupWithTimeout(
       () =>
         this.sendMessage<CSharpProjectCommandResult>(
@@ -797,10 +1044,14 @@ export class CSharpWorkerClient {
             ...workerRequest,
             assetBaseUrl: this.options.assetBaseUrl,
             timeoutMs: Math.max(100, timeoutMs - 1_000),
+            ...(this.options.projectUserAuthorityMode
+              ? { projectUserAuthorityMode: this.options.projectUserAuthorityMode }
+              : {}),
             ...this.workerOptionsPayload(),
           },
           timeoutMs + 5_000,
-          onEvent
+          onEvent,
+          kernelHttp
         ),
       timeoutMs,
       signal

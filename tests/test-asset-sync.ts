@@ -122,6 +122,28 @@ async function main(): Promise<void> {
     'Filtered Python sync should not copy JavaScript project assets'
   );
 
+  const filteredJavaScriptTargetDir = join(tempRoot, 'public', 'javascript-workers');
+  const filteredJavaScriptRun = spawnSync(
+    'node',
+    ['dist/cli.js', 'sync-assets', filteredJavaScriptTargetDir, '--languages', 'javascript'],
+    { cwd: resolve(process.cwd()), encoding: 'utf8' }
+  );
+  if (filteredJavaScriptRun.status !== 0) {
+    throw new Error(
+      filteredJavaScriptRun.stderr || filteredJavaScriptRun.stdout || 'Filtered JavaScript asset sync CLI failed'
+    );
+  }
+  for (const relativePath of [
+    'javascript-worker.js',
+    'javascript-project-worker.js',
+    'shared/runtime-kernel-policy-classic.js',
+    'vendor/typescript.js',
+    'vendor/javascript-libraries.js',
+  ]) {
+    const fileStat = await stat(join(filteredJavaScriptTargetDir, relativePath));
+    assertCondition(fileStat.isFile(), `Expected filtered JavaScript synced asset at ${relativePath}`);
+  }
+
   console.log('PASS: asset sync CLI copies canonical and language-filtered worker assets');
 }
 

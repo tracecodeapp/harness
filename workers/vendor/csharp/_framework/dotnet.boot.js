@@ -1,7 +1,7 @@
 export const config = /*json-start*/{
   "mainAssemblyName": "TraceCode.CSharpHost.dll",
   "resources": {
-    "hash": "sha256-rrjWia7IyFgcyjIlrsJUoR05TDKzQwfsSaLB3hWI+pQ=",
+    "hash": "sha256-ikNgoP8A7YgG8eUOMQK7dM8lESMLNQIzbE9kbaMgXeU=",
     "jsModuleNative": [
       {
         "name": "dotnet.native.js"
@@ -15,7 +15,7 @@ export const config = /*json-start*/{
     "wasmNative": [
       {
         "name": "dotnet.native.wasm",
-        "hash": "sha256-vUP5Lsl96IyFEO5csZxx1y45czdPoB8qFnEiP4vJclM="
+        "hash": "sha256-Ej2NHUJ7sEGydmSZmg5uOZxn6s57jeFbJvfMC9Zvgaw="
       }
     ],
     "coreAssembly": [
@@ -789,7 +789,7 @@ export const config = /*json-start*/{
       {
         "virtualPath": "TraceCode.CSharpHost.wasm",
         "name": "TraceCode.CSharpHost.wasm",
-        "hash": "sha256-CT+P1hQKfBNd7ICGjiW0d+5OU4//noGz03dWFaMm3Xc="
+        "hash": "sha256-oeBEttcUiG9/w5hdeoHUXFQc1hc6Mpyj8EDi0lVoPe0="
       },
       {
         "virtualPath": "WindowsBase.wasm",
@@ -957,119 +957,119 @@ export const config = /*json-start*/{
     },
     "vfs": [
       {
-        "virtualPath": "/tracecode-refs/Microsoft.CodeAnalysis.CSharp.dll",
-        "name": "supportFiles/0_Microsoft.CodeAnalysis.CSharp.dll",
-        "hash": "sha256-VBQncKAOWUlC7okjcm6kkSYwPQxSOTKIbCQX62bcB/g="
-      },
-      {
-        "virtualPath": "/tracecode-refs/Microsoft.CodeAnalysis.dll",
-        "name": "supportFiles/1_Microsoft.CodeAnalysis.dll",
-        "hash": "sha256-rYV/HOf44mwnIq3nBfrD+QUCpHWQwUB13xMnIQ8Qse8="
+        "virtualPath": "/tracecode-refs/TraceCode.CSharpHost.dll",
+        "name": "supportFiles/0_TraceCode.CSharpHost.dll",
+        "hash": "sha256-Ypw98HD7KkiPC7xT/lzkfdvPZyXuFXCUwwD33IbRpxw="
       },
       {
         "virtualPath": "/tracecode-refs/Microsoft.CSharp.dll",
-        "name": "supportFiles/2_Microsoft.CSharp.dll",
+        "name": "supportFiles/1_Microsoft.CSharp.dll",
         "hash": "sha256-zPxidcP2HdMMMIjmwVr4mrZ5pRPPbm/jdIxhkFdty5Q="
       },
       {
-        "virtualPath": "/tracecode-refs/Microsoft.VisualBasic.Core.dll",
-        "name": "supportFiles/3_Microsoft.VisualBasic.Core.dll",
-        "hash": "sha256-FtKIz30lF6HARP3ZiE5wCHRlZc4RKB8GAsJp5Lz+IfM="
-      },
-      {
-        "virtualPath": "/tracecode-refs/Microsoft.VisualBasic.dll",
-        "name": "supportFiles/4_Microsoft.VisualBasic.dll",
-        "hash": "sha256-MbUK9t7PDUpnY7GaGIOqQ4xS4o+WT9kkI4/M5XZ5+xQ="
-      },
-      {
-        "virtualPath": "/tracecode-refs/Microsoft.Win32.Primitives.dll",
-        "name": "supportFiles/5_Microsoft.Win32.Primitives.dll",
-        "hash": "sha256-IbjUvoDHb+UM24Tq6F+PpmeKTXlTUn38TrLzl1dqchQ="
-      },
-      {
-        "virtualPath": "/tracecode-refs/Microsoft.Win32.Registry.dll",
-        "name": "supportFiles/6_Microsoft.Win32.Registry.dll",
-        "hash": "sha256-PknFouEeKfuCycKrh7KQyGhX9RKzgRRk8uOICVXY5n8="
-      },
-      {
         "virtualPath": "/tracecode-refs/mscorlib.dll",
-        "name": "supportFiles/7_mscorlib.dll",
+        "name": "supportFiles/2_mscorlib.dll",
         "hash": "sha256-CO3MojrTtqXofSkBU2V31o2C3V+5M1ysGUtNc0PlgZ8="
       },
       {
         "virtualPath": "/tracecode-refs/netstandard.dll",
-        "name": "supportFiles/8_netstandard.dll",
+        "name": "supportFiles/3_netstandard.dll",
         "hash": "sha256-O9xNut9nyX4z3LW9Mzivc/NSMVJ3+tBydzIR63jcMRA="
       },
       {
+        "virtualPath": "/tracecode-refs/System.dll",
+        "name": "supportFiles/4_System.dll",
+        "hash": "sha256-14N93bu9s30AJuvXKxn2h61q/eeidHWj3xA2nb0GAqs="
+      },
+      {
+        "virtualPath": "/tracecode-refs/System.Core.dll",
+        "name": "supportFiles/5_System.Core.dll",
+        "hash": "sha256-w3iz6mo2/jHfjzfremanZcBw3HgPQCl7zlr6ut66sCA="
+      },
+      {
+        "virtualPath": "/tracecode-refs/System.Private.CoreLib.dll",
+        "name": "supportFiles/6_System.Private.CoreLib.dll",
+        "hash": "sha256-Wg6RfpQCPsQlFVQct0C06NqFYXtGtGrAA3x48A//KOo="
+      },
+      {
+        "virtualPath": "/tracecode-refs/System.Runtime.dll",
+        "name": "supportFiles/7_System.Runtime.dll",
+        "hash": "sha256-Uh/aBCkHTeK4gOhzYuBtWjqgZn6t2Jql2tqz8/40FRM="
+      },
+      {
+        "virtualPath": "/tracecode-refs/System.Runtime.Extensions.dll",
+        "name": "supportFiles/8_System.Runtime.Extensions.dll",
+        "hash": "sha256-glZdFgvq8x0WlI0JkYM+TvBUaCWbSNGN+xSf8ZPCHxg="
+      },
+      {
+        "virtualPath": "/tracecode-refs/System.Runtime.CompilerServices.Unsafe.dll",
+        "name": "supportFiles/9_System.Runtime.CompilerServices.Unsafe.dll",
+        "hash": "sha256-cvKUgvIlj872srt+Y90SLzd77T07xZmnCi6MQj+tdpI="
+      },
+      {
+        "virtualPath": "/tracecode-refs/System.Runtime.Numerics.dll",
+        "name": "supportFiles/10_System.Runtime.Numerics.dll",
+        "hash": "sha256-gHM3sAzlEZoY8K5OXaMGyPTNIMtlqChMhAxHlIxYuwU="
+      },
+      {
+        "virtualPath": "/tracecode-refs/System.Runtime.Serialization.Primitives.dll",
+        "name": "supportFiles/11_System.Runtime.Serialization.Primitives.dll",
+        "hash": "sha256-iBpkpmMv0lgQFjTdDmrEB/cGE0IbXrIxksmPobo29d8="
+      },
+      {
         "virtualPath": "/tracecode-refs/System.AppContext.dll",
-        "name": "supportFiles/9_System.AppContext.dll",
+        "name": "supportFiles/12_System.AppContext.dll",
         "hash": "sha256-utyjrF+WJMJVmJbS+xK9pRkcTlDBCAYg5dyz7+izC9s="
       },
       {
         "virtualPath": "/tracecode-refs/System.Buffers.dll",
-        "name": "supportFiles/10_System.Buffers.dll",
+        "name": "supportFiles/13_System.Buffers.dll",
         "hash": "sha256-3Jlg9qnvwmX32eX7U1jF27qeltas1XYb5djasf1Gabk="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Collections.Concurrent.dll",
-        "name": "supportFiles/11_System.Collections.Concurrent.dll",
-        "hash": "sha256-CX6lmG6/hzvwLYrHkOprlnPp4NxaJAVLarptSQrhYPI="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Collections.dll",
-        "name": "supportFiles/12_System.Collections.dll",
+        "name": "supportFiles/14_System.Collections.dll",
         "hash": "sha256-UXgWEQzW584sSppbN/vaP2sbfUZq8btZ3GWN4WSSm/Q="
       },
       {
+        "virtualPath": "/tracecode-refs/System.Collections.Concurrent.dll",
+        "name": "supportFiles/15_System.Collections.Concurrent.dll",
+        "hash": "sha256-CX6lmG6/hzvwLYrHkOprlnPp4NxaJAVLarptSQrhYPI="
+      },
+      {
         "virtualPath": "/tracecode-refs/System.Collections.Immutable.dll",
-        "name": "supportFiles/13_System.Collections.Immutable.dll",
+        "name": "supportFiles/16_System.Collections.Immutable.dll",
         "hash": "sha256-Pp+b1l9XVFkrU9MdPv6XZIdG+An0TYnUlwtbjKhNjOg="
       },
       {
         "virtualPath": "/tracecode-refs/System.Collections.NonGeneric.dll",
-        "name": "supportFiles/14_System.Collections.NonGeneric.dll",
+        "name": "supportFiles/17_System.Collections.NonGeneric.dll",
         "hash": "sha256-JOpukKdNC3XTBPczPh48ex0kilIll2O+dUq7+J1236U="
       },
       {
         "virtualPath": "/tracecode-refs/System.Collections.Specialized.dll",
-        "name": "supportFiles/15_System.Collections.Specialized.dll",
+        "name": "supportFiles/18_System.Collections.Specialized.dll",
         "hash": "sha256-zO5Di1lfmkDpGDyQfiHRwiG04Oqek2r0BSNMV+xDDwA="
       },
       {
-        "virtualPath": "/tracecode-refs/System.ComponentModel.Annotations.dll",
-        "name": "supportFiles/16_System.ComponentModel.Annotations.dll",
-        "hash": "sha256-ePsTShQ+Ngcor/Yob19Ec2ESRRL6cVd5aAlIB6F9naA="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.ComponentModel.DataAnnotations.dll",
-        "name": "supportFiles/17_System.ComponentModel.DataAnnotations.dll",
-        "hash": "sha256-Wpvah13UEvMRVME8vnYWrXhPEohIzWLh9DwQI+lMtB4="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.ComponentModel.dll",
-        "name": "supportFiles/18_System.ComponentModel.dll",
+        "name": "supportFiles/19_System.ComponentModel.dll",
         "hash": "sha256-Ucutc38A19GtejQzimuD07RKCpG6F4+LElE07mw0414="
       },
       {
-        "virtualPath": "/tracecode-refs/System.ComponentModel.EventBasedAsync.dll",
-        "name": "supportFiles/19_System.ComponentModel.EventBasedAsync.dll",
-        "hash": "sha256-x804BoeppsL2Dr/CGiRrCkWUP31dTGiICv048xtzlJg="
+        "virtualPath": "/tracecode-refs/System.ComponentModel.Annotations.dll",
+        "name": "supportFiles/20_System.ComponentModel.Annotations.dll",
+        "hash": "sha256-ePsTShQ+Ngcor/Yob19Ec2ESRRL6cVd5aAlIB6F9naA="
       },
       {
         "virtualPath": "/tracecode-refs/System.ComponentModel.Primitives.dll",
-        "name": "supportFiles/20_System.ComponentModel.Primitives.dll",
+        "name": "supportFiles/21_System.ComponentModel.Primitives.dll",
         "hash": "sha256-TszAT+gqwNNnZqoGDf0whIfH6wGK69PZTWHtpisxblM="
       },
       {
         "virtualPath": "/tracecode-refs/System.ComponentModel.TypeConverter.dll",
-        "name": "supportFiles/21_System.ComponentModel.TypeConverter.dll",
+        "name": "supportFiles/22_System.ComponentModel.TypeConverter.dll",
         "hash": "sha256-KRXM/dmdcOqqV/DI1kcD6AtFS+Mb52otXcDyKfBNi3Q="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Configuration.dll",
-        "name": "supportFiles/22_System.Configuration.dll",
-        "hash": "sha256-Jfu3j0fTatysqA7nP/daKKBckzB2fMDN/wA3KqAU404="
       },
       {
         "virtualPath": "/tracecode-refs/System.Console.dll",
@@ -1077,639 +1077,119 @@ export const config = /*json-start*/{
         "hash": "sha256-nn7Y4rO+yDUhXWb1jNDznJQib+xFSPRqlXQups6P2Xo="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Core.dll",
-        "name": "supportFiles/24_System.Core.dll",
-        "hash": "sha256-w3iz6mo2/jHfjzfremanZcBw3HgPQCl7zlr6ut66sCA="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Data.Common.dll",
-        "name": "supportFiles/25_System.Data.Common.dll",
-        "hash": "sha256-ZZIyvWgsV+lnvOMaRY04Im0VbWT8eyjbjUatndP4mA4="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Data.DataSetExtensions.dll",
-        "name": "supportFiles/26_System.Data.DataSetExtensions.dll",
-        "hash": "sha256-FCLpTweHaP+H3GqOJpHNHdxg0/nu0wXxcA95jgGvnEE="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Data.dll",
-        "name": "supportFiles/27_System.Data.dll",
-        "hash": "sha256-BGqwOq124LHZtJcoCUuF1WvMWLX3KI9j48FFEvRbq3w="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.Contracts.dll",
-        "name": "supportFiles/28_System.Diagnostics.Contracts.dll",
-        "hash": "sha256-MoFXFmKZLiMuA2Qjg9gzRfUw8XqlzdWUwd5gmBEvdAQ="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.Debug.dll",
-        "name": "supportFiles/29_System.Diagnostics.Debug.dll",
-        "hash": "sha256-GX4vBo5l09Gmt6nYiTAvPvIdhC/gOKCTEZj1TWodl5g="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.DiagnosticSource.dll",
-        "name": "supportFiles/30_System.Diagnostics.DiagnosticSource.dll",
-        "hash": "sha256-vaDxIsDWsrV5/ACyMo2cUxt4LmRvzlmGcfxdlX9LqIg="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.FileVersionInfo.dll",
-        "name": "supportFiles/31_System.Diagnostics.FileVersionInfo.dll",
-        "hash": "sha256-31QqrGQkUwUQOgHm4fLm1niHZjo1BOS7md23ct+BkHk="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.Process.dll",
-        "name": "supportFiles/32_System.Diagnostics.Process.dll",
-        "hash": "sha256-cD4PIh1RrZTtRXVrtQaC+nvUDNjDGkSuBVpA+JYZjtQ="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.StackTrace.dll",
-        "name": "supportFiles/33_System.Diagnostics.StackTrace.dll",
-        "hash": "sha256-fzta3E0w+giMwkxvnsmBpY6FXbIvl4pTZeyCuwRlwr4="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.TextWriterTraceListener.dll",
-        "name": "supportFiles/34_System.Diagnostics.TextWriterTraceListener.dll",
-        "hash": "sha256-37OUz9NYB1+ZlLy2iaFv6ex+ww6nvM+6G/VoBHI4E7c="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.Tools.dll",
-        "name": "supportFiles/35_System.Diagnostics.Tools.dll",
-        "hash": "sha256-JfRqiWU4ZuxcYiWPWWLCzNZTKF6xJj/OiaV5GzputT0="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.TraceSource.dll",
-        "name": "supportFiles/36_System.Diagnostics.TraceSource.dll",
-        "hash": "sha256-9UlqVJm3P7RuZu1fpg6HSzKUpy0D9UiY3703mWw2ciM="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Diagnostics.Tracing.dll",
-        "name": "supportFiles/37_System.Diagnostics.Tracing.dll",
-        "hash": "sha256-BlRaCMJAOzrHCAsCzPAjveQTF6tbaQ8HIfCKcIhAEew="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.dll",
-        "name": "supportFiles/38_System.dll",
-        "hash": "sha256-14N93bu9s30AJuvXKxn2h61q/eeidHWj3xA2nb0GAqs="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Drawing.dll",
-        "name": "supportFiles/39_System.Drawing.dll",
-        "hash": "sha256-2jka+vJLzmZ2kcp3Ri529zItF1Pk7PEzcUAninTEWso="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Drawing.Primitives.dll",
-        "name": "supportFiles/40_System.Drawing.Primitives.dll",
-        "hash": "sha256-xzC1aKwFxu/X2i2U4RrEOSnorzUEO84w3dKbWcCPYVk="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Dynamic.Runtime.dll",
-        "name": "supportFiles/41_System.Dynamic.Runtime.dll",
+        "name": "supportFiles/24_System.Dynamic.Runtime.dll",
         "hash": "sha256-iutPPlh38K5CbtyWf4S46VzX6zW+4Kl8cmmPEZVJEtg="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Formats.Asn1.dll",
-        "name": "supportFiles/42_System.Formats.Asn1.dll",
-        "hash": "sha256-ZBIS3IEbOIPitxGbr1elbr4V9BuzC2DR/o3b0yA9Tf0="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Formats.Tar.dll",
-        "name": "supportFiles/43_System.Formats.Tar.dll",
-        "hash": "sha256-VRHl8WJZrB5iKPZap+3VX6C/irRChmPeep47CUxsR3I="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Globalization.Calendars.dll",
-        "name": "supportFiles/44_System.Globalization.Calendars.dll",
-        "hash": "sha256-xWcKjiGpeO5CLlTqgnB/x1jzPt1jyQG5iU678vcLq9Q="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Globalization.dll",
-        "name": "supportFiles/45_System.Globalization.dll",
+        "name": "supportFiles/25_System.Globalization.dll",
         "hash": "sha256-DM8llFxu2MwuEVQWiquiiAsVEN+wHZwU0PCuBbrjQRY="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Globalization.Extensions.dll",
-        "name": "supportFiles/46_System.Globalization.Extensions.dll",
-        "hash": "sha256-WdUFKbraPyAlAHl/+cx7KZpPfXz3/AdpgHqixWkupP4="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.Compression.Brotli.dll",
-        "name": "supportFiles/47_System.IO.Compression.Brotli.dll",
-        "hash": "sha256-vK4l2sEhz9OinS0GDbHLU3W4MPxcY6SI8XglyenSt4w="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.Compression.dll",
-        "name": "supportFiles/48_System.IO.Compression.dll",
-        "hash": "sha256-OYVNuvypqlAyCZbvQXrDKKtqdPhWCzVbIQHZScuLWs8="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.Compression.FileSystem.dll",
-        "name": "supportFiles/49_System.IO.Compression.FileSystem.dll",
-        "hash": "sha256-NM1naPnlSHIdeR2eE8xYZSm5xR9oLg2l1nidionm21o="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.Compression.ZipFile.dll",
-        "name": "supportFiles/50_System.IO.Compression.ZipFile.dll",
-        "hash": "sha256-xVyeFMIG8yNTRp2zpMquCF4duMS38YJYfsGKCVihsXA="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.IO.dll",
-        "name": "supportFiles/51_System.IO.dll",
+        "name": "supportFiles/26_System.IO.dll",
         "hash": "sha256-TfDrQWNAwbgsPGaQbWQb9b9152foRhp5ENDnJJ5fssY="
       },
       {
-        "virtualPath": "/tracecode-refs/System.IO.FileSystem.AccessControl.dll",
-        "name": "supportFiles/52_System.IO.FileSystem.AccessControl.dll",
-        "hash": "sha256-/Up9kSAQDS/ODByxaui801XUDqHm+QleVmH8D2QvZJ4="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.IO.FileSystem.dll",
-        "name": "supportFiles/53_System.IO.FileSystem.dll",
+        "name": "supportFiles/27_System.IO.FileSystem.dll",
         "hash": "sha256-OOP+Gj2l9IHtOA5DJPH0xTDpwJEdYv3hIkdOemtCzRA="
       },
       {
-        "virtualPath": "/tracecode-refs/System.IO.FileSystem.DriveInfo.dll",
-        "name": "supportFiles/54_System.IO.FileSystem.DriveInfo.dll",
-        "hash": "sha256-wKgbQTN1x7W9aCt8fdm1ZnRdK8LomFF7/NHjO2iJX4E="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.IO.FileSystem.Primitives.dll",
-        "name": "supportFiles/55_System.IO.FileSystem.Primitives.dll",
+        "name": "supportFiles/28_System.IO.FileSystem.Primitives.dll",
         "hash": "sha256-2IdRC/w/btziMqUehFxCjvVrXUUNBxR0KhpXkAvDcYI="
       },
       {
-        "virtualPath": "/tracecode-refs/System.IO.FileSystem.Watcher.dll",
-        "name": "supportFiles/56_System.IO.FileSystem.Watcher.dll",
-        "hash": "sha256-D6RO7tR+rQbeNC1890lHOmjBxQkIFBfcbazjuUpwy+s="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.IsolatedStorage.dll",
-        "name": "supportFiles/57_System.IO.IsolatedStorage.dll",
-        "hash": "sha256-9VKKIzo3hOh80rppKUqL63SzkFFwefnVAsYnrZsvapo="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.MemoryMappedFiles.dll",
-        "name": "supportFiles/58_System.IO.MemoryMappedFiles.dll",
-        "hash": "sha256-N2cvehYFdKWCyBVhYvr4RhQTYH274CXD+Qs9WtSQzfg="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.Pipelines.dll",
-        "name": "supportFiles/59_System.IO.Pipelines.dll",
-        "hash": "sha256-akbdQZK4hQu7vdtPU5XNCaX1sWhtPXmDgKvvLVffpKM="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.Pipes.AccessControl.dll",
-        "name": "supportFiles/60_System.IO.Pipes.AccessControl.dll",
-        "hash": "sha256-bEzyihuXEPtaeRToiscs7BVKQ/T4e/Q9/2MhBVPjL/s="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.Pipes.dll",
-        "name": "supportFiles/61_System.IO.Pipes.dll",
-        "hash": "sha256-CI4YfT5hrN+gp+/rWoGg4EO/XmkX9wqOXnAdIwsOigY="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.IO.UnmanagedMemoryStream.dll",
-        "name": "supportFiles/62_System.IO.UnmanagedMemoryStream.dll",
-        "hash": "sha256-nTjj493b3WSdBwRXrZerCpCKn58iMyrmf5jOoFaRccw="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Linq.AsyncEnumerable.dll",
-        "name": "supportFiles/63_System.Linq.AsyncEnumerable.dll",
-        "hash": "sha256-tiKLyY3HzAUdK3Rd6HbQUmyniA+G01WZrNz/qcbvcGI="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Linq.dll",
-        "name": "supportFiles/64_System.Linq.dll",
+        "name": "supportFiles/29_System.Linq.dll",
         "hash": "sha256-k9cFLYgJTJrgMYMSkhb23CBfc49Pw/rm04IFQqo0C8o="
       },
       {
         "virtualPath": "/tracecode-refs/System.Linq.Expressions.dll",
-        "name": "supportFiles/65_System.Linq.Expressions.dll",
+        "name": "supportFiles/30_System.Linq.Expressions.dll",
         "hash": "sha256-6PVckvXyoaoIPJ5BvHGUakxV5Ja2Ji/0d3cIju5GZD4="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Linq.Parallel.dll",
-        "name": "supportFiles/66_System.Linq.Parallel.dll",
-        "hash": "sha256-pgiiGXG9AE3XaMfdTeKXRSRI18O8LKPYmrGk50TQ2TM="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Linq.Queryable.dll",
-        "name": "supportFiles/67_System.Linq.Queryable.dll",
+        "name": "supportFiles/31_System.Linq.Queryable.dll",
         "hash": "sha256-89w/hErzC7qGjXwlv8IE05gFC1GJy4Bu/Ka5tDbsCy8="
       },
       {
         "virtualPath": "/tracecode-refs/System.Memory.dll",
-        "name": "supportFiles/68_System.Memory.dll",
+        "name": "supportFiles/32_System.Memory.dll",
         "hash": "sha256-MuU5RP13/kyCS4ZmNRQlqlWup7Eur75jGtTr4ljkJns="
       },
       {
         "virtualPath": "/tracecode-refs/System.Numerics.dll",
-        "name": "supportFiles/69_System.Numerics.dll",
+        "name": "supportFiles/33_System.Numerics.dll",
         "hash": "sha256-H3VjUbuICBE74QJUXqDhGuQ8OjooUvJ9K/iDchMG8HU="
       },
       {
         "virtualPath": "/tracecode-refs/System.Numerics.Vectors.dll",
-        "name": "supportFiles/70_System.Numerics.Vectors.dll",
+        "name": "supportFiles/34_System.Numerics.Vectors.dll",
         "hash": "sha256-jbilYhxDczkfZLWdBaBMFNL78+V+UB125J64gtsB6EA="
       },
       {
         "virtualPath": "/tracecode-refs/System.ObjectModel.dll",
-        "name": "supportFiles/71_System.ObjectModel.dll",
+        "name": "supportFiles/35_System.ObjectModel.dll",
         "hash": "sha256-GZn5iJHNG6n5kZ2dFNx0xRY1UqsgyQuEZcU0bkKxGQU="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Private.CoreLib.dll",
-        "name": "supportFiles/72_System.Private.CoreLib.dll",
-        "hash": "sha256-Wg6RfpQCPsQlFVQct0C06NqFYXtGtGrAA3x48A//KOo="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Private.DataContractSerialization.dll",
-        "name": "supportFiles/73_System.Private.DataContractSerialization.dll",
-        "hash": "sha256-lD5yJnWPwztcwwUKOSvXec/1VyymIu2BQJnWBuuJves="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Private.Uri.dll",
-        "name": "supportFiles/74_System.Private.Uri.dll",
-        "hash": "sha256-vPdIHBKWr8ymNmWBjNYVsQAJx6hWuo0ztAXCyfQUsPw="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Private.Xml.dll",
-        "name": "supportFiles/75_System.Private.Xml.dll",
-        "hash": "sha256-zpW824Y9V2ked/yVe+4THh8QyQSJTMImdr7LHyUQsTE="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Private.Xml.Linq.dll",
-        "name": "supportFiles/76_System.Private.Xml.Linq.dll",
-        "hash": "sha256-K6u1lQzPzH08c0MdpQL9+a5AWUSsGPTb+c0lutQhPl4="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Reflection.DispatchProxy.dll",
-        "name": "supportFiles/77_System.Reflection.DispatchProxy.dll",
-        "hash": "sha256-ohCPHS30EwnghB7SVYySpz4GjTSF4uwYeLJ++UL23LE="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Reflection.dll",
-        "name": "supportFiles/78_System.Reflection.dll",
+        "name": "supportFiles/36_System.Reflection.dll",
         "hash": "sha256-UDU0bBjgKFdPXGH8XJ2V5MBnsbwcywWNMad77i3FA7U="
       },
       {
         "virtualPath": "/tracecode-refs/System.Reflection.Extensions.dll",
-        "name": "supportFiles/79_System.Reflection.Extensions.dll",
+        "name": "supportFiles/37_System.Reflection.Extensions.dll",
         "hash": "sha256-EOUkD8a3AkDNBTN3uL+m3GZXRxYexu25WGwmKtxs/lg="
       },
       {
         "virtualPath": "/tracecode-refs/System.Reflection.Metadata.dll",
-        "name": "supportFiles/80_System.Reflection.Metadata.dll",
+        "name": "supportFiles/38_System.Reflection.Metadata.dll",
         "hash": "sha256-7wWw0cGUMw4SQ/8EbBslGQL2rpidx5Xxa/TIX9bBABg="
       },
       {
         "virtualPath": "/tracecode-refs/System.Reflection.Primitives.dll",
-        "name": "supportFiles/81_System.Reflection.Primitives.dll",
+        "name": "supportFiles/39_System.Reflection.Primitives.dll",
         "hash": "sha256-wvCy+LrYw/b7sKnDWT3Cr04B/+8ZSUy4Gb12ps0mUvE="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Reflection.TypeExtensions.dll",
-        "name": "supportFiles/82_System.Reflection.TypeExtensions.dll",
-        "hash": "sha256-AaCgChYzg+NYI6VB9OrUT/0KvUmV3PZw77XR2ovOi4Y="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Resources.Reader.dll",
-        "name": "supportFiles/83_System.Resources.Reader.dll",
-        "hash": "sha256-BlECWGbfBU7vzmVEuVQ2pFuUgLFzk7H5Rv8coSXgVGI="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Resources.ResourceManager.dll",
-        "name": "supportFiles/84_System.Resources.ResourceManager.dll",
-        "hash": "sha256-8/BKmJ/VbIB3WjkzKxuVHS5akaavoJZRRlA1rdhahuk="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Resources.Writer.dll",
-        "name": "supportFiles/85_System.Resources.Writer.dll",
-        "hash": "sha256-jGf5gwqogFIugPy5RAHnIz/qpk35PdEgxTrzKIG9tS8="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.CompilerServices.Unsafe.dll",
-        "name": "supportFiles/86_System.Runtime.CompilerServices.Unsafe.dll",
-        "hash": "sha256-cvKUgvIlj872srt+Y90SLzd77T07xZmnCi6MQj+tdpI="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.CompilerServices.VisualC.dll",
-        "name": "supportFiles/87_System.Runtime.CompilerServices.VisualC.dll",
-        "hash": "sha256-DqtNM2/BfCgpoYHR/whaHZ2FJZms5a4NH1ktVJQmOgM="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.dll",
-        "name": "supportFiles/88_System.Runtime.dll",
-        "hash": "sha256-Uh/aBCkHTeK4gOhzYuBtWjqgZn6t2Jql2tqz8/40FRM="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Extensions.dll",
-        "name": "supportFiles/89_System.Runtime.Extensions.dll",
-        "hash": "sha256-glZdFgvq8x0WlI0JkYM+TvBUaCWbSNGN+xSf8ZPCHxg="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Handles.dll",
-        "name": "supportFiles/90_System.Runtime.Handles.dll",
-        "hash": "sha256-VJDin5rk9SFwO7fV2OlqHKcVGGPp8MdOVnAnXv+JcZU="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.InteropServices.dll",
-        "name": "supportFiles/91_System.Runtime.InteropServices.dll",
-        "hash": "sha256-GRsMXmiRDLzN3CkJPjZk+p3WNKR7AQhvHyXYyi6M0Yo="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.InteropServices.RuntimeInformation.dll",
-        "name": "supportFiles/92_System.Runtime.InteropServices.RuntimeInformation.dll",
-        "hash": "sha256-dXLKT9vZl7TjVstEJgr9DtGplpicc0IK0bZvkaDtzuo="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Intrinsics.dll",
-        "name": "supportFiles/93_System.Runtime.Intrinsics.dll",
-        "hash": "sha256-NwSpttiGbKkLITdvWyrznwPsDf74ZgZx//s/4v8IG5I="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Loader.dll",
-        "name": "supportFiles/94_System.Runtime.Loader.dll",
-        "hash": "sha256-KA1ZHbB6UlUyPekkpTVySNOpzDz6Ey1Cs3ZCWqTqQBE="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Numerics.dll",
-        "name": "supportFiles/95_System.Runtime.Numerics.dll",
-        "hash": "sha256-gHM3sAzlEZoY8K5OXaMGyPTNIMtlqChMhAxHlIxYuwU="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Serialization.dll",
-        "name": "supportFiles/96_System.Runtime.Serialization.dll",
-        "hash": "sha256-J+m3khPhwoBnodU3YexNK2ObKo4IO6GZLn2lV9F/rAE="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Serialization.Formatters.dll",
-        "name": "supportFiles/97_System.Runtime.Serialization.Formatters.dll",
-        "hash": "sha256-2U+Z+y7vlzJD042g1/seJ6XWL9prAFftbJLXgZyN49g="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Serialization.Json.dll",
-        "name": "supportFiles/98_System.Runtime.Serialization.Json.dll",
-        "hash": "sha256-Cjd8nxaglPv5RSOgVfZz4zJaoKVKjsURQzeVCdJtNfE="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Serialization.Primitives.dll",
-        "name": "supportFiles/99_System.Runtime.Serialization.Primitives.dll",
-        "hash": "sha256-iBpkpmMv0lgQFjTdDmrEB/cGE0IbXrIxksmPobo29d8="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Runtime.Serialization.Xml.dll",
-        "name": "supportFiles/100_System.Runtime.Serialization.Xml.dll",
-        "hash": "sha256-MD69uZChr8iddFlvTwdafBUgl/M33RU64h/1U7OFBUQ="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.AccessControl.dll",
-        "name": "supportFiles/101_System.Security.AccessControl.dll",
-        "hash": "sha256-u39HhHeqdWpG69GXNAqwE37iYsZjzPWPol3KiL91krY="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Claims.dll",
-        "name": "supportFiles/102_System.Security.Claims.dll",
-        "hash": "sha256-iAxOsKeUlqCD2SBS9XDw/mgVBR3N+CVH6rH6fxRVg7M="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Cryptography.Algorithms.dll",
-        "name": "supportFiles/103_System.Security.Cryptography.Algorithms.dll",
-        "hash": "sha256-mZZXhlRqmxAv4G8qIsbULWAKcCDkcgd+26etd7TeLQU="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Cryptography.Cng.dll",
-        "name": "supportFiles/104_System.Security.Cryptography.Cng.dll",
-        "hash": "sha256-FRfnuGir+/S7VC8vo+SYOpWjfd8ipmIVoMq2/VPp2DU="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Cryptography.Csp.dll",
-        "name": "supportFiles/105_System.Security.Cryptography.Csp.dll",
-        "hash": "sha256-SHkejLf9WGcJRuO/60B5u/fRf2cHTZFg9WBMYpGdZAY="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Cryptography.dll",
-        "name": "supportFiles/106_System.Security.Cryptography.dll",
-        "hash": "sha256-JIAdUi2GkgSZZhQXXKpUcNuG/SVvlSLp6Htoka9xQew="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Cryptography.Encoding.dll",
-        "name": "supportFiles/107_System.Security.Cryptography.Encoding.dll",
-        "hash": "sha256-j+QM/iw0fxRG3zhnkI39uEqfaiPXkT2hr2Ipz5clO8s="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Cryptography.OpenSsl.dll",
-        "name": "supportFiles/108_System.Security.Cryptography.OpenSsl.dll",
-        "hash": "sha256-laar2ptTlDc1XzJ7UORJ3QJUwQ639h256AsKveWr3rU="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Cryptography.Primitives.dll",
-        "name": "supportFiles/109_System.Security.Cryptography.Primitives.dll",
-        "hash": "sha256-QYv96CoEysw7sEF/nSQ/jDJDzRi40+eJATY86v8PChw="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Cryptography.X509Certificates.dll",
-        "name": "supportFiles/110_System.Security.Cryptography.X509Certificates.dll",
-        "hash": "sha256-6ciJnjHzD3ZZt6NCHBIHL1PGZdXzH8DVkgh31sOGdjE="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.dll",
-        "name": "supportFiles/111_System.Security.dll",
-        "hash": "sha256-g5pyxx336inIPXDdwcaYbUWs4+Xx99JexjCSss2W6YA="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Principal.dll",
-        "name": "supportFiles/112_System.Security.Principal.dll",
-        "hash": "sha256-28DYYBqmn76UTPzRKH89ZCjsZDUIIREjvvRrrBzlC7I="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.Principal.Windows.dll",
-        "name": "supportFiles/113_System.Security.Principal.Windows.dll",
-        "hash": "sha256-C88tBNINv2NM47/q+JoYmo68Th7lYeIg+JdNLP/FykA="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Security.SecureString.dll",
-        "name": "supportFiles/114_System.Security.SecureString.dll",
-        "hash": "sha256-z0E04+D2rtsp0Y5c16CJsj2kBc7Pctmr6LPpHFt8/gU="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.ServiceModel.Web.dll",
-        "name": "supportFiles/115_System.ServiceModel.Web.dll",
-        "hash": "sha256-k+49KCwnlOG2+wv/wf2HESyokz94Z/Ya7m7Oim7Z2sk="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.ServiceProcess.dll",
-        "name": "supportFiles/116_System.ServiceProcess.dll",
-        "hash": "sha256-skdq8JvVrs/kUKhGq6RACh7GDWs+NYYCIjX+1QpZ/Ng="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Text.Encoding.CodePages.dll",
-        "name": "supportFiles/117_System.Text.Encoding.CodePages.dll",
-        "hash": "sha256-CYd82AkfpGLFoWI9qyF4lKxDbxfC6L4k4V2vCHbZztw="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Text.Encoding.dll",
-        "name": "supportFiles/118_System.Text.Encoding.dll",
-        "hash": "sha256-/8339L1i/zIDgjXVNlAmdRl6197RcV0+VEpj0gPl/pY="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Text.Encoding.Extensions.dll",
-        "name": "supportFiles/119_System.Text.Encoding.Extensions.dll",
+        "name": "supportFiles/40_System.Text.Encoding.Extensions.dll",
         "hash": "sha256-MjaHJPxm86YLtFnshYboARFbyMuaJnbbtCxH9W6xDEs="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Text.Encodings.Web.dll",
-        "name": "supportFiles/120_System.Text.Encodings.Web.dll",
-        "hash": "sha256-I7uExdd7oGC5RLgPwiHTaexdRHgXQvEjHYYmuJal5mc="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Text.Json.dll",
-        "name": "supportFiles/121_System.Text.Json.dll",
+        "name": "supportFiles/41_System.Text.Json.dll",
         "hash": "sha256-orVUEyv4PBjo0Tp0E3kWnlopa27U1uKgMmgk9QSMFCk="
       },
       {
         "virtualPath": "/tracecode-refs/System.Text.RegularExpressions.dll",
-        "name": "supportFiles/122_System.Text.RegularExpressions.dll",
+        "name": "supportFiles/42_System.Text.RegularExpressions.dll",
         "hash": "sha256-IStP3id/4XKqtDCzsVUQIGRDVBSIon2EXiXYVU91VzI="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Threading.AccessControl.dll",
-        "name": "supportFiles/123_System.Threading.AccessControl.dll",
-        "hash": "sha256-B7lZojN/rZrx1Ki/15CEhDszDsznwK7fV0CsNdlLS/M="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Threading.Channels.dll",
-        "name": "supportFiles/124_System.Threading.Channels.dll",
-        "hash": "sha256-Ib2Npwd0wsKyyf+G5h0Gdz/kwe4TmTNfGC07czoOeyc="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Threading.dll",
-        "name": "supportFiles/125_System.Threading.dll",
+        "name": "supportFiles/43_System.Threading.dll",
         "hash": "sha256-FZKgfGV9Ao5HQNDlNzcoYJ1B0bG2/yCluvItaL0CESY="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Threading.Overlapped.dll",
-        "name": "supportFiles/126_System.Threading.Overlapped.dll",
-        "hash": "sha256-b5TIhTgIr701bKI1b5qaS/ghhhnB43q2IJ2an86Zlww="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Threading.Tasks.Dataflow.dll",
-        "name": "supportFiles/127_System.Threading.Tasks.Dataflow.dll",
-        "hash": "sha256-OOEaPApMTQVybRizjoUSNZnwJlGN2GPpvyvSuZ9biFc="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.Threading.Tasks.dll",
-        "name": "supportFiles/128_System.Threading.Tasks.dll",
+        "name": "supportFiles/44_System.Threading.Tasks.dll",
         "hash": "sha256-XVcO0Mh0XefkY9euv/TgoTIkG+dDLlOfGwA3l4fI/+E="
       },
       {
         "virtualPath": "/tracecode-refs/System.Threading.Tasks.Extensions.dll",
-        "name": "supportFiles/129_System.Threading.Tasks.Extensions.dll",
+        "name": "supportFiles/45_System.Threading.Tasks.Extensions.dll",
         "hash": "sha256-HqAurRNq7ZvXXTzVco8KuHiS2wylethQXdV9yo7cXVI="
       },
       {
-        "virtualPath": "/tracecode-refs/System.Threading.Tasks.Parallel.dll",
-        "name": "supportFiles/130_System.Threading.Tasks.Parallel.dll",
-        "hash": "sha256-zGzLU1KN0dwHgYgttJ8LwnJOcg3CFObuFN6NSrezjqc="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Threading.Thread.dll",
-        "name": "supportFiles/131_System.Threading.Thread.dll",
-        "hash": "sha256-O60Rx4KKdRvd7JgZhcGiLg375BCcVCQ5obD03hdEjsU="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Threading.ThreadPool.dll",
-        "name": "supportFiles/132_System.Threading.ThreadPool.dll",
-        "hash": "sha256-328uSO6kTdAJN7txzUcadXHbOECRtLssXf1qnxYcunc="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Threading.Timer.dll",
-        "name": "supportFiles/133_System.Threading.Timer.dll",
-        "hash": "sha256-vKZ902fgcGpfFUT5uA8sgoYABJAWZo/iRQLde2nLWYk="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Transactions.dll",
-        "name": "supportFiles/134_System.Transactions.dll",
-        "hash": "sha256-VBzD3G4X6D231W8dvpWGLxmqLY5jLmh1Fcpu00yH8sA="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Transactions.Local.dll",
-        "name": "supportFiles/135_System.Transactions.Local.dll",
-        "hash": "sha256-AwxUJrJJajvgbB+h/96bODIh7WNLOae7E1oSbrphRZw="
-      },
-      {
         "virtualPath": "/tracecode-refs/System.ValueTuple.dll",
-        "name": "supportFiles/136_System.ValueTuple.dll",
+        "name": "supportFiles/46_System.ValueTuple.dll",
         "hash": "sha256-1HVhqRFTtdOcQjftCEXnlMiFLMr0go9KuIgmjQI1MHM="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Web.dll",
-        "name": "supportFiles/137_System.Web.dll",
-        "hash": "sha256-K95DbpTy66mp94W6cF4i1GbddWrtrIWi993pP4HyQgA="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Web.HttpUtility.dll",
-        "name": "supportFiles/138_System.Web.HttpUtility.dll",
-        "hash": "sha256-vynbYz00XLTBiFQXjRItWroF8xyzt7lvP4QDg+yL69U="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Windows.dll",
-        "name": "supportFiles/139_System.Windows.dll",
-        "hash": "sha256-i1CwtzteAd54RT3mjtgAla3PDzfTGaCVA3K3TE2HhW4="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Xml.dll",
-        "name": "supportFiles/140_System.Xml.dll",
-        "hash": "sha256-ui7vOt4toyvXGwFsa5yne05qTDyD+gzt26PuoIadiJI="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Xml.Linq.dll",
-        "name": "supportFiles/141_System.Xml.Linq.dll",
-        "hash": "sha256-49QnaV5VATVRedcMPE2bkoHgObRY1EtVimgIjojUjPc="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Xml.ReaderWriter.dll",
-        "name": "supportFiles/142_System.Xml.ReaderWriter.dll",
-        "hash": "sha256-E+rNXgXqNynSRkDdF+M9OjxkrqEXamPc4FD92gXhBhI="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Xml.Serialization.dll",
-        "name": "supportFiles/143_System.Xml.Serialization.dll",
-        "hash": "sha256-uy1uuTHkHvuxbbxOl0alUCX8a+azDOSUwLQ48yvlxmg="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Xml.XDocument.dll",
-        "name": "supportFiles/144_System.Xml.XDocument.dll",
-        "hash": "sha256-GdPZfkRcn7C8zJbWq7fKUos9AoU1JE3WPe/p+xW8i24="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Xml.XmlDocument.dll",
-        "name": "supportFiles/145_System.Xml.XmlDocument.dll",
-        "hash": "sha256-NTpzOrOzZVw0eNR3o62Y/DQ3GdL+4ZCXUXJu2baTA6M="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Xml.XmlSerializer.dll",
-        "name": "supportFiles/146_System.Xml.XmlSerializer.dll",
-        "hash": "sha256-MbBuy8/LQViFm3lv/vBNVJT0+89+dnTvmuClaG1MFto="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Xml.XPath.dll",
-        "name": "supportFiles/147_System.Xml.XPath.dll",
-        "hash": "sha256-4OVdEosiuv18ic72c/sgc3GjHE0NxZjg8UnKT1Lt4jc="
-      },
-      {
-        "virtualPath": "/tracecode-refs/System.Xml.XPath.XDocument.dll",
-        "name": "supportFiles/148_System.Xml.XPath.XDocument.dll",
-        "hash": "sha256-XLm1Hu7JdTxB6zQYPDK31yjqp3mTOLPpX+YRIKM/KV8="
-      },
-      {
-        "virtualPath": "/tracecode-refs/TraceCode.CSharpHost.dll",
-        "name": "supportFiles/149_TraceCode.CSharpHost.dll",
-        "hash": "sha256-IhIdhTEagEM1PiVxyXsA1qx3Ks9p+XbKSu7gN94Almg="
-      },
-      {
-        "virtualPath": "/tracecode-refs/WindowsBase.dll",
-        "name": "supportFiles/150_WindowsBase.dll",
-        "hash": "sha256-1I74pJxSD+RxKDfWm/l/VCgOiWYW3yVa+LycdEdP4UE="
       }
     ]
   },

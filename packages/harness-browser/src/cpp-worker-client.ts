@@ -21,6 +21,7 @@ import {
   type KernelHttpSyncServerBridge,
 } from './kernel-http-sync';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
 import { createWorkerProtocolToken } from './worker-protocol';
 
 type MessageId = string;
@@ -44,6 +45,10 @@ export interface CppWorkerAssets {
 
 export interface CppWorkerClientOptions extends CppWorkerAssets {
   workerUrl: string;
+  /** Verifies the execution-worker asset before constructing a Worker. */
+  assetPreflight?: () => Promise<void>;
+  /** Verifies compiler-frame and toolchain assets only when compilation is requested. */
+  runtimeAssetPreflight?: () => Promise<void>;
   debug?: boolean;
   initTimeoutMs?: number;
   executionTimeoutMs?: number;
@@ -137,6 +142,56 @@ const INTERVIEW_MODE_TIMEOUT_MS = 30_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const CPP_DEFAULT_FILE = 'solution.cpp';
+const DEFAULT_CPP_COMPILER_ARTIFACT_CACHE_LIMIT = 32;
+const MAX_CPP_COMPILER_ARTIFACT_CACHE_LIMIT = 512;
+const MAX_CPP_COMPILER_ARTIFACT_BYTES = 16 * 1024 * 1024;
+const MAX_CPP_COMPILER_ARTIFACT_CACHE_BYTES = 64 * 1024 * 1024;
+
+interface CppCompilerArtifactCacheEntry {
+  bytes: Uint8Array;
+  result: Record<string, unknown>;
+}
+
+function canonicalCompilerPayload(value: unknown, seen = new Set<object>()): string | null {
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') return Number.isFinite(value) ? JSON.stringify(value) : null;
+  if (value === undefined) return 'null';
+  if (typeof value !== 'object') return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const entries: string[] = [];
+      for (const item of value) {
+        if (item === undefined) {
+          entries.push('null');
+          continue;
+        }
+        const encoded = canonicalCompilerPayload(item, seen);
+        if (encoded === null) return null;
+        entries.push(encoded);
+      }
+      return `[${entries.join(',')}]`;
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) return null;
+    const entries: string[] = [];
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const item = (value as Record<string, unknown>)[key];
+      if (item === undefined) continue;
+      const encoded = canonicalCompilerPayload(item, seen);
+      if (encoded === null) return null;
+      entries.push(`${JSON.stringify(key)}:${encoded}`);
+    }
+    return `{${entries.join(',')}}`;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 export class CppWorkerClient {
   private worker: Worker | null = null;
@@ -166,6 +221,12 @@ export class CppWorkerClient {
   private compilerFrameRequestId = 0;
   private compilerFrameMessageHandler: ((event: MessageEvent) => void) | null = null;
   private pendingCompilerFrameRequests = new Map<string, PendingCompilerFrameRequest>();
+  private executionQueue: Promise<void> = Promise.resolve();
+  private compilerArtifactCache = new Map<string, CppCompilerArtifactCacheEntry>();
+  private compilerArtifactCacheBytes = 0;
+  private compilerCoordinatorGeneration = 0;
+  private executionLifecycleGeneration = 0;
+  private executionResetReason = new Error('C++ execution worker was reset');
 
   constructor(private readonly options: CppWorkerClientOptions) {
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
@@ -275,7 +336,11 @@ export class CppWorkerClient {
         return;
       }
 
-      pending.resolve(payload);
+      try {
+        pending.resolve(restoreTransferredTraceEvents(payload));
+      } catch (error) {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      }
     };
 
     this.worker.onerror = (error) => {
@@ -345,10 +410,27 @@ export class CppWorkerClient {
     payload?: unknown,
     timeoutMs = MESSAGE_TIMEOUT_MS,
     onEvent?: RuntimeCommandEventHandler,
-    kernelHttp?: RuntimeKernelHttpBridge
+    kernelHttp?: RuntimeKernelHttpBridge,
+    expectedLifecycleGeneration?: number
   ): Promise<T> {
+    await this.options.assetPreflight?.();
+    if (
+      expectedLifecycleGeneration !== undefined &&
+      expectedLifecycleGeneration !== this.executionLifecycleGeneration
+    ) {
+      throw this.executionResetReason;
+    }
+    if (this.messageRequiresCompilerAssets(type, payload)) {
+      await this.options.runtimeAssetPreflight?.();
+    }
     const worker = this.getWorker();
     await this.waitForWorkerReady();
+    if (
+      expectedLifecycleGeneration !== undefined &&
+      expectedLifecycleGeneration !== this.executionLifecycleGeneration
+    ) {
+      throw this.executionResetReason;
+    }
     const id = String(++this.messageId);
     const protocolToken = createWorkerProtocolToken();
 
@@ -382,6 +464,17 @@ export class CppWorkerClient {
 
       worker.postMessage({ id, type, payload, protocolToken });
     });
+  }
+
+  private messageRequiresCompilerAssets(type: string, payload: unknown): boolean {
+    if (type === 'init' || type === 'status') return false;
+    if (this.externalCompilerUrl) return false;
+    if (type !== 'execute-project-cpp') return true;
+    return Boolean(
+      payload &&
+        typeof payload === 'object' &&
+        (payload as { source?: unknown }).source === 'compile'
+    );
   }
 
   private hasPendingProtocolToken(protocolToken: unknown): protocolToken is string {
@@ -548,14 +641,17 @@ export class CppWorkerClient {
     };
   }
 
-  private terminateAndReset(reason: Error = new Error('Worker was terminated')): void {
+  private resetExecutionWorker(
+    reason: Error,
+    preserveCompilerCoordinator: boolean
+  ): void {
     this.workerReadyReject?.(reason);
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
     }
     this.initPromise = null;
-    this.warmupPromise = null;
+    if (!preserveCompilerCoordinator) this.warmupPromise = null;
     this.workerReadyPromise = null;
     this.workerReadyResolve = null;
     this.workerReadyReject = null;
@@ -570,7 +666,64 @@ export class CppWorkerClient {
       controller.abort();
     }
     this.activeExternalCompileControllers.clear();
-    this.clearCompilerFrames();
+    if (!preserveCompilerCoordinator || this.pendingCompilerFrameRequests.size > 0) {
+      this.clearCompilerFrames(reason);
+    }
+    if (!preserveCompilerCoordinator) {
+      this.executionLifecycleGeneration += 1;
+      this.executionResetReason = reason;
+      this.compilerCoordinatorGeneration += 1;
+      this.clearCompilerArtifactCache();
+    }
+  }
+
+  private terminateAndReset(reason: Error = new Error('Worker was terminated')): void {
+    this.resetExecutionWorker(reason, false);
+  }
+
+  private retireExecutionWorker(): void {
+    this.resetExecutionWorker(new Error('C++ execution worker completed and was retired'), true);
+  }
+
+  private runInDisposableExecutionWorker<T>(operation: () => Promise<T>): Promise<T> {
+    const lifecycleGeneration = this.executionLifecycleGeneration;
+    const run = this.executionQueue.then(async () => {
+      try {
+        if (lifecycleGeneration !== this.executionLifecycleGeneration) {
+          throw this.executionResetReason;
+        }
+        return await operation();
+      } finally {
+        this.retireExecutionWorker();
+        if (lifecycleGeneration === this.executionLifecycleGeneration) {
+          // Start the next clean worker as soon as this command retires. It only
+          // receives trusted init state until the next queued command consumes
+          // it, preserving one-command-per-worker isolation while moving worker
+          // bootstrap into normal user think time.
+          void this.init(lifecycleGeneration).catch(() => undefined);
+        }
+      }
+    });
+    this.executionQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async initForExecution(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      const abortError = createExecutionAbortError();
+      this.terminateAndReset(abortError);
+      throw abortError;
+    }
+    const onAbort = () => this.terminateAndReset(createExecutionAbortError());
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      await this.init();
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
   }
 
   private shouldRetryInit(error: unknown): boolean {
@@ -585,7 +738,7 @@ export class CppWorkerClient {
     );
   }
 
-  private sendInitMessage(): Promise<InitResult> {
+  private sendInitMessage(expectedLifecycleGeneration?: number): Promise<InitResult> {
     return this.sendMessage<InitResult>(
       'init',
       {
@@ -602,19 +755,28 @@ export class CppWorkerClient {
         },
         ...this.workerOptionsPayload(),
       },
-      this.initTimeoutMs
+      this.initTimeoutMs,
+      undefined,
+      undefined,
+      expectedLifecycleGeneration
     );
   }
 
-  async init(): Promise<InitResult> {
+  async init(expectedLifecycleGeneration?: number): Promise<InitResult> {
     if (this.initPromise) return this.initPromise;
     this.initPromise = (async () => {
       try {
-        return await this.sendInitMessage();
+        return await this.sendInitMessage(expectedLifecycleGeneration);
       } catch (error) {
+        if (
+          expectedLifecycleGeneration !== undefined &&
+          expectedLifecycleGeneration !== this.executionLifecycleGeneration
+        ) {
+          throw error;
+        }
         if (!this.shouldRetryInit(error)) throw error;
         this.terminateAndReset(error instanceof Error ? error : new Error(String(error)));
-        return this.sendInitMessage();
+        return this.sendInitMessage(expectedLifecycleGeneration);
       }
     })();
     try {
@@ -635,7 +797,7 @@ export class CppWorkerClient {
 
   async warmup(): Promise<WarmupResult> {
     if (this.warmupPromise) return this.warmupPromise;
-    this.warmupPromise = (async () => {
+    this.warmupPromise = this.runInDisposableExecutionWorker(async () => {
       try {
         await this.init();
         return await this.sendMessage<WarmupResult>('warmup', this.workerOptionsPayload(), this.initTimeoutMs);
@@ -643,7 +805,7 @@ export class CppWorkerClient {
         this.warmupPromise = null;
         throw error;
       }
-    })();
+    });
     return this.warmupPromise;
   }
 
@@ -670,14 +832,122 @@ export class CppWorkerClient {
     this.activeCompilerFrames.clear();
   }
 
+  private compilerArtifactCacheLimit(): number {
+    const requested = this.options.programCacheLimit ?? DEFAULT_CPP_COMPILER_ARTIFACT_CACHE_LIMIT;
+    if (!Number.isFinite(requested)) return DEFAULT_CPP_COMPILER_ARTIFACT_CACHE_LIMIT;
+    return Math.min(MAX_CPP_COMPILER_ARTIFACT_CACHE_LIMIT, Math.max(0, Math.floor(requested)));
+  }
+
+  private clearCompilerArtifactCache(): void {
+    this.compilerArtifactCache.clear();
+    this.compilerArtifactCacheBytes = 0;
+  }
+
+  private async compilerArtifactCacheKey(payload: unknown): Promise<string | null> {
+    if (this.compilerArtifactCacheLimit() === 0 || !globalThis.crypto?.subtle) return null;
+    const canonical = canonicalCompilerPayload(payload);
+    if (canonical === null) return null;
+    const digest = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(`tracecode.cpp.compiler-artifact.v1\0${canonical}`)
+    );
+    return bytesToHex(new Uint8Array(digest));
+  }
+
+  private cachedCompilerArtifact(cacheKey: string): Record<string, unknown> | null {
+    const cached = this.compilerArtifactCache.get(cacheKey);
+    if (!cached) return null;
+    this.compilerArtifactCache.delete(cacheKey);
+    this.compilerArtifactCache.set(cacheKey, cached);
+    const timings = cached.result.timings && typeof cached.result.timings === 'object'
+      ? cached.result.timings as Record<string, unknown>
+      : {};
+    return {
+      ...cached.result,
+      success: true,
+      programBuffer: cached.bytes.slice().buffer,
+      compileMs: 0,
+      artifactDigest: cacheKey,
+      timings: {
+        ...timings,
+        compileCacheHit: true,
+        artifactCacheHit: true,
+      },
+    };
+  }
+
+  private storeCompilerArtifact(
+    cacheKey: string,
+    payload: unknown,
+    result: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (result.success !== true || !(result.programBuffer instanceof ArrayBuffer)) return result;
+    const bytes = new Uint8Array(result.programBuffer);
+    const isClassicDriver = Boolean(
+      payload &&
+        typeof payload === 'object' &&
+        typeof (payload as { driverSource?: unknown }).driverSource === 'string' &&
+        !(payload as { project?: unknown }).project
+    );
+    if (isClassicDriver && !WebAssembly.validate(bytes)) {
+      return {
+        success: false,
+        error: 'C++ compiler returned an invalid WebAssembly program artifact.',
+        stdout: typeof result.stdout === 'string' ? result.stdout : '',
+        stderr: typeof result.stderr === 'string' ? result.stderr : '',
+      };
+    }
+    if (bytes.byteLength > MAX_CPP_COMPILER_ARTIFACT_BYTES) return result;
+
+    const storedResult = { ...result };
+    delete storedResult.programBuffer;
+    const existing = this.compilerArtifactCache.get(cacheKey);
+    if (existing) {
+      this.compilerArtifactCacheBytes -= existing.bytes.byteLength;
+      this.compilerArtifactCache.delete(cacheKey);
+    }
+    const cachedBytes = bytes.slice();
+    this.compilerArtifactCache.set(cacheKey, { bytes: cachedBytes, result: storedResult });
+    this.compilerArtifactCacheBytes += cachedBytes.byteLength;
+    const limit = this.compilerArtifactCacheLimit();
+    while (
+      this.compilerArtifactCache.size > limit ||
+      this.compilerArtifactCacheBytes > MAX_CPP_COMPILER_ARTIFACT_CACHE_BYTES
+    ) {
+      const oldestKey = this.compilerArtifactCache.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      const oldest = this.compilerArtifactCache.get(oldestKey);
+      this.compilerArtifactCache.delete(oldestKey);
+      if (oldest) this.compilerArtifactCacheBytes -= oldest.bytes.byteLength;
+    }
+    return {
+      ...result,
+      artifactDigest: cacheKey,
+      timings: {
+        ...(result.timings && typeof result.timings === 'object'
+          ? result.timings as Record<string, unknown>
+          : {}),
+        compileCacheHit: false,
+        artifactCacheHit: false,
+      },
+    };
+  }
+
   private async handleCompileRequest(message: WorkerMessage): Promise<void> {
     if (!message.requestId) return;
     const worker = this.worker;
     if (!worker) return;
+    const coordinatorGeneration = this.compilerCoordinatorGeneration;
 
-    const result = this.externalCompilerUrl
+    const cacheKey = await this.compilerArtifactCacheKey(message.payload);
+    const cached = cacheKey ? this.cachedCompilerArtifact(cacheKey) : null;
+    const compiled = cached ?? (this.externalCompilerUrl
       ? await this.compileWithExternalUrl(message.payload)
-      : await this.compileInFrame(message.payload);
+      : await this.compileInFrame(message.payload));
+    if (coordinatorGeneration !== this.compilerCoordinatorGeneration || worker !== this.worker) return;
+    const result = !cached && cacheKey
+      ? this.storeCompilerArtifact(cacheKey, message.payload, compiled)
+      : compiled;
     const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
     worker.postMessage(
       {
@@ -784,12 +1054,17 @@ export class CppWorkerClient {
 
     const frameUrl = new URL(this.compilerFrameUrl, globalThis.location?.href);
     const hostOrigin = new URL(globalThis.location?.href ?? frameUrl.href).origin;
-    if (frameUrl.origin !== hostOrigin) {
-      return Promise.reject(new Error('C++ compiler frame must be served from the same origin as the harness page.'));
+    const compilerWorkerUrl = this.options.compilerWorkerUrl
+      ? new URL(this.options.compilerWorkerUrl, globalThis.location?.href ?? frameUrl.href)
+      : new URL('cpp-compiler-worker.js', frameUrl.href);
+    if (compilerWorkerUrl.origin !== frameUrl.origin) {
+      return Promise.reject(new Error('C++ compiler worker must be served from the compiler frame origin.'));
     }
     this.compilerFrameTargetOrigin = frameUrl.origin;
     this.compilerFrameToken = createWorkerProtocolToken();
     frameUrl.searchParams.set('tracecodeFrameToken', this.compilerFrameToken);
+    frameUrl.searchParams.set('tracecodeParentOrigin', hostOrigin);
+    frameUrl.searchParams.set('tracecodeCompilerWorkerUrl', compilerWorkerUrl.href);
     const iframe = document.createElement('iframe');
     iframe.src = frameUrl.href;
     iframe.style.display = 'none';
@@ -826,7 +1101,6 @@ export class CppWorkerClient {
         globalThis.clearTimeout(pending.timeoutId);
         const response = event.data as { payload?: Record<string, unknown> };
         pending.resolve(response.payload ?? { success: false, error: 'C++ compiler frame returned an empty response.' });
-        this.clearCompilerFrames();
       };
       this.compilerFrameMessageHandler = onMessage;
 
@@ -890,23 +1164,25 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    await this.init();
-    try {
-      return await this.executeWithTimeout(
-        () =>
-          this.sendMessage<CodeExecutionResult>(
-            'compile-run',
-            { code, functionName, inputs, executionStyle },
-            this.executionTimeoutMs + 5_000
-          ),
-        this.executionTimeoutMs,
-        'compile-run',
-        signal
-      );
-    } catch (error) {
-      if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
-      throw error;
-    }
+    return this.runInDisposableExecutionWorker(async () => {
+      await this.initForExecution(signal);
+      try {
+        return await this.executeWithTimeout(
+          () =>
+            this.sendMessage<CodeExecutionResult>(
+              'compile-run',
+              { code, functionName, inputs, executionStyle },
+              this.executionTimeoutMs + 5_000
+            ),
+          this.executionTimeoutMs,
+          'compile-run',
+          signal
+        );
+      } catch (error) {
+        if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
+        throw error;
+      }
+    });
   }
 
   async executeCodeBatch(
@@ -916,30 +1192,32 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
-    await this.init();
-    try {
-      return await this.executeWithTimeout(
-        () =>
-          this.sendMessage<CodeExecutionBatchResult>(
-            'compile-run-batch',
-            { code, functionName, inputBatch, executionStyle },
-            this.executionTimeoutMs + 5_000
-          ),
-        this.executionTimeoutMs,
-        'compile-run',
-        signal
-      );
-    } catch (error) {
-      if (!this.isClientTimeout(error)) throw error;
-      const timeout = this.timeoutCodeResult(error);
-      return {
-        success: false,
-        results: inputBatch.map(() => timeout),
-        error: timeout.error,
-        consoleOutput: timeout.consoleOutput,
-        timings: timeout.timings,
-      };
-    }
+    return this.runInDisposableExecutionWorker(async () => {
+      await this.initForExecution(signal);
+      try {
+        return await this.executeWithTimeout(
+          () =>
+            this.sendMessage<CodeExecutionBatchResult>(
+              'compile-run-batch',
+              { code, functionName, inputBatch, executionStyle },
+              this.executionTimeoutMs + 5_000
+            ),
+          this.executionTimeoutMs,
+          'compile-run',
+          signal
+        );
+      } catch (error) {
+        if (!this.isClientTimeout(error)) throw error;
+        const timeout = this.timeoutCodeResult(error);
+        return {
+          success: false,
+          results: inputBatch.map(() => timeout),
+          error: timeout.error,
+          consoleOutput: timeout.consoleOutput,
+          timings: timeout.timings,
+        };
+      }
+    });
   }
 
   async executeTraceBatch(
@@ -950,30 +1228,39 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<{ success: boolean; results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
-    await this.init();
-    try {
-      return await this.executeWithTimeout(
-        () =>
-          this.sendMessage<{ success: boolean; results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }>(
-            'execute-trace-batch',
-            { code, functionName, inputBatch, options, executionStyle },
-            this.tracingTimeoutMs + 5_000
-          ),
-        this.tracingTimeoutMs,
-        'trace',
-        signal
-      );
-    } catch (error) {
-      if (!this.isClientTimeout(error)) throw error;
-      const timeout = this.timeoutTraceResult(error);
-      return {
-        success: false,
-        results: inputBatch.map(() => timeout),
-        error: timeout.error,
-        consoleOutput: timeout.consoleOutput,
-        timings: timeout.timings,
-      };
-    }
+    return this.runInDisposableExecutionWorker(async () => {
+      await this.initForExecution(signal);
+      try {
+        return await this.executeWithTimeout(
+          () =>
+            this.sendMessage<{ success: boolean; results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }>(
+              'execute-trace-batch',
+              {
+                code,
+                functionName,
+                inputBatch,
+                options,
+                executionStyle,
+                traceEventTransport: traceEventTransferRequest(),
+              },
+              this.tracingTimeoutMs + 5_000
+            ),
+          this.tracingTimeoutMs,
+          'trace',
+          signal
+        );
+      } catch (error) {
+        if (!this.isClientTimeout(error)) throw error;
+        const timeout = this.timeoutTraceResult(error);
+        return {
+          success: false,
+          results: inputBatch.map(() => timeout),
+          error: timeout.error,
+          consoleOutput: timeout.consoleOutput,
+          timings: timeout.timings,
+        };
+      }
+    });
   }
 
   async executeWithTracing(
@@ -984,23 +1271,32 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<ExecutionResult> {
-    await this.init();
-    try {
-      return await this.executeWithTimeout(
-        () =>
-          this.sendMessage<ExecutionResult>(
-            'execute-with-tracing',
-            { code, functionName, inputs, options, executionStyle },
-            this.tracingTimeoutMs + 5_000
-          ),
-        this.tracingTimeoutMs,
-        'trace',
-        signal
-      );
-    } catch (error) {
-      if (this.isClientTimeout(error)) return this.timeoutTraceResult(error);
-      throw error;
-    }
+    return this.runInDisposableExecutionWorker(async () => {
+      await this.initForExecution(signal);
+      try {
+        return await this.executeWithTimeout(
+          () =>
+            this.sendMessage<ExecutionResult>(
+              'execute-with-tracing',
+              {
+                code,
+                functionName,
+                inputs,
+                options,
+                executionStyle,
+                traceEventTransport: traceEventTransferRequest(),
+              },
+              this.tracingTimeoutMs + 5_000
+            ),
+          this.tracingTimeoutMs,
+          'trace',
+          signal
+        );
+      } catch (error) {
+        if (this.isClientTimeout(error)) return this.timeoutTraceResult(error);
+        throw error;
+      }
+    });
   }
 
   async executeCodeInterviewMode(
@@ -1010,30 +1306,32 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    await this.init();
-    try {
-      return await this.executeWithTimeout(
-        () =>
-          this.sendMessage<CodeExecutionResult>(
-            'execute-code-interview',
-            { code, functionName, inputs, executionStyle },
-            this.interviewTimeoutMs + 5_000
-          ),
-        this.interviewTimeoutMs,
-        'interview',
-        signal
-      );
-    } catch {
-      return {
-        success: false,
-        output: null,
-        error: 'Time Limit Exceeded',
-        timeoutReason: 'client-timeout',
-        diagnosticStage: 'interview',
-        consoleOutput: [],
-        timings: { totalMs: this.interviewTimeoutMs },
-      };
-    }
+    return this.runInDisposableExecutionWorker(async () => {
+      try {
+        await this.initForExecution(signal);
+        return await this.executeWithTimeout(
+          () =>
+            this.sendMessage<CodeExecutionResult>(
+              'execute-code-interview',
+              { code, functionName, inputs, executionStyle },
+              this.interviewTimeoutMs + 5_000
+            ),
+          this.interviewTimeoutMs,
+          'interview',
+          signal
+        );
+      } catch {
+        return {
+          success: false,
+          output: null,
+          error: 'Time Limit Exceeded',
+          timeoutReason: 'client-timeout',
+          diagnosticStage: 'interview',
+          consoleOutput: [],
+          timings: { totalMs: this.interviewTimeoutMs },
+        };
+      }
+    });
   }
 
   async executeProjectCpp(
@@ -1042,35 +1340,27 @@ export class CppWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     signal: AbortSignal | undefined = request.signal
   ): Promise<CppProjectCommandResult> {
-    if (signal?.aborted) {
-      const abortError = createExecutionAbortError();
-      this.terminateAndReset(abortError);
-      throw abortError;
-    }
-    const abortInit = () => this.terminateAndReset(createExecutionAbortError());
-    signal?.addEventListener('abort', abortInit, { once: true });
-    try {
-      await this.init();
-    } finally {
-      signal?.removeEventListener('abort', abortInit);
-    }
-    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
-    return this.executeWithTimeout(
-      () =>
-        this.sendMessage<CppProjectCommandResult>(
-          'execute-project-cpp',
-          {
-            ...workerRequest,
-            ...this.workerOptionsPayload(),
-          },
-          timeoutMs + 5_000,
-          onEvent,
-          kernelHttp
-        ),
-      timeoutMs,
-      'compile-run',
-      signal
-    );
+    return this.runInDisposableExecutionWorker(async () => {
+      await this.initForExecution(signal);
+      const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+      return this.executeWithTimeout(
+        () =>
+          this.sendMessage<CppProjectCommandResult>(
+            'execute-project-cpp',
+            {
+              ...workerRequest,
+              projectUserAuthorityMode: 'permanent',
+              ...this.workerOptionsPayload(),
+            },
+            timeoutMs + 5_000,
+            onEvent,
+            kernelHttp
+          ),
+        timeoutMs,
+        'compile-run',
+        signal
+      );
+    });
   }
 
   terminate(): void {

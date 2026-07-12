@@ -10,7 +10,6 @@ import {
 } from '@tracecode/harness-core';
 import { JavaScriptWorkerClient } from './javascript-worker-client';
 import { createJavaScriptRuntimeClient } from './javascript-runtime-client';
-import { createBrowserJavaScriptProjectRunner } from '../../harness-javascript/src/project-browser';
 import { JavaWorkerClient } from './java-worker-client';
 import { createJavaRuntimeClient } from './java-runtime-client';
 import { CSharpWorkerClient } from './csharp-worker-client';
@@ -24,7 +23,10 @@ import {
   resolveBrowserHarnessAssets,
   type BrowserHarnessAssets,
   type BrowserHarnessAssetOverrides,
+  type BrowserRuntimeAssetDescriptor,
+  type BrowserRuntimeId,
 } from './runtime-assets';
+import { createBrowserRuntimeAssetPreflight } from './runtime-asset-preflight';
 import {
   getLanguageRuntimeProfile,
   getSupportedLanguageProfiles,
@@ -83,13 +85,82 @@ class BrowserHarnessRuntime implements BrowserHarness {
 
   constructor(options: CreateBrowserHarnessOptions = {}) {
     this.assets = resolveBrowserHarnessAssets(options);
+    const assetPreflight = createBrowserRuntimeAssetPreflight(this.assets.runtimeManifests);
+    const preflight = (runtime: BrowserRuntimeId, assetNames: readonly string[]) =>
+      () => assetPreflight.preflight(runtime, assetNames);
+    const manifestAsset = (
+      runtime: BrowserRuntimeId,
+      name: string
+    ): BrowserRuntimeAssetDescriptor | undefined => {
+      const manifest = this.assets.runtimeManifests?.[runtime];
+      const value = (manifest?.assets as Record<string, unknown> | undefined)?.[name];
+      return value && typeof value === 'object' && typeof (value as { url?: unknown }).url === 'string'
+        ? value as BrowserRuntimeAssetDescriptor
+        : undefined;
+    };
+    const manifestAssetCollection = (
+      runtime: BrowserRuntimeId,
+      name: string
+    ): Readonly<Record<string, BrowserRuntimeAssetDescriptor>> | undefined => {
+      const manifest = this.assets.runtimeManifests?.[runtime];
+      const value = (manifest?.assets as Record<string, unknown> | undefined)?.[name];
+      return value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Readonly<Record<string, BrowserRuntimeAssetDescriptor>>
+        : undefined;
+    };
+    const pythonPackageDescriptors = manifestAssetCollection('python', 'packages');
+    const javaManifest = this.assets.runtimeManifests?.java;
+    const csharpDependencyDescriptors = manifestAssetCollection('csharp', 'dependencies');
+    if (javaManifest?.assets.loader && options.java?.cheerpjLoaderUrl) {
+      throw new TypeError(
+        'Java runtime assets cannot combine manifest.assets.loader with java.cheerpjLoaderUrl.'
+      );
+    }
     this.pythonWorkerClient = new PythonWorkerClient({
       workerUrl: this.assets.pythonWorker,
+      ...(this.assets.runtimeManifests?.python?.workerFormat
+        ? { workerFormat: this.assets.runtimeManifests.python.workerFormat }
+        : {}),
       debug: options.debug,
+      assetPreflight: preflight('python', ['worker', 'snippets']),
+      runtimeAssetPreflight: preflight('python', [
+        'runtimeCore',
+        'runtimeLoader',
+        'runtimeIndex',
+        'distribution',
+        'packages',
+      ]),
+      runtimeAssets: {
+        runtimeCoreUrl: this.assets.pythonRuntimeCore,
+        snippetsUrl: this.assets.pythonSnippets,
+        ...(manifestAsset('python', 'runtimeLoader')?.url
+          ? { loaderUrl: manifestAsset('python', 'runtimeLoader')?.url }
+          : {}),
+        ...(manifestAsset('python', 'runtimeIndex')?.url
+          ? { indexUrl: manifestAsset('python', 'runtimeIndex')?.url }
+          : {}),
+        ...(this.assets.runtimeManifests?.python?.loaderFormat
+          ? { loaderFormat: this.assets.runtimeManifests.python.loaderFormat }
+          : {}),
+        ...(pythonPackageDescriptors
+          ? {
+              packageUrls: Object.fromEntries(
+                Object.entries(pythonPackageDescriptors).map(([name, descriptor]) => [name, descriptor.url])
+              ),
+            }
+          : {}),
+      },
     });
     this.javaScriptWorkerClient = new JavaScriptWorkerClient({
       workerUrl: this.assets.javascriptWorker,
       debug: options.debug,
+      assetPreflight: preflight('javascript', ['worker']),
+      runtimeAssetPreflight: preflight('javascript', ['libraries']),
+      ...(manifestAsset('javascript', 'libraries')?.url
+        ? { javascriptLibrariesUrl: manifestAsset('javascript', 'libraries')?.url }
+        : {}),
+      typescriptCompilerUrl: this.assets.typescriptCompiler,
+      typescriptCompilerPreflight: preflight('typescript', ['compiler']),
     });
     this.javaWorkerClient = new JavaWorkerClient({
       workerUrl: this.assets.javaWorker,
@@ -97,15 +168,64 @@ class BrowserHarnessRuntime implements BrowserHarness {
       workerIdleTimeoutMs: options.java?.workerIdleTimeoutMs,
       externalCompilerUrl: options.java?.externalCompilerUrl,
       cheerpjLoaderUrl: options.java?.cheerpjLoaderUrl,
+      assetPreflight: preflight('java', ['worker']),
+      runtimeAssetPreflight: preflight('java', [
+        'loader',
+        'helperJar',
+        'compilerJar',
+        'rewriterJar',
+        'parserJar',
+      ]),
+      ...(javaManifest
+        ? {
+            runtimeAssets: {
+              ...(manifestAsset('java', 'loader')?.url
+                ? { loaderUrl: manifestAsset('java', 'loader')?.url }
+                : {}),
+              ...(manifestAsset('java', 'helperJar')?.url
+                ? { helperJarUrl: manifestAsset('java', 'helperJar')?.runtimePath ?? manifestAsset('java', 'helperJar')?.url }
+                : {}),
+              ...(manifestAsset('java', 'compilerJar')?.url
+                ? { compilerJarUrl: manifestAsset('java', 'compilerJar')?.runtimePath ?? manifestAsset('java', 'compilerJar')?.url }
+                : {}),
+              ...(manifestAsset('java', 'rewriterJar')?.url
+                ? { rewriterJarUrl: manifestAsset('java', 'rewriterJar')?.runtimePath ?? manifestAsset('java', 'rewriterJar')?.url }
+                : {}),
+              ...(manifestAsset('java', 'parserJar')?.url
+                ? { parserJarUrl: manifestAsset('java', 'parserJar')?.runtimePath ?? manifestAsset('java', 'parserJar')?.url }
+                : {}),
+            },
+          }
+        : {}),
     });
     this.csharpWorkerClient = new CSharpWorkerClient({
       workerUrl: this.assets.csharpWorker,
       assetBaseUrl: this.assets.csharpAssetBaseUrl,
       debug: options.debug,
       workerIdleTimeoutMs: options.csharp?.workerIdleTimeoutMs,
+      assetPreflight: preflight('csharp', ['worker']),
+      runtimeAssetPreflight: preflight('csharp', ['assetBaseUrl', 'dependencies']),
+      ...(csharpDependencyDescriptors
+        ? {
+            runtimeDependencies: Object.fromEntries(
+              Object.entries(csharpDependencyDescriptors).map(([name, descriptor]) => [name, descriptor.url])
+            ),
+          }
+        : {}),
     });
     this.cppWorkerClient = new CppWorkerClient({
       workerUrl: this.assets.cppWorker,
+      assetPreflight: preflight('cpp', ['worker']),
+      runtimeAssetPreflight: preflight('cpp', [
+        'compilerFrame',
+        'compilerWorker',
+        'runtimeHeader',
+        'compilerBundle',
+        'clangWasm',
+        'lldWasm',
+        'sysroot',
+        'toolchain',
+      ]),
       compilerFrameUrl: this.assets.cppCompilerFrame,
       compilerWorkerUrl: this.assets.cppCompilerWorker,
       clangWasmUrl: this.assets.cppClangWasm,
@@ -126,12 +246,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
     });
     this.clients = {
       python: createPythonRuntimeClient(this.pythonWorkerClient),
-      javascript: createJavaScriptRuntimeClient('javascript', this.javaScriptWorkerClient, {
-        executeProject: createBrowserJavaScriptProjectRunner({
-          workerUrl: this.assets.javascriptProjectWorker,
-          workerIsolation: 'per-command',
-        }),
-      }),
+      javascript: createJavaScriptRuntimeClient('javascript', this.javaScriptWorkerClient),
       typescript: createJavaScriptRuntimeClient('typescript', this.javaScriptWorkerClient),
       java: createJavaRuntimeClient(this.javaWorkerClient),
       csharp: createCSharpRuntimeClient(this.csharpWorkerClient),

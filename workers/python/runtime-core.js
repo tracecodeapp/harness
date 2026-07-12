@@ -3767,6 +3767,7 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
  * Execute Python code without tracing (for running tests)
  */
 async function executeCode(deps, code, functionName, inputs, executionStyle = 'function', options = {}) {
+  const startedAt = deps.performanceNow();
   const userCodeLineCount = code.split('\n').length;
   let userCodeStartLine = 1;
   const interviewGuardEnabled = options.interviewGuard === true;
@@ -4468,6 +4469,7 @@ json.dumps({
         output: null,
         error: result.timeoutReason || 'INTERVIEW_GUARD_TRIGGERED:resource-limit',
         consoleOutput: Array.isArray(result.console) ? result.console : [],
+        timings: { totalMs: deps.performanceNow() - startedAt },
       };
     }
 
@@ -4475,6 +4477,7 @@ json.dumps({
       success: true,
       output: result.output,
       consoleOutput: Array.isArray(result.console) ? result.console : [],
+      timings: { totalMs: deps.performanceNow() - startedAt },
     };
   } catch (error) {
     const rawError = error instanceof Error ? error.message : String(error);
@@ -4486,6 +4489,7 @@ json.dumps({
       error: message,
       errorLine: line,
       consoleOutput: [],
+      timings: { totalMs: deps.performanceNow() - startedAt },
     };
   }
 }

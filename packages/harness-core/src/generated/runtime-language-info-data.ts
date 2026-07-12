@@ -14,7 +14,7 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
     "language": "python",
     "displayName": "Python",
     "versionLabel": "Python 3.13.2 (Pyodide 0.29.0)",
-    "description": "Python 3.13.2 (Pyodide 0.29.0).\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nsortedcontainers 2.4.0 is available for TreeMap, ordered-set, and sorted-list style workflows.",
+    "description": "Python 3.13.2 (Pyodide 0.29.0).\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nOptional third-party packages are consumer-owned runtime assets and are available only when declared by the browser runtime manifest.",
     "runtime": {
       "name": "Pyodide",
       "version": "0.29.0",
@@ -31,14 +31,6 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
       "re",
       "string",
       "typing"
-    ],
-    "libraries": [
-      {
-        "name": "sortedcontainers",
-        "version": "2.4.0",
-        "importName": "sortedcontainers",
-        "detail": "SortedDict, SortedList, and SortedSet are loaded for tree-map/tree-set style use cases."
-      }
     ]
   },
   "javascript": {
@@ -187,11 +179,11 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
     "language": "java",
     "displayName": "Java",
     "versionLabel": "Java 17",
-    "description": "Java 17 is compiled with javac 17 and executed in the browser through a same-origin CheerpJ runtime asset.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
+    "description": "Java 17 is compiled with javac 17 and executed in the browser through consumer-configured CheerpJ runtime assets.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
     "runtime": {
       "name": "CheerpJ browser-local OpenJDK runtime",
       "version": "17",
-      "detail": "Loaded from a configured same-origin CheerpJ runtime asset."
+      "detail": "Loaded from consumer-configured runtime assets (same-origin or an approved CDN)."
     },
     "compiler": {
       "name": "javac",

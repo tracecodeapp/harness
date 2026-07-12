@@ -2892,7 +2892,13 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
     onmessage: null,
     importScripts: (...urls: string[]) => {
       for (const url of urls) {
-        if (String(url).endsWith('java-source-augmentations.js')) {
+        if (String(url).endsWith('runtime-kernel-policy-classic.js')) {
+          vm.runInContext(
+            readFileSync(join(process.cwd(), 'workers/shared/runtime-kernel-policy-classic.js'), 'utf8'),
+            context,
+            { filename: 'runtime-kernel-policy-classic.js' }
+          );
+        } else if (String(url).endsWith('java-source-augmentations.js')) {
           vm.runInContext(augmentationSource, context, {
             filename: 'java-source-augmentations.js',
           });
@@ -7972,6 +7978,30 @@ class Solution {
     }
     assertCondition(invalidRejected, 'Java script mode should reject non-function execution styles');
     console.log('PASS: java script mode rejects non-function execution style');
+
+    const permanentProject = await harness.sendMessage<{
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+    }>('execute-project-java', {
+      source: 'run',
+      scriptPath: 'Main',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      projectUserAuthorityMode: 'permanent',
+      project: {
+        files: [{
+          path: 'Main.java',
+          contents: 'class Main { public static void main(String[] args) { System.out.println("permanent-project"); } }\n',
+        }],
+      },
+    });
+    assertCondition(
+      permanentProject.exitCode === 0,
+      `Java disposable project command should complete after permanent authority sealing: ${JSON.stringify(permanentProject)}`
+    );
+    console.log('PASS: java disposable project worker retains its captured protocol after permanent authority sealing');
   } finally {
     harness.terminate();
   }

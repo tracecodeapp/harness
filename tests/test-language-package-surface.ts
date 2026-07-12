@@ -429,9 +429,16 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         worker.includes('function installPyodideProjectStdioBridge(') &&
-          worker.includes('pyodide.setStdout({ write: writeHandler(') &&
-          worker.includes('pyodide.setStderr({ write: writeHandler('),
-        '@tracecode/harness-python worker should ship Pyodide project stdio bridge hooks'
+          worker.includes('pyodide.setStdin({') &&
+          worker.includes('_stdout = _TraceProjectStream("stdout")') &&
+          worker.includes('_stderr = _TraceProjectStream("stderr")') &&
+          worker.includes('sys.__stdout__ = _stdout') &&
+          worker.includes('sys.__stderr__ = _stderr') &&
+          worker.includes('sys.__stdout__ = _previous_dunder_stdout') &&
+          worker.includes('sys.__stderr__ = _previous_dunder_stderr') &&
+          !worker.includes('pyodide.setStdout({ write: writeHandler(') &&
+          !worker.includes('pyodide.setStderr({ write: writeHandler('),
+        '@tracecode/harness-python worker should ship bounded project stdio hooks without provider callback re-entry'
       );
       assertCondition(
         worker.includes('self.__tracecodeReadProjectStdinByte = readProjectStdinByte') &&

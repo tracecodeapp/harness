@@ -1,9 +1,36 @@
 <!doctype html>
 <script type="module">
 let nextId = 0;
+// This worker owns only the trusted compiler bundle and its immutable parsed
+// toolchain resources. YoWASP creates a fresh compiler environment and Wasm
+// instance for each runClang call; compiled user programs are transferred out
+// and must never be instantiated in this frame or compiler worker.
+let compilerWorker = null;
 const pendingCompiles = new Map();
-const frameToken = new URLSearchParams(location.search).get('tracecodeFrameToken') || '';
-const allowedParentOrigin = location.origin;
+const frameParameters = new URLSearchParams(location.search);
+const frameToken = frameParameters.get('tracecodeFrameToken') || '';
+const allowedParentOrigin = (() => {
+  const value = frameParameters.get('tracecodeParentOrigin');
+  if (!value) return location.origin;
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === value
+      ? url.origin
+      : '';
+  } catch {
+    return '';
+  }
+})();
+const configuredCompilerWorkerUrl = (() => {
+  const value = frameParameters.get('tracecodeCompilerWorkerUrl');
+  if (!value) return new URL('cpp-compiler-worker.js', location.href).href;
+  try {
+    const url = new URL(value, location.href);
+    return url.origin === location.origin ? url.href : '';
+  } catch {
+    return '';
+  }
+})();
 
 function encodeError(error) {
   return error instanceof Error ? error.message : String(error);
@@ -12,79 +39,71 @@ function encodeError(error) {
 function rejectPendingCompiles(error) {
   for (const [, request] of pendingCompiles) {
     clearTimeout(request.timeoutId);
-    request.worker.onmessage = null;
-    request.worker.onerror = null;
-    request.worker.onmessageerror = null;
-    request.worker.terminate();
     request.reject(error);
   }
   pendingCompiles.clear();
 }
 
-function finishCompile(id) {
-  const request = pendingCompiles.get(id);
-  if (!request) return null;
-  pendingCompiles.delete(id);
-  clearTimeout(request.timeoutId);
-  request.worker.onmessage = null;
-  request.worker.onerror = null;
-  request.worker.onmessageerror = null;
-  request.worker.terminate();
-  return request;
+function resetCompilerWorker(error = null) {
+  if (compilerWorker) {
+    compilerWorker.onmessage = null;
+    compilerWorker.onerror = null;
+    compilerWorker.onmessageerror = null;
+    compilerWorker.terminate();
+  }
+  compilerWorker = null;
+  if (error) rejectPendingCompiles(error);
 }
 
-function createCompilerWorker(id) {
-  const worker = new Worker('cpp-compiler-worker.js', { type: 'module' });
-  worker.onmessage = (event) => {
+function getCompilerWorker() {
+  if (compilerWorker) return compilerWorker;
+  if (!configuredCompilerWorkerUrl) {
+    throw new Error('C++ compiler worker URL must share the compiler frame origin');
+  }
+  compilerWorker = new Worker(configuredCompilerWorkerUrl, { type: 'module' });
+  compilerWorker.onmessage = (event) => {
     const data = event.data || {};
     if (data.type === 'worker-ready') return;
     const request = pendingCompiles.get(data.id);
     if (!request) return;
     if (data.protocolToken !== request.protocolToken) return;
-    finishCompile(data.id);
+    pendingCompiles.delete(data.id);
+    clearTimeout(request.timeoutId);
     if (data.type !== 'compile-result') {
       request.reject(new Error(`Unexpected C++ compiler worker response: ${data.type}`));
       return;
     }
     request.resolve(data.payload);
   };
-  worker.onerror = (event) => {
-    const request = finishCompile(id);
-    request?.reject(new Error(event.message || 'C++ compiler worker error'));
+  compilerWorker.onerror = (event) => {
+    resetCompilerWorker(new Error(event.message || 'C++ compiler worker error'));
   };
-  worker.onmessageerror = () => {
-    const request = finishCompile(id);
-    request?.reject(new Error('C++ compiler worker response failed to deserialize'));
+  compilerWorker.onmessageerror = () => {
+    resetCompilerWorker(new Error('C++ compiler worker response failed to deserialize'));
   };
-  return worker;
+  return compilerWorker;
 }
 
 function compile(payload) {
   return new Promise((resolve, reject) => {
+    const worker = getCompilerWorker();
     const id = String(++nextId);
     const protocolToken = `frame-compiler-${id}-${Date.now()}-${Math.random()}`;
-    let worker;
-    try {
-      worker = createCompilerWorker(id);
-    } catch (error) {
-      reject(error instanceof Error ? error : new Error(String(error)));
-      return;
-    }
     const timeoutId = setTimeout(() => {
-      const request = finishCompile(id);
-      request?.reject(new Error('C++ compiler worker request timed out'));
+      resetCompilerWorker(new Error('C++ compiler worker request timed out'));
     }, 120000);
-    pendingCompiles.set(id, { protocolToken, resolve, reject, timeoutId, worker });
+    pendingCompiles.set(id, { protocolToken, resolve, reject, timeoutId });
     worker.postMessage({ id, type: 'compile', payload, protocolToken });
   });
 }
 
 addEventListener('pagehide', () => {
-  rejectPendingCompiles(new Error('C++ compiler frame was closed'));
+  resetCompilerWorker(new Error('C++ compiler frame was closed'));
 });
 
 addEventListener('message', async (event) => {
   if (event.data?.type !== 'compile') return;
+  if (event.source !== parent) return;
   if (event.origin !== allowedParentOrigin) return;
   if (typeof frameToken !== 'string' || frameToken.length === 0) return;
   if (event.data.frameToken !== frameToken) return;
@@ -108,7 +127,7 @@ addEventListener('message', async (event) => {
   }
 });
 
-if (frameToken) {
+if (frameToken && allowedParentOrigin) {
   parent.postMessage({ type: 'frame-ready', frameToken }, allowedParentOrigin);
 }
 </script>

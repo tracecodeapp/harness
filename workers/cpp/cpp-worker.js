@@ -5,7 +5,10 @@ import {
   normalizeRuntimeKernelDeviceReference,
   runtimeKernelVirtualMutationTarget,
   runtimeKernelVirtualPathTarget,
+  withRuntimeUserAuthorityLockdown,
 } from './shared/runtime-kernel-policy.js';
+
+const trustedCppWorkerPostMessage = self.postMessage.bind(self);
 
 const RESULT_MARKER = '__TRACECODE_RESULT__';
 const TRACE_EVENT_MARKER = '__TRACECODE_EVENT__';
@@ -15,6 +18,11 @@ const CPP_USER_SOURCE_FILE = 'solution.cpp';
 const CPP_STANDARD = 'c++23';
 const CPP_SCRIPT_FUNCTION_NAME = '__tracecode_script_main';
 const CPP_BATCH_TRACE_CASE_MARKER_FUNCTION = '__tracecode_batch_case';
+const TRACE_EVENT_TRANSFER_SCHEMA = 'tracecode.trace-events.transfer.v1';
+const TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES = 64 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES = 256 * 1024;
+const TRACE_EVENT_TRANSFER_MAX_BYTES = 64 * 1024 * 1024;
+const TRACE_EVENT_TRANSFER_MIN_EVENTS = 128;
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const DEFAULT_INTERVIEW_MAX_TRACE_STEPS = 10_000;
 const DEFAULT_INTERVIEW_MAX_LINE_EVENTS = 12_000;
@@ -185,7 +193,7 @@ function elapsedMs(startedAt) {
 
 function emitRequestProgress(stage, detail = undefined) {
   if (!activeRequestId) return;
-  postMessage({
+  trustedCppWorkerPostMessage({
     id: activeRequestId,
     type: 'runtime-progress',
     ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
@@ -207,7 +215,7 @@ function clearIdleTimer() {
 function resetIdleTimer() {
   clearIdleTimer();
   idleTimer = setTimeout(() => {
-    postMessage({ type: 'idle-timeout' });
+    trustedCppWorkerPostMessage({ type: 'idle-timeout' });
     self.close();
   }, idleTimeoutMs);
 }
@@ -484,12 +492,96 @@ function cloneBytes(value) {
   return new Uint8Array(value);
 }
 
-function postSuccess(id, type, payload) {
-  postMessage({ id, type, payload, ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}) });
+function prepareCppTraceEventTransfer(result, request, mode) {
+  if (
+    request?.schema !== TRACE_EVENT_TRANSFER_SCHEMA ||
+    request?.encoding !== 'json-utf8' ||
+    typeof TextEncoder === 'undefined'
+  ) {
+    return null;
+  }
+  const eventArrays = mode === 'batch'
+    ? Array.isArray(result?.results)
+      ? result.results.map((entry) => entry?.trace?.events)
+      : []
+    : [result?.trace?.events];
+  if (eventArrays.length === 0 || eventArrays.some((events) => !Array.isArray(events))) return null;
+  const eventCounts = eventArrays.map((events) => events.length);
+  const eventCount = eventCounts.reduce((sum, count) => sum + count, 0);
+  const requestedMinEvents = Number(request.minEventCount);
+  const minEventCount = Number.isSafeInteger(requestedMinEvents)
+    ? Math.max(TRACE_EVENT_TRANSFER_MIN_EVENTS, requestedMinEvents)
+    : TRACE_EVENT_TRANSFER_MIN_EVENTS;
+  if (eventCount < minEventCount) return null;
+
+  let encoded;
+  try {
+    encoded = new TextEncoder().encode(JSON.stringify(mode === 'batch' ? eventArrays : eventArrays[0]));
+  } catch {
+    return null;
+  }
+  const requestedMinBytes = Number(request.minTransferBytes);
+  const minTransferBytes = Number.isSafeInteger(requestedMinBytes)
+    ? Math.max(0, requestedMinBytes)
+    : 64 * 1024;
+  if (encoded.byteLength < minTransferBytes || encoded.byteLength > TRACE_EVENT_TRANSFER_MAX_BYTES) {
+    return null;
+  }
+
+  const requestedChunkBytes = Number(request.maxChunkBytes);
+  const chunkBytes = Number.isSafeInteger(requestedChunkBytes)
+    ? Math.max(16 * 1024, Math.min(TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES, requestedChunkBytes))
+    : TRACE_EVENT_TRANSFER_DEFAULT_CHUNK_BYTES;
+  const chunks = [];
+  for (let offset = 0; offset < encoded.byteLength; offset += chunkBytes) {
+    chunks.push(encoded.slice(offset, Math.min(encoded.byteLength, offset + chunkBytes)).buffer);
+  }
+  const payload = mode === 'batch'
+    ? {
+        ...result,
+        results: result.results.map((entry) => ({
+          ...entry,
+          trace: { ...entry.trace, events: [] },
+        })),
+      }
+    : {
+        ...result,
+        trace: { ...result.trace, events: [] },
+      };
+  payload.__traceEventTransport = {
+    schema: TRACE_EVENT_TRANSFER_SCHEMA,
+    encoding: 'json-utf8',
+    path: mode === 'batch' ? 'results[].trace.events' : 'trace.events',
+    eventCount,
+    ...(mode === 'batch' ? { eventCounts } : {}),
+    byteLength: encoded.byteLength,
+    chunks,
+  };
+  return { payload, transfer: chunks };
+}
+
+function postSuccess(id, type, payload, traceEventTransport) {
+  const mode = type === 'execute-with-tracing'
+    ? 'single'
+    : type === 'execute-trace-batch'
+      ? 'batch'
+      : null;
+  const transported = mode
+    ? prepareCppTraceEventTransfer(payload, traceEventTransport, mode)
+    : null;
+  trustedCppWorkerPostMessage(
+    {
+      id,
+      type,
+      payload: transported?.payload ?? payload,
+      ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
+    },
+    transported?.transfer ?? []
+  );
 }
 
 function postFailure(id, error) {
-  postMessage({
+  trustedCppWorkerPostMessage({
     id,
     type: 'error',
     ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
@@ -499,7 +591,7 @@ function postFailure(id, error) {
 
 function postProjectEvent(id, payload) {
   if (!id) return;
-  postMessage({ id, type: 'project-event', payload, ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}) });
+  trustedCppWorkerPostMessage({ id, type: 'project-event', payload, ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}) });
 }
 
 function bytesToHex(bytes) {
@@ -2150,7 +2242,7 @@ class CppKernelHttpSyncBridge {
   }
 
   post(type, payload) {
-    postMessage({
+    trustedCppWorkerPostMessage({
       id: this.messageId,
       type,
       payload,
@@ -8937,7 +9029,7 @@ function requestExternalCompile(driverSource) {
     }, 120_000);
 
     pendingExternalCompiles.set(requestId, { resolve, reject, timeoutId, protocolToken: activeRequestProtocolToken });
-    postMessage({
+    trustedCppWorkerPostMessage({
       type: 'compile-request',
       requestId,
       ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
@@ -8962,7 +9054,7 @@ function requestExternalCompilePayload(payload) {
     }, 120_000);
 
     pendingExternalCompiles.set(requestId, { resolve, reject, timeoutId, protocolToken: activeRequestProtocolToken });
-    postMessage({
+    trustedCppWorkerPostMessage({
       type: 'compile-request',
       requestId,
       ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
@@ -11182,7 +11274,7 @@ self.onmessage = (event) => {
 
   if (!id) return;
   if (typeof protocolToken !== 'string') {
-    postMessage({
+    trustedCppWorkerPostMessage({
       id,
       type: 'error',
       payload: { error: 'Missing C++ worker protocol token.' },
@@ -11210,9 +11302,15 @@ self.onmessage = (event) => {
             : type === 'compile-run'
               ? await handleCompileRun(payload)
               : type === 'compile-run-batch'
-                ? await handleCompileRunBatch(payload)
+              ? await handleCompileRunBatch(payload)
               : type === 'execute-project-cpp'
-                ? await handleProjectCpp(payload, id)
+                ? await withRuntimeUserAuthorityLockdown(
+                    () => handleProjectCpp(payload, id),
+                    {
+                      scope: self,
+                      mode: payload?.projectUserAuthorityMode ?? 'temporary',
+                    }
+                  )
               : type === 'execute-with-tracing'
                 ? await handleExecuteWithTracing(payload)
                 : type === 'execute-trace-batch'
@@ -11224,7 +11322,7 @@ self.onmessage = (event) => {
         emitRequestProgress('request-complete', { type });
       }
 
-      postSuccess(id, type, result);
+      postSuccess(id, type, result, payload?.traceEventTransport);
     })
     .catch((error) => {
       emitRuntimeDiagnostic('error', 'worker-request-failed', 'C++ worker request failed.', {
@@ -11243,4 +11341,4 @@ self.onmessage = (event) => {
 };
 
 emitRuntimeDiagnostic('info', 'worker-ready', 'C++ worker is ready.');
-postMessage({ type: 'worker-ready' });
+trustedCppWorkerPostMessage({ type: 'worker-ready' });

@@ -1494,8 +1494,8 @@ async function main(): Promise<void> {
     'Python runtime info should expose generated Python and Pyodide versions'
   );
   assertCondition(
-    pythonInfo.libraries?.some((library) => library.name === 'sortedcontainers' && Boolean(library.version)) === true,
-    'Python runtime info should expose sortedcontainers'
+    !pythonInfo.libraries?.some((library) => library.name === 'sortedcontainers'),
+    'Python runtime info must not claim consumer-manifest packages are always installed'
   );
   assertCondition(
     javascriptInfo.libraries?.some((library) => library.name === 'lodash' && Boolean(library.version)) === true,
@@ -1542,7 +1542,7 @@ async function main(): Promise<void> {
     'C++ runtime info should expose default header coverage'
   );
   assertCondition(
-    pythonInfo.description.includes('sortedcontainers') &&
+    pythonInfo.description.includes('consumer-owned runtime assets') &&
       javaInfo.description.includes('javac') &&
       csharpInfo.description.includes('.NET') &&
       cppInfo.description.includes(cppInfo.standard ?? 'C++'),

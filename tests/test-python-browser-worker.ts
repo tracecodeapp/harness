@@ -220,8 +220,12 @@ async function main(): Promise<void> {
           const id = String(++nextId);
           const protocolToken = 'python-test-token-' + id;
           const timeoutId = setTimeout(() => {
+            const timedOutRequest = pending.get(id);
             pending.delete(id);
-            reject(new Error(type + ' timed out'));
+            reject(new Error(
+              type + ' timed out; recent events=' +
+                JSON.stringify((timedOutRequest && timedOutRequest.events || []).slice(-12))
+            ));
           }, timeoutMs);
           pending.set(id, {
             protocolToken,
@@ -269,6 +273,7 @@ async function main(): Promise<void> {
       };
 
       await send('init', {}, 120000);
+      await send('warmup', {}, 180000);
 
       const traceKernelDevices = [
         { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
@@ -458,7 +463,7 @@ async function main(): Promise<void> {
         env: { MODE: 'browser-python-project' },
         stdinPipe: createRuntimeCommandStdinPipeFromText('from-stdin\\n'),
         project: { cwd: '/workspace', files: projectFiles, kernelDevices: traceKernelDevices },
-      });
+      }, 45000);
 
       const moduleRun = await send('execute-project-python', {
         source: 'module',

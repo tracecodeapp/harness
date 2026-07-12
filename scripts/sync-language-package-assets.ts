@@ -94,6 +94,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
         target: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
       },
+      {
+        source: ['workers', 'shared', 'runtime-kernel-policy.js'],
+        target: ['workers', 'shared', 'runtime-kernel-policy.js'],
+      },
     ],
   },
   {
@@ -106,6 +110,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
       {
         source: ['workers', 'javascript', 'javascript-project-worker.js'],
         target: ['workers', 'javascript-project-worker.js'],
+      },
+      {
+        source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
+        target: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
       },
       {
         source: ['workers', 'vendor', 'typescript.js'],

@@ -164,6 +164,13 @@ function loadJavaScriptLibrariesIntoContext(context: vm.Context): void {
   });
 }
 
+function loadRuntimeKernelPolicyIntoContext(context: vm.Context): void {
+  const policyPath = join(process.cwd(), 'workers', 'shared', 'runtime-kernel-policy-classic.js');
+  vm.runInContext(readFileSync(policyPath, 'utf8'), context, {
+    filename: 'runtime-kernel-policy-classic.js',
+  });
+}
+
 function createWorkerHarness(workerSource: string, options: CreateWorkerHarnessOptions = { typeScriptCompiler: ts }) {
   const pending = new Map<string, { protocolToken: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   let ready = false;
@@ -214,10 +221,16 @@ function createWorkerHarness(workerSource: string, options: CreateWorkerHarnessO
     }
   };
   (context as Record<string, unknown>).importScripts = (...urls: string[]) => {
-    if (options.importScripts) {
-      return options.importScripts(selfObject, context, ...urls);
+    const runtimeUrls = urls.filter((url) => String(url).includes('runtime-kernel-policy-classic.js'));
+    if (runtimeUrls.length > 0) {
+      loadRuntimeKernelPolicyIntoContext(context);
     }
-    return defaultImportScripts(...urls);
+    const remainingUrls = urls.filter((url) => !String(url).includes('runtime-kernel-policy-classic.js'));
+    if (remainingUrls.length === 0) return;
+    if (options.importScripts) {
+      return options.importScripts(selfObject, context, ...remainingUrls);
+    }
+    return defaultImportScripts(...remainingUrls);
   };
 
   vm.runInContext(workerSource, context, {
@@ -5144,6 +5157,57 @@ result = identity(42);`,
     'Script tracing should start at first executable top-level statement line'
   );
   console.log('PASS: execute-with-tracing top-level start line contract');
+
+  const traceDetailKinds = new Set(['snapshot', 'read', 'write', 'mutate']);
+  for (const language of ['javascript', 'typescript'] as const) {
+    const typedSuffix = language === 'typescript' ? ': number[]' : '';
+    const traceCode = `function appendValue(values${typedSuffix}) {
+  values.push(3);
+  return values.length;
+}`;
+    const fullTrace = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code: traceCode,
+      functionName: 'appendValue',
+      inputs: { values: [1, 2] },
+      executionStyle: 'function',
+      language,
+    });
+    const minimalTrace = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code: traceCode,
+      functionName: 'appendValue',
+      inputs: { values: [1, 2] },
+      options: { minimalTrace: true },
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(fullTrace.success && minimalTrace.success, `${language} full and minimal trace controls should succeed`);
+    assertCondition(
+      traceEvents(fullTrace).some((event) => traceDetailKinds.has(event.kind ?? '')),
+      `${language} full trace control should retain detail events`
+    );
+    assertCondition(
+      traceEvents(minimalTrace).some((event) => event.kind === 'line') &&
+        traceEvents(minimalTrace).some((event) => event.kind === 'return'),
+      `${language} minimal trace should preserve line and return events`
+    );
+    assertCondition(
+      traceEvents(minimalTrace).every((event) => !traceDetailKinds.has(event.kind ?? '')),
+      `${language} minimal trace should suppress snapshot/read/write/mutate events`
+    );
+    assertCondition(
+      JSON.stringify(minimalTrace).length < JSON.stringify(fullTrace).length,
+      `${language} minimal trace payload should be smaller than the full trace control`
+    );
+  }
+  console.log('PASS: execute-with-tracing minimalTrace payload contract');
 
   const opsClassStyle = await harness.sendMessage<{
     success: boolean;

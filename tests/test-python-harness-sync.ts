@@ -15,6 +15,7 @@ import {
 
 const WORKER_PATH = join(process.cwd(), 'workers', 'python', 'pyodide-worker.js');
 const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
+const SHARED_POLICY_PATH = join(process.cwd(), 'workers', 'shared', 'runtime-kernel-policy-classic.js');
 const LEGACY_RUNTIME_PATH = join(process.cwd(), 'packages', 'harness-python', 'src', 'pyodide.ts');
 
 function assertCondition(condition: boolean, message: string): void {
@@ -79,7 +80,11 @@ function createWorkerContext(source: string): vm.Context {
   return context;
 }
 
-async function assertWorkerInitWarmupContract(workerSource: string): Promise<void> {
+async function assertWorkerInitWarmupContract(
+  workerSource: string,
+  runtimeCoreSource: string,
+  sharedPolicySource: string
+): Promise<void> {
   const pending = new Map<string, (message: Record<string, unknown>) => void>();
   let loadPyodideCount = 0;
   let nextId = 0;
@@ -99,10 +104,24 @@ async function assertWorkerInitWarmupContract(workerSource: string): Promise<voi
     onmessage: null,
   };
 
-  const context = vm.createContext({
+  let context: vm.Context;
+  context = vm.createContext({
     console,
     performance: { now: () => Date.now() },
     self: selfObject,
+    importScripts(...urls: string[]) {
+      for (const url of urls) {
+        if (url.includes('runtime-kernel-policy-classic.js')) {
+          vm.runInContext(sharedPolicySource, context, { filename: 'runtime-kernel-policy-classic.js' });
+          continue;
+        }
+        if (url.includes('runtime-core.js')) {
+          vm.runInContext(runtimeCoreSource, context, { filename: 'runtime-core.js' });
+          continue;
+        }
+        throw new Error(`Unexpected Python worker warmup asset: ${url}`);
+      }
+    },
     setTimeout,
     clearTimeout,
   });
@@ -184,7 +203,7 @@ async function assertToPythonLiteralParity(workerSource: string): Promise<void> 
   console.log('PASS: toPythonLiteral parity');
 }
 
-async function assertProjectPythonEnvContract(workerSource: string): Promise<void> {
+async function assertProjectPythonEnvContract(workerSource: string, sharedPolicySource: string): Promise<void> {
   let capturedCode = '';
   const selfObject: Record<string, unknown> = {
     location: { search: '' },
@@ -198,15 +217,23 @@ async function assertProjectPythonEnvContract(workerSource: string): Promise<voi
     onmessage: null,
   };
 
-  const context = vm.createContext({
+  let context: vm.Context & {
+    executeProjectPython?: (request: unknown) => Promise<unknown>;
+  };
+  context = vm.createContext({
     console,
     performance: { now: () => Date.now() },
     self: selfObject,
+    importScripts(...urls: string[]) {
+      for (const url of urls) {
+        if (url.includes('runtime-kernel-policy-classic.js')) {
+          vm.runInContext(sharedPolicySource, context, { filename: 'runtime-kernel-policy-classic.js' });
+        }
+      }
+    },
     setTimeout,
     clearTimeout,
-  }) as vm.Context & {
-    executeProjectPython?: (request: unknown) => Promise<unknown>;
-  };
+  }) as typeof context;
 
   vm.runInContext(workerSource, context, {
     filename: 'pyodide-worker.js',
@@ -372,6 +399,7 @@ async function assertDeprecatedRuntimeNotImported(): Promise<void> {
 async function main(): Promise<void> {
   const workerSource = await readFile(WORKER_PATH, 'utf8');
   const runtimeCoreSource = await readFile(RUNTIME_CORE_PATH, 'utf8');
+  const sharedPolicySource = await readFile(SHARED_POLICY_PATH, 'utf8');
 
   assertCondition(
     workerSource.includes('generated-python-harness-snippets.js'),
@@ -468,9 +496,9 @@ async function main(): Promise<void> {
   assertLineSubsequenceInSource(workerSource, compatSerializeContractBlock, 'PYTHON_SERIALIZE_FUNCTION compatibility contract');
   console.log('PASS: serialize contracts synced');
 
-  await assertWorkerInitWarmupContract(workerSource);
+  await assertWorkerInitWarmupContract(workerSource, runtimeCoreSource, sharedPolicySource);
   await assertToPythonLiteralParity(workerSource);
-  await assertProjectPythonEnvContract(workerSource);
+  await assertProjectPythonEnvContract(workerSource, sharedPolicySource);
   await assertDeprecatedRuntimeNotImported();
 
   console.log('\nPython harness sync checks passed.');

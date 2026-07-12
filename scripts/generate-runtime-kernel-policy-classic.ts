@@ -23,6 +23,7 @@ const EXPORTED_POLICY_NAMES = [
   'runtimeKernelVirtualPathTarget',
   'runtimeKernelVirtualMutationTarget',
   'runtimeKernelVirtualOpenTarget',
+  'withRuntimeUserAuthorityLockdown',
 ] as const;
 
 function indentBlock(value: string): string {
@@ -34,12 +35,16 @@ function indentBlock(value: string): string {
 }
 
 function buildClassicPolicyScript(moduleSource: string): string {
-  const missingExports = EXPORTED_POLICY_NAMES.filter((name) => !moduleSource.includes(`export function ${name}`));
+  const missingExports = EXPORTED_POLICY_NAMES.filter(
+    (name) =>
+      !moduleSource.includes(`export function ${name}`) &&
+      !moduleSource.includes(`export async function ${name}`)
+  );
   if (missingExports.length > 0) {
     throw new Error(`Missing runtime kernel policy exports: ${missingExports.join(', ')}`);
   }
 
-  const classicSource = moduleSource.replace(/^export function /gm, 'function ');
+  const classicSource = moduleSource.replace(/^export (async )?function /gm, '$1function ');
   if (/\bexport\b/.test(classicSource) || /\bimport\b/.test(classicSource)) {
     throw new Error('runtime-kernel-policy.js must stay self-contained for classic worker generation.');
   }
@@ -54,8 +59,13 @@ function buildClassicPolicyScript(moduleSource: string): string {
 (function installRuntimeKernelPolicy(globalThis) {
 ${indentBlock(classicSource)}
 
-  globalThis.TraceRuntimeKernelPolicy = Object.freeze({
+  Object.defineProperty(globalThis, 'TraceRuntimeKernelPolicy', {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: Object.freeze({
 ${EXPORTED_POLICY_NAMES.map((name) => `    ${name},`).join('\n')}
+    }),
   });
 })(typeof self !== 'undefined' ? self : globalThis);
 `;

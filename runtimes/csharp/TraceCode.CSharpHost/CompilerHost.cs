@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.Loader;
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -29,6 +30,9 @@ public static partial class CompilerHost
     private const int ProjectMaxOutputStreamBytes = 1024 * 1024;
     private const int ProjectMaxLiveFileChanges = 1024;
     private const long ProjectMaxLiveFileChangeBytes = 4L * 1024 * 1024;
+    private const int CompiledArtifactCacheMaxEntries = 24;
+    private const long CompiledArtifactCacheMaxBytes = 8L * 1024 * 1024;
+    private const string CompiledArtifactCacheSchema = "tracecode-csharp-compile-v1";
     private static readonly string[] DeniedUserApiText =
     {
         "System.Net",
@@ -51,6 +55,9 @@ public static partial class CompilerHost
     };
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp14);
     private static readonly Lazy<MetadataReference[]> CachedReferences = new(() => ResolveReferences().ToArray());
+    private static readonly Dictionary<string, CompiledArtifact> CompiledArtifacts = new(StringComparer.Ordinal);
+    private static readonly LinkedList<string> CompiledArtifactRecency = new();
+    private static long compiledArtifactCacheBytes;
     private static string currentInputsJson = "{}";
     private static int projectLiveFileChangeCount;
     private static long projectLiveFileChangeBytes;
@@ -62,6 +69,28 @@ public static partial class CompilerHost
         NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
         MaxDepth = 256,
     };
+
+    private sealed class CompiledArtifact
+    {
+        public required byte[] PeBytes { get; init; }
+        public required LinkedListNode<string> RecencyNode { get; init; }
+    }
+
+    private sealed class UserExecutionLoadContext : AssemblyLoadContext
+    {
+        public UserExecutionLoadContext(string name) : base(name, isCollectible: true)
+        {
+        }
+
+        protected override Assembly? Load(AssemblyName assemblyName)
+        {
+            // User assemblies share only already-loaded host/framework assemblies. They cannot
+            // resolve arbitrary files, while a fresh collectible context gives every command a
+            // new static/type universe without throwing away Roslyn and its metadata references.
+            return AssemblyLoadContext.Default.Assemblies.FirstOrDefault(candidate =>
+                AssemblyName.ReferenceMatchesDefinition(candidate.GetName(), assemblyName));
+        }
+    }
 
     [JSImport("emitProjectEvent", "tracecode")]
     internal static partial void EmitProjectEventJson(string payloadJson);
@@ -91,34 +120,47 @@ public static partial class CompilerHost
             request.Inputs ??= new Dictionary<string, JsonElement>(StringComparer.Ordinal);
             ValidateExecutionInputs(request.Inputs);
 
-            timings["compileCacheHit"] = false;
+            string artifactKey = CompiledArtifactKey(request);
+            byte[]? peBytes = TryGetCompiledArtifact(artifactKey);
+            timings["compileCacheHit"] = peBytes is not null;
+            timings["compileArtifactKey"] = artifactKey;
             double compileStartedAt = stopwatch.Elapsed.TotalMilliseconds;
-            CSharpCompilation compilation = CreateCompilation(request);
-            using MemoryStream peStream = new();
-            var emitResult = compilation.Emit(peStream);
-            timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
-
-            if (!emitResult.Success)
+            if (peBytes is null)
             {
-                var diagnostics = emitResult.Diagnostics
-                    .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
-                    .Select(CSharpDiagnostic.FromRoslyn)
-                    .ToList();
-                return Serialize(new CSharpExecuteResponse
+                CSharpCompilation compilation = CreateCompilation(request);
+                using MemoryStream peStream = new();
+                var emitResult = compilation.Emit(peStream);
+                timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
+
+                if (!emitResult.Success)
                 {
-                    Success = false,
-                    Error = diagnostics.FirstOrDefault()?.Message ?? "C# compilation failed.",
-                    Diagnostics = diagnostics,
-                    ConsoleOutput = SplitConsoleOutput(capturedOut),
-                    Events = SnapshotTraceEvents(capturedOut),
-                    ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
-                    Timings = WithTotalTiming(timings, stopwatch),
-                });
+                    var diagnostics = emitResult.Diagnostics
+                        .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+                        .Select(CSharpDiagnostic.FromRoslyn)
+                        .ToList();
+                    return Serialize(new CSharpExecuteResponse
+                    {
+                        Success = false,
+                        Error = diagnostics.FirstOrDefault()?.Message ?? "C# compilation failed.",
+                        Diagnostics = diagnostics,
+                        ConsoleOutput = SplitConsoleOutput(capturedOut),
+                        Events = SnapshotTraceEvents(capturedOut),
+                        ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+                        Timings = WithTotalTiming(timings, stopwatch),
+                    });
+                }
+
+                peBytes = peStream.ToArray();
+                StoreCompiledArtifact(artifactKey, peBytes);
+            }
+            else
+            {
+                timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
             }
 
-            byte[] peBytes = peStream.ToArray();
-
-            Assembly userAssembly = Assembly.Load(peBytes);
+            timings["compileArtifactBytes"] = peBytes.LongLength;
+            timings["compileCacheEntries"] = CompiledArtifacts.Count;
+            timings["compileCacheBytes"] = compiledArtifactCacheBytes;
             currentInputsJson = JsonSerializer.Serialize(request.Inputs, JsonOptions);
             RuntimeTraceSink.Configure(
                 request.TimeoutMs,
@@ -129,21 +171,33 @@ public static partial class CompilerHost
                 request.Trace && request.MinimalTrace
             );
             double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
-            object? output = InvokeDriver(userAssembly);
-            timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
-            List<RuntimeTraceEvent> events = SnapshotTraceEvents(capturedOut);
-            BackfillSourceCollectionMutationEvents(request.Source, events);
-            return Serialize(new CSharpExecuteResponse
+            var loadContext = new UserExecutionLoadContext("TraceCode.UserExecution." + Guid.NewGuid().ToString("N"));
+            try
             {
-                Success = true,
-                Output = NormalizeOutput(output),
-                ConsoleOutput = SplitConsoleOutput(capturedOut),
-                Events = events,
-                TraceLimitExceeded = RuntimeTraceSink.TraceLimitExceeded,
-                TimeoutReason = RuntimeTraceSink.TraceLimitExceeded ? RuntimeTraceSink.TimeoutReason : null,
-                ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
-                Timings = WithTotalTiming(timings, stopwatch),
-            });
+                using MemoryStream assemblyStream = new(peBytes, writable: false);
+                Assembly userAssembly = loadContext.LoadFromStream(assemblyStream);
+                object? output = InvokeDriver(userAssembly);
+                object? normalizedOutput = NormalizeOutput(output);
+                timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
+                timings["executionRealm"] = "collectible-assembly-load-context";
+                List<RuntimeTraceEvent> events = SnapshotTraceEvents(capturedOut);
+                BackfillSourceCollectionMutationEvents(request.Source, events);
+                return Serialize(new CSharpExecuteResponse
+                {
+                    Success = true,
+                    Output = normalizedOutput,
+                    ConsoleOutput = SplitConsoleOutput(capturedOut),
+                    Events = events,
+                    TraceLimitExceeded = RuntimeTraceSink.TraceLimitExceeded,
+                    TimeoutReason = RuntimeTraceSink.TraceLimitExceeded ? RuntimeTraceSink.TimeoutReason : null,
+                    ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+                    Timings = WithTotalTiming(timings, stopwatch),
+                });
+            }
+            finally
+            {
+                loadContext.Unload();
+            }
         }
         catch (Exception error) when (error.GetBaseException() is TraceCodeTimeoutException timeout)
         {
@@ -943,6 +997,120 @@ public static partial class CompilerHost
             if (!object.Equals(left[index], right[index])) return false;
         }
         return true;
+    }
+
+    private static string CompiledArtifactKey(CSharpExecuteRequest request)
+    {
+        StringBuilder key = new();
+        key.Append(CompiledArtifactCacheSchema).Append('\n');
+        AppendCacheKeyPart(key, request.Source);
+        AppendCacheKeyPart(key, request.FunctionName);
+        AppendCacheKeyPart(key, request.ExecutionStyle);
+        key.Append(request.Trace ? "trace\n" : "plain\n");
+        foreach ((string name, JsonElement value) in request.Inputs)
+        {
+            AppendCacheKeyPart(key, name);
+            AppendInputCompileShape(key, value);
+            key.Append('\n');
+        }
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key.ToString()))).ToLowerInvariant();
+    }
+
+    private static void AppendCacheKeyPart(StringBuilder target, string value)
+    {
+        target.Append(value.Length).Append(':').Append(value).Append('\n');
+    }
+
+    private static void AppendInputCompileShape(StringBuilder target, JsonElement value)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                target.Append('{');
+                foreach (JsonProperty property in value.EnumerateObject())
+                {
+                    AppendCacheKeyPart(target, property.Name);
+                    AppendInputCompileShape(target, property.Value);
+                }
+                target.Append('}');
+                return;
+            case JsonValueKind.Array:
+                target.Append('[');
+                foreach (JsonElement item in value.EnumerateArray())
+                {
+                    AppendInputCompileShape(target, item);
+                }
+                target.Append(']');
+                return;
+            case JsonValueKind.String:
+                target.Append('s');
+                return;
+            case JsonValueKind.Number:
+                target.Append('n');
+                return;
+            case JsonValueKind.True:
+            case JsonValueKind.False:
+                target.Append('b');
+                return;
+            case JsonValueKind.Null:
+                target.Append('0');
+                return;
+            default:
+                target.Append('?');
+                return;
+        }
+    }
+
+    private static byte[]? TryGetCompiledArtifact(string key)
+    {
+        if (!CompiledArtifacts.TryGetValue(key, out CompiledArtifact? artifact))
+        {
+            return null;
+        }
+
+        CompiledArtifactRecency.Remove(artifact.RecencyNode);
+        CompiledArtifactRecency.AddLast(artifact.RecencyNode);
+        return artifact.PeBytes;
+    }
+
+    private static void StoreCompiledArtifact(string key, byte[] peBytes)
+    {
+        if (peBytes.LongLength > CompiledArtifactCacheMaxBytes)
+        {
+            return;
+        }
+
+        if (CompiledArtifacts.TryGetValue(key, out CompiledArtifact? existing))
+        {
+            compiledArtifactCacheBytes -= existing.PeBytes.LongLength;
+            CompiledArtifactRecency.Remove(existing.RecencyNode);
+            CompiledArtifacts.Remove(key);
+        }
+
+        LinkedListNode<string> recencyNode = CompiledArtifactRecency.AddLast(key);
+        CompiledArtifacts[key] = new CompiledArtifact
+        {
+            PeBytes = peBytes,
+            RecencyNode = recencyNode,
+        };
+        compiledArtifactCacheBytes += peBytes.LongLength;
+
+        while (CompiledArtifacts.Count > CompiledArtifactCacheMaxEntries
+            || compiledArtifactCacheBytes > CompiledArtifactCacheMaxBytes)
+        {
+            LinkedListNode<string>? oldest = CompiledArtifactRecency.First;
+            if (oldest is null)
+            {
+                break;
+            }
+
+            CompiledArtifactRecency.RemoveFirst();
+            if (CompiledArtifacts.Remove(oldest.Value, out CompiledArtifact? removed))
+            {
+                compiledArtifactCacheBytes -= removed.PeBytes.LongLength;
+            }
+        }
     }
 
     private static CSharpCompilation CreateCompilation(CSharpExecuteRequest request)
