@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## Unreleased
+
+### Added
+
+- Added a public browser-project provider matrix covering Python, JavaScript, TypeScript, Java, C#, and C++ across Chromium, Firefox, and WebKit. The matrix exercises compile/run, filesystem persistence, hidden/readonly policy, TraceKernel HTTP, stdio, cancellation, and disposal through public APIs.
+- Added separate five-sample performance baselines and a nightly/manual regression gate for every provider/engine pair, keeping compatibility and performance conclusions distinct.
+
+### Fixed
+
+- Deleted each request-scoped CheerpJ `/files/java-worker/<compileId>` tree after Java project results and file changes are materialized, while preserving the workspace-session VM warmup tree.
+
 ## [0.10.0] - 2026-07-12
 
 ### Added
