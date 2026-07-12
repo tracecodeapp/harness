@@ -999,13 +999,28 @@ export function rewriteVirtualExecutableInvocationsInAst(
 ): void {
   const availableExecutableRecords = new Map(executableRecords);
 
-  const resolveExecutablePath = (cwd: string, executable: string): string | null => {
-    if (!executable.includes('/') && !executable.startsWith('/')) return null;
+  const resolveWorkspaceExecutablePath = (cwd: string, executable: string): string | null => {
     try {
       return toProjectPath(workspaceRoot, resolveWorkspaceCommandPath(workspaceRoot, cwd, executable, workspaceAlias));
     } catch {
       return null;
     }
+  };
+
+  const resolveExecutableInvocationPath = (cwd: string, executable: string): string | null => {
+    // A bare command name is resolved through PATH by the shell. Do not silently
+    // reinterpret it as a file in cwd; virtual executables require an explicit
+    // path such as ./app or bin/app at invocation time.
+    if (!executable.includes('/') && !executable.startsWith('/')) return null;
+    return resolveWorkspaceExecutablePath(cwd, executable);
+  };
+
+  const resolveProducedExecutablePath = (cwd: string, output: string): string | null => {
+    // Compiler -o operands are filesystem paths relative to cwd even when they
+    // are bare names. This resolver is intentionally separate from invocation
+    // PATH semantics so `-o app && ./app` works on the first run without making
+    // a bare `app` command implicitly executable from cwd.
+    return resolveWorkspaceExecutablePath(cwd, output);
   };
 
   const commandArgs = (command: { args?: unknown[] }): string[] | null => {
@@ -1041,7 +1056,7 @@ export function rewriteVirtualExecutableInvocationsInAst(
       case 'SimpleCommand': {
         const name = literalWordValue(candidate.name);
         if (!name) return;
-        const resolvedExecutablePath = resolveExecutablePath(cwd, name);
+        const resolvedExecutablePath = resolveExecutableInvocationPath(cwd, name);
         if (resolvedExecutablePath && availableExecutableRecords.has(resolvedExecutablePath)) {
           candidate.args = [literalWord(name), ...(candidate.args ?? [])];
           candidate.name = literalWord(TRACEKERNEL_EXEC_COMMAND);
@@ -1098,7 +1113,7 @@ export function rewriteVirtualExecutableInvocationsInAst(
         if (CPP_COMPILER_COMMANDS.has(name)) {
           const parsed = parseCppCompileInvocation(args);
           if (!isCppCompileCommandResult(parsed) && !parsed.showVersion) {
-            const outputPath = resolveExecutablePath(currentCwd, cppOutputPathFromArgs(parsed.args));
+            const outputPath = resolveProducedExecutablePath(currentCwd, cppOutputPathFromArgs(parsed.args));
             if (outputPath) availableExecutableRecords.set(outputPath, { path: outputPath, kind: 'cpp' });
           }
         } else if (name === 'cd') {

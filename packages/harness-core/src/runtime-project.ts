@@ -1396,8 +1396,11 @@ export type RuntimeWorkspaceEventHandler = (event: RuntimeWorkspaceEvent) => voi
 
 export type RuntimeWorkspaceUnsubscribe = () => void;
 
+export type RuntimeWorkspaceMutationHandler = (revision: number) => void;
+
 export interface RuntimeWorkspaceKernel {
   readonly info: RuntimeKernelInfo;
+  readonly mutationVersion: number;
   readFile(path: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<string>;
   writeFile(path: string, contents: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<void>;
   writeSkillFiles(files: readonly RuntimeFile[], actor?: RuntimeWorkspaceActor): Promise<void>;
@@ -1405,6 +1408,7 @@ export interface RuntimeWorkspaceKernel {
   applyFileChange(change: RuntimeFileChange, actor?: RuntimeWorkspaceActor, phase?: RuntimeFileMutationPhase): Promise<void>;
   snapshot(options?: { entrypoint?: string; includeHidden?: boolean }): Promise<RuntimeProjectSnapshot>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
+  watchMutations(listener: RuntimeWorkspaceMutationHandler): RuntimeWorkspaceUnsubscribe;
 }
 
 export interface RuntimeWorkspaceStat {
@@ -1562,7 +1566,7 @@ export interface RuntimeWorkspace {
   snapshot(options?: { entrypoint?: string; includeHidden?: boolean }): Promise<RuntimeProjectSnapshot>;
   journal(sinceSeq?: number): readonly KernelJournalRecord[];
   exportPatch(base: RuntimeProjectSnapshot, options?: RuntimeProjectPatchOptions): Promise<RuntimeProjectPatch>;
-  importPatch(base: RuntimeProjectSnapshot, patch: RuntimeProjectPatch): Promise<void>;
+  importPatch(base: RuntimeProjectSnapshot, patch: RuntimeProjectPatch, options?: RuntimeProjectPatchOptions): Promise<void>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
   dispose(): void;
 }

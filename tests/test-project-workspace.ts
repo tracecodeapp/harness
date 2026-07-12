@@ -789,12 +789,13 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
   await workspace.remove('removed-empty', { recursive: true });
   await workspace.mkdir('new-empty/deep');
 
-  const patch = await workspace.exportPatch(base, {
+  const patchIdentity = {
     base: {
       id: 'two-sum-project',
       version: '2026-06-07',
     },
-  });
+  };
+  const patch = await workspace.exportPatch(base, patchIdentity);
   assertCondition(patch.version === 1, 'exportPatch should use the v1 patch format');
   assertCondition(patch.base.id === 'two-sum-project', 'exportPatch should preserve caller-provided base id');
   assertCondition(patch.base.version === '2026-06-07', 'exportPatch should preserve caller-provided base version');
@@ -818,7 +819,15 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
   restored.watch((event) => {
     if (event.type === 'file-change') restoredEvents.push(event);
   });
-  await restored.importPatch(base, patch);
+  await assertRejectsAsync(
+    () => restored.importPatch(base, patch),
+    'importPatch should reject identity-bearing patches when the importer cannot verify their project identity'
+  );
+  await assertRejectsAsync(
+    () => restored.importPatch(base, patch, { base: { id: 'different-project', version: '2026-06-07' } }),
+    'importPatch should reject mismatched project identity before mutating'
+  );
+  await restored.importPatch(base, patch, patchIdentity);
   assertCondition(
     JSON.stringify(comparableProjectSnapshot(await restored.snapshot())) ===
       JSON.stringify(comparableProjectSnapshot(await workspace.snapshot())),
@@ -839,7 +848,7 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
     directories: changedBase.directories,
   });
   await assertRejectsAsync(
-    () => staleBaseWorkspace.importPatch(changedBase, patch),
+    () => staleBaseWorkspace.importPatch(changedBase, patch, patchIdentity),
     'importPatch should reject a patch whose base manifest does not match the provided base'
   );
   assertCondition(await staleBaseWorkspace.readFile('src/main.txt') === 'released-edit\n', 'stale import should not mutate the workspace');
@@ -851,7 +860,7 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
   });
   await dirtyWorkspace.writeFile('local-only.txt', 'dirty\n');
   await assertRejectsAsync(
-    () => dirtyWorkspace.importPatch(base, patch),
+    () => dirtyWorkspace.importPatch(base, patch, patchIdentity),
     'importPatch should reject when the current workspace is not the patch base'
   );
   assertCondition(await dirtyWorkspace.readFile('local-only.txt') === 'dirty\n', 'current-workspace rejection should preserve existing files');
@@ -875,7 +884,7 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
     directories: base.directories,
   });
   await assertRejectsAsync(
-    () => invalidWorkspace.importPatch(base, invalidPatch),
+    () => invalidWorkspace.importPatch(base, invalidPatch, patchIdentity),
     'importPatch should reject invalid path preconditions before mutating'
   );
   assertCondition(await invalidWorkspace.readFile('src/main.txt') === 'base\n', 'invalid patch rejection should not apply earlier writes');
@@ -3439,6 +3448,59 @@ async function testCppCommandAdapter(): Promise<void> {
     `virtual executable loader should expand script and argv globs, received ${JSON.stringify(explicitRun.stdout)}`
   );
   assertCondition(requests.length === 10, 'cpp runner should be invoked for compile variants and direct executable runs');
+}
+
+async function testCppBareOutputRunsInFirstCompoundCommand(): Promise<void> {
+  const requests: CppProjectCommandRequest[] = [];
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }],
+    cppRunner: async (request): Promise<RuntimeCommandResult> => {
+      requests.push(request);
+      if (request.source === 'compile') {
+        const outputIndex = request.args.lastIndexOf('-o');
+        const outputPath = outputIndex >= 0 ? request.args[outputIndex + 1] : 'a.out';
+        assertCondition(outputPath, `C++ regression compile should include an output path: ${JSON.stringify(request)}`);
+        return {
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          files: [{
+            path: outputPath,
+            contents: Buffer.from('first-run-executable').toString('base64'),
+            encoding: 'base64',
+          }],
+        };
+      }
+      return {
+        stdout: `ran:${request.scriptPath}:${request.args.join(',')}\n`,
+        stderr: '',
+        exitCode: 0,
+      };
+    },
+  });
+
+  assertCondition(!(await workspace.exists('project-bench')), 'Regression output must not exist before the compound command');
+  const result = await workspace.runCommand('clang++ main.cpp -o project-bench && ./project-bench first-run');
+  assertCondition(
+    result.exitCode === 0 && result.stdout === 'ran:./project-bench:first-run\n',
+    `A bare -o output should be registered before its first ./ invocation in the same shell chain: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    requests.length === 2 &&
+      requests[0]?.source === 'compile' &&
+      requests[1]?.source === 'run' &&
+      requests[1]?.scriptPath === './project-bench',
+    `The first compound command should route compile then run through the C++ adapter: ${JSON.stringify(requests)}`
+  );
+  assertCondition(await workspace.exists('project-bench'), 'The compiler output should persist in the workspace');
+
+  const requestCountBeforeBareInvocation = requests.length;
+  const bareInvocation = await workspace.runCommand('project-bench should-not-use-cwd');
+  assertCondition(
+    bareInvocation.exitCode !== 0 && requests.length === requestCountBeforeBareInvocation,
+    `Produced-output discovery must not change bare command PATH resolution: ${JSON.stringify(bareInvocation)}`
+  );
+  workspace.dispose();
 }
 
 async function testCSharpCommandAdapter(): Promise<void> {
@@ -10403,6 +10465,117 @@ async function testBrowserKernelStorageFlushPersistsDirtyState(): Promise<void> 
   );
 }
 
+async function testBrowserKernelStorageTreatsEmptySnapshotAsAuthoritative(): Promise<void> {
+  const workspace = await createBrowserProjectWorkspace({
+    projectSession: {
+      id: 'empty-storage-authority',
+      files: [{ path: 'seed.txt', contents: 'must-not-resurrect\n' }],
+    },
+    kernelStorage: {
+      async load() {
+        return {
+          version: 1,
+          savedAt: new Date().toISOString(),
+          snapshot: { files: [], directories: [] },
+        };
+      },
+      async save() {},
+      async flush() {},
+    },
+    ...throwingBrowserWorkerClients(),
+  });
+  try {
+    assertCondition(
+      !(await workspace.exists('seed.txt')) && (await workspace.snapshot()).files.length === 0,
+      'an empty stored workspace must not resurrect editable project-session seed files'
+    );
+  } finally {
+    await workspace.destroy({ reason: 'test' });
+  }
+}
+
+async function testBrowserKernelStoragePersistsUnstreamedFilesystemMutations(): Promise<void> {
+  let latestFiles = new Map<string, number>();
+  const workspace = await createBrowserProjectWorkspace({
+    files: [{ path: 'chunk.txt', contents: 'x'.repeat(1024 * 1024) }],
+    kernelStorage: {
+      async load() {
+        return null;
+      },
+      async save(snapshot) {
+        latestFiles = new Map(snapshot.files.map((file) => [file.path, file.contents.length]));
+      },
+      async flush() {},
+    },
+    ...throwingBrowserWorkerClients(),
+  });
+  const result = await workspace.runCommand('cat chunk.txt chunk.txt chunk.txt chunk.txt chunk.txt > too-large.txt');
+  assertCondition(result.exitCode === 0, `oversized shell mutation should succeed: ${JSON.stringify(result)}`);
+  await workspace.destroy({ reason: 'test' });
+  assertCondition(
+    latestFiles.get('too-large.txt') === 5 * 1024 * 1024,
+    `storage mutation watcher must persist writes whose public file-change payload is suppressed: ${JSON.stringify([...latestFiles])}`
+  );
+}
+
+async function testBrowserKernelStorageRetriesAndReportsBackgroundFailures(): Promise<void> {
+  let saveAttempts = 0;
+  const reportedErrors: string[] = [];
+  let latestSnapshot: TestRuntimeProjectSnapshot | undefined;
+  const workspace = await createBrowserProjectWorkspace({
+    files: [],
+    kernelStorage: {
+      async load() {
+        return null;
+      },
+      async save(snapshot) {
+        saveAttempts += 1;
+        if (saveAttempts === 2) throw new Error('transient background save failure');
+        latestSnapshot = cloneProjectSnapshot(snapshot);
+      },
+      async flush() {},
+    },
+    onKernelStorageError(error) {
+      reportedErrors.push(error.message);
+    },
+    ...throwingBrowserWorkerClients(),
+  });
+  await workspace.writeFile('retry.txt', 'retry\n');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await workspace.destroy({ reason: 'test' });
+  assertCondition(
+    reportedErrors.some((message) => message.includes('transient background save failure')),
+    `background persistence failures should be observable by the host: ${JSON.stringify(reportedErrors)}`
+  );
+  assertCondition(
+    saveAttempts >= 3 && latestSnapshot?.files.some((file) => file.path === 'retry.txt' && file.contents === 'retry\n') === true,
+    `failed persistence revisions should remain dirty and retry during flush: ${JSON.stringify({ saveAttempts, latestSnapshot })}`
+  );
+}
+
+async function testBrowserProjectSharedWorkersRequireTrustedOptIn(): Promise<void> {
+  let untrustedError = '';
+  try {
+    await createBrowserProjectWorkspace({
+      projectWorkerIsolation: 'shared',
+      ...throwingBrowserWorkerClients(),
+    });
+  } catch (error) {
+    untrustedError = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    untrustedError.includes('trustedSharedWorkerReuse: true'),
+    `shared project workers across every language should require an explicit trusted-reuse opt-in: ${untrustedError}`
+  );
+
+  const trustedWorkspace = await createBrowserProjectWorkspace({
+    projectWorkerIsolation: 'shared',
+    trustedSharedWorkerReuse: true,
+    ...throwingBrowserWorkerClients(),
+  });
+  trustedWorkspace.dispose();
+}
+
 async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
   const events: RuntimeWorkspaceEvent[] = [];
   const pythonRequests: PythonProjectCommandRequest[] = [];
@@ -13495,6 +13668,14 @@ async function testTraceKernelInfoConfig(): Promise<void> {
       snapshot.kernelFiles?.some((file) => file.path === '/proc/self/mountinfo' && file.contents.includes('tracekernel:workspace')) === true,
     `snapshot should expose kernel proc files: ${JSON.stringify(snapshot.kernelFiles)}`
   );
+  assertCondition(
+    snapshot.kernelFiles?.every((file) =>
+      !file.path.startsWith('/proc/self/fd/') &&
+      !file.path.startsWith('/proc/self/fdinfo/') &&
+      !/^\/proc\/[1-9][0-9]*(?:\/|$)/u.test(file.path)
+    ) === true,
+    `runner snapshots must not export process-specific proc descriptors: ${JSON.stringify(snapshot.kernelFiles)}`
+  );
   workspace.dispose();
 }
 
@@ -13858,6 +14039,7 @@ async function main(): Promise<void> {
   await testJavaCommandAdapter();
   await testJavaRunCommandGlobExpansion();
   await testCppCommandAdapter();
+  await testCppBareOutputRunsInFirstCompoundCommand();
   await testCSharpCommandAdapter();
   await testCompileCommandGlobExpansion();
   await testNativeCompileGlobProjectRunners();
@@ -13935,6 +14117,10 @@ async function main(): Promise<void> {
   await testBrowserKernelStorageRehydrationPreservesReadonlyPolicy();
   await testBrowserKernelStorageCoalescesPersistence();
   await testBrowserKernelStorageFlushPersistsDirtyState();
+  await testBrowserKernelStorageTreatsEmptySnapshotAsAuthoritative();
+  await testBrowserKernelStoragePersistsUnstreamedFilesystemMutations();
+  await testBrowserKernelStorageRetriesAndReportsBackgroundFailures();
+  await testBrowserProjectSharedWorkersRequireTrustedOptIn();
   await testBrowserProjectWorkspaceTraceKernelConfig();
   await testBrowserProjectWorkspaceAdvancedCommandTranslation();
   await testNativeProjectWorkspaceFactory();

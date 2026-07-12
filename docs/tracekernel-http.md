@@ -47,16 +47,26 @@ the configured delegate. The delegate configuration requires:
 - `timeoutMs`, `maxConcurrentRequests`, and `maxRequestsPerCommand`: bounded
   defaults for delegate calls.
 
-The non-overridable blocklist is evaluated before the allowlist and before the
-delegate is invoked. It blocks loopback, private, link-local, unspecified, and
-local/internal metadata hosts such as `localhost`, `*.local`, `*.internal`, and
-`metadata.google.internal`. Policy failures are logged in
+The non-overridable literal-host blocklist is evaluated before the allowlist and
+before the delegate is invoked. It blocks loopback, private, shared, link-local,
+benchmarking, documentation, multicast/reserved, IPv4-mapped/translated/6to4
+private targets, and local/internal names such as `localhost`, `*.local`,
+`*.internal`, `*.home.arpa`, and `metadata.google.internal`. Policy failures are logged in
 `/proc/tracekernel/net/requests` with an `external` marker and return a
 TraceKernel HTTP error response instead of calling the delegate.
 
-The harness validates hostname strings; it cannot resolve DNS. In-browser direct
-egress relies on browser CORS/PNA as the network boundary. Server-side proxy
-delegates must perform post-resolution IP checks.
+The default Fetch delegate revalidates every exposed redirect, permits at most
+five same-origin hops, applies browser-compatible method/body rewriting, fails
+closed on opaque redirects, and streams at most 4 MiB of response data. A timed
+out delegate retains its concurrency slot until the underlying promise settles,
+even when an app delegate ignores abort. Workspace disposal aborts active work
+and rejects new dispatches.
+
+The harness validates literal hostnames; browser fetch does not reveal the
+resolved peer address, so it cannot independently defeat DNS rebinding.
+In-browser direct egress also relies on browser CORS/PNA. Prefer exact host
+allowlists, and use a consumer-controlled proxy that resolves and pins public
+addresses on every hop when egress is a security boundary.
 
 For JavaScript, prefer the worker-backed browser runner for any hardening-sensitive
 surface. `createBrowserJavaScriptProjectRunner({ hardened: true, workerUrl })`

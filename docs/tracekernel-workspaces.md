@@ -108,6 +108,36 @@ Useful command knobs:
 Terminal UIs should use `workspace.createTerminalSession(...)`. The terminal
 session owns prompt state, foreground command lifecycle, and live stdin state.
 
+### Browser worker isolation and optional prewarming
+
+Browser project workspaces default to `projectWorkerIsolation: 'per-command'`.
+Python, Java, C#, and C++ commands therefore execute in workers that are retired
+after one command; a worker that has run user code is never returned to an idle
+pool. Shared workers are trusted-only and require both
+`projectWorkerIsolation: 'shared'` and `trustedSharedWorkerReuse: true`.
+
+Heavy runtime startup can be hidden with an opt-in one-shot prewarm depth:
+
+```ts
+const workspace = await createBrowserProjectWorkspace({
+  projectWorkerPrewarm: {
+    python: 1,
+    csharp: 1,
+  },
+});
+```
+
+No heavy language is prewarmed by default. Each configured Python, Java, or C#
+worker finishes trusted runtime warmup before it becomes leasable, receives at
+most one user command, and is then terminated. Failed warmups are evicted and a
+fresh worker is tried; aborting or disposing the workspace retires affected
+leases. Depth is capped at 2 per language and 4 across a workspace to bound
+idle memory and concurrent warmups. The configured depth is the ready/idle
+target: while a command holds its one-shot lease, a replacement warmup can
+temporarily add one worker beyond that language's idle depth. Prewarming is
+incompatible with trusted shared-worker mode and with consumer-provided
+language clients.
+
 ## Virtual Namespaces
 
 TraceKernel exposes kernel-owned namespaces to project code:
@@ -134,6 +164,11 @@ Workspace operations can run as actors:
 
 Actors can carry filesystem and HTTP capabilities. The built-in HTTP presets are:
 
+Filesystem capability paths use three explicit forms: `path` matches exactly,
+`path/*` matches direct children, and `path/**` matches all descendants. An
+absent filesystem capability preserves legacy unrestricted behavior; an
+explicit empty capability grants no filesystem access.
+
 - `workspace`: simulated `listen`, simulated `dispatch`, diagnostics reads, and
   external fetch that follows workspace egress config.
 - `system`: simulated HTTP plus external fetch capability regardless of the
@@ -143,6 +178,17 @@ Actors can carry filesystem and HTTP capabilities. The built-in HTTP presets are
 TraceKernel HTTP is an in-workspace transport, not host networking. See
 [TraceKernel HTTP Simulation](./tracekernel-http.md) for listener, dispatch,
 timeout, and built-in client details.
+
+## Filesystem Storage Limits
+
+Browser workspaces enforce logical `storageLimits` before filesystem mutations
+commit. Defaults are 64 MiB per workspace, 16 MiB per regular file, and 10,000
+files/directories/symlinks. Seed/session hydration, shell redirects, appends,
+copies, moves, links, and runner final diffs all pass through the same
+metadata-only quota ledger; hidden and readonly session entries count too.
+Multi-file final diffs are preflighted as a transaction so a rejected mutation
+does not leave a partially applied workspace. Apps can lower or raise the three
+limits with `maxWorkspaceBytes`, `maxFileBytes`, and `maxEntryCount`.
 
 ## Persistence
 
@@ -158,6 +204,15 @@ Browser project workspaces can persist snapshots through `kernelStorage`.
 Do not store the encryption key in same-origin browser storage. The helper
 encrypts snapshots before writing to IndexedDB and rejects plaintext snapshots
 unless `allowPlaintextSnapshotMigration: true` is set for migration.
+Version 3 records authenticate the database/store/key namespace, key ID,
+timestamp, and monotonic revision as AES-GCM additional data. Legacy encrypted
+records require the separate `allowLegacyEncryptedSnapshotMigration` opt-in.
+
+Encryption alone does not stop a same-origin attacker from replaying an older,
+valid ciphertext. Deployments that need rollback/replay rejection must provide
+a `revisionAuthority` whose monotonic state lives outside the protected
+IndexedDB (for example, an app service). Clearing storage reserves a tombstone
+revision through that authority so restoring a deleted local record is stale.
 
 For cloud sync, prefer compact overlays:
 

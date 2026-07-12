@@ -104,6 +104,7 @@ import type {
   RuntimePackageManagerConfig,
   RuntimePackageManagerName,
   RuntimePackageManifest,
+  NormalizedRuntimeWorkspaceStorageLimits,
   TypeScriptProjectCommandRunner,
 } from './index';
 import { TRACEKERNEL_BIN_PATH, TRACEKERNEL_SKILLS_ROOT } from './constants';
@@ -412,11 +413,24 @@ export async function snapshotRuntimeKernelVirtualFiles(
   const files: RuntimeFile[] = [];
   await collectKernelProcSnapshotFiles(fs, '/proc', files);
   await collectKernelProcSnapshotFiles(fs, TRACEKERNEL_SKILLS_ROOT, files);
+  // /proc/self and numeric PID trees describe the shell process that produced
+  // this snapshot. They are neither portable nor authoritative inside a fresh
+  // language worker, whose runtime owns its own process and descriptor view.
+  // Forwarding entries such as /proc/self/fd/0 can also collide with runtime
+  // symlinks (for example Emscripten's /proc/self/fd). Keep only the stable
+  // mount description from /proc/self; TraceKernel control files and skills
+  // remain part of the worker handoff.
+  const portableFiles = files.filter((file) => {
+    if (file.path === '/proc/self/mountinfo') return true;
+    if (file.path.startsWith('/proc/self/')) return false;
+    if (/^\/proc\/[1-9][0-9]*(?:\/|$)/u.test(file.path)) return false;
+    return true;
+  });
   const virtualFiles = options.publicView === false
     ? runtimeKernelVirtualFiles(info)
     : publicRuntimeKernelVirtualFiles(info);
-  if (files.length === 0) return virtualFiles;
-  const byPath = new Map(files.map((file) => [file.path, file]));
+  if (portableFiles.length === 0) return virtualFiles;
+  const byPath = new Map(portableFiles.map((file) => [file.path, file]));
   for (const file of virtualFiles) byPath.set(file.path, file);
   return [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
@@ -575,6 +589,12 @@ export function isRuntimeFileGenerationConflict(error: unknown): boolean {
 }
 
 
+export function isRuntimeWorkspaceStorageLimitError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 'EFBIG' || code === 'ENOSPC';
+}
+
+
 export function runtimeCommandError(error: unknown): RuntimeCommandError | undefined {
   if (error instanceof RuntimeFileGenerationConflictError) return error.toCommandError();
   if (error instanceof RuntimeKernelInterruptedError) {
@@ -655,7 +675,11 @@ export async function applyCommandResultFiles(
       });
     });
   } catch (error) {
-    if (isKernelReadonlyError(error) || isRuntimeFileGenerationConflict(error)) {
+    if (
+      isKernelReadonlyError(error) ||
+      isRuntimeFileGenerationConflict(error) ||
+      isRuntimeWorkspaceStorageLimitError(error)
+    ) {
       const observedFs = ctx.fs instanceof KernelObservedFileSystem || ctx.fs instanceof CommandBoundFileSystem
         ? ctx.fs
         : undefined;
@@ -696,7 +720,6 @@ export function prepareFinalDiffChange(workspaceRoot: string, file: RuntimeFileC
         return;
       }
       const changedFile = file as RuntimeFile;
-      await fs.mkdir(dirname(absolutePath), { recursive: true });
       if ((changedFile.encoding ?? 'utf8') === 'base64') {
         await fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
       } else {
@@ -966,31 +989,569 @@ export class CommandBoundFileSystem implements IFileSystem {
 }
 
 
+type RuntimeWorkspaceQuotaEntryKind = 'file' | 'directory' | 'symlink';
+
+interface RuntimeWorkspaceQuotaEntry {
+  kind: RuntimeWorkspaceQuotaEntryKind;
+  size: number;
+}
+
+type RuntimeWorkspaceQuotaChanges = Map<string, RuntimeWorkspaceQuotaEntry | null>;
+
+
+/**
+ * A metadata-only quota boundary around the backing filesystem.
+ *
+ * The ledger stores sizes and entry kinds, never file contents. Hot writes
+ * project only the target and any missing ancestors. Tree copies/moves and
+ * final-diff transactions clone metadata because their cost is already
+ * proportional to the affected tree.
+ */
+class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
+  private entries = new Map<string, RuntimeWorkspaceQuotaEntry>();
+  private totalWorkspaceBytes = 0;
+  private totalWorkspaceEntries = 0;
+  private initialized = false;
+  private mutationTail: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly inner: IFileSystem,
+    private readonly workspaceRoot: () => string,
+    private readonly limits: NormalizedRuntimeWorkspaceStorageLimits
+  ) {}
+
+  private async withMutationLock<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.mutationTail;
+    let release!: () => void;
+    this.mutationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      await this.ensureInitialized();
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
+    await this.rebuildLedger();
+    this.initialized = true;
+  }
+
+  private async rebuildLedger(): Promise<void> {
+    const entries = new Map<string, RuntimeWorkspaceQuotaEntry>();
+    for (const rawPath of this.inner.getAllPaths()) {
+      const path = normalizeFsLockPath(rawPath);
+      const stat = await this.inner.lstat(path);
+      if (stat.isSymbolicLink) {
+        entries.set(path, {
+          kind: 'symlink',
+          size: new TextEncoder().encode(await this.inner.readlink(path)).byteLength,
+        });
+      } else if (stat.isFile) {
+        entries.set(path, { kind: 'file', size: stat.size });
+      } else if (stat.isDirectory) {
+        entries.set(path, { kind: 'directory', size: 0 });
+      }
+    }
+    this.commitSnapshot(entries);
+  }
+
+  private isCounted(path: string): boolean {
+    const root = normalizeFsLockPath(this.workspaceRoot());
+    return path !== root && isWithinWorkspace(root, path);
+  }
+
+  private displayPath(path: string): string {
+    const root = normalizeFsLockPath(this.workspaceRoot());
+    return isWithinWorkspace(root, path) ? toProjectPath(root, path) : path;
+  }
+
+  private storageError(
+    code: 'EFBIG' | 'ENOSPC',
+    message: string,
+    path: string,
+    syscall: string
+  ): Error {
+    const displayPath = this.displayPath(path);
+    return Object.assign(
+      new Error(`${code}: ${message}, ${syscall} '${displayPath}'`),
+      {
+        code,
+        errno: code === 'EFBIG' ? 27 : 28,
+        syscall,
+        path: displayPath,
+      }
+    );
+  }
+
+  private assertSnapshotWithinLimits(entries: ReadonlyMap<string, RuntimeWorkspaceQuotaEntry>, path: string, syscall: string): void {
+    let totalBytes = 0;
+    let totalEntries = 0;
+    for (const [entryPath, entry] of entries) {
+      if (!this.isCounted(entryPath)) continue;
+      if (entry.kind === 'file' && entry.size > this.limits.maxFileBytes) {
+        throw this.storageError(
+          'EFBIG',
+          `workspace file exceeds ${this.limits.maxFileBytes} bytes`,
+          entryPath,
+          syscall
+        );
+      }
+      totalBytes += entry.size;
+      totalEntries += 1;
+    }
+    if (totalBytes > this.limits.maxWorkspaceBytes) {
+      throw this.storageError(
+        'ENOSPC',
+        `workspace exceeds ${this.limits.maxWorkspaceBytes} logical bytes`,
+        path,
+        syscall
+      );
+    }
+    if (totalEntries > this.limits.maxEntryCount) {
+      throw this.storageError(
+        'ENOSPC',
+        `workspace exceeds ${this.limits.maxEntryCount} entries`,
+        path,
+        syscall
+      );
+    }
+  }
+
+  private assertChangesWithinLimits(changes: RuntimeWorkspaceQuotaChanges, path: string, syscall: string): void {
+    let totalBytes = this.totalWorkspaceBytes;
+    let totalEntries = this.totalWorkspaceEntries;
+    for (const [entryPath, next] of changes) {
+      if (!this.isCounted(entryPath)) continue;
+      const previous = this.entries.get(entryPath);
+      if (previous) {
+        totalBytes -= previous.size;
+        totalEntries -= 1;
+      }
+      if (next) {
+        if (next.kind === 'file' && next.size > this.limits.maxFileBytes) {
+          throw this.storageError(
+            'EFBIG',
+            `workspace file exceeds ${this.limits.maxFileBytes} bytes`,
+            entryPath,
+            syscall
+          );
+        }
+        totalBytes += next.size;
+        totalEntries += 1;
+      }
+    }
+    if (totalBytes > this.limits.maxWorkspaceBytes) {
+      throw this.storageError(
+        'ENOSPC',
+        `workspace exceeds ${this.limits.maxWorkspaceBytes} logical bytes`,
+        path,
+        syscall
+      );
+    }
+    if (totalEntries > this.limits.maxEntryCount) {
+      throw this.storageError(
+        'ENOSPC',
+        `workspace exceeds ${this.limits.maxEntryCount} entries`,
+        path,
+        syscall
+      );
+    }
+  }
+
+  private commitChanges(changes: RuntimeWorkspaceQuotaChanges): void {
+    for (const [path, next] of changes) {
+      const previous = this.entries.get(path);
+      if (this.isCounted(path) && previous) {
+        this.totalWorkspaceBytes -= previous.size;
+        this.totalWorkspaceEntries -= 1;
+      }
+      if (next) {
+        this.entries.set(path, next);
+        if (this.isCounted(path)) {
+          this.totalWorkspaceBytes += next.size;
+          this.totalWorkspaceEntries += 1;
+        }
+      } else {
+        this.entries.delete(path);
+      }
+    }
+  }
+
+  private commitSnapshot(entries: Map<string, RuntimeWorkspaceQuotaEntry>): void {
+    this.entries = entries;
+    this.totalWorkspaceBytes = 0;
+    this.totalWorkspaceEntries = 0;
+    for (const [path, entry] of entries) {
+      if (!this.isCounted(path)) continue;
+      this.totalWorkspaceBytes += entry.size;
+      this.totalWorkspaceEntries += 1;
+    }
+  }
+
+  private currentEntry(path: string, changes?: RuntimeWorkspaceQuotaChanges): RuntimeWorkspaceQuotaEntry | undefined {
+    const normalizedPath = normalizeFsLockPath(path);
+    if (changes?.has(normalizedPath)) return changes.get(normalizedPath) ?? undefined;
+    return this.entries.get(normalizedPath);
+  }
+
+  private addMissingParents(path: string, changes: RuntimeWorkspaceQuotaChanges): void {
+    let current = dirname(normalizeFsLockPath(path));
+    const missing: string[] = [];
+    while (current !== '/') {
+      if (this.currentEntry(current, changes)) break;
+      missing.push(current);
+      current = dirname(current);
+    }
+    for (const directoryPath of missing.reverse()) {
+      changes.set(directoryPath, { kind: 'directory', size: 0 });
+    }
+  }
+
+  private writeSize(content: FileContent, options?: FsWriteFileOptions): number {
+    if (typeof content !== 'string') return content.byteLength;
+    const encoding = typeof options === 'string' ? options : options?.encoding;
+    if (encoding === 'base64') return bytesFromBase64(content).byteLength;
+    if (encoding === 'hex') return Math.floor(content.length / 2);
+    if (encoding === 'ascii' || encoding === 'binary' || encoding === 'latin1') return content.length;
+    return new TextEncoder().encode(content).byteLength;
+  }
+
+  private removeSubtreeFromChanges(path: string, changes: RuntimeWorkspaceQuotaChanges): void {
+    const normalizedPath = normalizeFsLockPath(path);
+    for (const candidate of this.entries.keys()) {
+      if (candidate === normalizedPath || candidate.startsWith(`${normalizedPath}/`)) {
+        changes.set(candidate, null);
+      }
+    }
+    for (const candidate of [...changes.keys()]) {
+      if (candidate === normalizedPath || candidate.startsWith(`${normalizedPath}/`)) {
+        changes.set(candidate, null);
+      }
+    }
+  }
+
+  private ensureSnapshotParents(entries: Map<string, RuntimeWorkspaceQuotaEntry>, path: string): void {
+    let current = dirname(normalizeFsLockPath(path));
+    const missing: string[] = [];
+    while (current !== '/') {
+      if (entries.has(current)) break;
+      missing.push(current);
+      current = dirname(current);
+    }
+    for (const directoryPath of missing.reverse()) {
+      entries.set(directoryPath, { kind: 'directory', size: 0 });
+    }
+  }
+
+  private removeSnapshotSubtree(entries: Map<string, RuntimeWorkspaceQuotaEntry>, path: string): void {
+    const normalizedPath = normalizeFsLockPath(path);
+    for (const candidate of [...entries.keys()]) {
+      if (candidate === normalizedPath || candidate.startsWith(`${normalizedPath}/`)) {
+        entries.delete(candidate);
+      }
+    }
+  }
+
+  private copySnapshotTree(
+    entries: Map<string, RuntimeWorkspaceQuotaEntry>,
+    sourceSnapshot: ReadonlyMap<string, RuntimeWorkspaceQuotaEntry>,
+    source: string,
+    destination: string,
+    recursive: boolean
+  ): void {
+    const normalizedSource = normalizeFsLockPath(source);
+    const normalizedDestination = normalizeFsLockPath(destination);
+    const sourceEntry = sourceSnapshot.get(normalizedSource);
+    if (!sourceEntry) return;
+    this.ensureSnapshotParents(entries, normalizedDestination);
+    if (sourceEntry.kind !== 'directory') {
+      entries.set(normalizedDestination, { ...sourceEntry });
+      return;
+    }
+    if (!recursive) return;
+    entries.set(normalizedDestination, { kind: 'directory', size: 0 });
+    const sourcePaths = [...sourceSnapshot.keys()]
+      .filter((path) => path.startsWith(`${normalizedSource}/`))
+      .sort((left, right) => left.length - right.length || left.localeCompare(right));
+    for (const sourcePath of sourcePaths) {
+      const entry = sourceSnapshot.get(sourcePath)!;
+      entries.set(`${normalizedDestination}${sourcePath.slice(normalizedSource.length)}`, { ...entry });
+    }
+  }
+
+  async runFinalDiffTransaction<T>(
+    changes: readonly RuntimeFinalDiffPreparedChange[],
+    mutate: (rawFileSystem: IFileSystem) => Promise<T>
+  ): Promise<T> {
+    return this.withMutationLock(async () => {
+      const projected = new Map(this.entries);
+      for (const prepared of changes) {
+        const path = normalizeFsLockPath(prepared.absolutePath);
+        const change = prepared.change;
+        if (isRuntimeDirectoryChange(change)) {
+          if (change.deleted === true) {
+            this.removeSnapshotSubtree(projected, path);
+          } else {
+            this.ensureSnapshotParents(projected, path);
+            if (!projected.has(path)) projected.set(path, { kind: 'directory', size: 0 });
+          }
+        } else if ((change as RuntimeFileDeletion).deleted === true) {
+          projected.delete(path);
+        } else {
+          this.ensureSnapshotParents(projected, path);
+          projected.set(path, {
+            kind: 'file',
+            size: contentToBytesForRuntimeFile(change as RuntimeFile).byteLength,
+          });
+        }
+        // Preflight every prefix, not just the final projection. This keeps
+        // transient write order from exceeding the same bound while still
+        // validating the complete transaction before its first mutation.
+        this.assertSnapshotWithinLimits(projected, path, 'write');
+      }
+      const diagnosticPath = normalizeFsLockPath(changes[0]?.absolutePath ?? this.workspaceRoot());
+      this.assertSnapshotWithinLimits(projected, diagnosticPath, 'write');
+      try {
+        const result = await mutate(this.inner);
+        this.commitSnapshot(projected);
+        return result;
+      } catch (error) {
+        // The caller owns rollback for the filesystem transaction. Rebuild the
+        // metadata ledger from the resulting state so even a rollback failure
+        // cannot desynchronize later quota decisions.
+        await this.rebuildLedger();
+        throw error;
+      }
+    });
+  }
+
+  readFile(path: string, options?: FsReadFileOptions): Promise<string> {
+    return this.inner.readFile(path, options);
+  }
+
+  readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
+    if (!this.inner.readFileBytes) return Promise.reject(new Error('readFileBytes is not supported by this filesystem.'));
+    return this.inner.readFileBytes(path) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+  }
+
+  readFileBuffer(path: string): Promise<Uint8Array> {
+    return this.inner.readFileBuffer(path);
+  }
+
+  writeFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    return this.withMutationLock(async () => {
+      const normalizedPath = normalizeFsLockPath(path);
+      const changes: RuntimeWorkspaceQuotaChanges = new Map();
+      this.addMissingParents(normalizedPath, changes);
+      changes.set(normalizedPath, { kind: 'file', size: this.writeSize(content, options) });
+      this.assertChangesWithinLimits(changes, normalizedPath, 'write');
+      await this.inner.writeFile(path, content, options);
+      this.commitChanges(changes);
+    });
+  }
+
+  appendFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    return this.withMutationLock(async () => {
+      const normalizedPath = normalizeFsLockPath(path);
+      const changes: RuntimeWorkspaceQuotaChanges = new Map();
+      this.addMissingParents(normalizedPath, changes);
+      const current = this.currentEntry(normalizedPath, changes);
+      const previousBytes = current?.kind === 'file' ? current.size : 0;
+      changes.set(normalizedPath, { kind: 'file', size: previousBytes + this.writeSize(content, options) });
+      this.assertChangesWithinLimits(changes, normalizedPath, 'write');
+      await this.inner.appendFile(path, content, options);
+      this.commitChanges(changes);
+    });
+  }
+
+  exists(path: string): Promise<boolean> {
+    return this.inner.exists(path);
+  }
+
+  stat(path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
+    return this.inner.stat(path);
+  }
+
+  mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
+    return this.withMutationLock(async () => {
+      const normalizedPath = normalizeFsLockPath(path);
+      const changes: RuntimeWorkspaceQuotaChanges = new Map();
+      if (options?.recursive) this.addMissingParents(normalizedPath, changes);
+      if (!this.currentEntry(normalizedPath, changes)) {
+        changes.set(normalizedPath, { kind: 'directory', size: 0 });
+      }
+      this.assertChangesWithinLimits(changes, normalizedPath, 'mkdir');
+      await this.inner.mkdir(path, options);
+      this.commitChanges(changes);
+    });
+  }
+
+  readdir(path: string): Promise<string[]> {
+    return this.inner.readdir(path);
+  }
+
+  readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
+    if (!this.inner.readdirWithFileTypes) return Promise.reject(new Error('readdirWithFileTypes is not supported by this filesystem.'));
+    return this.inner.readdirWithFileTypes(path) as Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>>;
+  }
+
+  rm(path: string, options?: FsRmOptions): Promise<void> {
+    return this.withMutationLock(async () => {
+      const normalizedPath = normalizeFsLockPath(path);
+      const changes: RuntimeWorkspaceQuotaChanges = new Map();
+      if (options?.recursive) this.removeSubtreeFromChanges(normalizedPath, changes);
+      else changes.set(normalizedPath, null);
+      await this.inner.rm(path, options);
+      this.commitChanges(changes);
+    });
+  }
+
+  cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
+    return this.withMutationLock(async () => {
+      const normalizedSource = normalizeFsLockPath(src);
+      const normalizedDestination = normalizeFsLockPath(dest);
+      const sourceEntry = this.entries.get(normalizedSource);
+      if (sourceEntry && sourceEntry.kind !== 'directory') {
+        const changes: RuntimeWorkspaceQuotaChanges = new Map();
+        this.addMissingParents(normalizedDestination, changes);
+        changes.set(normalizedDestination, { ...sourceEntry });
+        this.assertChangesWithinLimits(changes, normalizedDestination, 'copy');
+        await this.inner.cp(src, dest, options);
+        this.commitChanges(changes);
+        return;
+      }
+      const projected = new Map(this.entries);
+      this.copySnapshotTree(projected, this.entries, src, dest, options?.recursive === true);
+      this.assertSnapshotWithinLimits(projected, normalizedDestination, 'copy');
+      await this.inner.cp(src, dest, options);
+      this.commitSnapshot(projected);
+    });
+  }
+
+  mv(src: string, dest: string): Promise<void> {
+    return this.withMutationLock(async () => {
+      const normalizedSource = normalizeFsLockPath(src);
+      const normalizedDestination = normalizeFsLockPath(dest);
+      const sourceEntry = this.entries.get(normalizedSource);
+      if (sourceEntry && sourceEntry.kind !== 'directory') {
+        const changes: RuntimeWorkspaceQuotaChanges = new Map();
+        this.addMissingParents(normalizedDestination, changes);
+        changes.set(normalizedDestination, { ...sourceEntry });
+        changes.set(normalizedSource, null);
+        this.assertChangesWithinLimits(changes, normalizedDestination, 'rename');
+        await this.inner.mv(src, dest);
+        this.commitChanges(changes);
+        return;
+      }
+      const sourceSnapshot = new Map(this.entries);
+      const projected = new Map(this.entries);
+      this.copySnapshotTree(projected, sourceSnapshot, src, dest, true);
+      this.removeSnapshotSubtree(projected, src);
+      this.assertSnapshotWithinLimits(projected, normalizedDestination, 'rename');
+      await this.inner.mv(src, dest);
+      this.commitSnapshot(projected);
+    });
+  }
+
+  resolvePath(base: string, path: string): string {
+    return this.inner.resolvePath(base, path);
+  }
+
+  getAllPaths(): string[] {
+    return this.inner.getAllPaths();
+  }
+
+  chmod(path: string, mode: number): Promise<void> {
+    return this.inner.chmod(path, mode);
+  }
+
+  symlink(target: string, linkPath: string): Promise<void> {
+    return this.withMutationLock(async () => {
+      const normalizedPath = normalizeFsLockPath(linkPath);
+      const changes: RuntimeWorkspaceQuotaChanges = new Map();
+      this.addMissingParents(normalizedPath, changes);
+      changes.set(normalizedPath, {
+        kind: 'symlink',
+        size: new TextEncoder().encode(target).byteLength,
+      });
+      this.assertChangesWithinLimits(changes, normalizedPath, 'symlink');
+      await this.inner.symlink(target, linkPath);
+      this.commitChanges(changes);
+    });
+  }
+
+  link(existingPath: string, newPath: string): Promise<void> {
+    return this.withMutationLock(async () => {
+      const normalizedExistingPath = normalizeFsLockPath(existingPath);
+      const normalizedNewPath = normalizeFsLockPath(newPath);
+      const changes: RuntimeWorkspaceQuotaChanges = new Map();
+      this.addMissingParents(normalizedNewPath, changes);
+      const existing = this.entries.get(normalizedExistingPath);
+      if (existing?.kind === 'file') {
+        changes.set(normalizedNewPath, { ...existing });
+      }
+      this.assertChangesWithinLimits(changes, normalizedNewPath, 'link');
+      await this.inner.link(existingPath, newPath);
+      this.commitChanges(changes);
+    });
+  }
+
+  readlink(path: string): Promise<string> {
+    return this.inner.readlink(path);
+  }
+
+  lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
+    return this.inner.lstat(path);
+  }
+
+  realpath(path: string): Promise<string> {
+    return this.inner.realpath(path);
+  }
+
+  utimes(path: string, atime: Date, mtime: Date): Promise<void> {
+    return this.inner.utimes(path, atime, mtime);
+  }
+}
+
+
 export class KernelObservedFileSystem implements IFileSystem {
+  private readonly base: IFileSystem;
+  private readonly quotaFileSystem: RuntimeWorkspaceQuotaFileSystem;
   private suspendDepth = 0;
   private nextGeneration = 1;
   private mutationCounter = 0;
   private nextInode = 10_000;
   private readonly generations = new Map<string, number>();
   private readonly inodes = new Map<string, number>();
+  private readonly mutationWatchers = new Set<(revision: number) => void>();
   private liveFileChangeBudgetPid: number | undefined;
   private liveFileChangeCount = 0;
   private liveFileChangeBytes = 0;
 
   constructor(
-    private readonly base: IFileSystem,
+    base: IFileSystem,
     private readonly locks: RuntimeFileSystemLockCoordinator,
     private readonly workspaceRoot: () => string,
     private readonly workspaceAlias: () => string | undefined,
     private readonly kernelInfo: () => RuntimeKernelInfo,
     private readonly assertWritable: (absolutePath: string, operation: string) => void,
     private readonly assertSubtreeWritable: (absolutePath: string, operation: string) => void,
+    private readonly isHidden: (absolutePath: string) => boolean,
     private readonly onSyscallEvent: (event: RuntimeFileSystemSyscallEvent) => void,
     private readonly dynamicProc: RuntimeDynamicProcProvider,
     private readonly onFileChange: (context: RuntimeCommandExecutionContext | undefined, change: RuntimeFileChange) => void,
     private readonly readDevice: (context: RuntimeCommandExecutionContext | undefined, device: RuntimeKernelDevicePath) => string,
-    private readonly writeDevice: (context: RuntimeCommandExecutionContext | undefined, device: RuntimeKernelDevicePath, data: string) => void
-  ) {}
+    private readonly writeDevice: (context: RuntimeCommandExecutionContext | undefined, device: RuntimeKernelDevicePath, data: string) => void,
+    storageLimits: NormalizedRuntimeWorkspaceStorageLimits
+  ) {
+    this.quotaFileSystem = new RuntimeWorkspaceQuotaFileSystem(base, workspaceRoot, storageLimits);
+    this.base = this.quotaFileSystem;
+  }
 
   suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {
     this.suspendDepth += 1;
@@ -1005,6 +1566,13 @@ export class KernelObservedFileSystem implements IFileSystem {
 
   get mutationVersion(): number {
     return this.mutationCounter;
+  }
+
+  watchMutations(listener: (revision: number) => void): () => void {
+    this.mutationWatchers.add(listener);
+    return () => {
+      this.mutationWatchers.delete(listener);
+    };
   }
 
   inodeForPath(path: string): number {
@@ -1108,23 +1676,27 @@ export class KernelObservedFileSystem implements IFileSystem {
             await this.validateFinalDiffPreparedChange(change);
           }
           await this.validateFinalDiffDirectoryDeletes(prepared);
-          const rollback = await this.snapshotRollbackState(prepared.map((change) => change.absolutePath));
-          const committed: RuntimeFileChange[] = [];
-          try {
-            await this.suspendNotifications(async () => {
-              for (const change of prepared) {
-                await change.apply(this.base);
-                committed.push(change.change);
-              }
-            });
-          } catch (error) {
-            await this.restoreRollbackState(rollback);
-            rolledBack = true;
-            throw error;
-          }
+          let rollback!: RuntimeFileSystemRollbackState;
+          const committed = await this.quotaFileSystem.runFinalDiffTransaction(prepared, async (rawFileSystem) => {
+            rollback = await this.snapshotRollbackState(prepared.map((change) => change.absolutePath));
+            const transactionChanges: RuntimeFileChange[] = [];
+            try {
+              await this.suspendNotifications(async () => {
+                for (const change of prepared) {
+                  await change.apply(rawFileSystem);
+                  transactionChanges.push(change.change);
+                }
+              });
+            } catch (error) {
+              await this.restoreRollbackState(rollback, rawFileSystem);
+              rolledBack = true;
+              throw error;
+            }
+            return transactionChanges;
+          });
           await this.recordFinalDiffInodeMutations(prepared, rollback);
           for (const change of prepared) {
-          this.recordMutation(context, [change.absolutePath], change.kind);
+            this.recordMutation(context, [change.absolutePath], change.kind);
           }
           this.onSyscallEvent({ type: 'fs-transaction-commit', pid: generationContext?.pid, detail });
           return committed;
@@ -1305,46 +1877,46 @@ export class KernelObservedFileSystem implements IFileSystem {
     }
   }
 
-  private async restoreRollbackState(state: RuntimeFileSystemRollbackState): Promise<void> {
+  private async restoreRollbackState(state: RuntimeFileSystemRollbackState, fs: IFileSystem = this.base): Promise<void> {
     for (const entry of state.entries) {
-      await this.removeRollbackPath(entry.path);
+      await this.removeRollbackPath(entry.path, fs);
       if (entry.kind === 'missing') continue;
       if (entry.kind === 'file') {
-        await this.base.mkdir(dirname(entry.path), { recursive: true });
-        await this.base.writeFile(entry.path, entry.contents);
+        await fs.mkdir(dirname(entry.path), { recursive: true });
+        await fs.writeFile(entry.path, entry.contents);
         continue;
       }
       if (entry.kind === 'symlink') {
-        await this.base.mkdir(dirname(entry.path), { recursive: true });
-        await this.base.symlink(entry.target, entry.path);
+        await fs.mkdir(dirname(entry.path), { recursive: true });
+        await fs.symlink(entry.target, entry.path);
         continue;
       }
-      await this.base.mkdir(entry.path, { recursive: true });
+      await fs.mkdir(entry.path, { recursive: true });
       for (const directoryPath of [...entry.directories].sort((left, right) => left.length - right.length)) {
-        await this.base.mkdir(directoryPath, { recursive: true });
+        await fs.mkdir(directoryPath, { recursive: true });
       }
       for (const file of entry.files) {
-        await this.base.mkdir(dirname(file.path), { recursive: true });
-        await this.base.writeFile(file.path, file.contents);
+        await fs.mkdir(dirname(file.path), { recursive: true });
+        await fs.writeFile(file.path, file.contents);
       }
       for (const symlink of entry.symlinks) {
-        await this.base.mkdir(dirname(symlink.path), { recursive: true });
-        await this.base.symlink(symlink.target, symlink.path);
+        await fs.mkdir(dirname(symlink.path), { recursive: true });
+        await fs.symlink(symlink.target, symlink.path);
       }
     }
     for (const directoryPath of state.createdAncestors) {
-      await this.removeDirectoryIfEmpty(directoryPath);
+      await this.removeDirectoryIfEmpty(directoryPath, fs);
     }
   }
 
-  private async removeRollbackPath(path: string): Promise<void> {
+  private async removeRollbackPath(path: string, fs: IFileSystem = this.base): Promise<void> {
     if (path === this.workspaceRoot()) {
-      for (const entry of await this.base.readdir(path).catch(() => [])) {
-        await this.base.rm(`${path}/${entry}`, { force: true, recursive: true });
+      for (const entry of await fs.readdir(path).catch(() => [])) {
+        await fs.rm(`${path}/${entry}`, { force: true, recursive: true });
       }
       return;
     }
-    await this.base.rm(path, { force: true, recursive: true });
+    await fs.rm(path, { force: true, recursive: true });
   }
 
   private async recordFinalDiffInodeMutations(
@@ -1399,12 +1971,12 @@ export class KernelObservedFileSystem implements IFileSystem {
     );
   }
 
-  private async removeDirectoryIfEmpty(path: string): Promise<void> {
-    if (path === this.workspaceRoot() || !(await this.base.exists(path))) return;
-    const stat = await this.base.stat(path);
+  private async removeDirectoryIfEmpty(path: string, fs: IFileSystem = this.base): Promise<void> {
+    if (path === this.workspaceRoot() || !(await fs.exists(path))) return;
+    const stat = await fs.stat(path);
     if (!stat.isDirectory) return;
-    if ((await this.base.readdir(path)).length > 0) return;
-    await this.base.rm(path, { force: true, recursive: true });
+    if ((await fs.readdir(path)).length > 0) return;
+    await fs.rm(path, { force: true, recursive: true });
   }
 
   private withReadLocks<T>(
@@ -1499,6 +2071,14 @@ export class KernelObservedFileSystem implements IFileSystem {
       this.generations.set(path, generation);
     }
     this.recordCommandMutation(context, generationPaths);
+    for (const watcher of this.mutationWatchers) {
+      try {
+        watcher(this.mutationCounter);
+      } catch {
+        // Mutation observers are diagnostic/durability hooks and must not roll
+        // back an already committed filesystem operation.
+      }
+    }
   }
 
   private forgetInodes(paths: readonly string[]): void {
@@ -1575,6 +2155,68 @@ export class KernelObservedFileSystem implements IFileSystem {
     );
   }
 
+  private hidesProjectFiles(context: RuntimeCommandExecutionContext | undefined): context is RuntimeCommandExecutionContext {
+    return context !== undefined && context.includeHiddenFiles !== true;
+  }
+
+  private assertCommandPathVisible(
+    context: RuntimeCommandExecutionContext | undefined,
+    absolutePath: string,
+    operation: string
+  ): void {
+    if (!this.hidesProjectFiles(context) || !this.isHidden(absolutePath)) return;
+    this.throwCommandPathHidden(absolutePath, operation);
+  }
+
+  private throwCommandPathHidden(absolutePath: string, operation: string): never {
+    const displayPath = isWithinWorkspace(this.workspaceRoot(), absolutePath)
+      ? toProjectPath(this.workspaceRoot(), absolutePath)
+      : absolutePath;
+    throw Object.assign(
+      new Error(`ENOENT: no such file or directory, ${operation} '${displayPath}'`),
+      { code: 'ENOENT' }
+    );
+  }
+
+  private async assertCommandReadTargetVisible(
+    context: RuntimeCommandExecutionContext | undefined,
+    absolutePath: string,
+    operation: string
+  ): Promise<void> {
+    this.assertCommandPathVisible(context, absolutePath, operation);
+    if (!this.hidesProjectFiles(context)) return;
+    const realPath = await this.base.realpath(absolutePath).catch(() => absolutePath);
+    this.assertCommandPathVisible(context, realPath, operation);
+  }
+
+  private async assertCommandCopySourceVisible(
+    context: RuntimeCommandExecutionContext | undefined,
+    absolutePath: string
+  ): Promise<void> {
+    await this.assertCommandReadTargetVisible(context, absolutePath, 'open');
+    if (!this.hidesProjectFiles(context)) return;
+    const stat = await this.base.stat(absolutePath).catch(() => null);
+    if (!stat?.isDirectory) return;
+    const containsHiddenPath = this.base.getAllPaths().some((candidate) =>
+      candidate !== absolutePath &&
+      isWithinWorkspace(absolutePath, candidate) &&
+      this.isHidden(candidate)
+    );
+    if (containsHiddenPath) this.throwCommandPathHidden(absolutePath, 'open');
+  }
+
+  private filterCommandDirectoryEntries<T extends { name: string } | string>(
+    context: RuntimeCommandExecutionContext | undefined,
+    absoluteDirectoryPath: string,
+    entries: T[]
+  ): T[] {
+    if (!this.hidesProjectFiles(context)) return entries;
+    return entries.filter((entry) => {
+      const name = typeof entry === 'string' ? entry : entry.name;
+      return !this.isHidden(normalizeFsLockPath(`${absoluteDirectoryPath}/${name}`));
+    });
+  }
+
   readFile(path: string, options?: FsReadFileOptions): Promise<string> {
     return this.readFileWithContext(undefined, path, options);
   }
@@ -1589,7 +2231,10 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
     if (readTarget.kind === 'error') return Promise.reject(kernelReadTargetError(path, readTarget));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks(context, [mappedPath], 'read-file', () => this.base.readFile(mappedPath, options));
+    return this.withReadLocks(context, [mappedPath], 'read-file', async () => {
+      await this.assertCommandReadTargetVisible(context, mappedPath, 'open');
+      return this.base.readFile(mappedPath, options);
+    });
   }
 
   readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
@@ -1616,9 +2261,10 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (readTarget.kind === 'error') return Promise.reject(kernelReadTargetError(path, readTarget));
     if (!this.base.readFileBytes) return Promise.reject(new Error('readFileBytes is not supported by this filesystem.'));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks(context, [mappedPath], 'read-file', () =>
-      this.base.readFileBytes!(mappedPath) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>
-    );
+    return this.withReadLocks(context, [mappedPath], 'read-file', async () => {
+      await this.assertCommandReadTargetVisible(context, mappedPath, 'open');
+      return this.base.readFileBytes!(mappedPath) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+    });
   }
 
   readFileBuffer(path: string): Promise<Uint8Array> {
@@ -1635,7 +2281,10 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
     if (readTarget.kind === 'error') return Promise.reject(kernelReadTargetError(path, readTarget));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks(context, [mappedPath], 'read-file', () => this.base.readFileBuffer(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'read-file', async () => {
+      await this.assertCommandReadTargetVisible(context, mappedPath, 'open');
+      return this.base.readFileBuffer(mappedPath);
+    });
   }
 
   async writeFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
@@ -1703,12 +2352,17 @@ export class KernelObservedFileSystem implements IFileSystem {
     return this.existsWithContext(undefined, path);
   }
 
-  existsWithContext(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<boolean> {
+  async existsWithContext(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<boolean> {
     if (this.dynamicProc.entryKind(this.mapPath(path), context) !== null) return Promise.resolve(true);
     const accessTarget = kernelAccessTarget(path);
     if (accessTarget.kind === 'allowed') return Promise.resolve(true);
     if (accessTarget.kind === 'denied') return Promise.resolve(false);
-    return this.base.exists(this.mapPath(path));
+    const mappedPath = this.mapPath(path);
+    if (this.hidesProjectFiles(context) && this.isHidden(mappedPath)) return false;
+    if (!(await this.base.exists(mappedPath))) return false;
+    if (!this.hidesProjectFiles(context)) return true;
+    const realPath = await this.base.realpath(mappedPath).catch(() => mappedPath);
+    return !this.isHidden(realPath);
   }
 
   stat(path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
@@ -1722,7 +2376,10 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (statTarget.kind === 'stat') return Promise.resolve(this.virtualStat(statTarget.stat));
     if (statTarget.kind === 'error') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks(context, [mappedPath], 'stat', () => this.base.stat(mappedPath)).then((stat) => {
+    return this.withReadLocks(context, [mappedPath], 'stat', async () => {
+      await this.assertCommandReadTargetVisible(context, mappedPath, 'stat');
+      return this.base.stat(mappedPath);
+    }).then((stat) => {
       if (isWithinWorkspace(this.workspaceRoot(), mappedPath)) this.inodeForPath(mappedPath);
       return stat;
     });
@@ -1772,7 +2429,10 @@ export class KernelObservedFileSystem implements IFileSystem {
       ));
     }
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks(context, [mappedPath], 'readdir', () => this.base.readdir(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'readdir', async () => {
+      await this.assertCommandReadTargetVisible(context, mappedPath, 'scandir');
+      return this.filterCommandDirectoryEntries(context, mappedPath, await this.base.readdir(mappedPath));
+    });
   }
 
   readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
@@ -1810,7 +2470,10 @@ export class KernelObservedFileSystem implements IFileSystem {
     }
     if (!this.base.readdirWithFileTypes) return Promise.reject(new Error('readdirWithFileTypes is not supported by this filesystem.'));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks(context, [mappedPath], 'readdir', () => this.base.readdirWithFileTypes!(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'readdir', async () => {
+      await this.assertCommandReadTargetVisible(context, mappedPath, 'scandir');
+      return this.filterCommandDirectoryEntries(context, mappedPath, await this.base.readdirWithFileTypes!(mappedPath));
+    });
   }
 
   async rm(path: string, options?: FsRmOptions): Promise<void> {
@@ -1867,6 +2530,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     await this.withMutationLocks(context, [mappedSource, mappedDestination], 'copy', async () => {
+      await this.assertCommandCopySourceVisible(context, mappedSource);
       this.assertWritable(mappedDestination, 'copy');
       await this.base.cp(mappedSource, mappedDestination, options);
       this.inodeForPath(mappedDestination);
@@ -1905,7 +2569,9 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (sourceTarget.kind === 'device-file') return this.readDeviceFile(context, sourceTarget.path);
     if (sourceTarget.kind === 'proc-file') return readPublicRuntimeProcFile(sourceTarget.path, this.kernelInfo());
     if (sourceTarget.kind === 'error') throwKernelFileReadTargetError(path, sourceTarget);
-    return this.base.readFileBuffer(this.mapPath(path));
+    const mappedPath = this.mapPath(path);
+    await this.assertCommandReadTargetVisible(context, mappedPath, 'open');
+    return this.base.readFileBuffer(mappedPath);
   }
 
   private async copyDynamicVirtualFile(
@@ -1997,7 +2663,9 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   getAllPathsWithContext(context: RuntimeCommandExecutionContext | undefined): string[] {
-    const paths = this.base.getAllPaths();
+    const paths = this.hidesProjectFiles(context)
+      ? this.base.getAllPaths().filter((path) => !this.isHidden(path))
+      : this.base.getAllPaths();
     const alias = this.workspaceAlias();
     const root = this.workspaceRoot();
     const aliasPaths = !alias || alias === root
@@ -2068,6 +2736,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     const mappedNewPath = this.mapPath(newPath);
     const mappedExistingPath = this.mapPath(existingPath);
     return this.withMutationLocks(context, [mappedExistingPath, mappedNewPath], 'copy', async () => {
+      await this.assertCommandReadTargetVisible(context, mappedExistingPath, 'link');
       this.assertWritable(mappedNewPath, 'link');
       await this.base.link(mappedExistingPath, mappedNewPath);
       this.recordMutation(context, [mappedExistingPath, mappedNewPath], 'copy');
@@ -2085,7 +2754,17 @@ export class KernelObservedFileSystem implements IFileSystem {
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind !== 'workspace') return Promise.reject(new Error(`Kernel virtual path is not a symbolic link: ${path}`));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks(context, [mappedPath], 'readlink', () => this.base.readlink(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'readlink', async () => {
+      this.assertCommandPathVisible(context, mappedPath, 'readlink');
+      const target = await this.base.readlink(mappedPath);
+      if (this.hidesProjectFiles(context)) {
+        const absoluteTarget = target.startsWith('/')
+          ? this.mapPath(target)
+          : normalizeFsLockPath(`${dirname(mappedPath)}/${target}`);
+        this.assertCommandPathVisible(context, absoluteTarget, 'readlink');
+      }
+      return target;
+    });
   }
 
   lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
@@ -2099,18 +2778,25 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (statTarget.kind === 'stat') return Promise.resolve(this.virtualStat(statTarget.stat));
     if (statTarget.kind === 'error') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
     const mappedPath = this.mapPath(path);
-    return this.withReadLocks(context, [mappedPath], 'stat', () => this.base.lstat(mappedPath));
+    return this.withReadLocks(context, [mappedPath], 'stat', async () => {
+      this.assertCommandPathVisible(context, mappedPath, 'lstat');
+      return this.base.lstat(mappedPath);
+    });
   }
 
   realpath(path: string): Promise<string> {
     return this.realpathWithContext(undefined, path);
   }
 
-  realpathWithContext(_context: RuntimeCommandExecutionContext | undefined, path: string): Promise<string> {
+  async realpathWithContext(_context: RuntimeCommandExecutionContext | undefined, path: string): Promise<string> {
     assertNoNul(path, 'Kernel path');
     if (this.dynamicProc.entryKind(this.mapPath(path), _context) !== null) return Promise.resolve(this.mapPath(path));
     if (isRuntimeKernelVirtualNamespacePath(path)) return Promise.resolve(path);
-    return this.base.realpath(this.mapPath(path));
+    const mappedPath = this.mapPath(path);
+    this.assertCommandPathVisible(_context, mappedPath, 'realpath');
+    const realPath = await this.base.realpath(mappedPath);
+    this.assertCommandPathVisible(_context, realPath, 'realpath');
+    return realPath;
   }
 
   private dynamicVirtualPaths(

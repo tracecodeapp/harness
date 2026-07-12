@@ -9,7 +9,13 @@ import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
-import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
+import {
+  RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES,
+  RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT,
+  RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES,
+  createRuntimeWorkspace,
+  normalizeRuntimeWorkspaceStorageLimits,
+} from '../packages/harness-project/src/index';
 import { assertRuntimeFinalDiffBudget, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 import { createIndexedDbKernelStorage } from '../packages/harness-browser/src/project';
 import {
@@ -31,12 +37,22 @@ function assertCondition(condition: boolean, message: string): void {
 }
 
 function csharpWorkerVmSource(source: string): string {
-  const replaced = source.replace(
-    'const sharedKernelPolicyReady = loadSharedKernelPolicy();',
-    'self.TraceRuntimeKernelPolicy = Object.freeze({});\nconst sharedKernelPolicyReady = Promise.resolve();'
-  );
-  assertCondition(replaced !== source, 'C# worker VM source should stub shared policy startup loading');
-  return replaced;
+  const startupStart = 'const sharedKernelPolicyReady = loadSharedKernelPolicy().then(() => {';
+  const startupEnd = '\n});\n\nfunction now()';
+  const startIndex = source.indexOf(startupStart);
+  const endIndex = source.indexOf(startupEnd, startIndex);
+  assertCondition(startIndex >= 0 && endIndex >= 0, 'C# worker VM source should locate shared policy startup loading');
+  const stubbedStartup = [
+    "Object.defineProperty(self, 'TraceRuntimeKernelPolicy', {",
+    '  value: Object.freeze({ withRuntimeUserAuthorityLockdown: async (callback) => callback() }),',
+    '  configurable: false,',
+    '  enumerable: false,',
+    '  writable: false,',
+    '});',
+    'trustedRuntimeUserAuthorityLockdown = self.TraceRuntimeKernelPolicy.withRuntimeUserAuthorityLockdown;',
+    'const sharedKernelPolicyReady = Promise.resolve();',
+  ].join('\n');
+  return source.slice(0, startIndex) + stubbedStartup + source.slice(endIndex + '\n});'.length);
 }
 
 function nativeJavaTraceEvent(event: Record<string, unknown>): string {
@@ -522,10 +538,11 @@ async function testIndexedDbKernelStorageEncryptsSnapshots(): Promise<void> {
     });
 
     const rawRecord = stores.get('workspaces')?.get('workspace') as
-      | { version?: number; encrypted?: { ciphertext?: string; iv?: string; keyId?: string } }
+      | { version?: number; revision?: number; savedAt?: string; encrypted?: { ciphertext?: string; iv?: string; keyId?: string } }
       | undefined;
     assertCondition(
-      rawRecord?.version === 2 &&
+      rawRecord?.version === 3 &&
+        rawRecord.revision === 1 &&
         typeof rawRecord.encrypted?.ciphertext === 'string' &&
         typeof rawRecord.encrypted.iv === 'string' &&
         rawRecord.encrypted.keyId === 'test-key',
@@ -543,6 +560,93 @@ async function testIndexedDbKernelStorageEncryptsSnapshots(): Promise<void> {
         loaded.snapshot.entrypoint === 'secret.txt',
       `IndexedDB kernel storage should decrypt snapshots through the storage API: ${JSON.stringify(loaded)}`
     );
+
+    stores.get('workspaces')?.set('other-workspace', JSON.parse(JSON.stringify(rawRecord)));
+    const otherStorage = createIndexedDbKernelStorage({
+      key: 'other-workspace',
+      databaseName: 'tracecode-secure-workspace',
+      storeName: 'workspaces',
+      trustedSameOriginPersistence: true,
+      encryptionKey,
+      keyId: 'test-key',
+    });
+    const namespaceSwapError = await rejectedMessage(() => otherStorage.load());
+    assertCondition(
+      namespaceSwapError.includes('Failed to decrypt'),
+      `encrypted records must be authenticated to their database/store/key namespace: ${namespaceSwapError}`
+    );
+
+    const wrongKeyIdStorage = createIndexedDbKernelStorage({
+      key: 'workspace',
+      databaseName: 'tracecode-secure-workspace',
+      storeName: 'workspaces',
+      trustedSameOriginPersistence: true,
+      encryptionKey,
+      keyId: 'wrong-key',
+    });
+    const keyIdError = await rejectedMessage(() => wrongKeyIdStorage.load());
+    assertCondition(
+      keyIdError.includes('keyId does not match'),
+      `encrypted records must validate the configured keyId before decryption: ${keyIdError}`
+    );
+
+    let currentRevision = 0;
+    const replayStorage = createIndexedDbKernelStorage({
+      key: 'replay-workspace',
+      databaseName: 'tracecode-secure-workspace',
+      storeName: 'workspaces',
+      trustedSameOriginPersistence: true,
+      encryptionKey,
+      keyId: 'test-key',
+      revisionAuthority: {
+        trustedExternalState: true,
+        nextRevision() {
+          currentRevision += 1;
+          return currentRevision;
+        },
+        assertCurrentRevision(revision) {
+          if (revision !== currentRevision) throw new Error(`stale revision ${revision}; current is ${currentRevision}`);
+        },
+      },
+    });
+    await replayStorage.save({ files: [{ path: 'one.txt', contents: 'one\n' }] });
+    const replayedRecord = JSON.parse(JSON.stringify(stores.get('workspaces')?.get('replay-workspace')));
+    await replayStorage.save({ files: [{ path: 'two.txt', contents: 'two\n' }] });
+    stores.get('workspaces')?.set('replay-workspace', replayedRecord);
+    const replayError = await rejectedMessage(() => replayStorage.load());
+    assertCondition(
+      replayError.includes('stale revision 1; current is 2'),
+      `external revision authority should reject replayed encrypted records: ${replayError}`
+    );
+
+    let clearRevision = 0;
+    const clearStorage = createIndexedDbKernelStorage({
+      key: 'clear-workspace',
+      databaseName: 'tracecode-secure-workspace',
+      storeName: 'workspaces',
+      trustedSameOriginPersistence: true,
+      encryptionKey,
+      keyId: 'test-key',
+      revisionAuthority: {
+        trustedExternalState: true,
+        nextRevision() {
+          clearRevision += 1;
+          return clearRevision;
+        },
+        assertCurrentRevision(revision) {
+          if (revision !== clearRevision) throw new Error(`stale cleared revision ${revision}; current is ${clearRevision}`);
+        },
+      },
+    });
+    await clearStorage.save({ files: [{ path: 'cleared.txt', contents: 'restore-me\n' }] });
+    const clearedRecord = JSON.parse(JSON.stringify(stores.get('workspaces')?.get('clear-workspace')));
+    await clearStorage.clear?.();
+    stores.get('workspaces')?.set('clear-workspace', clearedRecord);
+    const clearReplayError = await rejectedMessage(() => clearStorage.load());
+    assertCondition(
+      clearReplayError.includes('stale cleared revision 1; current is 2'),
+      `clearing encrypted storage must advance external replay authority: ${clearReplayError}`
+    );
   } finally {
     restoreIndexedDb();
   }
@@ -550,7 +654,16 @@ async function testIndexedDbKernelStorageEncryptsSnapshots(): Promise<void> {
 
 async function testBrowserJavaScriptWorkerRejectsUserSpoofedResults(): Promise<void> {
   await withProtocolTestWorker(async (workerUrl) => {
-    const runner = createBrowserJavaScriptProjectRunner({ workerUrl, timeoutMs: 1000 });
+    // This same-realm protocol double cannot safely emulate the non-restoring
+    // descriptor seals of a disposable WorkerGlobalScope. Real Chromium
+    // permanent-mode coverage lives in test-javascript-authority-browser.ts;
+    // this test isolates protocol spoofing under the explicit trusted-reuse path.
+    const runner = createBrowserJavaScriptProjectRunner({
+      workerUrl,
+      workerIsolation: 'shared',
+      trustedReusableWorker: true,
+      timeoutMs: 1000,
+    });
     const result = await runner({
       code: '',
       source: 'file',
@@ -685,6 +798,259 @@ async function testBrowserJavaScriptReadonlyHardlinksAreRejected(): Promise<void
   assertCondition(await workspace.readFile('README.md') === 'protected\n', 'readonly source should remain unchanged');
 
   workspace.dispose();
+}
+
+async function testCommandFilesystemRespectsHiddenProjectFiles(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'command-hidden-files',
+      files: [
+        { path: 'visible.txt', contents: 'visible\n' },
+        { path: '.trace/fixtures/secret.txt', contents: 'hidden-input\n', hidden: true, readonly: true },
+      ],
+    },
+  });
+
+  try {
+    const read = await workspace.runCommand('cat .trace/fixtures/secret.txt');
+    const exists = await workspace.runCommand('test -e .trace/fixtures/secret.txt');
+    const stat = await workspace.runCommand('stat .trace/fixtures/secret.txt');
+    const list = await workspace.runCommand('ls -a .trace/fixtures');
+    const find = await workspace.runCommand('find .');
+    const copy = await workspace.runCommand('cp .trace/fixtures/secret.txt copied-secret.txt');
+    const link = await workspace.runCommand('ln .trace/fixtures/secret.txt linked-secret.txt');
+    assertCondition(
+      read.exitCode !== 0 && !read.stdout.includes('hidden-input') && !read.stderr.includes('hidden-input'),
+      `ordinary commands must not read hidden project files: ${JSON.stringify(read)}`
+    );
+    assertCondition(exists.exitCode !== 0, `ordinary command exists checks must not see hidden project files: ${JSON.stringify(exists)}`);
+    assertCondition(
+      stat.exitCode !== 0 && !stat.stdout.includes('secret.txt'),
+      `ordinary command stat calls must not see hidden project files: ${JSON.stringify(stat)}`
+    );
+    assertCondition(
+      list.exitCode !== 0 && !list.stdout.includes('secret.txt'),
+      `ordinary command directory reads must not see hidden project files: ${JSON.stringify(list)}`
+    );
+    assertCondition(
+      !find.stdout.includes('secret.txt') && !find.stdout.includes('.trace'),
+      `ordinary command directory traversal must filter hidden project paths: ${JSON.stringify(find)}`
+    );
+    assertCondition(
+      copy.exitCode !== 0 && !(await workspace.exists('copied-secret.txt')),
+      `ordinary commands must not copy hidden project files into visible paths: ${JSON.stringify(copy)}`
+    );
+    assertCondition(
+      link.exitCode !== 0 && !(await workspace.exists('linked-secret.txt')),
+      `ordinary commands must not hardlink hidden project files into visible paths: ${JSON.stringify(link)}`
+    );
+
+    const authorizedRead = await workspace.runCommand('cat .trace/fixtures/secret.txt', { includeHiddenFiles: true });
+    const authorizedStat = await workspace.runCommand('stat .trace/fixtures/secret.txt', { includeHiddenFiles: true });
+    const authorizedList = await workspace.runCommand('ls -a .trace/fixtures', { includeHiddenFiles: true });
+    const authorizedFind = await workspace.runCommand('find .', { includeHiddenFiles: true });
+    assertCondition(
+      authorizedRead.exitCode === 0 && authorizedRead.stdout === 'hidden-input\n',
+      `explicit hidden-file commands should preserve authorized reads: ${JSON.stringify(authorizedRead)}`
+    );
+    assertCondition(
+      authorizedStat.exitCode === 0 && authorizedStat.stdout.includes('.trace/fixtures/secret.txt'),
+      `explicit hidden-file commands should preserve authorized stat calls: ${JSON.stringify(authorizedStat)}`
+    );
+    assertCondition(
+      authorizedList.exitCode === 0 && authorizedList.stdout.includes('secret.txt'),
+      `explicit hidden-file commands should preserve authorized directory reads: ${JSON.stringify(authorizedList)}`
+    );
+    assertCondition(
+      authorizedFind.exitCode === 0 && authorizedFind.stdout.includes('.trace/fixtures/secret.txt'),
+      `explicit hidden-file commands should preserve authorized directory traversal: ${JSON.stringify(authorizedFind)}`
+    );
+
+    const publicMkdirError = await rejectedMessage(() => workspace.mkdir('.trace/fixtures/public-created'));
+    const commandMkdir = await workspace.runCommand('mkdir -p .trace/fixtures/command-created');
+    assertCondition(
+      publicMkdirError.includes('EROFS') && !(await workspace.exists('.trace/fixtures/public-created')),
+      `public mkdir must reject hidden readonly subtrees: ${publicMkdirError}`
+    );
+    assertCondition(
+      commandMkdir.exitCode !== 0 && !(await workspace.exists('.trace/fixtures/command-created')),
+      `command mkdir must reject hidden readonly subtrees: ${JSON.stringify(commandMkdir)}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
+async function testDirectCppExecutableRespectsHiddenProjectFiles(): Promise<void> {
+  const mountedSnapshots: string[][] = [];
+  const workspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'cpp-direct-hidden-files',
+      files: [
+        { path: 'main.cpp', contents: 'int main() { return 0; }\n' },
+        { path: 'visible.txt', contents: 'visible\n' },
+        { path: '.trace/fixtures/secret.txt', contents: 'secret\n', hidden: true },
+      ],
+    },
+    cppRunner: async (request) => {
+      mountedSnapshots.push(request.project.files.map((file) => file.path));
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  });
+
+  try {
+    const compile = await workspace.runCommand('clang++ main.cpp -o a.out');
+    const ordinaryRun = await workspace.runCommand('./a.out');
+    const authorizedRun = await workspace.runCommand('./a.out', { includeHiddenFiles: true });
+    assertCondition(compile.exitCode === 0, `C++ compile stub should register the executable: ${JSON.stringify(compile)}`);
+    assertCondition(ordinaryRun.exitCode === 0, `ordinary direct C++ run should succeed: ${JSON.stringify(ordinaryRun)}`);
+    assertCondition(authorizedRun.exitCode === 0, `authorized direct C++ run should succeed: ${JSON.stringify(authorizedRun)}`);
+    assertCondition(mountedSnapshots.length === 3, `expected compile and two run snapshots: ${mountedSnapshots.length}`);
+    assertCondition(
+      mountedSnapshots[0].includes('visible.txt') && !mountedSnapshots[0].includes('.trace/fixtures/secret.txt'),
+      `ordinary C++ compilation must not mount hidden files: ${JSON.stringify(mountedSnapshots[0])}`
+    );
+    assertCondition(
+      mountedSnapshots[1].includes('visible.txt') && !mountedSnapshots[1].includes('.trace/fixtures/secret.txt'),
+      `ordinary direct C++ execution must not mount hidden files: ${JSON.stringify(mountedSnapshots[1])}`
+    );
+    assertCondition(
+      mountedSnapshots[2].includes('.trace/fixtures/secret.txt'),
+      `explicit hidden-file authorization should still reach direct C++ execution: ${JSON.stringify(mountedSnapshots[2])}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
+async function testKernelActorsEnforceFilesystemCapabilities(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'read/allowed.txt', contents: 'allowed\n' },
+      { path: 'private.txt', contents: 'private\n' },
+      { path: 'trash/delete.txt', contents: 'delete\n' },
+      { path: 'keep.txt', contents: 'keep\n' },
+    ],
+  });
+  const restrictedActor = {
+    id: 'restricted-agent',
+    kind: 'test' as const,
+    capabilities: {
+      read: ['read/**'],
+      write: ['write/**'],
+      delete: ['trash/**'],
+    },
+  };
+
+  try {
+    assertCondition(
+      await workspace.kernel.readFile('read/allowed.txt', restrictedActor) === 'allowed\n',
+      'restricted actor should retain reads inside its allowlist'
+    );
+    const deniedRead = await rejectedMessage(() => workspace.kernel.readFile('private.txt', restrictedActor));
+    assertCondition(deniedRead.includes('EACCES'), `restricted actor read should fail closed: ${deniedRead}`);
+
+    await workspace.kernel.writeFile('write/allowed.txt', 'written\n', restrictedActor);
+    assertCondition(await workspace.readFile('write/allowed.txt') === 'written\n', 'restricted actor should write inside its allowlist');
+    const deniedWrite = await rejectedMessage(() => workspace.kernel.writeFile('private-write.txt', 'blocked\n', restrictedActor));
+    assertCondition(
+      deniedWrite.includes('EACCES') && !(await workspace.exists('private-write.txt')),
+      `restricted actor write should fail closed: ${deniedWrite}`
+    );
+
+    await workspace.kernel.deleteFile('trash/delete.txt', restrictedActor);
+    assertCondition(!(await workspace.exists('trash/delete.txt')), 'restricted actor should delete inside its allowlist');
+    const deniedDelete = await rejectedMessage(() => workspace.kernel.deleteFile('keep.txt', restrictedActor));
+    assertCondition(
+      deniedDelete.includes('EACCES') && await workspace.exists('keep.txt'),
+      `restricted actor delete should fail closed: ${deniedDelete}`
+    );
+
+    await workspace.kernel.applyFileChange(
+      { path: 'write/from-diff.txt', contents: 'diff\n' },
+      restrictedActor,
+      'final-diff'
+    );
+    const deniedDiff = await rejectedMessage(() => workspace.kernel.applyFileChange(
+      { path: 'outside-diff.txt', contents: 'blocked\n' },
+      restrictedActor,
+      'final-diff'
+    ));
+    assertCondition(
+      deniedDiff.includes('EACCES') && !(await workspace.exists('outside-diff.txt')),
+      `restricted actor final diff should enforce write capabilities: ${deniedDiff}`
+    );
+
+    const implicitUnrestrictedActor = { id: 'legacy-host', kind: 'system' as const, capabilities: {} };
+    assertCondition(
+      await workspace.kernel.readFile('private.txt', implicitUnrestrictedActor) === 'private\n',
+      'omitted filesystem capability lists should preserve backward-compatible unrestricted access'
+    );
+    const denyAllActor = {
+      id: 'deny-all',
+      kind: 'test' as const,
+      capabilities: { read: [], write: [], delete: [] },
+    };
+    const denyAllRead = await rejectedMessage(() => workspace.kernel.readFile('read/allowed.txt', denyAllActor));
+    assertCondition(denyAllRead.includes('EACCES'), `explicit empty capability lists should deny all access: ${denyAllRead}`);
+  } finally {
+    workspace.dispose();
+  }
+}
+
+async function testWorkspaceHydrationCannotOverwriteProtectedSessionFiles(): Promise<void> {
+  const projectSession = {
+    id: 'protected-hydration',
+    files: [
+      { path: 'locked.txt', contents: 'authoritative\n', readonly: true },
+      { path: '.trace/secret.txt', contents: 'secret\n', hidden: true, readonly: true },
+    ],
+  } as const;
+
+  const readonlyOverwrite = await rejectedMessage(() => createRuntimeWorkspace({
+    projectSession,
+    files: [{ path: 'locked.txt', contents: 'attacker-controlled\n' }],
+  }));
+  assertCondition(
+    readonlyOverwrite.includes('EROFS') && readonlyOverwrite.includes('hydrate'),
+    `top-level hydration must not overwrite readonly session files: ${readonlyOverwrite}`
+  );
+
+  const hiddenOverwrite = await rejectedMessage(() => createRuntimeWorkspace({
+    projectSession,
+    files: [{ path: '.trace/secret.txt', contents: 'attacker-controlled\n' }],
+  }));
+  assertCondition(
+    hiddenOverwrite.includes('EROFS') && hiddenOverwrite.includes('hydrate'),
+    `top-level hydration must not overwrite hidden session files: ${hiddenOverwrite}`
+  );
+
+  const hiddenSibling = await rejectedMessage(() => createRuntimeWorkspace({
+    projectSession,
+    files: [{ path: '.trace/injected.txt', contents: 'attacker-controlled\n' }],
+  }));
+  assertCondition(
+    hiddenSibling.includes('EROFS'),
+    `top-level hydration must not create files inside hidden namespaces: ${hiddenSibling}`
+  );
+
+  const identicalWorkspace = await createRuntimeWorkspace({
+    projectSession,
+    files: [
+      { path: 'locked.txt', contents: 'authoritative\n' },
+      { path: '.trace/secret.txt', contents: 'secret\n' },
+      { path: 'editable.txt', contents: 'editable\n' },
+    ],
+  });
+  try {
+    assertCondition(
+      await identicalWorkspace.readFile('locked.txt') === 'authoritative\n' &&
+        await identicalWorkspace.readFile('editable.txt') === 'editable\n',
+      'identical protected hydration entries should remain harmless no-ops while editable files load'
+    );
+  } finally {
+    identicalWorkspace.dispose();
+  }
 }
 
 async function testBrowserJavaScriptHiddenFilesAreNotMounted(): Promise<void> {
@@ -970,6 +1336,9 @@ async function testBrowserJavaScriptSyntaxErrorsHideRunnerInternals(): Promise<v
 }
 
 async function testBrowserJavaScriptTimeoutWaitsForLiveFileChangeQueue(): Promise<void> {
+  // Same-realm execution temporarily installs virtual timer globals. Capture a
+  // host timer so this assertion observes the outer runner timeout.
+  const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
   let releaseApply!: () => void;
   const applyCanFinish = new Promise<void>((resolve) => {
     releaseApply = resolve;
@@ -1005,7 +1374,7 @@ async function testBrowserJavaScriptTimeoutWaitsForLiveFileChangeQueue(): Promis
     settled = true;
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 25));
+  await new Promise((resolve) => hostSetTimeout(resolve, 25));
   assertCondition(applyStarted, 'browser JS timeout test should start live file-change application');
   assertCondition(settled, 'browser JS timeout should resolve even while live file-change application is pending');
   const result = await command;
@@ -1095,6 +1464,10 @@ async function testJavaScriptInputMaterializerAvoidsTypeNameEval(): Promise<void
 
 async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): Promise<void> {
   const source = await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8');
+  const policySource = await readFile(
+    join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy-classic.js'),
+    'utf8'
+  );
   const pending = new Map<string, { token: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   let ready = false;
   const workerScope = {
@@ -1117,7 +1490,8 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
       entry.resolve(record.payload);
     },
   };
-  const context = vm.createContext({
+  let context!: vm.Context;
+  context = vm.createContext({
     console,
     self: workerScope,
     performance: { now: () => Date.now() },
@@ -1127,6 +1501,10 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
     TextEncoder,
     TextDecoder,
     importScripts: (...urls: string[]) => {
+      if (urls.every((url) => url.includes('runtime-kernel-policy-classic.js'))) {
+        vm.runInContext(policySource, context, { filename: 'runtime-kernel-policy-classic.js' });
+        return;
+      }
       throw new Error(`Unexpected importScripts in destructured iterable test: ${urls.join(',')}`);
     },
   });
@@ -2251,13 +2629,17 @@ async function testCppWorkerProjectEventBudgets(): Promise<void> {
     ''
   );
   const posted: Array<{ type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } }> = [];
+  const capturePostMessage = (message: unknown) => {
+    posted.push(message as { type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } });
+  };
   const context = vm.createContext({
     console,
-    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
-    location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
-    postMessage: (message: unknown) => {
-      posted.push(message as { type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } });
+    self: {
+      location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+      postMessage: capturePostMessage,
     },
+    location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+    postMessage: capturePostMessage,
     URL,
     TextEncoder,
     TextDecoder,
@@ -2317,7 +2699,10 @@ async function testCppPinnedToolchainFetchesFailClosed(): Promise<void> {
   );
   const context = vm.createContext({
     console,
-    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
+    self: {
+      location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+      postMessage: () => {},
+    },
     location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
     postMessage: () => {},
     URL,
@@ -2375,7 +2760,7 @@ async function testCppPinnedToolchainFetchesFailClosed(): Promise<void> {
   );
 }
 
-async function testCppCompilerWorkersAreDisposable(): Promise<void> {
+async function testCppCompilerLifecycleSeparatesCompilationFromExecution(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
     ''
@@ -2420,7 +2805,10 @@ async function testCppCompilerWorkersAreDisposable(): Promise<void> {
   }
   const context = vm.createContext({
     console,
-    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
+    self: {
+      location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+      postMessage: () => {},
+    },
     location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
     postMessage: () => {},
     Worker: DisposableCompilerWorker,
@@ -2467,18 +2855,25 @@ async function testCppCompilerWorkersAreDisposable(): Promise<void> {
 
   const frameSource = await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-compiler-frame.html'), 'utf8');
   assertCondition(
-    !frameSource.includes('let compilerWorker = null') &&
-      frameSource.includes('function createCompilerWorker(id)') &&
-      frameSource.includes('request.worker.terminate()'),
-    'C++ compiler frame should use disposable compiler workers rather than a persistent worker singleton'
+    frameSource.includes('let compilerWorker = null') &&
+      frameSource.includes('function getCompilerWorker()') &&
+      frameSource.includes("resetCompilerWorker(new Error('C++ compiler worker request timed out'))"),
+    'C++ compiler frame should retain only the trusted compiler/toolchain worker and reset it on timeout'
+  );
+  const compilerWorkerSource = await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-compiler-worker.js'), 'utf8');
+  assertCondition(
+    !compilerWorkerSource.includes('WebAssembly.instantiate') &&
+      !compilerWorkerSource.includes('new WebAssembly.Instance') &&
+      !compilerWorkerSource.includes('runWasi('),
+    'the persistent C++ compiler worker must never instantiate or execute compiled user programs'
   );
 
   const clientSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-browser', 'src', 'cpp-worker-client.ts'), 'utf8');
   assertCondition(
-    clientSource.includes(`pending.resolve(response.payload ?? { success: false, error: 'C++ compiler frame returned an empty response.' });
-        this.clearCompilerFrames();`) &&
+    clientSource.includes('private runInDisposableExecutionWorker<T>') &&
+      clientSource.includes('this.retireExecutionWorker();') &&
       clientSource.includes("this.clearCompilerFrames(new Error('C++ compiler frame request timed out.'));"),
-    'C++ browser client should dispose compiler frames after compile completion and timeout'
+    'C++ browser client should retire user execution workers after every command while preserving only healthy compiler frames'
   );
 }
 
@@ -2488,10 +2883,13 @@ async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
     ''
   );
   const sharedKernelPolicySource = (await readFile(join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy.js'), 'utf8'))
-    .replace(/^export function /gm, 'function ');
+    .replace(/^export (async )?function /gm, '$1function ');
   const context = vm.createContext({
     console,
-    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
+    self: {
+      location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+      postMessage: () => {},
+    },
     location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
     postMessage: () => {},
     URL,
@@ -2609,7 +3007,10 @@ async function testCppInferredNumericLiteralsRejectNonFiniteValues(): Promise<vo
   );
   const context = vm.createContext({
     console,
-    self: { location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' } },
+    self: {
+      location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
+      postMessage: () => {},
+    },
     location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
     postMessage: () => {},
     URL,
@@ -2803,6 +3204,309 @@ async function testKernelObservedFileSystemLiveFileChangesAreBudgeted(): Promise
     );
   } finally {
     workspace.dispose();
+  }
+}
+
+async function testRuntimeWorkspaceStorageQuotasAreAtomic(): Promise<void> {
+  const defaults = normalizeRuntimeWorkspaceStorageLimits(undefined);
+  assertCondition(
+    defaults.maxWorkspaceBytes === RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES &&
+      defaults.maxFileBytes === RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES &&
+      defaults.maxEntryCount === RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT,
+    `workspace storage defaults should remain bounded: ${JSON.stringify(defaults)}`
+  );
+  const overrides = normalizeRuntimeWorkspaceStorageLimits({
+    maxWorkspaceBytes: 123,
+    maxFileBytes: 45,
+    maxEntryCount: 6,
+  });
+  assertCondition(
+    overrides.maxWorkspaceBytes === 123 && overrides.maxFileBytes === 45 && overrides.maxEntryCount === 6,
+    `workspace storage limits should accept consumer-owned overrides: ${JSON.stringify(overrides)}`
+  );
+
+  const seededError = await rejectedMessage(() => createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 8, maxFileBytes: 2, maxEntryCount: 10 },
+    files: [{ path: 'oversized.txt', contents: 'abc' }],
+  }));
+  assertCondition(seededError.includes('EFBIG'), `seed hydration should enforce per-file storage limits: ${seededError}`);
+
+  const bytesWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 8, maxFileBytes: 5, maxEntryCount: 10 },
+    files: [{ path: 'stable.txt', contents: '1234' }],
+  });
+  try {
+    const oversized = await rejectedMessage(() => bytesWorkspace.writeFile('stable.txt', '123456'));
+    assertCondition(oversized.includes('EFBIG'), `direct overwrites should enforce per-file limits: ${oversized}`);
+    assertCondition(
+      await bytesWorkspace.readFile('stable.txt') === '1234',
+      'a rejected oversized overwrite must leave the previous file unchanged'
+    );
+
+    await bytesWorkspace.writeFile('other.txt', 'abcd');
+    const aggregate = await rejectedMessage(() => bytesWorkspace.appendFile('other.txt', 'e'));
+    assertCondition(aggregate.includes('ENOSPC'), `append should enforce aggregate workspace bytes: ${aggregate}`);
+    assertCondition(
+      await bytesWorkspace.readFile('other.txt') === 'abcd',
+      'a rejected aggregate append must leave the previous file unchanged'
+    );
+  } finally {
+    bytesWorkspace.dispose();
+  }
+
+  const entryWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 100, maxFileBytes: 100, maxEntryCount: 2 },
+  });
+  try {
+    await entryWorkspace.writeFile('nested/one.txt', '1');
+    const entries = await rejectedMessage(() => entryWorkspace.writeFile('two.txt', '2'));
+    assertCondition(entries.includes('ENOSPC'), `implicit directories should count toward the path limit: ${entries}`);
+    assertCondition(!(await entryWorkspace.exists('two.txt')), 'a rejected entry-count write must not create its target');
+  } finally {
+    entryWorkspace.dispose();
+  }
+
+  const copyWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 5, maxFileBytes: 5, maxEntryCount: 20 },
+    files: [{ path: 'source.txt', contents: 'abc' }],
+  });
+  try {
+    const copy = await rejectedMessage(() => copyWorkspace.copyFile('source.txt', 'copy.txt'));
+    assertCondition(copy.includes('ENOSPC'), `copy should reserve aggregate bytes before mutation: ${copy}`);
+    assertCondition(!(await copyWorkspace.exists('copy.txt')), 'a rejected copy must not create its destination');
+
+    const hardlink = await copyWorkspace.runCommand('ln source.txt linked.txt');
+    assertCondition(hardlink.exitCode !== 0, `hard links should enforce logical aggregate bytes: ${JSON.stringify(hardlink)}`);
+    assertCondition(!(await copyWorkspace.exists('linked.txt')), 'a rejected hard link must not create its destination');
+  } finally {
+    copyWorkspace.dispose();
+  }
+
+  const symlinkWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 20, maxFileBytes: 10, maxEntryCount: 20 },
+    files: [{ path: 'target.txt', contents: 'ab' }],
+  });
+  try {
+    const first = await symlinkWorkspace.runCommand('ln -s target.txt alias');
+    assertCondition(first.exitCode === 0, `a symlink target within quota should succeed: ${JSON.stringify(first)}`);
+    await symlinkWorkspace.writeFile('alias', '12345');
+    await symlinkWorkspace.appendFile('alias', '67890');
+    assertCondition(
+      await symlinkWorkspace.readFile('alias') === '1234567890' &&
+        await symlinkWorkspace.readFile('target.txt') === 'ab',
+      'writes and appends to a final symlink path should mirror InMemoryFs replacement semantics without changing its old target'
+    );
+    const oversizedAlias = await rejectedMessage(() => symlinkWorkspace.appendFile('alias', '!'));
+    assertCondition(oversizedAlias.includes('EFBIG'), `symlink replacement should retain exact per-file accounting: ${oversizedAlias}`);
+    assertCondition(
+      await symlinkWorkspace.readFile('alias') === '1234567890',
+      'a rejected append to a former symlink path must leave its replacement file unchanged'
+    );
+
+    const second = await symlinkWorkspace.runCommand('ln -s target.txt alias-2');
+    assertCondition(second.exitCode !== 0, `symlink target storage should count toward aggregate bytes: ${JSON.stringify(second)}`);
+    assertCondition(!(await symlinkWorkspace.exists('alias-2')), 'a rejected symlink must not create its path');
+  } finally {
+    symlinkWorkspace.dispose();
+  }
+
+  const hardlinkWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 8, maxFileBytes: 6, maxEntryCount: 20 },
+    files: [{ path: 'source.txt', contents: 'abc' }],
+  });
+  try {
+    const linked = await hardlinkWorkspace.runCommand('ln source.txt hard.txt');
+    assertCondition(linked.exitCode === 0, `a within-quota hard link should succeed: ${JSON.stringify(linked)}`);
+    await hardlinkWorkspace.writeFile('hard.txt', '12345');
+    assertCondition(
+      await hardlinkWorkspace.readFile('source.txt') === 'abc' && await hardlinkWorkspace.readFile('hard.txt') === '12345',
+      'hard-link paths should follow InMemoryFs copy-on-write accounting'
+    );
+    const rejectedAppend = await rejectedMessage(() => hardlinkWorkspace.appendFile('hard.txt', 'x'));
+    assertCondition(rejectedAppend.includes('ENOSPC'), `hard-link replacement growth should enforce aggregate bytes: ${rejectedAppend}`);
+    assertCondition(
+      await hardlinkWorkspace.readFile('source.txt') === 'abc' && await hardlinkWorkspace.readFile('hard.txt') === '12345',
+      'a rejected hard-link-path append must leave both logical entries unchanged'
+    );
+  } finally {
+    hardlinkWorkspace.dispose();
+  }
+
+  const overwriteWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 8, maxFileBytes: 5, maxEntryCount: 20 },
+    files: [
+      { path: 'source.txt', contents: 'abc' },
+      { path: 'destination.txt', contents: '12' },
+    ],
+  });
+  try {
+    await overwriteWorkspace.copyFile('source.txt', 'destination.txt');
+    assertCondition(
+      await overwriteWorkspace.readFile('destination.txt') === 'abc',
+      'copy overwrite should replace rather than double-count destination bytes'
+    );
+    await overwriteWorkspace.moveFile('source.txt', 'destination.txt');
+    assertCondition(
+      !(await overwriteWorkspace.exists('source.txt')) && await overwriteWorkspace.readFile('destination.txt') === 'abc',
+      'move overwrite should remove source bytes and retain one destination entry'
+    );
+    await overwriteWorkspace.appendFile('deep/nested/new.txt', '12345');
+    assertCondition(
+      await overwriteWorkspace.readFile('deep/nested/new.txt') === '12345',
+      'append-to-create should still create missing parents after direct mkdir calls were removed'
+    );
+    const rejectedNested = await rejectedMessage(() => overwriteWorkspace.copyFile('destination.txt', 'other/copy.txt'));
+    assertCondition(rejectedNested.includes('ENOSPC'), `nested copy should reserve parents and bytes before mutation: ${rejectedNested}`);
+    assertCondition(
+      !(await overwriteWorkspace.exists('other')) && !(await overwriteWorkspace.exists('other/copy.txt')),
+      'a rejected nested copy must not create destination parents'
+    );
+  } finally {
+    overwriteWorkspace.dispose();
+  }
+
+  const rejectedOverwriteWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 6, maxFileBytes: 5, maxEntryCount: 20 },
+    files: [
+      { path: 'source.txt', contents: '1234' },
+      { path: 'destination.txt', contents: 'x' },
+    ],
+  });
+  try {
+    const rejectedCopy = await rejectedMessage(() =>
+      rejectedOverwriteWorkspace.copyFile('source.txt', 'destination.txt')
+    );
+    assertCondition(rejectedCopy.includes('ENOSPC'), `copy overwrite should project replacement bytes: ${rejectedCopy}`);
+    assertCondition(
+      await rejectedOverwriteWorkspace.readFile('source.txt') === '1234' &&
+        await rejectedOverwriteWorkspace.readFile('destination.txt') === 'x',
+      'a rejected copy overwrite must preserve both source and destination'
+    );
+  } finally {
+    rejectedOverwriteWorkspace.dispose();
+  }
+
+  const rejectedMoveWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 10, maxFileBytes: 10, maxEntryCount: 2 },
+    files: [
+      { path: 'source.txt', contents: 'source' },
+      { path: 'keep.txt', contents: 'keep' },
+    ],
+  });
+  try {
+    const rejectedMove = await rejectedMessage(() =>
+      rejectedMoveWorkspace.moveFile('source.txt', 'nested/destination.txt')
+    );
+    assertCondition(rejectedMove.includes('ENOSPC'), `move should project missing destination parents: ${rejectedMove}`);
+    assertCondition(
+      await rejectedMoveWorkspace.readFile('source.txt') === 'source' &&
+        await rejectedMoveWorkspace.readFile('keep.txt') === 'keep' &&
+        !(await rejectedMoveWorkspace.exists('nested')),
+      'a rejected move must preserve its source and avoid creating destination parents'
+    );
+  } finally {
+    rejectedMoveWorkspace.dispose();
+  }
+
+  const shellWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 4, maxFileBytes: 4, maxEntryCount: 20 },
+  });
+  try {
+    const shell = await shellWorkspace.runCommand('printf 12345 > shell.txt');
+    assertCondition(shell.exitCode !== 0, `shell writes should cross the same storage boundary: ${JSON.stringify(shell)}`);
+    assertCondition(!(await shellWorkspace.exists('shell.txt')), 'a rejected shell write must not create its target');
+  } finally {
+    shellWorkspace.dispose();
+  }
+
+  const rejectedFinalDiffWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 5, maxFileBytes: 5, maxEntryCount: 20 },
+    files: [
+      { path: 'runner.js', contents: 'r' },
+      { path: 'keep.txt', contents: 'ok' },
+    ],
+    nodeRunner: async () => ({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      files: [
+        { path: 'one.txt', contents: '12' },
+        { path: 'two.txt', contents: '34' },
+      ],
+    }),
+  });
+  try {
+    const result = await rejectedFinalDiffWorkspace.runCommand('node runner.js');
+    assertCondition(
+      result.exitCode === 28 && result.error?.code === 'ENOSPC',
+      `final-diff quota rejection should be a structured command failure: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      !(await rejectedFinalDiffWorkspace.exists('one.txt')) &&
+        !(await rejectedFinalDiffWorkspace.exists('two.txt')) &&
+        await rejectedFinalDiffWorkspace.readFile('keep.txt') === 'ok',
+      'a rejected final-diff transaction must leave the workspace unchanged'
+    );
+  } finally {
+    rejectedFinalDiffWorkspace.dispose();
+  }
+
+  const netFinalDiffWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 5, maxFileBytes: 4, maxEntryCount: 20 },
+    files: [
+      { path: 'runner.js', contents: 'r' },
+      { path: 'old.txt', contents: '1234' },
+    ],
+    nodeRunner: async () => ({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      files: [
+        { path: 'old.txt', deleted: true },
+        { path: 'new.txt', contents: 'abcd' },
+      ],
+    }),
+  });
+  try {
+    const result = await netFinalDiffWorkspace.runCommand('node runner.js');
+    assertCondition(result.exitCode === 0, `a deletion-first within-quota final diff should commit: ${JSON.stringify(result)}`);
+    assertCondition(
+      await netFinalDiffWorkspace.readFile('new.txt') === 'abcd' && !(await netFinalDiffWorkspace.exists('old.txt')),
+      'a within-quota net final diff should commit all changes'
+    );
+  } finally {
+    netFinalDiffWorkspace.dispose();
+  }
+
+  const transientFinalDiffWorkspace = await createRuntimeWorkspace({
+    storageLimits: { maxWorkspaceBytes: 5, maxFileBytes: 4, maxEntryCount: 20 },
+    files: [
+      { path: 'runner.js', contents: 'r' },
+      { path: 'old.txt', contents: '1234' },
+    ],
+    nodeRunner: async () => ({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      files: [
+        { path: 'new.txt', contents: 'abcd' },
+        { path: 'old.txt', deleted: true },
+      ],
+    }),
+  });
+  try {
+    const result = await transientFinalDiffWorkspace.runCommand('node runner.js');
+    assertCondition(
+      result.exitCode === 28 && result.error?.code === 'ENOSPC',
+      `final-diff preflight should reject an over-quota mutation prefix before applying it: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      await transientFinalDiffWorkspace.readFile('old.txt') === '1234' &&
+        !(await transientFinalDiffWorkspace.exists('new.txt')),
+      'a rejected transient-overage final diff must leave its original state unchanged'
+    );
+  } finally {
+    transientFinalDiffWorkspace.dispose();
   }
 }
 
@@ -3147,7 +3851,7 @@ async function testTraceKernelWildcardHttpDoesNotCatchExternalHosts(): Promise<v
 
     const externalResponse = await workspace.http.request({ url: 'http://api.example.com:3658/secret?token=abc' });
     assertCondition(
-      externalResponse.status === 0 && externalResponse.body.includes('Connection refused'),
+      externalResponse.status === 0 && externalResponse.error?.code === 'EHOSTUNREACH',
       `external host should not be captured by wildcard listener: ${JSON.stringify(externalResponse)}`
     );
     assertCondition(
@@ -3438,6 +4142,80 @@ async function testBrowserJavaScriptGlobalFetchUsesTraceKernel(): Promise<void> 
   }
 }
 
+async function testBrowserJavaScriptWorkerAmbientAuthorityIsDenied(): Promise<void> {
+  const attempted: string[] = [];
+  const fakeCapabilities: Record<string, unknown> = {
+    indexedDB: { open: () => attempted.push('indexedDB') },
+    caches: { open: () => attempted.push('caches') },
+    cookieStore: { get: () => attempted.push('cookieStore') },
+    Worker: class { constructor() { attempted.push('Worker'); } },
+    SharedWorker: class { constructor() { attempted.push('SharedWorker'); } },
+    BroadcastChannel: class { constructor() { attempted.push('BroadcastChannel'); } },
+    importScripts: () => attempted.push('importScripts'),
+  };
+  const restorers = Object.entries(fakeCapabilities).map(([name, value]) => ({
+    name,
+    value,
+    restore: setTestGlobalProperty(name, value),
+  }));
+  try {
+    const workspace = await createRuntimeWorkspace({
+      nodeRunner: createBrowserJavaScriptProjectRunner({
+        allowMainThreadExecution: true,
+        trustedMainThreadExecution: true,
+        timeoutMs: 1000,
+      }),
+      files: [{
+        path: 'ambient-authority.js',
+        contents: [
+          'const probes = [',
+          '  ["indexedDB", () => globalThis.indexedDB.open("tracecode")],',
+          '  ["caches", () => globalThis.caches.open("tracecode")],',
+          '  ["cookieStore", () => globalThis.cookieStore.get("tracecode")],',
+          '  ["Worker", () => new globalThis.Worker("nested.js")],',
+          '  ["SharedWorker", () => new globalThis.SharedWorker("nested.js")],',
+          '  ["BroadcastChannel", () => new globalThis.BroadcastChannel("tracecode")],',
+          '  ["importScripts", () => globalThis.importScripts("nested.js")],',
+          '];',
+          'for (const [name, probe] of probes) {',
+          '  try { probe(); console.log(name + ":allowed"); }',
+          '  catch (error) { console.log(name + ":" + (error.code || error.name)); }',
+          '}',
+          '',
+        ].join('\n'),
+      }],
+    });
+    try {
+      const result = await workspace.runCommand('node ambient-authority.js');
+      assertCondition(result.exitCode === 0, `ambient authority probe should finish: ${JSON.stringify(result)}`);
+      assertCondition(
+        result.stdout === [
+          'indexedDB:EACCES',
+          'caches:EACCES',
+          'cookieStore:EACCES',
+          'Worker:EACCES',
+          'SharedWorker:EACCES',
+          'BroadcastChannel:EACCES',
+          'importScripts:EACCES',
+          '',
+        ].join('\n'),
+        `worker ambient capabilities should fail closed: ${result.stdout}`
+      );
+      assertCondition(attempted.length === 0, `ambient host capabilities must not be invoked: ${attempted.join(',')}`);
+    } finally {
+      workspace.dispose();
+    }
+    for (const { name, value } of restorers) {
+      assertCondition(
+        (globalThis as unknown as Record<string, unknown>)[name] === value,
+        `${name} should be restored after browser JavaScript execution`
+      );
+    }
+  } finally {
+    for (const { restore } of restorers.reverse()) restore();
+  }
+}
+
 async function main(): Promise<void> {
   await testConcurrentCommandsKeepChainLocalContext();
   await testBackgroundJobDoesNotBlockForegroundCommands();
@@ -3447,6 +4225,10 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptWorkerRejectsUserSpoofedResults();
   await testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn();
   await testBrowserJavaScriptReadonlyHardlinksAreRejected();
+  await testCommandFilesystemRespectsHiddenProjectFiles();
+  await testDirectCppExecutableRespectsHiddenProjectFiles();
+  await testKernelActorsEnforceFilesystemCapabilities();
+  await testWorkspaceHydrationCannotOverwriteProtectedSessionFiles();
   await testBrowserJavaScriptHiddenFilesAreNotMounted();
   await testBrowserJavaScriptHiddenNamespaceMutationMatrix();
   await testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamespace();
@@ -3477,7 +4259,7 @@ async function main(): Promise<void> {
   await testJavaWorkerTraceHeaderExpansionIsBounded();
   await testCppWorkerProjectEventBudgets();
   await testCppPinnedToolchainFetchesFailClosed();
-  await testCppCompilerWorkersAreDisposable();
+  await testCppCompilerLifecycleSeparatesCompilationFromExecution();
   await testCppInheritedStdioRespectsKernelDevices();
   await testCppTraceIdsDoNotExposePointers();
   await testCppContainerLookupFindsRespectTraceBudget();
@@ -3486,6 +4268,7 @@ async function main(): Promise<void> {
   await testSharedKernelPolicyRefreshesMutableDeviceManifests();
   testRuntimeFinalDiffBudgets();
   await testKernelObservedFileSystemLiveFileChangesAreBudgeted();
+  await testRuntimeWorkspaceStorageQuotasAreAtomic();
   await testTraceKernelTraversalSkipsSymlinkCycles();
   await testTraceKernelFinalDiffDirectoryDeletesRejectStaleDescendants();
   await testTraceKernelProjectCommandStepsAreBounded();
@@ -3502,10 +4285,13 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptHttpTimeoutPropagatesToKernel();
   await testBrowserJavaScriptHttpDestroyCompletesActiveRequest();
   await testBrowserJavaScriptGlobalFetchUsesTraceKernel();
+  await testBrowserJavaScriptWorkerAmbientAuthorityIsDenied();
   console.log('tracekernel hardening tests passed');
 }
 
-main().catch((error) => {
+try {
+  await main();
+} catch (error) {
   console.error(error);
   process.exitCode = 1;
-});
+}

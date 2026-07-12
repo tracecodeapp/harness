@@ -232,6 +232,7 @@ import {
   fsMutationGenerationPaths,
   fsMutationLockRequests,
   fsParentStructureLockRequests,
+  normalizeFsLockPath,
   type RuntimeFileSystemMutationKind,
   type RuntimeFileSystemLockRequest,
 } from './locks';
@@ -275,6 +276,7 @@ import {
   isRuntimeDirectoryChange,
   isKernelReadonlyError,
   isRuntimeFileGenerationConflict,
+  isRuntimeWorkspaceStorageLimitError,
   kernelAccessTarget,
   kernelCommandFailure,
   kernelDirectoryTarget,
@@ -447,9 +449,64 @@ export interface CreateRuntimeWorkspaceOptions {
   python?: boolean;
   javascript?: boolean | ProjectWorkspaceJavaScriptConfig;
   executionLimits?: ProjectWorkspaceExecutionLimits;
+  /**
+   * Logical storage limits for the in-browser project filesystem. Limits are
+   * enforced for every filesystem entry under the workspace root (including
+   * hidden/session files) before a mutation is committed.
+   */
+  storageLimits?: RuntimeWorkspaceStorageLimits;
   externalHttp?: RuntimeExternalHttpConfig;
   kernel?: RuntimeTraceKernelConfig;
   kernelControl?: RuntimeTraceKernelControlOptions;
+}
+
+export interface RuntimeWorkspaceStorageLimits {
+  /** Maximum logical bytes across files and symbolic-link targets. */
+  maxWorkspaceBytes?: number;
+  /** Maximum logical bytes stored by any single regular file. */
+  maxFileBytes?: number;
+  /** Maximum files, directories, and symbolic links below the workspace root. */
+  maxEntryCount?: number;
+}
+
+export interface NormalizedRuntimeWorkspaceStorageLimits {
+  maxWorkspaceBytes: number;
+  maxFileBytes: number;
+  maxEntryCount: number;
+}
+
+export const RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
+export const RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES = 16 * 1024 * 1024;
+export const RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT = 10_000;
+
+function normalizeRuntimeWorkspaceStorageLimit(value: number | undefined, fallback: number, label: string): number {
+  const normalized = value ?? fallback;
+  if (!Number.isSafeInteger(normalized) || normalized < 0) {
+    throw new Error(`${label} must be a non-negative safe integer.`);
+  }
+  return normalized;
+}
+
+export function normalizeRuntimeWorkspaceStorageLimits(
+  limits: RuntimeWorkspaceStorageLimits | undefined
+): NormalizedRuntimeWorkspaceStorageLimits {
+  return Object.freeze({
+    maxWorkspaceBytes: normalizeRuntimeWorkspaceStorageLimit(
+      limits?.maxWorkspaceBytes,
+      RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES,
+      'storageLimits.maxWorkspaceBytes'
+    ),
+    maxFileBytes: normalizeRuntimeWorkspaceStorageLimit(
+      limits?.maxFileBytes,
+      RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES,
+      'storageLimits.maxFileBytes'
+    ),
+    maxEntryCount: normalizeRuntimeWorkspaceStorageLimit(
+      limits?.maxEntryCount,
+      RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT,
+      'storageLimits.maxEntryCount'
+    ),
+  });
 }
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
@@ -823,6 +880,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly kernelJournalLog: KernelJournalRecord[] = [];
   private readonly httpListeners = new Map<string, RuntimeKernelHttpListenerRecord>();
   private readonly httpRequestLog: RuntimeKernelHttpRequestRecord[] = [];
+  private readonly httpLifecycleAbortController = new AbortController();
   private readonly readonlyFiles = new Set<string>();
   private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
   private readonlySuspendDepth = 0;
@@ -869,6 +927,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       () => this.kernelInfo,
       (absolutePath, operation) => this.assertWorkspacePathWritable(absolutePath, operation),
       (absolutePath, operation) => this.assertWorkspaceSubtreeWritable(absolutePath, operation),
+      (absolutePath) => this.isWorkspacePathHidden(absolutePath),
       (event) => this.recordKernelEvent(event.type, event.pid, event.detail),
       this.createDynamicProcProvider(),
       (context, change) => {
@@ -876,7 +935,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.emitLocalRuntimeEvent({ type: 'file-change', change, phase: 'live' }, context);
       },
       (context, device) => this.readDevice(device, context),
-      (context, device, data) => this.writeDevice(device, data, context)
+      (context, device, data) => this.writeDevice(device, data, context),
+      normalizeRuntimeWorkspaceStorageLimits(options.storageLimits)
     );
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>
@@ -1044,6 +1104,50 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private hasHttpCapability(actor: RuntimeWorkspaceActor, capability: keyof NonNullable<RuntimeWorkspaceCapabilities['http']>): boolean {
     return actor.capabilities?.http?.[capability] === true;
+  }
+
+  private actorCapabilityPath(path: string): string {
+    if (path.startsWith('/')) return normalizeFsLockPath(mapWorkspaceAlias(this.cwd, this.kernelInfo.workspaceAlias, path));
+    return normalizeFsLockPath(this.toWorkspaceEntryPath(path));
+  }
+
+  private actorCapabilityPattern(pattern: string): string {
+    const trimmed = pattern.trim();
+    if (trimmed === '**' || trimmed === '*') return `${this.cwd}/**`;
+    if (trimmed.startsWith('/')) {
+      return normalizeFsLockPath(mapWorkspaceAlias(this.cwd, this.kernelInfo.workspaceAlias, trimmed));
+    }
+    return normalizeFsLockPath(`${this.cwd}/${trimmed}`);
+  }
+
+  private actorCapabilityMatches(pattern: string, path: string): boolean {
+    const normalizedPattern = this.actorCapabilityPattern(pattern);
+    if (normalizedPattern.endsWith('/**')) {
+      const root = normalizedPattern.slice(0, -3);
+      return path === root || path.startsWith(`${root}/`);
+    }
+    if (normalizedPattern.endsWith('/*')) {
+      const root = normalizedPattern.slice(0, -2);
+      if (!path.startsWith(`${root}/`)) return false;
+      return !path.slice(root.length + 1).includes('/');
+    }
+    if (normalizedPattern.includes('*')) return false;
+    return path === normalizedPattern;
+  }
+
+  private assertActorFileCapability(
+    actor: RuntimeWorkspaceActor,
+    capability: 'read' | 'write' | 'delete',
+    path: string
+  ): void {
+    const rules = actor.capabilities?.[capability];
+    if (rules === undefined) return;
+    const candidate = this.actorCapabilityPath(path);
+    if (rules.some((pattern) => this.actorCapabilityMatches(pattern, candidate))) return;
+    throw Object.assign(
+      new Error(`EACCES: ${capability} is not allowed for actor ${actor.kind}:${actor.id}, '${path}'`),
+      { code: 'EACCES', path }
+    );
   }
 
   private assertHttpCapability(
@@ -1638,15 +1742,22 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     options: RuntimeKernelHttpDispatchOptions & { timeoutBody?: string },
     timeoutMs: number | undefined,
     invoke: (signal: AbortSignal) => Promise<RuntimeKernelHttpResponse>,
-    settleFailure: (error: string, body: string) => RuntimeKernelHttpResponse
+    settleFailure: (error: string, body: string) => RuntimeKernelHttpResponse,
+    onInvocationSkipped?: () => void
   ): Promise<RuntimeKernelHttpResponse> {
     const signal = options.signal;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
+    let lifecycleAbortListener: (() => void) | undefined;
     const requestAbortController = new AbortController();
     const abortHandlerRequest = (): void => {
       if (!requestAbortController.signal.aborted) requestAbortController.abort();
     };
+    if (this.httpLifecycleAbortController.signal.aborted) {
+      abortHandlerRequest();
+      onInvocationSkipped?.();
+      return settleFailure('EINTR', 'TraceKernel HTTP workspace has been disposed\n');
+    }
     const handlerResponse = invoke(requestAbortController.signal);
     const races: Array<Promise<RuntimeKernelHttpResponse>> = [handlerResponse];
     if (timeoutMs !== undefined) {
@@ -1669,11 +1780,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         signal.addEventListener('abort', abortListener, { once: true });
       }));
     }
+    races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
+      lifecycleAbortListener = () => {
+        abortHandlerRequest();
+        resolve(settleFailure('EINTR', 'TraceKernel HTTP workspace has been disposed\n'));
+      };
+      this.httpLifecycleAbortController.signal.addEventListener('abort', lifecycleAbortListener, { once: true });
+    }));
     try {
       return await Promise.race(races);
     } finally {
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       if (abortListener) signal?.removeEventListener('abort', abortListener);
+      if (lifecycleAbortListener) {
+        this.httpLifecycleAbortController.signal.removeEventListener('abort', lifecycleAbortListener);
+      }
     }
   }
 
@@ -1740,6 +1861,23 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (allowlistReason) {
       return this.externalHttpBlockedResponse(normalizedRequest, 403, 'EHOSTUNREACH', allowlistReason);
     }
+    if (options.signal?.aborted || this.httpLifecycleAbortController.signal.aborted) {
+      const body = this.httpLifecycleAbortController.signal.aborted
+        ? 'TraceKernel HTTP workspace has been disposed\n'
+        : 'TraceKernel HTTP request aborted\n';
+      this.recordHttpRequest({
+        method: normalizedRequest.method,
+        url: normalizedRequest.url,
+        error: 'EINTR',
+        external: true,
+      });
+      this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: 'EINTR' });
+      return {
+        status: 0,
+        body,
+        error: this.createHttpError('EINTR', body.trim()),
+      };
+    }
     if (!this.consumeExternalHttpBudget(config, options.commandContext)) {
       return this.externalHttpBlockedResponse(
         normalizedRequest,
@@ -1756,27 +1894,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         `external fetch concurrency limit reached (${config.maxConcurrentRequests})`
       );
     }
-    const timeoutMs = options.timeoutMs === undefined ? config.timeoutMs : Math.max(1, Math.ceil(Number(options.timeoutMs)));
-    if (!Number.isFinite(timeoutMs)) {
+    const requestedTimeoutMs = options.timeoutMs === undefined
+      ? config.timeoutMs
+      : Math.max(1, Math.ceil(Number(options.timeoutMs)));
+    if (!Number.isFinite(requestedTimeoutMs)) {
       return this.httpErrorResponse(
         400,
         this.createHttpError('EINVAL', `TraceKernel HTTP timeout rejected: ${options.timeoutMs}`)
       );
     }
-    if (options.signal?.aborted) {
-      this.recordHttpRequest({
-        method: normalizedRequest.method,
-        url: normalizedRequest.url,
-        error: 'EINTR',
-        external: true,
-      });
-      this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: 'EINTR' });
-      return {
-        status: 0,
-        body: 'TraceKernel HTTP request aborted\n',
-        error: this.createHttpError('EINTR', 'TraceKernel HTTP request aborted'),
-      };
-    }
+    const timeoutMs = Math.min(config.timeoutMs, requestedTimeoutMs);
     let settled = false;
     const settleFailure = (error: string, body: string): RuntimeKernelHttpResponse => {
       if (!settled) {
@@ -1792,8 +1919,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { status: 0, body, error: this.createHttpError(error, body.trim()) };
     };
     this.activeExternalHttpRequests += 1;
-    try {
-      const response = await this.runHttpDispatchWithAbortRace(options, timeoutMs, async (signal) => {
+    const response = await this.runHttpDispatchWithAbortRace(options, timeoutMs, async (signal) => {
+      try {
         const externalRequest: RuntimeExternalHttpRequest = {
           method: normalizedRequest.method,
           url: normalizedRequest.url,
@@ -1802,41 +1929,41 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           ...(normalizedRequest.bodyEncoding ? { bodyEncoding: normalizedRequest.bodyEncoding } : {}),
           signal,
         };
-        try {
-          const normalizedResponse = this.normalizeHttpResponse(await config.fetch(externalRequest));
-          if (!settled) {
-            this.recordHttpRequest({
-              method: normalizedRequest.method,
-              url: normalizedRequest.url,
-              status: normalizedResponse.status,
-              external: true,
-            });
-            this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, {
-              status: normalizedResponse.status,
-              ...(normalizedResponse.annotation !== undefined ? { annotation: normalizedResponse.annotation } : {}),
-              response: normalizedResponse,
-            });
-          }
-          return normalizedResponse;
-        } catch (error) {
-          const message = this.sanitizeHttpDiagnosticField(error instanceof Error ? error.message : String(error));
-          if (!settled) {
-            this.recordHttpRequest({
-              method: normalizedRequest.method,
-              url: normalizedRequest.url,
-              error: message,
-              external: true,
-            });
-            this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: message });
-          }
-          return { status: 502, body: `tracekernel: external fetch failed: ${message}\n` };
+        const normalizedResponse = this.normalizeHttpResponse(await config.fetch(externalRequest));
+        if (!settled) {
+          this.recordHttpRequest({
+            method: normalizedRequest.method,
+            url: normalizedRequest.url,
+            status: normalizedResponse.status,
+            external: true,
+          });
+          this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, {
+            status: normalizedResponse.status,
+            ...(normalizedResponse.annotation !== undefined ? { annotation: normalizedResponse.annotation } : {}),
+            response: normalizedResponse,
+          });
         }
-      }, settleFailure);
-      settled = true;
-      return response;
-    } finally {
+        return normalizedResponse;
+      } catch (error) {
+        const message = this.sanitizeHttpDiagnosticField(error instanceof Error ? error.message : String(error));
+        if (!settled) {
+          this.recordHttpRequest({
+            method: normalizedRequest.method,
+            url: normalizedRequest.url,
+            error: message,
+            external: true,
+          });
+          this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: message });
+        }
+        return { status: 502, body: `tracekernel: external fetch failed: ${message}\n` };
+      } finally {
+        this.activeExternalHttpRequests = Math.max(0, this.activeExternalHttpRequests - 1);
+      }
+    }, settleFailure, () => {
       this.activeExternalHttpRequests = Math.max(0, this.activeExternalHttpRequests - 1);
-    }
+    });
+    settled = true;
+    return response;
   }
 
   private async dispatchHttpRequest(
@@ -1874,6 +2001,30 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         error: error instanceof Error ? error.message : String(error),
       });
       return this.httpErrorResponse(400, this.httpErrorFromThrown(error, 'EINVAL'));
+    }
+    if (this.httpLifecycleAbortController.signal.aborted) {
+      this.recordHttpRequest({
+        ...(listener ? { listenerId: listener.info.id, pid: listener.info.pid } : {}),
+        method: normalizedRequest.method,
+        url: normalizedRequest.url,
+        error: 'EINTR',
+        ...(!listener && this.externalHttp ? { external: true as const } : {}),
+      });
+      if (listener || this.externalHttp) {
+        this.recordHttpJournal(
+          normalizedRequest,
+          url,
+          listener ? 'listener' : 'external',
+          actor,
+          options.commandContext,
+          { error: 'EINTR' }
+        );
+      }
+      return {
+        status: 0,
+        body: 'TraceKernel HTTP workspace has been disposed\n',
+        error: this.createHttpError('EINTR', 'TraceKernel HTTP workspace has been disposed'),
+      };
     }
     if (!listener) {
       if (this.externalHttp) {
@@ -1997,7 +2148,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       } finally {
         this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
       }
-    }, settleFailure);
+    }, settleFailure, () => {
+      this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
+    });
     settled = true;
     return response;
   }
@@ -2203,7 +2356,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       op: 'request',
       method: normalizedRequest.method,
       host: url.hostname.replace(/^\[|\]$/g, '').toLowerCase(),
-      path: normalizedRequest.path,
+      path: url.pathname || '/',
       ...(result.status !== undefined ? { status: result.status } : {}),
       via,
       ...(this.journalActorId(actor) ? { actor: this.journalActorId(actor) } : {}),
@@ -3620,7 +3773,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private isWorkspacePathReadOnly(absolutePath: string): boolean {
     if (!isWithinWorkspace(this.cwd, absolutePath) || absolutePath === this.cwd) return false;
-    return this.readonlyFiles.has(toProjectPath(this.cwd, absolutePath));
+    const relativePath = toProjectPath(this.cwd, absolutePath);
+    return [...this.readonlyFiles].some((path) => path === relativePath || relativePath.startsWith(`${path}/`));
   }
 
   private isProjectPathHidden(path: string): boolean {
@@ -3998,6 +4152,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     encoding?: RuntimeFileEncoding,
     phase: RuntimeFileMutationPhase = 'live'
   ): Promise<void> {
+    this.assertActorFileCapability(actor, 'write', path);
     this.assertWorkspaceUsableForMutation('write');
     this.assertDynamicVirtualWritable(path, 'write');
     const writeTarget = kernelWriteTarget(path);
@@ -4018,7 +4173,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
     await this.fs.withBaseMutation([absolutePath], async (fs) => {
       this.assertWorkspacePathWritable(absolutePath, 'write');
-      await fs.mkdir(dirname(absolutePath), { recursive: true });
       await fs.writeFile(
         absolutePath,
         normalizedEncoding === 'base64' ? bytesFromBase64(contents) : contents
@@ -4048,12 +4202,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private async writeSkillFilesAs(
     files: readonly RuntimeFile[],
-    _actor: RuntimeWorkspaceActor = SYSTEM_ACTOR
+    actor: RuntimeWorkspaceActor = SYSTEM_ACTOR
   ): Promise<void> {
     this.assertNotDestroyed();
     const nextFiles = new Map(this.skillFiles);
     for (const file of files) {
       const normalized = this.normalizeSkillFile(file);
+      this.assertActorFileCapability(actor, 'write', runtimeSkillAbsolutePath(normalized.path));
       for (const existingPath of nextFiles.keys()) {
         if (existingPath === normalized.path) continue;
         if (existingPath.startsWith(`${normalized.path}/`) || normalized.path.startsWith(`${existingPath}/`)) {
@@ -4090,7 +4245,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       : new TextEncoder().encode(contents);
     const bytes = await this.fs.withBaseMutation([absolutePath], async (fs) => {
       this.assertWorkspacePathWritable(absolutePath, 'append');
-      await fs.mkdir(dirname(absolutePath), { recursive: true });
       await fs.appendFile(absolutePath, nextBytes);
       return fs.readFileBuffer(absolutePath);
     }, mutationKind);
@@ -4226,6 +4380,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const absolutePath = this.toWorkspaceEntryPath(path);
     let createdDirectories: string[] = [];
     await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      this.assertWorkspacePathWritable(absolutePath, 'mkdir');
       createdDirectories = await this.collectMissingWorkspaceDirectories(absolutePath);
       await fs.mkdir(absolutePath, { recursive: true });
     }, 'directory-create');
@@ -4269,7 +4424,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       async (fs) => {
         this.assertWorkspacePathWritable(absoluteDestinationPath, 'copy');
         const bytes = await fs.readFileBuffer(absoluteSourcePath);
-        await fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
         await fs.writeFile(absoluteDestinationPath, bytes);
         return bytes;
       },
@@ -4330,9 +4484,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(destinationPath), 'move');
       this.assertWorkspacePathWritable(absoluteDestinationPath, 'move');
       sourceBytes = await fs.readFileBuffer(absoluteSourcePath);
-      await fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
-      await fs.writeFile(absoluteDestinationPath, sourceBytes);
-      await fs.rm(absoluteSourcePath, { force: true });
+      await fs.mv(absoluteSourcePath, absoluteDestinationPath);
     }, 'rename');
     this.fs.moveInode(absoluteSourcePath, absoluteDestinationPath);
     this.emitLocalRuntimeEvent({
@@ -4526,6 +4678,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         if (process.signal) {
           const result = this.signalCommandResult(process);
+          const output = this.captureReturnedOutput(commandContext, result);
+          processExitCode = result.exitCode;
+          await this.flushRuntimeEventQueue(commandContext);
+          this.emitReturnedOutputEvents(output, commandContext);
+          return { ...result, ...output };
+        }
+        if (isRuntimeWorkspaceStorageLimitError(error)) {
+          const result = kernelCommandFailure(error);
           const output = this.captureReturnedOutput(commandContext, result);
           processExitCode = result.exitCode;
           await this.flushRuntimeEventQueue(commandContext);
@@ -4897,6 +5057,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.fs.withBaseMutation([this.cwd], (fs) => fs.rm(this.cwd, { force: true, recursive: true }), 'recursive-delete')
     );
     this.httpListeners.clear();
+    if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
     this.processTable.clear();
     this.zombieProcessTable.clear();
     this.processWaiters.clear();
@@ -4978,7 +5139,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       cwd: request.cwd,
       env: request.env,
       ...(request.stdinPipe ? { stdinPipe: { buffer: request.stdinPipe.buffer } } : {}),
-      project: await this.snapshot({ includeHidden: true }),
+      project: await this.snapshotForCommand(request.commandContext.includeHiddenFiles === true),
       onEvent: (event) => {
         this.handleRuntimeCommandEvent(event, request.commandContext);
       },
@@ -5078,9 +5239,32 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
   }
 
-  async importPatch(baseSnapshot: RuntimeProjectSnapshot, patch: RuntimeProjectPatch): Promise<void> {
+  async importPatch(
+    baseSnapshot: RuntimeProjectSnapshot,
+    patch: RuntimeProjectPatch,
+    options: RuntimeProjectPatchOptions = {}
+  ): Promise<void> {
     this.assertNotDestroyed();
     const normalizedPatch = normalizeRuntimeProjectPatch(patch);
+    const metadataVersion = this.projectSession?.metadata?.version;
+    const expectedIdentity = {
+      id: options.base?.id ?? this.projectSession?.projectId,
+      version: options.base?.version ?? (typeof metadataVersion === 'string' ? metadataVersion : undefined),
+    };
+    for (const field of ['id', 'version'] as const) {
+      const declared = normalizedPatch.base[field];
+      const expected = expectedIdentity[field];
+      if (declared === undefined && expected === undefined) continue;
+      if (declared !== expected) {
+        throw staleRuntimeProjectPatchError(
+          declared === undefined
+            ? `patch base ${field} is missing; expected ${expected}`
+            : expected === undefined
+              ? `patch base ${field} ${declared} cannot be verified by this workspace`
+              : `patch base ${field} ${declared} does not match expected ${expected}`
+        );
+      }
+    }
     const base = await createRuntimeProjectPatchSnapshotView(baseSnapshot, 'Runtime project patch base snapshot');
     validateRuntimeProjectPatchAgainstBase(base, normalizedPatch);
 
@@ -5108,6 +5292,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   dispose(): void {
+    if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
     this.httpListeners.clear();
     this.eventWatchers.clear();
     // Native/just-bash workspaces currently own no external resources.
@@ -5146,7 +5331,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const { files: _files, ...commandResult } = result;
       return commandResult;
     } catch (error) {
-      if (isKernelReadonlyError(error) || isRuntimeFileGenerationConflict(error)) {
+      if (
+        isKernelReadonlyError(error) ||
+        isRuntimeFileGenerationConflict(error) ||
+        isRuntimeWorkspaceStorageLimitError(error)
+      ) {
         this.recordKernelCommandError(error);
         return kernelCommandFailure(error);
       }
@@ -5155,9 +5344,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private createKernel(): RuntimeWorkspaceKernel {
+    const workspace = this;
     return {
       info: this.kernelInfo,
-      readFile: (path, _actor, encoding) => this.readFile(path, encoding, { publicProc: false }),
+      get mutationVersion() {
+        return workspace.fs.mutationVersion;
+      },
+      readFile: (path, actor = PRINCIPAL_ACTOR, encoding) => {
+        this.assertActorFileCapability(actor, 'read', path);
+        return this.readFile(path, encoding, { publicProc: false });
+      },
       writeFile: (path, contents, actor = PRINCIPAL_ACTOR, encoding) => this.writeFileAs(path, contents, actor, encoding, 'live'),
       writeSkillFiles: (files, actor = SYSTEM_ACTOR) => this.writeSkillFilesAs(files, actor),
       deleteFile: (path, actor = PRINCIPAL_ACTOR) => this.deleteFileAs(path, actor, 'live'),
@@ -5168,6 +5364,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       },
       snapshot: (options) => this.snapshot(options),
       watch: (listener) => this.watch(listener),
+      watchMutations: (listener) => this.fs.watchMutations(listener),
     };
   }
 
@@ -5176,6 +5373,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor,
     phase: RuntimeFileMutationPhase
   ): Promise<void> {
+    this.assertActorFileCapability(
+      actor,
+      (isRuntimeDirectoryChange(change) && change.deleted === true) ||
+        (!isRuntimeDirectoryChange(change) && (change as RuntimeFileDeletion).deleted === true)
+        ? 'delete'
+        : 'write',
+      change.path
+    );
     this.assertWorkspaceUsableForMutation('apply');
     await this.applyFileChangeToWorkspace(change, actor, phase, true);
   }
@@ -5185,6 +5390,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor,
     phase: RuntimeFileMutationPhase
   ): Promise<void> {
+    this.assertActorFileCapability(actor, 'delete', path);
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const relativePath = this.toWorkspaceRelativePath(path);
@@ -5331,7 +5537,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
     await this.fs.withBaseMutation([absolutePath], async (fs) => {
       this.assertWorkspacePathWritable(absolutePath, 'write');
-      await fs.mkdir(dirname(absolutePath), { recursive: true });
       if (normalizedEncoding === 'base64') {
         await fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
       } else {
@@ -5497,19 +5702,47 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 export async function createRuntimeWorkspace(
   options: CreateRuntimeWorkspaceOptions = {}
 ): Promise<RuntimeProjectWorkspace> {
+  const sessionDirectories = options.projectSession?.directories ?? [];
+  const sessionFiles = options.projectSession?.files ?? [];
+  const suppliedDirectories = options.directories ?? [];
+  const suppliedFiles = options.files ?? [];
   options = normalizeRuntimeWorkspaceOptions(options);
   const workspace = new RuntimeProjectWorkspace(options);
   await workspace.ensureReady();
   if (options.skills) {
     await workspace.writeSkillFiles(options.skills);
   }
-  if (options.directories) {
-    for (const directory of options.directories) {
-      await workspace.mkdir(directory);
-    }
+  if (sessionDirectories.length > 0) {
+    await workspace.withSuspendedReadonlyPolicy(async () => {
+      for (const directory of sessionDirectories) {
+        await workspace.mkdir(directory);
+      }
+    });
   }
-  if (options.files) {
-    await workspace.withSuspendedReadonlyPolicy(() => workspace.writeFiles(options.files ?? []));
+  for (const directory of suppliedDirectories) {
+    await workspace.mkdir(directory);
+  }
+  if (sessionFiles.length > 0) {
+    await workspace.withSuspendedReadonlyPolicy(() => workspace.writeFiles(sessionFiles));
+  }
+  if (suppliedFiles.length > 0) {
+    const authoritativeFiles = new Map(
+      (await workspace.snapshot({ includeHidden: true })).files.map((file) => [file.path, file])
+    );
+    for (const file of suppliedFiles) {
+      const path = normalizeRuntimeProjectPath(file.path);
+      if (workspace.isReadOnly(path)) {
+        const authoritative = authoritativeFiles.get(path);
+        if (authoritative && bytesEqual(
+          contentToBytesForRuntimeFile(authoritative),
+          contentToBytesForRuntimeFile({ ...file, path })
+        )) {
+          continue;
+        }
+        throw createRuntimeKernelReadonlyFileError(path, 'hydrate');
+      }
+      await workspace.writeFile(path, file.contents, file.encoding);
+    }
   }
   return workspace;
 }

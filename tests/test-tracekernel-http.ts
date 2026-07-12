@@ -280,6 +280,112 @@ async function testExternalFetchBudgets(): Promise<void> {
   }
 }
 
+async function testExternalFetchTimeoutCapAndLingeringDelegateAccounting(): Promise<void> {
+  let releaseDelegate!: () => void;
+  const releasePromise = new Promise<void>((resolve) => {
+    releaseDelegate = resolve;
+  });
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let calls = 0;
+  let delegateAborted = false;
+  const workspace = await createRuntimeWorkspace({
+    externalHttp: {
+      hosts: ['allowed.example'],
+      timeoutMs: 5,
+      maxConcurrentRequests: 1,
+      fetch: async (request) => {
+        calls += 1;
+        if (calls === 1) markStarted();
+        request.signal.addEventListener('abort', () => { delegateAborted = true; }, { once: true });
+        await releasePromise;
+        return { status: 200, body: 'released\n' };
+      },
+    },
+  });
+  try {
+    const firstPromise = workspace.http.request({
+      url: 'https://allowed.example/actual-path?token=super-secret',
+      path: '/misleading-path?token=also-secret',
+      timeoutMs: 500,
+    });
+    await started;
+    const first = await firstPromise;
+    assertCondition(
+      first.status === 0 && first.body === 'TraceKernel HTTP request timed out after 5 milliseconds\n',
+      `request timeout overrides must not widen the configured cap: ${JSON.stringify(first)}`
+    );
+    assertCondition(delegateAborted, 'configured timeout should abort the delegate signal');
+
+    const journal = workspace.journal().find((record) => record.kind === 'http');
+    assertCondition(
+      journal?.kind === 'http' && journal.path === '/actual-path',
+      `HTTP journal path must come from the real URL and omit its query: ${JSON.stringify(journal)}`
+    );
+    assertCondition(
+      !JSON.stringify(journal).includes('super-secret') && !JSON.stringify(journal).includes('misleading-path'),
+      `HTTP journal must not leak query values or caller-supplied path aliases: ${JSON.stringify(journal)}`
+    );
+
+    const whileLingering = await workspace.http.request({ url: 'https://allowed.example/second' });
+    assertCondition(
+      whileLingering.status === 429 && whileLingering.error?.code === 'EAGAIN',
+      `an abort-ignoring delegate must retain its concurrency slot until it settles: ${JSON.stringify(whileLingering)}`
+    );
+    releaseDelegate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const afterSettle = await workspace.http.request({ url: 'https://allowed.example/third' });
+    assertCondition(afterSettle.status === 200, `settled delegate should release its concurrency slot: ${JSON.stringify(afterSettle)}`);
+  } finally {
+    workspace.dispose();
+    releaseDelegate();
+  }
+}
+
+async function testWorkspaceDisposeAbortsExternalFetchLifecycle(): Promise<void> {
+  let releaseDelegate!: () => void;
+  const releasePromise = new Promise<void>((resolve) => {
+    releaseDelegate = resolve;
+  });
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let calls = 0;
+  let delegateAborted = false;
+  const workspace = await createRuntimeWorkspace({
+    externalHttp: {
+      hosts: ['allowed.example'],
+      timeoutMs: 60_000,
+      fetch: async (request) => {
+        calls += 1;
+        markStarted();
+        request.signal.addEventListener('abort', () => { delegateAborted = true; }, { once: true });
+        await releasePromise;
+        return { status: 200, body: 'late\n' };
+      },
+    },
+  });
+  const pending = workspace.http.request({ url: 'https://allowed.example/dispose' });
+  await started;
+  workspace.dispose();
+  const disposed = await pending;
+  assertCondition(
+    disposed.status === 0 && disposed.error?.code === 'EINTR' && disposed.body?.includes('disposed'),
+    `workspace disposal should settle active external requests: ${JSON.stringify(disposed)}`
+  );
+  assertCondition(delegateAborted, 'workspace disposal should abort the active delegate signal');
+  const afterDispose = await workspace.http.request({ url: 'https://allowed.example/after-dispose' });
+  assertCondition(
+    afterDispose.status === 0 && afterDispose.error?.code === 'EINTR' && calls === 1,
+    `disposed workspaces must not start new external delegates: ${JSON.stringify({ afterDispose, calls })}`
+  );
+  releaseDelegate();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function testExternalFetchActorOptOut(): Promise<void> {
   let workspace!: Awaited<ReturnType<typeof createRuntimeWorkspace>>;
   let delegateCalled = false;
@@ -378,6 +484,8 @@ async function main(): Promise<void> {
   await testExternalFetchBlocklistWinsOverAllowlist();
   await testExternalFetchAllowlistSemantics();
   await testExternalFetchBudgets();
+  await testExternalFetchTimeoutCapAndLingeringDelegateAccounting();
+  await testWorkspaceDisposeAbortsExternalFetchLifecycle();
   await testExternalFetchActorOptOut();
   await testLoopbackListenerShadowsExternalHost();
   await testIsBlockedExternalHttpHost();
