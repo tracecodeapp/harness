@@ -31,6 +31,10 @@ async function main(): Promise<void> {
       platform: 'browser',
       target: 'es2022',
       tsconfig: join(root, 'tsconfig.base.json'),
+      alias: {
+        zlib: join(root, 'packages', 'harness-project', 'src', 'zlib-browser-shim.ts'),
+        'node:zlib': join(root, 'packages', 'harness-project', 'src', 'zlib-browser-shim.ts'),
+      },
       define: { 'process.env.NODE_ENV': '"production"' },
     }),
     build({
@@ -41,6 +45,10 @@ async function main(): Promise<void> {
       platform: 'browser',
       target: 'es2022',
       tsconfig: join(root, 'tsconfig.base.json'),
+      alias: {
+        zlib: join(root, 'packages', 'harness-project', 'src', 'zlib-browser-shim.ts'),
+        'node:zlib': join(root, 'packages', 'harness-project', 'src', 'zlib-browser-shim.ts'),
+      },
       define: { 'process.env.NODE_ENV': '"production"' },
     }),
   ]);
