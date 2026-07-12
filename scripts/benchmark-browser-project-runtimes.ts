@@ -575,6 +575,10 @@ async function buildPublicProjectBundle(tempRoot: string): Promise<{
     target: ['es2022'],
     sourcemap: false,
     logLevel: 'warning',
+    alias: {
+      zlib: resolve(process.cwd(), 'packages/harness-project/src/zlib-browser-shim.ts'),
+      'node:zlib': resolve(process.cwd(), 'packages/harness-project/src/zlib-browser-shim.ts'),
+    },
     define: { 'process.env.NODE_ENV': '"production"' },
   });
   const buildMs = performance.now() - startedAt;
