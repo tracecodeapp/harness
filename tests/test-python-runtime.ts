@@ -74,6 +74,7 @@ type RuntimeCore = {
       };
       loadPyodideInstance: () => Promise<void>;
       getPyodide: () => { runPythonAsync: (code: string) => Promise<string> };
+      performanceNow: () => number;
     },
     code: string,
     functionName: string,
@@ -496,10 +497,10 @@ async function assertPyodideProjectEventsApplyResourceBudgets(): Promise<void> {
   console.log('PASS: Pyodide project event budgets cap output and live file changes');
 }
 
-async function assertPyodideProviderOutputIgnoresMutableGlobalHook(): Promise<void> {
+async function assertPyodideProviderOutputCallbacksRemainUntouched(): Promise<void> {
   const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
   const events: Array<{ type?: string; stream?: string; device?: string; data?: string }> = [];
-  let stdoutHandler: ((buffer: Uint8Array) => number) | undefined;
+  let stdoutInstallCount = 0;
   const selfObject: Record<string, unknown> = {
     __tracecodeProjectEvent: (event: { type?: string; stream?: string; device?: string; data?: string }) => {
       events.push(event);
@@ -515,36 +516,29 @@ async function assertPyodideProviderOutputIgnoresMutableGlobalHook(): Promise<vo
     TextDecoder,
     Uint8Array,
     btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
+    __recordStdoutInstall: () => {
+      stdoutInstallCount += 1;
+    },
   });
   vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
-  (context as { __setStdout?: (handler: (buffer: Uint8Array) => number) => void }).__setStdout = (handler) => {
-    stdoutHandler = handler;
-  };
   vm.runInContext(
     `pyodide = {
-      setStdout(options) {
-        if (options && typeof options.write === 'function') __setStdout(options.write);
+      setStdout() {
+        __recordStdoutInstall();
       },
     };
     self.__restoreStdio = installPyodideProjectStdioBridge([{ path: '/dev/stdout', writable: true, outputDevice: '/dev/stdout' }], null);`,
     context
   );
-  assertCondition(typeof stdoutHandler === 'function', 'Pyodide stdout handler should be installed');
-  stdoutHandler?.(new TextEncoder().encode('provider-output\n'));
+  assertCondition(stdoutInstallCount === 0, 'Pyodide provider stdout callback should remain untouched');
   vm.runInContext('self.__restoreStdio();', context);
 
   assertCondition(
-    events.some((event) =>
-      event.type === 'output' &&
-      event.stream === 'stdout' &&
-      event.device === '/dev/stdout' &&
-      event.data === 'provider-output\n'
-    ) &&
-      !events.some((event) => event.type === 'poisoned') &&
+    events.length === 0 &&
       !('__tracecodeProjectProviderOutput' in selfObject),
-    `Pyodide provider stdout should ignore stale global hooks: ${JSON.stringify(events)}`
+    `Pyodide provider stdout should remain host-owned and stale hooks should be removed: ${JSON.stringify(events)}`
   );
-  console.log('PASS: Pyodide provider output ignores mutable global hook');
+  console.log('PASS: Pyodide provider output callbacks remain untouched');
 }
 
 async function runPythonScript(script: string): Promise<string> {
@@ -3697,6 +3691,7 @@ function runPythonAsyncLikePyodide(code: string): string {
 
 async function assertExecuteCodeHydratesAnnotatedCustomObjects(): Promise<void> {
   const runtime = await loadRuntimeCore();
+  let now = 0;
   const source = `class Campaign:
     def __init__(self, cap: int, bid: int):
         self.cap = cap
@@ -3725,6 +3720,7 @@ class Solution:
     getPyodide: () => ({
       runPythonAsync: async (code: string) => runPythonAsyncLikePyodide(code),
     }),
+    performanceNow: () => ++now,
   };
 
   const result = await runtime.executeCode(
@@ -3901,7 +3897,7 @@ finally:
 async function main(): Promise<void> {
   await assertPyodideProjectFsEventsRejectTraversal();
   await assertPyodideProjectEventsApplyResourceBudgets();
-  await assertPyodideProviderOutputIgnoresMutableGlobalHook();
+  await assertPyodideProviderOutputCallbacksRemainUntouched();
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
   await assertSubscriptedUserMethodsPreserveEvaluationOrder();
