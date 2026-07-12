@@ -22,6 +22,8 @@ declare global {
 async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
+  const requestedUrls: string[] = [];
+  page.on('request', (request) => requestedUrls.push(request.url()));
 
   try {
     await page.goto(previewUrl, { waitUntil: 'networkidle' });
@@ -42,6 +44,7 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
     assertCondition(
       initial.output.includes('C++: cd cpp && clang++ -std=c++17 report.cpp -o ../report') &&
         initial.output.includes('     ../report') &&
+        initial.output.includes('Java: inject window.__tracecodeRuntimeAssetManifests.java before boot') &&
         !initial.output.includes('Project workspace ready.') &&
         !initial.output.includes('../report, ./report'),
       `project terminal should print copyable compile/run commands on separate lines: ${JSON.stringify(initial.output)}`
@@ -151,41 +154,23 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
     await page.fill('#dev-terminal-input', 'cd .. && javac java/TicketTriage.java && java -cp java TicketTriage');
     await page.press('#dev-terminal-input', 'Enter');
     await page.waitForFunction(
-      () => document.querySelector('#dev-terminal-output')?.textContent?.includes('Customer:') === true,
+      () => document.querySelector('#dev-terminal-output')?.textContent?.includes(
+        'Browser project Java is unavailable because CheerpJ is not vendored'
+      ) === true,
       undefined,
-      { timeout: 180_000 }
-    );
-    await page.fill('#dev-terminal-input', 'Acme Mobile');
-    await page.press('#dev-terminal-input', 'Enter');
-    await page.waitForFunction(
-      () => document.querySelector('#dev-terminal-output')?.textContent?.includes('Severity (1-5):') === true,
-      undefined,
-      { timeout: 180_000 }
-    );
-    await page.fill('#dev-terminal-input', '5');
-    await page.press('#dev-terminal-input', 'Enter');
-    await page.waitForFunction(
-      () => document.querySelector('#dev-terminal-output')?.textContent?.includes('Issue summary:') === true,
-      undefined,
-      { timeout: 180_000 }
-    );
-    await page.fill('#dev-terminal-input', 'Compile Java on iPhone');
-    await page.press('#dev-terminal-input', 'Enter');
-    await page.waitForFunction(
-      () => document.querySelector('#dev-terminal-output')?.textContent?.includes('ticket.json written') === true,
-      undefined,
-      { timeout: 180_000 }
+      { timeout: 15_000 }
     );
 
     const javaRunOutput = await page.locator('#dev-terminal-output').textContent();
     assertCondition(
-      javaRunOutput?.includes('Customer: Acme Mobile') === true &&
-        javaRunOutput.includes('Severity (1-5): 5') &&
-        javaRunOutput.includes('Issue summary: Compile Java on iPhone') &&
-        javaRunOutput.includes('priority=urgent') &&
-        javaRunOutput.includes('ticket.json written') &&
-        !javaRunOutput.includes('TRACE_DEMO_STDIN_COLLECTED'),
-      `project terminal should drive the Java executable with live stdin: ${JSON.stringify(javaRunOutput)}`
+      javaRunOutput?.includes('assets.runtimeManifests.java') === true &&
+        javaRunOutput.includes('javaWorkerClient') &&
+        javaRunOutput.includes('exit 1'),
+      `project terminal should explain the consumer-owned Java runtime requirement: ${JSON.stringify(javaRunOutput)}`
+    );
+    assertCondition(
+      !requestedUrls.some((url) => url.includes('cheerpj-loader.js')),
+      `missing Java configuration must fail before any CheerpJ request: ${JSON.stringify(requestedUrls)}`
     );
   } finally {
     await browser.close();

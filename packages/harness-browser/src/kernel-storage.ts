@@ -7,7 +7,8 @@ import type {
 import { normalizeRuntimeProjectPath } from '../../harness-project/src/index';
 
 const STORAGE_VERSION = 1;
-const ENCRYPTED_STORAGE_VERSION = 2;
+const LEGACY_ENCRYPTED_STORAGE_VERSION = 2;
+const ENCRYPTED_STORAGE_VERSION = 3;
 const MAX_STORAGE_OPTION_LENGTH = 256;
 const STORAGE_ENCRYPTION_ALGORITHM = 'AES-GCM';
 const STORAGE_ENCRYPTION_IV_BYTES = 12;
@@ -22,7 +23,7 @@ export interface BrowserKernelStorageSnapshot {
   snapshot: RuntimeProjectSnapshot;
 }
 
-interface BrowserKernelStorageEncryptedRecord {
+interface BrowserKernelStorageEncryptedRecordV2 {
   version: 2;
   savedAt: string;
   encrypted: {
@@ -33,7 +34,41 @@ interface BrowserKernelStorageEncryptedRecord {
   };
 }
 
-type BrowserKernelStorageIndexedDbRecord = BrowserKernelStorageSnapshot | BrowserKernelStorageEncryptedRecord;
+interface BrowserKernelStorageEncryptedRecord {
+  version: 3;
+  savedAt: string;
+  revision: number;
+  encrypted: {
+    algorithm: 'AES-GCM';
+    iv: string;
+    ciphertext: string;
+    keyId?: string;
+  };
+}
+
+type BrowserKernelStorageIndexedDbRecord =
+  | BrowserKernelStorageSnapshot
+  | BrowserKernelStorageEncryptedRecordV2
+  | BrowserKernelStorageEncryptedRecord;
+
+interface BrowserKernelStorageEncryptionContext {
+  databaseName: string;
+  storeName: string;
+  key: string;
+  keyId?: string;
+}
+
+/**
+ * Optional monotonic authority for replay-sensitive persistence. Its state must
+ * live outside the same-origin IndexedDB being protected (for example, a host
+ * service or hardware-backed store). nextRevision must atomically reserve a
+ * strictly increasing value; assertCurrentRevision must reject stale values.
+ */
+export interface IndexedDbKernelStorageRevisionAuthority {
+  trustedExternalState: true;
+  nextRevision(): number | Promise<number>;
+  assertCurrentRevision(revision: number): void | Promise<void>;
+}
 
 export interface BrowserKernelStorage {
   load(): Promise<BrowserKernelStorageSnapshot | null>;
@@ -50,11 +85,17 @@ export interface IndexedDbKernelStorageOptions {
   encryptionKey: CryptoKey;
   keyId?: string;
   allowPlaintextSnapshotMigration?: true;
+  allowLegacyEncryptedSnapshotMigration?: true;
+  revisionAuthority?: IndexedDbKernelStorageRevisionAuthority;
 }
 
 export interface BrowserKernelStorageBinding {
   flush(): Promise<void>;
   dispose(): void;
+}
+
+export interface BrowserKernelStorageBindingOptions {
+  onError?: (error: Error) => void;
 }
 
 export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOptions): BrowserKernelStorage {
@@ -68,6 +109,15 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
       'IndexedDB kernel storage persists workspace snapshots and requires an AES-GCM encryptionKey that is not stored in same-origin browser storage.'
     );
   }
+  if (options.revisionAuthority && (
+    options.revisionAuthority.trustedExternalState !== true ||
+    typeof options.revisionAuthority.nextRevision !== 'function' ||
+    typeof options.revisionAuthority.assertCurrentRevision !== 'function'
+  )) {
+    throw new Error(
+      'IndexedDB kernel storage revisionAuthority must use trusted external state and implement nextRevision/assertCurrentRevision.'
+    );
+  }
   const databaseName = normalizeStorageOption(options.databaseName, 'IndexedDB kernel storage databaseName');
   const storeName = normalizeStorageOption(options.storeName, 'IndexedDB kernel storage storeName');
   const key = normalizeStorageOption(options.key, 'IndexedDB kernel storage key');
@@ -75,9 +125,16 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
     ? undefined
     : normalizeStorageOption(options.keyId, 'IndexedDB kernel storage keyId');
   const encryptionKey = options.encryptionKey;
+  const encryptionContext: BrowserKernelStorageEncryptionContext = {
+    databaseName,
+    storeName,
+    key,
+    ...(keyId ? { keyId } : {}),
+  };
 
   let dbPromise: Promise<IDBDatabase> | null = null;
   let pendingWrite: Promise<void> = Promise.resolve();
+  let lastRevision = 0;
 
   const openDb = (): Promise<IDBDatabase> => {
     if (typeof indexedDB === 'undefined') {
@@ -108,7 +165,20 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
       const store = await transaction('readonly');
       const value = await idbRequest<BrowserKernelStorageIndexedDbRecord | undefined>(store.get(key));
       if (!value) return null;
-      if (isEncryptedStorageRecord(value)) return decryptStorageSnapshot(value, encryptionKey);
+      if (isEncryptedStorageRecord(value)) {
+        const snapshot = await decryptStorageSnapshot(value, encryptionKey, encryptionContext);
+        await options.revisionAuthority?.assertCurrentRevision(value.revision);
+        lastRevision = Math.max(lastRevision, value.revision);
+        return snapshot;
+      }
+      if (isLegacyEncryptedStorageRecord(value)) {
+        if (options.allowLegacyEncryptedSnapshotMigration === true) {
+          return decryptLegacyStorageSnapshot(value, encryptionKey, keyId);
+        }
+        throw new Error(
+          'IndexedDB kernel storage contains a legacy encrypted workspace snapshot without namespace authentication; enable allowLegacyEncryptedSnapshotMigration to load and re-save it.'
+        );
+      }
       if (isRecord(value) && value.version === STORAGE_VERSION) {
         if (options.allowPlaintextSnapshotMigration === true) {
           return value as BrowserKernelStorageSnapshot;
@@ -120,21 +190,28 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
       throw new Error('IndexedDB kernel storage record is malformed.');
     },
     async save(snapshot: RuntimeProjectSnapshot): Promise<void> {
-      pendingWrite = pendingWrite.then(async () => {
+      pendingWrite = pendingWrite.catch(() => undefined).then(async () => {
         const store = await transaction('readwrite');
         const savedAt = new Date().toISOString();
+        const revision = await nextStorageRevision(options.revisionAuthority, lastRevision);
         await idbRequest(store.put(await encryptStorageSnapshot({
           version: STORAGE_VERSION,
           savedAt,
           snapshot,
-        }, encryptionKey, keyId), key));
+        }, encryptionKey, encryptionContext, revision), key));
+        lastRevision = revision;
       });
       await pendingWrite;
     },
     async clear(): Promise<void> {
-      pendingWrite = pendingWrite.then(async () => {
+      pendingWrite = pendingWrite.catch(() => undefined).then(async () => {
+        // Reserve a tombstone revision before deleting the local record. With
+        // an external authority this makes a subsequently restored ciphertext
+        // stale instead of allowing a cleared workspace to be replayed.
+        const revision = await nextStorageRevision(options.revisionAuthority, lastRevision);
         const store = await transaction('readwrite');
         await idbRequest(store.delete(key));
+        lastRevision = revision;
       });
       await pendingWrite;
     },
@@ -155,6 +232,9 @@ function isEncryptedStorageRecord(value: unknown): value is BrowserKernelStorage
   return (
     isRecord(value) &&
     value.version === ENCRYPTED_STORAGE_VERSION &&
+    typeof value.savedAt === 'string' &&
+    Number.isSafeInteger(value.revision) &&
+    (value.revision as number) > 0 &&
     isRecord(value.encrypted) &&
     value.encrypted.algorithm === STORAGE_ENCRYPTION_ALGORITHM &&
     typeof value.encrypted.iv === 'string' &&
@@ -162,37 +242,127 @@ function isEncryptedStorageRecord(value: unknown): value is BrowserKernelStorage
   );
 }
 
+function isLegacyEncryptedStorageRecord(value: unknown): value is BrowserKernelStorageEncryptedRecordV2 {
+  return (
+    isRecord(value) &&
+    value.version === LEGACY_ENCRYPTED_STORAGE_VERSION &&
+    typeof value.savedAt === 'string' &&
+    isRecord(value.encrypted) &&
+    value.encrypted.algorithm === STORAGE_ENCRYPTION_ALGORITHM &&
+    typeof value.encrypted.iv === 'string' &&
+    typeof value.encrypted.ciphertext === 'string'
+  );
+}
+
+function storageEncryptionAdditionalData(
+  savedAt: string,
+  context: BrowserKernelStorageEncryptionContext,
+  revision: number
+): Uint8Array<ArrayBuffer> {
+  return storageTextEncoder.encode(JSON.stringify({
+    schema: '@tracecode/harness-browser/kernel-storage/aes-gcm-v3',
+    version: ENCRYPTED_STORAGE_VERSION,
+    databaseName: context.databaseName,
+    storeName: context.storeName,
+    key: context.key,
+    keyId: context.keyId ?? null,
+    savedAt,
+    revision,
+  }));
+}
+
+async function nextStorageRevision(
+  authority: IndexedDbKernelStorageRevisionAuthority | undefined,
+  previousRevision: number
+): Promise<number> {
+  const revision = authority ? await authority.nextRevision() : previousRevision + 1;
+  if (!Number.isSafeInteger(revision) || revision <= previousRevision) {
+    throw new Error(
+      `IndexedDB kernel storage revision must be a safe integer greater than ${previousRevision}; received ${String(revision)}.`
+    );
+  }
+  return revision;
+}
+
 async function encryptStorageSnapshot(
   snapshot: BrowserKernelStorageSnapshot,
   encryptionKey: CryptoKey,
-  keyId: string | undefined
+  context: BrowserKernelStorageEncryptionContext,
+  revision: number
 ): Promise<BrowserKernelStorageEncryptedRecord> {
   const storageCrypto = getStorageCrypto();
   const iv = new Uint8Array(STORAGE_ENCRYPTION_IV_BYTES);
   storageCrypto.getRandomValues(iv);
   const plaintext = storageTextEncoder.encode(JSON.stringify(snapshot));
   const ciphertext = new Uint8Array(await storageCrypto.subtle.encrypt(
-    { name: STORAGE_ENCRYPTION_ALGORITHM, iv },
+    {
+      name: STORAGE_ENCRYPTION_ALGORITHM,
+      iv,
+      additionalData: storageEncryptionAdditionalData(snapshot.savedAt, context, revision),
+    },
     encryptionKey,
     plaintext
   ));
   return {
     version: ENCRYPTED_STORAGE_VERSION,
     savedAt: snapshot.savedAt,
+    revision,
     encrypted: {
       algorithm: STORAGE_ENCRYPTION_ALGORITHM,
       iv: bytesToBase64(iv),
       ciphertext: bytesToBase64(ciphertext),
-      ...(keyId ? { keyId } : {}),
+      ...(context.keyId ? { keyId: context.keyId } : {}),
     },
   };
 }
 
 async function decryptStorageSnapshot(
   record: BrowserKernelStorageEncryptedRecord,
-  encryptionKey: CryptoKey
+  encryptionKey: CryptoKey,
+  context: BrowserKernelStorageEncryptionContext
 ): Promise<BrowserKernelStorageSnapshot> {
   try {
+    if (record.encrypted.keyId !== context.keyId) {
+      throw new Error('encrypted snapshot keyId does not match the configured keyId');
+    }
+    const storageCrypto = getStorageCrypto();
+    const iv = base64ToBytes(record.encrypted.iv);
+    if (iv.byteLength !== STORAGE_ENCRYPTION_IV_BYTES) {
+      throw new Error(`encrypted snapshot IV must be ${STORAGE_ENCRYPTION_IV_BYTES} bytes`);
+    }
+    const ciphertext = base64ToBytes(record.encrypted.ciphertext);
+    const plaintext = await storageCrypto.subtle.decrypt(
+      {
+        name: STORAGE_ENCRYPTION_ALGORITHM,
+        iv,
+        additionalData: storageEncryptionAdditionalData(record.savedAt, context, record.revision),
+      },
+      encryptionKey,
+      ciphertext
+    );
+    const parsed = JSON.parse(storageTextDecoder.decode(plaintext)) as unknown;
+    if (!isRecord(parsed) || parsed.version !== STORAGE_VERSION || !isRecord(parsed.snapshot)) {
+      throw new Error('decrypted snapshot is malformed');
+    }
+    if (parsed.savedAt !== record.savedAt) {
+      throw new Error('encrypted snapshot timestamp does not match its authenticated record');
+    }
+    return parsed as unknown as BrowserKernelStorageSnapshot;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to decrypt IndexedDB kernel storage snapshot: ${message}`);
+  }
+}
+
+async function decryptLegacyStorageSnapshot(
+  record: BrowserKernelStorageEncryptedRecordV2,
+  encryptionKey: CryptoKey,
+  expectedKeyId: string | undefined
+): Promise<BrowserKernelStorageSnapshot> {
+  try {
+    if (record.encrypted.keyId !== expectedKeyId) {
+      throw new Error('legacy encrypted snapshot keyId does not match the configured keyId');
+    }
     const storageCrypto = getStorageCrypto();
     const iv = base64ToBytes(record.encrypted.iv);
     const ciphertext = base64ToBytes(record.encrypted.ciphertext);
@@ -203,12 +373,12 @@ async function decryptStorageSnapshot(
     );
     const parsed = JSON.parse(storageTextDecoder.decode(plaintext)) as unknown;
     if (!isRecord(parsed) || parsed.version !== STORAGE_VERSION || !isRecord(parsed.snapshot)) {
-      throw new Error('decrypted snapshot is malformed');
+      throw new Error('decrypted legacy snapshot is malformed');
     }
     return parsed as unknown as BrowserKernelStorageSnapshot;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to decrypt IndexedDB kernel storage snapshot: ${message}`);
+    throw new Error(`Failed to decrypt legacy IndexedDB kernel storage snapshot: ${message}`);
   }
 }
 
@@ -249,7 +419,8 @@ export async function persistInitialBrowserKernelSnapshot(
 
 export function bindBrowserKernelStorage(
   workspace: RuntimeWorkspace,
-  storage: BrowserKernelStorage | undefined
+  storage: BrowserKernelStorage | undefined,
+  options: BrowserKernelStorageBindingOptions = {}
 ): BrowserKernelStorageBinding {
   if (!storage) {
     return {
@@ -260,9 +431,22 @@ export function bindBrowserKernelStorage(
 
   let pendingPersist: Promise<void> = Promise.resolve();
   let persistQueued = false;
-  let dirty = false;
+  let dirtyRevision = 0;
+  let persistedRevision = 0;
+  let lastPersistError: Error | null = null;
   let lastCompletedPersistAt = Date.now();
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const reportError = (error: unknown): Error => {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    lastPersistError = normalized;
+    try {
+      options.onError?.(normalized);
+    } catch {
+      // A host observer must not replace the persistence failure being reported.
+    }
+    return normalized;
+  };
 
   const cancelDebounceTimer = (): void => {
     if (debounceTimer !== null) {
@@ -275,19 +459,28 @@ export function bindBrowserKernelStorage(
     if (persistQueued) return;
     persistQueued = true;
     pendingPersist = pendingPersist
-      .catch(() => undefined)
       .then(async () => {
-        persistQueued = false;
-        if (!dirty) return;
-        dirty = false;
-        let snapshot: RuntimeProjectSnapshot;
-        try {
-          snapshot = await workspace.snapshot();
-        } catch {
-          return;
+        while (persistedRevision < dirtyRevision) {
+          const revision = dirtyRevision;
+          try {
+            const snapshot: RuntimeProjectSnapshot = await workspace.snapshot();
+            await storage.save(snapshot);
+            persistedRevision = revision;
+            lastPersistError = null;
+            lastCompletedPersistAt = Date.now();
+          } catch (error) {
+            reportError(error);
+            return;
+          }
         }
-        await storage.save(snapshot);
-        lastCompletedPersistAt = Date.now();
+      })
+      .catch((error) => {
+        // Keep background persistence promises handled. flush() rethrows the
+        // recorded error while dirty state remains pending for a later retry.
+        reportError(error);
+      })
+      .finally(() => {
+        persistQueued = false;
       });
   };
 
@@ -295,13 +488,12 @@ export function bindBrowserKernelStorage(
     cancelDebounceTimer();
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
-      if (dirty) queuePersist();
+      if (persistedRevision < dirtyRevision) queuePersist();
     }, PERSIST_DEBOUNCE_MS);
   };
 
-  const unsubscribe: RuntimeWorkspaceUnsubscribe = workspace.watch((event) => {
-    if (event.type !== 'file-change') return;
-    dirty = true;
+  const unsubscribe: RuntimeWorkspaceUnsubscribe = workspace.kernel.watchMutations(() => {
+    dirtyRevision += 1;
     if (Date.now() - lastCompletedPersistAt >= PERSIST_MAX_STALENESS_MS) {
       cancelDebounceTimer();
       queuePersist();
@@ -313,13 +505,20 @@ export function bindBrowserKernelStorage(
   return {
     async flush(): Promise<void> {
       cancelDebounceTimer();
-      if (dirty) queuePersist();
+      if (persistedRevision < dirtyRevision) queuePersist();
       await pendingPersist;
-      await storage.flush?.();
+      if (persistedRevision < dirtyRevision) {
+        throw lastPersistError ?? new Error('Browser kernel storage did not persist the latest workspace revision.');
+      }
+      try {
+        await storage.flush?.();
+      } catch (error) {
+        throw reportError(error);
+      }
     },
     dispose(): void {
       cancelDebounceTimer();
-      if (dirty) queuePersist();
+      if (persistedRevision < dirtyRevision) queuePersist();
       unsubscribe();
     },
   };

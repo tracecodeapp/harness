@@ -25,8 +25,15 @@ import { JavaWorkerClient, type JavaWorkerClientOptions } from './java-worker-cl
 import { PythonWorkerClient, type PythonWorkerClientOptions } from './pyodide-worker-client';
 import {
   resolveBrowserHarnessAssets,
+  type BrowserRuntimeAssetDescriptor,
   type BrowserHarnessAssetOverrides,
 } from './runtime-assets';
+import { createBrowserRuntimeAssetPreflight } from './runtime-asset-preflight';
+import {
+  createBrowserExecutionWorkerHost,
+  type BrowserExecutionWorkerHost,
+  type BrowserExecutionWorkerHostOptions,
+} from './execution-host';
 import {
   bindBrowserKernelStorage,
   hydrateBrowserKernelStorage,
@@ -52,11 +59,32 @@ export {
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
 } from '../../harness-project/src/index';
+export {
+  BROWSER_EXECUTION_HOST_PROTOCOL,
+  createBrowserExecutionWorkerHost,
+  installBrowserExecutionWorkerHost,
+  type BrowserExecutionWorkerHost,
+  type BrowserExecutionWorkerHostOptions,
+  type InstallBrowserExecutionWorkerHostOptions,
+} from './execution-host';
 
 export type BrowserProjectWorkspace = RuntimeWorkspace;
 export type BrowserProjectNodeOptions = Omit<BrowserJavaScriptProjectRunnerOptions, 'applyFileChange'>;
 export type BrowserProjectTypeScriptOptions = BrowserTypeScriptProjectRunnerOptions;
 export type BrowserProjectWorkerIsolation = 'shared' | 'per-command';
+export type BrowserProjectJavaLifecycle = 'workspace-session' | 'per-command';
+export interface BrowserProjectExecutionHostOptions extends BrowserExecutionWorkerHostOptions {
+  /** Heavy Java runtime lifecycle inside the dedicated origin. Defaults to workspace-session. */
+  javaLifecycle?: BrowserProjectJavaLifecycle;
+}
+export interface BrowserProjectWorkerPrewarmOptions {
+  /** Ready/idle clean Python workers (0-2); active leases may coexist with their replacements. */
+  python?: number;
+  /** Ready/idle clean Java workers (0-2); active leases may coexist with their replacements. */
+  java?: number;
+  /** Ready/idle clean C# workers (0-2); active leases may coexist with their replacements. */
+  csharp?: number;
+}
 
 function readonlySessionFiles(options: CreateRuntimeWorkspaceOptions): string[] {
   return [...new Set((options.projectSession?.files ?? [])
@@ -80,62 +108,302 @@ function isReadonlyDeletion(change: RuntimeFileChange, readonlyFiles: readonly s
   return omittedReadonlyFiles.includes(path);
 }
 
-function createPerCommandPythonWorkerClient(options: PythonWorkerClientOptions): Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'> {
-  const active = new Set<PythonWorkerClient>();
+function browserAssetUrlsEqual(left: string, right: string): boolean {
+  if (left === right) return true;
+  const documentBase = globalThis.location?.href;
+  if (!documentBase) return false;
+  try {
+    return new URL(left, documentBase).href === new URL(right, documentBase).href;
+  } catch {
+    return false;
+  }
+}
+
+function assertManifestBoundProjectAsset(
+  runtime: 'javascript' | 'typescript',
+  optionName: string,
+  override: string | undefined,
+  manifestUrl: string,
+  hasManifest: boolean
+): void {
+  if (!hasManifest || override === undefined || browserAssetUrlsEqual(override, manifestUrl)) return;
+  throw new TypeError(
+    `Browser project runtime "${runtime}" cannot override ${optionName} while its runtime manifest is active ` +
+      `(manifest: ${JSON.stringify(manifestUrl)}, override: ${JSON.stringify(override)}).`
+  );
+}
+
+interface PrewarmableProjectWorker {
+  warmup(): Promise<unknown>;
+  terminate(): void;
+}
+
+interface OneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorker> {
+  run<Result>(signal: AbortSignal | undefined, execute: (client: Client) => Promise<Result>): Promise<Result>;
+  terminate(): void;
+}
+
+interface OneShotPoolEntry<Client extends PrewarmableProjectWorker> {
+  client: Client;
+  generation: number;
+  token: number;
+  state: 'warming' | 'idle' | 'leased' | 'retired';
+}
+
+interface OneShotWarmOutcome {
+  success: boolean;
+  error?: Error;
+}
+
+const MAX_PROJECT_PREWARM_DEPTH_PER_LANGUAGE = 2;
+const MAX_PROJECT_PREWARM_DEPTH_TOTAL = 4;
+const PROJECT_PREWARM_RETRY_LIMIT = 2;
+
+function normalizeProjectWorkerPrewarm(
+  value: BrowserProjectWorkerPrewarmOptions | undefined
+): Required<BrowserProjectWorkerPrewarmOptions> {
+  if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) {
+    throw new TypeError('projectWorkerPrewarm must be an object when provided.');
+  }
+  const normalized = {
+    python: value?.python ?? 0,
+    java: value?.java ?? 0,
+    csharp: value?.csharp ?? 0,
+  };
+  for (const [language, depth] of Object.entries(normalized)) {
+    if (!Number.isInteger(depth) || depth < 0 || depth > MAX_PROJECT_PREWARM_DEPTH_PER_LANGUAGE) {
+      throw new TypeError(
+        `projectWorkerPrewarm.${language} must be an integer from 0 to ${MAX_PROJECT_PREWARM_DEPTH_PER_LANGUAGE}.`
+      );
+    }
+  }
+  const total = normalized.python + normalized.java + normalized.csharp;
+  if (total > MAX_PROJECT_PREWARM_DEPTH_TOTAL) {
+    throw new TypeError(
+      `projectWorkerPrewarm total depth must not exceed ${MAX_PROJECT_PREWARM_DEPTH_TOTAL}; received ${total}.`
+    );
+  }
+  return normalized;
+}
+
+function projectPoolAbortError(): Error {
+  return Object.assign(new Error('Project worker lease was aborted.'), { name: 'AbortError' });
+}
+
+function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorker>(
+  label: string,
+  depth: number,
+  createClient: () => Client
+): OneShotPrewarmedWorkerPool<Client> {
+  let generation = 1;
+  let nextToken = 0;
+  let refillEnabled = true;
+  const entries = new Map<number, OneShotPoolEntry<Client>>();
+  const idle: Array<OneShotPoolEntry<Client>> = [];
+  const warming = new Map<number, Promise<OneShotWarmOutcome>>();
+  const active = new Map<number, OneShotPoolEntry<Client>>();
+
+  const retire = (entry: OneShotPoolEntry<Client>) => {
+    if (entry.state === 'retired') return;
+    entry.state = 'retired';
+    entries.delete(entry.token);
+    active.delete(entry.token);
+    try {
+      entry.client.terminate();
+    } catch {
+      // Retirement is best-effort after the client has already failed.
+    }
+  };
+
+  const warmNewClient = (): Promise<OneShotWarmOutcome> => {
+    const entry: OneShotPoolEntry<Client> = {
+      client: createClient(),
+      generation,
+      token: ++nextToken,
+      state: 'warming',
+    };
+    entries.set(entry.token, entry);
+    const promise = (async (): Promise<OneShotWarmOutcome> => {
+      try {
+        await entry.client.warmup();
+        if (!refillEnabled || entry.generation !== generation || entry.state !== 'warming') {
+          retire(entry);
+          return { success: false, error: new Error(`${label} prewarmed worker was retired before lease.`) };
+        }
+        entry.state = 'idle';
+        idle.push(entry);
+        return { success: true };
+      } catch (error) {
+        const warmError = error instanceof Error ? error : new Error(String(error));
+        retire(entry);
+        return { success: false, error: warmError };
+      } finally {
+        warming.delete(entry.token);
+      }
+    })();
+    warming.set(entry.token, promise);
+    return promise;
+  };
+
+  const idleCount = () => idle.reduce(
+    (count, entry) => count + (entry.state === 'idle' && entry.generation === generation ? 1 : 0),
+    0
+  );
+
+  const refill = () => {
+    if (!refillEnabled || depth === 0) return;
+    while (idleCount() + warming.size < depth) {
+      void warmNewClient();
+    }
+  };
+
+  const waitForWarmup = async (signal?: AbortSignal): Promise<OneShotWarmOutcome> => {
+    const nextWarmup = Promise.race(Array.from(warming.values()));
+    if (!signal) return nextWarmup;
+    if (signal.aborted) throw projectPoolAbortError();
+    return new Promise<OneShotWarmOutcome>((resolve, reject) => {
+      const onAbort = () => {
+        cleanup();
+        reject(projectPoolAbortError());
+      };
+      const cleanup = () => signal.removeEventListener('abort', onAbort);
+      signal.addEventListener('abort', onAbort, { once: true });
+      nextWarmup.then(
+        (outcome) => {
+          cleanup();
+          resolve(outcome);
+        },
+        (error) => {
+          cleanup();
+          reject(error);
+        }
+      );
+    });
+  };
+
+  const acquire = async (
+    expectedGeneration: number,
+    signal?: AbortSignal
+  ): Promise<OneShotPoolEntry<Client>> => {
+    let lastWarmError: Error | undefined;
+    let directWarmAttempts = 0;
+    for (;;) {
+      if (expectedGeneration !== generation) {
+        throw new Error(`${label} project worker acquisition was retired before lease.`);
+      }
+      if (signal?.aborted) throw projectPoolAbortError();
+      let entry = idle.shift();
+      while (entry && (entry.state !== 'idle' || entry.generation !== generation)) {
+        if (entry.state !== 'retired') retire(entry);
+        entry = idle.shift();
+      }
+      if (entry) {
+        entry.state = 'leased';
+        active.set(entry.token, entry);
+        refill();
+        return entry;
+      }
+      if (warming.size > 0) {
+        const outcome = await waitForWarmup(signal);
+        if (!outcome.success) lastWarmError = outcome.error;
+        continue;
+      }
+      if (directWarmAttempts >= PROJECT_PREWARM_RETRY_LIMIT) {
+        throw new Error(
+          `${label} project worker failed to warm after ${PROJECT_PREWARM_RETRY_LIMIT} fresh attempts.`,
+          lastWarmError ? { cause: lastWarmError } : undefined
+        );
+      }
+      directWarmAttempts += 1;
+      const outcome = await warmNewClient();
+      if (!outcome.success) lastWarmError = outcome.error;
+    }
+  };
+
+  refill();
+
+  return {
+    async run<Result>(signal: AbortSignal | undefined, execute: (client: Client) => Promise<Result>): Promise<Result> {
+      refillEnabled = true;
+      refill();
+      const leaseGeneration = generation;
+      const entry = await acquire(leaseGeneration, signal);
+      const onAbort = () => retire(entry);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      try {
+        if (signal?.aborted) {
+          retire(entry);
+          throw projectPoolAbortError();
+        }
+        const result = await execute(entry.client);
+        if (
+          leaseGeneration !== generation ||
+          entry.state !== 'leased' ||
+          active.get(entry.token) !== entry
+        ) {
+          throw new Error(`${label} project worker lease was retired before its result settled.`);
+        }
+        return result;
+      } finally {
+        signal?.removeEventListener('abort', onAbort);
+        retire(entry);
+        refill();
+      }
+    },
+    terminate() {
+      refillEnabled = false;
+      generation += 1;
+      for (const entry of Array.from(entries.values())) retire(entry);
+      idle.length = 0;
+      warming.clear();
+      active.clear();
+    },
+  };
+}
+
+function createPerCommandPythonWorkerClient(
+  options: PythonWorkerClientOptions,
+  prewarmDepth = 0
+): Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'> {
+  const pool = createOneShotPrewarmedWorkerPool('Python', prewarmDepth, () => new PythonWorkerClient(options));
   return {
     async executeProjectPython(request, timeoutMs, onEvent, signal) {
-      const client = new PythonWorkerClient(options);
-      active.add(client);
-      try {
-        return await client.executeProjectPython(request, timeoutMs, onEvent, signal);
-      } finally {
-        active.delete(client);
-        client.terminate();
-      }
+      return pool.run(signal, (client) => client.executeProjectPython(request, timeoutMs, onEvent, signal));
     },
     terminate() {
-      for (const client of active) client.terminate();
-      active.clear();
+      pool.terminate();
     },
   };
 }
 
-function createPerCommandJavaWorkerClient(options: JavaWorkerClientOptions): Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'> {
-  const active = new Set<JavaWorkerClient>();
+function createPerCommandJavaWorkerClient(
+  options: JavaWorkerClientOptions,
+  prewarmDepth = 0,
+  validateRuntimeAssets?: () => void
+): Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'> {
+  const pool = createOneShotPrewarmedWorkerPool('Java', prewarmDepth, () => new JavaWorkerClient(options));
   return {
     async executeProjectJava(request, timeoutMs, onEvent, signal) {
-      const client = new JavaWorkerClient(options);
-      active.add(client);
-      try {
-        return await client.executeProjectJava(request, timeoutMs, onEvent, signal);
-      } finally {
-        active.delete(client);
-        client.terminate();
-      }
+      validateRuntimeAssets?.();
+      return pool.run(signal, (client) => client.executeProjectJava(request, timeoutMs, onEvent, signal));
     },
     terminate() {
-      for (const client of active) client.terminate();
-      active.clear();
+      pool.terminate();
     },
   };
 }
 
-function createPerCommandCSharpWorkerClient(options: CSharpWorkerClientOptions): Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'> {
-  const active = new Set<CSharpWorkerClient>();
+function createPerCommandCSharpWorkerClient(
+  options: CSharpWorkerClientOptions,
+  prewarmDepth = 0
+): Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'> {
+  const pool = createOneShotPrewarmedWorkerPool('C#', prewarmDepth, () => new CSharpWorkerClient(options));
   return {
     async executeProjectCSharp(request, timeoutMs, onEvent, signal) {
-      const client = new CSharpWorkerClient(options);
-      active.add(client);
-      try {
-        return await client.executeProjectCSharp(request, timeoutMs, onEvent, signal);
-      } finally {
-        active.delete(client);
-        client.terminate();
-      }
+      return pool.run(signal, (client) => client.executeProjectCSharp(request, timeoutMs, onEvent, signal));
     },
     terminate() {
-      for (const client of active) client.terminate();
-      active.clear();
+      pool.terminate();
     },
   };
 }
@@ -169,9 +437,19 @@ export interface CreateBrowserProjectWorkspaceOptions
   javaWorkerClient?: Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'>;
   csharpWorkerClient?: Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'>;
   cppWorkerClient?: Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'>;
+  /**
+   * Runs Java workers on a dedicated origin. TraceCode deployments should use
+   * this for CheerpJ project execution so runtime IndexedDB never shares the
+   * application origin.
+   */
+  executionHost?: BrowserProjectExecutionHostOptions;
   nodeProject?: BrowserProjectNodeOptions;
   typescriptProject?: BrowserProjectTypeScriptOptions;
   projectWorkerIsolation?: BrowserProjectWorkerIsolation;
+  /** Required when reusing any language worker across untrusted project commands. */
+  trustedSharedWorkerReuse?: true;
+  /** Opt-in clean one-shot worker depth; disabled for every language by default. */
+  projectWorkerPrewarm?: BrowserProjectWorkerPrewarmOptions;
   nodeProjectTimeoutMs?: number;
   pythonProjectTimeoutMs?: number;
   javaProjectTimeoutMs?: number;
@@ -181,12 +459,65 @@ export interface CreateBrowserProjectWorkspaceOptions
   csharpWorkerIdleTimeoutMs?: number;
   cppWorkerIdleTimeoutMs?: number;
   kernelStorage?: BrowserKernelStorage;
+  onKernelStorageError?: (error: Error) => void;
 }
 
 export async function createBrowserProjectWorkspace(
   options: CreateBrowserProjectWorkspaceOptions = {}
 ): Promise<BrowserProjectWorkspace> {
   const assets = resolveBrowserHarnessAssets(options);
+  const runtimeAssetPreflight = createBrowserRuntimeAssetPreflight(assets.runtimeManifests);
+  const pythonManifest = assets.runtimeManifests?.python;
+  const pythonAsset = (name: string): BrowserRuntimeAssetDescriptor | undefined => {
+    const value = (pythonManifest?.assets as Record<string, unknown> | undefined)?.[name];
+    return value && typeof value === 'object' && typeof (value as { url?: unknown }).url === 'string'
+      ? value as BrowserRuntimeAssetDescriptor
+      : undefined;
+  };
+  const pythonPackageDescriptors = (() => {
+    const value = (pythonManifest?.assets as Record<string, unknown> | undefined)?.packages;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Readonly<Record<string, BrowserRuntimeAssetDescriptor>>
+      : undefined;
+  })();
+  const manifestAsset = (
+    runtime: 'javascript' | 'typescript' | 'java' | 'csharp',
+    name: string
+  ): BrowserRuntimeAssetDescriptor | undefined => {
+    const manifest = assets.runtimeManifests?.[runtime];
+    const value = (manifest?.assets as Record<string, unknown> | undefined)?.[name];
+    return value && typeof value === 'object' && typeof (value as { url?: unknown }).url === 'string'
+      ? value as BrowserRuntimeAssetDescriptor
+      : undefined;
+  };
+  const manifestAssetCollection = (
+    runtime: 'csharp',
+    name: string
+  ): Readonly<Record<string, BrowserRuntimeAssetDescriptor>> | undefined => {
+    const manifest = assets.runtimeManifests?.[runtime];
+    const value = (manifest?.assets as Record<string, unknown> | undefined)?.[name];
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Readonly<Record<string, BrowserRuntimeAssetDescriptor>>
+      : undefined;
+  };
+  const javaManifest = assets.runtimeManifests?.java;
+  const assertProjectJavaRuntimeAssets = (): void => {
+    const requiredAssets = ['worker', 'loader', 'helperJar', 'compilerJar', 'rewriterJar', 'parserJar'] as const;
+    const missingAssets = requiredAssets.filter((name) => {
+      if (name === 'worker') {
+        const value = (javaManifest?.assets as Record<string, unknown> | undefined)?.worker;
+        return !(value && typeof value === 'object' && typeof (value as { url?: unknown }).url === 'string');
+      }
+      return !manifestAsset('java', name);
+    });
+    if (missingAssets.length === 0) return;
+    throw new Error(
+      'Browser project Java is unavailable because CheerpJ is not vendored. ' +
+        'Configure assets.runtimeManifests.java with worker, loader, helperJar, compilerJar, rewriterJar, and parserJar, ' +
+        `or provide javaWorkerClient. Missing: ${missingAssets.join(', ')}.`
+    );
+  };
+  const csharpDependencyDescriptors = manifestAssetCollection('csharp', 'dependencies');
   const {
     assetBaseUrl: _assetBaseUrl,
     assets: _assets,
@@ -195,9 +526,12 @@ export async function createBrowserProjectWorkspace(
     javaWorkerClient: providedJavaWorkerClient,
     csharpWorkerClient: providedCSharpWorkerClient,
     cppWorkerClient: providedCppWorkerClient,
+    executionHost: executionHostOptions,
     nodeProject,
     typescriptProject,
     projectWorkerIsolation = 'per-command',
+    trustedSharedWorkerReuse,
+    projectWorkerPrewarm,
     nodeProjectTimeoutMs,
     pythonProjectTimeoutMs,
     javaProjectTimeoutMs,
@@ -207,174 +541,371 @@ export async function createBrowserProjectWorkspace(
     csharpWorkerIdleTimeoutMs,
     cppWorkerIdleTimeoutMs,
     kernelStorage,
+    onKernelStorageError,
     ...workspaceOptions
   } = options;
+  if (executionHostOptions && providedJavaWorkerClient) {
+    throw new Error('executionHost cannot be combined with a provided javaWorkerClient.');
+  }
+  const javaExecutionLifecycle = executionHostOptions?.javaLifecycle ?? 'workspace-session';
+  if (javaExecutionLifecycle !== 'workspace-session' && javaExecutionLifecycle !== 'per-command') {
+    throw new TypeError('executionHost.javaLifecycle must be "workspace-session" or "per-command".');
+  }
   if (projectWorkerIsolation !== 'per-command' && projectWorkerIsolation !== 'shared') {
     throw new TypeError(
       `Invalid browser project worker isolation "${String(projectWorkerIsolation)}"; expected "per-command" or "shared".`
     );
   }
-  const ownedWorkers: Array<{ terminate(): void }> = [];
-  const pythonWorkerOptions: PythonWorkerClientOptions = {
-    workerUrl: assets.pythonWorker,
-    debug,
-  };
-  const javaWorkerOptions: JavaWorkerClientOptions = {
-    workerUrl: assets.javaWorker,
-    debug,
-    workerIdleTimeoutMs: javaWorkerIdleTimeoutMs,
-  };
-  const csharpWorkerOptions: CSharpWorkerClientOptions = {
-    workerUrl: assets.csharpWorker,
-    assetBaseUrl: assets.csharpAssetBaseUrl,
-    debug,
-    workerIdleTimeoutMs: csharpWorkerIdleTimeoutMs,
-  };
-  const cppWorkerOptions: CppWorkerClientOptions = {
-    workerUrl: assets.cppWorker,
-    compilerFrameUrl: assets.cppCompilerFrame,
-    compilerWorkerUrl: assets.cppCompilerWorker,
-    clangWasmUrl: assets.cppClangWasm,
-    lldWasmUrl: assets.cppLldWasm,
-    sysrootUrl: assets.cppSysroot,
-    runtimeHeaderUrl: assets.cppRuntimeHeader,
-    compilerBundleUrl: assets.cppCompilerBundle,
-    toolchainIntegrity: assets.cppToolchainIntegrity,
-    debug,
-    workerIdleTimeoutMs: cppWorkerIdleTimeoutMs,
-  };
-  const pythonWorkerClient =
-    providedPythonWorkerClient ??
-    (projectWorkerIsolation === 'per-command'
-      ? createPerCommandPythonWorkerClient(pythonWorkerOptions)
-      : new PythonWorkerClient(pythonWorkerOptions));
-  const javaWorkerClient =
-    providedJavaWorkerClient ??
-    (projectWorkerIsolation === 'per-command'
-      ? createPerCommandJavaWorkerClient(javaWorkerOptions)
-      : new JavaWorkerClient(javaWorkerOptions));
-  const csharpWorkerClient =
-    providedCSharpWorkerClient ??
-    (projectWorkerIsolation === 'per-command'
-      ? createPerCommandCSharpWorkerClient(csharpWorkerOptions)
-      : new CSharpWorkerClient(csharpWorkerOptions));
-  const cppWorkerClient =
-    providedCppWorkerClient ??
-    (projectWorkerIsolation === 'per-command'
-      ? createPerCommandCppWorkerClient(cppWorkerOptions)
-      : new CppWorkerClient(cppWorkerOptions));
-
-  if (!providedPythonWorkerClient) ownedWorkers.push(pythonWorkerClient);
-  if (!providedJavaWorkerClient) ownedWorkers.push(javaWorkerClient);
-  if (!providedCSharpWorkerClient) ownedWorkers.push(csharpWorkerClient);
-  if (!providedCppWorkerClient) ownedWorkers.push(cppWorkerClient);
-
-  let workspace: BrowserProjectWorkspace;
-  let storageBinding: BrowserKernelStorageBinding | undefined;
-  const sessionReadonlyFiles = readonlySessionFiles(workspaceOptions);
-  const applyWorkerFileChange: NonNullable<Parameters<typeof createBrowserPythonProjectRunner>[1]>['applyFileChange'] =
-    async (change, phase, options) => {
-      if (options?.signal?.aborted) return false;
-      await workspace.kernel.applyFileChange(change, undefined, phase);
-      if (options?.signal?.aborted) return false;
-      return false;
-    };
-  const applyCSharpWorkerFileChange: NonNullable<Parameters<typeof createBrowserCSharpProjectRunner>[1]>['applyFileChange'] =
-    async (change, phase, options) => {
-      if (options?.signal?.aborted) return false;
-      if (isReadonlyDeletion(change, sessionReadonlyFiles)) return false;
-      await workspace.kernel.applyFileChange(change, undefined, phase);
-      if (options?.signal?.aborted) return false;
-      return false;
-    };
-
-  const storedSnapshot = await hydrateBrowserKernelStorage(kernelStorage);
-  const hasStoredWorkspace = storedSnapshot && (
-    storedSnapshot.files.length > 0 ||
-    (storedSnapshot.directories?.length ?? 0) > 0
+  if (projectWorkerIsolation === 'shared' && trustedSharedWorkerReuse !== true) {
+    throw new Error(
+      'Browser project shared worker reuse is trusted-only and requires trustedSharedWorkerReuse: true.'
+    );
+  }
+  const projectPrewarm = normalizeProjectWorkerPrewarm(projectWorkerPrewarm);
+  if (
+    projectWorkerIsolation !== 'per-command' &&
+    (projectPrewarm.python > 0 || projectPrewarm.java > 0 || projectPrewarm.csharp > 0)
+  ) {
+    throw new Error('projectWorkerPrewarm is only supported with per-command project worker isolation.');
+  }
+  if (providedPythonWorkerClient && projectPrewarm.python > 0) {
+    throw new Error('projectWorkerPrewarm.python cannot be used with a provided pythonWorkerClient.');
+  }
+  if (providedJavaWorkerClient && projectPrewarm.java > 0) {
+    throw new Error('projectWorkerPrewarm.java cannot be used with a provided javaWorkerClient.');
+  }
+  if (!providedJavaWorkerClient && projectPrewarm.java > 0) {
+    assertProjectJavaRuntimeAssets();
+  }
+  if (providedCSharpWorkerClient && projectPrewarm.csharp > 0) {
+    throw new Error('projectWorkerPrewarm.csharp cannot be used with a provided csharpWorkerClient.');
+  }
+  assertManifestBoundProjectAsset(
+    'javascript',
+    'nodeProject.workerUrl',
+    nodeProject?.workerUrl,
+    assets.javascriptProjectWorker,
+    assets.runtimeManifests?.javascript !== undefined
   );
-  const policyFiles = policySessionFiles(workspaceOptions);
-  const projectSession = hasStoredWorkspace && workspaceOptions.projectSession
-    ? {
-        ...workspaceOptions.projectSession,
-        files: policyFiles,
-        directories: [],
+  assertManifestBoundProjectAsset(
+    'typescript',
+    'typescriptProject.compilerUrl',
+    typescriptProject?.compilerUrl,
+    assets.typescriptCompiler,
+    assets.runtimeManifests?.typescript !== undefined
+  );
+  let executionHost: BrowserExecutionWorkerHost | undefined;
+  if (executionHostOptions) {
+    executionHost = createBrowserExecutionWorkerHost(executionHostOptions);
+    try {
+      await executionHost.ready();
+      const javaWorkerAsset = javaManifest?.assets.worker;
+      if (!javaWorkerAsset) {
+        throw new Error('executionHost requires a complete Java runtime manifest.');
       }
-    : workspaceOptions.projectSession;
+      const workerUrl = new URL(
+        javaWorkerAsset.url,
+        globalThis.location?.href ?? executionHostOptions.url
+      );
+      if (workerUrl.origin !== executionHost.origin) {
+        throw new Error(
+          `Java manifest worker origin ${JSON.stringify(workerUrl.origin)} must match executionHost origin ${JSON.stringify(executionHost.origin)}.`
+        );
+      }
+    } catch (error) {
+      executionHost.dispose();
+      throw error;
+    }
+  }
+  const ownedWorkers: Array<{ terminate(): void }> = [];
+  try {
+    const pythonWorkerOptions: PythonWorkerClientOptions = {
+      workerUrl: assets.pythonWorker,
+      ...(projectWorkerIsolation === 'per-command'
+        ? { projectUserAuthorityMode: 'permanent' as const }
+        : {}),
+      ...(pythonManifest?.workerFormat ? { workerFormat: pythonManifest.workerFormat } : {}),
+      debug,
+      assetPreflight: () => runtimeAssetPreflight.preflight('python', ['worker', 'snippets']),
+      runtimeAssetPreflight: () => runtimeAssetPreflight.preflight('python', [
+        'runtimeCore',
+        'runtimeLoader',
+        'runtimeIndex',
+        'distribution',
+        'packages',
+      ]),
+      runtimeAssets: {
+        runtimeCoreUrl: assets.pythonRuntimeCore,
+        snippetsUrl: assets.pythonSnippets,
+        ...(pythonAsset('runtimeLoader')?.url ? { loaderUrl: pythonAsset('runtimeLoader')?.url } : {}),
+        ...(pythonAsset('runtimeIndex')?.url ? { indexUrl: pythonAsset('runtimeIndex')?.url } : {}),
+        ...(pythonManifest?.loaderFormat ? { loaderFormat: pythonManifest.loaderFormat } : {}),
+        ...(pythonPackageDescriptors
+          ? {
+              packageUrls: Object.fromEntries(
+                Object.entries(pythonPackageDescriptors).map(([name, descriptor]) => [name, descriptor.url])
+              ),
+            }
+          : {}),
+      },
+    };
+    const javaWorkerOptions: JavaWorkerClientOptions = {
+      workerUrl: assets.javaWorker,
+      ...(projectWorkerIsolation === 'per-command' && !executionHost
+        ? { projectUserAuthorityMode: 'permanent' as const }
+        : {}),
+      ...(executionHost
+        ? {
+            workerFactory: executionHost.workerFactory,
+            isolatedRuntimeStorage: true,
+            ...(javaExecutionLifecycle === 'per-command'
+              ? { projectUserAuthorityMode: 'permanent' as const }
+              : { projectUserAuthorityMode: 'isolated-origin' as const }),
+          }
+        : {}),
+      debug,
+      workerIdleTimeoutMs: javaWorkerIdleTimeoutMs,
+      assetPreflight: async () => {
+        assertProjectJavaRuntimeAssets();
+        await runtimeAssetPreflight.preflight('java', ['worker']);
+      },
+      runtimeAssetPreflight: () => runtimeAssetPreflight.preflight('java', [
+        'loader',
+        'helperJar',
+        'compilerJar',
+        'rewriterJar',
+        'parserJar',
+      ]),
+      ...(javaManifest
+        ? {
+            runtimeAssets: {
+              ...(manifestAsset('java', 'loader')?.url
+                ? { loaderUrl: manifestAsset('java', 'loader')?.url }
+                : {}),
+              ...(manifestAsset('java', 'helperJar')?.url
+                ? { helperJarUrl: manifestAsset('java', 'helperJar')?.runtimePath ?? manifestAsset('java', 'helperJar')?.url }
+                : {}),
+              ...(manifestAsset('java', 'compilerJar')?.url
+                ? { compilerJarUrl: manifestAsset('java', 'compilerJar')?.runtimePath ?? manifestAsset('java', 'compilerJar')?.url }
+                : {}),
+              ...(manifestAsset('java', 'rewriterJar')?.url
+                ? { rewriterJarUrl: manifestAsset('java', 'rewriterJar')?.runtimePath ?? manifestAsset('java', 'rewriterJar')?.url }
+                : {}),
+              ...(manifestAsset('java', 'parserJar')?.url
+                ? { parserJarUrl: manifestAsset('java', 'parserJar')?.runtimePath ?? manifestAsset('java', 'parserJar')?.url }
+                : {}),
+            },
+          }
+        : {}),
+    };
+    const csharpWorkerOptions: CSharpWorkerClientOptions = {
+      workerUrl: assets.csharpWorker,
+      assetBaseUrl: assets.csharpAssetBaseUrl,
+      ...(projectWorkerIsolation === 'per-command'
+        ? { projectUserAuthorityMode: 'permanent' as const }
+        : {}),
+      debug,
+      workerIdleTimeoutMs: csharpWorkerIdleTimeoutMs,
+      assetPreflight: () => runtimeAssetPreflight.preflight('csharp', ['worker']),
+      runtimeAssetPreflight: () => runtimeAssetPreflight.preflight('csharp', [
+        'assetBaseUrl',
+        'dependencies',
+      ]),
+      ...(csharpDependencyDescriptors
+        ? {
+            runtimeDependencies: Object.fromEntries(
+              Object.entries(csharpDependencyDescriptors).map(([name, descriptor]) => [name, descriptor.url])
+            ),
+          }
+        : {}),
+    };
+    const cppWorkerOptions: CppWorkerClientOptions = {
+      workerUrl: assets.cppWorker,
+      assetPreflight: () => runtimeAssetPreflight.preflight('cpp', ['worker']),
+      runtimeAssetPreflight: () => runtimeAssetPreflight.preflight('cpp', [
+        'compilerFrame',
+        'compilerWorker',
+        'runtimeHeader',
+        'compilerBundle',
+        'clangWasm',
+        'lldWasm',
+        'sysroot',
+        'toolchain',
+      ]),
+      compilerFrameUrl: assets.cppCompilerFrame,
+      compilerWorkerUrl: assets.cppCompilerWorker,
+      clangWasmUrl: assets.cppClangWasm,
+      lldWasmUrl: assets.cppLldWasm,
+      sysrootUrl: assets.cppSysroot,
+      runtimeHeaderUrl: assets.cppRuntimeHeader,
+      compilerBundleUrl: assets.cppCompilerBundle,
+      toolchainIntegrity: assets.cppToolchainIntegrity,
+      debug,
+      workerIdleTimeoutMs: cppWorkerIdleTimeoutMs,
+    };
+    const pythonWorkerClient =
+      providedPythonWorkerClient ??
+      (projectWorkerIsolation === 'per-command'
+        ? createPerCommandPythonWorkerClient(pythonWorkerOptions, projectPrewarm.python)
+        : new PythonWorkerClient(pythonWorkerOptions));
+    if (!providedPythonWorkerClient) ownedWorkers.push(pythonWorkerClient);
+    const javaWorkerClient =
+      providedJavaWorkerClient ??
+      (projectWorkerIsolation === 'per-command' && (!executionHost || javaExecutionLifecycle === 'per-command')
+        ? createPerCommandJavaWorkerClient(javaWorkerOptions, projectPrewarm.java, assertProjectJavaRuntimeAssets)
+        : new JavaWorkerClient(javaWorkerOptions));
+    if (!providedJavaWorkerClient) ownedWorkers.push(javaWorkerClient);
+    if (executionHost && javaExecutionLifecycle === 'workspace-session' && projectPrewarm.java > 0) {
+      if (projectPrewarm.java !== 1) {
+        executionHost.dispose();
+        throw new Error('executionHost workspace-session Java prewarm depth must be 0 or 1.');
+      }
+      await (javaWorkerClient as JavaWorkerClient).warmup();
+    }
+    const csharpWorkerClient =
+      providedCSharpWorkerClient ??
+      (projectWorkerIsolation === 'per-command'
+        ? createPerCommandCSharpWorkerClient(csharpWorkerOptions, projectPrewarm.csharp)
+        : new CSharpWorkerClient(csharpWorkerOptions));
+    if (!providedCSharpWorkerClient) ownedWorkers.push(csharpWorkerClient);
+    const cppWorkerClient =
+      providedCppWorkerClient ??
+      (projectWorkerIsolation === 'per-command'
+        ? createPerCommandCppWorkerClient(cppWorkerOptions)
+        : new CppWorkerClient(cppWorkerOptions));
+    if (!providedCppWorkerClient) ownedWorkers.push(cppWorkerClient);
 
-  workspace = await createRuntimeWorkspace({
-    ...workspaceOptions,
-    projectSession,
-    ...(hasStoredWorkspace
+    if (executionHost) ownedWorkers.push({ terminate: () => executionHost?.dispose() });
+
+    let workspace: BrowserProjectWorkspace;
+    let storageBinding: BrowserKernelStorageBinding | undefined;
+    const sessionReadonlyFiles = readonlySessionFiles(workspaceOptions);
+    const applyWorkerFileChange: NonNullable<Parameters<typeof createBrowserPythonProjectRunner>[1]>['applyFileChange'] =
+      async (change, phase, options) => {
+        if (options?.signal?.aborted) return false;
+        await workspace.kernel.applyFileChange(change, undefined, phase);
+        if (options?.signal?.aborted) return false;
+        return false;
+      };
+    const applyCSharpWorkerFileChange: NonNullable<Parameters<typeof createBrowserCSharpProjectRunner>[1]>['applyFileChange'] =
+      async (change, phase, options) => {
+        if (options?.signal?.aborted) return false;
+        if (isReadonlyDeletion(change, sessionReadonlyFiles)) return false;
+        await workspace.kernel.applyFileChange(change, undefined, phase);
+        if (options?.signal?.aborted) return false;
+        return false;
+    };
+
+    const storedSnapshot = await hydrateBrowserKernelStorage(kernelStorage);
+    // An intentionally empty persisted workspace is still authoritative. Treating
+    // it as "no snapshot" resurrects deleted seed/session files on the next load.
+    const hasStoredWorkspace = storedSnapshot !== null;
+    const policyFiles = policySessionFiles(workspaceOptions);
+    const projectSession = hasStoredWorkspace && workspaceOptions.projectSession
       ? {
-          files: storedSnapshot.files,
-          directories: storedSnapshot.directories,
-          entrypoint: storedSnapshot.entrypoint ?? workspaceOptions.entrypoint,
+          ...workspaceOptions.projectSession,
+          files: policyFiles,
+          directories: [],
         }
-      : {}),
-    pythonRunner: createBrowserPythonProjectRunner(pythonWorkerClient, {
-      timeoutMs: pythonProjectTimeoutMs,
-      applyFileChange: applyWorkerFileChange,
-    }),
-    nodeRunner: createBrowserJavaScriptProjectRunner({
-      timeoutMs: nodeProjectTimeoutMs,
-      workerUrl: assets.javascriptProjectWorker,
-      workerIsolation: projectWorkerIsolation,
-      ...nodeProject,
-      applyFileChange: applyWorkerFileChange,
-    }),
-    typescriptRunner: createBrowserTypeScriptProjectRunner({
-      compilerUrl: assets.typescriptCompiler,
-      ...typescriptProject,
-    }),
-    javaRunner: createBrowserJavaProjectRunner(javaWorkerClient, {
-      timeoutMs: javaProjectTimeoutMs,
-      applyFileChange: applyWorkerFileChange,
-    }),
-    csharpRunner: createBrowserCSharpProjectRunner(csharpWorkerClient, {
-      timeoutMs: csharpProjectTimeoutMs,
-      applyFileChange: applyCSharpWorkerFileChange,
-    }),
-    cppRunner: createBrowserCppProjectRunner(cppWorkerClient, {
-      timeoutMs: cppProjectTimeoutMs,
-      applyFileChange: applyWorkerFileChange,
-    }),
-    kernelControl: {
-      async reset() {
+      : workspaceOptions.projectSession;
+
+    workspace = await createRuntimeWorkspace({
+      ...workspaceOptions,
+      projectSession,
+      ...(hasStoredWorkspace
+        ? {
+            files: storedSnapshot.files,
+            directories: storedSnapshot.directories,
+            entrypoint: storedSnapshot.entrypoint ?? workspaceOptions.entrypoint,
+          }
+        : {}),
+      pythonRunner: createBrowserPythonProjectRunner(pythonWorkerClient, {
+        timeoutMs: pythonProjectTimeoutMs,
+        applyFileChange: applyWorkerFileChange,
+      }),
+      nodeRunner: createBrowserJavaScriptProjectRunner({
+        timeoutMs: nodeProjectTimeoutMs,
+        workerIsolation: projectWorkerIsolation,
+        ...nodeProject,
+        workerUrl: assets.runtimeManifests?.javascript
+          ? assets.javascriptProjectWorker
+          : nodeProject?.workerUrl ?? assets.javascriptProjectWorker,
+        assetPreflight: () => runtimeAssetPreflight.preflight('javascript', ['projectWorker']),
+        ...(projectWorkerIsolation === 'shared' ? { trustedReusableWorker: true } : {}),
+        applyFileChange: applyWorkerFileChange,
+      }),
+      typescriptRunner: createBrowserTypeScriptProjectRunner({
+        ...typescriptProject,
+        // This factory owns and preflights the compiler URL, so its same-document
+        // script is trusted compiler infrastructure rather than user code. A
+        // runtime manifest is the explicit consumer trust decision for an
+        // external compiler CDN.
+        allowDomCompilerScript: typescriptProject?.allowDomCompilerScript ?? true,
+        allowExternalDomCompilerScript: assets.runtimeManifests?.typescript
+          ? true
+          : typescriptProject?.allowExternalDomCompilerScript,
+        compilerUrl: assets.runtimeManifests?.typescript
+          ? assets.typescriptCompiler
+          : typescriptProject?.compilerUrl ?? assets.typescriptCompiler,
+        compilerPreflight: () => runtimeAssetPreflight.preflight('typescript', ['compiler']),
+      }),
+      javaRunner: createBrowserJavaProjectRunner(javaWorkerClient, {
+        timeoutMs: javaProjectTimeoutMs,
+        applyFileChange: applyWorkerFileChange,
+      }),
+      csharpRunner: createBrowserCSharpProjectRunner(csharpWorkerClient, {
+        timeoutMs: csharpProjectTimeoutMs,
+        applyFileChange: applyCSharpWorkerFileChange,
+      }),
+      cppRunner: createBrowserCppProjectRunner(cppWorkerClient, {
+        timeoutMs: cppProjectTimeoutMs,
+        applyFileChange: applyWorkerFileChange,
+      }),
+      kernelControl: {
+        async reset() {
+          storageBinding?.dispose();
+          await storageBinding?.flush();
+          await kernelStorage?.clear?.();
+          for (const worker of ownedWorkers) {
+            worker.terminate();
+          }
+        },
+      },
+    });
+
+    storageBinding = bindBrowserKernelStorage(workspace, kernelStorage, {
+      onError: onKernelStorageError,
+    });
+    await persistInitialBrowserKernelSnapshot(workspace, kernelStorage);
+    const disposeWorkspace = workspace.dispose.bind(workspace);
+    const destroyWorkspace = workspace.destroy.bind(workspace);
+
+    return Object.assign(workspace, {
+      async destroy(options?: { reason?: string; clearStorage?: boolean }) {
         storageBinding?.dispose();
         await storageBinding?.flush();
-        await kernelStorage?.clear?.();
+        if (options?.clearStorage) {
+          await kernelStorage?.clear?.();
+        }
+        await destroyWorkspace(options);
         for (const worker of ownedWorkers) {
           worker.terminate();
         }
       },
-    },
-  });
-
-  storageBinding = bindBrowserKernelStorage(workspace, kernelStorage);
-  await persistInitialBrowserKernelSnapshot(workspace, kernelStorage);
-  const disposeWorkspace = workspace.dispose.bind(workspace);
-  const destroyWorkspace = workspace.destroy.bind(workspace);
-
-  return Object.assign(workspace, {
-    async destroy(options?: { reason?: string; clearStorage?: boolean }) {
-      storageBinding?.dispose();
-      await storageBinding?.flush();
-      if (options?.clearStorage) {
-        await kernelStorage?.clear?.();
-      }
-      await destroyWorkspace(options);
-      for (const worker of ownedWorkers) {
-        worker.terminate();
-      }
-    },
-    dispose() {
-      storageBinding?.dispose();
-      void storageBinding?.flush();
-      disposeWorkspace();
-      for (const worker of ownedWorkers) {
-        worker.terminate();
-      }
-    },
-  });
+      dispose() {
+        storageBinding?.dispose();
+        void storageBinding?.flush().catch(() => undefined);
+        disposeWorkspace();
+        for (const worker of ownedWorkers) {
+          worker.terminate();
+        }
+      },
+    });
+  } catch (error) {
+    for (const worker of ownedWorkers) {
+      worker.terminate();
+    }
+    executionHost?.dispose();
+    throw error;
+  }
 }

@@ -6,6 +6,7 @@ import type {
   RuntimeProjectTerminalInputState,
   RuntimeWorkspaceEvent,
 } from '@tracecode/harness/core';
+import type { BrowserRuntimeAssetManifests } from '@tracecode/harness/browser';
 
 async function bootProjectTerminal(): Promise<void> {
   document.body.innerHTML = `
@@ -63,8 +64,14 @@ async function bootProjectTerminal(): Promise<void> {
     }
   ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
+  const runtimeManifests = (
+    window as Window & { __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests }
+  ).__tracecodeRuntimeAssetManifests;
+  const javaAvailable = runtimeManifests?.java !== undefined;
+
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
+    ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
     javaProjectTimeoutMs: 120_000,
     cppProjectTimeoutMs: 120_000,
     kernel: {
@@ -80,7 +87,9 @@ async function bootProjectTerminal(): Promise<void> {
       language: 'mixed',
       commands: {
         cpp: 'cd cpp && clang++ -std=c++17 report.cpp -o ../report',
-        java: 'javac java/TicketTriage.java && java -cp java TicketTriage',
+        ...(javaAvailable
+          ? { java: 'javac java/TicketTriage.java && java -cp java TicketTriage' }
+          : {}),
       },
       metadata: {
         source: 'project-terminal-twitter-demo',
@@ -96,10 +105,17 @@ async function bootProjectTerminal(): Promise<void> {
             '  ../report',
             '  cat report.md',
             '',
-            'Java:',
-            '  javac java/TicketTriage.java',
-            '  java -cp java TicketTriage',
-            '  cat ticket.json',
+            ...(javaAvailable
+              ? [
+                  'Java:',
+                  '  javac java/TicketTriage.java',
+                  '  java -cp java TicketTriage',
+                  '  cat ticket.json',
+                ]
+              : [
+                  'Java:',
+                  '  unavailable until the host injects a complete consumer runtime manifest',
+                ]),
             '',
           ].join('\n'),
         },
@@ -245,7 +261,12 @@ public class TicketTriage {
       if (command === 'help') {
         appendLine('C++:  cd cpp && clang++ -std=c++17 report.cpp -o ../report', 'status');
         appendLine('      ../report', 'status');
-        appendLine('Java: javac java/TicketTriage.java && java -cp java TicketTriage', 'status');
+        appendLine(
+          javaAvailable
+            ? 'Java: javac java/TicketTriage.java && java -cp java TicketTriage'
+            : 'Java: inject window.__tracecodeRuntimeAssetManifests.java before boot',
+          'status'
+        );
         appendLine('Reset: tracekernelctl reset', 'status');
         return { stdout: '', stderr: '', exitCode: 0 };
       }
@@ -297,6 +318,10 @@ public class TicketTriage {
   };
 
   const runJavaDemo = async (): Promise<void> => {
+    if (!javaAvailable) {
+      appendLine('Java requires a complete consumer-owned runtime manifest before boot.', 'stderr');
+      return;
+    }
     await runTerminalCommand('javac java/TicketTriage.java');
     await runTerminalCommand('java -cp java TicketTriage');
     await runTerminalCommand('cat ticket.json');
@@ -322,8 +347,12 @@ public class TicketTriage {
   appendLine('Try: ls, cat README.txt');
   appendLine('C++: cd cpp && clang++ -std=c++17 report.cpp -o ../report');
   appendLine('     ../report');
-  appendLine('Java: javac java/TicketTriage.java');
-  appendLine('      java -cp java TicketTriage');
+  if (javaAvailable) {
+    appendLine('Java: javac java/TicketTriage.java');
+    appendLine('      java -cp java TicketTriage');
+  } else {
+    appendLine('Java: inject window.__tracecodeRuntimeAssetManifests.java before boot');
+  }
   appendLine('Reset saved demo data with: tracekernelctl reset');
   input.disabled = false;
   input.focus();

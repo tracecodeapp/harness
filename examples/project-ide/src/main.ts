@@ -1,11 +1,13 @@
 import './styles.css';
 
-import * as monaco from 'monaco-editor';
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 
-import { getRuntimeProjectIoCapabilityMatrix } from '@tracecode/harness/browser';
+import {
+  getRuntimeProjectIoCapabilityMatrix,
+  type BrowserRuntimeAssetManifests,
+} from '@tracecode/harness/browser';
 import type { Language, RuntimeCommandEvent, RuntimeWorkspaceEvent } from '@tracecode/harness/core';
 
 // ----------------------------------------------------------------------
@@ -19,23 +21,41 @@ self.MonacoEnvironment = {
   }
 };
 
-monaco.editor.defineTheme('tracecodeDark', {
-  base: 'vs-dark',
-  inherit: true,
-  rules: [
-    { background: '1e1f22', token: '' }
-  ],
-  colors: {
-    'editor.background': '#1e1f22',
-    'editor.lineHighlightBackground': '#26282e',
-    'editorLineNumber.foreground': '#585b63',
-    'editorIndentGuide.background': '#393b40',
-    'editor.selectionBackground': '#2d5fa566',
-    'scrollbarSlider.background': '#393b4080',
-    'scrollbarSlider.hoverBackground': '#4e515780',
-    'scrollbarSlider.activeBackground': '#5a5d63',
-  }
-});
+type MonacoModule = typeof import('monaco-editor/esm/vs/editor/editor.api');
+
+async function loadProjectEditor(): Promise<MonacoModule> {
+  const [monaco] = await Promise.all([
+    import('monaco-editor/esm/vs/editor/editor.api'),
+    import('monaco-editor/esm/vs/language/json/monaco.contribution'),
+    import('monaco-editor/esm/vs/language/typescript/monaco.contribution'),
+    import('monaco-editor/esm/vs/basic-languages/python/python.contribution'),
+    import('monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution'),
+    import('monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution'),
+    import('monaco-editor/esm/vs/basic-languages/java/java.contribution'),
+    import('monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution'),
+    import('monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution'),
+  ]);
+
+  monaco.editor.defineTheme('tracecodeDark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      { background: '1e1f22', token: '' }
+    ],
+    colors: {
+      'editor.background': '#1e1f22',
+      'editor.lineHighlightBackground': '#26282e',
+      'editorLineNumber.foreground': '#585b63',
+      'editorIndentGuide.background': '#393b40',
+      'editor.selectionBackground': '#2d5fa566',
+      'scrollbarSlider.background': '#393b4080',
+      'scrollbarSlider.hoverBackground': '#4e515780',
+      'scrollbarSlider.activeBackground': '#5a5d63',
+    }
+  });
+
+  return monaco;
+}
 
 // ----------------------------------------------------------------------
 // Constants & Fixtures
@@ -178,6 +198,9 @@ async function bootDevTerminal(): Promise<void> {
   const sessionMeta = document.querySelector<HTMLDivElement>('#dev-session-meta')!;
 
   output.replaceChildren(form);
+  // Paint the project shell immediately. Monaco and the project workspace are
+  // independent startup branches, so load them concurrently behind first paint.
+  const monacoPromise = loadProjectEditor();
 
   const appendLine = (text: string, className = ''): void => {
     const line = document.createElement('div');
@@ -208,8 +231,14 @@ async function bootDevTerminal(): Promise<void> {
     }
   ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
+  const runtimeManifests = (
+    window as Window & { __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests }
+  ).__tracecodeRuntimeAssetManifests;
+  const javaAvailable = runtimeManifests?.java !== undefined;
+
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
+    ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
     pythonProjectTimeoutMs: 120_000,
     javaProjectTimeoutMs: 120_000,
     csharpProjectTimeoutMs: 120_000,
@@ -233,8 +262,12 @@ async function bootDevTerminal(): Promise<void> {
             'node takehome/js/main.js',
             'tsc --project takehome/ts/tsconfig.json',
             'node takehome/ts/dist/index.js',
-            'javac -d takehome/java/out takehome/java/stressjava/Main.java takehome/java/stressjava/Order.java takehome/java/stressjava/OrderParser.java takehome/java/stressjava/ReportWriter.java',
-            'java --class-path takehome/java/out stressjava.Main',
+            ...(javaAvailable
+              ? [
+                  'javac -d takehome/java/out takehome/java/stressjava/Main.java takehome/java/stressjava/Order.java takehome/java/stressjava/OrderParser.java takehome/java/stressjava/ReportWriter.java',
+                  'java --class-path takehome/java/out stressjava.Main',
+                ]
+              : []),
             { command: 'clang++ -std=c++17 main.cpp order.cpp -o ../analyzer', cwd: 'takehome/cpp/src' },
             { command: './analyzer', cwd: 'takehome/cpp' },
             'dotnet run --project takehome/csharp/app/App.csproj',
@@ -242,7 +275,7 @@ async function bootDevTerminal(): Promise<void> {
         },
         build: {
           steps: [
-            'javac Main.java',
+            ...(javaAvailable ? ['javac Main.java'] : []),
             'clang++ -std=c++17 main.cpp helper.cpp -o session-cpp',
             'dotnet build WeatherApi.csproj --nologo',
             'dotnet build takehome/csharp/app/App.csproj --nologo',
@@ -257,7 +290,7 @@ async function bootDevTerminal(): Promise<void> {
             'node takehome/ts/dist/index.js',
           ],
         },
-        java: 'javac Main.java && java Main',
+        ...(javaAvailable ? { java: 'javac Main.java && java Main' } : {}),
         csharp: 'dotnet run -- alpha beta',
         cpp: 'clang++ -std=c++17 main.cpp helper.cpp && ./a.out',
       },
@@ -1091,6 +1124,7 @@ int main(int argc, char** argv) {
     return 'plaintext';
   };
 
+  const monaco = await monacoPromise;
   const projectEditor = monaco.editor.create(editorRoot, {
     value: '',
     language: 'python',
@@ -1218,27 +1252,31 @@ int main(int argc, char** argv) {
       command:
         'python3 -c "from pathlib import Path; Path(\\"mvp-python.txt\\").write_text(\\"python-live\\\\n\\"); print(Path(\\"mvp-python.txt\\").read_text().strip()); open(\\"/dev/stdout\\", \\"w\\").write(\\"python-device\\\\n\\")"',
     },
-    java: {
-      label: 'Java bridged FS + stdio',
-      command: 'javac MvpJava.java && java MvpJava',
-      setup: async () => {
-        await workspace.writeFile(
-          'MvpJava.java',
-          [
-            'import java.nio.file.Files;',
-            'import java.nio.file.Path;',
-            'class MvpJava {',
-            '  public static void main(String[] args) throws Exception {',
-            '    Files.writeString(Path.of("mvp-java.txt"), "java-live\\n");',
-            '    System.out.print(Files.readString(Path.of("mvp-java.txt")));',
-            '    System.out.print("java-stdio\\n");',
-            '  }',
-            '}',
-            '',
-          ].join('\n')
-        );
-      },
-    },
+    ...(javaAvailable
+      ? {
+          java: {
+            label: 'Java bridged FS + stdio',
+            command: 'javac MvpJava.java && java MvpJava',
+            setup: async () => {
+              await workspace.writeFile(
+                'MvpJava.java',
+                [
+                  'import java.nio.file.Files;',
+                  'import java.nio.file.Path;',
+                  'class MvpJava {',
+                  '  public static void main(String[] args) throws Exception {',
+                  '    Files.writeString(Path.of("mvp-java.txt"), "java-live\\n");',
+                  '    System.out.print(Files.readString(Path.of("mvp-java.txt")));',
+                  '    System.out.print("java-stdio\\n");',
+                  '  }',
+                  '}',
+                  '',
+                ].join('\n')
+              );
+            },
+          },
+        }
+      : {}),
     csharp: {
       label: 'C# bridged FS + stdio',
       command: 'dotnet run --project mvp-csharp/MvpCSharp.csproj',
@@ -1561,7 +1599,11 @@ int main(int argc, char** argv) {
   updatePrompt();
   await renderFileTree();
   await openFile(activeFilePath);
-  appendLine('Try: python3 main.py, node index.js, javac Main.java && java Main, or mvp js');
+  appendLine(
+    javaAvailable
+      ? 'Try: python3 main.py, node index.js, javac Main.java && java Main, or mvp js'
+      : 'Try: python3 main.py, node index.js, or mvp js. Java requires an injected consumer runtime manifest.'
+  );
   input.disabled = false;
   input.focus();
 
