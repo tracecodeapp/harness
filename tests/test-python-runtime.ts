@@ -3857,7 +3857,6 @@ async function assertVirtualScandirMatchesIteratorContract(): Promise<void> {
   const script = `
 import os
 import stat
-from pathlib import Path
 
 ${helperSource}
 
@@ -3886,7 +3885,8 @@ assert list(closed) == []
 original_scandir = os.scandir
 os.scandir = lambda path: _virtual_scandir(os.fspath(path), _entries, _kind, _stat)
 try:
-    assert [path.name for path in Path("/proc").iterdir()] == ["kernel", "self"]
+    with os.scandir("/proc") as proc_entries:
+        assert [entry.name for entry in proc_entries] == ["kernel", "self"]
 finally:
     os.scandir = original_scandir
 `;
