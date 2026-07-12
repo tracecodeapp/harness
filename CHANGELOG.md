@@ -28,6 +28,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 - Fixed external HTTP validation and response handling across redirect policy, streaming bodies, header normalization, request budgets, aborts, timeouts, and listener cleanup.
 - Fixed browser worker reuse and disposal edge cases so user execution state, pending HTTP work, runtime authority, compiler frames, and project resources do not leak into later commands.
 - Fixed packaged runtime initialization so the generated shared browser policy is loaded before public worker execution.
+- Fixed fresh-checkout source test resolution so workspace packages use the shared core source mapping before build artifacts exist.
 - Updated Python project stdio regression coverage to match the bounded interpreter-level stream bridge while leaving provider-level callbacks host-owned.
 - Documented the Java asset boundary: consumers supply the CheerpJ 4.2 loader URL, and this release does not redistribute or host CheerpJ runtime files.
 
