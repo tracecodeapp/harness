@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.10.0] - 2026-07-12
+
+### Added
+
+- Added consumer-owned browser runtime asset manifests across Python, JavaScript/TypeScript, Java, C#, and C++, with explicit runtime origins, delivery modes, integrity metadata, preflight validation, and configurable runtime paths. The harness remains CDN-neutral: consumers can use their own CDN or first-party infrastructure without coupling deployment to TraceCode.
+- Added a cross-origin browser execution host for isolating runtime workers from the application origin, including origin policy, lifecycle controls, transferable trace batching, and project-workspace integration.
+- Added permanent per-execution authority boundaries and disposable project workers while retaining explicitly trusted warm compiler/runtime coordinators. Browser runtime capabilities now remain scoped across computed, prototype, deferred, and cross-command access paths.
+- Added browser project runtime benchmarking and deployment guidance, including cached A/B measurements, classic-provider performance ceilings, execution-host setup, runtime asset ownership, and isolation contracts.
+- Added Java project workspace profiles for compiler-heavy session reuse and disposable command execution, plus persisted project resources and workspace-aware classpath handling.
+
+### Changed
+
+- Improved browser runtime lifecycle and repeat execution performance with explicit warmup, one-shot prewarm pools, compile/artifact caching, bounded transferable trace batches, and runtime-specific coordinator/worker separation.
+- Improved Python browser distribution with a consumer-configured module worker, explicit package manifests, deterministic package preload failure behavior, and self-hostable Pyodide asset plumbing.
+- Reduced the shipped C# browser reference pack to the assemblies required by the supported contract and improved C# and C++ compiler cache lifecycle behavior.
+- Improved browser project storage, concurrent command isolation, runtime HTTP bridging, filesystem observation, redirects, streaming responses, and command-scoped cleanup.
+- Expanded build and release gates so generated policy, language assets, browser execution hosting, runtime authority, worker lifecycle, package preload, and external HTTP behavior are validated through their public surfaces.
+
+### Fixed
+
+- Fixed project filesystem observation and mutation behavior across path validation, file and directory operations, symlink handling, descriptor activity, final diffs, and event ordering.
+- Fixed external HTTP validation and response handling across redirect policy, streaming bodies, header normalization, request budgets, aborts, timeouts, and listener cleanup.
+- Fixed browser worker reuse and disposal edge cases so user execution state, pending HTTP work, runtime authority, compiler frames, and project resources do not leak into later commands.
+- Fixed packaged runtime initialization so the generated shared browser policy is loaded before public worker execution.
+- Documented the Java asset boundary: consumers supply the CheerpJ 4.2 loader URL, and this release does not redistribute or host CheerpJ runtime files.
+
 ## [0.9.10] - 2026-07-05
 
 Re-release of the 0.9.9 changes with a correctly built `dist`. (0.9.9 was published from a stale `dist` and shipped none of the code below; a `prepublishOnly` build guard now prevents this.)
