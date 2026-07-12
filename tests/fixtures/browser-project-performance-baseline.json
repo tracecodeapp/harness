@@ -3,6 +3,7 @@
   "recordedAt": "2026-07-12",
   "samplesPerCell": 5,
   "browserContexts": "fresh",
+  "browserProcesses": "fresh per provider-engine cell",
   "runtimeDownloads": "excluded from repeated command phases with immutable local asset delivery",
   "tolerance": {
     "relative": 1.5,

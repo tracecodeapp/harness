@@ -26,23 +26,15 @@ jobs:
       - name: Install ${{ matrix.engine }}
         run: pnpm exec playwright install --with-deps ${{ matrix.engine }}
       - name: Measure ${{ matrix.engine }} project providers
-        run: >-
-          pnpm bench:browser-project-runtimes
-          --engine=${{ matrix.engine }}
-          --languages=python,javascript,typescript,java,csharp,cpp
-          --iterations=5
-          --cache-assets
-          --execution-host
-          --runtime-manifests=tests/fixtures/browser-project-java-cheerpj-4.2.json
-          --request-timeout-ms=180000
-          --report=reports/browser-project-runtime-${{ matrix.engine }}.json
-      - name: Check ${{ matrix.engine }} regression budget
-        run: >-
-          pnpm check:browser-project-performance
-          --report=reports/browser-project-runtime-${{ matrix.engine }}.json
+        env:
+          TRACECODE_PROJECT_MATRIX_ENGINES: ${{ matrix.engine }}
+          TRACECODE_PROJECT_MATRIX_ITERATIONS: 5
+          TRACECODE_PROJECT_MATRIX_REPORT_DIR: reports
+          TRACECODE_PROJECT_MATRIX_PERFORMANCE_GATE: 1
+        run: pnpm test:project-browser-matrix
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: browser-project-runtime-${{ matrix.engine }}
-          path: reports/browser-project-runtime-${{ matrix.engine }}.json
+          path: reports/browser-project-runtime-${{ matrix.engine }}-*.json
           if-no-files-found: error

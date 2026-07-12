@@ -57,6 +57,8 @@ pnpm test:project-browser-matrix
 `TRACECODE_PROJECT_MATRIX_ENGINES` and `TRACECODE_PROJECT_MATRIX_LANGUAGES`
 can select a strict subset for local diagnosis. CI installs and runs all three
 engines so browser compatibility cannot silently collapse back to Chromium.
+Each provider-engine cell launches a fresh browser process, preventing a
+previous provider's WASM/JIT memory from contaminating compatibility or timing.
 
 `--runtime-manifests` accepts either a runtime map directly or an object with a
 `runtimeManifests` property. `TRACECODE_BENCH_RUNTIME_MANIFESTS` is the CI
@@ -173,7 +175,8 @@ The gate requires five passing samples per cell and applies both relative and
 absolute tolerance. It is deliberately a broad regression detector, not a
 promise that CI hardware reproduces a developer laptop to the millisecond.
 `.github/workflows/browser-performance.yml` runs Chromium, Firefox, and WebKit
-as separate nightly/manual jobs and retains each raw report as an artifact.
+as separate nightly/manual jobs, measures each provider in its own browser
+process, and retains the per-provider raw reports as artifacts.
 
 The 2026-07-12 baseline also establishes an important engine distinction:
 Firefox passed the full contract but was substantially slower for Python, C#,
