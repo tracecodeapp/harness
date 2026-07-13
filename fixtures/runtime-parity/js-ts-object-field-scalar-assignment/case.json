@@ -48,16 +48,12 @@
           "next"
         ],
         "pathDepth": 1,
-        "value": {
-          "__ref__": "list-1"
-        }
+        "valueRef": "list-1"
       },
       {
         "kind": "write",
         "variable": "cur",
-        "value": {
-          "__ref__": "list-1"
-        }
+        "valueRef": "list-1"
       }
     ]
   },

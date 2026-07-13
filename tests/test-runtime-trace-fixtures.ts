@@ -160,6 +160,7 @@ interface RuntimeTraceEventAssertion {
   method?: string;
   args?: unknown[];
   value?: unknown;
+  valueRef?: string;
 }
 
 interface RuntimeTraceEventCountAssertion extends RuntimeTraceEventAssertion {
@@ -1259,6 +1260,11 @@ function eventMatchesAssertion(event: RuntimeTrace['events'][number], assertion:
   }
   if (assertion.value !== undefined) {
     if (!('value' in event) || stableStringify(event.value) !== stableStringify(assertion.value)) return false;
+  }
+  if (assertion.valueRef !== undefined) {
+    if (!('value' in event) || event.value === null || typeof event.value !== 'object') return false;
+    const value = event.value as { __id__?: unknown; __ref__?: unknown };
+    if (value.__id__ !== assertion.valueRef && value.__ref__ !== assertion.valueRef) return false;
   }
   return true;
 }
