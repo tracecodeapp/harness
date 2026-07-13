@@ -3507,6 +3507,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
         {
+            if (collectionVariables.Contains(identifier.Identifier.ValueText))
+            {
+                return TraceStatement(
+                    $"TraceCode.Internal.TraceCodeTrace.WithIndexSources({CreateIndexSourcesExpression(sourceIndexExpression)}, (System.Action)(() => {arrayExpression}[{runtimeIndexExpression}] = {assignment.Right}));"
+                );
+            }
+
             string indexTempName = $"__tracecode_indexed_assignment_index_{indexedAssignmentCounter++}";
             string valueTempName = $"__tracecode_indexed_assignment_value_{indexedAssignmentCounter++}";
             string unaryWriteStatements = string.Join(" ", GetUnaryIdentifierWriteNames(assignment)

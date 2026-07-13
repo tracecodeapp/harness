@@ -560,14 +560,6 @@
             "pathDepth": 1
           },
           {
-            "kind": "read",
-            "variable": "i"
-          },
-          {
-            "kind": "read",
-            "variable": "left"
-          },
-          {
             "kind": "write",
             "variable": "pulled"
           }
@@ -623,14 +615,6 @@
             "pathDepth": 2
           },
           {
-            "kind": "read",
-            "variable": "mid"
-          },
-          {
-            "kind": "read",
-            "variable": "nums"
-          },
-          {
             "kind": "write",
             "variable": "tail"
           }
@@ -659,14 +643,6 @@
             "kind": "read",
             "variable": "nums",
             "pathDepth": 2
-          },
-          {
-            "kind": "read",
-            "variable": "mid"
-          },
-          {
-            "kind": "read",
-            "variable": "nums"
           },
           {
             "kind": "write",

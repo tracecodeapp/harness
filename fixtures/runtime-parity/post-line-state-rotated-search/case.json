@@ -118,29 +118,6 @@
     "returnHit"
   ],
   "expectLineSequenceByLanguage": {
-    "csharp": [
-      "initLeft",
-      "initRight",
-      "condition",
-      "condition",
-      "mid",
-      "hitCheck",
-      "leftSortedCheck",
-      "targetInLeftCheck",
-      "moveLeft",
-      "condition",
-      "condition",
-      "mid",
-      "hitCheck",
-      "leftSortedCheck",
-      "targetInLeftCheck",
-      "moveRight",
-      "condition",
-      "condition",
-      "mid",
-      "hitCheck",
-      "returnHit"
-    ],
     "cpp": [
       "initLeft",
       "initRight",

@@ -112,16 +112,6 @@
         },
         {
           "count": 1,
-          "kind": "read",
-          "variable": "matrix"
-        },
-        {
-          "count": 1,
-          "kind": "read",
-          "variable": "pizza"
-        },
-        {
-          "count": 1,
           "kind": "write",
           "variable": "cols"
         },
@@ -484,10 +474,6 @@
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "matrix"
-          },
-          {
-            "kind": "read",
             "pathDepth": 2,
             "variable": "matrix"
           },
@@ -510,10 +496,6 @@
       },
       "stringRowLength": {
         "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "pizza"
-          },
           {
             "kind": "read",
             "pathDepth": 2,
