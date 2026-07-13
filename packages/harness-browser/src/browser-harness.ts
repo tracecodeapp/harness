@@ -4,10 +4,7 @@ import type {
   RuntimeClient,
 } from '@tracecode/harness-core';
 import type { LanguageRuntimeInfo } from '@tracecode/harness-core';
-import {
-  getLanguageRuntimeInfo,
-  getSupportedLanguageRuntimeInfos,
-} from '@tracecode/harness-core';
+import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
 import { JavaScriptWorkerClient } from './javascript-worker-client';
 import { createJavaScriptRuntimeClient } from './javascript-runtime-client';
 import { JavaWorkerClient } from './java-worker-client';
@@ -28,15 +25,26 @@ import {
 } from './runtime-assets';
 import { createBrowserRuntimeAssetPreflight } from './runtime-asset-preflight';
 import {
+  createBrowserRuntimeEnvironment,
+  type BrowserRuntimeEnvironment,
+  type BrowserRuntimeEnvironmentReport,
+  type BrowserRuntimeFeatureSupport,
+  type BrowserRuntimeEngine,
+  type BrowserRuntimeReadiness,
+} from './runtime-environment';
+import {
   getLanguageRuntimeProfile,
-  getSupportedLanguageProfiles,
-  isLanguageSupported,
-  SUPPORTED_LANGUAGES,
 } from './runtime-profiles';
 
 export interface CreateBrowserHarnessOptions {
   assetBaseUrl?: string;
   assets?: BrowserHarnessAssetOverrides;
+  /** Optional shared V2 deployment/readiness environment. */
+  environment?: BrowserRuntimeEnvironment;
+  /** Providers exposed by this harness. Defaults to every built-in language. */
+  providers?: readonly Language[];
+  engine?: BrowserRuntimeEngine;
+  featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
   debug?: boolean;
   java?: {
     workerIdleTimeoutMs?: number;
@@ -60,6 +68,7 @@ export interface CreateBrowserHarnessOptions {
 
 export interface BrowserHarness {
   readonly assets: BrowserHarnessAssets;
+  readonly environment: BrowserRuntimeEnvironment;
   readonly supportedLanguages: readonly Language[];
   getClient(language: Language): RuntimeClient;
   getProfile(language: Language): LanguageRuntimeProfile;
@@ -67,6 +76,8 @@ export interface BrowserHarness {
   getLanguageInfo(language: Language): LanguageRuntimeInfo;
   getSupportedLanguageInfos(): readonly LanguageRuntimeInfo[];
   isLanguageSupported(language: Language): boolean;
+  preflightLanguage(language: Language): Promise<BrowserRuntimeReadiness>;
+  preflight(): Promise<BrowserRuntimeEnvironmentReport>;
   warmLanguage(language: Language): Promise<{ success: boolean; loadTimeMs: number }>;
   disposeLanguage(language: Language): void;
   dispose(): void;
@@ -74,7 +85,8 @@ export interface BrowserHarness {
 
 class BrowserHarnessRuntime implements BrowserHarness {
   readonly assets: BrowserHarnessAssets;
-  readonly supportedLanguages = SUPPORTED_LANGUAGES;
+  readonly environment: BrowserRuntimeEnvironment;
+  readonly supportedLanguages: readonly Language[];
 
   private readonly pythonWorkerClient: PythonWorkerClient;
   private readonly javaScriptWorkerClient: JavaScriptWorkerClient;
@@ -84,7 +96,25 @@ class BrowserHarnessRuntime implements BrowserHarness {
   private readonly clients: Record<Language, RuntimeClient>;
 
   constructor(options: CreateBrowserHarnessOptions = {}) {
-    this.assets = resolveBrowserHarnessAssets(options);
+    if (
+      options.environment &&
+      (options.assetBaseUrl !== undefined || options.assets !== undefined || options.providers !== undefined ||
+        options.engine !== undefined || options.featureOverrides !== undefined)
+    ) {
+      throw new TypeError(
+        'CreateBrowserHarnessOptions.environment cannot be combined with asset, provider, engine, or feature overrides.'
+      );
+    }
+    this.environment = options.environment ?? createBrowserRuntimeEnvironment({
+      assetBaseUrl: options.assetBaseUrl,
+      assets: options.assets,
+      providers: options.providers,
+      surface: 'classic',
+      engine: options.engine,
+      featureOverrides: options.featureOverrides,
+    });
+    this.assets = this.environment.assets;
+    this.supportedLanguages = this.environment.providers;
     const assetPreflight = createBrowserRuntimeAssetPreflight(this.assets.runtimeManifests);
     const preflight = (runtime: BrowserRuntimeId, assetNames: readonly string[]) =>
       () => assetPreflight.preflight(runtime, assetNames);
@@ -255,6 +285,9 @@ class BrowserHarnessRuntime implements BrowserHarness {
   }
 
   getClient(language: Language): RuntimeClient {
+    if (!this.supportedLanguages.includes(language)) {
+      throw new Error(`Runtime for language "${language}" is not selected in this browser environment.`);
+    }
     const client = this.clients[language];
     if (!client) {
       throw new Error(`Runtime for language "${language}" is not implemented yet.`);
@@ -267,7 +300,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
   }
 
   getSupportedLanguageProfiles(): readonly LanguageRuntimeProfile[] {
-    return getSupportedLanguageProfiles();
+    return this.supportedLanguages.map((language) => getLanguageRuntimeProfile(language));
   }
 
   getLanguageInfo(language: Language): LanguageRuntimeInfo {
@@ -275,14 +308,25 @@ class BrowserHarnessRuntime implements BrowserHarness {
   }
 
   getSupportedLanguageInfos(): readonly LanguageRuntimeInfo[] {
-    return getSupportedLanguageRuntimeInfos();
+    return this.supportedLanguages.map((language) => getLanguageRuntimeInfo(language));
   }
 
   isLanguageSupported(language: Language): boolean {
-    return isLanguageSupported(language);
+    return this.supportedLanguages.includes(language);
+  }
+
+  preflightLanguage(language: Language): Promise<BrowserRuntimeReadiness> {
+    return this.environment.preflight(language);
+  }
+
+  preflight(): Promise<BrowserRuntimeEnvironmentReport> {
+    return this.environment.preflightAll();
   }
 
   warmLanguage(language: Language): Promise<{ success: boolean; loadTimeMs: number }> {
+    if (!this.supportedLanguages.includes(language)) {
+      return Promise.reject(new Error(`Runtime for language "${language}" is not selected in this browser environment.`));
+    }
     if (language === 'python') {
       return this.pythonWorkerClient.warmup();
     }
@@ -302,6 +346,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
   }
 
   disposeLanguage(language: Language): void {
+    if (!this.supportedLanguages.includes(language)) return;
     if (language === 'python') {
       this.pythonWorkerClient.terminate();
       return;

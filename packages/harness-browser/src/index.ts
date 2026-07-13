@@ -2,6 +2,7 @@ export * from './browser-harness';
 export * from './runtime-capability-guards';
 export * from './runtime-profiles';
 export * from './execution-host';
+export * from './runtime-environment';
 export * from '../../harness-core/src/runtime-language-info';
 export {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
