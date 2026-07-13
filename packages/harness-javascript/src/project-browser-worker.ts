@@ -44,6 +44,10 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
   private nextRequestId = 1;
   private readonly listeners = new Map<string, RuntimeKernelHttpHandler>();
   private readonly listenerInfo = new Map<string, RuntimeKernelHttpListenerInfo>();
+  private readonly listenerRegistrations = new Map<string, {
+    resolve: (info: RuntimeKernelHttpListenerInfo) => void;
+    reject: (error: Error) => void;
+  }>();
   private readonly dispatchRequests = new Map<string, {
     resolve: (response: RuntimeKernelHttpResponse) => void;
     reject: (error: Error) => void;
@@ -67,6 +71,16 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
     };
     this.listeners.set(listenerId, handler);
     this.listenerInfo.set(listenerId, optimisticInfo);
+    let resolveRegistration!: (info: RuntimeKernelHttpListenerInfo) => void;
+    let rejectRegistration!: (error: Error) => void;
+    const ready = new Promise<RuntimeKernelHttpListenerInfo>((resolve, reject) => {
+      resolveRegistration = resolve;
+      rejectRegistration = reject;
+    });
+    this.listenerRegistrations.set(listenerId, {
+      resolve: resolveRegistration,
+      reject: rejectRegistration,
+    });
     this.postProtocolMessage({
       type: 'kernel-http-listen',
       listenerId,
@@ -79,14 +93,16 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
       get info() {
         return listenerInfo.get(listenerId) ?? optimisticInfo;
       },
+      ready,
       close: () => {
         if (closed) return;
         closed = true;
         this.listeners.delete(listenerId);
         this.listenerInfo.delete(listenerId);
+        this.listenerRegistrations.delete(listenerId);
         this.postProtocolMessage({ type: 'kernel-http-close', listenerId });
       },
-    } as RuntimeKernelHttpListenerHandle;
+    };
   }
 
   dispatch(request: RuntimeKernelHttpRequest, options: RuntimeKernelHttpDispatchOptions = {}): Promise<RuntimeKernelHttpResponse> {
@@ -132,11 +148,18 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
 
   updateListenerInfo(listenerId: string, info: RuntimeKernelHttpListenerInfo): void {
     this.listenerInfo.set(listenerId, info);
+    this.listenerRegistrations.get(listenerId)?.resolve(info);
+    this.listenerRegistrations.delete(listenerId);
   }
 
-  failListener(listenerId: string): void {
+  failListener(listenerId: string, message: string): void {
     this.listeners.delete(listenerId);
     this.listenerInfo.delete(listenerId);
+    const error = new Error(message);
+    const code = /^([A-Z][A-Z0-9_]+):/.exec(message)?.[1];
+    if (code) Object.assign(error, { code });
+    this.listenerRegistrations.get(listenerId)?.reject(error);
+    this.listenerRegistrations.delete(listenerId);
   }
 
   abortRequest(requestId: string): void {
@@ -240,7 +263,7 @@ function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
     if (message.type === 'kernel-http-error' && message.requestId) {
       command.bridge.rejectDispatch(message.requestId, message.error);
     } else if (message.type === 'kernel-http-error' && message.listenerId) {
-      command.bridge.failListener(message.listenerId);
+      command.bridge.failListener(message.listenerId, message.error);
     }
     return true;
   }

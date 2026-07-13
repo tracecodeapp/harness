@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.11.1] - 2026-07-13
+
+### Fixed
+
+- Fixed browser-backed Node HTTP listener registration so `server.listen()` only reports success after TraceKernel accepts the bind. Conflicting listeners started from another project terminal now fail with `EADDRINUSE`, do not invoke the listen callback, and leave the original server running.
+
 ## [0.11.0] - 2026-07-12
 
 ### Added

@@ -2103,10 +2103,16 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
   const activeHandles = new Set<RuntimeKernelHttpListenerHandle>();
   const activeClientAborters = new Set<() => void>();
   let activeClientRequests = 0;
-  const closeWaiters: Array<() => void> = [];
+  let activeWorkError: Error | null = null;
+  const closeWaiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
   const notifyCloseWaiters = (): void => {
     if (activeHandles.size > 0 || activeClientRequests > 0) return;
-    while (closeWaiters.length > 0) closeWaiters.shift()?.();
+    while (closeWaiters.length > 0) {
+      const waiter = closeWaiters.shift();
+      if (!waiter) continue;
+      if (activeWorkError) waiter.reject(activeWorkError);
+      else waiter.resolve();
+    }
   };
   const closeHandle = (handle: RuntimeKernelHttpListenerHandle): void => {
     if (!activeHandles.delete(handle)) return;
@@ -2129,7 +2135,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
         const port = typeof args[0] === 'number' || typeof args[0] === 'string' ? Number(args[0]) : 80;
         const host = typeof args[1] === 'string' ? args[1] : undefined;
         const callback = args.find((arg): arg is () => void => typeof arg === 'function');
-        handle = kernelHttp.listen({ port, ...(host ? { host } : {}) }, async (request) => {
+        const listenerHandle = kernelHttp.listen({ port, ...(host ? { host } : {}) }, async (request) => {
           const incoming = createIncomingMessage(request);
           const responsePromise = new Promise<RuntimeKernelHttpResponse>((resolve) => {
             const response = createServerResponse(resolve);
@@ -2150,10 +2156,32 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
           });
           return responsePromise;
         });
-        activeHandles.add(handle);
-        server.listening = true;
-        events.emit('listening');
-        callback?.();
+        handle = listenerHandle;
+        activeHandles.add(listenerHandle);
+        const markListening = (): void => {
+          if (handle !== listenerHandle) return;
+          server.listening = true;
+          events.emit('listening');
+          callback?.();
+        };
+        if (listenerHandle.ready) {
+          void listenerHandle.ready.then(markListening, (cause) => {
+            if (handle !== listenerHandle) return;
+            server.listening = false;
+            const error = cause instanceof Error ? cause : new Error(String(cause));
+            try {
+              if (!events.emit('error', error)) activeWorkError ??= error;
+            } catch (unhandledError) {
+              activeWorkError ??= unhandledError instanceof Error
+                ? unhandledError
+                : new Error(String(unhandledError));
+            }
+            closeHandle(listenerHandle);
+            if (handle === listenerHandle) handle = null;
+          });
+        } else {
+          markListening();
+        }
         return server;
       },
       close: (callback?: (error?: Error) => void) => {
@@ -2587,8 +2615,8 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
     Response: TraceKernelResponse,
     hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0,
     waitForClose: () => activeHandles.size === 0 && activeClientRequests === 0
-      ? Promise.resolve()
-      : new Promise<void>((resolve) => closeWaiters.push(resolve)),
+      ? activeWorkError ? Promise.reject(activeWorkError) : Promise.resolve()
+      : new Promise<void>((resolve, reject) => closeWaiters.push({ resolve, reject })),
     closeAll,
   };
 }
@@ -7525,9 +7553,7 @@ export async function runBrowserJavaScriptProjectRequest(
         await Promise.resolve();
       }
 
-      if (httpApi.hasActiveWork()) {
-        await httpApi.waitForClose();
-      }
+      await httpApi.waitForClose();
       await eventLoopApi.drain();
       liveIo.close();
       await liveIo.flush();

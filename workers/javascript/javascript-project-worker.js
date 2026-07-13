@@ -5272,10 +5272,16 @@ function createHttpApi(kernelHttp, signal) {
   const activeHandles = /* @__PURE__ */ new Set();
   const activeClientAborters = /* @__PURE__ */ new Set();
   let activeClientRequests = 0;
+  let activeWorkError = null;
   const closeWaiters = [];
   const notifyCloseWaiters = () => {
     if (activeHandles.size > 0 || activeClientRequests > 0) return;
-    while (closeWaiters.length > 0) closeWaiters.shift()?.();
+    while (closeWaiters.length > 0) {
+      const waiter = closeWaiters.shift();
+      if (!waiter) continue;
+      if (activeWorkError) waiter.reject(activeWorkError);
+      else waiter.resolve();
+    }
   };
   const closeHandle = (handle) => {
     if (!activeHandles.delete(handle)) return;
@@ -5297,7 +5303,7 @@ function createHttpApi(kernelHttp, signal) {
         const port = typeof args[0] === "number" || typeof args[0] === "string" ? Number(args[0]) : 80;
         const host = typeof args[1] === "string" ? args[1] : void 0;
         const callback = args.find((arg) => typeof arg === "function");
-        handle = kernelHttp.listen({ port, ...host ? { host } : {} }, async (request2) => {
+        const listenerHandle = kernelHttp.listen({ port, ...host ? { host } : {} }, async (request2) => {
           const incoming = createIncomingMessage(request2);
           const responsePromise = new Promise((resolve) => {
             const response = createServerResponse(resolve);
@@ -5318,10 +5324,30 @@ function createHttpApi(kernelHttp, signal) {
           });
           return responsePromise;
         });
-        activeHandles.add(handle);
-        server.listening = true;
-        events.emit("listening");
-        callback?.();
+        handle = listenerHandle;
+        activeHandles.add(listenerHandle);
+        const markListening = () => {
+          if (handle !== listenerHandle) return;
+          server.listening = true;
+          events.emit("listening");
+          callback?.();
+        };
+        if (listenerHandle.ready) {
+          void listenerHandle.ready.then(markListening, (cause) => {
+            if (handle !== listenerHandle) return;
+            server.listening = false;
+            const error = cause instanceof Error ? cause : new Error(String(cause));
+            try {
+              if (!events.emit("error", error)) activeWorkError ??= error;
+            } catch (unhandledError) {
+              activeWorkError ??= unhandledError instanceof Error ? unhandledError : new Error(String(unhandledError));
+            }
+            closeHandle(listenerHandle);
+            if (handle === listenerHandle) handle = null;
+          });
+        } else {
+          markListening();
+        }
         return server;
       },
       close: (callback) => {
@@ -5703,7 +5729,7 @@ function createHttpApi(kernelHttp, signal) {
     Request: TraceKernelRequest,
     Response: TraceKernelResponse,
     hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0,
-    waitForClose: () => activeHandles.size === 0 && activeClientRequests === 0 ? Promise.resolve() : new Promise((resolve) => closeWaiters.push(resolve)),
+    waitForClose: () => activeHandles.size === 0 && activeClientRequests === 0 ? activeWorkError ? Promise.reject(activeWorkError) : Promise.resolve() : new Promise((resolve, reject) => closeWaiters.push({ resolve, reject })),
     closeAll
   };
 }
@@ -9578,9 +9604,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
       await Promise.resolve();
     }
-    if (httpApi.hasActiveWork()) {
-      await httpApi.waitForClose();
-    }
+    await httpApi.waitForClose();
     await eventLoopApi.drain();
     liveIo.close();
     await liveIo.flush();
@@ -9655,6 +9679,7 @@ var WorkerKernelHttpBridge = class {
   nextRequestId = 1;
   listeners = /* @__PURE__ */ new Map();
   listenerInfo = /* @__PURE__ */ new Map();
+  listenerRegistrations = /* @__PURE__ */ new Map();
   dispatchRequests = /* @__PURE__ */ new Map();
   serverRequestAbortControllers = /* @__PURE__ */ new Map();
   listen(options, handler) {
@@ -9669,6 +9694,16 @@ var WorkerKernelHttpBridge = class {
     };
     this.listeners.set(listenerId, handler);
     this.listenerInfo.set(listenerId, optimisticInfo);
+    let resolveRegistration;
+    let rejectRegistration;
+    const ready = new Promise((resolve, reject) => {
+      resolveRegistration = resolve;
+      rejectRegistration = reject;
+    });
+    this.listenerRegistrations.set(listenerId, {
+      resolve: resolveRegistration,
+      reject: rejectRegistration
+    });
     this.postProtocolMessage({
       type: "kernel-http-listen",
       listenerId,
@@ -9681,11 +9716,13 @@ var WorkerKernelHttpBridge = class {
       get info() {
         return listenerInfo.get(listenerId) ?? optimisticInfo;
       },
+      ready,
       close: () => {
         if (closed) return;
         closed = true;
         this.listeners.delete(listenerId);
         this.listenerInfo.delete(listenerId);
+        this.listenerRegistrations.delete(listenerId);
         this.postProtocolMessage({ type: "kernel-http-close", listenerId });
       }
     };
@@ -9730,10 +9767,17 @@ var WorkerKernelHttpBridge = class {
   }
   updateListenerInfo(listenerId, info) {
     this.listenerInfo.set(listenerId, info);
+    this.listenerRegistrations.get(listenerId)?.resolve(info);
+    this.listenerRegistrations.delete(listenerId);
   }
-  failListener(listenerId) {
+  failListener(listenerId, message) {
     this.listeners.delete(listenerId);
     this.listenerInfo.delete(listenerId);
+    const error = new Error(message);
+    const code = /^([A-Z][A-Z0-9_]+):/.exec(message)?.[1];
+    if (code) Object.assign(error, { code });
+    this.listenerRegistrations.get(listenerId)?.reject(error);
+    this.listenerRegistrations.delete(listenerId);
   }
   abortRequest(requestId) {
     this.serverRequestAbortControllers.get(requestId)?.abort();
@@ -9816,7 +9860,7 @@ function handleKernelHttpHostMessage(message) {
     if (message2.type === "kernel-http-error" && message2.requestId) {
       command.bridge.rejectDispatch(message2.requestId, message2.error);
     } else if (message2.type === "kernel-http-error" && message2.listenerId) {
-      command.bridge.failListener(message2.listenerId);
+      command.bridge.failListener(message2.listenerId, message2.error);
     }
     return true;
   }

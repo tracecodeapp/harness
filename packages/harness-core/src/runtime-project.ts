@@ -367,6 +367,11 @@ export interface RuntimeWorkspaceHttpClient {
 export interface RuntimeKernelHttpListenerHandle {
   readonly id: string;
   readonly info: RuntimeKernelHttpListenerInfo;
+  /**
+   * Resolves once a transported listener has been accepted by the kernel.
+   * In-process listeners are registered synchronously and may omit this.
+   */
+  readonly ready?: Promise<RuntimeKernelHttpListenerInfo>;
   close(): void;
 }
 

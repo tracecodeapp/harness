@@ -6664,6 +6664,15 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
             '',
           ].join('\n'),
         },
+        {
+          path: 'duplicate.js',
+          contents: [
+            'const http = require("node:http");',
+            'http.createServer((_req, res) => res.end("duplicate"))',
+            '  .listen(3100, "127.0.0.1", () => console.log("unexpected-listen"));',
+            '',
+          ].join('\n'),
+        },
       ],
       kernel: { scheduler: { maxConcurrentCommands: 4 } },
       nodeRunner: createBrowserJavaScriptProjectRunner({ workerUrl }),
@@ -6690,6 +6699,23 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
     assertCondition(
       client.stdout === '200:GET /worker-client\n',
       `worker-backed Node http.get should dispatch through TraceKernel: ${client.stdout}`
+    );
+
+    const secondTerminal = workspace.createTerminalSession();
+    const duplicate = await secondTerminal.run('node duplicate.js');
+    assertCondition(duplicate.exitCode !== 0, `worker-backed duplicate bind should fail: ${JSON.stringify(duplicate)}`);
+    assertCondition(
+      duplicate.stderr.includes('EADDRINUSE: address already in use 127.0.0.1:3100'),
+      `worker-backed duplicate bind should report EADDRINUSE: ${JSON.stringify(duplicate)}`
+    );
+    assertCondition(
+      !duplicate.stdout.includes('unexpected-listen'),
+      `worker-backed rejected bind must not invoke the listen callback: ${JSON.stringify(duplicate)}`
+    );
+    const responseAfterConflict = await workspace.runCommand('curl -s http://localhost:3100/still-listening');
+    assertCondition(
+      responseAfterConflict.stdout === 'GET /still-listening\n',
+      `original worker-backed listener should survive a conflicting bind: ${JSON.stringify(responseAfterConflict)}`
     );
 
     const listenerRow = listeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3100\t'));
