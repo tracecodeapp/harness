@@ -1,28 +1,20 @@
 import type {
+  Language,
   RuntimeDirectoryChange,
   RuntimeFileChange,
   RuntimeFileDeletion,
   RuntimeWorkspace,
 } from '@tracecode/harness-core';
-import {
-  createRuntimeWorkspace,
-  normalizeRuntimeProjectPath,
-  type CreateRuntimeWorkspaceOptions,
-} from '../../harness-project/src/index';
-import { createBrowserCSharpProjectRunner } from '../../harness-csharp/src/project-browser';
-import { createBrowserCppProjectRunner } from '../../harness-cpp/src/project-browser';
-import { createBrowserJavaProjectRunner } from '../../harness-java/src/project-browser';
-import {
-  createBrowserJavaScriptProjectRunner,
-  createBrowserTypeScriptProjectRunner,
-  type BrowserJavaScriptProjectRunnerOptions,
-  type BrowserTypeScriptProjectRunnerOptions,
+import { normalizeRuntimeProjectPath } from '@tracecode/harness-core';
+import type { CreateRuntimeWorkspaceOptions } from '../../harness-project/src/index';
+import type {
+  BrowserJavaScriptProjectRunnerOptions,
+  BrowserTypeScriptProjectRunnerOptions,
 } from '../../harness-javascript/src/project-browser';
-import { createBrowserPythonProjectRunner } from '../../harness-python/src/project-browser';
-import { CSharpWorkerClient, type CSharpWorkerClientOptions } from './csharp-worker-client';
-import { CppWorkerClient, type CppWorkerClientOptions } from './cpp-worker-client';
-import { JavaWorkerClient, type JavaWorkerClientOptions } from './java-worker-client';
-import { PythonWorkerClient, type PythonWorkerClientOptions } from './pyodide-worker-client';
+import type { CSharpWorkerClient, CSharpWorkerClientOptions } from './csharp-worker-client';
+import type { CppWorkerClient, CppWorkerClientOptions } from './cpp-worker-client';
+import type { JavaWorkerClient, JavaWorkerClientOptions } from './java-worker-client';
+import type { PythonWorkerClient, PythonWorkerClientOptions } from './pyodide-worker-client';
 import {
   resolveBrowserHarnessAssets,
   type BrowserRuntimeAssetDescriptor,
@@ -58,7 +50,7 @@ export {
   runtimeHttpRequestText,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
-} from '../../harness-project/src/index';
+} from '@tracecode/harness-core';
 export {
   BROWSER_EXECUTION_HOST_PROTOCOL,
   createBrowserExecutionWorkerHost,
@@ -73,6 +65,7 @@ export type BrowserProjectNodeOptions = Omit<BrowserJavaScriptProjectRunnerOptio
 export type BrowserProjectTypeScriptOptions = BrowserTypeScriptProjectRunnerOptions;
 export type BrowserProjectWorkerIsolation = 'shared' | 'per-command';
 export type BrowserProjectJavaLifecycle = 'workspace-session' | 'per-command';
+export type BrowserProjectProvider = Language;
 export interface BrowserProjectExecutionHostOptions extends BrowserExecutionWorkerHostOptions {
   /** Heavy Java runtime lifecycle inside the provider-neutral host. Defaults to workspace-session. */
   javaLifecycle?: BrowserProjectJavaLifecycle;
@@ -158,6 +151,27 @@ interface OneShotWarmOutcome {
 const MAX_PROJECT_PREWARM_DEPTH_PER_LANGUAGE = 2;
 const MAX_PROJECT_PREWARM_DEPTH_TOTAL = 4;
 const PROJECT_PREWARM_RETRY_LIMIT = 2;
+const BROWSER_PROJECT_PROVIDERS: readonly BrowserProjectProvider[] = Object.freeze([
+  'python',
+  'javascript',
+  'typescript',
+  'java',
+  'csharp',
+  'cpp',
+]);
+
+function normalizeBrowserProjectProviders(
+  providers: readonly BrowserProjectProvider[] | undefined
+): readonly BrowserProjectProvider[] {
+  const normalized: BrowserProjectProvider[] = [];
+  for (const provider of providers ?? BROWSER_PROJECT_PROVIDERS) {
+    if (!BROWSER_PROJECT_PROVIDERS.includes(provider)) {
+      throw new TypeError(`Browser project provider ${JSON.stringify(provider)} is not supported.`);
+    }
+    if (!normalized.includes(provider)) normalized.push(provider);
+  }
+  return Object.freeze(normalized);
+}
 
 function normalizeProjectWorkerPrewarm(
   value: BrowserProjectWorkerPrewarmOptions | undefined
@@ -362,10 +376,10 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
 }
 
 function createPerCommandPythonWorkerClient(
-  options: PythonWorkerClientOptions,
-  prewarmDepth = 0
+  prewarmDepth: number,
+  createClient: () => PythonWorkerClient
 ): Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'> {
-  const pool = createOneShotPrewarmedWorkerPool('Python', prewarmDepth, () => new PythonWorkerClient(options));
+  const pool = createOneShotPrewarmedWorkerPool('Python', prewarmDepth, createClient);
   return {
     async executeProjectPython(request, timeoutMs, onEvent, signal) {
       return pool.run(signal, (client) => client.executeProjectPython(request, timeoutMs, onEvent, signal));
@@ -377,11 +391,11 @@ function createPerCommandPythonWorkerClient(
 }
 
 function createPerCommandJavaWorkerClient(
-  options: JavaWorkerClientOptions,
-  prewarmDepth = 0,
+  prewarmDepth: number,
+  createClient: () => JavaWorkerClient,
   validateRuntimeAssets?: () => void
 ): Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'> {
-  const pool = createOneShotPrewarmedWorkerPool('Java', prewarmDepth, () => new JavaWorkerClient(options));
+  const pool = createOneShotPrewarmedWorkerPool('Java', prewarmDepth, createClient);
   return {
     async executeProjectJava(request, timeoutMs, onEvent, signal) {
       validateRuntimeAssets?.();
@@ -394,10 +408,10 @@ function createPerCommandJavaWorkerClient(
 }
 
 function createPerCommandCSharpWorkerClient(
-  options: CSharpWorkerClientOptions,
-  prewarmDepth = 0
+  prewarmDepth: number,
+  createClient: () => CSharpWorkerClient
 ): Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'> {
-  const pool = createOneShotPrewarmedWorkerPool('C#', prewarmDepth, () => new CSharpWorkerClient(options));
+  const pool = createOneShotPrewarmedWorkerPool('C#', prewarmDepth, createClient);
   return {
     async executeProjectCSharp(request, timeoutMs, onEvent, signal) {
       return pool.run(signal, (client) => client.executeProjectCSharp(request, timeoutMs, onEvent, signal));
@@ -408,11 +422,13 @@ function createPerCommandCSharpWorkerClient(
   };
 }
 
-function createPerCommandCppWorkerClient(options: CppWorkerClientOptions): Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'> {
+function createPerCommandCppWorkerClient(
+  createClient: () => CppWorkerClient
+): Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'> {
   const active = new Set<CppWorkerClient>();
   return {
     async executeProjectCpp(request, timeoutMs, onEvent, signal) {
-      const client = new CppWorkerClient(options);
+      const client = createClient();
       active.add(client);
       try {
         return await client.executeProjectCpp(request, timeoutMs, onEvent, signal);
@@ -432,6 +448,8 @@ export interface CreateBrowserProjectWorkspaceOptions
   extends Omit<CreateRuntimeWorkspaceOptions, 'pythonRunner' | 'nodeRunner' | 'javaRunner' | 'csharpRunner' | 'cppRunner'> {
   assetBaseUrl?: string;
   assets?: BrowserHarnessAssetOverrides;
+  /** Runtime providers assembled into this workspace. Defaults to every browser provider. */
+  providers?: readonly BrowserProjectProvider[];
   debug?: boolean;
   pythonWorkerClient?: Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'>;
   javaWorkerClient?: Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'>;
@@ -461,6 +479,39 @@ export interface CreateBrowserProjectWorkspaceOptions
 export async function createBrowserProjectWorkspace(
   options: CreateBrowserProjectWorkspaceOptions = {}
 ): Promise<BrowserProjectWorkspace> {
+  const projectRuntimePromise = import('../../harness-project/src/index');
+  const providers = normalizeBrowserProjectProviders(options.providers);
+  const hasProvider = (provider: BrowserProjectProvider) => providers.includes(provider);
+  const [pythonProvider, javascriptProvider, javaProvider, csharpProvider, cppProvider] = await Promise.all([
+    hasProvider('python')
+      ? Promise.all([
+          import('../../harness-python/src/project-browser'),
+          import('./pyodide-worker-client'),
+        ])
+      : undefined,
+    hasProvider('javascript') || hasProvider('typescript')
+      ? import('../../harness-javascript/src/project-browser')
+      : undefined,
+    hasProvider('java')
+      ? Promise.all([
+          import('../../harness-java/src/project-browser'),
+          import('./java-worker-client'),
+        ])
+      : undefined,
+    hasProvider('csharp')
+      ? Promise.all([
+          import('../../harness-csharp/src/project-browser'),
+          import('./csharp-worker-client'),
+        ])
+      : undefined,
+    hasProvider('cpp')
+      ? Promise.all([
+          import('../../harness-cpp/src/project-browser'),
+          import('./cpp-worker-client'),
+        ])
+      : undefined,
+  ]);
+  const { createRuntimeWorkspace } = await projectRuntimePromise;
   const assets = resolveBrowserHarnessAssets(options);
   const runtimeAssetPreflight = createBrowserRuntimeAssetPreflight(assets.runtimeManifests);
   const pythonManifest = assets.runtimeManifests?.python;
@@ -517,6 +568,7 @@ export async function createBrowserProjectWorkspace(
   const {
     assetBaseUrl: _assetBaseUrl,
     assets: _assets,
+    providers: _providers,
     debug,
     pythonWorkerClient: providedPythonWorkerClient,
     javaWorkerClient: providedJavaWorkerClient,
@@ -546,6 +598,17 @@ export async function createBrowserProjectWorkspace(
   ) {
     throw new Error('executionHost cannot be combined with provided language worker clients.');
   }
+  const providedClientSelections = [
+    ['python', providedPythonWorkerClient],
+    ['java', providedJavaWorkerClient],
+    ['csharp', providedCSharpWorkerClient],
+    ['cpp', providedCppWorkerClient],
+  ] as const;
+  for (const [provider, client] of providedClientSelections) {
+    if (client && !hasProvider(provider)) {
+      throw new Error(`${provider}WorkerClient requires providers to include ${JSON.stringify(provider)}.`);
+    }
+  }
   const javaExecutionLifecycle = executionHostOptions?.javaLifecycle ?? 'workspace-session';
   if (javaExecutionLifecycle !== 'workspace-session' && javaExecutionLifecycle !== 'per-command') {
     throw new TypeError('executionHost.javaLifecycle must be "workspace-session" or "per-command".');
@@ -561,6 +624,11 @@ export async function createBrowserProjectWorkspace(
     );
   }
   const projectPrewarm = normalizeProjectWorkerPrewarm(projectWorkerPrewarm);
+  for (const provider of ['python', 'java', 'csharp'] as const) {
+    if (projectPrewarm[provider] > 0 && !hasProvider(provider)) {
+      throw new Error(`projectWorkerPrewarm.${provider} requires providers to include ${JSON.stringify(provider)}.`);
+    }
+  }
   if (
     projectWorkerIsolation !== 'per-command' &&
     (projectPrewarm.python > 0 || projectPrewarm.java > 0 || projectPrewarm.csharp > 0)
@@ -579,37 +647,40 @@ export async function createBrowserProjectWorkspace(
   if (providedCSharpWorkerClient && projectPrewarm.csharp > 0) {
     throw new Error('projectWorkerPrewarm.csharp cannot be used with a provided csharpWorkerClient.');
   }
-  assertManifestBoundProjectAsset(
-    'javascript',
-    'nodeProject.workerUrl',
-    nodeProject?.workerUrl,
-    assets.javascriptProjectWorker,
-    assets.runtimeManifests?.javascript !== undefined
-  );
-  assertManifestBoundProjectAsset(
-    'typescript',
-    'typescriptProject.compilerUrl',
-    typescriptProject?.compilerUrl,
-    assets.typescriptCompiler,
-    assets.runtimeManifests?.typescript !== undefined
-  );
+  if (hasProvider('javascript')) {
+    assertManifestBoundProjectAsset(
+      'javascript',
+      'nodeProject.workerUrl',
+      nodeProject?.workerUrl,
+      assets.javascriptProjectWorker,
+      assets.runtimeManifests?.javascript !== undefined
+    );
+  }
+  if (hasProvider('typescript')) {
+    assertManifestBoundProjectAsset(
+      'typescript',
+      'typescriptProject.compilerUrl',
+      typescriptProject?.compilerUrl,
+      assets.typescriptCompiler,
+      assets.runtimeManifests?.typescript !== undefined
+    );
+  }
   let executionHost: BrowserExecutionWorkerHost | undefined;
   if (executionHostOptions) {
     executionHost = createBrowserExecutionWorkerHost(executionHostOptions);
     try {
       await executionHost.ready();
-      const javaWorkerAsset = javaManifest?.assets.worker;
-      if (!javaWorkerAsset) {
-        throw new Error('executionHost requires a complete Java runtime manifest.');
-      }
-      const workerUrl = new URL(
-        javaWorkerAsset.url,
-        `${executionHost.origin}/`
-      );
-      if (workerUrl.origin !== executionHost.origin) {
-        throw new Error(
-          `Java manifest worker origin ${JSON.stringify(workerUrl.origin)} must match executionHost origin ${JSON.stringify(executionHost.origin)}.`
-        );
+      if (hasProvider('java')) {
+        const javaWorkerAsset = javaManifest?.assets.worker;
+        if (!javaWorkerAsset) {
+          throw new Error('executionHost requires a complete Java runtime manifest when Java is selected.');
+        }
+        const workerUrl = new URL(javaWorkerAsset.url, `${executionHost.origin}/`);
+        if (workerUrl.origin !== executionHost.origin) {
+          throw new Error(
+            `Java manifest worker origin ${JSON.stringify(workerUrl.origin)} must match executionHost origin ${JSON.stringify(executionHost.origin)}.`
+          );
+        }
       }
       const hostedWorkerUrls = [
         ['python', assets.pythonWorker],
@@ -618,6 +689,7 @@ export async function createBrowserProjectWorkspace(
         ['cpp', assets.cppWorker],
       ] as const;
       for (const [runtime, configuredUrl] of hostedWorkerUrls) {
+        if (!hasProvider(runtime)) continue;
         const hostedWorkerUrl = new URL(configuredUrl, `${executionHost.origin}/`);
         if (hostedWorkerUrl.origin !== executionHost.origin) {
           throw new Error(
@@ -759,18 +831,31 @@ export async function createBrowserProjectWorkspace(
       debug,
       workerIdleTimeoutMs: cppWorkerIdleTimeoutMs,
     };
-    const pythonWorkerClient =
-      providedPythonWorkerClient ??
-      (projectWorkerIsolation === 'per-command'
-        ? createPerCommandPythonWorkerClient(pythonWorkerOptions, projectPrewarm.python)
-        : new PythonWorkerClient(pythonWorkerOptions));
-    if (!providedPythonWorkerClient) ownedWorkers.push(pythonWorkerClient);
-    const javaWorkerClient =
-      providedJavaWorkerClient ??
-      (projectWorkerIsolation === 'per-command' && (!executionHost || javaExecutionLifecycle === 'per-command')
-        ? createPerCommandJavaWorkerClient(javaWorkerOptions, projectPrewarm.java, assertProjectJavaRuntimeAssets)
-        : new JavaWorkerClient(javaWorkerOptions));
-    if (!providedJavaWorkerClient) ownedWorkers.push(javaWorkerClient);
+    const PythonWorkerClientConstructor = pythonProvider?.[1].PythonWorkerClient;
+    const pythonWorkerClient = hasProvider('python')
+      ? providedPythonWorkerClient ?? (
+          projectWorkerIsolation === 'per-command'
+            ? createPerCommandPythonWorkerClient(
+                projectPrewarm.python,
+                () => new PythonWorkerClientConstructor!(pythonWorkerOptions)
+              )
+            : new PythonWorkerClientConstructor!(pythonWorkerOptions)
+        )
+      : undefined;
+    if (pythonWorkerClient && !providedPythonWorkerClient) ownedWorkers.push(pythonWorkerClient);
+    const JavaWorkerClientConstructor = javaProvider?.[1].JavaWorkerClient;
+    const javaWorkerClient = hasProvider('java')
+      ? providedJavaWorkerClient ?? (
+          projectWorkerIsolation === 'per-command' && (!executionHost || javaExecutionLifecycle === 'per-command')
+            ? createPerCommandJavaWorkerClient(
+                projectPrewarm.java,
+                () => new JavaWorkerClientConstructor!(javaWorkerOptions),
+                assertProjectJavaRuntimeAssets
+              )
+            : new JavaWorkerClientConstructor!(javaWorkerOptions)
+        )
+      : undefined;
+    if (javaWorkerClient && !providedJavaWorkerClient) ownedWorkers.push(javaWorkerClient);
     if (executionHost && javaExecutionLifecycle === 'workspace-session' && projectPrewarm.java > 0) {
       if (projectPrewarm.java !== 1) {
         executionHost.dispose();
@@ -778,32 +863,41 @@ export async function createBrowserProjectWorkspace(
       }
       await (javaWorkerClient as JavaWorkerClient).warmup();
     }
-    const csharpWorkerClient =
-      providedCSharpWorkerClient ??
-      (projectWorkerIsolation === 'per-command'
-        ? createPerCommandCSharpWorkerClient(csharpWorkerOptions, projectPrewarm.csharp)
-        : new CSharpWorkerClient(csharpWorkerOptions));
-    if (!providedCSharpWorkerClient) ownedWorkers.push(csharpWorkerClient);
-    const cppWorkerClient =
-      providedCppWorkerClient ??
-      (projectWorkerIsolation === 'per-command'
-        ? createPerCommandCppWorkerClient(cppWorkerOptions)
-        : new CppWorkerClient(cppWorkerOptions));
-    if (!providedCppWorkerClient) ownedWorkers.push(cppWorkerClient);
+    const CSharpWorkerClientConstructor = csharpProvider?.[1].CSharpWorkerClient;
+    const csharpWorkerClient = hasProvider('csharp')
+      ? providedCSharpWorkerClient ?? (
+          projectWorkerIsolation === 'per-command'
+            ? createPerCommandCSharpWorkerClient(
+                projectPrewarm.csharp,
+                () => new CSharpWorkerClientConstructor!(csharpWorkerOptions)
+              )
+            : new CSharpWorkerClientConstructor!(csharpWorkerOptions)
+        )
+      : undefined;
+    if (csharpWorkerClient && !providedCSharpWorkerClient) ownedWorkers.push(csharpWorkerClient);
+    const CppWorkerClientConstructor = cppProvider?.[1].CppWorkerClient;
+    const cppWorkerClient = hasProvider('cpp')
+      ? providedCppWorkerClient ?? (
+          projectWorkerIsolation === 'per-command'
+            ? createPerCommandCppWorkerClient(() => new CppWorkerClientConstructor!(cppWorkerOptions))
+            : new CppWorkerClientConstructor!(cppWorkerOptions)
+        )
+      : undefined;
+    if (cppWorkerClient && !providedCppWorkerClient) ownedWorkers.push(cppWorkerClient);
 
     if (executionHost) ownedWorkers.push({ terminate: () => executionHost?.dispose() });
 
     let workspace: BrowserProjectWorkspace;
     let storageBinding: BrowserKernelStorageBinding | undefined;
     const sessionReadonlyFiles = readonlySessionFiles(workspaceOptions);
-    const applyWorkerFileChange: NonNullable<Parameters<typeof createBrowserPythonProjectRunner>[1]>['applyFileChange'] =
+    const applyWorkerFileChange: NonNullable<BrowserJavaScriptProjectRunnerOptions['applyFileChange']> =
       async (change, phase, options) => {
         if (options?.signal?.aborted) return false;
         await workspace.kernel.applyFileChange(change, undefined, phase);
         if (options?.signal?.aborted) return false;
         return false;
       };
-    const applyCSharpWorkerFileChange: NonNullable<Parameters<typeof createBrowserCSharpProjectRunner>[1]>['applyFileChange'] =
+    const applyCSharpWorkerFileChange: NonNullable<BrowserJavaScriptProjectRunnerOptions['applyFileChange']> =
       async (change, phase, options) => {
         if (options?.signal?.aborted) return false;
         if (isReadonlyDeletion(change, sessionReadonlyFiles)) return false;
@@ -835,49 +929,73 @@ export async function createBrowserProjectWorkspace(
             entrypoint: storedSnapshot.entrypoint ?? workspaceOptions.entrypoint,
           }
         : {}),
-      pythonRunner: createBrowserPythonProjectRunner(pythonWorkerClient, {
-        timeoutMs: pythonProjectTimeoutMs,
-        applyFileChange: applyWorkerFileChange,
-      }),
-      nodeRunner: createBrowserJavaScriptProjectRunner({
-        timeoutMs: nodeProjectTimeoutMs,
-        workerIsolation: projectWorkerIsolation,
-        ...nodeProject,
-        workerUrl: assets.runtimeManifests?.javascript
-          ? assets.javascriptProjectWorker
-          : nodeProject?.workerUrl ?? assets.javascriptProjectWorker,
-        ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
-        assetPreflight: () => runtimeAssetPreflight.preflight('javascript', ['projectWorker']),
-        ...(projectWorkerIsolation === 'shared' ? { trustedReusableWorker: true } : {}),
-        applyFileChange: applyWorkerFileChange,
-      }),
-      typescriptRunner: createBrowserTypeScriptProjectRunner({
-        ...typescriptProject,
-        // This factory owns and preflights the compiler URL, so its same-document
-        // script is trusted compiler infrastructure rather than user code. A
-        // runtime manifest is the explicit consumer trust decision for an
-        // external compiler CDN.
-        allowDomCompilerScript: typescriptProject?.allowDomCompilerScript ?? true,
-        allowExternalDomCompilerScript: assets.runtimeManifests?.typescript
-          ? true
-          : typescriptProject?.allowExternalDomCompilerScript,
-        compilerUrl: assets.runtimeManifests?.typescript
-          ? assets.typescriptCompiler
-          : typescriptProject?.compilerUrl ?? assets.typescriptCompiler,
-        compilerPreflight: () => runtimeAssetPreflight.preflight('typescript', ['compiler']),
-      }),
-      javaRunner: createBrowserJavaProjectRunner(javaWorkerClient, {
-        timeoutMs: javaProjectTimeoutMs,
-        applyFileChange: applyWorkerFileChange,
-      }),
-      csharpRunner: createBrowserCSharpProjectRunner(csharpWorkerClient, {
-        timeoutMs: csharpProjectTimeoutMs,
-        applyFileChange: applyCSharpWorkerFileChange,
-      }),
-      cppRunner: createBrowserCppProjectRunner(cppWorkerClient, {
-        timeoutMs: cppProjectTimeoutMs,
-        applyFileChange: applyWorkerFileChange,
-      }),
+      ...(pythonWorkerClient && pythonProvider
+        ? {
+            pythonRunner: pythonProvider[0].createBrowserPythonProjectRunner(pythonWorkerClient, {
+              timeoutMs: pythonProjectTimeoutMs,
+              applyFileChange: applyWorkerFileChange,
+            }),
+          }
+        : {}),
+      ...(hasProvider('javascript') && javascriptProvider
+        ? {
+            nodeRunner: javascriptProvider.createBrowserJavaScriptProjectRunner({
+              timeoutMs: nodeProjectTimeoutMs,
+              workerIsolation: projectWorkerIsolation,
+              ...nodeProject,
+              workerUrl: assets.runtimeManifests?.javascript
+                ? assets.javascriptProjectWorker
+                : nodeProject?.workerUrl ?? assets.javascriptProjectWorker,
+              ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
+              assetPreflight: () => runtimeAssetPreflight.preflight('javascript', ['projectWorker']),
+              ...(projectWorkerIsolation === 'shared' ? { trustedReusableWorker: true } : {}),
+              applyFileChange: applyWorkerFileChange,
+            }),
+          }
+        : {}),
+      ...(hasProvider('typescript') && javascriptProvider
+        ? {
+            typescriptRunner: javascriptProvider.createBrowserTypeScriptProjectRunner({
+              ...typescriptProject,
+              // This factory owns and preflights the compiler URL, so its same-document
+              // script is trusted compiler infrastructure rather than user code. A
+              // runtime manifest is the explicit consumer trust decision for an
+              // external compiler CDN.
+              allowDomCompilerScript: typescriptProject?.allowDomCompilerScript ?? true,
+              allowExternalDomCompilerScript: assets.runtimeManifests?.typescript
+                ? true
+                : typescriptProject?.allowExternalDomCompilerScript,
+              compilerUrl: assets.runtimeManifests?.typescript
+                ? assets.typescriptCompiler
+                : typescriptProject?.compilerUrl ?? assets.typescriptCompiler,
+              compilerPreflight: () => runtimeAssetPreflight.preflight('typescript', ['compiler']),
+            }),
+          }
+        : {}),
+      ...(javaWorkerClient && javaProvider
+        ? {
+            javaRunner: javaProvider[0].createBrowserJavaProjectRunner(javaWorkerClient, {
+              timeoutMs: javaProjectTimeoutMs,
+              applyFileChange: applyWorkerFileChange,
+            }),
+          }
+        : {}),
+      ...(csharpWorkerClient && csharpProvider
+        ? {
+            csharpRunner: csharpProvider[0].createBrowserCSharpProjectRunner(csharpWorkerClient, {
+              timeoutMs: csharpProjectTimeoutMs,
+              applyFileChange: applyCSharpWorkerFileChange,
+            }),
+          }
+        : {}),
+      ...(cppWorkerClient && cppProvider
+        ? {
+            cppRunner: cppProvider[0].createBrowserCppProjectRunner(cppWorkerClient, {
+              timeoutMs: cppProjectTimeoutMs,
+              applyFileChange: applyWorkerFileChange,
+            }),
+          }
+        : {}),
       kernelControl: {
         async reset() {
           storageBinding?.dispose();

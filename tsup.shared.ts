@@ -9,7 +9,8 @@ export const commonConfig = {
   sourcemap: true,
   clean: true,
   target: 'es2022',
-  splitting: false,
+  // Use tsup's format-aware default: split ESM while keeping CommonJS
+  // self-contained. Explicit CJS splitting can corrupt generated just-bash code.
   bundle: true,
   banner: {
     js: 'var define = undefined;',

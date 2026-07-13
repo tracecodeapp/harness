@@ -4,7 +4,7 @@ import type {
   RuntimeWorkspace,
   RuntimeWorkspaceUnsubscribe,
 } from '@tracecode/harness-core';
-import { normalizeRuntimeProjectPath } from '../../harness-project/src/index';
+import { normalizeRuntimeProjectPath } from '@tracecode/harness-core';
 
 const STORAGE_VERSION = 1;
 const LEGACY_ENCRYPTED_STORAGE_VERSION = 2;

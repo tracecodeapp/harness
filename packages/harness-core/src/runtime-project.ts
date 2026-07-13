@@ -1,5 +1,24 @@
 export type RuntimeFileEncoding = 'utf8' | 'base64';
 
+/** Canonical, traversal-safe project path normalization shared by every surface. */
+export function normalizeRuntimeProjectPath(path: string): string {
+  if (path.includes('\0')) throw new Error('Project path must not contain NUL bytes.');
+  const normalized = path.replace(/\\/g, '/');
+  if (normalized.trim().length === 0) throw new Error('Project path must not be empty.');
+  if (normalized.startsWith('/')) throw new Error(`Project path must be relative: ${path}`);
+  if (/^[A-Za-z]:\//u.test(normalized)) {
+    throw new Error(`Project path must not include a drive prefix: ${path}`);
+  }
+  const parts: string[] = [];
+  for (const part of normalized.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') throw new Error(`Project path must not escape the workspace: ${path}`);
+    parts.push(part);
+  }
+  if (parts.length === 0) throw new Error(`Project path must point to a file: ${path}`);
+  return parts.join('/');
+}
+
 export interface RuntimeFile {
   path: string;
   contents: string;

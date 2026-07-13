@@ -497,6 +497,40 @@ async function main(): Promise<void> {
     }
     console.log('PASS: browser project workspace routes Node commands through worker');
 
+    const javascriptOnlyWorkspace = await createBrowserProjectWorkspace({
+      providers: ['javascript'],
+      assetBaseUrl: '/project-javascript-only',
+      files: [{ path: 'index.js', contents: 'console.log("selected")\n' }],
+    });
+    try {
+      const javascriptResult = await javascriptOnlyWorkspace.runCommand('node index.js');
+      const pythonResult = await javascriptOnlyWorkspace.runCommand('python3 -c "print(1)"');
+      assertCondition(javascriptResult.exitCode === 0, 'selected JavaScript provider should be assembled');
+      assertCondition(
+        pythonResult.exitCode !== 0 && /command (?:not found|not available)/u.test(pythonResult.stderr),
+        `unselected Python provider should not be exposed: ${JSON.stringify(pythonResult)}`
+      );
+    } finally {
+      javascriptOnlyWorkspace.dispose();
+    }
+
+    const filesystemOnlyWorkspace = await createBrowserProjectWorkspace({
+      providers: [],
+      files: [{ path: 'README.md', contents: 'filesystem only\n' }],
+    });
+    try {
+      const listing = await filesystemOnlyWorkspace.runCommand('ls');
+      const runtimeAttempt = await filesystemOnlyWorkspace.runCommand('node index.js');
+      assertCondition(listing.stdout.includes('README.md'), 'empty provider selection should retain the project filesystem');
+      assertCondition(
+        /command (?:not found|not available)/u.test(runtimeAttempt.stderr),
+        'empty provider selection should expose no runtime adapters'
+      );
+    } finally {
+      filesystemOnlyWorkspace.dispose();
+    }
+    console.log('PASS: browser project provider selection assembles only requested runtime adapters');
+
     const concurrentProjectWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-concurrency',
       pythonProjectTimeoutMs: 5000,

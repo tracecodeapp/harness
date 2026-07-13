@@ -6,6 +6,7 @@ import {
   canCreateRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
+  normalizeRuntimeProjectPath,
   readRuntimeCommandStdinPipeBytes,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES,
@@ -103,6 +104,7 @@ import type {
 } from './index';
 import { DEFAULT_CWD, TRACEKERNEL_BIN_PATH, TRACEKERNEL_SKILLS_ROOT } from './constants';
 
+export { normalizeRuntimeProjectPath };
 
 
 export function normalizeTraceKernelVirtualPath(path: string): string | null {
@@ -164,35 +166,6 @@ export function assertNoNul(value: string, label: string): void {
   if (value.includes('\0')) {
     throw new Error(`${label} must not contain NUL bytes.`);
   }
-}
-
-
-export function normalizeRuntimeProjectPath(path: string): string {
-  assertNoNul(path, 'Project path');
-  const normalized = path.replace(/\\/g, '/');
-  if (normalized.trim().length === 0) {
-    throw new Error('Project path must not be empty.');
-  }
-  if (normalized.startsWith('/')) {
-    throw new Error(`Project path must be relative: ${path}`);
-  }
-  if (/^[A-Za-z]:\//.test(normalized)) {
-    throw new Error(`Project path must not include a drive prefix: ${path}`);
-  }
-
-  const parts: string[] = [];
-  for (const part of normalized.split('/')) {
-    if (!part || part === '.') continue;
-    if (part === '..') {
-      throw new Error(`Project path must not escape the workspace: ${path}`);
-    }
-    parts.push(part);
-  }
-
-  if (parts.length === 0) {
-    throw new Error(`Project path must point to a file: ${path}`);
-  }
-  return parts.join('/');
 }
 
 

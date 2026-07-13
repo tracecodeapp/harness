@@ -524,7 +524,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
     }
     if (packageCheck.name === '@tracecode/harness-javascript') {
-      const projectBrowser = await readFile(join(packageDir, 'dist/project-browser.js'), 'utf8');
+      const projectBrowser = (
+        await Promise.all(
+          (await readdir(join(packageDir, 'dist')))
+            .filter((file) => file.endsWith('.js'))
+            .map((file) => readFile(join(packageDir, 'dist', file), 'utf8'))
+        )
+      ).join('\n');
       const projectWorker = await readFile(join(packageDir, 'workers/javascript-project-worker.js'), 'utf8');
       // The routed-device output bridge is core code (createRuntimeProjectIoBridge);
       // the externalized project-browser bundle imports it rather than inlining it,
@@ -866,7 +872,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           browserDeclarations.includes('RuntimeProjectIoSupport'),
         '@tracecode/harness-browser declarations should export the derived project I/O support helper'
       );
-      const browserProjectDist = await readFile(join(packageDir, 'dist/project.js'), 'utf8');
+      const browserDistDir = join(packageDir, 'dist');
+      const browserProjectDist = (
+        await Promise.all(
+          (await readdir(browserDistDir))
+            .filter((file) => file.endsWith('.js'))
+            .map((file) => readFile(join(browserDistDir, file), 'utf8'))
+        )
+      ).join('\n');
       assertCondition(
         browserProjectDist.includes('enqueueKernelHttpSyncServerRequest(bridge, request, runtimeLabel)') &&
           browserProjectDist.includes('drainKernelHttpSyncServerQueue(bridge, runtimeLabel)') &&
