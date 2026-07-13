@@ -31,6 +31,7 @@ type Phase =
   | 'http-bridge'
   | 'process-io'
   | 'cancellation'
+  | 'runtime-cancellation'
   | 'disposal';
 type PhaseStatus = 'passed' | 'failed' | 'skipped';
 
@@ -183,6 +184,7 @@ const ALL_PHASES: Phase[] = [
   'http-bridge',
   'process-io',
   'cancellation',
+  'runtime-cancellation',
   'disposal',
 ];
 const DEFAULT_SEED = 20_260_711;
@@ -940,6 +942,7 @@ async function runBrowserPlanItem(
           'http-bridge',
           'process-io',
           'cancellation',
+          'runtime-cancellation',
           'disposal',
         ];
         const encoder = new TextEncoder();
@@ -1083,6 +1086,7 @@ async function runBrowserPlanItem(
             'workspace construction',
             publicProjectModule.createBrowserProjectWorkspace({
               assetBaseUrl: '/workers',
+              providers: language === 'typescript' ? ['typescript', 'javascript'] : [language],
               ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
               ...(language === 'java' && executionHostUrl
                 ? {
@@ -1371,6 +1375,57 @@ async function runBrowserPlanItem(
                 cancellationError: value.error,
                 resultError: value.result && 'error' in value.result ? value.result.error : undefined,
                 cancellationWallMs: value.wallMs,
+              },
+              serializedResultBytes: serializedBytes(value),
+            })
+          );
+
+          await measurePhase(
+            'runtime-cancellation',
+            async () => {
+              const commands: Record<string, string> = {
+                python: 'python3 -c "while True: pass"',
+                javascript: 'node -e "while (true) {}"',
+                typescript: 'node -e "while (true) {}"',
+                java: `printf 'public class Cancel { public static void main(String[] args) { while (true) {} } }\\n' > Cancel.java && javac Cancel.java && java Cancel`,
+                csharp: `printf 'while (true) {}\\n' > Program.cs && dotnet run --project App.csproj`,
+                cpp: `printf 'int main() { while (true) {} }\\n' > cancel.cpp && clang++ -std=c++17 cancel.cpp -o cancel && ./cancel`,
+              };
+              const command = commands[language]!;
+              const controller = new AbortController();
+              const startedAt = performance.now();
+              const timer = setTimeout(() => controller.abort(), 50);
+              try {
+                const result = await workspace.runCommand(command, { signal: controller.signal });
+                return { command, result, wallMs: performance.now() - startedAt };
+              } catch (error) {
+                return {
+                  command,
+                  error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+                  wallMs: performance.now() - startedAt,
+                };
+              } finally {
+                clearTimeout(timer);
+              }
+            },
+            (value) => {
+              const errors: string[] = [];
+              const resultError = value.result && 'error' in value.result ? value.result.error : undefined;
+              const cancelled = value.error !== undefined || resultError !== undefined || value.result?.exitCode !== 0;
+              if (!cancelled) errors.push(`active runtime command unexpectedly completed: ${JSON.stringify(value.result)}`);
+              if (value.wallMs > 5_000) errors.push(`active runtime cancellation took ${value.wallMs.toFixed(1)}ms to settle`);
+              return errors;
+            },
+            (value) => ({
+              command: value.command,
+              exitCode: value.result?.exitCode,
+              stdout: value.result?.stdout,
+              stderr: value.result?.stderr,
+              details: {
+                cancellationError: value.error,
+                resultError: value.result && 'error' in value.result ? value.result.error : undefined,
+                cancellationWallMs: value.wallMs,
+                target: 'active browser runtime compile/run',
               },
               serializedResultBytes: serializedBytes(value),
             })
@@ -1767,6 +1822,7 @@ async function main(): Promise<void> {
           'http-bridge': 'public workspace.http.listen reached from public shell curl through TraceKernel',
           'process-io': 'shell pipeline plus distinct stdout and stderr streams',
           cancellation: 'AbortSignal cancellation of an active shell command with bounded settlement',
+          'runtime-cancellation': 'AbortSignal cancellation after dispatching an active provider compile/run command',
           disposal: 'idempotent workspace disposal and execution-host iframe removal',
         },
       },

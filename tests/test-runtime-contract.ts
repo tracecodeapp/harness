@@ -1075,8 +1075,12 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'project.workspace.virtualDevices',
     'project.workspace.virtualProc',
     'project.filesystem.finalDiff',
+    'project.filesystem.liveMutationEvents',
+    'project.filesystem.binaryFiles',
     'project.filesystem.directories',
+    'project.stdio.liveStdin',
     'project.stdio.outputEvents',
+    'project.stdio.deviceFiles',
     'diagnostics.compileErrors',
     'diagnostics.mappedErrorLines',
   ],
@@ -1644,14 +1648,15 @@ async function main(): Promise<void> {
     'TypeScript should preserve mapped compile error lines'
   );
   assertCondition(
-    !typescriptProfile.capabilities.project.workspace.supported &&
-      !typescriptProfile.capabilities.project.filesystem.finalDiff &&
-      !typescriptProfile.capabilities.project.filesystem.liveMutationEvents,
-    'TypeScript should not advertise browser project I/O without a trusted worker compiler path'
+    typescriptProfile.capabilities.project.workspace.supported &&
+      typescriptProfile.capabilities.project.filesystem.finalDiff &&
+      typescriptProfile.capabilities.project.filesystem.liveMutationEvents &&
+      !typescriptProfile.capabilities.project.filesystem.providerLiveInterception,
+    'TypeScript should advertise trusted compiler output as bridged project I/O'
   );
   assertCondition(
-    getRuntimeProjectIoSupport('typescript').tier === 'unsupported',
-    'TypeScript browser project I/O should be unsupported by default'
+    getRuntimeProjectIoSupport('typescript').tier === 'bridged-live',
+    'TypeScript browser project I/O should expose the bridged-live tier'
   );
   assertCondition(
     pythonProfile.capabilities.project.filesystem.providerLiveInterception &&
@@ -1753,9 +1758,9 @@ async function main(): Promise<void> {
     'JavaScript should advertise browser-native live project I/O and node final-diff project I/O'
   );
   assertCondition(
-    getRuntimeProjectIoCapability('typescript').browser.tier === 'unsupported' &&
+    getRuntimeProjectIoCapability('typescript').browser.tier === 'bridged-live' &&
       getRuntimeProjectIoCapability('typescript').node.tier === 'final-diff',
-    'TypeScript should advertise unsupported browser project I/O and node final-diff project I/O'
+    'TypeScript should advertise browser bridged-live I/O and node final-diff project I/O'
   );
   assertCondition(
     getRuntimeProjectIoCapability('java').browser.tier === 'bridged-live' &&

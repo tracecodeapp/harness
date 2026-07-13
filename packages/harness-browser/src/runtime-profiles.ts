@@ -69,39 +69,6 @@ const FINAL_DIFF_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']
   },
 };
 
-const NO_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['project'] = {
-  workspace: {
-    supported: false,
-    kernelFs: false,
-    virtualDevices: false,
-    virtualProc: false,
-  },
-  filesystem: {
-    finalDiff: false,
-    liveMutationEvents: false,
-    providerLiveInterception: false,
-    binaryFiles: false,
-    directories: false,
-  },
-  stdio: {
-    liveStdin: false,
-    outputEvents: false,
-    deviceFiles: false,
-  },
-};
-
-const UNSUPPORTED_PROJECT_IO_SUPPORT: RuntimeProjectIoSupport = Object.freeze({
-  tier: 'unsupported',
-  supported: false,
-  kernelFs: false,
-  liveMutationEvents: false,
-  finalDiff: false,
-  providerLiveInterception: false,
-  streamingStdio: false,
-  liveStdin: false,
-  deviceFiles: false,
-});
-
 const NODE_FINAL_DIFF_PROJECT_IO_SUPPORT: RuntimeProjectIoSupport = Object.freeze({
   tier: 'final-diff',
   supported: true,
@@ -262,7 +229,7 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: false,
       },
     },
-    project: NO_PROJECT_IO_CAPABILITIES,
+    project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {
@@ -591,7 +558,7 @@ const PROJECT_IO_LIMITATIONS: Record<Language, readonly string[]> = {
     'Browser project mode is the reference live TraceKernel path; node project mode uses host filesystem execution with final-diff reconciliation.',
   ],
   typescript: [
-    'Browser project mode is disabled by default until TypeScript compiler loading is worker-backed or explicitly injected as trusted.',
+    'Browser project compilation loads consumer-trusted TypeScript compiler infrastructure and emits bridged file changes at compile completion.',
     'Node project mode supports tsc compile/typecheck commands through TraceKernel snapshots; emitted JavaScript runs through the JavaScript project path.',
     'Package installation and watch/build mode are not implemented.',
   ],

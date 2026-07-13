@@ -3,7 +3,7 @@
 /**
  * End-to-end benchmark for the public Classic browser harness.
  *
- * This intentionally imports createBrowserHarness() in Chromium and only uses
+ * This intentionally imports createBrowserHarness() in a real browser and only uses
  * BrowserHarness/RuntimeClient methods. It does not speak private worker
  * protocols, so changes to worker scheduling, cloning, and client adapters are
  * represented in the measurements consumers actually see.
@@ -17,9 +17,10 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { build } from 'esbuild';
-import { chromium, type BrowserContext, type Page, type Request } from 'playwright';
+import { chromium, firefox, webkit, type Browser, type BrowserContext, type Page, type Request } from 'playwright';
 
 type Language = 'python' | 'javascript' | 'typescript' | 'java' | 'csharp' | 'cpp';
+type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
 type Mode = 'execute' | 'trace' | 'interview';
 type Phase =
   | 'cold-first-execute'
@@ -30,6 +31,7 @@ type Phase =
   | 'interview';
 
 interface BenchmarkArgs {
+  engine: BrowserEngine;
   languages: Language[];
   workloads: string[];
   modes: Mode[];
@@ -216,6 +218,7 @@ interface SummaryRecord {
 }
 
 const ALL_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
+const ALL_ENGINES: BrowserEngine[] = ['chromium', 'firefox', 'webkit'];
 const ALL_MODES: Mode[] = ['execute', 'trace', 'interview'];
 const DEFAULT_SEED = 17_729;
 
@@ -488,9 +491,10 @@ function usage(): string {
   return [
     'Usage: pnpm bench:browser-runtimes [options]',
     '',
-    'Benchmarks the public createBrowserHarness() Classic API in Chromium.',
+    'Benchmarks the public createBrowserHarness() Classic API in a real browser.',
     '',
     'Options:',
+    '  --engine=chromium|firefox|webkit Browser engine. Default: chromium.',
     '  --languages=python,javascript,typescript,java,csharp,cpp',
     '                                  Browser runtimes to benchmark. Default: all.',
     '  --workloads=add,two-sum         Workloads to run. Default: all.',
@@ -506,7 +510,7 @@ function usage(): string {
     '  --cache-assets                  Serve immutable cache headers so warm phases exclude downloads.',
     '  --phase-delay-ms=25             Delay between phases to model interactive think time. Default: 0.',
     '  --prewarm-runtime               Call harness.warmLanguage() before the first measured execute.',
-    '  --headful                       Run Chromium with a visible window.',
+    '  --headful                       Run the selected browser with a visible window.',
   ].join('\n');
 }
 
@@ -544,6 +548,7 @@ function nonNegativeInteger(raw: string, label: string): number {
 
 function parseArgs(argv: string[]): BenchmarkArgs {
   const args: BenchmarkArgs = {
+    engine: 'chromium',
     languages: ALL_LANGUAGES,
     workloads: WORKLOADS.map((workload) => workload.id),
     modes: ALL_MODES,
@@ -572,6 +577,10 @@ function parseArgs(argv: string[]): BenchmarkArgs {
     }
     if (arg === '--headful') {
       args.headful = true;
+      continue;
+    }
+    if (arg.startsWith('--engine=')) {
+      args.engine = parseCsv(arg.slice('--engine='.length), ALL_ENGINES, 'engine')[0]!;
       continue;
     }
     if (arg === '--smoke' || arg === '--quick') {
@@ -990,7 +999,7 @@ function metricDelta(before: Record<string, number>, after: Record<string, numbe
 
 async function runBrowserPlanItem(
   browserOrigin: string,
-  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  browser: Browser,
   item: RunPlanItem,
   args: BenchmarkArgs,
   networkRecords: NetworkResourceRecord[],
@@ -1677,7 +1686,7 @@ async function main(): Promise<void> {
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-browser-bench-'));
   const workersRoot = join(tempRoot, 'workers');
   let server: Awaited<ReturnType<typeof startStaticServer>> | undefined;
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  let browser: Browser | undefined;
 
   try {
     await runAssetSync(workersRoot, args.languages);
@@ -1688,9 +1697,10 @@ async function main(): Promise<void> {
       '<title>TraceCode public browser harness benchmark</title>',
     ].join('\n'), 'utf8');
     server = await startStaticServer(resolve(tempRoot), args.cacheAssets);
-    browser = await chromium.launch({
+    const browserType = args.engine === 'firefox' ? firefox : args.engine === 'webkit' ? webkit : chromium;
+    browser = await browserType.launch({
       headless: !args.headful,
-      args: ['--enable-precise-memory-info'],
+      ...(args.engine === 'chromium' ? { args: ['--enable-precise-memory-info'] } : {}),
     });
 
     const initRecords: InitRecord[] = [];
@@ -1793,6 +1803,7 @@ async function main(): Promise<void> {
         },
       },
       options: {
+        engine: args.engine,
         languages: args.languages,
         workloads: selectedWorkloads.map((workload) => workload.id),
         modes: args.modes,

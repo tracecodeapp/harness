@@ -64,3 +64,21 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium firefox webkit
       - name: Test browser project providers across engines
         run: pnpm test:project-browser-matrix
+
+  browser-classic-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - name: Install browser test runtimes
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+      - name: Test Classic browser providers across engines
+        run: pnpm test:classic-browser-matrix
