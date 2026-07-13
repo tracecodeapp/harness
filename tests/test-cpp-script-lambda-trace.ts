@@ -16,6 +16,7 @@ type RuntimeTraceEvent = {
 };
 
 async function createCppWorkerHarness() {
+  const workerUrl = pathToFileURL(`${process.cwd()}/workers/cpp/cpp-worker.js`);
   const sharedKernelPolicySource = (await readFile('workers/shared/runtime-kernel-policy.js', 'utf8'))
     .replace(/\bexport\s+/g, '');
   const workerSource = (await readFile('workers/cpp/cpp-worker.js', 'utf8')).replace(
@@ -38,6 +39,9 @@ async function createCppWorkerHarness() {
     console,
     TextEncoder,
     TextDecoder,
+    URL,
+    URLSearchParams,
+    Blob,
     WebAssembly,
     Date,
     performance,
@@ -53,6 +57,10 @@ async function createCppWorkerHarness() {
     Math,
     RegExp,
     Promise,
+    location: {
+      href: workerUrl.href,
+      origin: workerUrl.origin,
+    },
     postMessage: () => {},
     fetch: readAsset,
     crypto: globalThis.crypto,

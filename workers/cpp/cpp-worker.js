@@ -8483,7 +8483,13 @@ function buildCppUserFunctionNameSet(source) {
   const names = new Set();
   if (typeof source !== 'string' || source.trim() === '') return names;
   for (const signature of parseCppFunctionSignatures(source)) {
-    if (typeof signature?.name === 'string' && signature.name) names.add(signature.name);
+    if (
+      typeof signature?.name === 'string' &&
+      signature.name &&
+      !(signature.lambda === true && /^tracecode[A-Z]/.test(signature.name))
+    ) {
+      names.add(signature.name);
+    }
   }
 
   const cleaned = stripComments(source);
