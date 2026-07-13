@@ -401,6 +401,12 @@
         {
           "count": 1,
           "kind": "write",
+          "pathDepth": 1,
+          "variable": "self"
+        },
+        {
+          "count": 1,
+          "kind": "write",
           "pathDepth": 2,
           "variable": "self"
         },
