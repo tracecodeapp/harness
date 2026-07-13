@@ -53,6 +53,73 @@ public final class BrowserCompileAndTraceLibrary {
     }
   }
 
+  /** Restores validated compiler output into a fresh request-scoped classes directory. */
+  public static boolean restoreCompileCache(String cacheRoot, String classesDir) throws IOException {
+    Path cache = safeCompileCacheRoot(cacheRoot);
+    Path destination = safeRequestClassesDir(classesDir);
+    if (!Files.exists(cache)) return false;
+    resetDirectory(destination);
+    copyDirectory(cache, destination);
+    return true;
+  }
+
+  /** Stores compiler output only when the helper wrote complete cache metadata. */
+  public static boolean commitCompileCache(String classesDir, String cacheRoot) throws IOException {
+    Path source = safeRequestClassesDir(classesDir);
+    boolean hasRunMetadata = Files.exists(source.resolve(".tracecode-run-cache-key")) &&
+        Files.exists(source.resolve(".tracecode-run-cache-key.manifest"));
+    boolean hasTraceMetadata = Files.exists(source.resolve(".tracecode-cache-key")) &&
+        Files.exists(source.resolve(".tracecode-cache-key.manifest"));
+    if (!hasRunMetadata && !hasTraceMetadata) return false;
+    Path cache = safeCompileCacheRoot(cacheRoot);
+    resetDirectory(cache);
+    copyDirectory(source, cache);
+    return true;
+  }
+
+  private static Path safeCompileCacheRoot(String value) throws IOException {
+    Path runtimeRoot = Paths.get("/files/java-worker").toAbsolutePath().normalize();
+    Path target = Paths.get(value).toAbsolutePath().normalize();
+    if (
+        !target.startsWith(runtimeRoot) ||
+        target.getNameCount() != runtimeRoot.getNameCount() + 1 ||
+        !target.getFileName().toString().startsWith("compile-cache-")
+    ) {
+      throw new IOException("Invalid Java compile cache root: " + value);
+    }
+    return target;
+  }
+
+  private static Path safeRequestClassesDir(String value) throws IOException {
+    Path runtimeRoot = Paths.get("/files/java-worker").toAbsolutePath().normalize();
+    Path target = Paths.get(value).toAbsolutePath().normalize();
+    if (
+        !target.startsWith(runtimeRoot) ||
+        target.getNameCount() != runtimeRoot.getNameCount() + 2 ||
+        !target.getFileName().toString().equals("classes") ||
+        target.getParent().getFileName().toString().startsWith("compile-cache-")
+    ) {
+      throw new IOException("Invalid request-scoped Java classes directory: " + value);
+    }
+    return target;
+  }
+
+  private static void copyDirectory(Path source, Path destination) throws IOException {
+    try (Stream<Path> stream = Files.walk(source)) {
+      for (Path path : stream.sorted().collect(Collectors.toList())) {
+        Path relative = source.relativize(path);
+        Path target = destination.resolve(relative).normalize();
+        if (!target.startsWith(destination)) throw new IOException("Compile cache entry escaped destination.");
+        if (Files.isDirectory(path)) {
+          Files.createDirectories(target);
+        } else if (Files.isRegularFile(path)) {
+          Files.createDirectories(target.getParent());
+          Files.write(target, Files.readAllBytes(path));
+        }
+      }
+    }
+  }
+
   public static String compileAndTrace(
       String sourcePath,
       String classesDir,
@@ -347,6 +414,32 @@ public final class BrowserCompileAndTraceLibrary {
         compilerProfile);
   }
 
+  public static String runCachedClasses(
+      String classesDir,
+      String entryClass,
+      String runtimeClasspath,
+      String compilerProfile
+  ) throws Exception {
+    try {
+      Path classesPath = safeRequestClassesDir(classesDir);
+      assertRestoredCompileCache(classesPath, ".tracecode-run-cache-key", List.of(entryClass));
+      InvocationReport result = runEntryClass(classesPath, entryClass, classpathPaths(runtimeClasspath));
+      return buildRunReportJson(
+          result.success,
+          result.output,
+          "",
+          "",
+          result.runtimeError,
+          0,
+          result.classLoadTimeMs,
+          result.runTimeMs,
+          true,
+          compilerProfile);
+    } catch (Throwable error) {
+      return buildRunReportJson(false, null, "", "", stackTrace(error), 0, 0, 0, true, compilerProfile);
+    }
+  }
+
   public static String traceCompiledClassManifest(
       String classManifest,
       String classesDir,
@@ -383,6 +476,42 @@ public final class BrowserCompileAndTraceLibrary {
         result.classLoadTimeMs,
         result.runTimeMs,
         parseBoolean(compileCacheHit),
+        compilerProfile,
+        result.traceLimitExceeded,
+        result.droppedEventCount);
+  }
+
+  public static String traceCachedClasses(
+      String classesDir,
+      String entryClass,
+      String runtimeClasspath,
+      String compilerProfile,
+      String maxStoredEvents
+  ) throws Exception {
+    int parsedMaxEvents;
+    try {
+      parsedMaxEvents = Integer.parseInt(maxStoredEvents);
+    } catch (Exception ignored) {
+      parsedMaxEvents = 50000;
+    }
+    Path classesPath = safeRequestClassesDir(classesDir);
+    assertRestoredCompileCache(classesPath, ".tracecode-cache-key", List.of(entryClass));
+    TraceInvocationReport result = traceEntryClass(
+        classesPath,
+        entryClass,
+        classpathPaths(runtimeClasspath),
+        parsedMaxEvents);
+    return buildTraceReportJson(
+        result.success,
+        result.output,
+        result.events,
+        "",
+        "",
+        result.runtimeError,
+        0,
+        result.classLoadTimeMs,
+        result.runTimeMs,
+        true,
         compilerProfile,
         result.traceLimitExceeded,
         result.droppedEventCount);
@@ -425,6 +554,27 @@ public final class BrowserCompileAndTraceLibrary {
         parseLongOrZero(compileTimeMs),
         parseBoolean(compileCacheHit),
         compilerProfile);
+  }
+
+  public static String runCachedClassesBatch(
+      String classesDir,
+      String entryClasses,
+      String runtimeClasspath,
+      String compilerProfile
+  ) throws Exception {
+    List<String> entries = splitEntryClasses(entryClasses);
+    if (entries.isEmpty()) throw new IllegalArgumentException("runCachedClassesBatch requires entry classes");
+    Path classesPath = safeRequestClassesDir(classesDir);
+    assertRestoredCompileCache(classesPath, ".tracecode-run-cache-key", entries);
+    List<String> resultJson = new ArrayList<>();
+    boolean success = true;
+    List<Path> runtimeClasspathPaths = classpathPaths(runtimeClasspath);
+    for (String entry : entries) {
+      InvocationReport result = runEntryClass(classesPath, entry, runtimeClasspathPaths);
+      if (!result.success) success = false;
+      resultJson.add(buildInvocationReportJson(result));
+    }
+    return buildRunBatchReportJson(success, resultJson, "", "", null, 0, true, compilerProfile);
   }
 
   public static String compileAndRunProject(
@@ -1149,6 +1299,19 @@ public final class BrowserCompileAndTraceLibrary {
       String entryClass
   ) throws IOException {
     return canReuseCompiledClasses(classesDir, cacheKeyPath, cacheKey, List.of(entryClass));
+  }
+
+  private static void assertRestoredCompileCache(
+      Path classesDir,
+      String cacheKeyFile,
+      List<String> entryClasses
+  ) throws IOException {
+    Path cacheKeyPath = classesDir.resolve(cacheKeyFile);
+    if (!Files.exists(cacheKeyPath)) throw new IOException("Restored Java compile cache is missing its key.");
+    String storedKey = Files.readString(cacheKeyPath, StandardCharsets.UTF_8);
+    if (!canReuseCompiledClasses(classesDir, cacheKeyPath, storedKey, entryClasses)) {
+      throw new IOException("Restored Java compile cache failed entry or manifest validation.");
+    }
   }
 
   private static boolean canReuseCompiledClasses(

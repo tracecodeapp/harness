@@ -55,6 +55,7 @@ export interface CreateBrowserHarnessOptions {
   debug?: boolean;
   java?: {
     workerIdleTimeoutMs?: number;
+    compileCacheLimit?: number;
     externalCompilerUrl?: string;
     cheerpjLoaderUrl?: string;
   };
@@ -231,6 +232,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
       ...(workerFactory ? { workerFactory, isolatedRuntimeStorage: true } : {}),
       debug: options.debug,
       workerIdleTimeoutMs: options.java?.workerIdleTimeoutMs,
+      compileCacheLimit: options.java?.compileCacheLimit,
       externalCompilerUrl: options.java?.externalCompilerUrl,
       cheerpjLoaderUrl: options.java?.cheerpjLoaderUrl,
       assetPreflight: preflight('java', ['worker']),

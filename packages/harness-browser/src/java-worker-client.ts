@@ -29,6 +29,8 @@ export interface JavaWorkerClientOptions {
   workerUrl: string;
   debug?: boolean;
   workerIdleTimeoutMs?: number;
+  /** Bounded content-addressed compiled-class entries retained by this worker (0-64). */
+  compileCacheLimit?: number;
   externalCompilerUrl?: string;
   cheerpjLoaderUrl?: string;
   assetPreflight?: () => Promise<void>;
@@ -143,6 +145,12 @@ export class JavaWorkerClient {
   private readonly debug: boolean;
 
   constructor(private readonly options: JavaWorkerClientOptions) {
+    if (
+      options.compileCacheLimit !== undefined &&
+      (!Number.isInteger(options.compileCacheLimit) || options.compileCacheLimit < 0 || options.compileCacheLimit > 64)
+    ) {
+      throw new TypeError('Java compileCacheLimit must be an integer from 0 to 64.');
+    }
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
   }
 
@@ -605,6 +613,7 @@ export class JavaWorkerClient {
 
   private workerOptionsPayload(): {
     idleTimeoutMs?: number;
+    compileCacheLimit?: number;
     externalCompilerEnabled?: boolean;
     cheerpjLoaderUrl?: string;
     runtimeAssets?: JavaWorkerClientOptions['runtimeAssets'];
@@ -612,6 +621,7 @@ export class JavaWorkerClient {
   } {
     return {
       ...(this.options.workerIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
+      ...(this.options.compileCacheLimit === undefined ? {} : { compileCacheLimit: this.options.compileCacheLimit }),
       ...(this.options.externalCompilerUrl ? { externalCompilerEnabled: true } : {}),
       ...(this.options.cheerpjLoaderUrl ? { cheerpjLoaderUrl: this.options.cheerpjLoaderUrl } : {}),
       ...(this.options.runtimeAssets ? { runtimeAssets: this.options.runtimeAssets } : {}),

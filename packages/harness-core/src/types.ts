@@ -41,6 +41,7 @@ export interface RuntimeExecutionTimings {
   runMs?: number;
   hostCallMs?: number;
   compileCacheHit?: boolean;
+  artifactCacheHit?: boolean;
 }
 
 // Non-tracing code execution result

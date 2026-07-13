@@ -470,6 +470,7 @@ export interface CreateBrowserProjectWorkspaceOptions
   csharpProjectTimeoutMs?: number;
   cppProjectTimeoutMs?: number;
   javaWorkerIdleTimeoutMs?: number;
+  javaCompileCacheLimit?: number;
   csharpWorkerIdleTimeoutMs?: number;
   cppWorkerIdleTimeoutMs?: number;
   kernelStorage?: BrowserKernelStorage;
@@ -586,6 +587,7 @@ export async function createBrowserProjectWorkspace(
     csharpProjectTimeoutMs,
     cppProjectTimeoutMs,
     javaWorkerIdleTimeoutMs,
+    javaCompileCacheLimit,
     csharpWorkerIdleTimeoutMs,
     cppWorkerIdleTimeoutMs,
     kernelStorage,
@@ -751,6 +753,7 @@ export async function createBrowserProjectWorkspace(
         : {}),
       debug,
       workerIdleTimeoutMs: javaWorkerIdleTimeoutMs,
+      compileCacheLimit: javaCompileCacheLimit,
       assetPreflight: async () => {
         assertProjectJavaRuntimeAssets();
         await runtimeAssetPreflight.preflight('java', ['worker']);

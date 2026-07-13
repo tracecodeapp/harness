@@ -78,6 +78,7 @@ interface RuntimeTimingRecord {
   runMs?: number;
   hostCallMs?: number;
   compileCacheHit?: boolean;
+  artifactCacheHit?: boolean;
   pchCacheHit?: boolean;
 }
 
@@ -120,6 +121,7 @@ interface PhaseRecord {
   errors: string[];
   timings?: RuntimeTimingRecord;
   caseTimings: RuntimeTimingRecord[];
+  artifactCacheHits?: boolean[];
   responseSerializedBytes: number;
   traceSerializedBytes?: number;
   traceEventCount?: number;
@@ -1167,6 +1169,7 @@ async function runBrowserPlanItem(
             if (metric !== undefined) result[key] = metric;
           }
           if (typeof input.compileCacheHit === 'boolean') result.compileCacheHit = input.compileCacheHit;
+          if (typeof input.artifactCacheHit === 'boolean') result.artifactCacheHit = input.artifactCacheHit;
           if (typeof input.pchCacheHit === 'boolean') result.pchCacheHit = input.pchCacheHit;
           return Object.keys(result).length > 0 ? result : undefined;
         }
@@ -1376,6 +1379,9 @@ async function runBrowserPlanItem(
             errors,
             timings,
             caseTimings,
+            artifactCacheHits: resultCases
+              .map((testCase: any) => testCase.timings?.artifactCacheHit)
+              .filter((value: unknown): value is boolean => typeof value === 'boolean'),
             responseSerializedBytes: response === undefined ? 0 : safeSerializedBytes(response),
             traceSerializedBytes: traces?.traceSerializedBytes,
             traceEventCount: traces?.traceEventCount,

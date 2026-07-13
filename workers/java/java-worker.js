@@ -19,6 +19,9 @@ const DEFAULT_COMPILER_DEBUG_PROFILE = 'full';
 const DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE = 'none';
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
+const DEFAULT_JAVA_COMPILE_CACHE_LIMIT = 16;
+const MAX_JAVA_COMPILE_CACHE_LIMIT = 64;
+const JAVA_COMPILE_CACHE_VERSION = 'classic-compiled-classes-v1';
 const SCRIPT_METHOD_NAME = '__tracecodeScript';
 const DYNAMIC_INPUT_PREFIX = '/str/tracecode-java-input';
 const JAVA_DEFAULT_IMPORTS = [
@@ -163,6 +166,8 @@ let cheerpjRuntimeFetchExactUrls = new Set();
 let activeJavaProjectIo = null;
 let javaCompileIsolationCounter = 0;
 let javaProjectBridgeRunCounter = 0;
+let javaCompileCacheLimit = DEFAULT_JAVA_COMPILE_CACHE_LIMIT;
+const javaCompileCache = new Map();
 const activeProtocolTokens = new Map();
 const pendingExternalJavaCompiles = new Map();
 const STDIN_PIPE_HEADER_INTS = 3;
@@ -867,6 +872,10 @@ function applyWorkerOptions(payload) {
   const nextIdleTimeoutMs = Number(payload?.idleTimeoutMs);
   if (Number.isFinite(nextIdleTimeoutMs) && nextIdleTimeoutMs > 0) {
     idleTimeoutMs = Math.max(1_000, Math.floor(nextIdleTimeoutMs));
+  }
+  const nextCompileCacheLimit = Number(payload?.compileCacheLimit);
+  if (Number.isFinite(nextCompileCacheLimit) && nextCompileCacheLimit >= 0) {
+    javaCompileCacheLimit = Math.min(MAX_JAVA_COMPILE_CACHE_LIMIT, Math.floor(nextCompileCacheLimit));
   }
   if (payload?.allowIsolatedRuntimeStorage === true) {
     if (!trustedJavaIndexedDB) {
@@ -3787,6 +3796,72 @@ async function deleteJavaRuntimeRequestTree(compileLibraryClass, compileId) {
   await compileLibraryClass.deleteRuntimeRequestTree(`/files/java-worker/${compileId}`);
 }
 
+function classicJavaCompileCacheKey(mode, stableCompileId) {
+  return stableHash({
+    version: JAVA_COMPILE_CACHE_VERSION,
+    mode,
+    stableCompileId,
+    helperJar: HELPER_JAR_PATH,
+    compilerJar: JDK17_COMPILER_JAR_PATH,
+  });
+}
+
+function classicJavaCompileCacheRoot(cacheKey) {
+  return `/files/java-worker/compile-cache-${cacheKey}`;
+}
+
+async function trimClassicJavaCompileCache(compileLibraryClass) {
+  while (javaCompileCache.size > javaCompileCacheLimit) {
+    const oldest = javaCompileCache.keys().next().value;
+    if (oldest === undefined) return;
+    javaCompileCache.delete(oldest);
+    await compileLibraryClass.deleteRuntimeRequestTree(classicJavaCompileCacheRoot(oldest));
+  }
+}
+
+async function restoreClassicJavaCompileCache(compileLibraryClass, cacheKey, classesDir) {
+  if (
+    javaCompileCacheLimit <= 0 ||
+    typeof compileLibraryClass?.restoreCompileCache !== 'function'
+  ) {
+    return false;
+  }
+  const restoredValue = await compileLibraryClass.restoreCompileCache(
+    classicJavaCompileCacheRoot(cacheKey),
+    classesDir
+  );
+  const restored = restoredValue === true || restoredValue === 1;
+  if (restored) {
+    javaCompileCache.delete(cacheKey);
+    javaCompileCache.set(cacheKey, true);
+    await trimClassicJavaCompileCache(compileLibraryClass);
+  }
+  return restored;
+}
+
+async function finalizeClassicJavaCompileCache(compileLibraryClass, cacheKey, classesDir, compileId, artifactCacheHit) {
+  try {
+    if (
+      !artifactCacheHit &&
+      javaCompileCacheLimit > 0 &&
+      typeof compileLibraryClass?.commitCompileCache === 'function'
+    ) {
+      const committedValue = await compileLibraryClass.commitCompileCache(
+        classesDir,
+        classicJavaCompileCacheRoot(cacheKey)
+      );
+      const committed = committedValue === true || committedValue === 1;
+      if (committed) {
+        javaCompileCache.delete(cacheKey);
+        javaCompileCache.set(cacheKey, true);
+        await trimClassicJavaCompileCache(compileLibraryClass);
+      }
+    }
+  } finally {
+    await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId);
+  }
+}
+
 async function getRewriteLibraryClass() {
   if (!rewriteLibraryClassPromise) {
     rewriteLibraryClassPromise = (async () => {
@@ -5774,12 +5849,14 @@ async function runJavaTraceRequest(payload, requestId) {
   const rewriteStart = performance.now();
   const normalizedPayload = normalizeJavaExecutionPayload(payload);
 
+  const stableCompileId = buildJavaCompileId(normalizedPayload, 'trace');
   const compileId = isolateJavaCompileId(buildJavaCompileId(normalizedPayload, 'trace'), requestId);
-  const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, compileId);
+  const compileCacheKey = classicJavaCompileCacheKey('trace', stableCompileId);
+  const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, stableCompileId);
 
   let rewrittenSource;
   try {
-    rewrittenSource = await rewriteSource(normalizedPayload, compileId, dynamicInputs);
+    rewrittenSource = await rewriteSource(normalizedPayload, stableCompileId, dynamicInputs);
     rewrittenSource = augmentTraceCallArgumentSnapshots(rewrittenSource);
     rewrittenSource = augmentArrayLengthReads(rewrittenSource);
     rewrittenSource = self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(
@@ -5823,8 +5900,8 @@ async function runJavaTraceRequest(payload, requestId) {
   }
   const rewriteEnd = performance.now();
 
-  const exportsClassName = buildExportsClassName(compileId);
-  const packageName = buildPackageName(compileId);
+  const exportsClassName = buildExportsClassName(stableCompileId);
+  const packageName = buildPackageName(stableCompileId);
   const sourcePath = `/str/${exportsClassName}.java`;
   const classesDir = `/files/java-worker/${compileId}/classes`;
 
@@ -5846,11 +5923,19 @@ async function runJavaTraceRequest(payload, requestId) {
   } catch (error) {
     throw makeWorkerStageError('compiler bridge load', error);
   }
-
+  const artifactCacheHit = await restoreClassicJavaCompileCache(compileLibraryClass, compileCacheKey, classesDir);
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'traceCompiledClassManifest')) {
+    if (artifactCacheHit && typeof compileLibraryClass?.traceCachedClasses === 'function') {
+      reportText = await compileLibraryClass.traceCachedClasses(
+        classesDir,
+        `${packageName}.${exportsClassName}`,
+        HELPER_JAR_PATH,
+        DEFAULT_COMPILER_DEBUG_PROFILE,
+        String(resolveMaxStoredEvents(payload.options))
+      );
+    } else if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'traceCompiledClassManifest')) {
       const externalCompile = await compileJavaOutsideBrowser({
         schema: 'tracecode.java.external-compile.v1',
         mode: 'trace',
@@ -5893,6 +5978,7 @@ async function runJavaTraceRequest(payload, requestId) {
       );
     }
   } catch (error) {
+    await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId).catch(() => undefined);
     throw makeWorkerStageError('compile and trace', error);
   }
   const libraryCallEnd = performance.now();
@@ -5901,8 +5987,16 @@ async function runJavaTraceRequest(payload, requestId) {
   try {
     report = JSON.parse(reportText);
   } catch (error) {
+    await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId).catch(() => undefined);
     throw makeWorkerStageError('trace report parse', error);
   }
+  await finalizeClassicJavaCompileCache(
+    compileLibraryClass,
+    compileCacheKey,
+    classesDir,
+    compileId,
+    artifactCacheHit
+  );
   const totalEnd = performance.now();
   const consoleOutput = javaReportConsoleOutput(report, { includeSuccessfulDiagnostics: false });
 
@@ -5951,6 +6045,7 @@ async function runJavaTraceRequest(payload, requestId) {
       classLoadMs: report.classLoadTimeMs ?? 0,
       runMs: report.runTimeMs ?? 0,
       compileCacheHit: report.compileCacheHit ?? false,
+      artifactCacheHit,
     },
   };
 }
@@ -5958,16 +6053,18 @@ async function runJavaTraceRequest(payload, requestId) {
 async function runJavaCodeRequest(payload, requestId) {
   const totalStart = performance.now();
   const normalizedPayload = normalizeJavaExecutionPayload(payload);
+  const stableCompileId = buildJavaCompileId(normalizedPayload, 'execute');
   const compileId = isolateJavaCompileId(buildJavaCompileId(normalizedPayload, 'execute'), requestId);
-  const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, compileId);
-  const exportsClassName = buildExportsClassName(compileId);
-  const packageName = buildPackageName(compileId);
+  const compileCacheKey = classicJavaCompileCacheKey('execute', stableCompileId);
+  const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, stableCompileId);
+  const exportsClassName = buildExportsClassName(stableCompileId);
+  const packageName = buildPackageName(stableCompileId);
   const sourcePath = `/str/${exportsClassName}.java`;
   const classesDir = `/files/java-worker/${compileId}/classes`;
 
   let runnableSource;
   try {
-    runnableSource = buildPlainRunnableSource(normalizedPayload, compileId, dynamicInputs);
+    runnableSource = buildPlainRunnableSource(normalizedPayload, stableCompileId, dynamicInputs);
   } catch (error) {
     throw makeWorkerStageError('source generation', error);
   }
@@ -5990,11 +6087,19 @@ async function runJavaCodeRequest(payload, requestId) {
   } catch (error) {
     throw makeWorkerStageError('compiler bridge load', error);
   }
+  const artifactCacheHit = await restoreClassicJavaCompileCache(compileLibraryClass, compileCacheKey, classesDir);
 
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifest')) {
+    if (artifactCacheHit && typeof compileLibraryClass?.runCachedClasses === 'function') {
+      reportText = await compileLibraryClass.runCachedClasses(
+        classesDir,
+        `${packageName}.${exportsClassName}`,
+        HELPER_JAR_PATH,
+        DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+      );
+    } else if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifest')) {
       const externalCompile = await compileJavaOutsideBrowser({
         schema: 'tracecode.java.external-compile.v1',
         mode: 'execute',
@@ -6032,6 +6137,7 @@ async function runJavaCodeRequest(payload, requestId) {
       );
     }
   } catch (error) {
+    await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId).catch(() => undefined);
     throw makeWorkerStageError('compile and run', error);
   }
   const libraryCallEnd = performance.now();
@@ -6040,8 +6146,16 @@ async function runJavaCodeRequest(payload, requestId) {
   try {
     report = JSON.parse(reportText);
   } catch (error) {
+    await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId).catch(() => undefined);
     throw makeWorkerStageError('execution report parse', error);
   }
+  await finalizeClassicJavaCompileCache(
+    compileLibraryClass,
+    compileCacheKey,
+    classesDir,
+    compileId,
+    artifactCacheHit
+  );
 
   const totalEnd = performance.now();
   const consoleOutput = javaReportConsoleOutput(report, { includeSuccessfulDiagnostics: false });
@@ -6052,6 +6166,7 @@ async function runJavaCodeRequest(payload, requestId) {
     classLoadMs: report.classLoadTimeMs ?? 0,
     runMs: report.runTimeMs ?? 0,
     compileCacheHit: report.compileCacheHit ?? false,
+    artifactCacheHit,
   };
 
   if (report.success !== true) {
@@ -6284,22 +6399,24 @@ async function runJavaCodeBatchRequest(payload, requestId) {
     ...payload,
     inputs: inputBatch[0] ?? {},
   });
+  const stableCompileId = buildJavaBatchCompileId(normalizedPayload, inputBatch);
   const compileId = isolateJavaCompileId(buildJavaBatchCompileId(normalizedPayload, inputBatch), requestId);
+  const compileCacheKey = classicJavaCompileCacheKey('execute-batch', stableCompileId);
   const dynamicInputBatch = inputBatch.map((inputs, index) =>
     dynamicInputEntriesForPayload(
       { ...normalizedPayload, inputs },
-      `${compileId}-${index}`
+      `${stableCompileId}-${index}`
     )
   );
   const dynamicInputs = dynamicInputBatch.flat();
-  const exportsClassName = buildExportsClassName(compileId);
+  const exportsClassName = buildExportsClassName(stableCompileId);
   const sourcePath = `/str/${exportsClassName}.java`;
   const classesDir = `/files/java-worker/${compileId}/classes`;
 
   let runnableSource;
   let entryClasses;
   try {
-    const batchSource = buildBatchRunnableSource(normalizedPayload, compileId, inputBatch, dynamicInputBatch);
+    const batchSource = buildBatchRunnableSource(normalizedPayload, stableCompileId, inputBatch, dynamicInputBatch);
     runnableSource = batchSource.source;
     entryClasses = batchSource.entryClasses;
   } catch (error) {
@@ -6324,11 +6441,19 @@ async function runJavaCodeBatchRequest(payload, requestId) {
   } catch (error) {
     throw makeWorkerStageError('compiler bridge load', error);
   }
+  const artifactCacheHit = await restoreClassicJavaCompileCache(compileLibraryClass, compileCacheKey, classesDir);
 
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifestBatch')) {
+    if (artifactCacheHit && typeof compileLibraryClass?.runCachedClassesBatch === 'function') {
+      reportText = await compileLibraryClass.runCachedClassesBatch(
+        classesDir,
+        entryClasses.join('\n'),
+        HELPER_JAR_PATH,
+        DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+      );
+    } else if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifestBatch')) {
       const externalCompile = await compileJavaOutsideBrowser({
         schema: 'tracecode.java.external-compile.v1',
         mode: 'execute-batch',
@@ -6367,6 +6492,7 @@ async function runJavaCodeBatchRequest(payload, requestId) {
       );
     }
   } catch (error) {
+    await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId).catch(() => undefined);
     throw makeWorkerStageError('compile and run batch', error);
   }
   const libraryCallEnd = performance.now();
@@ -6375,8 +6501,16 @@ async function runJavaCodeBatchRequest(payload, requestId) {
   try {
     report = JSON.parse(reportText);
   } catch (error) {
+    await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId).catch(() => undefined);
     throw makeWorkerStageError('batch execution report parse', error);
   }
+  await finalizeClassicJavaCompileCache(
+    compileLibraryClass,
+    compileCacheKey,
+    classesDir,
+    compileId,
+    artifactCacheHit
+  );
 
   const totalEnd = performance.now();
   const consoleOutput = javaReportConsoleOutput(report, { includeSuccessfulDiagnostics: false });
@@ -6399,6 +6533,7 @@ async function runJavaCodeBatchRequest(payload, requestId) {
         hostCallMs: 0,
         totalMs: classLoadMs + runMs,
         compileCacheHit,
+        artifactCacheHit,
       },
     };
   });
@@ -6425,6 +6560,7 @@ async function runJavaCodeBatchRequest(payload, requestId) {
       classLoadMs: rawResults.reduce((sum, entry) => sum + (entry?.classLoadTimeMs ?? 0), 0),
       runMs: rawResults.reduce((sum, entry) => sum + (entry?.runTimeMs ?? 0), 0),
       compileCacheHit,
+      artifactCacheHit,
     },
   };
 }
@@ -6582,6 +6718,7 @@ self.onmessage = (event) => {
         postExecutionResult(result);
       } catch (error) {
         const errorMessage = await formatWorkerErrorMessageAsync(error);
+        if (WORKER_DEBUG) console.error(`[TraceRuntime Java request failed] ${errorMessage}`);
         emitRuntimeDiagnostic('error', 'worker-request-failed', 'Java worker execution request failed.', {
           type: message.type,
           message: errorMessage,

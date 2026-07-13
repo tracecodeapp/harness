@@ -332,6 +332,10 @@ function assertJavaLexicalScannersAreCached(): void {
 
 function assertJavaCompileCachePathsArePerExecution(): void {
   const workerSource = readFileSync(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
+  const helperSource = readFileSync(
+    join(process.cwd(), 'workers', 'java', 'src', 'tracecode', 'browser', 'BrowserCompileAndTraceLibrary.java'),
+    'utf8'
+  );
 
   assertCondition(
     /async function runJavaCodeRequest\(payload, requestId\)[\s\S]*isolateJavaCompileId\(buildJavaCompileId\(normalizedPayload, 'execute'\), requestId\)/.test(workerSource),
@@ -389,8 +393,8 @@ function assertJavaCompileCachePathsArePerExecution(): void {
       const stableExecuteId = buildJavaCompileId(payload, 'execute');
       const firstExecuteId = isolateJavaCompileId(stableExecuteId, 'request-one');
       const secondExecuteId = isolateJavaCompileId(stableExecuteId, 'request-two');
-      const firstDynamicPath = dynamicInputEntriesForPayload(payload, firstExecuteId)[0].path;
-      const secondDynamicPath = dynamicInputEntriesForPayload(payload, secondExecuteId)[0].path;
+      const firstDynamicPath = dynamicInputEntriesForPayload(payload, stableExecuteId)[0].path;
+      const secondDynamicPath = dynamicInputEntriesForPayload(payload, stableExecuteId)[0].path;
       const projectStableId = stableHash({
         compileMode: 'project',
         request: {
@@ -409,8 +413,8 @@ function assertJavaCompileCachePathsArePerExecution(): void {
         secondExecuteId,
         firstExecuteClassesDir: '/files/java-worker/' + firstExecuteId + '/classes',
         secondExecuteClassesDir: '/files/java-worker/' + secondExecuteId + '/classes',
-        firstExecutePackage: buildPackageName(firstExecuteId),
-        secondExecutePackage: buildPackageName(secondExecuteId),
+        firstExecutePackage: buildPackageName(stableExecuteId),
+        secondExecutePackage: buildPackageName(stableExecuteId),
         firstDynamicPath,
         secondDynamicPath,
         firstProjectId,
@@ -435,11 +439,18 @@ function assertJavaCompileCachePathsArePerExecution(): void {
   assertCondition(result.firstExecuteId !== result.stableExecuteId, 'Java execution id should not expose the stable compile cache seed directly');
   assertCondition(result.firstExecuteId !== result.secondExecuteId, 'Identical Java executions should receive distinct compile ids');
   assertCondition(result.firstExecuteClassesDir !== result.secondExecuteClassesDir, 'Identical Java executions should not reuse writable class directories');
-  assertCondition(result.firstExecutePackage !== result.secondExecutePackage, 'Identical Java executions should not reuse generated package names');
-  assertCondition(result.firstDynamicPath !== result.secondDynamicPath, 'Identical Java executions should not reuse dynamic input file paths');
+  assertCondition(result.firstExecutePackage === result.secondExecutePackage, 'Java cacheable class names should be content-addressed');
+  assertCondition(result.firstDynamicPath === result.secondDynamicPath, 'Serialized Java requests should reuse content-addressed dynamic input paths');
   assertCondition(result.firstProjectId !== result.secondProjectId, 'Identical Java project executions should receive distinct compile ids');
+  assertCondition(
+    helperSource.includes('assertRestoredCompileCache') &&
+      helperSource.includes('compiledOutputManifest(classesDir)') &&
+      helperSource.includes('Files.write(target, Files.readAllBytes(path))') &&
+      !helperSource.includes('Files.copy(path, target'),
+    'Java compiled artifacts should be copied into fresh trees with manifest validation and CheerpJ-compatible byte writes'
+  );
 
-  console.log('PASS: Java compile cache output paths are isolated per execution');
+  console.log('PASS: Java compile cache uses content-addressed artifacts with fresh request paths');
 }
 
 function main(): void {
