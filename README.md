@@ -124,11 +124,13 @@ configuration; it is not embedded as a harness product dependency. See
 [Isolation Boundaries](./docs/isolation-boundaries.md#runtime-assets-and-cdns)
 for integrity, origin, and immutable-URL requirements.
 
-For untrusted project execution, host heavy browser runtimes on a dedicated
-credential-free origin through the
-[browser execution host](./docs/browser-execution-host.md). This is the
-TraceCode-recommended Java project profile because CheerpJ's /files mount is
-IndexedDB-backed and must not share the application origin.
+For untrusted browser execution, route selected Classic or project providers
+through the [browser execution host](./docs/browser-execution-host.md) on a
+dedicated credential-free origin. Provider routing is explicit, so a consumer
+can host Java remotely while Python, JavaScript/TypeScript, C#, and C++ continue
+to use its application-owned asset paths. This is the TraceCode-recommended
+Java project profile because CheerpJ's /files mount is IndexedDB-backed and
+must not share the application origin.
 
 CheerpJ is not redistributed. An owned browser project Java runner therefore
 requires a complete `assets.runtimeManifests.java` asset set before its first

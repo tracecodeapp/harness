@@ -531,6 +531,72 @@ async function main(): Promise<void> {
     }
     console.log('PASS: browser project provider selection assembles only requested runtime adapters');
 
+    let unselectedClassicHostProviderError = '';
+    try {
+      createBrowserHarness({
+        providers: ['java'],
+        executionHost: {
+          url: 'https://exec.tracecode.test/host.html',
+          providers: ['python'],
+        },
+      });
+    } catch (error) {
+      unselectedClassicHostProviderError = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      unselectedClassicHostProviderError.includes('executionHost provider "python" is not selected'),
+      `Classic execution host routing must reject unselected providers: ${unselectedClassicHostProviderError}`
+    );
+    let splitJavaScriptHostProviderError = '';
+    try {
+      createBrowserHarness({
+        providers: ['javascript', 'typescript'],
+        executionHost: {
+          url: 'https://exec.tracecode.test/host.html',
+          providers: ['typescript'],
+        },
+      });
+    } catch (error) {
+      splitJavaScriptHostProviderError = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      splitJavaScriptHostProviderError.includes('JavaScript and TypeScript share one Classic worker'),
+      `Classic execution host routing must make shared-worker placement explicit: ${splitJavaScriptHostProviderError}`
+    );
+    let unselectedProjectHostProviderError = '';
+    try {
+      await createBrowserProjectWorkspace({
+        providers: ['python'],
+        executionHost: {
+          url: 'https://exec.tracecode.test/host.html',
+          providers: ['java'],
+        },
+      });
+    } catch (error) {
+      unselectedProjectHostProviderError = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      unselectedProjectHostProviderError.includes('executionHost provider "java" is not selected'),
+      `Project execution host routing must reject unselected providers: ${unselectedProjectHostProviderError}`
+    );
+    let unexecutableTypeScriptHostProviderError = '';
+    try {
+      await createBrowserProjectWorkspace({
+        providers: ['typescript'],
+        executionHost: {
+          url: 'https://exec.tracecode.test/host.html',
+          providers: ['typescript'],
+        },
+      });
+    } catch (error) {
+      unexecutableTypeScriptHostProviderError = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      unexecutableTypeScriptHostProviderError.includes('requires the "javascript" project provider'),
+      `Project TypeScript host routing must name its JavaScript execution dependency: ${unexecutableTypeScriptHostProviderError}`
+    );
+    console.log('PASS: browser execution hosts validate provider-specific routing and shared-worker aliases');
+
     const concurrentProjectWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-concurrency',
       pythonProjectTimeoutMs: 5000,

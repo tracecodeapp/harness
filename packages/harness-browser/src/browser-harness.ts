@@ -50,8 +50,8 @@ export interface CreateBrowserHarnessOptions {
   providers?: readonly Language[];
   engine?: BrowserRuntimeEngine;
   featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
-  /** Runs every selected provider worker on a dedicated, credential-free origin. */
-  executionHost?: BrowserExecutionWorkerHostOptions;
+  /** Runs selected provider workers on a dedicated, credential-free origin. */
+  executionHost?: BrowserHarnessExecutionHostOptions;
   debug?: boolean;
   java?: {
     workerIdleTimeoutMs?: number;
@@ -72,6 +72,11 @@ export interface CreateBrowserHarnessOptions {
     usePrecompiledHeader?: boolean;
     externalCompilerUrl?: string;
   };
+}
+
+export interface BrowserHarnessExecutionHostOptions extends BrowserExecutionWorkerHostOptions {
+  /** Providers routed through this host. Defaults to every provider selected by the harness. */
+  providers?: readonly Language[];
 }
 
 export interface BrowserHarness {
@@ -102,6 +107,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
   private readonly csharpWorkerClient: CSharpWorkerClient;
   private readonly cppWorkerClient: CppWorkerClient;
   private readonly executionHost?: BrowserExecutionWorkerHost;
+  private readonly executionHostProviders: ReadonlySet<Language>;
   private readonly clients: Record<Language, RuntimeClient>;
 
   constructor(options: CreateBrowserHarnessOptions = {}) {
@@ -155,10 +161,37 @@ class BrowserHarnessRuntime implements BrowserHarness {
         'Java runtime assets cannot combine manifest.assets.loader with java.cheerpjLoaderUrl.'
       );
     }
-    this.executionHost = options.executionHost
+    const executionHostProviders = new Set<Language>();
+    for (const language of options.executionHost
+      ? options.executionHost.providers ?? this.supportedLanguages
+      : []) {
+      if (!this.supportedLanguages.includes(language)) {
+        throw new TypeError(
+          `executionHost provider ${JSON.stringify(language)} is not selected by this browser harness.`
+        );
+      }
+      executionHostProviders.add(language);
+    }
+    if (options.executionHost && executionHostProviders.size === 0) {
+      throw new TypeError('executionHost.providers must select at least one Classic provider.');
+    }
+    if (
+      this.supportedLanguages.includes('javascript') &&
+      this.supportedLanguages.includes('typescript') &&
+      executionHostProviders.has('javascript') !== executionHostProviders.has('typescript')
+    ) {
+      throw new TypeError(
+        'JavaScript and TypeScript share one Classic worker and must be routed through executionHost together.'
+      );
+    }
+    this.executionHostProviders = executionHostProviders;
+    this.executionHost = options.executionHost && executionHostProviders.size > 0
       ? createBrowserExecutionWorkerHost(options.executionHost)
       : undefined;
-    const workerFactory = this.executionHost?.workerFactory;
+    const hosted = (language: Language): boolean => this.executionHostProviders.has(language);
+    const workerFactoryFor = (language: Language) => hosted(language)
+      ? this.executionHost?.workerFactory
+      : undefined;
     if (this.executionHost) {
       const workerUrls = new Map<Language, string>([
         ['python', this.assets.pythonWorker],
@@ -168,7 +201,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
         ['csharp', this.assets.csharpWorker],
         ['cpp', this.assets.cppWorker],
       ]);
-      for (const language of this.supportedLanguages) {
+      for (const language of this.executionHostProviders) {
         const workerUrl = new URL(workerUrls.get(language)!, `${this.executionHost.origin}/`);
         if (workerUrl.origin !== this.executionHost.origin) {
           this.executionHost.dispose();
@@ -179,9 +212,10 @@ class BrowserHarnessRuntime implements BrowserHarness {
       }
     }
     try {
+      const pythonWorkerFactory = workerFactoryFor('python');
       this.pythonWorkerClient = new PythonWorkerClient({
       workerUrl: this.assets.pythonWorker,
-      ...(workerFactory ? { workerFactory } : {}),
+      ...(pythonWorkerFactory ? { workerFactory: pythonWorkerFactory } : {}),
       ...(this.assets.runtimeManifests?.python?.workerFormat
         ? { workerFormat: this.assets.runtimeManifests.python.workerFormat }
         : {}),
@@ -215,9 +249,10 @@ class BrowserHarnessRuntime implements BrowserHarness {
           : {}),
       },
     });
+    const javaScriptWorkerFactory = workerFactoryFor('javascript') ?? workerFactoryFor('typescript');
     this.javaScriptWorkerClient = new JavaScriptWorkerClient({
       workerUrl: this.assets.javascriptWorker,
-      ...(workerFactory ? { workerFactory } : {}),
+      ...(javaScriptWorkerFactory ? { workerFactory: javaScriptWorkerFactory } : {}),
       debug: options.debug,
       assetPreflight: preflight('javascript', ['worker']),
       runtimeAssetPreflight: preflight('javascript', ['libraries']),
@@ -227,9 +262,10 @@ class BrowserHarnessRuntime implements BrowserHarness {
       typescriptCompilerUrl: this.assets.typescriptCompiler,
       typescriptCompilerPreflight: preflight('typescript', ['compiler']),
     });
+    const javaWorkerFactory = workerFactoryFor('java');
     this.javaWorkerClient = new JavaWorkerClient({
       workerUrl: this.assets.javaWorker,
-      ...(workerFactory ? { workerFactory, isolatedRuntimeStorage: true } : {}),
+      ...(javaWorkerFactory ? { workerFactory: javaWorkerFactory, isolatedRuntimeStorage: true } : {}),
       debug: options.debug,
       workerIdleTimeoutMs: options.java?.workerIdleTimeoutMs,
       compileCacheLimit: options.java?.compileCacheLimit,
@@ -265,9 +301,10 @@ class BrowserHarnessRuntime implements BrowserHarness {
           }
         : {}),
     });
+    const csharpWorkerFactory = workerFactoryFor('csharp');
     this.csharpWorkerClient = new CSharpWorkerClient({
       workerUrl: this.assets.csharpWorker,
-      ...(workerFactory ? { workerFactory } : {}),
+      ...(csharpWorkerFactory ? { workerFactory: csharpWorkerFactory } : {}),
       assetBaseUrl: this.assets.csharpAssetBaseUrl,
       debug: options.debug,
       workerIdleTimeoutMs: options.csharp?.workerIdleTimeoutMs,
@@ -281,9 +318,10 @@ class BrowserHarnessRuntime implements BrowserHarness {
           }
         : {}),
     });
+    const cppWorkerFactory = workerFactoryFor('cpp');
     this.cppWorkerClient = new CppWorkerClient({
       workerUrl: this.assets.cppWorker,
-      ...(workerFactory ? { workerFactory } : {}),
+      ...(cppWorkerFactory ? { workerFactory: cppWorkerFactory } : {}),
       assetPreflight: preflight('cpp', ['worker']),
       runtimeAssetPreflight: preflight('cpp', [
         'compilerFrame',
@@ -361,7 +399,9 @@ class BrowserHarnessRuntime implements BrowserHarness {
   preflightLanguage(language: Language): Promise<BrowserRuntimeReadiness> {
     return Promise.all([
       this.environment.preflight(language),
-      this.executionHost?.ready() ?? Promise.resolve(),
+      this.executionHostProviders.has(language)
+        ? this.executionHost?.ready() ?? Promise.resolve()
+        : Promise.resolve(),
     ]).then(([readiness]) => readiness);
   }
 

@@ -67,6 +67,8 @@ export type BrowserProjectWorkerIsolation = 'shared' | 'per-command';
 export type BrowserProjectJavaLifecycle = 'workspace-session' | 'per-command';
 export type BrowserProjectProvider = Language;
 export interface BrowserProjectExecutionHostOptions extends BrowserExecutionWorkerHostOptions {
+  /** Providers routed through this host. Defaults to Java for compatibility with the 0.10 contract. */
+  providers?: readonly BrowserProjectProvider[];
   /** Heavy Java runtime lifecycle inside the provider-neutral host. Defaults to workspace-session. */
   javaLifecycle?: BrowserProjectJavaLifecycle;
 }
@@ -455,7 +457,7 @@ export interface CreateBrowserProjectWorkspaceOptions
   javaWorkerClient?: Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'>;
   csharpWorkerClient?: Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'>;
   cppWorkerClient?: Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'>;
-  /** Runs every built-in project worker on a dedicated, credential-free origin. */
+  /** Runs selected project workers on a dedicated, credential-free origin. */
   executionHost?: BrowserProjectExecutionHostOptions;
   nodeProject?: BrowserProjectNodeOptions;
   typescriptProject?: BrowserProjectTypeScriptOptions;
@@ -594,12 +596,37 @@ export async function createBrowserProjectWorkspace(
     onKernelStorageError,
     ...workspaceOptions
   } = options;
-  if (
-    executionHostOptions &&
-    (providedPythonWorkerClient || providedJavaWorkerClient || providedCSharpWorkerClient || providedCppWorkerClient)
-  ) {
-    throw new Error('executionHost cannot be combined with provided language worker clients.');
+  const requestedExecutionHostProviders = executionHostOptions
+    ? normalizeBrowserProjectProviders(
+        executionHostOptions.providers ?? (hasProvider('java') ? ['java'] : [])
+      )
+    : [];
+  if (executionHostOptions && requestedExecutionHostProviders.length === 0) {
+    throw new TypeError(
+      'executionHost.providers must select at least one project provider when Java is not selected.'
+    );
   }
+  for (const provider of requestedExecutionHostProviders) {
+    if (!hasProvider(provider)) {
+      throw new TypeError(
+        `executionHost provider ${JSON.stringify(provider)} is not selected by this browser project workspace.`
+      );
+    }
+  }
+  const executionHostProviders = new Set<BrowserProjectProvider>(requestedExecutionHostProviders);
+  // TypeScript project commands compile in the trusted page and execute through
+  // the JavaScript project worker. Treat TypeScript as an alias for that physical
+  // worker so the routing contract describes where user code actually runs.
+  if (executionHostProviders.delete('typescript')) {
+    if (!hasProvider('javascript')) {
+      throw new TypeError(
+        'executionHost provider "typescript" requires the "javascript" project provider that executes compiled output.'
+      );
+    }
+    executionHostProviders.add('javascript');
+  }
+  const isExecutionHosted = (provider: BrowserProjectProvider): boolean =>
+    executionHostProviders.has(provider);
   const providedClientSelections = [
     ['python', providedPythonWorkerClient],
     ['java', providedJavaWorkerClient],
@@ -609,6 +636,11 @@ export async function createBrowserProjectWorkspace(
   for (const [provider, client] of providedClientSelections) {
     if (client && !hasProvider(provider)) {
       throw new Error(`${provider}WorkerClient requires providers to include ${JSON.stringify(provider)}.`);
+    }
+    if (client && isExecutionHosted(provider)) {
+      throw new Error(
+        `executionHost.providers cannot include ${JSON.stringify(provider)} when ${provider}WorkerClient is provided.`
+      );
     }
   }
   const javaExecutionLifecycle = executionHostOptions?.javaLifecycle ?? 'workspace-session';
@@ -672,7 +704,7 @@ export async function createBrowserProjectWorkspace(
     executionHost = createBrowserExecutionWorkerHost(executionHostOptions);
     try {
       await executionHost.ready();
-      if (hasProvider('java')) {
+      if (isExecutionHosted('java')) {
         const javaWorkerAsset = javaManifest?.assets.worker;
         if (!javaWorkerAsset) {
           throw new Error('executionHost requires a complete Java runtime manifest when Java is selected.');
@@ -691,7 +723,7 @@ export async function createBrowserProjectWorkspace(
         ['cpp', assets.cppWorker],
       ] as const;
       for (const [runtime, configuredUrl] of hostedWorkerUrls) {
-        if (!hasProvider(runtime)) continue;
+        if (!isExecutionHosted(runtime)) continue;
         const hostedWorkerUrl = new URL(configuredUrl, `${executionHost.origin}/`);
         if (hostedWorkerUrl.origin !== executionHost.origin) {
           throw new Error(
@@ -708,7 +740,7 @@ export async function createBrowserProjectWorkspace(
   try {
     const pythonWorkerOptions: PythonWorkerClientOptions = {
       workerUrl: assets.pythonWorker,
-      ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
+      ...(executionHost && isExecutionHosted('python') ? { workerFactory: executionHost.workerFactory } : {}),
       ...(projectWorkerIsolation === 'per-command'
         ? { projectUserAuthorityMode: 'permanent' as const }
         : {}),
@@ -739,10 +771,10 @@ export async function createBrowserProjectWorkspace(
     };
     const javaWorkerOptions: JavaWorkerClientOptions = {
       workerUrl: assets.javaWorker,
-      ...(projectWorkerIsolation === 'per-command' && !executionHost
+      ...(projectWorkerIsolation === 'per-command' && !isExecutionHosted('java')
         ? { projectUserAuthorityMode: 'permanent' as const }
         : {}),
-      ...(executionHost
+      ...(executionHost && isExecutionHosted('java')
         ? {
             workerFactory: executionHost.workerFactory,
             isolatedRuntimeStorage: true,
@@ -789,7 +821,7 @@ export async function createBrowserProjectWorkspace(
     };
     const csharpWorkerOptions: CSharpWorkerClientOptions = {
       workerUrl: assets.csharpWorker,
-      ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
+      ...(executionHost && isExecutionHosted('csharp') ? { workerFactory: executionHost.workerFactory } : {}),
       assetBaseUrl: assets.csharpAssetBaseUrl,
       ...(projectWorkerIsolation === 'per-command'
         ? { projectUserAuthorityMode: 'permanent' as const }
@@ -811,7 +843,7 @@ export async function createBrowserProjectWorkspace(
     };
     const cppWorkerOptions: CppWorkerClientOptions = {
       workerUrl: assets.cppWorker,
-      ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
+      ...(executionHost && isExecutionHosted('cpp') ? { workerFactory: executionHost.workerFactory } : {}),
       assetPreflight: () => runtimeAssetPreflight.preflight('cpp', ['worker']),
       runtimeAssetPreflight: () => runtimeAssetPreflight.preflight('cpp', [
         'compilerFrame',
@@ -849,7 +881,7 @@ export async function createBrowserProjectWorkspace(
     const JavaWorkerClientConstructor = javaProvider?.[1].JavaWorkerClient;
     const javaWorkerClient = hasProvider('java')
       ? providedJavaWorkerClient ?? (
-          projectWorkerIsolation === 'per-command' && (!executionHost || javaExecutionLifecycle === 'per-command')
+          projectWorkerIsolation === 'per-command' && (!isExecutionHosted('java') || javaExecutionLifecycle === 'per-command')
             ? createPerCommandJavaWorkerClient(
                 projectPrewarm.java,
                 () => new JavaWorkerClientConstructor!(javaWorkerOptions),
@@ -859,7 +891,7 @@ export async function createBrowserProjectWorkspace(
         )
       : undefined;
     if (javaWorkerClient && !providedJavaWorkerClient) ownedWorkers.push(javaWorkerClient);
-    if (executionHost && javaExecutionLifecycle === 'workspace-session' && projectPrewarm.java > 0) {
+    if (executionHost && isExecutionHosted('java') && javaExecutionLifecycle === 'workspace-session' && projectPrewarm.java > 0) {
       if (projectPrewarm.java !== 1) {
         executionHost.dispose();
         throw new Error('executionHost workspace-session Java prewarm depth must be 0 or 1.');
@@ -949,7 +981,9 @@ export async function createBrowserProjectWorkspace(
               workerUrl: assets.runtimeManifests?.javascript
                 ? assets.javascriptProjectWorker
                 : nodeProject?.workerUrl ?? assets.javascriptProjectWorker,
-              ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
+              ...(executionHost && isExecutionHosted('javascript')
+                ? { workerFactory: executionHost.workerFactory }
+                : {}),
               assetPreflight: () => runtimeAssetPreflight.preflight('javascript', ['projectWorker']),
               ...(projectWorkerIsolation === 'shared' ? { trustedReusableWorker: true } : {}),
               applyFileChange: applyWorkerFileChange,

@@ -53,12 +53,38 @@ The application page must also be cross-origin isolated. The harness rejects
 execution-host creation otherwise because Java stdin and TraceKernel HTTP use
 SharedArrayBuffer and Atomics.
 
+## Provider routing
+
+Classic and project surfaces can route any worker-backed provider through the
+host without changing where the other providers load. Each hosted worker URL
+must resolve on the execution origin; runtime manifests and CDN locations stay
+consumer-owned.
+
+~~~ts
+const harness = createBrowserHarness({
+  executionHost: {
+    url: 'https://runtime.example.com/host.html',
+    providers: ['java'],
+  },
+  assets: { runtimeManifests: { java: javaRuntimeManifest } },
+});
+~~~
+
+Classic defaults to all selected providers when `executionHost.providers` is
+omitted. JavaScript and TypeScript share one Classic worker and therefore must
+be routed together. Project mode preserves the 0.10 Java-only default; pass an
+explicit provider list to host Python, JavaScript/TypeScript execution, C#,
+C++, or several providers. TypeScript project compilation occurs in the
+trusted page and its emitted JavaScript executes through the JavaScript project
+worker, so hosted TypeScript requires the JavaScript project provider.
+
 ## TraceCode workspace profile
 
 ~~~ts
 const workspace = await createBrowserProjectWorkspace({
   executionHost: {
     url: 'https://exec.tracecode.app/host.html',
+    providers: ['java'],
     javaLifecycle: 'workspace-session',
   },
   assets: {
