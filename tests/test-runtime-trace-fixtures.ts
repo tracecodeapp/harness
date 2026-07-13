@@ -41,6 +41,7 @@ import {
 const FIXTURES_DIR = join(process.cwd(), 'fixtures', 'runtime-parity');
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const JAVASCRIPT_WORKER_PATH = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
+const RUNTIME_KERNEL_POLICY_CLASSIC_PATH = join(process.cwd(), 'workers', 'shared', 'runtime-kernel-policy-classic.js');
 const JAVA_SOURCE_AUGMENTATIONS_PATH = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js');
 const JAVA_REWRITER_CLASSPATH = [
   join(process.cwd(), 'workers', 'vendor', 'java-rewriter.jar'),
@@ -752,6 +753,22 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
     return readFile(reportPath, 'utf8');
   }
 
+  async function compileAndRun(): Promise<string> {
+    return JSON.stringify({
+      success: true,
+      output: 3,
+      compilerStdout: '',
+      compilerStderr: '',
+      runtimeError: null,
+      compileTimeMs: 0,
+      classLoadTimeMs: 0,
+      runTimeMs: 0,
+      compileCacheHit: false,
+    });
+  }
+
+  async function deleteRuntimeRequestTree(): Promise<void> {}
+
   const workerClient = {
     init: async () => ({ success: true, loadTimeMs: 0 }),
     executeWithTracing: async (
@@ -761,8 +778,11 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
       options: Record<string, unknown> | undefined,
       executionStyle: string
     ): Promise<JavaWorkerTraceResult> => {
-      const workerSource = await readFile(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
-      const augmentationSource = await readFile(JAVA_SOURCE_AUGMENTATIONS_PATH, 'utf8');
+      const [workerSource, augmentationSource, runtimeKernelPolicySource] = await Promise.all([
+        readFile(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8'),
+        readFile(JAVA_SOURCE_AUGMENTATIONS_PATH, 'utf8'),
+        readFile(RUNTIME_KERNEL_POLICY_CLASSIC_PATH, 'utf8'),
+      ]);
       const initProtocolToken = 'runtime-trace-java-init-token';
       const traceProtocolToken = 'runtime-trace-java-trace-token';
       let response: JavaWorkerRawTraceResult | null = null;
@@ -837,7 +857,11 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
           },
           tracecode: {
             browser: {
-              BrowserCompileAndTraceLibrary: { compileAndTrace },
+              BrowserCompileAndTraceLibrary: {
+                compileAndRun,
+                compileAndTrace,
+                deleteRuntimeRequestTree,
+              },
             },
           },
         }),
@@ -852,6 +876,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         queueMicrotask,
       });
       try {
+        vm.runInContext(runtimeKernelPolicySource, context, { filename: 'runtime-kernel-policy-classic.js' });
         vm.runInContext(workerSource, context, { filename: 'java-worker.js' });
         if (typeof selfObject.onmessage !== 'function') {
           throw new Error('Java worker did not register onmessage');
@@ -1776,7 +1801,11 @@ async function runFixture(
 }
 
 async function main(): Promise<void> {
-  const workerSource = await readFile(JAVASCRIPT_WORKER_PATH, 'utf8');
+  const [runtimeKernelPolicySource, javascriptWorkerSource] = await Promise.all([
+    readFile(RUNTIME_KERNEL_POLICY_CLASSIC_PATH, 'utf8'),
+    readFile(JAVASCRIPT_WORKER_PATH, 'utf8'),
+  ]);
+  const workerSource = `${runtimeKernelPolicySource}\n${javascriptWorkerSource}`;
   const languages = selectedFixtureLanguages();
   logFixtureProgress(`selected languages=${languages.join(',')}`);
   logFixtureProgress('javascript worker source loaded');
