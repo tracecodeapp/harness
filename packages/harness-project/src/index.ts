@@ -2490,7 +2490,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private attachExternalSignal(process: RuntimeKernelProcessRecord, signal: AbortSignal | undefined): (() => void) | undefined {
     if (!signal) return undefined;
     const abort = () => {
-      this.signalProcess(process, 'SIGTERM');
+      const reason = signal.reason as { signal?: unknown } | undefined;
+      const signalName = typeof reason?.signal === 'string' ? reason.signal : 'SIGTERM';
+      this.signalProcess(process, signalName);
     };
     if (signal.aborted) {
       abort();

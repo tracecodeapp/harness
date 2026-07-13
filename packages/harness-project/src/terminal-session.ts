@@ -138,6 +138,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   private activeStdinPrompt = '';
   private activeCommand = '';
   private activeRun = false;
+  private activeCommandAbortController: AbortController | null = null;
   private readonly onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 
   constructor(
@@ -176,6 +177,13 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
 
   get inputState(): RuntimeProjectTerminalInputState {
     return this.currentInputState;
+  }
+
+  interrupt(): boolean {
+    const controller = this.activeCommandAbortController;
+    if (!controller || controller.signal.aborted) return false;
+    controller.abort({ signal: 'SIGINT', signalCode: 2 });
+    return true;
   }
 
   writeStdin(data: string): boolean {
@@ -309,6 +317,17 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     const previousTerminalEventHandler = this.activeTerminalEventHandler;
     const previousStdinPrompt = this.activeStdinPrompt;
     const previousCommand = this.activeCommand;
+    const commandAbortController = new AbortController();
+    const forwardExternalAbort = (): void => {
+      if (!commandAbortController.signal.aborted) {
+        commandAbortController.abort(options.signal?.reason);
+      }
+    };
+    if (options.signal?.aborted) {
+      forwardExternalAbort();
+    } else {
+      options.signal?.addEventListener('abort', forwardExternalAbort, { once: true });
+    }
     const ownedStdinPipe = options.stdinPipe
       ? undefined
       : canCreateRuntimeCommandStdinPipe()
@@ -319,16 +338,25 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.activeTerminalEventHandler = options.onTerminalEvent;
     this.activeStdinPrompt = '';
     this.activeCommand = trimmed;
+    this.activeCommandAbortController = commandAbortController;
     this.setInputState('busy', 'command-start');
 
     try {
-      return await this.runForegroundTerminalCommand(trimmed, options, commandStdinPipe);
+      return await this.runForegroundTerminalCommand(
+        trimmed,
+        { ...options, signal: commandAbortController.signal },
+        commandStdinPipe
+      );
     } finally {
+      options.signal?.removeEventListener('abort', forwardExternalAbort);
       ownedStdinPipe?.close();
       this.activeStdinPipe = previousStdinPipe;
       this.activeTerminalEventHandler = previousTerminalEventHandler;
       this.activeStdinPrompt = previousStdinPrompt;
       this.activeCommand = previousCommand;
+      if (this.activeCommandAbortController === commandAbortController) {
+        this.activeCommandAbortController = null;
+      }
       this.activeRun = false;
       this.setInputState('command', 'command-finish');
     }

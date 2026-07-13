@@ -1489,6 +1489,11 @@ export interface RuntimeProjectTerminalSession {
   readonly cwd: string;
   readonly prompt: RuntimeProjectTerminalPrompt;
   readonly inputState: RuntimeProjectTerminalInputState;
+  /**
+   * Interrupt the active foreground command as if the user pressed Ctrl+C.
+   * Returns false when the terminal has no interruptible foreground command.
+   */
+  interrupt(): boolean;
   writeStdin(data: string): boolean;
   run(command: string, options?: RuntimeProjectTerminalRunOptions): Promise<RuntimeCommandResult>;
 }

@@ -12151,6 +12151,44 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
     `busy terminal session should return to command mode after its command completes: ${JSON.stringify({ firstTerminalResult, inputState: oneCommandSession.inputState })}`
   );
 
+  let interruptibleTerminalCommandStarted!: () => void;
+  const interruptibleTerminalCommandStartedPromise = new Promise<void>((resolve) => {
+    interruptibleTerminalCommandStarted = resolve;
+  });
+  const interruptibleTerminalWorkspace = await createRuntimeWorkspace({
+    files: [{ path: 'interruptible.js', contents: 'await new Promise(() => {})\n' }],
+    nodeRunner: async (request) => {
+      interruptibleTerminalCommandStarted();
+      await new Promise<void>((resolve) => {
+        if (request.signal?.aborted) {
+          resolve();
+          return;
+        }
+        request.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  });
+  const interruptibleTerminalSession = interruptibleTerminalWorkspace.createTerminalSession();
+  assertCondition(
+    interruptibleTerminalSession.interrupt() === false,
+    'an idle terminal session should report that there is no foreground command to interrupt'
+  );
+  const interruptibleTerminalRun = interruptibleTerminalSession.run('node interruptible.js');
+  await interruptibleTerminalCommandStartedPromise;
+  assertCondition(
+    interruptibleTerminalSession.interrupt() === true && interruptibleTerminalSession.interrupt() === false,
+    'terminal interrupt should signal the active foreground command exactly once'
+  );
+  const interruptedTerminalResult = await interruptibleTerminalRun;
+  assertCondition(
+    interruptedTerminalResult.exitCode === 130 &&
+      interruptedTerminalResult.error?.detail?.signal === 'SIGINT' &&
+      interruptibleTerminalSession.inputState.mode === 'command',
+    `terminal interrupt should deliver SIGINT, return exit 130, and restore the prompt: ${JSON.stringify({ interruptedTerminalResult, inputState: interruptibleTerminalSession.inputState })}`
+  );
+  await interruptibleTerminalWorkspace.destroy();
+
   let releaseBackgroundTerminalCommand!: () => void;
   const backgroundTerminalCommandReleased = new Promise<void>((resolve) => {
     releaseBackgroundTerminalCommand = resolve;

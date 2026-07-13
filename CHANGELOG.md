@@ -8,6 +8,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Added
 
+- Added `terminal.interrupt()` to project terminal sessions. It sends `SIGINT` to the active foreground command, returns exit code 130 through the existing process lifecycle, restores the command prompt, and reports whether an interruptible command was present so terminal UIs can wire Ctrl+C without discovering kernel PIDs.
 - Added a structured browser runtime environment and preflight report with provider selection, engine/feature detection, surface-specific asset checks, readiness states, and explicit compatibility caveats.
 - Added provider-scoped cross-origin execution hosting for Classic and project runtimes. Consumers can independently host Python, JavaScript/TypeScript execution, Java, C#, and C++ workers while retaining local delivery for every other provider; the existing project Java-only default remains compatible.
 - Added lazy project-provider assembly, including filesystem-only workspaces, dynamically loaded provider modules, split ESM output, and browser bundle-size gates.
