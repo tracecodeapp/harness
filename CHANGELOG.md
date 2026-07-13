@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.11.0] - 2026-07-12
+
+### Added
+
+- Added a structured browser runtime environment and preflight report with provider selection, engine/feature detection, surface-specific asset checks, readiness states, and explicit compatibility caveats.
+- Added provider-scoped cross-origin execution hosting for Classic and project runtimes. Consumers can independently host Python, JavaScript/TypeScript execution, Java, C#, and C++ workers while retaining local delivery for every other provider; the existing project Java-only default remains compatible.
+- Added lazy project-provider assembly, including filesystem-only workspaces, dynamically loaded provider modules, split ESM output, and browser bundle-size gates.
+- Added real-browser Classic and project provider matrices across Chromium, Firefox, and WebKit, including active runtime cancellation and five-sample nightly performance gates.
+
+### Changed
+
+- Reduced exact-repeat Python Classic execution to roughly 1–3 ms across browser engines with a bounded compiled-source runner. Every command still receives fresh globals and restores builtins, module registration, and trace state; `python.compileCacheLimit` can bound or disable retained code objects.
+- Reduced exact-repeat Java Classic execution to roughly 88 ms in Chromium by restoring content-addressed compiled classes into a fresh request directory and classloader. Cache keys include the generated source identity, mode, helper/compiler assets, and cache version; `java.compileCacheLimit` can bound or disable retained artifacts.
+- Expanded the execution-host worker protocol to preserve transferable ownership and worker construction options across all worker-backed providers.
+- Kept WebKit C++ readiness explicitly degraded after a clean 10-sample local baseline because an earlier hosted run observed an intermittent engine-level WebAssembly null-reference; nightly tests intentionally do not mask it with retries.
+
+### Fixed
+
+- Fixed generalized project execution hosting so a Java-only first-party host no longer redirects unrelated provider workers to the Java asset origin or rejects local consumer-provided clients for providers that are not hosted.
+- Fixed TypeScript project profiling and matrix selection so compiled output uses its JavaScript execution dependency and cancellation is measured against active runtime work.
+- Fixed Java compiled-artifact reuse so cache hits cannot share writable class directories, stale in-memory entries fall back to source compilation, restored manifests are validated, and request trees are always deleted.
+- Fixed Python Classic cross-command state leakage through globals, `builtins`, and `sys.modules` registration while preserving warm-runtime performance.
+- Fixed Python mutation tracing so user methods named like collection operations no longer suppress events for actual list, dictionary, set, deque, or array receivers, while custom objects remain free of false mutation events.
+- Fixed C++ script traces so generated `tracecode*` lambda helpers and their call-stack frames remain hidden while explicitly declared user functions retain their names.
+- Fixed C# indexed collection assignments so wrapper-level writes carry source provenance without emitting a second duplicate indexed write, and refreshed parity fixtures for the existing non-redundant read/loop-header contract.
+
 ## [0.10.1] - 2026-07-12
 
 ### Added
