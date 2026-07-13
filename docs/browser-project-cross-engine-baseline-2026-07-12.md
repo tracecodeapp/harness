@@ -33,6 +33,15 @@ Firefox's slower WASM-heavy providers are therefore performance differences,
 not missing capabilities. Do not combine these engine distributions into one
 provider average.
 
+An additional isolated WebKit/C++ five-context soak also passed every phase:
+first command 2,824 ms p50, second fresh command 2,584 ms p50, and active
+runtime cancellation 53 ms p50. Together with the baseline this is 10/10
+current fresh-context samples. Readiness remains `degraded`, rather than being
+promoted to `ready`, because an earlier hosted run observed an internal WebKit
+null-reference while entering compiled C++ WebAssembly. The nightly matrix
+continues to run five samples and intentionally has no retry masking; promotion
+should follow repeated clean CI history, not one local soak.
+
 The machine-readable p50 baseline and tolerances live in
 `tests/fixtures/browser-project-performance-baseline.json`. Raw reports are
 intentionally ignored and are retained as CI artifacts by the nightly workflow.
