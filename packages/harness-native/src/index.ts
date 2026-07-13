@@ -89,6 +89,7 @@ interface NativePythonRuntimeCore {
       INTERVIEW_GUARD_DEFAULTS: Record<string, number>;
       loadPyodideInstance: () => Promise<void>;
       getPyodide: () => { runPythonAsync: (code: string) => Promise<string> };
+      performanceNow: () => number;
       toPythonLiteral: (value: unknown) => string;
     },
     code: string,
@@ -538,10 +539,12 @@ class NativePythonRuntimeClient implements RuntimeClient {
                 .replace(
                   /\njson\.dumps\(\{\n    "output": _serialize\(_result\),\n    "console": _console_output,\n\}\)\n?$/,
                   '\n_tracecode_result_json = json.dumps({\n    "output": _serialize(_result),\n    "console": _console_output,\n})\nprint(_tracecode_result_json)\n'
-                );
+                )
+                .replace(/\n_json_out\n?$/, '\nprint(_json_out)\n');
               return (await runPythonScript(this.options.pythonCommand, runnable, this.options.timeoutMs)).trim();
             },
           }),
+          performanceNow: () => Date.now(),
           toPythonLiteral,
         },
         code,
