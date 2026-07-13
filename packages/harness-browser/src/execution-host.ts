@@ -115,7 +115,7 @@ class RemoteBrowserWorker implements BrowserWorkerLike {
 
   constructor(
     readonly id: string,
-    private readonly send: (message: ParentToHostMessage) => void,
+    private readonly send: (message: ParentToHostMessage, transfer?: Transferable[]) => void,
     url: string | URL,
     options?: WorkerOptions
   ) {
@@ -128,7 +128,7 @@ class RemoteBrowserWorker implements BrowserWorkerLike {
     });
   }
 
-  postMessage(data: unknown, _transfer?: Transferable[]): void {
+  postMessage(data: unknown, transfer?: Transferable[]): void {
     if (this.terminated) {
       throw new Error('Remote execution-host worker has been terminated.');
     }
@@ -137,7 +137,7 @@ class RemoteBrowserWorker implements BrowserWorkerLike {
       type: 'worker-post-message',
       workerId: this.id,
       data,
-    });
+    }, transfer);
   }
 
   terminate(): void {
@@ -205,7 +205,7 @@ export function createBrowserExecutionWorkerHost(
   const token = secureRandomToken();
   const channel = new MessageChannel();
   const workers = new Map<string, RemoteBrowserWorker>();
-  const queuedMessages: ParentToHostMessage[] = [];
+  const queuedMessages: Array<{ message: ParentToHostMessage; transfer?: Transferable[] }> = [];
   let disposed = false;
   let ready = false;
   let nextWorkerId = 0;
@@ -220,13 +220,13 @@ export function createBrowserExecutionWorkerHost(
     readyReject?.(new Error('Browser execution host handshake timed out.'));
   }, options.handshakeTimeoutMs ?? 15_000);
 
-  const send = (message: ParentToHostMessage): void => {
+  const send = (message: ParentToHostMessage, transfer?: Transferable[]): void => {
     if (disposed) throw new Error('Browser execution host has been disposed.');
     if (!ready) {
-      queuedMessages.push(message);
+      queuedMessages.push({ message, ...(transfer?.length ? { transfer } : {}) });
       return;
     }
-    channel.port1.postMessage(message);
+    channel.port1.postMessage(message, transfer ?? []);
   };
 
   channel.port1.onmessage = (event: MessageEvent<HostToParentMessage>) => {
@@ -238,7 +238,9 @@ export function createBrowserExecutionWorkerHost(
       ready = true;
       globalThis.clearTimeout(timeoutId);
       readyResolve?.();
-      for (const queued of queuedMessages.splice(0)) channel.port1.postMessage(queued);
+      for (const queued of queuedMessages.splice(0)) {
+        channel.port1.postMessage(queued.message, queued.transfer ?? []);
+      }
       return;
     }
     const worker = workers.get(message.workerId);
@@ -290,6 +292,47 @@ export function createBrowserExecutionWorkerHost(
       iframe.remove();
     },
   });
+}
+
+function transferableValues(value: unknown, ports: readonly MessagePort[] = []): Transferable[] {
+  const transferables = new Set<Transferable>(ports);
+  const visited = new Set<object>();
+  const visit = (candidate: unknown): void => {
+    if (!candidate || typeof candidate !== 'object' || visited.has(candidate)) return;
+    visited.add(candidate);
+    if (candidate instanceof ArrayBuffer) {
+      transferables.add(candidate);
+      return;
+    }
+    if (ArrayBuffer.isView(candidate)) {
+      if (candidate.buffer instanceof ArrayBuffer) transferables.add(candidate.buffer);
+      return;
+    }
+    if (typeof MessagePort !== 'undefined' && candidate instanceof MessagePort) {
+      transferables.add(candidate);
+      return;
+    }
+    const constructorName = (candidate as { constructor?: { name?: string } }).constructor?.name;
+    if (
+      constructorName === 'ImageBitmap' ||
+      constructorName === 'OffscreenCanvas' ||
+      constructorName === 'ReadableStream' ||
+      constructorName === 'WritableStream' ||
+      constructorName === 'TransformStream' ||
+      constructorName === 'AudioData' ||
+      constructorName === 'VideoFrame'
+    ) {
+      transferables.add(candidate as Transferable);
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item);
+      return;
+    }
+    for (const item of Object.values(candidate as Record<string, unknown>)) visit(item);
+  };
+  visit(value);
+  return Array.from(transferables);
 }
 
 export interface InstallBrowserExecutionWorkerHostOptions {
@@ -373,12 +416,13 @@ export function installBrowserExecutionWorkerHost(
           const worker = createWorker(workerUrl.href, request.options);
           connection.workers.set(request.workerId, worker);
           worker.onmessage = (workerEvent) => {
-            port.postMessage({
+            const response = {
               protocol: BROWSER_EXECUTION_HOST_PROTOCOL,
               type: 'worker-message',
               workerId: request.workerId,
               data: workerEvent.data,
-            } satisfies HostToParentMessage);
+            } satisfies HostToParentMessage;
+            port.postMessage(response, transferableValues(workerEvent.data, workerEvent.ports));
           };
           worker.onerror = (workerEvent) => {
             port.postMessage({
@@ -406,7 +450,7 @@ export function installBrowserExecutionWorkerHost(
       const worker = connection.workers.get(request.workerId);
       if (!worker) return;
       if (request.type === 'worker-post-message') {
-        worker.postMessage(request.data);
+        worker.postMessage(request.data, transferableValues(request.data, portEvent.ports));
       } else if (request.type === 'terminate-worker') {
         worker.terminate();
         connection.workers.delete(request.workerId);

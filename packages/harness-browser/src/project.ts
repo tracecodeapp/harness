@@ -74,7 +74,7 @@ export type BrowserProjectTypeScriptOptions = BrowserTypeScriptProjectRunnerOpti
 export type BrowserProjectWorkerIsolation = 'shared' | 'per-command';
 export type BrowserProjectJavaLifecycle = 'workspace-session' | 'per-command';
 export interface BrowserProjectExecutionHostOptions extends BrowserExecutionWorkerHostOptions {
-  /** Heavy Java runtime lifecycle inside the dedicated origin. Defaults to workspace-session. */
+  /** Heavy Java runtime lifecycle inside the provider-neutral host. Defaults to workspace-session. */
   javaLifecycle?: BrowserProjectJavaLifecycle;
 }
 export interface BrowserProjectWorkerPrewarmOptions {
@@ -437,11 +437,7 @@ export interface CreateBrowserProjectWorkspaceOptions
   javaWorkerClient?: Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'>;
   csharpWorkerClient?: Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'>;
   cppWorkerClient?: Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'>;
-  /**
-   * Runs Java workers on a dedicated origin. TraceCode deployments should use
-   * this for CheerpJ project execution so runtime IndexedDB never shares the
-   * application origin.
-   */
+  /** Runs every built-in project worker on a dedicated, credential-free origin. */
   executionHost?: BrowserProjectExecutionHostOptions;
   nodeProject?: BrowserProjectNodeOptions;
   typescriptProject?: BrowserProjectTypeScriptOptions;
@@ -544,8 +540,11 @@ export async function createBrowserProjectWorkspace(
     onKernelStorageError,
     ...workspaceOptions
   } = options;
-  if (executionHostOptions && providedJavaWorkerClient) {
-    throw new Error('executionHost cannot be combined with a provided javaWorkerClient.');
+  if (
+    executionHostOptions &&
+    (providedPythonWorkerClient || providedJavaWorkerClient || providedCSharpWorkerClient || providedCppWorkerClient)
+  ) {
+    throw new Error('executionHost cannot be combined with provided language worker clients.');
   }
   const javaExecutionLifecycle = executionHostOptions?.javaLifecycle ?? 'workspace-session';
   if (javaExecutionLifecycle !== 'workspace-session' && javaExecutionLifecycle !== 'per-command') {
@@ -605,12 +604,26 @@ export async function createBrowserProjectWorkspace(
       }
       const workerUrl = new URL(
         javaWorkerAsset.url,
-        globalThis.location?.href ?? executionHostOptions.url
+        `${executionHost.origin}/`
       );
       if (workerUrl.origin !== executionHost.origin) {
         throw new Error(
           `Java manifest worker origin ${JSON.stringify(workerUrl.origin)} must match executionHost origin ${JSON.stringify(executionHost.origin)}.`
         );
+      }
+      const hostedWorkerUrls = [
+        ['python', assets.pythonWorker],
+        ['javascript', assets.javascriptProjectWorker],
+        ['csharp', assets.csharpWorker],
+        ['cpp', assets.cppWorker],
+      ] as const;
+      for (const [runtime, configuredUrl] of hostedWorkerUrls) {
+        const hostedWorkerUrl = new URL(configuredUrl, `${executionHost.origin}/`);
+        if (hostedWorkerUrl.origin !== executionHost.origin) {
+          throw new Error(
+            `${runtime} worker origin ${JSON.stringify(hostedWorkerUrl.origin)} must match executionHost origin ${JSON.stringify(executionHost.origin)}.`
+          );
+        }
       }
     } catch (error) {
       executionHost.dispose();
@@ -621,6 +634,7 @@ export async function createBrowserProjectWorkspace(
   try {
     const pythonWorkerOptions: PythonWorkerClientOptions = {
       workerUrl: assets.pythonWorker,
+      ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
       ...(projectWorkerIsolation === 'per-command'
         ? { projectUserAuthorityMode: 'permanent' as const }
         : {}),
@@ -700,6 +714,7 @@ export async function createBrowserProjectWorkspace(
     };
     const csharpWorkerOptions: CSharpWorkerClientOptions = {
       workerUrl: assets.csharpWorker,
+      ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
       assetBaseUrl: assets.csharpAssetBaseUrl,
       ...(projectWorkerIsolation === 'per-command'
         ? { projectUserAuthorityMode: 'permanent' as const }
@@ -721,6 +736,7 @@ export async function createBrowserProjectWorkspace(
     };
     const cppWorkerOptions: CppWorkerClientOptions = {
       workerUrl: assets.cppWorker,
+      ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
       assetPreflight: () => runtimeAssetPreflight.preflight('cpp', ['worker']),
       runtimeAssetPreflight: () => runtimeAssetPreflight.preflight('cpp', [
         'compilerFrame',
@@ -830,6 +846,7 @@ export async function createBrowserProjectWorkspace(
         workerUrl: assets.runtimeManifests?.javascript
           ? assets.javascriptProjectWorker
           : nodeProject?.workerUrl ?? assets.javascriptProjectWorker,
+        ...(executionHost ? { workerFactory: executionHost.workerFactory } : {}),
         assetPreflight: () => runtimeAssetPreflight.preflight('javascript', ['projectWorker']),
         ...(projectWorkerIsolation === 'shared' ? { trustedReusableWorker: true } : {}),
         applyFileChange: applyWorkerFileChange,

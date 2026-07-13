@@ -23,6 +23,7 @@ import type {
   RuntimeProjectCommandRequest,
 } from '@tracecode/harness-core';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
 import { createWorkerProtocolToken } from './worker-protocol';
 
@@ -31,6 +32,7 @@ export type CSharpExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
 export interface CSharpWorkerClientOptions {
   workerUrl: string;
+  workerFactory?: BrowserWorkerFactory;
   assetBaseUrl: string;
   debug?: boolean;
   initTimeoutMs?: number;
@@ -134,7 +136,7 @@ function normalizeCSharpTraceEventFile(event: RuntimeTraceEvent): RuntimeTraceEv
 }
 
 export class CSharpWorkerClient {
-  private worker: Worker | null = null;
+  private worker: BrowserWorkerLike | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
   private httpRequestId = 0;
@@ -159,10 +161,10 @@ export class CSharpWorkerClient {
   }
 
   isSupported(): boolean {
-    return typeof Worker !== 'undefined';
+    return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
-  private getWorker(): Worker {
+  private getWorker(): BrowserWorkerLike {
     if (this.worker) return this.worker;
 
     if (!this.isSupported()) {
@@ -179,7 +181,9 @@ export class CSharpWorkerClient {
         ? `${this.options.workerUrl}?dev=${Date.now()}`
         : this.options.workerUrl;
 
-    this.worker = new Worker(workerUrl, { type: 'module' });
+    this.worker = this.options.workerFactory
+      ? this.options.workerFactory(workerUrl, { type: 'module' })
+      : new Worker(workerUrl, { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const { id, type, payload, protocolToken } = event.data;
 

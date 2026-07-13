@@ -108,6 +108,18 @@ export type JavaScriptProjectCommandRunner = RuntimeProjectCommandRunner<JavaScr
 export type BrowserJavaScriptProjectCommandRunner = JavaScriptProjectCommandRunner;
 export type BrowserJavaScriptProjectWorkerIsolation = 'shared' | 'per-command';
 
+export interface BrowserJavaScriptProjectWorkerLike {
+  onmessage: ((event: MessageEvent) => void) | null;
+  onerror: ((event: ErrorEvent) => void) | null;
+  postMessage(message: unknown, transfer?: Transferable[]): void;
+  terminate(): void;
+}
+
+export type BrowserJavaScriptProjectWorkerFactory = (
+  url: string | URL,
+  options?: WorkerOptions
+) => BrowserJavaScriptProjectWorkerLike;
+
 export interface BrowserJavaScriptProjectRunnerOptions {
   /** Verifies the consumer-owned project worker before it is constructed. */
   assetPreflight?: () => Promise<void>;
@@ -125,6 +137,7 @@ export interface BrowserJavaScriptProjectRunnerOptions {
   projectUserAuthorityMode?: 'temporary' | 'permanent';
   timeoutMs?: number;
   workerIsolation?: BrowserJavaScriptProjectWorkerIsolation;
+  workerFactory?: BrowserJavaScriptProjectWorkerFactory;
   workerUrl?: string;
 }
 
@@ -3411,7 +3424,10 @@ interface BrowserJavaScriptProjectWorkerMessage {
   type: string;
   payload?: unknown;
   protocolToken?: string;
-  runnerOptions?: Pick<BrowserJavaScriptProjectRunnerOptions, 'allowDynamicEval'>;
+  runnerOptions?: Pick<
+    BrowserJavaScriptProjectRunnerOptions,
+    'allowDynamicEval' | 'projectUserAuthorityMode'
+  >;
   port?: MessagePort;
 }
 
@@ -3455,7 +3471,7 @@ function createBrowserJavaScriptProjectPolicyFailureRunner(stderr: string): Java
 }
 
 class BrowserJavaScriptProjectWorkerClient {
-  private worker: Worker | null = null;
+  private worker: BrowserJavaScriptProjectWorkerLike | null = null;
   private messageId = 0;
   private httpRequestId = 0;
   private readonly pendingMessages = new Map<string, BrowserJavaScriptProjectPendingMessage>();
@@ -3465,7 +3481,8 @@ class BrowserJavaScriptProjectWorkerClient {
     private readonly runnerOptions: Pick<
       BrowserJavaScriptProjectRunnerOptions,
       'allowDynamicEval' | 'projectUserAuthorityMode'
-    > = {}
+    > = {},
+    private readonly workerFactory?: BrowserJavaScriptProjectWorkerFactory
   ) {}
 
   executeProject(
@@ -3491,9 +3508,11 @@ class BrowserJavaScriptProjectWorkerClient {
     this.terminateAndReset();
   }
 
-  private getWorker(): Worker {
+  private getWorker(): BrowserJavaScriptProjectWorkerLike {
     if (this.worker) return this.worker;
-    this.worker = new Worker(this.workerUrl, { type: 'module' });
+    this.worker = this.workerFactory
+      ? this.workerFactory(this.workerUrl, { type: 'module' })
+      : new Worker(this.workerUrl, { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<BrowserJavaScriptProjectWorkerMessage>) => {
       this.handleWorkerMessage(event.data);
     };
@@ -3818,7 +3837,7 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
           const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
             allowDynamicEval: options.allowDynamicEval,
             projectUserAuthorityMode: 'permanent',
-          });
+          }, options.workerFactory);
           try {
             return await client.executeProject(workerRequest, timeoutMs, onEvent);
           } finally {
@@ -3830,7 +3849,7 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
   const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
     allowDynamicEval: options.allowDynamicEval,
     projectUserAuthorityMode: 'temporary',
-  });
+  }, options.workerFactory);
   return (request) =>
     runRuntimeProjectWorkerBridge({
       request,
@@ -3854,7 +3873,7 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
 export function createBrowserJavaScriptProjectRunner(
   options: BrowserJavaScriptProjectRunnerOptions = {}
 ): JavaScriptProjectCommandRunner {
-  if (options.workerUrl && typeof Worker !== 'undefined') {
+  if (options.workerUrl && (options.workerFactory !== undefined || typeof Worker !== 'undefined')) {
     return createWorkerBackedBrowserJavaScriptProjectRunner({
       ...options,
       workerUrl: options.workerUrl,

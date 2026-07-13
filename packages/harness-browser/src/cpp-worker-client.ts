@@ -21,6 +21,7 @@ import {
   type KernelHttpSyncServerBridge,
 } from './kernel-http-sync';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
 import { createWorkerProtocolToken } from './worker-protocol';
 
@@ -45,6 +46,7 @@ export interface CppWorkerAssets {
 
 export interface CppWorkerClientOptions extends CppWorkerAssets {
   workerUrl: string;
+  workerFactory?: BrowserWorkerFactory;
   /** Verifies the execution-worker asset before constructing a Worker. */
   assetPreflight?: () => Promise<void>;
   /** Verifies compiler-frame and toolchain assets only when compilation is requested. */
@@ -194,7 +196,7 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 export class CppWorkerClient {
-  private worker: Worker | null = null;
+  private worker: BrowserWorkerLike | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
   private initPromise: Promise<InitResult> | null = null;
@@ -239,10 +241,10 @@ export class CppWorkerClient {
   }
 
   isSupported(): boolean {
-    return typeof Worker !== 'undefined';
+    return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
-  private getWorker(): Worker {
+  private getWorker(): BrowserWorkerLike {
     if (this.worker) return this.worker;
 
     if (!this.isSupported()) {
@@ -259,7 +261,9 @@ export class CppWorkerClient {
         ? `${this.options.workerUrl}?dev=${Date.now()}`
         : this.options.workerUrl;
 
-    this.worker = new Worker(workerUrl, { type: 'module' });
+    this.worker = this.options.workerFactory
+      ? this.options.workerFactory(workerUrl, { type: 'module' })
+      : new Worker(workerUrl, { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const { id, type, payload, protocolToken } = event.data;
 

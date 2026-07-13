@@ -5,6 +5,11 @@ import {
   type BrowserWorkerLike,
 } from '../packages/harness-browser/src/execution-host';
 import { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
+import { PythonWorkerClient } from '../packages/harness-browser/src/pyodide-worker-client';
+import { JavaScriptWorkerClient } from '../packages/harness-browser/src/javascript-worker-client';
+import { CSharpWorkerClient } from '../packages/harness-browser/src/csharp-worker-client';
+import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
+import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -69,14 +74,16 @@ class MockWorker implements BrowserWorkerLike {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   readonly posted: unknown[] = [];
+  readonly transfers: Transferable[][] = [];
   terminated = false;
 
   constructor() {
     queueMicrotask(() => this.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
   }
 
-  postMessage(message: unknown): void {
+  postMessage(message: unknown, transfer: Transferable[] = []): void {
     this.posted.push(message);
+    this.transfers.push(transfer);
     const request = message as { id?: string; type?: string; protocolToken?: string; payload?: unknown };
     queueMicrotask(() => {
       if (request.type === 'init') {
@@ -109,6 +116,28 @@ class MockWorker implements BrowserWorkerLike {
         } as MessageEvent);
         return;
       }
+      if (request.type === 'execute-project-javascript') {
+        this.onmessage?.({
+          data: {
+            id: request.id,
+            type: request.type,
+            protocolToken: request.protocolToken,
+            payload: { stdout: 'remote-javascript\n', stderr: '', exitCode: 0, files: [] },
+          },
+        } as MessageEvent);
+        return;
+      }
+      if (request.id && request.type) {
+        this.onmessage?.({
+          data: {
+            id: request.id,
+            type: request.type,
+            protocolToken: request.protocolToken,
+            payload: { success: true, loadTimeMs: 1 },
+          },
+        } as MessageEvent);
+        return;
+      }
       this.onmessage?.({ data: { echoed: message } } as MessageEvent);
     });
   }
@@ -122,13 +151,13 @@ async function main(): Promise<void> {
   const parentWindow = new FakeWindow('https://app.tracecode.test/editor');
   const executionWindow = new FakeWindow('https://exec.tracecode.test/host');
   executionWindow.parent = parentWindow;
-  const createdWorkers: Array<{ url: string; worker: MockWorker }> = [];
+  const createdWorkers: Array<{ url: string; options?: WorkerOptions; worker: MockWorker }> = [];
   const installed = installBrowserExecutionWorkerHost({
     window: executionWindow as unknown as Window,
     allowedParentOrigins: [parentWindow.location.origin],
-    workerFactory(url) {
+    workerFactory(url, options) {
       const worker = new MockWorker();
-      createdWorkers.push({ url: String(url), worker });
+      createdWorkers.push({ url: String(url), ...(options ? { options } : {}), worker });
       return worker;
     },
   });
@@ -179,6 +208,19 @@ async function main(): Promise<void> {
     JSON.stringify(await echoed) === JSON.stringify({ echoed: { command: 'init' } }),
     'Execution host must relay worker messages'
   );
+  const transferredBytes = new Uint8Array([1, 2, 3, 4]);
+  const transferredEcho = new Promise<unknown>((resolve) => {
+    remote.onmessage = (event) => {
+      if ((event.data as { echoed?: unknown } | undefined)?.echoed !== undefined) resolve(event.data);
+    };
+  });
+  remote.postMessage({ bytes: transferredBytes }, [transferredBytes.buffer]);
+  await transferredEcho;
+  assertCondition(transferredBytes.byteLength === 0, 'Parent ownership should transfer to the execution host');
+  assertCondition(
+    createdWorkers[0]?.worker.transfers[1]?.length === 1,
+    'Execution host must preserve transfer lists when relaying to workers'
+  );
   assertCondition(
     createdWorkers[0]?.url === 'https://exec.tracecode.test/workers/java-worker.js',
     `Worker URL must resolve on the execution origin: ${createdWorkers[0]?.url}`
@@ -226,6 +268,72 @@ async function main(): Promise<void> {
     'Execution-origin Java commands must declare the isolated-origin authority contract'
   );
   javaClient.terminate();
+
+  const pythonClient = new PythonWorkerClient({
+    workerUrl: '/workers/python-worker.js',
+    workerFactory: host.workerFactory,
+    debug: false,
+  });
+  const javascriptClient = new JavaScriptWorkerClient({
+    workerUrl: '/workers/javascript-worker.js',
+    workerFactory: host.workerFactory,
+    debug: false,
+  });
+  const csharpClient = new CSharpWorkerClient({
+    workerUrl: '/workers/csharp-worker.js',
+    workerFactory: host.workerFactory,
+    assetBaseUrl: '/workers/dotnet',
+    debug: false,
+  });
+  const cppClient = new CppWorkerClient({
+    workerUrl: '/workers/cpp-worker.js',
+    workerFactory: host.workerFactory,
+    clangWasmUrl: '/workers/clang.wasm',
+    lldWasmUrl: '/workers/lld.wasm',
+    sysrootUrl: '/workers/sysroot.tar',
+    runtimeHeaderUrl: '/workers/runtime.hpp',
+    compilerBundleUrl: '/workers/compiler.js',
+    debug: false,
+  });
+  await Promise.all([
+    pythonClient.init(),
+    javascriptClient.init(),
+    csharpClient.init(),
+    cppClient.init(),
+  ]);
+  const javascriptProjectRunner = createBrowserJavaScriptProjectRunner({
+    workerUrl: '/workers/javascript-project-worker.js',
+    workerFactory: host.workerFactory,
+  });
+  const javascriptProjectResult = await javascriptProjectRunner({
+    source: 'run',
+    scriptPath: 'index.js',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: { files: [{ path: 'index.js', contents: 'console.log("remote")\n' }] },
+  });
+  assertCondition(
+    javascriptProjectResult.stdout === 'remote-javascript\n',
+    `Project JavaScript must execute through the provider-neutral host: ${JSON.stringify(javascriptProjectResult)}`
+  );
+  assertCondition(
+    createdWorkers.some(({ url }) => url.endsWith('/workers/python-worker.js')) &&
+      createdWorkers.some(({ url }) => url.includes('/workers/javascript-worker.js')) &&
+      createdWorkers.some(({ url }) => url.endsWith('/workers/javascript-project-worker.js')) &&
+      createdWorkers.some(({ url }) => url.endsWith('/workers/csharp-worker.js')) &&
+      createdWorkers.some(({ url }) => url.endsWith('/workers/cpp-worker.js')),
+    'Execution host worker factories must be provider-neutral'
+  );
+  assertCondition(
+    createdWorkers.find(({ url }) => url.endsWith('/workers/csharp-worker.js'))?.options?.type === 'module' &&
+      createdWorkers.find(({ url }) => url.endsWith('/workers/cpp-worker.js'))?.options?.type === 'module',
+    'Execution host must preserve provider worker construction options'
+  );
+  pythonClient.terminate();
+  javascriptClient.terminate();
+  csharpClient.terminate();
+  cppClient.terminate();
 
   const rejected = host.workerFactory('https://evil.example/worker.js');
   const rejectedError = new Promise<string>((resolve) => {

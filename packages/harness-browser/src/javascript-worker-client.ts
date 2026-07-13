@@ -1,5 +1,6 @@
 import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
 import { createWorkerProtocolToken } from './worker-protocol';
 
@@ -9,6 +10,7 @@ export type JavaScriptWorkerLanguage = 'javascript' | 'typescript';
 
 export interface JavaScriptWorkerClientOptions {
   workerUrl: string;
+  workerFactory?: BrowserWorkerFactory;
   debug?: boolean;
   assetPreflight?: () => Promise<void>;
   runtimeAssetPreflight?: () => Promise<void>;
@@ -65,7 +67,7 @@ function appendWorkerQueryParameter(workerUrl: string, name: string, value: stri
 }
 
 class JavaScriptWorkerConnection {
-  private worker: Worker | null = null;
+  private worker: BrowserWorkerLike | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
   private workerReadyPromise: Promise<void> | null = null;
@@ -77,19 +79,20 @@ class JavaScriptWorkerConnection {
     private readonly workerUrl: string,
     private readonly role: JavaScriptWorkerRole,
     private readonly debug: boolean,
-    private readonly assetPreflight?: () => Promise<void>
+    private readonly assetPreflight?: () => Promise<void>,
+    private readonly workerFactory?: BrowserWorkerFactory
   ) {}
 
   get isDisposed(): boolean {
     return this.disposed;
   }
 
-  private getWorker(): Worker {
+  private getWorker(): BrowserWorkerLike {
     if (this.disposed) {
       throw new Error(`JavaScript ${this.role} worker was terminated`);
     }
     if (this.worker) return this.worker;
-    if (typeof Worker === 'undefined') {
+    if (!this.workerFactory && typeof Worker === 'undefined') {
       throw new Error('Web Workers are not supported in this environment');
     }
 
@@ -102,7 +105,9 @@ class JavaScriptWorkerConnection {
     if (this.debug) {
       resolvedWorkerUrl = appendWorkerQueryParameter(resolvedWorkerUrl, 'dev', String(Date.now()));
     }
-    const worker = new Worker(resolvedWorkerUrl);
+    const worker = this.workerFactory
+      ? this.workerFactory(resolvedWorkerUrl)
+      : new Worker(resolvedWorkerUrl);
     this.worker = worker;
 
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
@@ -254,7 +259,7 @@ export class JavaScriptWorkerClient {
   }
 
   isSupported(): boolean {
-    return typeof Worker !== 'undefined';
+    return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
   private getCoordinator(): JavaScriptWorkerConnection {
@@ -266,7 +271,8 @@ export class JavaScriptWorkerClient {
         this.options.workerUrl,
         'coordinator',
         this.debug,
-        this.options.assetPreflight
+        this.options.assetPreflight,
+        this.options.workerFactory
       );
     }
     return this.coordinator;
@@ -277,7 +283,8 @@ export class JavaScriptWorkerClient {
       this.options.workerUrl,
       'executor',
       this.debug,
-      this.options.assetPreflight
+      this.options.assetPreflight,
+      this.options.workerFactory
     );
   }
 

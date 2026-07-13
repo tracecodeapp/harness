@@ -21,6 +21,7 @@ import type {
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
 import { createWorkerProtocolToken } from './worker-protocol';
 
@@ -29,6 +30,7 @@ export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
 export interface PythonWorkerClientOptions {
   workerUrl: string;
+  workerFactory?: BrowserWorkerFactory;
   /** Worker construction mode. Module Pyodide loaders require a module worker. */
   workerFormat?: 'classic' | 'module';
   debug?: boolean;
@@ -129,7 +131,7 @@ function appendPythonWorkerQueryParameter(workerUrl: string, name: string, value
 }
 
 export class PythonWorkerClient {
-  private worker: Worker | null = null;
+  private worker: BrowserWorkerLike | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
   private httpRequestId = 0;
@@ -173,13 +175,13 @@ export class PythonWorkerClient {
    * Check if Web Workers are supported
    */
   isSupported(): boolean {
-    return typeof Worker !== 'undefined';
+    return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
   /**
    * Get or create the worker instance
    */
-  private getWorker(): Worker {
+  private getWorker(): BrowserWorkerLike {
     if (this.worker) return this.worker;
 
     if (!this.isSupported()) {
@@ -206,10 +208,10 @@ export class PythonWorkerClient {
     if (this.workerFormat === 'module') {
       workerUrl = appendPythonWorkerQueryParameter(workerUrl, 'tracecodePythonWorkerFormat', 'module');
     }
-    this.worker = new Worker(
-      workerUrl,
-      this.workerFormat === 'module' ? { type: 'module' } : undefined
-    );
+    const workerOptions = this.workerFormat === 'module' ? { type: 'module' as const } : undefined;
+    this.worker = this.options.workerFactory
+      ? this.options.workerFactory(workerUrl, workerOptions)
+      : new Worker(workerUrl, workerOptions);
     
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const { id, type, payload, protocolToken } = event.data;
