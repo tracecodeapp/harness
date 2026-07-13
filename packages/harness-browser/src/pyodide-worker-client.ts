@@ -33,6 +33,8 @@ export interface PythonWorkerClientOptions {
   workerFactory?: BrowserWorkerFactory;
   /** Worker construction mode. Module Pyodide loaders require a module worker. */
   workerFormat?: 'classic' | 'module';
+  /** Bounded compiled Classic harness/source entries retained by this worker (0-16). */
+  compileCacheLimit?: number;
   debug?: boolean;
   assetPreflight?: () => Promise<void>;
   runtimeAssetPreflight?: () => Promise<void>;
@@ -146,6 +148,12 @@ export class PythonWorkerClient {
   private readonly loaderFormat: 'classic-script' | 'module';
 
   constructor(private readonly options: PythonWorkerClientOptions) {
+    if (
+      options.compileCacheLimit !== undefined &&
+      (!Number.isInteger(options.compileCacheLimit) || options.compileCacheLimit < 0 || options.compileCacheLimit > 16)
+    ) {
+      throw new TypeError('Python compileCacheLimit must be an integer from 0 to 16.');
+    }
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
     this.workerFormat = options.workerFormat ?? 'classic';
     this.loaderFormat = options.runtimeAssets?.loaderFormat ?? 'classic-script';
@@ -762,8 +770,16 @@ export class PythonWorkerClient {
     }
   }
 
-  private runtimeAssetsPayload(): { runtimeAssets?: PythonWorkerClientOptions['runtimeAssets'] } {
-    return this.options.runtimeAssets ? { runtimeAssets: this.options.runtimeAssets } : {};
+  private runtimeAssetsPayload(): {
+    compileCacheLimit?: number;
+    runtimeAssets?: PythonWorkerClientOptions['runtimeAssets'];
+  } {
+    return {
+      ...(this.options.compileCacheLimit === undefined
+        ? {}
+        : { compileCacheLimit: this.options.compileCacheLimit }),
+      ...(this.options.runtimeAssets ? { runtimeAssets: this.options.runtimeAssets } : {}),
+    };
   }
 
   async warmup(): Promise<WarmupResult> {

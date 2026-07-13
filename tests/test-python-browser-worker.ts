@@ -275,6 +275,34 @@ async function main(): Promise<void> {
       await send('init', {}, 120000);
       await send('warmup', {}, 180000);
 
+      const classicPoisonRun = await send('execute-code', {
+        code: [
+          'import builtins, sys, types',
+          'builtins.__tracecode_cross_command_leak__ = "poisoned"',
+          'sys.modules["tracecode_cross_command_leak"] = types.ModuleType("tracecode_cross_command_leak")',
+          '_TRACECODE_HELPER_LEAK = "poisoned"',
+          'def solve(value):',
+          '    return value + 1',
+        ].join('\\n'),
+        functionName: 'solve',
+        inputs: { value: 1 },
+        executionStyle: 'function',
+      });
+      const classicIsolationProbe = await send('execute-code', {
+        code: [
+          'import builtins, sys',
+          'def solve():',
+          '    return [',
+          '        hasattr(builtins, "__tracecode_cross_command_leak__"),',
+          '        "tracecode_cross_command_leak" in sys.modules,',
+          '        "_TRACECODE_HELPER_LEAK" in globals(),',
+          '    ]',
+        ].join('\\n'),
+        functionName: 'solve',
+        inputs: {},
+        executionStyle: 'function',
+      });
+
       const traceKernelDevices = [
         { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
         { path: '/dev/null', readable: true, writable: true, inputDevice: '/dev/null', outputDevice: '/dev/null' },
@@ -1261,8 +1289,10 @@ async function main(): Promise<void> {
         // Terminating the worker is how this smoke test stops the long-lived server.
       }
 
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outboundHttpTimeouts, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams, asgiInspect, asgiDelete, asgiConflict, stdlibEnqueue, stdlibInspect, stdlibDequeue };
+      return { classicPoisonRun, classicIsolationProbe, fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outboundHttpTimeouts, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams, asgiInspect, asgiDelete, asgiConflict, stdlibEnqueue, stdlibInspect, stdlibDequeue };
     })()`) as {
+      classicPoisonRun: { success: boolean; output: unknown; error?: string };
+      classicIsolationProbe: { success: boolean; output: unknown; error?: string };
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
       cwdRelativeFileRun: PythonProjectWorkerResponse;
@@ -1293,6 +1323,16 @@ async function main(): Promise<void> {
       stdlibInspect: { status: number; headers?: Record<string, string>; body?: string };
       stdlibDequeue: { status: number; headers?: Record<string, string>; body?: string };
     };
+
+    assertCondition(
+      results.classicPoisonRun.success === true && results.classicPoisonRun.output === 2,
+      `Python Classic isolation poison setup should execute normally: ${JSON.stringify(results.classicPoisonRun)}`
+    );
+    assertCondition(
+      results.classicIsolationProbe.success === true &&
+        JSON.stringify(results.classicIsolationProbe.output) === JSON.stringify([false, false, false]),
+      `Python Classic commands must not inherit builtins, sys.modules, or helper globals: ${JSON.stringify(results.classicIsolationProbe)}`
+    );
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(

@@ -53,6 +53,9 @@ export interface CreateBrowserHarnessOptions {
   /** Runs selected provider workers on a dedicated, credential-free origin. */
   executionHost?: BrowserHarnessExecutionHostOptions;
   debug?: boolean;
+  python?: {
+    compileCacheLimit?: number;
+  };
   java?: {
     workerIdleTimeoutMs?: number;
     compileCacheLimit?: number;
@@ -216,6 +219,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
       this.pythonWorkerClient = new PythonWorkerClient({
       workerUrl: this.assets.pythonWorker,
       ...(pythonWorkerFactory ? { workerFactory: pythonWorkerFactory } : {}),
+      compileCacheLimit: options.python?.compileCacheLimit,
       ...(this.assets.runtimeManifests?.python?.workerFormat
         ? { workerFormat: this.assets.runtimeManifests.python.workerFormat }
         : {}),

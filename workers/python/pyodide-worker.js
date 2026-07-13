@@ -62,6 +62,8 @@ const SHARED_KERNEL_POLICY_MODULE_PATHS = [
   './shared/runtime-kernel-policy.js',
   '../shared/runtime-kernel-policy.js',
 ];
+const DEFAULT_PYTHON_COMPILE_CACHE_LIMIT = 4;
+const MAX_PYTHON_COMPILE_CACHE_LIMIT = 16;
 
 let configuredPythonRuntimeAssets = null;
 let configuredPythonRuntimeAssetsSignature = null;
@@ -69,6 +71,18 @@ let configuredPythonSnippetsLoaded = false;
 let pythonModuleBootstrapPromise = null;
 let moduleLoadPyodide = null;
 let trustedPythonUserAuthorityLockdown = null;
+let pythonCompileCacheLimit = DEFAULT_PYTHON_COMPILE_CACHE_LIMIT;
+
+function configurePythonWorkerOptions(payload) {
+  if (payload?.compileCacheLimit === undefined) return;
+  const value = Number(payload.compileCacheLimit);
+  if (!Number.isInteger(value) || value < 0 || value > MAX_PYTHON_COMPILE_CACHE_LIMIT) {
+    throw new Error(
+      `Python worker compileCacheLimit must be an integer from 0 to ${MAX_PYTHON_COMPILE_CACHE_LIMIT}.`
+    );
+  }
+  pythonCompileCacheLimit = value;
+}
 
 function configurePythonRuntimeAssets(value) {
   if (value === undefined || value === null) return;
@@ -1172,6 +1186,7 @@ function buildRuntimeDeps() {
       PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET
     ),
     INTERVIEW_GUARD_DEFAULTS,
+    pythonCompileCacheLimit,
     loadPyodideInstance,
     getPyodide: () => pyodide,
     performanceNow: () => performance.now(),
@@ -4839,6 +4854,7 @@ async function processMessage(data) {
     switch (type) {
       case 'init': {
         const startTime = performance.now();
+        configurePythonWorkerOptions(payload);
         configurePythonRuntimeAssets(payload?.runtimeAssets);
         await ensurePythonModuleBootstrap();
         const loadTimeMs = performance.now() - startTime;

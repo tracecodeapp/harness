@@ -2,14 +2,14 @@
 
 ## Answer
 
-The Classic harness can be pushed farther, but not uniformly. Isolated
-JavaScript, TypeScript, C# cache-hit, and C++ cache-hit paths are at or close to
-their practical browser floor. Python still has removable wrapper overhead.
-Fresh Java, C#, and C++ source is compiler-bound and remains hundreds of
-milliseconds or seconds unless the compiler/cache architecture changes.
+The Classic harness can be pushed farther, but not uniformly. Isolated Python,
+JavaScript, TypeScript, C# cache-hit, and C++ cache-hit paths are now at or close
+to their practical browser floor. Fresh Java, C#, and C++ source is
+compiler-bound and remains hundreds of milliseconds or seconds unless the
+compiler architecture changes.
 
-The largest remaining wins are Java compiled-artifact reuse, Python runner
-reuse with a fresh namespace, selected-language background warmup, and
+Java compiled-artifact reuse and a bounded Python compiled runner have now
+landed. The largest remaining wins are selected-language background warmup and
 compiler-specific work for fresh C#/C++ source. General worker/message tuning
 will no longer materially move the heavy-compiler rows.
 
@@ -43,26 +43,27 @@ license model for consumers.
 |---|---:|---:|---:|---:|---:|---|
 | JavaScript | init 19 ms | 3.2 ms | 2.7 ms | 2.7 ms | 2–4 ms | At practical isolated-worker floor |
 | TypeScript | init 19 ms + warm 115 ms | 7.1 ms | 4.3 ms | 4.1 ms | 4–8 ms | At practical floor after compiler JIT warmup |
-| Python | warm 1,964 ms | 24 ms | 20 ms | 18 ms | 8–12 ms | More room; wrapper/parser path dominates small programs |
+| Python | warm ~1,900 ms | 4–5 ms | 1–2 ms | 5 ms | 1–6 ms | At practical floor with fresh globals and bounded compiled-source reuse |
 | C# | warm 3,054 ms | 966 ms | 3.9 ms | 882 ms | cache hit 2–4 ms; new source 0.7–0.9 s | Cache hit is at floor; new source is Roslyn/emit-bound |
 | C++ | warm 2,866 ms | 1,980 ms | 8.4 ms | 1,936 ms | cache hit 7–10 ms; new source 1.6–1.9 s | Cache hit is at floor; new source is local Clang/link-bound |
-| Java (CheerpJ 4.2) | init 1,376 ms + warm 7,760 ms | 1,561 ms | 825 ms | 612 ms | cached artifact 20–80 ms; new source 0.5–1.5 s | javac-bound; repeat currently recompiles by design |
+| Java (CheerpJ 4.2) | init ~1,150 ms | 8.7–10.1 s cold | 88 ms | 0.8–0.9 s | cached artifact 50–100 ms; new source 0.5–1.5 s | Exact source reuses validated classes in a fresh request tree |
 
 The fresh-context prewarm column includes local asset fetch, parsing,
 WebAssembly compilation, and runtime initialization. It is shown to make the
 cost visible, not to claim that startup disappeared. CDN/WAN download time is
 not included in the command-ready rows.
 
-The final Python timing probe attributes about 17.4 ms of the 18 ms edited-source
-wall time to work inside the runtime worker. The browser message boundary is
-therefore not the bottleneck; reducing Python latency requires changing the
-generated wrapper/runner path.
+The Python runner now compiles each exact generated harness/source at most once
+in a four-entry default LRU. It executes that code object with a fresh globals
+mapping on every command, then restores builtins, `sys.modules`, and trace state.
+Across Chromium, Firefox, and WebKit, exact repeats measured 1–3 ms; edited
+source measured 5 ms in Chromium/WebKit and 24–25 ms in Firefox.
 
 The Java command phases also had zero measured browser transfer bytes. Java
-reported 598–1,546 ms of javac time for fresh/isolated command paths. Every
-request currently uses a fresh classes directory, so the helper's local compile
-cache cannot hit; the measured exact repeat is another compile, not the true
-bytecode-cache floor.
+reported 796–843 ms of javac time for edited/batch command paths in the latest
+probe. Exact repeats restore validated content-addressed class artifacts into a
+fresh request directory and fresh classloader; they reported `compileMs=0` and
+`artifactCacheHit=true` at 88 ms p50 / 94 ms p95.
 
 ## Critical Java findings
 
@@ -71,7 +72,7 @@ bytecode-cache floor.
 | Delivery URL and CheerpJ VFS path were represented by one manifest field | A valid browser/CDN URL is not the /app/... classpath CheerpJ consumes | Added optional generic runtimePath; preflight continues to verify url |
 | Generic authority lockdown denied all fetch during user execution | CheerpJ lazily range-fetches pinned JDK/runtime resources after warmup, causing a 20 s timeout | Java now receives a capability-limited fetch allowing only GET/HEAD to the pinned loader directory and declared JAR paths |
 | Java project mode uses CheerpJ /files inside permanent authority denial | /files is IndexedDB-backed; reopening ambient same-origin IndexedDB would expose application databases | Resolved for interactive workspaces with an exact-origin, credential-free execution host; adversarial evaluation remains per-command |
-| Java compile isolation creates a new classes directory on every command | Safe isolation also guarantees compileCacheHit=false, making exact repeats ~825 ms | Correct today, but a trusted content-addressed bytecode cache can copy artifacts into each fresh run directory |
+| Java compile isolation creates a new classes directory on every command | Directly reusing a writable classes tree would couple commands | Resolved with a bounded content-addressed artifact cache copied and manifest-validated into a fresh request directory |
 | CheerpJ 4.3 is current upstream, but this deployment selected 4.2 | Runtime upgrades can change speed and compatibility independently from the harness | Keep the version in the consumer manifest and test it as a deployment choice |
 
 The capability-limited fetch preserves the authority boundary: it does not
@@ -97,6 +98,8 @@ boundary.
 | TypeScript immediate exact repeat | 17.8 ms | 4.4 ms | -75.3% | Trusted coordinator + clean executor overlap |
 | TypeScript interactive edited source | 17.5 ms | 4.1 ms | -76.6% | Executor bootstrap is outside command time |
 | C++ interactive exact repeat | 17.4 ms | 8.4 ms | -51.7% | Next clean worker initializes during editor think time |
+| Python exact repeat (Chromium) | 19 ms | 1.1 ms | -94.2% | Bounded compiled harness/source reuse with a fresh command namespace |
+| Java exact repeat (Chromium) | 0.9–1.3 s | 88 ms | ~-92% | Validated compiled artifacts copied into a fresh request tree |
 
 Every executed JavaScript/TypeScript/C++ worker is still retired after its one
 user command. Only a clean worker that has received trusted initialization—and
@@ -112,12 +115,10 @@ second copy in the trusted coordinator.
 
 | Priority | Provider | Work | Likely impact | Constraint |
 |---:|---|---|---:|---|
-| 1 | Python | Install a trusted runner once, pass requests as data, and execute user code in a fresh namespace | Roughly 6–10 ms | Must prove builtins/modules and helper state cannot leak between commands |
-| 2 | Consumer app | Call `warmLanguage()` on language selection/intent and serialize heavy warmups | Removes 2–3 s from click-to-result | Startup CPU/memory still exists and must not warm every runtime at once |
-| 3 | Java | Add a bounded trusted content-addressed class-artifact cache, then copy bytecode into a fresh per-command directory | Repeat from ~825 ms toward tens of ms | Cache key must include generated source, runtime/helper versions, compiler flags, and execution mode |
-| 4 | C# | Cache generated syntax trees/driver components; evaluate an AOT-compiled host | Tens to low hundreds of ms; AOT may do more | Emit dominates; AOT increases payload, build time, and startup memory |
-| 5 | C++ | Split stable driver/runtime objects from the user translation unit; profile PCH/modules | Roughly 10–35% on new source | About 99% of edited-source time is compiler work |
-| 6 | Heavy runtimes | Add opt-in persistent artifact caching across reloads | Near cache-hit latency for previously compiled exact sources | Same-origin persistence is mutable; secure deployments need authenticated metadata or must treat it as an untrusted cache |
+| 1 | Consumer app | Call `warmLanguage()` on language selection/intent and serialize heavy warmups | Removes 2–3 s from click-to-result | Startup CPU/memory still exists and must not warm every runtime at once |
+| 2 | C# | Cache generated syntax trees/driver components; evaluate an AOT-compiled host | Tens to low hundreds of ms; AOT may do more | Emit dominates; AOT increases payload, build time, and startup memory |
+| 3 | C++ | Split stable driver/runtime objects from the user translation unit; profile PCH/modules | Roughly 10–35% on new source | About 99% of edited-source time is compiler work |
+| 4 | Heavy runtimes | Add opt-in persistent artifact caching across reloads | Near cache-hit latency for previously compiled exact sources | Same-origin persistence is mutable; secure deployments need authenticated metadata or must treat it as an untrusted cache |
 
 ## Realistic endpoint
 
@@ -125,8 +126,8 @@ second copy in the trusted coordinator.
 |---|---:|---|
 | JavaScript | 2–4 ms interactive | Retain/reuse a user-tainted realm, weakening per-command isolation |
 | TypeScript | 3–6 ms interactive | Prepared-source cache or retained realm; only ~1–2 ms remains |
-| Python | 8–12 ms | Reusable trusted runner plus rigorously fresh namespace/module state |
-| Java exact source | 20–80 ms | Trusted bytecode cache copied into a fresh classloader directory |
+| Python | 1–6 ms | Already at the message/namespace floor for small exact or edited programs |
+| Java exact source | 50–100 ms | Already close to the fresh-copy/classloader floor under CheerpJ 4.2 |
 | Java new source | 0.5–1.5 s | Different/incremental compiler architecture or external compilation |
 | Java project command | ~0.7–1.5 s after workspace-session warmup | Content-addressed bytecode cache or incremental compiler; per-command adversarial mode remains much slower |
 | C# exact source | 2–4 ms | Already effectively at the browser boundary |

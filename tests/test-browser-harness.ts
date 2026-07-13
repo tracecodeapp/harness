@@ -597,6 +597,17 @@ async function main(): Promise<void> {
     );
     console.log('PASS: browser execution hosts validate provider-specific routing and shared-worker aliases');
 
+    let invalidPythonCompileCacheError = '';
+    try {
+      new PythonWorkerClient({ workerUrl: '/python-worker.js', compileCacheLimit: 17 });
+    } catch (error) {
+      invalidPythonCompileCacheError = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      invalidPythonCompileCacheError.includes('Python compileCacheLimit must be an integer from 0 to 16'),
+      `Python compiled runner cache must enforce its public memory bound: ${invalidPythonCompileCacheError}`
+    );
+
     const concurrentProjectWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-concurrency',
       pythonProjectTimeoutMs: 5000,

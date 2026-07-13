@@ -31,6 +31,106 @@ except Exception:
 
 const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
 const MAX_TRACE_MAX_PATH_DEPTH = 8;
+const isolatedPythonExecutionGuards = new WeakMap();
+
+function createIsolatedPythonExecutionGuard(pyodide) {
+  const guard = pyodide.runPython(`
+import builtins as __tracecode_guard_builtins
+import sys as __tracecode_guard_sys
+
+class __TracecodeExecutionGuard:
+    def __init__(self, builtins_module, sys_module):
+        self._builtins_dict = builtins_module.__dict__
+        self._modules = sys_module.modules
+        self._gettrace = sys_module.gettrace
+        self._settrace = sys_module.settrace
+        self._builtins_snapshot = None
+        self._modules_snapshot = None
+        self._trace_snapshot = None
+        self._compiled = {}
+        self._compiled_limit = 4
+
+    def begin(self):
+        if self._builtins_snapshot is not None:
+            raise RuntimeError('Nested TraceCode Python execution scope')
+        self._builtins_snapshot = dict(self._builtins_dict)
+        self._modules_snapshot = dict(self._modules)
+        self._trace_snapshot = self._gettrace()
+
+    def restore(self):
+        builtins_snapshot = self._builtins_snapshot
+        modules_snapshot = self._modules_snapshot
+        trace_snapshot = self._trace_snapshot
+        self._builtins_snapshot = None
+        self._modules_snapshot = None
+        self._trace_snapshot = None
+        if builtins_snapshot is None or modules_snapshot is None:
+            raise RuntimeError('TraceCode Python execution scope was not active')
+        self._settrace(None)
+        self._builtins_dict.clear()
+        self._builtins_dict.update(builtins_snapshot)
+        self._modules.clear()
+        self._modules.update(modules_snapshot)
+        self._settrace(trace_snapshot)
+
+    def run(self, source, namespace, result_name):
+        code = self._compiled.pop(source, None)
+        if code is None:
+            code = compile(source, '<exec>', 'exec')
+        self._compiled[source] = code
+        while len(self._compiled) > self._compiled_limit:
+            del self._compiled[next(iter(self._compiled))]
+        exec(code, namespace)
+        return namespace[result_name]
+
+    def set_compiled_limit(self, value):
+        self._compiled_limit = max(0, min(16, int(value)))
+        while len(self._compiled) > self._compiled_limit:
+            del self._compiled[next(iter(self._compiled))]
+
+__tracecode_execution_guard = __TracecodeExecutionGuard(
+    __tracecode_guard_builtins,
+    __tracecode_guard_sys,
+)
+__tracecode_execution_guard
+`);
+  pyodide.globals.delete('__tracecode_execution_guard');
+  pyodide.globals.delete('__TracecodeExecutionGuard');
+  pyodide.globals.delete('__tracecode_guard_builtins');
+  pyodide.globals.delete('__tracecode_guard_sys');
+  return guard;
+}
+
+async function runPythonInFreshExecutionScope(deps, source, resultName) {
+  const pyodide = deps.getPyodide();
+  // Dependency-injected source-generation tests intentionally provide only
+  // runPythonAsync. Real Pyodide exposes all three APIs used for the isolated
+  // execution path.
+  if (
+    typeof pyodide?.runPython !== 'function' ||
+    typeof pyodide?.toPy !== 'function' ||
+    typeof pyodide?.globals?.delete !== 'function'
+  ) {
+    return pyodide.runPythonAsync(source);
+  }
+  let guard = isolatedPythonExecutionGuards.get(pyodide);
+  if (!guard) {
+    guard = createIsolatedPythonExecutionGuard(pyodide);
+    isolatedPythonExecutionGuards.set(pyodide, guard);
+  }
+  const namespace = pyodide.toPy({ __name__: '__main__' });
+  guard.set_compiled_limit(deps.pythonCompileCacheLimit ?? 4);
+  guard.begin();
+  try {
+    return guard.run(source, namespace, resultName);
+  } finally {
+    try {
+      guard.restore();
+    } finally {
+      namespace?.destroy?.();
+    }
+  }
+}
 
 function getTraceMaxPathDepth(value) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -3386,7 +3486,7 @@ sys.settrace(None)
 _builtins.print = _original_print
 print = _original_print
 
-json.dumps({
+__tracecode_execution_result_json = json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
         'schemaVersion': 'runtime-trace-2026-04-28',
@@ -3404,6 +3504,7 @@ json.dumps({
     'lineEventCount': _total_line_events,
     'traceStepCount': len(_trace_data)
 })
+__tracecode_execution_result_json
 `;
 
   const code = harnessPrefix + harnessSuffix;
@@ -3644,7 +3745,11 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
   try {
     await deps.loadPyodideInstance();
     
-    const resultJson = await deps.getPyodide().runPythonAsync(tracingCode);
+    const resultJson = await runPythonInFreshExecutionScope(
+      deps,
+      tracingCode,
+      '__tracecode_execution_result_json'
+    );
     const result = JSON.parse(resultJson);
 
     const executionTimeMs = deps.performanceNow() - startTime;
@@ -4453,14 +4558,15 @@ if _result is None:
     if _inplace is not None:
         _result = _inplace
 
-json.dumps({
+_json_out = json.dumps({
     "output": _serialize(_result),
     "console": _console_output,
 })
+_json_out
 `;
     const execCode = execPrefix + code + execSuffix;
 
-    const resultJson = await deps.getPyodide().runPythonAsync(execCode);
+    const resultJson = await runPythonInFreshExecutionScope(deps, execCode, '_json_out');
     const result = JSON.parse(resultJson);
 
     if (result.guardTriggered) {
@@ -4790,14 +4896,15 @@ def _tracecode_run_case(_raw_inputs):
         return {'success': False, 'output': None, 'error': str(_error), 'consoleOutput': _console_output}
 
 _results = [_tracecode_run_case(_case) for _case in _INPUT_BATCH]
-json.dumps({
+_json_out = json.dumps({
     'success': all(_result.get('success') is True for _result in _results),
     'results': _results,
     'consoleOutput': [line for _result in _results for line in _result.get('consoleOutput', [])],
 })
+_json_out
 `;
 
-    const resultJson = await deps.getPyodide().runPythonAsync(batchCode);
+    const resultJson = await runPythonInFreshExecutionScope(deps, batchCode, '_json_out');
     const parsed = JSON.parse(resultJson);
     return {
       success: parsed.success === true,
