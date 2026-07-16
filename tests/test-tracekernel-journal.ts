@@ -42,12 +42,14 @@ async function testAbsoluteCrossKindOrdering(): Promise<void> {
     assertCondition(result.exitCode === 0, `scripted command should succeed: ${JSON.stringify(result)}`);
     const journal = workspace.journal();
     const order = journal.map((record) => `${record.kind}:${record.op}${record.kind === 'fs' ? `:${record.path}` : ''}`);
+    // just-bash 3.0.3+ models `> file` as the two filesystem mutations that
+    // implement an open with O_TRUNC followed by delivery of command output.
     assertDeepEqual(
       order,
-      ['process:exec', 'fs:write:ordered.txt', 'http:request', 'process:exit'],
-      `journal should have one monotonic cross-kind sequence`
+      ['process:exec', 'fs:write:ordered.txt', 'fs:write:ordered.txt', 'http:request', 'process:exit'],
+      `journal should preserve the redirect truncate, payload write, request, and exit sequence`
     );
-    assertDeepEqual(journal.map((record) => record.seq), [1, 2, 3, 4], 'journal seq should be contiguous for this run');
+    assertDeepEqual(journal.map((record) => record.seq), [1, 2, 3, 4, 5], 'journal seq should be contiguous for this run');
   } finally {
     await workspace.destroy();
   }
@@ -64,6 +66,68 @@ async function testFsBothPaths(): Promise<void> {
     const runtime = fsRecords.find((record) => record.path === 'runtime.txt');
     assertCondition(editor?.actor === 'principal:principal' && editor.pid === undefined, `editor write should be principal-attributed: ${JSON.stringify(editor)}`);
     assertCondition(runtime?.actor.startsWith('runtime:') === true && typeof runtime.pid === 'number', `command write should be pid-attributed runtime: ${JSON.stringify(runtime)}`);
+  } finally {
+    await workspace.destroy();
+  }
+}
+
+async function testProtectedProcessAttributionAndLineage(): Promise<void> {
+  const workspace = await createRuntimeWorkspace();
+  try {
+    const hostProcess = workspace.kernel.createProcess({
+      name: 'host-editor',
+      actor: { id: 'learner', kind: 'principal' },
+      signalPolicy: 'system-only',
+    });
+    await hostProcess.writeFile('owned.txt', 'owned\n');
+    const childResult = await hostProcess.runCommand('printf "child\\n" > child.txt');
+    assertCondition(childResult.exitCode === 0, `process child command should succeed: ${JSON.stringify(childResult)}`);
+
+    const records = workspace.journal();
+    const ownedWrite = records.find((record): record is Extract<KernelJournalRecord, { kind: 'fs' }> =>
+      record.kind === 'fs' && record.path === 'owned.txt'
+    );
+    const childExec = records.find((record): record is Extract<KernelJournalRecord, { kind: 'process' }> =>
+      record.kind === 'process' && record.op === 'exec' && record.argv?.includes('child.txt') === true
+    );
+    const childWrite = records.find((record): record is Extract<KernelJournalRecord, { kind: 'fs' }> =>
+      record.kind === 'fs' && record.path === 'child.txt'
+    );
+    assertCondition(
+      ownedWrite?.pid === hostProcess.pid && ownedWrite.actor === 'principal:learner',
+      `direct process write should retain its PID and actor: ${JSON.stringify(ownedWrite)}`
+    );
+    assertCondition(
+      childExec?.ppid === hostProcess.pid && childExec.actor === 'principal:learner',
+      `child command should retain parent lineage and actor: ${JSON.stringify(childExec)}`
+    );
+    assertCondition(
+      childWrite?.pid === childExec?.pid && childWrite.actor === 'principal:learner',
+      `child mutation should retain child PID and process actor: ${JSON.stringify(childWrite)}`
+    );
+
+    const denied = await workspace.runCommand(`kill ${hostProcess.pid}`);
+    assertCondition(
+      denied.exitCode === 1 && denied.stderr.includes('Operation not permitted'),
+      `workspace command must not signal a system-only process: ${JSON.stringify(denied)}`
+    );
+    const deniedGroup = await workspace.runCommand(`kill -${hostProcess.pid}`);
+    assertCondition(
+      deniedGroup.exitCode === 1 && deniedGroup.stderr.includes('Operation not permitted'),
+      `workspace group signal must not signal a system-only process: ${JSON.stringify(deniedGroup)}`
+    );
+    const deniedReset = await workspace.runCommand('tracekernelctl reset');
+    assertCondition(
+      deniedReset.exitCode === 1 && deniedReset.stderr.includes('Operation not permitted'),
+      `workspace reset must not bypass protected process lifecycle: ${JSON.stringify(deniedReset)}`
+    );
+    await hostProcess.writeFile('still-alive.txt', 'alive\n');
+
+    hostProcess.dispose();
+    const processExit = workspace.journal().find((record): record is Extract<KernelJournalRecord, { kind: 'process' }> =>
+      record.kind === 'process' && record.op === 'exit' && record.pid === hostProcess.pid
+    );
+    assertCondition(processExit?.actor === 'principal:learner', `system disposal should journal the process exit: ${JSON.stringify(processExit)}`);
   } finally {
     await workspace.destroy();
   }
@@ -186,6 +250,7 @@ async function testLiveAndSnapshotAgree(): Promise<void> {
 async function main(): Promise<void> {
   await testAbsoluteCrossKindOrdering();
   await testFsBothPaths();
+  await testProtectedProcessAttributionAndLineage();
   await testRedaction();
   await testAnnotationPassthrough();
   await testInVmCannotForge();

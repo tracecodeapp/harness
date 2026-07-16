@@ -372,7 +372,7 @@ export function parseTscInvocation(args: string[]): RuntimeCommandResult | { arg
   if (unsupported) {
     return {
       stdout: '',
-      stderr: `tracekernel: tsc ${unsupported} is not supported in the emulated project environment\n`,
+      stderr: `tsc: ${unsupported} is not supported by this runtime\n`,
       exitCode: 2,
     };
   }
@@ -731,13 +731,19 @@ function parseTerminalStatements(command: string): TerminalAstStatement[] | null
 function terminalStaticWordValue(word: unknown): string | null {
   const candidate = word as {
     type?: unknown;
-    parts?: Array<{ type?: unknown; value?: unknown; parts?: unknown[] }>;
+    parts?: Array<{ type?: unknown; value?: unknown; pattern?: unknown; parts?: unknown[] }>;
   };
   if (candidate?.type !== 'Word' || !Array.isArray(candidate.parts)) return null;
   let value = '';
   for (const part of candidate.parts) {
     if (part?.type === 'Literal' && typeof part.value === 'string') {
       value += part.value;
+      continue;
+    }
+    // An unquoted glob is still a static word at this layer. Callers that
+    // support workspace globbing expand the preserved pattern themselves.
+    if (part?.type === 'Glob' && typeof part.pattern === 'string') {
+      value += part.pattern;
       continue;
     }
     if (part?.type === 'SingleQuoted' && typeof part.value === 'string') {

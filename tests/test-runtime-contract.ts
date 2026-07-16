@@ -3,6 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import type { CommandContext } from 'just-bash/browser';
 import {
   createBrowserHarness,
   SUPPORTED_LANGUAGES,
@@ -70,6 +71,7 @@ import {
   type RuntimeCommandEvent,
   type RuntimeProjectCommandRequest,
 } from '../packages/harness-core/src/runtime-project';
+import { runPackageScript } from '../packages/harness-project/src/package-manager';
 import {
   normalizeRuntimeKernelManifestDevicePath as normalizeWorkerKernelManifestDevicePath,
   normalizeRuntimeKernelDeviceReference as normalizeWorkerKernelDeviceReference,
@@ -653,7 +655,7 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
     stderr: '',
     exitCode: 0,
     files: [
-      { path: 'controller-live.txt', contents: 'final-live\n' },
+      { path: 'controller-live.txt', contents: 'live\n' },
       { path: 'controller-hidden.txt', contents: 'final-hidden\n' },
       { path: 'controller-returned.txt', contents: 'returned\n' },
     ],
@@ -664,8 +666,11 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
 
   assertCondition(
     stableStringify(controllerAppliedChanges) === stableStringify(['live:controller-live.txt', 'live:controller-hidden.txt']) &&
-      stableStringify(controllerResult.files) === stableStringify([{ path: 'controller-returned.txt', contents: 'returned\n' }]),
-    `runtime live I/O controller should apply live changes and filter final-diff duplicates: ${stableStringify({ controllerAppliedChanges, controllerResult })}`
+      stableStringify(controllerResult.files) === stableStringify([
+        { path: 'controller-hidden.txt', contents: 'final-hidden\n' },
+        { path: 'controller-returned.txt', contents: 'returned\n' },
+      ]),
+    `runtime live I/O controller should preserve final diffs that differ from earlier live changes: ${stableStringify({ controllerAppliedChanges, controllerResult })}`
   );
   assertCondition(
     controllerEvents
@@ -828,7 +833,7 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
         stderr: 'streamed-err\n',
         exitCode: 0,
         files: [
-          { path: 'live.txt', contents: 'final-live\n' },
+          { path: 'live.txt', contents: 'live\n' },
           { path: 'hidden-live.txt', contents: 'final-hidden\n' },
           { path: 'returned.txt', contents: 'returned\n' },
         ],
@@ -844,8 +849,11 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
     result.stdout === 'streamed\n' &&
       result.stderr === 'streamed-err\n' &&
       result.exitCode === 0 &&
-      stableStringify(result.files) === stableStringify([{ path: 'returned.txt', contents: 'returned\n' }]),
-    `runtime worker bridge should return stdout/stderr and filter already-applied file changes: ${stableStringify(result)}`
+      stableStringify(result.files) === stableStringify([
+        { path: 'hidden-live.txt', contents: 'final-hidden\n' },
+        { path: 'returned.txt', contents: 'returned\n' },
+      ]),
+    `runtime worker bridge should filter exact live duplicates and preserve changed final diffs: ${stableStringify(result)}`
   );
   assertCondition(
     events[0]?.type === 'status' &&
@@ -965,35 +973,68 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
   });
 
   assertCondition(
-    failedResult.exitCode === 1 &&
-      failedResult.stderr === 'apply-failed:bad-live.txt\n' &&
-      failedResult.stdout === '',
-    `runtime worker bridge should return command-shaped live apply failures: ${stableStringify(failedResult)}`
+    failedResult.exitCode === 137 &&
+      failedResult.stderr === '' &&
+      failedResult.stdout === '' &&
+      failedResult.error?.code === 'EIO' &&
+      failedResult.error.detail?.diagnostic === 'apply-failed:bad-live.txt',
+    `runtime worker bridge should keep host live-apply failures out of terminal stderr: ${stableStringify(failedResult)}`
   );
   assertCondition(
     failedEvents.some((event) =>
       event.type === 'status' &&
         event.phase === 'process-exit' &&
-        event.detail?.exitCode === 1 &&
-        event.detail.error === 'apply-failed:bad-live.txt'
+        event.detail?.exitCode === 137 &&
+        event.detail.error === 'Runtime process terminated unexpectedly' &&
+        event.detail.diagnostic === 'apply-failed:bad-live.txt'
     ) &&
-      failedEvents.some((event) =>
-        event.type === 'output' &&
-          event.stream === 'stderr' &&
-          event.data === 'apply-failed:bad-live.txt\n'
-      ) &&
+      !failedEvents.some((event) => event.type === 'output' && event.stream === 'stderr') &&
       !failedEvents.some((event) => event.type === 'output' && event.data.includes('after-bad')),
-    `runtime worker bridge should stop later output after live apply failures: ${stableStringify(failedEvents)}`
-  );
-  const failedErrorOutputIndex = failedEvents.findIndex((event) =>
-    event.type === 'output' &&
-      event.stream === 'stderr' &&
-      event.data === 'apply-failed:bad-live.txt\n'
+    `runtime worker bridge should stop later output and retain diagnostics in status metadata: ${stableStringify(failedEvents)}`
   );
   const failedExitIndex = failedEvents.findIndex((event) => event.type === 'status' && event.phase === 'process-exit');
   assertCondition(
-    failedErrorOutputIndex >= 0 && failedExitIndex > failedErrorOutputIndex,
-    `runtime worker bridge should emit apply failure stderr before process-exit status: ${stableStringify(failedEvents)}`
+    failedExitIndex >= 0,
+    `runtime worker bridge should emit process-exit status for apply failures: ${stableStringify(failedEvents)}`
+  );
+}
+
+async function assertPackageScriptOutputContextContract(): Promise<void> {
+  const commandContext = {
+    cwd: '/workspace',
+    env: new Map<string, string>(),
+    exec: async () => ({ stdout: 'child output\n', stderr: '', exitCode: 0 }),
+  } as unknown as CommandContext;
+  const emitted: Array<{ stream: string; data: string; context?: CommandContext }> = [];
+  const result = await runPackageScript(
+    'npm',
+    commandContext,
+    '/workspace',
+    {
+      path: '/workspace/package.json',
+      directory: '/workspace',
+      json: {
+        name: 'stream-contract',
+        version: '1.0.0',
+        scripts: { test: 'node test.js' },
+      },
+    },
+    'test',
+    [],
+    { managers: ['npm'], autoLinkBins: false, npmVersion: '11.0.0' },
+    false,
+    false,
+    false,
+    (stream, data, context) => emitted.push({ stream, data, context })
+  );
+
+  assertCondition(
+    emitted.length === 1 &&
+      emitted[0]?.stream === 'stdout' &&
+      emitted[0]?.data === '\n> stream-contract@1.0.0 test\n> node test.js\n\n' &&
+      emitted[0]?.context === commandContext &&
+      result.stdout === `${emitted[0]?.data}child output\n`,
+    `package script output should retain the active command context and prefix the final stdout: ${stableStringify({ emitted, result })}`
   );
 }
 
@@ -1452,6 +1493,8 @@ async function main(): Promise<void> {
   console.log('PASS: worker runtime kernel mutation policy contract');
   await assertRuntimeProjectWorkerBridgeContract();
   console.log('PASS: runtime project worker bridge live I/O contract');
+  await assertPackageScriptOutputContextContract();
+  console.log('PASS: package script output context contract');
 
   await testJavaSerializedResultNormalization();
   const profiles = getSupportedLanguageProfiles();

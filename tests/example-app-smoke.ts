@@ -443,8 +443,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'javac -d out src/app/PackageMain.java src/app/PackageHelper.java',
-    'weather-api % javac -d out src/app/PackageMain.java src/app/PackageHelper.java',
-    (text) => text.includes('weather-api % javac -d out src/app/PackageMain.java src/app/PackageHelper.java') && !text.includes('Java compilation failed'),
+    'weather-api $ javac -d out src/app/PackageMain.java src/app/PackageHelper.java',
+    (text) => text.includes('weather-api $ javac -d out src/app/PackageMain.java src/app/PackageHelper.java') && !text.includes('Java compilation failed'),
     240_000
   );
   await runTerminalCommand(
@@ -461,8 +461,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'javac -d glob-out src/app/*.java',
-    'weather-api % javac -d glob-out src/app/*.java',
-    (text) => text.includes('weather-api % javac -d glob-out src/app/*.java') && !text.includes('Java compilation failed'),
+    'weather-api $ javac -d glob-out src/app/*.java',
+    (text) => text.includes('weather-api $ javac -d glob-out src/app/*.java') && !text.includes('Java compilation failed'),
     240_000
   );
   await runTerminalCommand(
@@ -479,8 +479,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'java right.Main',
-    'weather-api % java right.Main',
-    (text) => text.includes('weather-api % java right.Main') && text.includes('5'),
+    'weather-api $ java right.Main',
+    (text) => text.includes('weather-api $ java right.Main') && text.includes('5'),
     240_000
   );
   await runTerminalCommand(
@@ -497,8 +497,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'clang++ -std=c++17 main.cpp helper.cpp',
-    'weather-api % clang++ -std=c++17 main.cpp helper.cpp',
-    (text) => text.includes('weather-api % clang++ -std=c++17 main.cpp helper.cpp') && !text.includes('C++ compilation failed'),
+    'weather-api $ clang++ -std=c++17 main.cpp helper.cpp',
+    (text) => text.includes('weather-api $ clang++ -std=c++17 main.cpp helper.cpp') && !text.includes('C++ compilation failed'),
     240_000
   );
   await runTerminalCommand(
@@ -509,8 +509,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'clang++ -std=c++17 *.cpp -o glob-app',
-    'weather-api % clang++ -std=c++17 *.cpp -o glob-app',
-    (text) => text.includes('weather-api % clang++ -std=c++17 *.cpp -o glob-app') && !text.includes('C++ compilation failed'),
+    'weather-api $ clang++ -std=c++17 *.cpp -o glob-app',
+    (text) => text.includes('weather-api $ clang++ -std=c++17 *.cpp -o glob-app') && !text.includes('C++ compilation failed'),
     240_000
   );
   await runTerminalCommand(
@@ -548,14 +548,14 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   };
   await runProjectButton(
     '#dev-menu-run-project-start',
-    'weather-api % python3 main.py',
-    (text) => text.includes('weather-api % python3 main.py') && text.includes('5')
+    'weather-api $ python3 main.py',
+    (text) => text.includes('weather-api $ python3 main.py') && text.includes('5')
   );
   await runProjectButton(
     '#dev-menu-run-project-test',
     'csharp:Acme:takehome',
     (text) =>
-      text.includes('weather-api % python3 takehome/python/main.py') &&
+      text.includes('weather-api $ python3 takehome/python/main.py') &&
       text.includes('python:Acme:takehome') &&
       text.includes('node:Acme:takehome') &&
       text.includes('ts:Acme:takehome') &&
@@ -566,9 +566,9 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runProjectButton(
     '#dev-menu-run-project-build',
-    'weather-api % javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp && dotnet build WeatherApi.csproj --nologo && dotnet build takehome/csharp/app/App.csproj --nologo',
+    'weather-api $ javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp && dotnet build WeatherApi.csproj --nologo && dotnet build takehome/csharp/app/App.csproj --nologo',
     (text) =>
-      text.includes('weather-api % javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp && dotnet build WeatherApi.csproj --nologo && dotnet build takehome/csharp/app/App.csproj --nologo') &&
+      text.includes('weather-api $ javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp && dotnet build WeatherApi.csproj --nologo && dotnet build takehome/csharp/app/App.csproj --nologo') &&
       !text.includes('Java compilation failed') &&
       !text.includes('C++ compilation failed') &&
       !text.includes('C# compilation failed'),

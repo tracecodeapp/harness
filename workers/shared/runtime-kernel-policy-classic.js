@@ -257,10 +257,7 @@
   const runtimeAuthorityActiveScopes = new WeakMap();
 
   function runtimeAuthorityError(name) {
-    return Object.assign(
-      new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`),
-      { code: 'EACCES' }
-    );
+    return new ReferenceError(`${name} is not defined`);
   }
 
   function runtimeDeniedAuthority(name) {
@@ -272,7 +269,7 @@
       apply: () => deny(),
       construct: () => deny(),
       get: (_target, property) => property === Symbol.toStringTag
-        ? 'TraceRuntimeDeniedCapability'
+        ? 'Function'
         : runtimeDeniedAuthority(`${name}.${String(property)}`),
       set: () => {
         throw runtimeAuthorityError(name);

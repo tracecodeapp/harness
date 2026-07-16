@@ -1014,7 +1014,7 @@ export function publicRuntimeKernelInfo(info: RuntimeKernelInfo): RuntimeKernelI
     },
     host: {
       hostname: 'tracevm',
-      osName: 'tracecode',
+      osName: 'tracekernel',
     },
     workspace: {
       id: workspaceName,

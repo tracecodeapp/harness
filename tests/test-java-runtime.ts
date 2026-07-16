@@ -6045,7 +6045,7 @@ async function main(): Promise<void> {
     });
     assertCondition(
       previewCompileProjectExecute.exitCode !== 0 &&
-        previewCompileProjectExecute.stderr.includes('--enable-preview is not supported in the browser project environment'),
+        previewCompileProjectExecute.stderr.includes('--enable-preview is not supported by this runtime'),
       `Java execute-project-java should explicitly reject browser javac preview mode: ${previewCompileProjectExecute.stderr}`
     );
     assertCondition(
@@ -6072,7 +6072,7 @@ async function main(): Promise<void> {
     });
     assertCondition(
       previewRunProjectExecute.exitCode !== 0 &&
-        previewRunProjectExecute.stderr.includes('--enable-preview is not supported in the browser project environment'),
+        previewRunProjectExecute.stderr.includes('--enable-preview is not supported by this runtime'),
       `Java execute-project-java should explicitly reject browser java preview mode: ${previewRunProjectExecute.stderr}`
     );
     assertCondition(

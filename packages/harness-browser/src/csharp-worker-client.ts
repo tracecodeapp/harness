@@ -394,7 +394,7 @@ export class CSharpWorkerClient {
       if (!pending.kernelHttp) {
         this.postKernelHttpError(commandId, {
           listenerId: message.listenerId,
-          error: 'TraceKernel HTTP is not available.',
+          error: 'Network subsystem is unavailable.',
         });
         return;
       }
@@ -444,7 +444,7 @@ export class CSharpWorkerClient {
       if (!pending.kernelHttp) {
         this.postKernelHttpError(commandId, {
           requestId: message.requestId,
-          error: 'TraceKernel HTTP is not available.',
+          error: 'Network subsystem is unavailable.',
         });
         return;
       }

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { MessageChannel } from 'node:worker_threads';
 import {
   type JavaScriptProjectCommandRequest,
   type JavaProjectCommandRequest,
@@ -124,11 +125,23 @@ class FakeModuleWorker {
 
   postMessage(message: unknown): void {
     if (this.terminated) return;
+    // The production worker permanently removes ambient browser authority in
+    // its own realm. This fake shares the test process realm, so use the
+    // equivalent temporary boundary and restore the host after each command.
+    const candidate = message as {
+      runnerOptions?: { projectUserAuthorityMode?: 'temporary' | 'permanent' };
+    };
+    const deliveredMessage = candidate.runnerOptions?.projectUserAuthorityMode === 'permanent'
+      ? {
+          ...(message as Record<string, unknown>),
+          runnerOptions: { ...candidate.runnerOptions, projectUserAuthorityMode: 'temporary' as const },
+        }
+      : message;
     if (!this.workerOnMessage) {
-      this.queuedMessages.push(message);
+      this.queuedMessages.push(deliveredMessage);
       return;
     }
-    this.workerOnMessage({ data: message } as MessageEvent);
+    this.workerOnMessage({ data: deliveredMessage } as MessageEvent);
   }
 
   terminate(): void {
@@ -162,6 +175,25 @@ class FakeModuleWorker {
       (globalThis as typeof globalThis & { self?: unknown }).self = previousSelf;
     }
   }
+}
+
+const fakeWorkerAuthorityGlobals = [
+  'fetch', 'Headers', 'Request', 'Response', 'XMLHttpRequest', 'WebSocket',
+  'WebSocketStream', 'WebTransport', 'EventSource', 'indexedDB', 'caches',
+  'cookieStore', 'Worker', 'SharedWorker', 'BroadcastChannel', 'importScripts',
+] as const;
+
+function snapshotFakeWorkerHostGlobals(): () => void {
+  const global = globalThis as typeof globalThis & Record<string, unknown>;
+  const descriptors = new Map(
+    fakeWorkerAuthorityGlobals.map((name) => [name, Object.getOwnPropertyDescriptor(global, name)] as const)
+  );
+  return () => {
+    for (const [name, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  };
 }
 
 async function runCommandWithLiveInput(
@@ -2280,7 +2312,7 @@ async function testWorkspaceDestroyWaitsForActiveCommand(): Promise<void> {
   );
   const afterDestroy = await workspace.runCommand('pwd');
   assertCondition(
-    afterDestroy.exitCode !== 0 && afterDestroy.stderr.includes('destroyed'),
+    afterDestroy.exitCode !== 0 && afterDestroy.stderr === 'project session is no longer available\n',
     `commands after destroy should be rejected: ${JSON.stringify(afterDestroy)}`
   );
 }
@@ -2723,10 +2755,13 @@ async function testWorkspaceFinalDiffTransactionRollsBackUnexpectedApplyFailure(
     ],
   });
   const unsubscribe = workspace.watch((event) => events.push(event));
+  let throwingFileReads = 0;
   const throwingFile = {
     path: 'second.txt',
     get contents(): string {
-      throw new Error('synthetic final-diff apply failure');
+      throwingFileReads += 1;
+      if (throwingFileReads > 1) throw new Error('synthetic final-diff apply failure');
+      return 'second:changed\n';
     },
   };
   let failed = false;
@@ -2749,7 +2784,7 @@ async function testWorkspaceFinalDiffTransactionRollsBackUnexpectedApplyFailure(
     unsubscribe();
   }
 
-  assertCondition(failed, 'synthetic final-diff apply failure should propagate to the caller');
+  assertCondition(failed, 'unexpected final-diff apply failure should propagate to the caller');
   assertCondition(
     await workspace.readFile('first.txt') === 'first:initial\n' &&
       await workspace.readFile('second.txt') === 'second:initial\n',
@@ -3442,7 +3477,10 @@ async function testCppCommandAdapter(): Promise<void> {
   const explicitCompile = await workspace.runCommand('clang++ -std=c++17 main.cpp helper.cpp -o bin/app.out');
   assertCondition(explicitCompile.exitCode === 0, 'clang++ adapter should compile executable outputs for direct path glob runs');
   const explicitRun = await workspace.runCommand('./bin/*.out data/*.txt');
-  assertCondition(explicitRun.exitCode === 0, 'virtual executable loader should expand executable and argv globs');
+  assertCondition(
+    explicitRun.exitCode === 0,
+    `virtual executable loader should expand executable and argv globs, received ${JSON.stringify(explicitRun)}`
+  );
   assertCondition(
     explicitRun.stdout === 'source=run\nscript=bin/app.out\nargs=data/a.txt,data/b.txt\nfiles=a.out,bin/app.out,data/a.txt,data/b.txt,generated.txt,helper.hpp,main.cpp\n',
     `virtual executable loader should expand script and argv globs, received ${JSON.stringify(explicitRun.stdout)}`
@@ -3482,14 +3520,14 @@ async function testCppBareOutputRunsInFirstCompoundCommand(): Promise<void> {
   assertCondition(!(await workspace.exists('project-bench')), 'Regression output must not exist before the compound command');
   const result = await workspace.runCommand('clang++ main.cpp -o project-bench && ./project-bench first-run');
   assertCondition(
-    result.exitCode === 0 && result.stdout === 'ran:./project-bench:first-run\n',
+    result.exitCode === 0 && result.stdout === 'ran:project-bench:first-run\n',
     `A bare -o output should be registered before its first ./ invocation in the same shell chain: ${JSON.stringify(result)}`
   );
   assertCondition(
     requests.length === 2 &&
       requests[0]?.source === 'compile' &&
       requests[1]?.source === 'run' &&
-      requests[1]?.scriptPath === './project-bench',
+      requests[1]?.scriptPath === 'project-bench',
     `The first compound command should route compile then run through the C++ adapter: ${JSON.stringify(requests)}`
   );
   assertCondition(await workspace.exists('project-bench'), 'The compiler output should persist in the workspace');
@@ -4590,24 +4628,30 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     onEvent: (event) => failedEvents.push(event),
   });
 
-  assertCondition(failedResult.exitCode === 1, `browser node failed applyFileChange hook should fail command: ${JSON.stringify(failedResult)}`);
   assertCondition(
-    failedResult.stderr.includes('reject-live:bad-live-js.txt'),
-    `browser node failed applyFileChange hook should surface apply error: ${failedResult.stderr}`
+    failedResult.exitCode === 137 && failedResult.error?.code === 'EIO',
+    `browser node failed applyFileChange hook should terminate the runtime process: ${JSON.stringify(failedResult)}`
+  );
+  assertCondition(
+    !failedResult.stderr.includes('reject-live:bad-live-js.txt') &&
+      failedResult.error?.detail?.diagnostic === 'reject-live:bad-live-js.txt',
+    `browser node failed applyFileChange hook should keep host diagnostics out of stderr: ${JSON.stringify(failedResult)}`
   );
   assertCondition(
     !failedEvents.some((event) => event.type === 'output' && event.data === 'after-bad-live\n'),
     `browser node failed applyFileChange hook should stop later streamed output events: ${JSON.stringify(failedEvents)}`
   );
-  const failedApplyStderrIndex = failedEvents.findIndex(
-    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('reject-live:bad-live-js.txt')
-  );
   const failedApplyExitIndex = failedEvents.findIndex(
-    (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 1
+    (event) =>
+      event.type === 'status' &&
+      event.phase === 'process-exit' &&
+      event.detail?.exitCode === 137 &&
+      event.detail?.diagnostic === 'reject-live:bad-live-js.txt'
   );
   assertCondition(
-    failedApplyStderrIndex >= 0 && failedApplyExitIndex > failedApplyStderrIndex,
-    `browser node failed applyFileChange hook should stream stderr before process-exit: ${JSON.stringify(failedEvents)}`
+    failedApplyExitIndex >= 0 &&
+      !failedEvents.some((event) => event.type === 'output' && event.data.includes('reject-live:bad-live-js.txt')),
+    `browser node failed applyFileChange hook should expose diagnostics only in status metadata: ${JSON.stringify(failedEvents)}`
   );
 
   const timerAppliedChanges: string[] = [];
@@ -6399,7 +6443,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   ].join(' '));
   assertCondition(builtinResult.exitCode === 0, `browser node os/url builtins should succeed: ${builtinResult.stderr}`);
   assertCondition(
-    builtinResult.stdout === 'browser\n/tmp\ntrue\n1\n/workspace/lib/math.js\n',
+    builtinResult.stdout === 'tracekernel\n/tmp\ntrue\n1\n/workspace/lib/math.js\n',
     `browser node os/url builtins should expose desktop-shaped APIs: ${builtinResult.stdout}`
   );
 }
@@ -6634,8 +6678,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
 }
 
 async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
-  const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
-  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = FakeModuleWorker;
+  const restoreHostGlobals = snapshotFakeWorkerHostGlobals();
   try {
     const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/src/project-browser-worker.ts')).href}?tracekernel-http=${Date.now()}`;
     const workspace = await createRuntimeWorkspace({
@@ -6675,7 +6718,10 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
         },
       ],
       kernel: { scheduler: { maxConcurrentCommands: 4 } },
-      nodeRunner: createBrowserJavaScriptProjectRunner({ workerUrl }),
+      nodeRunner: createBrowserJavaScriptProjectRunner({
+        workerUrl,
+        workerFactory: (url) => new FakeModuleWorker(String(url)),
+      }),
     });
 
     const terminal = workspace.createTerminalSession();
@@ -6725,13 +6771,12 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
     assertCondition(killed.exitCode === 0, `worker-backed server should be killable: ${JSON.stringify(killed)}`);
     await workspace.runCommand(`wait ${serverPid}`);
   } finally {
-    (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
+    restoreHostGlobals();
   }
 }
 
 async function testExternalFetchFromJavaScriptWorker(): Promise<void> {
-  const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
-  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = FakeModuleWorker;
+  const restoreHostGlobals = snapshotFakeWorkerHostGlobals();
   const seen: Array<{ method: string; url: string; body?: string }> = [];
   try {
     const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/src/project-browser-worker.ts')).href}?tracekernel-external-http=${Date.now()}`;
@@ -6758,12 +6803,18 @@ async function testExternalFetchFromJavaScriptWorker(): Promise<void> {
           return { status: 209, headers: { 'x-echo': request.headers['x-worker'] ?? '' }, body: `${request.method}:${request.body ?? ''}\n` };
         },
       },
-      nodeRunner: createBrowserJavaScriptProjectRunner({ workerUrl }),
+      nodeRunner: createBrowserJavaScriptProjectRunner({
+        workerUrl,
+        workerFactory: (url) => new FakeModuleWorker(String(url)),
+      }),
     });
     try {
       const result = await workspace.runCommand('node external-fetch.js');
       assertCondition(result.exitCode === 0, `browser JS worker fetch should succeed through kernel bridge: ${JSON.stringify(result)}`);
-      assertCondition(result.stdout === '209:yes\nPOST:worker-body\n', `browser JS worker external fetch response mismatch: ${result.stdout}`);
+      assertCondition(
+        result.stdout === '209:yes\nPOST:worker-body\n\n',
+        `browser JS worker external fetch response mismatch: ${JSON.stringify(result.stdout)}`
+      );
       assertCondition(
         seen.length === 1 && seen[0]?.method === 'POST' && seen[0]?.url === 'https://allowed.example/x' && seen[0]?.body === 'worker-body',
         `browser JS worker fetch should reach host delegate: ${JSON.stringify(seen)}`
@@ -6772,7 +6823,7 @@ async function testExternalFetchFromJavaScriptWorker(): Promise<void> {
       workspace.dispose();
     }
   } finally {
-    (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
+    restoreHostGlobals();
   }
 }
 
@@ -9404,7 +9455,7 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   });
   assertCondition(
     previewResult.exitCode !== 0 &&
-      previewResult.stderr.includes('--enable-preview is not supported in the browser project environment'),
+      previewResult.stderr.includes('--enable-preview is not supported by this runtime'),
     `browser java runner should reject preview mode locally: ${previewResult.stderr}`
   );
   const previewStderrIndex = previewEvents.findIndex(
@@ -9437,7 +9488,7 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   });
   assertCondition(
     assertionsResult.exitCode !== 0 &&
-      assertionsResult.stderr.includes('-ea is not supported in the browser project environment'),
+      assertionsResult.stderr.includes('-ea is not supported by this runtime'),
     `browser java runner should reject assertions mode locally: ${assertionsResult.stderr}`
   );
   const assertionsStderrIndex = assertionsEvents.findIndex(
@@ -9556,14 +9607,22 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     onEvent: (event) => rejectedEvents.push(event),
   });
   assertCondition(
-    rejectedResult.exitCode === 1 && rejectedResult.stderr.includes('py-worker-disconnected'),
-    `pyodide runner should return command-shaped worker failures: ${JSON.stringify(rejectedResult)}`
+    rejectedResult.exitCode === 137 &&
+      rejectedResult.stderr === '' &&
+      rejectedResult.error?.code === 'EIO' &&
+      rejectedResult.error.detail?.diagnostic === 'py-worker-disconnected',
+    `pyodide runner should keep worker diagnostics out of terminal stderr: ${JSON.stringify(rejectedResult)}`
   );
   assertCondition(
     rejectedEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
-      rejectedEvents.some((event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 1) &&
-      rejectedEvents.some((event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('py-worker-disconnected')),
-    `pyodide runner should emit terminal status and stderr for worker failures: ${JSON.stringify(rejectedEvents)}`
+      rejectedEvents.some((event) =>
+        event.type === 'status' &&
+          event.phase === 'process-exit' &&
+          event.detail?.exitCode === 137 &&
+          event.detail?.diagnostic === 'py-worker-disconnected'
+      ) &&
+      !rejectedEvents.some((event) => event.type === 'output' && event.stream === 'stderr'),
+    `pyodide runner should report worker diagnostics through status metadata only: ${JSON.stringify(rejectedEvents)}`
   );
 
   const failedApplyEvents: RuntimeCommandEvent[] = [];
@@ -9590,12 +9649,20 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     onEvent: (event) => failedApplyEvents.push(event),
   });
   assertCondition(
-    failedApplyResult.exitCode === 1 && failedApplyResult.stderr.includes('reject-live:bad-live.txt'),
-    `pyodide runner should return command-shaped live apply failures: ${JSON.stringify(failedApplyResult)}`
+    failedApplyResult.exitCode === 137 &&
+      failedApplyResult.stderr === '' &&
+      failedApplyResult.error?.code === 'EIO' &&
+      failedApplyResult.error.detail?.diagnostic === 'reject-live:bad-live.txt',
+    `pyodide runner should keep live-apply diagnostics out of terminal stderr: ${JSON.stringify(failedApplyResult)}`
   );
   assertCondition(
-    failedApplyEvents.some((event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 1) &&
-      failedApplyEvents.some((event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('reject-live:bad-live.txt')) &&
+    failedApplyEvents.some((event) =>
+      event.type === 'status' &&
+        event.phase === 'process-exit' &&
+        event.detail?.exitCode === 137 &&
+        event.detail?.diagnostic === 'reject-live:bad-live.txt'
+    ) &&
+      !failedApplyEvents.some((event) => event.type === 'output' && event.stream === 'stderr') &&
       !failedApplyEvents.some((event) => event.type === 'output' && event.data.includes('after-bad-live')),
     `pyodide runner should stop later output after live apply failures: ${JSON.stringify(failedApplyEvents)}`
   );
@@ -9706,7 +9773,7 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
     options: { noBuild: true },
   });
   assertCondition(
-    noBuildResult.exitCode !== 0 && noBuildResult.stderr.includes('--no-build is not supported in the browser project environment'),
+    noBuildResult.exitCode !== 0 && noBuildResult.stderr.includes('--no-build is not supported by this runtime'),
     `browser C# runner should reject no-build mode locally: ${noBuildResult.stderr}`
   );
   assertCondition(received?.scriptPath === '<project>', 'browser C# no-build rejection should not invoke worker client');
@@ -9830,8 +9897,8 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   try {
     const dynamicEvalDisabled = await dynamicEvalDisabledWorkspace.runCommand('node index.js');
     assertCondition(
-      dynamicEvalDisabled.exitCode !== 0 &&
-        dynamicEvalDisabled.stderr.includes('browser JavaScript project runner requires dynamic evaluation'),
+      dynamicEvalDisabled.exitCode === 126 &&
+        dynamicEvalDisabled.stderr === 'node: JavaScript runtime is unavailable\n',
       `browser project workspace should pass nodeProject options to the JS runner: ${dynamicEvalDisabled.stderr}`
     );
   } finally {
@@ -11673,7 +11740,8 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   const failedLiveMessage = failedLiveError || failedLiveResult?.stderr || '';
   assertCondition(
     failedLiveMessage.includes('Project path must stay inside the workspace') ||
-      failedLiveMessage.includes('Kernel proc path is read-only'),
+      failedLiveMessage.includes('Kernel proc path is read-only') ||
+      failedLiveMessage.includes('TraceKernel file-change path must be relative'),
     `invalid live file-change should fail the command with a filesystem error: ${JSON.stringify({ failedLiveError, failedLiveResult })}`
   );
   assertCondition(
@@ -11968,12 +12036,12 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
 
   const session = workspace.createTerminalSession();
   assertCondition(session.cwd === '/home/obi/weather-api', `terminal session should start at workspace root: ${session.cwd}`);
-  assertCondition(session.prompt.text === 'obi@tracevm weather-api %', `terminal prompt should use kernel identity: ${session.prompt.text}`);
+  assertCondition(session.prompt.text === 'obi@tracevm weather-api $', `terminal prompt should use kernel identity: ${session.prompt.text}`);
 
   const cdSrc = await session.run('cd src');
   assertCondition(cdSrc.exitCode === 0, `terminal cd should succeed: ${cdSrc.stderr}`);
   assertCondition(session.cwd === '/home/obi/weather-api/src', `terminal cd should update session cwd: ${session.cwd}`);
-  assertCondition(session.prompt.text === 'obi@tracevm src %', `terminal prompt should follow cwd basename: ${session.prompt.text}`);
+  assertCondition(session.prompt.text === 'obi@tracevm src $', `terminal prompt should follow cwd basename: ${session.prompt.text}`);
 
   const pwd = await session.run('pwd');
   assertCondition(pwd.stdout === '/home/obi/weather-api/src\n', `terminal pwd should read session cwd: ${JSON.stringify(pwd)}`);
@@ -12026,7 +12094,7 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
 
   const cdHome = await session.run('cd ..');
   assertCondition(cdHome.exitCode === 0 && session.cwd === '/home/obi', `terminal cd .. should allow read-only home navigation: ${session.cwd}`);
-  assertCondition(session.prompt.text === 'obi@tracevm ~ %', `terminal prompt should label home cwd: ${session.prompt.text}`);
+  assertCondition(session.prompt.text === 'obi@tracevm ~ $', `terminal prompt should label home cwd: ${session.prompt.text}`);
   const homePwd = await session.run('pwd');
   assertCondition(homePwd.stdout === '/home/obi\n', `terminal pwd should allow home cwd: ${JSON.stringify(homePwd)}`);
   const homeLs = await session.run('ls');
@@ -12125,7 +12193,7 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
     `terminal stdin prompt output should carry terminal metadata: ${JSON.stringify(stdinCommandEvents)}`
   );
   assertCondition(
-    stdinSession.inputState.mode === 'command' && stdinSession.inputState.label === 'obi@tracevm weather-api %',
+    stdinSession.inputState.mode === 'command' && stdinSession.inputState.label === 'obi@tracevm weather-api $',
     `terminal input state should return to command prompt after stdin run: ${JSON.stringify(stdinSession.inputState)}`
   );
 
@@ -12647,7 +12715,7 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   assertCondition(
     outputBudget.exitCode === 1 &&
       outputBudget.error?.code === 'EMSGSIZE' &&
-      outputBudget.stdout.includes('[tracekernel: project command output truncated after 60 bytes]') &&
+      outputBudget.stdout.includes('[command output truncated after 60 bytes]') &&
       !outputBudget.stdout.includes('step-input'),
     `project session steps should enforce an aggregate output budget: ${JSON.stringify(outputBudget)}`
   );
@@ -12920,6 +12988,22 @@ async function testPackageManagerProjectCommands(): Promise<void> {
     npmTestBannerIndex !== -1 && npmTestStartIndex !== -1 && npmTestBannerIndex < npmTestStartIndex,
     `npm run should stream the script banner before nested command events: ${JSON.stringify(npmTestEvents)}`
   );
+  const npmTestStreamedStdout = npmTestEvents
+    .filter((event): event is Extract<RuntimeCommandEvent, { type: 'output' }> =>
+      event.type === 'output' && event.stream === 'stdout'
+    )
+    .map((event) => event.data)
+    .join('');
+  assertCondition(
+    npmTestStreamedStdout === npmTest.stdout,
+    `npm run streamed stdout should exactly match returned stdout: ${JSON.stringify({ npmTestStreamedStdout, stdout: npmTest.stdout })}`
+  );
+  assertCondition(
+    nodeRequests
+      .filter((request) => Boolean(request.env.npm_lifecycle_event))
+      .every((request) => request.env.npm_config_user_agent?.includes(' tracekernel x64 ') === true),
+    `npm lifecycle metadata should identify TraceKernel rather than a fabricated host OS: ${JSON.stringify(nodeRequests.map((request) => request.env.npm_config_user_agent))}`
+  );
 
   const exec = await workspace.runCommand('npm exec weather-cli inspect');
   assertCondition(
@@ -12967,8 +13051,10 @@ async function testPackageManagerProjectCommands(): Promise<void> {
   });
   const disabledInstall = await disabledInstallWorkspace.runCommand('npm install');
   assertCondition(
-    disabledInstall.exitCode === 1 && disabledInstall.stderr.includes('disabled in tracekernel'),
-    `npm install without a dependency provider should fail closed: ${JSON.stringify(disabledInstall)}`
+    disabledInstall.exitCode === 1 &&
+      disabledInstall.stderr.includes('npm error code ENETUNREACH') &&
+      !disabledInstall.stderr.toLowerCase().includes('tracekernel'),
+    `npm install without a dependency provider should look like an offline registry failure: ${JSON.stringify(disabledInstall)}`
   );
   disabledInstallWorkspace.dispose();
 }
@@ -13053,6 +13139,16 @@ async function testTypeScriptProjectCommands(): Promise<void> {
       badTypecheck.stderr.includes("Type 'string' is not assignable to type 'number'"),
     `tsc --noEmit should surface project-path diagnostics: ${JSON.stringify(badTypecheck)}`
   );
+
+  await workspace.writeFile('explicit-failure.ts', 'const value: number = ;\n');
+  const explicitFailure = await workspace.runCommand('tsc explicit-failure.ts');
+  assertCondition(
+    explicitFailure.exitCode !== 0 &&
+      explicitFailure.stderr.includes('/home/user/ts-project/explicit-failure.ts:1:23') &&
+      explicitFailure.stderr.includes('error TS1109'),
+    `tsc with an explicit source file should compile that file instead of the tsconfig file list: ${JSON.stringify(explicitFailure)}`
+  );
+  await workspace.deleteFile('explicit-failure.ts');
 
   await workspace.writeFile('tsconfig.json', JSON.stringify({
     compilerOptions: {
@@ -13186,8 +13282,8 @@ async function testTypeScriptProjectCommands(): Promise<void> {
   );
   const watch = await workspace.runCommand('tsc --watch --project takehome/browser-ts/tsconfig.json');
   assertCondition(
-    watch.exitCode === 2 && watch.stderr.includes('tracekernel: tsc --watch is not supported'),
-    `tsc --watch should fail with a clean tracekernel error: ${JSON.stringify(watch)}`
+    watch.exitCode === 2 && watch.stderr === 'tsc: --watch is not supported by this runtime\n',
+    `tsc --watch should fail without exposing the runtime implementation: ${JSON.stringify(watch)}`
   );
 
   workspace.dispose();
@@ -13405,7 +13501,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
     cppCompound.exitCode === 0 &&
       cppCompound.stdout === 'cpp:/home/user/cpp-weather-api:compound:new-york:chain\n' &&
       cppRequests.at(-1)?.source === 'run' &&
-      cppRequests.at(-1)?.scriptPath === './build/weather-app',
+      cppRequests.at(-1)?.scriptPath === 'build/weather-app',
     `C++ compiled executables should run inside shell chains: ${JSON.stringify({ cppCompound, lastRequest: cppRequests.at(-1) })}`
   );
   const cppNestedCompound = await cppWorkspace.runCommand('cd src && clang++ main.cpp normalizer.cpp -o ../build/weather-app && ../build/weather-app nested', {
@@ -13446,13 +13542,13 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
 }
 
 async function testProjectSessionLifecycle(): Promise<void> {
-  const expiresAt = '2026-01-01T00:00:00.000Z';
+  const expiresAt = '2099-01-01T00:00:00.000Z';
   const workspace = await createRuntimeWorkspace({
     projectSession: {
       id: 'lifecycle-session',
       projectSlug: 'lifecycle-project',
-      createdAt: '2025-12-31T00:00:00.000Z',
-      lastOpenedAt: '2025-12-31T01:00:00.000Z',
+      createdAt: '2098-12-31T00:00:00.000Z',
+      lastOpenedAt: '2098-12-31T01:00:00.000Z',
       expiresAt,
       expirationBehavior: 'readonly',
       commands: {
@@ -13464,19 +13560,19 @@ async function testProjectSessionLifecycle(): Promise<void> {
     },
   });
   assertCondition(
-    workspace.projectSession?.lifecycle.createdAt === '2025-12-31T00:00:00.000Z' &&
-      workspace.projectSession.lifecycle.lastOpenedAt === '2025-12-31T01:00:00.000Z' &&
+    workspace.projectSession?.lifecycle.createdAt === '2098-12-31T00:00:00.000Z' &&
+      workspace.projectSession.lifecycle.lastOpenedAt === '2098-12-31T01:00:00.000Z' &&
       workspace.projectSession.lifecycle.expiresAt === expiresAt &&
       workspace.projectSession.lifecycle.expirationBehavior === 'readonly',
     `project session should expose lifecycle metadata: ${JSON.stringify(workspace.projectSession?.lifecycle)}`
   );
   const events: RuntimeCommandEvent[] = [];
   const unsubscribe = workspace.watch((event) => events.push(event));
-  const activeLifecycle = await workspace.checkExpiration('2025-12-31T23:59:59.000Z');
+  const activeLifecycle = await workspace.checkExpiration('2098-12-31T23:59:59.000Z');
   assertCondition(!activeLifecycle?.expiredAt, 'checkExpiration before expiresAt should not expire the session');
-  const expiredLifecycle = await workspace.checkExpiration('2026-01-01T00:00:00.000Z');
+  const expiredLifecycle = await workspace.checkExpiration(expiresAt);
   assertCondition(
-    expiredLifecycle?.expiredAt === '2026-01-01T00:00:00.000Z',
+    expiredLifecycle?.expiredAt === expiresAt,
     `checkExpiration should stamp expiredAt when called after expiry: ${JSON.stringify(expiredLifecycle)}`
   );
   assertCondition(
@@ -13506,7 +13602,7 @@ async function testProjectSessionLifecycle(): Promise<void> {
       files: [{ path: 'main.txt', contents: 'active\n' }],
     },
   });
-  await noneWorkspace.checkExpiration('2026-01-01T00:00:00.000Z');
+  await noneWorkspace.checkExpiration(expiresAt);
   await noneWorkspace.writeFile('main.txt', 'still-writable\n');
   assertCondition(await noneWorkspace.readFile('main.txt') === 'still-writable\n', 'expirationBehavior none should leave policy to the host app');
   noneWorkspace.dispose();
@@ -13519,7 +13615,7 @@ async function testProjectSessionLifecycle(): Promise<void> {
       files: [{ path: 'main.txt', contents: 'active\n' }],
     },
   });
-  await destroyWorkspace.checkExpiration('2026-01-01T00:00:00.000Z');
+  await destroyWorkspace.checkExpiration(expiresAt);
   await assertRejectsAsync(() => destroyWorkspace.readFile('main.txt'), 'expirationBehavior destroy should destroy the workspace when checked');
 
   const controlCalls: string[] = [];
@@ -13605,7 +13701,7 @@ async function testExpiredDestroySessionDestroysWithoutPolling(): Promise<void> 
   assertCondition(
     result.exitCode !== 0 &&
       result.stderr.includes('project session expired') &&
-      !result.stderr.includes('tracekernel session has been destroyed'),
+      !result.stderr.includes('project session is no longer available'),
     `expired destroy command should reject as expired before async destroy runs: ${JSON.stringify(result)}`
   );
   await waitForMacrotasks(3);
@@ -13618,7 +13714,7 @@ async function testExpiredDestroySessionDestroysWithoutPolling(): Promise<void> 
   }
   const readErrorMessage = readError instanceof Error ? readError.message : String(readError);
   assertCondition(
-    readErrorMessage.includes('tracekernel session has been destroyed'),
+    readErrorMessage.includes('project session is no longer available'),
     `expired destroy session should reject reads after scheduled destroy: ${readErrorMessage}`
   );
   assertCondition(
@@ -14207,7 +14303,16 @@ async function main(): Promise<void> {
   console.log('PASS: project workspace primitives are backed by just-bash');
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+// Keep Node alive until the asynchronous gate settles without creating a
+// timer that the in-process browser runtime can mistake for learner work.
+const testProcessKeepAlive = new MessageChannel();
+testProcessKeepAlive.port1.on('message', () => undefined);
+void main()
+  .catch((error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    testProcessKeepAlive.port1.close();
+    testProcessKeepAlive.port2.close();
+  });

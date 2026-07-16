@@ -442,13 +442,16 @@ async function testProjectJavaRequiresCompleteManifestBeforeWorkerConstruction()
     });
     try {
       const result = await workspace.runCommand('javac Main.java');
-      const output = `${result.stdout}\n${result.stderr}`;
+      const diagnostic = String(result.error?.detail?.diagnostic ?? '');
       assertCondition(
-        result.exitCode !== 0 &&
-          output.includes('Browser project Java is unavailable because CheerpJ is not vendored') &&
-          output.includes('assets.runtimeManifests.java') &&
-          output.includes('javaWorkerClient'),
-        `Project Java must fail with provider-neutral configuration guidance for ${testCase.label}: ${JSON.stringify(result)}`
+        result.exitCode === 137 &&
+          result.stdout === '' &&
+          result.stderr === '' &&
+          result.error?.code === 'EIO' &&
+          diagnostic.includes('Browser project Java is unavailable because CheerpJ is not vendored') &&
+          diagnostic.includes('assets.runtimeManifests.java') &&
+          diagnostic.includes('javaWorkerClient'),
+        `Project Java must keep provider configuration out of learner stderr while retaining host diagnostics for ${testCase.label}: ${JSON.stringify(result)}`
       );
       assertCondition(
         !CapturingWorker.instances.some((worker) => String(worker.url).includes('java')),

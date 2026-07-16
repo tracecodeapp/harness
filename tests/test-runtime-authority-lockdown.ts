@@ -142,13 +142,13 @@ async function runAuthorityProbe(harness: LockdownHarness, label: string): Promi
   ) as string[];
 
   const expectedDenied = [
-    ...GLOBAL_CAPABILITIES.map((name) => `${name}:EACCES`),
-    ...NAVIGATOR_CAPABILITIES.map((name) => `navigator.${name}:EACCES`),
-    'defineProperty:EACCES',
-    'deleteProperty:EACCES',
-    'setPrototypeOf:EACCES',
+    ...GLOBAL_CAPABILITIES.map((name) => `${name}:ReferenceError`),
+    ...NAVIGATOR_CAPABILITIES.map((name) => `navigator.${name}:ReferenceError`),
+    'defineProperty:ReferenceError',
+    'deleteProperty:ReferenceError',
+    'setPrototypeOf:ReferenceError',
     'reflectSet:false',
-    'postMutation:EACCES',
+    'postMutation:ReferenceError',
     'http:204',
   ];
   assertCondition(
@@ -210,16 +210,16 @@ async function testNestedLockdownDoesNotRestoreEarly(): Promise<void> {
     `(async () => self.TraceRuntimeKernelPolicy.withRuntimeUserAuthorityLockdown(async () => {
       const nested = await self.TraceRuntimeKernelPolicy.withRuntimeUserAuthorityLockdown(() => {
         try { self.fetch(); return 'allowed'; }
-        catch (error) { return error.code; }
+        catch (error) { return error.code || error.name; }
       });
       let afterNested;
       try { self.fetch(); afterNested = 'allowed'; }
-      catch (error) { afterNested = error.code; }
+      catch (error) { afterNested = error.code || error.name; }
       return [nested, afterNested];
     }))()`,
     harness.context
   ) as string[];
-  assertCondition(JSON.stringify(result) === '["EACCES","EACCES"]', `Nested lockdown restored early: ${result}`);
+  assertCondition(JSON.stringify(result) === '["ReferenceError","ReferenceError"]', `Nested lockdown restored early: ${result}`);
   assertRestored(harness, 'nested execution');
   console.log('PASS: nested authority lockdown retains the outer execution boundary');
 }
@@ -231,13 +231,13 @@ async function testCapabilityLimitedAuthorityOverride(): Promise<void> {
       const fetchResult = self.fetch('allowed-runtime-asset');
       let websocketResult;
       try { self.WebSocket(); websocketResult = 'allowed'; }
-      catch (error) { websocketResult = error.code; }
+      catch (error) { websocketResult = error.code || error.name; }
       let mutationResult;
       try {
         Object.defineProperty(self, 'fetch', { configurable: true, value: () => 'bypass' });
         mutationResult = 'allowed';
       } catch (error) {
-        mutationResult = error.code;
+        mutationResult = error.code || error.name;
       }
       return [fetchResult, websocketResult, mutationResult];
     }, {
@@ -248,7 +248,7 @@ async function testCapabilityLimitedAuthorityOverride(): Promise<void> {
     harness.context
   ) as string[];
   assertCondition(
-    JSON.stringify(result) === '["guarded:allowed-runtime-asset","EACCES","EACCES"]',
+    JSON.stringify(result) === '["guarded:allowed-runtime-asset","ReferenceError","ReferenceError"]',
     `Capability override widened authority unexpectedly: ${JSON.stringify(result)}`
   );
   assertCondition(harness.attempted.length === 0, 'Capability override invoked the original ambient fetch');
@@ -412,9 +412,9 @@ async function testPermanentLockdownSealsPrototypeAndDeferredEscapes(): Promise<
 
   assertCondition(
     JSON.stringify(result) === JSON.stringify([
-      'computed:EACCES',
-      'descriptor:EACCES',
-      'legacy-fs:EACCES',
+      'computed:ReferenceError',
+      'descriptor:ReferenceError',
+      'legacy-fs:ReferenceError',
       'deferred:scheduled',
       'http:204',
     ]),
@@ -423,7 +423,7 @@ async function testPermanentLockdownSealsPrototypeAndDeferredEscapes(): Promise<
   assertCondition(harness.attempted.length === 0, `Permanent lockdown invoked native authority: ${harness.attempted}`);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assertCondition(
-    harness.selfObject.__deferredAuthorityOutcome === 'EACCES',
+    harness.selfObject.__deferredAuthorityOutcome === 'ReferenceError',
     `Deferred task regained authority after callback settlement: ${String(harness.selfObject.__deferredAuthorityOutcome)}`
   );
   assertCondition(
@@ -442,7 +442,7 @@ async function testPermanentLockdownSealsPrototypeAndDeferredEscapes(): Promise<
     })()`,
     harness.context
   );
-  assertCondition(postBoundaryResult === 'EACCES', 'Permanent lockdown restored authority after the callback settled');
+  assertCondition(postBoundaryResult === 'ReferenceError', 'Permanent lockdown restored authority after the callback settled');
   console.log('PASS: permanent authority lockdown seals computed, prototype, and deferred escapes');
 }
 

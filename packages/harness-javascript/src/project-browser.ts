@@ -24,12 +24,13 @@ import {
   createRuntimeProjectIoBridge,
   readRuntimeCommandStdinPipeBytes,
   runtimeAbortSignalName,
+  runtimeProjectInfrastructureFailure,
   runRuntimeProjectWorkerBridge,
   runtimeCommandStdinPipeClosed,
   runtimeCommandStdinPipeRemainingBytes,
   runtimeSignalExitCode,
 } from '@tracecode/harness-core';
-import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
+import { BROWSER_PROJECT_NODE_COMPAT_VERSION, getLanguageRuntimeInfo } from '@tracecode/harness-core';
 import {
   createTypeScriptProjectRunner,
   type TypeScriptProjectCompiler,
@@ -105,7 +106,10 @@ export type JavaScriptProjectCommandRequest = RuntimeProjectCommandRequest<
 >;
 export type JavaScriptProjectCommandResult = RuntimeCommandResult;
 export type JavaScriptProjectCommandRunner = RuntimeProjectCommandRunner<JavaScriptProjectCommandRequest>;
-export type BrowserJavaScriptProjectCommandRunner = JavaScriptProjectCommandRunner;
+export type BrowserJavaScriptProjectCommandRunner = JavaScriptProjectCommandRunner & {
+  /** Retires an unused prewarmed worker owned by this runner. */
+  dispose?: () => void;
+};
 export type BrowserJavaScriptProjectWorkerIsolation = 'shared' | 'per-command';
 
 export interface BrowserJavaScriptProjectWorkerLike {
@@ -135,6 +139,10 @@ export interface BrowserJavaScriptProjectRunnerOptions {
   trustedReusableWorker?: boolean;
   /** @internal Set by the worker-backed runner; disposable workers require permanent mode. */
   projectUserAuthorityMode?: 'temporary' | 'permanent';
+  /** Prepare one clean disposable worker in the background for the next command. */
+  prewarm?: boolean;
+  /** @internal Allows the owning workspace to retire an unused prewarmed worker. */
+  registerPrewarmCleanup?: (cleanup: () => void) => void;
   timeoutMs?: number;
   workerIsolation?: BrowserJavaScriptProjectWorkerIsolation;
   workerFactory?: BrowserJavaScriptProjectWorkerFactory;
@@ -148,6 +156,8 @@ export interface BrowserTypeScriptProjectRunnerOptions {
   /** Verifies the consumer-owned compiler asset immediately before lazy loading. */
   compilerPreflight?: () => Promise<void>;
   compilerUrl?: string;
+  /** Load the trusted compiler in the background without delaying workspace creation. */
+  prewarmCompiler?: boolean;
 }
 
 const browserTypeScriptCompilerPromises = new Map<string, Promise<TypeScriptProjectCompiler>>();
@@ -220,6 +230,11 @@ async function loadBrowserTypeScriptCompiler(
       document.head.appendChild(script);
     });
     browserTypeScriptCompilerPromises.set(trustedCompilerUrl, compilerPromise);
+    void compilerPromise.catch(() => {
+      if (browserTypeScriptCompilerPromises.get(trustedCompilerUrl) === compilerPromise) {
+        browserTypeScriptCompilerPromises.delete(trustedCompilerUrl);
+      }
+    });
   }
   return compilerPromise;
 }
@@ -227,21 +242,36 @@ async function loadBrowserTypeScriptCompiler(
 export function createBrowserTypeScriptProjectRunner(
   options: BrowserTypeScriptProjectRunnerOptions = {}
 ) {
-  return createTypeScriptProjectRunner({
-    ...(options.compiler ? { compiler: options.compiler } : {}),
-    loadCompiler: async () => {
+  let compilerPromise: Promise<TypeScriptProjectCompiler> | null = null;
+  const loadCompiler = (): Promise<TypeScriptProjectCompiler> => {
+    if (compilerPromise) return compilerPromise;
+    const attempt = (async () => {
       await options.compilerPreflight?.();
       return loadBrowserTypeScriptCompiler(options.compilerUrl, {
         allowDomCompilerScript: options.allowDomCompilerScript,
         allowExternalDomCompilerScript: options.allowExternalDomCompilerScript,
       });
-    },
+    })();
+    const observed = attempt.catch((error) => {
+      if (compilerPromise === observed) compilerPromise = null;
+      throw error;
+    });
+    compilerPromise = observed;
+    return observed;
+  };
+  if (!options.compiler && options.prewarmCompiler) {
+    void loadCompiler().catch(() => undefined);
+  }
+  return createTypeScriptProjectRunner({
+    ...(options.compiler ? { compiler: options.compiler } : {}),
+    loadCompiler,
   });
 }
 
 interface BrowserJavaScriptProjectExecutionState {
   cancelled: boolean;
   abortController: AbortController;
+  cleanupHostGlobals?: () => void;
 }
 
 type ModuleRecord = {
@@ -732,7 +762,7 @@ function fallbackKernelInfo(project: RuntimeProjectSnapshot, workspace: Workspac
     },
     host: {
       hostname: 'tracevm',
-      osName: 'tracecode',
+      osName: 'tracekernel',
     },
     workspace: {
       id: `${workspaceName}-${startedAt.replace(/[:.]/g, '-')}`,
@@ -761,7 +791,10 @@ function browserReadonlyKernelNamespacePath(path: unknown): string | null {
   return raw === '/skills' || raw.startsWith('/skills/') ? raw : null;
 }
 
-function createBrowserProcSnapshot(kernelFiles?: readonly RuntimeFile[]): BrowserProcSnapshot {
+function createBrowserProcSnapshot(
+  kernelFiles?: readonly RuntimeFile[],
+  request?: JavaScriptProjectCommandRequest
+): BrowserProcSnapshot {
   const files = new Map<string, string>();
   const directoryEntries = new Map<string, Map<string, RuntimeKernelDirectoryEntry>>();
   const ensureDirectory = (path: string): void => {
@@ -785,6 +818,28 @@ function createBrowserProcSnapshot(kernelFiles?: readonly RuntimeFile[]): Browse
   };
   ensureDirectory('/skills');
   for (const file of kernelFiles ?? []) addFile(file.path, file.contents);
+  if (request?.process) {
+    const argv = processArgvForRequest(request);
+    const command = argv.join(' ');
+    const status = [
+      `Name:\t${(request.scriptPath || 'node').split('/').at(-1) || 'node'}`,
+      'State:\tR (running)',
+      `Pid:\t${request.process.pid}`,
+      `PPid:\t${request.process.ppid}`,
+      `PGid:\t${request.process.pgid}`,
+      `Sid:\t${request.process.sid}`,
+      'FDSize:\t3',
+      'Uid:\t1000\t1000\t1000\t1000',
+      'Gid:\t1000\t1000\t1000\t1000',
+      `Command:\t${command}`,
+      '',
+    ].join('\n');
+    const cmdline = `${argv.join('\0')}\0`;
+    for (const root of ['/proc/self', `/proc/${request.process.pid}`]) {
+      addFile(`${root}/status`, status);
+      addFile(`${root}/cmdline`, cmdline);
+    }
+  }
   const directories = new Map<string, readonly RuntimeKernelDirectoryEntry[]>();
   for (const [path, entries] of directoryEntries) {
     if (path === '/' || !(
@@ -1315,24 +1370,39 @@ function workspaceUsername(workspaceHome: string): string {
   return parts[parts.length - 1] ?? 'browser';
 }
 
-function createOsApi(workspaceRoot: string) {
+function createOsApi(workspaceRoot: string, kernelInfo: RuntimeKernelInfo) {
   const home = inferWorkspaceHome(workspaceRoot);
+  const cpuCount = Math.max(1, Math.min(8, Math.floor(globalThis.navigator?.hardwareConcurrency ?? 2)));
+  const cpu = () => ({
+    model: 'Virtual CPU',
+    speed: 2400,
+    times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
+  });
   return {
     EOL: '\n',
-    arch: () => 'wasm32',
-    cpus: () => [],
+    devNull: '/dev/null',
+    arch: () => 'x64',
+    availableParallelism: () => cpuCount,
+    cpus: () => Array.from({ length: cpuCount }, cpu),
     endianness: () => 'LE',
+    freemem: () => 6 * 1024 * 1024 * 1024,
     homedir: () => home,
-    hostname: () => 'tracevm',
-    platform: () => 'browser',
-    release: () => '',
+    hostname: () => kernelInfo.host.hostname,
+    loadavg: () => [0, 0, 0],
+    machine: () => 'x86_64',
+    networkInterfaces: () => ({}),
+    platform: () => 'tracekernel',
+    release: () => kernelInfo.version,
     tmpdir: () => '/tmp',
+    totalmem: () => 8 * 1024 * 1024 * 1024,
     type: () => 'tracekernel',
+    uptime: () => 0,
+    version: () => kernelInfo.version,
     userInfo: () => ({
       username: workspaceUsername(home),
-      uid: -1,
-      gid: -1,
-      shell: null,
+      uid: 1000,
+      gid: 1000,
+      shell: '/bin/bash',
       homedir: home,
     }),
   };
@@ -2099,6 +2169,27 @@ function normalizeHttpClientRequest(args: unknown[]): {
   };
 }
 
+function runtimeKernelNetworkCause(response: RuntimeKernelHttpResponse, url: URL): Error {
+  const code = response.error?.code || 'ECONNREFUSED';
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+  const message = code === 'EPROTONOSUPPORT'
+    ? response.error?.message.replace(/^EPROTONOSUPPORT:\s*/, '') || `Protocol "${url.protocol.replace(/:$/, '')}" not supported`
+    : code === 'EAGAIN' || code === 'ERATELIMIT'
+      ? 'Resource temporarily unavailable'
+      : `connect ${code} ${url.hostname}:${port}`;
+  return Object.assign(new Error(message), {
+    code,
+    ...(code.startsWith('EHOST') || code === 'ECONNREFUSED'
+      ? { address: url.hostname, port: Number(port) }
+      : {}),
+  });
+}
+
+function runtimeKernelFetchError(response: RuntimeKernelHttpResponse, url: URL): TypeError {
+  const cause = runtimeKernelNetworkCause(response, url);
+  return Object.assign(new TypeError('fetch failed'), { cause });
+}
+
 function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: AbortSignal | undefined) {
   const activeHandles = new Set<RuntimeKernelHttpListenerHandle>();
   const activeClientAborters = new Set<() => void>();
@@ -2131,7 +2222,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
     const server = {
       listening: false,
       listen: (...args: unknown[]) => {
-        if (!kernelHttp) throw Object.assign(new Error('ENOSYS: tracekernel HTTP is not available'), { code: 'ENOSYS' });
+        if (!kernelHttp) throw Object.assign(new Error('ENOSYS: network subsystem is unavailable'), { code: 'ENOSYS' });
         const port = typeof args[0] === 'number' || typeof args[0] === 'string' ? Number(args[0]) : 80;
         const host = typeof args[1] === 'string' ? args[1] : undefined;
         const callback = args.find((arg): arg is () => void => typeof arg === 'function');
@@ -2262,7 +2353,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
         if (!kernelHttp) {
           activeClientRequests += 1;
           queueMicrotask(() => {
-            events.emit('error', Object.assign(new Error('ENOSYS: tracekernel HTTP is not available'), { code: 'ENOSYS' }));
+            events.emit('error', Object.assign(new Error('ENOSYS: network subsystem is unavailable'), { code: 'ENOSYS' }));
             activeClientRequests -= 1;
             notifyCloseWaiters();
           });
@@ -2323,7 +2414,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
         }).then((response) => {
           if (destroyed) return;
           if (response.status === 0) {
-            events.emit('error', Object.assign(new Error(response.body ?? 'connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
+            events.emit('error', runtimeKernelNetworkCause(response, requestOptions.url));
             finishClientRequest();
             return;
           }
@@ -2365,6 +2456,21 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
 
   const get = (...args: unknown[]) => {
     const clientRequest = request(...args);
+    clientRequest.end();
+    return clientRequest;
+  };
+
+  const httpsRequest = (...args: unknown[]) => {
+    const first = args[0];
+    if (typeof first === 'string' || first instanceof URL) return request(...args);
+    const options = first && typeof first === 'object'
+      ? { ...(first as Record<string, unknown>), protocol: (first as Record<string, unknown>).protocol ?? 'https:' }
+      : { protocol: 'https:' };
+    return request(options, ...args.slice(1));
+  };
+
+  const httpsGet = (...args: unknown[]) => {
+    const clientRequest = httpsRequest(...args);
     clientRequest.end();
     return clientRequest;
   };
@@ -2535,7 +2641,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
   }
 
   const fetch = async (input: unknown, init?: Record<string, unknown>): Promise<TraceKernelResponse> => {
-    if (!kernelHttp) throw Object.assign(new Error('ENOSYS: tracekernel HTTP is not available'), { code: 'ENOSYS' });
+    if (!kernelHttp) throw Object.assign(new Error('ENOSYS: network subsystem is unavailable'), { code: 'ENOSYS' });
     const request = new TraceKernelRequest(input, init);
     const url = new URL(request.url);
     const body = request.bodyForDispatch();
@@ -2585,7 +2691,7 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
       }).then((response) => {
         if (!active) return;
         if (response.status === 0) {
-          reject(Object.assign(new TypeError(response.body ?? 'fetch failed'), { code: 'ECONNREFUSED' }));
+          reject(runtimeKernelFetchError(response, url));
           finishFetch();
           return;
         }
@@ -2607,6 +2713,11 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
       Server: function Server(this: unknown, requestListener?: (request: unknown, response: unknown) => unknown) {
         return createServer(requestListener);
       },
+      STATUS_CODES: HTTP_STATUS_CODES,
+    },
+    httpsModule: {
+      request: httpsRequest,
+      get: httpsGet,
       STATUS_CODES: HTTP_STATUS_CODES,
     },
     fetch,
@@ -2668,10 +2779,7 @@ const permanentBrowserDynamicConstructorPrototypes = Object.freeze([
 ]);
 
 function permanentBrowserAuthorityError(name: string): Error {
-  return Object.assign(
-    new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`),
-    { code: 'EACCES' }
-  );
+  return new ReferenceError(`${name} is not defined`);
 }
 
 function permanentBrowserDeniedAuthority(name: string): unknown {
@@ -2683,7 +2791,7 @@ function permanentBrowserDeniedAuthority(name: string): unknown {
         apply: () => deny(),
         construct: () => deny(),
         get: (_target, property) => property === Symbol.toStringTag
-          ? 'TraceKernelDeniedCapability'
+          ? 'Function'
           : permanentBrowserDeniedAuthority(`${name}.${String(property)}`),
         set: () => {
           throw permanentBrowserAuthorityError(name);
@@ -2797,8 +2905,8 @@ function installBrowserHttpGlobalLockdown(
     return installPermanentBrowserWorkerAuthorityBoundary(httpApi);
   }
   const global = globalThis as typeof globalThis & Record<string, unknown>;
-  const blockedNetworkApi = (name: string) => function blockedTraceKernelNetworkApi(): never {
-    throw Object.assign(new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`), { code: 'EACCES' });
+  const blockedNetworkApi = (name: string) => function blockedBrowserNetworkApi(): never {
+    throw new ReferenceError(`${name} is not defined`);
   };
   const blockedAuthorityObject = (name: string): unknown => {
     const deny = blockedNetworkApi(name);
@@ -2806,7 +2914,7 @@ function installBrowserHttpGlobalLockdown(
       ? new Proxy(deny, {
           apply: () => deny(),
           construct: () => deny(),
-          get: (_target, property) => property === Symbol.toStringTag ? 'TraceKernelDeniedCapability' : deny,
+          get: (_target, property) => property === Symbol.toStringTag ? 'Function' : deny,
         })
       : deny;
   };
@@ -3400,6 +3508,34 @@ function formatBrowserJavaScriptErrorForStderr(error: unknown): string {
   return `${String(error)}\n`;
 }
 
+function isBrowserJavaScriptUserStackFrame(line: string, sourcePath: string): boolean {
+  return (
+    line.includes(sourcePath) ||
+    line.includes('/workspace/') ||
+    line.includes('/home/')
+  );
+}
+
+function isBrowserJavaScriptInternalStackFrame(line: string): boolean {
+  return (
+    line.includes('/@fs/') ||
+    line.includes('/packages/harness-') ||
+    line.includes('/dist/browser/project.js') ||
+    line.includes('/workers/javascript-project-worker.js') ||
+    line.includes('javascript-project-worker.js:') ||
+    line.includes('blob:') ||
+    line.includes('runBrowserJavaScriptProjectRequest') ||
+    line.includes('executeEntrypoint') ||
+    line.includes('executeModule') ||
+    line.includes('resolveModulePath') ||
+    line.includes('requireModule') ||
+    line.includes('createHttpApi') ||
+    line.includes('registerHttpListener') ||
+    line.includes('at new Function') ||
+    line.includes('at new AsyncFunction')
+  );
+}
+
 function sanitizeBrowserJavaScriptStack(error: unknown, sourcePath: string): unknown {
   if (!(error instanceof Error) || typeof error.stack !== 'string' || !error.stack.trim()) {
     return error;
@@ -3409,36 +3545,43 @@ function sanitizeBrowserJavaScriptStack(error: unknown, sourcePath: string): unk
     /\(eval at [^,]+ \([^)]*\), <anonymous>:(\d+):(\d+)\)/g,
     (_match, line, column) => `(${sourcePath}:${Math.max(1, Number(line) - 2)}:${column})`
   );
-  const lines: string[] = [];
-  for (const line of mappedStack.split('\n')) {
-    if (
-      line.includes('/@fs/') ||
-      line.includes('/dist/browser/project.js') ||
-      line.includes('runBrowserJavaScriptProjectRequest') ||
-      line.includes('executeEntrypoint') ||
-      line.includes('executeModule')
-    ) {
-      break;
+  const stackLines = mappedStack.split('\n');
+  const lines: string[] = [stackLines[0] ?? error.message];
+  for (const line of stackLines.slice(1)) {
+    if (isBrowserJavaScriptUserStackFrame(line, sourcePath)) {
+      lines.push(line);
+      continue;
     }
-    lines.push(line);
+    if (isBrowserJavaScriptInternalStackFrame(line)) continue;
+    // Browser engine frames and host URLs are implementation details. Keep
+    // only frames that can be attributed to the submitted workspace.
   }
+  if (lines.length === 1) lines.push(`    at ${sourcePath}:1:1`);
   Object.defineProperty(error, 'stack', {
     configurable: true,
-    value: (lines.length > 0 ? lines : [mappedStack.split('\n')[0] ?? error.message]).join('\n'),
+    value: lines.join('\n'),
   });
   return error;
 }
 
 function processArgvForRequest(request: JavaScriptProjectCommandRequest): string[] {
+  const executable = '/usr/local/bin/node';
   if (request.source === 'argument') {
-    return ['node', ...request.args];
+    return [executable, ...request.args];
   }
 
   if (request.source === 'stdin') {
-    return ['node', '-', ...request.args];
+    return [executable, '-', ...request.args];
   }
 
-  return ['node', request.scriptPath, ...request.args];
+  const requestedScriptPath = request.scriptPath || '<anonymous>';
+  const scriptPath = requestedScriptPath.startsWith('/')
+    ? requestedScriptPath
+    : `${request.project.workspaceRoot ?? request.project.cwd ?? '/workspace'}/${normalizeProjectPath([
+        workspaceCwdPath(request),
+        requestedScriptPath,
+      ].filter(Boolean).join('/'))}`;
+  return [executable, scriptPath, ...request.args];
 }
 
 function requireModulesForRequest(request: JavaScriptProjectCommandRequest): string[] {
@@ -3485,21 +3628,31 @@ function createBrowserJavaScriptProjectProtocolToken(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
-function createBrowserJavaScriptProjectPolicyFailureRunner(stderr: string): JavaScriptProjectCommandRunner {
+function createBrowserJavaScriptProjectPolicyFailureRunner(diagnostic: string): JavaScriptProjectCommandRunner {
   return (request) => {
+    const stderr = 'node: JavaScript runtime is unavailable\n';
     const io = createRuntimeProjectIoBridge(request.onEvent);
     io.output('stderr', stderr);
-    io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
+    io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 126, diagnostic });
     return Promise.resolve({
       stdout: '',
       stderr,
-      exitCode: 1,
+      exitCode: 126,
+      error: {
+        code: 'ENOEXEC',
+        errno: 8,
+        message: 'JavaScript runtime is unavailable',
+        detail: { diagnostic },
+      },
     });
   };
 }
 
 class BrowserJavaScriptProjectWorkerClient {
   private worker: BrowserJavaScriptProjectWorkerLike | null = null;
+  private workerReadyPromise: Promise<void> | null = null;
+  private workerReadyResolve: (() => void) | null = null;
+  private workerReadyReject: ((error: Error) => void) | null = null;
   private messageId = 0;
   private httpRequestId = 0;
   private readonly pendingMessages = new Map<string, BrowserJavaScriptProjectPendingMessage>();
@@ -3532,16 +3685,31 @@ class BrowserJavaScriptProjectWorkerClient {
     );
   }
 
+  warmup(): Promise<void> {
+    this.getWorker();
+    return this.workerReadyPromise ?? Promise.resolve();
+  }
+
   terminate(): void {
     this.terminateAndReset();
   }
 
   private getWorker(): BrowserJavaScriptProjectWorkerLike {
     if (this.worker) return this.worker;
+    this.workerReadyPromise = new Promise<void>((resolve, reject) => {
+      this.workerReadyResolve = resolve;
+      this.workerReadyReject = reject;
+    });
     this.worker = this.workerFactory
       ? this.workerFactory(this.workerUrl, { type: 'module' })
       : new Worker(this.workerUrl, { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<BrowserJavaScriptProjectWorkerMessage>) => {
+      if (event.data.type === 'worker-ready') {
+        this.workerReadyResolve?.();
+        this.workerReadyResolve = null;
+        this.workerReadyReject = null;
+        return;
+      }
       this.handleWorkerMessage(event.data);
     };
     this.worker.onerror = (event) => {
@@ -3632,7 +3800,7 @@ class BrowserJavaScriptProjectWorkerClient {
     const message = payload as RuntimeKernelHttpProtocolMessage;
     if (type === 'kernel-http-listen' && message.type === 'kernel-http-listen') {
       if (!pending.kernelHttp) {
-        this.postKernelHttpError(commandId, { listenerId: message.listenerId, error: 'TraceKernel HTTP is not available.' });
+        this.postKernelHttpError(commandId, { listenerId: message.listenerId, error: 'Network subsystem is unavailable.' });
         return;
       }
       try {
@@ -3664,7 +3832,7 @@ class BrowserJavaScriptProjectWorkerClient {
     }
     if (type === 'kernel-http-dispatch' && message.type === 'kernel-http-dispatch') {
       if (!pending.kernelHttp) {
-        this.postKernelHttpError(commandId, { requestId: message.requestId, error: 'TraceKernel HTTP is not available.' });
+        this.postKernelHttpError(commandId, { requestId: message.requestId, error: 'Network subsystem is unavailable.' });
         return;
       }
       const abortController = new AbortController();
@@ -3823,6 +3991,10 @@ class BrowserJavaScriptProjectWorkerClient {
   private terminateAndReset(reason: Error = new Error('JavaScript project worker was terminated')): void {
     this.worker?.terminate();
     this.worker = null;
+    this.workerReadyReject?.(reason);
+    this.workerReadyPromise = null;
+    this.workerReadyResolve = null;
+    this.workerReadyReject = null;
     for (const [, pending] of this.pendingMessages) {
       this.cleanupPendingKernelHttp(pending);
       pending.reject(reason);
@@ -3833,21 +4005,59 @@ class BrowserJavaScriptProjectWorkerClient {
 
 function createWorkerBackedBrowserJavaScriptProjectRunner(
   options: BrowserJavaScriptProjectRunnerOptions & { workerUrl: string }
-): JavaScriptProjectCommandRunner {
+): BrowserJavaScriptProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const workerIsolation = options.workerIsolation ?? 'per-command';
   if (workerIsolation !== 'per-command' && workerIsolation !== 'shared') {
     return createBrowserJavaScriptProjectPolicyFailureRunner(
-      `node: invalid browser JavaScript worker isolation "${String(workerIsolation)}"; expected "per-command" or "shared"\n`
+      `Invalid JavaScript worker isolation: ${String(workerIsolation)}`
     );
   }
   if (workerIsolation === 'shared' && options.trustedReusableWorker !== true) {
     return createBrowserJavaScriptProjectPolicyFailureRunner(
-      'node: browser JavaScript shared worker isolation is trusted-only and requires trustedReusableWorker: true\n'
+      'Shared JavaScript worker isolation requires trustedReusableWorker'
     );
   }
   if (workerIsolation === 'per-command') {
-    return (request) =>
+    type PreparedWorker = { client: BrowserJavaScriptProjectWorkerClient };
+    let standby: Promise<PreparedWorker> | null = null;
+    let disposed = false;
+    const clients = new Set<BrowserJavaScriptProjectWorkerClient>();
+    const prepareWorker = (): Promise<PreparedWorker> => {
+      if (standby) return standby;
+      const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
+        allowDynamicEval: options.allowDynamicEval,
+        projectUserAuthorityMode: 'permanent',
+      }, options.workerFactory);
+      clients.add(client);
+      const attempt = (async () => {
+        await options.assetPreflight?.();
+        await client.warmup();
+        if (disposed) throw new Error('JavaScript project prewarm was retired.');
+        return { client };
+      })();
+      const observed = attempt.catch((error) => {
+        clients.delete(client);
+        client.terminate();
+        if (standby === observed) standby = null;
+        throw error;
+      });
+      standby = observed;
+      void observed.catch(() => undefined);
+      return observed;
+    };
+    const refill = () => {
+      if (!disposed && options.prewarm && !standby) prepareWorker();
+    };
+    const dispose = () => {
+      disposed = true;
+      standby = null;
+      for (const client of clients) client.terminate();
+      clients.clear();
+    };
+    options.registerPrewarmCleanup?.(dispose);
+    refill();
+    const runner: JavaScriptProjectCommandRunner = (request) =>
       runRuntimeProjectWorkerBridge({
         request,
         startPhase: 'process-start',
@@ -3861,18 +4071,26 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
         finishMessage: 'Browser Node exited',
         applyFileChange: options.applyFileChange,
         run: async (workerRequest, onEvent) => {
-          await options.assetPreflight?.();
-          const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
-            allowDynamicEval: options.allowDynamicEval,
-            projectUserAuthorityMode: 'permanent',
-          }, options.workerFactory);
+          const prepared = options.prewarm ? prepareWorker() : null;
+          if (prepared && standby === prepared) standby = null;
+          refill();
+          const client = prepared
+            ? (await prepared).client
+            : new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
+                allowDynamicEval: options.allowDynamicEval,
+                projectUserAuthorityMode: 'permanent',
+              }, options.workerFactory);
+          clients.add(client);
           try {
+            if (!prepared) await options.assetPreflight?.();
             return await client.executeProject(workerRequest, timeoutMs, onEvent);
           } finally {
+            clients.delete(client);
             client.terminate();
           }
         },
       });
+    return Object.assign(runner, { dispose });
   }
   const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
     allowDynamicEval: options.allowDynamicEval,
@@ -3900,7 +4118,7 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
 
 export function createBrowserJavaScriptProjectRunner(
   options: BrowserJavaScriptProjectRunnerOptions = {}
-): JavaScriptProjectCommandRunner {
+): BrowserJavaScriptProjectCommandRunner {
   if (options.workerUrl && (options.workerFactory !== undefined || typeof Worker !== 'undefined')) {
     return createWorkerBackedBrowserJavaScriptProjectRunner({
       ...options,
@@ -3913,7 +4131,7 @@ export function createBrowserJavaScriptProjectRunner(
     options.trustedMainThreadExecution !== true
   ) {
     return createBrowserJavaScriptProjectPolicyFailureRunner(
-      'node: browser JavaScript project runner requires a Worker-backed runner unless allowMainThreadExecution and trustedMainThreadExecution are explicitly enabled\n'
+      'JavaScript Worker execution is unavailable and trusted main-thread execution was not enabled'
     );
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -3931,6 +4149,7 @@ export function createBrowserJavaScriptProjectRunner(
       if (forcedResult) return;
       executionState.cancelled = true;
       executionState.abortController.abort();
+      executionState.cleanupHostGlobals?.();
       forcedResult = result;
       resolveForcedResult(result);
     };
@@ -3966,14 +4185,18 @@ export function createBrowserJavaScriptProjectRunner(
       abortListener = () => {
         if (forcedResult) return;
         const signal = runtimeAbortSignalName(request.signal);
-        const exitCode = runtimeSignalExitCode(signal);
+        const failure = runtimeProjectInfrastructureFailure(
+          Object.assign(new Error('Execution interrupted'), { name: 'AbortError' }),
+          request.signal
+        );
         const io = createRuntimeProjectIoBridge(request.onEvent);
-        io.status('process-exit', 'Browser Node interrupted', { command: 'node', exitCode, signal });
-        forceResult({
-          stdout: '',
-          stderr: 'Execution aborted\n',
-          exitCode,
+        io.status('process-exit', 'Browser Node interrupted', {
+          command: 'node',
+          exitCode: failure.exitCode,
+          signal,
+          error: failure.error?.message,
         });
+        forceResult(failure);
       };
       request.signal.addEventListener('abort', abortListener, { once: true });
       if (request.signal.aborted) abortListener();
@@ -3995,14 +4218,20 @@ export async function runBrowserJavaScriptProjectRequest(
   executionState: BrowserJavaScriptProjectExecutionState
 ): Promise<RuntimeCommandResult> {
     if (options.allowDynamicEval === false) {
-      const stderr = 'node: browser JavaScript project runner requires dynamic evaluation\n';
+      const stderr = 'node: JavaScript runtime is unavailable\n';
       const io = createRuntimeProjectIoBridge(request.onEvent);
       io.output('stderr', stderr);
-      io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
+      io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 126 });
       return {
         stdout: '',
         stderr,
-        exitCode: 1,
+        exitCode: 126,
+        error: {
+          code: 'ENOEXEC',
+          errno: 8,
+          message: 'JavaScript runtime is unavailable',
+          detail: { diagnostic: 'Dynamic evaluation is disabled' },
+        },
       };
     }
 
@@ -4026,7 +4255,7 @@ export async function runBrowserJavaScriptProjectRequest(
     const workspaceRoot = workspacePathContext.root;
     const kernelInfo = request.project.kernel ?? fallbackKernelInfo(request.project, workspacePathContext);
     const kernelDevices = request.project.kernelDevices;
-    const procSnapshot = createBrowserProcSnapshot(request.project.kernelFiles);
+    const procSnapshot = createBrowserProcSnapshot(request.project.kernelFiles, request);
     const cwdPath = workspaceCwdPath(request);
     const hiddenFiles = Array.from(new Set(
       (request.project.hiddenFiles ?? []).map((path) => normalizeWorkspaceEntryPath(path, '', false, workspacePathContext))
@@ -4368,11 +4597,25 @@ export async function runBrowserJavaScriptProjectRequest(
       () => deviceInputClosed('/dev/stdin'),
       eventLoopApi.setTimeout
     );
+    const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
     const processApi = {
       argv: processArgvForRequest(request),
+      execArgv: [] as string[],
+      execPath: '/usr/local/bin/node',
       env: request.env,
+      version: `v${nodeVersion}`,
+      versions: { node: nodeVersion },
+      release: { name: 'node' },
+      platform: 'tracekernel',
+      arch: 'x64',
+      pid: request.process?.pid ?? 1,
+      ppid: request.process?.ppid ?? 0,
+      title: 'node',
       exitCode: undefined as number | undefined,
       cwd: () => request.cwd,
+      nextTick: (callback: (...args: unknown[]) => void, ...args: unknown[]) => {
+        globalThis.queueMicrotask(() => callback(...args));
+      },
       stdin: stdinDevice,
       stdout: createWritableDevice('/dev/stdout', 1),
       stderr: createWritableDevice('/dev/stderr', 2),
@@ -4385,7 +4628,7 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const nodePathSearchEntries = nodePathEntries(request, cwdPath, workspacePathContext);
     const pathApi = createPathApi(() => cwdPath, workspaceRoot);
-    const osApi = createOsApi(workspaceRoot);
+    const osApi = createOsApi(workspaceRoot, kernelInfo);
     const urlApi = createUrlApi();
     const assertApi = createAssertApi();
     const eventsApi = createEventsApi();
@@ -7271,6 +7514,19 @@ export async function runBrowserJavaScriptProjectRequest(
       options.projectUserAuthorityMode ?? 'temporary'
     );
     const restoreTimerGlobals = installBrowserTimerGlobals(eventLoopApi);
+    let hostGlobalsRestored = false;
+    const restoreHostGlobals = (): void => {
+      if (hostGlobalsRestored) return;
+      hostGlobalsRestored = true;
+      eventLoopApi.clearAll();
+      restoreTimerGlobals();
+      restoreHttpGlobals();
+    };
+    executionState.cleanupHostGlobals = restoreHostGlobals;
+    if (executionState.cancelled) {
+      restoreHostGlobals();
+      return { stdout: '', stderr: '', exitCode: 1 };
+    }
     const builtins = new Map<string, unknown>([
       ['fs', fsApi],
       ['node:fs', fsApi],
@@ -7286,6 +7542,8 @@ export async function runBrowserJavaScriptProjectRequest(
       ['node:buffer', { Buffer: BrowserBuffer }],
       ['http', httpApi.module],
       ['node:http', httpApi.module],
+      ['https', httpApi.httpsModule],
+      ['node:https', httpApi.httpsModule],
       ['zlib', zlibApi],
       ['node:zlib', zlibApi],
       ['assert', assertApi],
@@ -7556,7 +7814,23 @@ export async function runBrowserJavaScriptProjectRequest(
       await httpApi.waitForClose();
       await eventLoopApi.drain();
       liveIo.close();
-      await liveIo.flush();
+      try {
+        await liveIo.flush();
+      } catch (error) {
+        const failed = runtimeProjectInfrastructureFailure(error, executionState.abortController.signal);
+        const hostIo = createRuntimeProjectIoBridge(request.onEvent);
+        hostIo.status('process-exit', 'Browser Node exited', {
+          command: 'node',
+          exitCode: failed.exitCode,
+          error: failed.error?.message,
+          ...(failed.error?.detail ?? {}),
+        });
+        return {
+          ...failed,
+          stdout: stdout.join(''),
+          stderr: stderr.join(''),
+        };
+      }
       const resultFiles = [
         ...Array.from(fileStore.entries())
         .filter(([path, contents]) => !byteEqual(originalFiles.get(path), contents))
@@ -7587,12 +7861,14 @@ export async function runBrowserJavaScriptProjectRequest(
     } catch (error) {
       httpApi.closeAll();
       eventLoopApi.clearAll();
-      const exitCode = typeof (error as { exitCode?: unknown }).exitCode === 'number'
-        ? (error as { exitCode: number }).exitCode
+      const sourcePath = processArgvForRequest(request)[1] ?? `${request.project.workspaceRoot ?? request.project.cwd ?? '/workspace'}/[eval]`;
+      const displayError = sanitizeBrowserJavaScriptStack(error, sourcePath);
+      const exitCode = typeof (displayError as { exitCode?: unknown }).exitCode === 'number'
+        ? (displayError as { exitCode: number }).exitCode
         : 1;
-      const stderrSuffix = (error as { suppressStderr?: unknown }).suppressStderr
+      const stderrSuffix = (displayError as { suppressStderr?: unknown }).suppressStderr
         ? ''
-        : formatBrowserJavaScriptErrorForStderr(error);
+        : formatBrowserJavaScriptErrorForStderr(displayError);
       const hostIo = createRuntimeProjectIoBridge(request.onEvent);
       if (stderrSuffix) {
         stderr.push(stderrSuffix);
@@ -7602,13 +7878,17 @@ export async function runBrowserJavaScriptProjectRequest(
       try {
         await liveIo.flush();
       } catch (flushError) {
-        const flushStderr = flushError instanceof Error ? `${flushError.message}\n` : `${String(flushError)}\n`;
-        hostIo.output('stderr', flushStderr);
-        hostIo.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
+        const failed = runtimeProjectInfrastructureFailure(flushError, executionState.abortController.signal);
+        hostIo.status('process-exit', 'Browser Node exited', {
+          command: 'node',
+          exitCode: failed.exitCode,
+          error: failed.error?.message,
+          ...(failed.error?.detail ?? {}),
+        });
         return {
+          ...failed,
           stdout: stdout.join(''),
-          stderr: stderr.join('') + flushStderr,
-          exitCode: 1,
+          stderr: stderr.join(''),
         };
       }
       hostIo.status('process-exit', 'Browser Node exited', { command: 'node', exitCode });
@@ -7618,7 +7898,9 @@ export async function runBrowserJavaScriptProjectRequest(
         exitCode,
       };
     } finally {
-      restoreTimerGlobals();
-      restoreHttpGlobals();
+      restoreHostGlobals();
+      if (executionState.cleanupHostGlobals === restoreHostGlobals) {
+        executionState.cleanupHostGlobals = undefined;
+      }
     }
 }

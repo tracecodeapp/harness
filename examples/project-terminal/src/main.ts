@@ -6,7 +6,7 @@ import type {
   RuntimeProjectTerminalInputState,
   RuntimeWorkspaceEvent,
 } from '@tracecode/harness/core';
-import type { BrowserRuntimeAssetManifests } from '@tracecode/harness/browser';
+import type { BrowserProjectProvider, BrowserRuntimeAssetManifests } from '@tracecode/harness/browser';
 
 async function bootProjectTerminal(): Promise<void> {
   document.body.innerHTML = `
@@ -14,7 +14,7 @@ async function bootProjectTerminal(): Promise<void> {
       <section class="dev-terminal" aria-label="Tracekernel terminal">
         <div class="dev-terminal-output" id="dev-terminal-output" aria-live="polite">
           <form class="dev-terminal-form" id="dev-terminal-form">
-            <span class="dev-terminal-prompt" id="dev-terminal-prompt">user@tracevm demo %</span>
+            <span class="dev-terminal-prompt" id="dev-terminal-prompt">user@tracevm demo $</span>
             <input
               id="dev-terminal-input"
               class="dev-terminal-input"
@@ -68,10 +68,19 @@ async function bootProjectTerminal(): Promise<void> {
     window as Window & { __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests }
   ).__tracecodeRuntimeAssetManifests;
   const javaAvailable = runtimeManifests?.java !== undefined;
+  const providers: BrowserProjectProvider[] = [
+    'python',
+    'javascript',
+    'typescript',
+    ...(javaAvailable ? ['java' as const] : []),
+    'csharp',
+    'cpp',
+  ];
 
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
     ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
+    providers,
     javaProjectTimeoutMs: 120_000,
     cppProjectTimeoutMs: 120_000,
     kernel: {

@@ -132,7 +132,7 @@ export function writeKernelHttpSyncManifest(buffer: SharedArrayBuffer, manifest:
   const encoded = new TextEncoder().encode(manifest);
   if (encoded.byteLength > bytes.byteLength) {
     const overflow = new TextEncoder().encode(
-      kernelHttpErrorManifest(`TraceKernel HTTP response exceeded ${runtimeLabel} bridge buffer capacity`)
+      kernelHttpErrorManifest(`${runtimeLabel} network response exceeded buffer capacity`)
     );
     bytes.set(overflow.subarray(0, bytes.byteLength));
     Atomics.store(header, KERNEL_HTTP_SYNC_LENGTH_INDEX, Math.min(overflow.byteLength, bytes.byteLength));
@@ -190,7 +190,7 @@ export function closeKernelHttpSyncServerBridge(bridge: KernelHttpSyncServerBrid
     entry.resolve({
       status: 503,
       headers: { 'content-type': 'text/plain' },
-      body: `${runtimeLabel} TraceKernel HTTP server closed\n`,
+      body: 'Service Unavailable\n',
     });
   }
 }
@@ -212,7 +212,7 @@ export function handleKernelHttpDispatchSyncMessage(pending: KernelHttpSyncPendi
   if (!pending.kernelHttp) {
     writeKernelHttpSyncManifest(
       buffer,
-      kernelHttpErrorManifest(`TraceKernel HTTP is not available for this ${runtimeLabel} command`),
+      kernelHttpErrorManifest('Network subsystem is unavailable'),
       runtimeLabel
     );
     return;
@@ -220,7 +220,7 @@ export function handleKernelHttpDispatchSyncMessage(pending: KernelHttpSyncPendi
   if (!request || typeof request !== 'object') {
     writeKernelHttpSyncManifest(
       buffer,
-      kernelHttpErrorManifest(`Invalid ${runtimeLabel} TraceKernel HTTP request`),
+      kernelHttpErrorManifest(`Invalid ${runtimeLabel} network request`),
       runtimeLabel
     );
     return;
@@ -236,7 +236,7 @@ export function handleKernelHttpDispatchSyncMessage(pending: KernelHttpSyncPendi
       const message = error instanceof Error ? error.message : String(error);
       writeKernelHttpSyncManifest(
         buffer,
-        kernelHttpErrorManifest(message || 'TraceKernel HTTP request failed'),
+        kernelHttpErrorManifest(message || 'Network request failed'),
         runtimeLabel
       );
     });
@@ -259,7 +259,7 @@ export function handleKernelHttpListenSyncMessage(pending: KernelHttpSyncPending
     if (controlBuffer instanceof SharedArrayBuffer) {
       writeKernelHttpSyncManifest(
         controlBuffer,
-        kernelHttpErrorManifest(`Invalid ${runtimeLabel} TraceKernel HTTP listener registration`),
+        kernelHttpErrorManifest(`Invalid ${runtimeLabel} network listener registration`),
         runtimeLabel
       );
     }
@@ -268,7 +268,7 @@ export function handleKernelHttpListenSyncMessage(pending: KernelHttpSyncPending
   if (!pending.kernelHttp) {
     writeKernelHttpSyncManifest(
       controlBuffer,
-      kernelHttpErrorManifest(`TraceKernel HTTP is not available for this ${runtimeLabel} command`),
+      kernelHttpErrorManifest('Network subsystem is unavailable'),
       runtimeLabel
     );
     return;
@@ -295,7 +295,7 @@ export function handleKernelHttpListenSyncMessage(pending: KernelHttpSyncPending
     const message = error instanceof Error ? error.message : String(error);
     writeKernelHttpSyncManifest(
       controlBuffer,
-      kernelHttpErrorManifest(message || `Unable to register ${runtimeLabel} TraceKernel HTTP listener`),
+      kernelHttpErrorManifest(message || `Unable to register ${runtimeLabel} network listener`),
       runtimeLabel
     );
   }
@@ -325,14 +325,14 @@ function enqueueKernelHttpSyncServerRequest(
     return Promise.resolve({
       status: 503,
       headers: { 'content-type': 'text/plain' },
-      body: `${runtimeLabel} TraceKernel HTTP server closed\n`,
+      body: 'Service Unavailable\n',
     });
   }
   if (bridge.queue.length >= KERNEL_HTTP_SYNC_MAX_QUEUED_REQUESTS) {
     return Promise.resolve({
       status: 503,
       headers: { 'content-type': 'text/plain' },
-      body: `${runtimeLabel} TraceKernel HTTP server queue is full\n`,
+      body: 'Service Unavailable\n',
     });
   }
   return new Promise<RuntimeKernelHttpResponse>((resolve) => {
@@ -345,7 +345,7 @@ function enqueueKernelHttpSyncServerRequest(
         resolve({
           status: 0,
           headers: { 'content-type': 'text/plain' },
-          body: 'TraceKernel HTTP request aborted\n',
+          body: 'Network request aborted\n',
         });
       };
       request.signal.addEventListener?.('abort', entry.abortListener, { once: true });
@@ -372,7 +372,7 @@ function drainKernelHttpSyncServerQueue(bridge: KernelHttpSyncServerBridge, runt
       entry.resolve({
         status: 500,
         headers: { 'content-type': 'text/plain' },
-        body: `${message || `${runtimeLabel} TraceKernel HTTP server request failed`}\n`,
+        body: `${message || `${runtimeLabel} network request failed`}\n`,
       });
     })
     .finally(() => {
@@ -393,7 +393,7 @@ function dispatchKernelHttpSyncServerRequest(
     return Promise.resolve({
       status: 503,
       headers: { 'content-type': 'text/plain' },
-      body: `${runtimeLabel} TraceKernel HTTP server buffer is not idle\n`,
+      body: 'Service Unavailable\n',
     });
   }
   const encoded = new TextEncoder().encode(kernelHttpRequestManifest(request));
@@ -401,7 +401,7 @@ function dispatchKernelHttpSyncServerRequest(
     return Promise.resolve({
       status: 413,
       headers: { 'content-type': 'text/plain' },
-      body: `TraceKernel HTTP request exceeded ${runtimeLabel} bridge buffer capacity\n`,
+      body: `${runtimeLabel} network request exceeded buffer capacity\n`,
     });
   }
   bytes.set(encoded);
@@ -424,7 +424,7 @@ function dispatchKernelHttpSyncServerRequest(
         settle({
           status: 0,
           headers: { 'content-type': 'text/plain' },
-          body: 'TraceKernel HTTP request aborted\n',
+          body: 'Network request aborted\n',
         });
       };
       request.signal.addEventListener?.('abort', abortListener, { once: true });
@@ -449,7 +449,7 @@ function dispatchKernelHttpSyncServerRequest(
         settle({
           status: 503,
           headers: { 'content-type': 'text/plain' },
-          body: `${runtimeLabel} TraceKernel HTTP server closed\n`,
+          body: 'Service Unavailable\n',
         });
         return;
       }

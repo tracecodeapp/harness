@@ -473,7 +473,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       packedMock.close();
       const packedStall = nativeWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, () => new Promise(() => {}));
       const packedTimeout = await nativeWorkspace.http.request({ url: 'http://localhost:' + packedStall.info.port + '/stall', timeoutMs: 1 });
-      if (packedTimeout.status !== 0 || packedTimeout.body !== 'TraceKernel HTTP request timed out after 1 milliseconds\\n') {
+      if (packedTimeout.status !== 0 || packedTimeout.body !== 'Network request timed out after 1 milliseconds\\n') {
         throw new Error('Packed native project workspace HTTP timeout smoke failed: ' + JSON.stringify(packedTimeout));
       }
       packedStall.close();

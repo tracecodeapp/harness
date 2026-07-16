@@ -218,17 +218,82 @@ async function main(): Promise<void> {
 
     assertCondition(classic.control.success && classic.control.output === 5, `Classic control failed: ${JSON.stringify(classic)}`);
     assertCondition(
-      classic.computed.success === false && classic.computed.error?.includes('EACCES'),
+      classic.computed.success === false && classic.computed.error === 'fetch is not defined',
       `Classic computed Function escape was not denied: ${JSON.stringify(classic.computed)}`
     );
     assertCondition(
-      classic.deferred.success === false && classic.deferred.error?.includes('EACCES'),
+      classic.deferred.success === false && classic.deferred.error === 'fetch is not defined',
       `Classic deferred Function escape was not denied: ${JSON.stringify(classic.deferred)}`
     );
     assertCondition(classic.typed.success && classic.typed.output === 12, `TypeScript control failed: ${JSON.stringify(classic.typed)}`);
     assertCondition(
       classic.traced.success && classic.traced.output === 9 && classic.traced.eventCount > 0,
       `Classic tracing control failed: ${JSON.stringify(classic.traced)}`
+    );
+
+    const projectJournal = await page.evaluate(async () => {
+      const { createBrowserProjectWorkspace } = await import('/browser-project.js');
+      const workspace = await createBrowserProjectWorkspace({
+        assetBaseUrl: '/workers',
+        files: [{ path: 'seed.txt', contents: 'seed\n' }],
+        nodeProjectTimeoutMs: 20_000,
+      });
+      const records = [];
+      const unsubscribe = workspace.watch((event) => {
+        if (event.type === 'kernel-journal') records.push(event.record);
+      });
+      const client = workspace.kernel.createProcess({
+        name: 'client',
+        actor: { kind: 'runtime', id: 'learner' },
+        signalPolicy: 'system-only',
+      });
+      const tracebot = workspace.kernel.createProcess({
+        name: 'tracebot',
+        actor: { kind: 'runtime', id: 'tracebot' },
+        signalPolicy: 'system-only',
+      });
+      try {
+        const result = await client.runCommand(
+          'node -e "const fs=require(\\\"node:fs\\\");fs.writeFileSync(\\\"node-edit.txt\\\",\\\"changed\\\\n\\\")"'
+        );
+        const tracebotResult = await tracebot.runCommand(
+          'node -e "const fs=require(\\\"node:fs\\\");fs.writeFileSync(\\\"tracebot-edit.txt\\\",\\\"changed\\\\n\\\")"'
+        );
+        return { result, tracebotResult, records };
+      } finally {
+        tracebot.dispose();
+        client.dispose();
+        unsubscribe();
+        workspace.dispose();
+      }
+    });
+    assertCondition(
+      projectJournal.result.exitCode === 0,
+      `Browser Node write failed: ${JSON.stringify(projectJournal)}`
+    );
+    assertCondition(
+      projectJournal.records.some((record) => (
+        record.kind === 'fs' &&
+        record.op === 'write' &&
+        record.path === 'node-edit.txt' &&
+        record.actor === 'runtime:learner' &&
+        typeof record.pid === 'number'
+      )),
+      `Browser Node write lost kernel journal process attribution: ${JSON.stringify(projectJournal.records)}`
+    );
+    assertCondition(
+      projectJournal.tracebotResult.exitCode === 0,
+      `Browser TraceBot Node write failed: ${JSON.stringify(projectJournal)}`
+    );
+    assertCondition(
+      projectJournal.records.some((record) => (
+        record.kind === 'fs' &&
+        record.op === 'write' &&
+        record.path === 'tracebot-edit.txt' &&
+        record.actor === 'runtime:tracebot' &&
+        typeof record.pid === 'number'
+      )),
+      `Browser TraceBot write lost kernel journal process attribution: ${JSON.stringify(projectJournal.records)}`
     );
 
     const project = await page.evaluate(async ({ testOrigin, exposed }) => {
@@ -306,12 +371,12 @@ async function main(): Promise<void> {
     const outputLine = project.result.stdout.trim().split('\n').at(-1) ?? '';
     const outcomes = JSON.parse(outputLine) as Record<string, string>;
     assertCondition(outcomes.safeFetch === '207:kernel-ok', `TraceKernel fetch control failed: ${JSON.stringify(outcomes)}`);
-    assertCondition(outcomes.computed === 'EACCES', `Project computed constructor escape was not denied: ${JSON.stringify(outcomes)}`);
-    assertCondition(outcomes.descriptorFetch === 'EACCES', `Project prototype fetch escape was not denied: ${JSON.stringify(outcomes)}`);
-    assertCondition(outcomes.deferredFetch === 'EACCES', `Project deferred fetch regained authority: ${JSON.stringify(outcomes)}`);
+    assertCondition(outcomes.computed === 'ReferenceError', `Project computed constructor escape was not denied: ${JSON.stringify(outcomes)}`);
+    assertCondition(outcomes.descriptorFetch === 'ReferenceError', `Project prototype fetch escape was not denied: ${JSON.stringify(outcomes)}`);
+    assertCondition(outcomes.deferredFetch === 'ReferenceError', `Project deferred fetch regained authority: ${JSON.stringify(outcomes)}`);
     for (const name of project.probeNames) {
       assertCondition(
-        outcomes[name] === 'EACCES' || outcomes[name] === 'missing',
+        outcomes[name] === 'ReferenceError' || outcomes[name] === 'missing',
         `Project exposed ${name} authority was neither denied nor absent from the user facade: ${JSON.stringify(outcomes)}`
       );
     }

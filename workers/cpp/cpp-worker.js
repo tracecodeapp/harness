@@ -359,7 +359,7 @@ function createProjectOutputByteBudget() {
         }
       }
 
-      const marker = encodeUtf8(`\n[tracekernel: ${normalizedStream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`);
+      const marker = encodeUtf8(`\n[${normalizedStream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`);
       output.push(marker);
       outputBytes[normalizedStream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + marker.length;
       truncatedOutputStreams.add(normalizedStream);
@@ -420,7 +420,7 @@ function createProjectEventBudget(runtimeName) {
         }
 
         truncatedOutputStreams.add(event.stream);
-        const marker = `\n[tracekernel: ${event.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+        const marker = `\n[${event.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
         const data = `${projectTruncateUtf8(event.data, Math.max(0, remaining))}${marker}`;
         outputBytes[event.stream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + projectUtf8Bytes(marker);
         return data ? { ...event, data } : null;
@@ -2140,7 +2140,7 @@ function cppKernelHttpStringFromBase64(value) {
 }
 
 function cppKernelHttpErrorManifest(message) {
-  return `ERROR\n${cppKernelHttpBase64FromString(message || 'TraceKernel HTTP request failed')}`;
+  return `ERROR\n${cppKernelHttpBase64FromString(message || 'Network request failed')}`;
 }
 
 function cppKernelHttpSyncSupported() {
@@ -2192,7 +2192,7 @@ function parseCppKernelHttpResponseManifest(manifestBytes) {
     return {
       status: 500,
       headers: { 'content-type': 'text/plain' },
-      body: cppKernelHttpBase64FromString(`${message || 'TraceKernel HTTP request failed'}\n`),
+      body: cppKernelHttpBase64FromString(`${message || 'Network request failed'}\n`),
       bodyEncoding: 'base64',
     };
   }
@@ -2265,7 +2265,7 @@ class CppKernelHttpSyncBridge {
       return {
         status: 0,
         headers: { 'content-type': 'text/plain' },
-        body: 'SharedArrayBuffer support is required for C++ TraceKernel HTTP\n',
+        body: 'Network subsystem is unavailable\n',
       };
     }
     const buffer = new SharedArrayBuffer(CPP_KERNEL_HTTP_SYNC_HEADER_BYTES + CPP_KERNEL_HTTP_SYNC_BUFFER_BYTES);
@@ -2276,18 +2276,18 @@ class CppKernelHttpSyncBridge {
     });
     const manifest = this.waitForSyncManifest(buffer, CPP_KERNEL_HTTP_SYNC_WAIT_MS);
     if (!manifest) {
-      return { status: 0, headers: { 'content-type': 'text/plain' }, body: 'TraceKernel HTTP request timed out\n' };
+      return { status: 0, headers: { 'content-type': 'text/plain' }, body: 'Network request timed out\n' };
     }
     return parseCppKernelHttpResponseManifest(manifest) ?? {
       status: 0,
       headers: { 'content-type': 'text/plain' },
-      body: 'TraceKernel HTTP returned an invalid response\n',
+      body: 'Invalid network response\n',
     };
   }
 
   listen(options) {
     if (!cppKernelHttpSyncSupported()) {
-      return { error: 'SharedArrayBuffer support is required for C++ TraceKernel HTTP listeners' };
+      return { error: 'Network subsystem is unavailable' };
     }
     const serverId = this.nextServerId++;
     const clientServerId = `cpp-http-${serverId}`;
@@ -2303,20 +2303,20 @@ class CppKernelHttpSyncBridge {
     const controlManifest = this.waitForSyncManifest(controlBuffer, CPP_KERNEL_HTTP_SYNC_WAIT_MS);
     if (!controlManifest) {
       this.servers.delete(serverId);
-      return { error: 'TraceKernel HTTP listener registration timed out' };
+      return { error: 'Network listener registration timed out' };
     }
     const lines = decodeUtf8(controlManifest).split('\n');
     if (lines[0] !== 'OK' || !lines[1]) {
       this.servers.delete(serverId);
       const message = lines[0] === 'ERROR' && lines[1] ? cppKernelHttpStringFromBase64(lines[1]) : '';
-      return { error: message || 'TraceKernel HTTP listener registration failed' };
+      return { error: message || 'Network listener registration failed' };
     }
     let info;
     try {
       info = JSON.parse(cppKernelHttpStringFromBase64(lines[1]));
     } catch {
       this.servers.delete(serverId);
-      return { error: 'TraceKernel HTTP listener registration returned invalid metadata' };
+      return { error: 'Network listener registration returned invalid metadata' };
     }
     const port = Number(info?.port);
     return {
@@ -2343,7 +2343,7 @@ class CppKernelHttpSyncBridge {
           this.respond(serverId, {
             status: 400,
             headers: { 'content-type': 'text/plain' },
-            body: 'TraceKernel HTTP request could not be parsed\n',
+            body: 'Network request could not be parsed\n',
           });
           continue;
         }
@@ -2369,7 +2369,7 @@ class CppKernelHttpSyncBridge {
     const bytes = new Uint8Array(server.requestBuffer, CPP_KERNEL_HTTP_SYNC_HEADER_BYTES);
     const encoded = encodeUtf8(cppKernelHttpResponseManifest(response));
     const written = encoded.byteLength > bytes.byteLength
-      ? encodeUtf8(cppKernelHttpErrorManifest('TraceKernel HTTP response exceeded C++ bridge buffer capacity'))
+      ? encodeUtf8(cppKernelHttpErrorManifest('Network response exceeded buffer capacity'))
       : encoded;
     bytes.set(written.subarray(0, bytes.byteLength));
     Atomics.store(header, CPP_KERNEL_HTTP_SYNC_LENGTH_INDEX, Math.min(written.byteLength, bytes.byteLength));

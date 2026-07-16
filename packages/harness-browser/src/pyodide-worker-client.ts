@@ -447,7 +447,7 @@ export class PythonWorkerClient {
     const message = payload as RuntimeKernelHttpProtocolMessage;
     if (type === 'kernel-http-listen' && message.type === 'kernel-http-listen') {
       if (!pending.kernelHttp) {
-        this.postKernelHttpError(commandId, { listenerId: message.listenerId, error: 'TraceKernel HTTP is not available.' });
+        this.postKernelHttpError(commandId, { listenerId: message.listenerId, error: 'Network subsystem is unavailable.' });
         return;
       }
       try {
@@ -479,7 +479,7 @@ export class PythonWorkerClient {
     }
     if (type === 'kernel-http-dispatch' && message.type === 'kernel-http-dispatch') {
       if (!pending.kernelHttp) {
-        this.postKernelHttpError(commandId, { requestId: message.requestId, error: 'TraceKernel HTTP is not available.' });
+        this.postKernelHttpError(commandId, { requestId: message.requestId, error: 'Network subsystem is unavailable.' });
         return;
       }
       const abortController = new AbortController();

@@ -268,7 +268,7 @@ function applyProjectEventBudget(context, payload) {
     }
 
     context.truncatedOutputStreams.add(payload.stream);
-    const marker = `\n[tracekernel: ${payload.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+    const marker = `\n[${payload.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
     const data = `${projectTruncateUtf8(payload.data, Math.max(0, remaining))}${marker}`;
     context.outputBytes[payload.stream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + projectUtf8Bytes(marker);
     return data ? { ...payload, data } : null;

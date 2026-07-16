@@ -9,7 +9,12 @@ import { PythonWorkerClient } from '../packages/harness-browser/src/pyodide-work
 import { JavaScriptWorkerClient } from '../packages/harness-browser/src/javascript-worker-client';
 import { CSharpWorkerClient } from '../packages/harness-browser/src/csharp-worker-client';
 import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
-import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
+import {
+  createBrowserJavaScriptProjectRunner,
+  createBrowserTypeScriptProjectRunner,
+} from '../packages/harness-javascript/src/project-browser';
+import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
+import { BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION } from '../packages/harness-browser/src/runtime-assets';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -362,7 +367,159 @@ async function main(): Promise<void> {
   }
   assertCondition(sameOriginError.includes('different origin'), 'Same-origin execution hosts must fail closed');
 
-  console.log('PASS: cross-origin execution worker host protocol, origin policy, and lifecycle');
+  const delayedExecutionWindow = new FakeWindow('https://lazy-exec.tracecode.test/host.html');
+  delayedExecutionWindow.parent = parentWindow;
+  const delayedWorkers: Array<{ url: string; worker: MockWorker }> = [];
+  const delayedInstallation = installBrowserExecutionWorkerHost({
+    window: delayedExecutionWindow as unknown as Window,
+    allowedParentOrigins: [parentWindow.location.origin],
+    workerFactory(url) {
+      const worker = new MockWorker();
+      delayedWorkers.push({ url: String(url), worker });
+      return worker;
+    },
+  });
+  const delayedIframe = new FakeIframe({
+    postMessage(data, targetOrigin, ports) {
+      assertCondition(targetOrigin === delayedExecutionWindow.location.origin, 'Lazy host must use its exact origin');
+      delayedExecutionWindow.emitMessage(
+        data,
+        parentWindow.location.origin,
+        parentWindow,
+        ports as MessagePort[]
+      );
+    },
+  });
+  let hostFrameAppended: (() => void) | undefined;
+  const hostFrameWasAppended = new Promise<void>((resolve) => {
+    hostFrameAppended = resolve;
+  });
+  const delayedParent = {
+    appendChild(node: FakeIframe) {
+      assertCondition(node === delayedIframe, 'Unexpected lazy execution iframe');
+      hostFrameAppended?.();
+      return node;
+    },
+  };
+  const delayedDocument = {
+    body: delayedParent,
+    createElement(name: string) {
+      assertCondition(name === 'iframe', 'Lazy execution host must create an iframe');
+      return delayedIframe;
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('asset', { status: 200 });
+  let lazyWorkspace: Awaited<ReturnType<typeof createBrowserProjectWorkspace>> | undefined;
+  try {
+    const workspacePromise = createBrowserProjectWorkspace({
+      providers: ['java'],
+      executionHost: {
+        url: delayedExecutionWindow.location.href,
+        window: parentWindow as unknown as Window,
+        document: delayedDocument as unknown as Document,
+        parent: delayedParent as unknown as HTMLElement,
+        allowUnisolatedForTesting: true,
+        providers: ['java'],
+        javaLifecycle: 'workspace-session',
+      },
+      projectWorkerPrewarm: { java: 1 },
+      assets: {
+        runtimeManifests: {
+          java: {
+            runtime: 'java',
+            runtimeVersion: 'lazy-host-test',
+            protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+            workerFormat: 'classic',
+            loaderFormat: 'classic-script',
+            assetBaseUrl: `${delayedExecutionWindow.location.origin}/workers/`,
+            originPolicy: { mode: 'any' },
+            assets: {
+              worker: { url: 'java-worker.js' },
+              loader: { url: 'cheerpj-loader.js' },
+              helperJar: { url: 'helper.jar' },
+              compilerJar: { url: 'compiler.jar' },
+              rewriterJar: { url: 'rewriter.jar' },
+              parserJar: { url: 'parser.jar' },
+            },
+          },
+        },
+      },
+      files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+    });
+    await hostFrameWasAppended;
+    lazyWorkspace = await Promise.race([
+      workspacePromise,
+      new Promise<never>((_, reject) => setTimeout(
+        () => reject(new Error('Project workspace waited for the background Java host.')),
+        500
+      )),
+    ]);
+    const listing = await lazyWorkspace.runCommand('ls');
+    assertCondition(listing.stdout.includes('Main.java'), 'Terminal/filesystem must be usable while Java warms');
+
+    let javaCommandSettled = false;
+    const javaCommand = lazyWorkspace.runCommand('java Main').finally(() => {
+      javaCommandSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertCondition(!javaCommandSettled, 'Java command must wait for the existing background warmup');
+    assertCondition(delayedWorkers.length === 0, 'Java worker must wait for the execution-host handshake');
+
+    delayedIframe.triggerLoad();
+    const javaCommandResult = await javaCommand;
+    assertCondition(javaCommandResult.exitCode === 0, 'Java command should continue after background readiness');
+    const javaMessages = delayedWorkers[0]?.worker.posted as Array<{ type?: string }> | undefined;
+    const warmupIndex = javaMessages?.findIndex((message) => message.type === 'warmup') ?? -1;
+    const executeIndex = javaMessages?.findIndex((message) => message.type === 'execute-project-java') ?? -1;
+    assertCondition(
+      warmupIndex >= 0 && executeIndex > warmupIndex,
+      'A command arriving during startup must share and await the background Java warmup'
+    );
+  } finally {
+    lazyWorkspace?.dispose();
+    delayedInstallation.dispose();
+    globalThis.fetch = originalFetch;
+  }
+
+  let releaseTypeScriptPreflight!: () => void;
+  const typeScriptPreflight = new Promise<void>((resolve) => {
+    releaseTypeScriptPreflight = resolve;
+  });
+  let typeScriptPreflightCalls = 0;
+  const typeScriptRunner = createBrowserTypeScriptProjectRunner({
+    prewarmCompiler: true,
+    compilerPreflight: () => {
+      typeScriptPreflightCalls += 1;
+      return typeScriptPreflight;
+    },
+  });
+  await Promise.resolve();
+  assertCondition(typeScriptPreflightCalls === 1, 'TypeScript compiler prewarm must begin when the runner is created');
+  let typeScriptCommandSettled = false;
+  const typeScriptCommand = typeScriptRunner({
+    code: '',
+    source: 'file',
+    scriptPath: 'index.ts',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+      files: [{ path: 'index.ts', contents: 'const value: number = 1;\n' }],
+    },
+  }).finally(() => {
+    typeScriptCommandSettled = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assertCondition(!typeScriptCommandSettled, 'TypeScript command must wait for the existing compiler prewarm');
+  assertCondition(typeScriptPreflightCalls === 1, 'TypeScript command must share the in-flight compiler prewarm');
+  releaseTypeScriptPreflight();
+  const typeScriptResult = await typeScriptCommand;
+  assertCondition(typeScriptResult.exitCode === 0, 'TypeScript command should continue after compiler prewarm');
+
+  console.log('PASS: cross-origin execution host lifecycle plus provider-neutral non-blocking project warmup');
 }
 
 main().catch((error) => {

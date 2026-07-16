@@ -295,22 +295,24 @@ async function testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn(): P
   };
   try {
     const defaultResult = await createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 })(request);
-    assertCondition(defaultResult.exitCode === 1, `browser JS without Worker should fail closed: ${JSON.stringify(defaultResult)}`);
+    assertCondition(defaultResult.exitCode === 126, `browser JS without Worker should fail closed: ${JSON.stringify(defaultResult)}`);
     assertCondition(defaultResult.stdout === '', `browser JS default fallback should not execute same-realm code: ${JSON.stringify(defaultResult)}`);
     assertCondition(
-      defaultResult.stderr.includes('allowMainThreadExecution and trustedMainThreadExecution'),
-      `browser JS default fallback should require both main-thread trust flags: ${JSON.stringify(defaultResult)}`
+      defaultResult.stderr === 'node: JavaScript runtime is unavailable\n' &&
+        defaultResult.error?.detail?.diagnostic === 'JavaScript Worker execution is unavailable and trusted main-thread execution was not enabled',
+      `browser JS default fallback should keep configuration detail out of terminal stderr: ${JSON.stringify(defaultResult)}`
     );
 
     const allowOnlyResult = await createBrowserJavaScriptProjectRunner({
       allowMainThreadExecution: true,
       timeoutMs: 1000,
     })(request);
-    assertCondition(allowOnlyResult.exitCode === 1, `allowMainThreadExecution alone should fail closed: ${JSON.stringify(allowOnlyResult)}`);
+    assertCondition(allowOnlyResult.exitCode === 126, `allowMainThreadExecution alone should fail closed: ${JSON.stringify(allowOnlyResult)}`);
     assertCondition(allowOnlyResult.stdout === '', `allowMainThreadExecution alone should not execute same-realm code: ${JSON.stringify(allowOnlyResult)}`);
     assertCondition(
-      allowOnlyResult.stderr.includes('trustedMainThreadExecution'),
-      `allowMainThreadExecution alone should require trustedMainThreadExecution: ${JSON.stringify(allowOnlyResult)}`
+      allowOnlyResult.stderr === 'node: JavaScript runtime is unavailable\n' &&
+        allowOnlyResult.error?.detail?.diagnostic === 'JavaScript Worker execution is unavailable and trusted main-thread execution was not enabled',
+      `allowMainThreadExecution alone should keep configuration detail out of terminal stderr: ${JSON.stringify(allowOnlyResult)}`
     );
 
     const hardenedResult = await createBrowserJavaScriptProjectRunner({
@@ -319,11 +321,12 @@ async function testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn(): P
       hardened: true,
       timeoutMs: 1000,
     })(request);
-    assertCondition(hardenedResult.exitCode === 1, `hardened browser JS should still require a Worker: ${JSON.stringify(hardenedResult)}`);
+    assertCondition(hardenedResult.exitCode === 126, `hardened browser JS should still require a Worker: ${JSON.stringify(hardenedResult)}`);
     assertCondition(hardenedResult.stdout === '', `hardened browser JS should not execute same-realm code: ${JSON.stringify(hardenedResult)}`);
     assertCondition(
-      hardenedResult.stderr.includes('allowMainThreadExecution and trustedMainThreadExecution'),
-      `hardened browser JS should explain the missing Worker-backed runner: ${JSON.stringify(hardenedResult)}`
+      hardenedResult.stderr === 'node: JavaScript runtime is unavailable\n' &&
+        hardenedResult.error?.detail?.diagnostic === 'JavaScript Worker execution is unavailable and trusted main-thread execution was not enabled',
+      `hardened browser JS should keep configuration detail out of terminal stderr: ${JSON.stringify(hardenedResult)}`
     );
 
     const trustedResult = await createBrowserJavaScriptProjectRunner({
@@ -710,11 +713,12 @@ async function testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn(): Promise<
       },
     });
 
-    assertCondition(result.exitCode === 1, `untrusted shared browser JS worker should fail closed: ${JSON.stringify(result)}`);
+    assertCondition(result.exitCode === 126, `untrusted shared browser JS worker should fail closed: ${JSON.stringify(result)}`);
     assertCondition(result.stdout === '', `untrusted shared browser JS worker should not execute project code: ${JSON.stringify(result)}`);
     assertCondition(
-      result.stderr.includes('trustedReusableWorker'),
-      `shared browser JS workers should require explicit trustedReusableWorker opt-in: ${JSON.stringify(result)}`
+      result.stderr === 'node: JavaScript runtime is unavailable\n' &&
+        result.error?.detail?.diagnostic === 'Shared JavaScript worker isolation requires trustedReusableWorker',
+      `shared browser JS workers should keep configuration detail out of terminal stderr: ${JSON.stringify(result)}`
     );
 
     const invalidIsolationRunner = createBrowserJavaScriptProjectRunner({
@@ -736,7 +740,7 @@ async function testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn(): Promise<
     });
 
     assertCondition(
-      invalidIsolationResult.exitCode === 1,
+      invalidIsolationResult.exitCode === 126,
       `invalid browser JS worker isolation should fail closed: ${JSON.stringify(invalidIsolationResult)}`
     );
     assertCondition(
@@ -744,8 +748,9 @@ async function testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn(): Promise<
       `invalid browser JS worker isolation should not execute project code: ${JSON.stringify(invalidIsolationResult)}`
     );
     assertCondition(
-      invalidIsolationResult.stderr.includes('invalid browser JavaScript worker isolation'),
-      `invalid browser JS worker isolation should report the bad option: ${JSON.stringify(invalidIsolationResult)}`
+      invalidIsolationResult.stderr === 'node: JavaScript runtime is unavailable\n' &&
+        invalidIsolationResult.error?.detail?.diagnostic === 'Invalid JavaScript worker isolation: shared ',
+      `invalid browser JS worker isolation should keep configuration detail out of terminal stderr: ${JSON.stringify(invalidIsolationResult)}`
     );
   });
 }
@@ -3179,8 +3184,14 @@ async function testKernelObservedFileSystemLiveFileChangesAreBudgeted(): Promise
     assertCondition(oversized.exitCode === 0, `oversized live write command should complete: ${JSON.stringify(oversized)}`);
     assertCondition((await workspace.stat('too-large.txt')).size === 5 * 1024 * 1024, 'oversized live write should persist without streaming its contents');
     assertCondition(
-      !oversizedEvents.some((event) => event.type === 'file-change' && event.phase === 'live' && event.change.path === 'too-large.txt'),
-      `oversized live file-change should be dropped before reading contents: ${JSON.stringify(oversizedEvents)}`
+      !oversizedEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'too-large.txt' &&
+        'contents' in event.change &&
+        event.change.contents !== ''
+      ),
+      `oversized live file contents should be dropped before reading the payload: ${JSON.stringify(oversizedEvents)}`
     );
     assertCondition(
       oversizedEvents.some((event) =>
@@ -3421,7 +3432,10 @@ async function testRuntimeWorkspaceStorageQuotasAreAtomic(): Promise<void> {
   try {
     const shell = await shellWorkspace.runCommand('printf 12345 > shell.txt');
     assertCondition(shell.exitCode !== 0, `shell writes should cross the same storage boundary: ${JSON.stringify(shell)}`);
-    assertCondition(!(await shellWorkspace.exists('shell.txt')), 'a rejected shell write must not create its target');
+    assertCondition(
+      await shellWorkspace.exists('shell.txt') && await shellWorkspace.readFile('shell.txt') === '',
+      'a rejected redirected write should preserve the preceding create/truncate without persisting over-quota bytes'
+    );
   } finally {
     shellWorkspace.dispose();
   }
@@ -3858,7 +3872,7 @@ async function testTraceKernelWildcardHttpDoesNotCatchExternalHosts(): Promise<v
 
     const externalResponse = await workspace.http.request({ url: 'http://api.example.com:3658/secret?token=abc' });
     assertCondition(
-      externalResponse.status === 0 && externalResponse.error?.code === 'EHOSTUNREACH',
+      externalResponse.status === 0 && externalResponse.error?.code === 'ENOTFOUND',
       `external host should not be captured by wildcard listener: ${JSON.stringify(externalResponse)}`
     );
     assertCondition(
@@ -3973,7 +3987,7 @@ async function testTraceKernelHttpRejectsInvalidResponseStatus(): Promise<void> 
     const response = await workspace.http.request({ url: 'http://localhost:3653/status' });
     assertCondition(response.status === 500, `invalid listener status should become a handler failure: ${JSON.stringify(response)}`);
     assertCondition(
-      String(response.body ?? '').includes('invalid TraceKernel HTTP response status'),
+      String(response.body ?? '').includes('invalid HTTP response status'),
       `invalid listener status should explain the rejection: ${JSON.stringify(response)}`
     );
   } finally {
@@ -4197,13 +4211,13 @@ async function testBrowserJavaScriptWorkerAmbientAuthorityIsDenied(): Promise<vo
       assertCondition(result.exitCode === 0, `ambient authority probe should finish: ${JSON.stringify(result)}`);
       assertCondition(
         result.stdout === [
-          'indexedDB:EACCES',
-          'caches:EACCES',
-          'cookieStore:EACCES',
-          'Worker:EACCES',
-          'SharedWorker:EACCES',
-          'BroadcastChannel:EACCES',
-          'importScripts:EACCES',
+          'indexedDB:ReferenceError',
+          'caches:ReferenceError',
+          'cookieStore:ReferenceError',
+          'Worker:ReferenceError',
+          'SharedWorker:ReferenceError',
+          'BroadcastChannel:ReferenceError',
+          'importScripts:ReferenceError',
           '',
         ].join('\n'),
         `worker ambient capabilities should fail closed: ${result.stdout}`

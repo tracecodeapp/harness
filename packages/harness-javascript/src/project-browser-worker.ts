@@ -173,7 +173,7 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
         type: 'kernel-http-error',
         requestId,
         listenerId,
-        error: `TraceKernel HTTP listener not found: ${listenerId}`,
+        error: `Network listener not found: ${listenerId}`,
       });
       return;
     }

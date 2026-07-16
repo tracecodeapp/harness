@@ -31,7 +31,7 @@ export interface BrowserCSharpProjectRunnerOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
-const NO_BUILD_UNSUPPORTED_STDERR = 'dotnet: --no-build is not supported in the browser project environment\n';
+const NO_BUILD_UNSUPPORTED_STDERR = 'dotnet: --no-build is not supported by this runtime\n';
 
 function unsupportedBrowserCSharpRunResult(request: CSharpProjectCommandRequest): CSharpProjectCommandResult {
   const result: CSharpProjectCommandResult = {

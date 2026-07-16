@@ -318,12 +318,27 @@ function allProjectSourceFiles(project: RuntimeProjectSnapshot): string[] {
 
 function sourceRootsFromProject(
   project: RuntimeProjectSnapshot,
-  parsedConfig: TypeScript.ParsedCommandLine | null
+  parsedConfig: TypeScript.ParsedCommandLine | null,
+  explicitSourceFiles: readonly string[]
 ): string[] {
+  if (explicitSourceFiles.length > 0) return [...explicitSourceFiles];
   if (parsedConfig) {
     return parsedConfig.fileNames.map((file) => file.replace(/\\/g, '/'));
   }
   return allProjectSourceFiles(project);
+}
+
+function explicitSourceFilesFromArgs(
+  compiler: TypeScriptProjectCompiler,
+  args: readonly string[],
+  project: RuntimeProjectSnapshot,
+  cwd: string
+): { fileNames: string[]; errors: readonly TypeScript.Diagnostic[] } {
+  const commandLine = compiler.parseCommandLine([...args]);
+  return {
+    fileNames: commandLine.fileNames.map((fileName) => absoluteProjectPath(fileName, project, cwd)),
+    errors: commandLine.errors,
+  };
 }
 
 function isUnderDirectory(path: string, directory: string): boolean {
@@ -503,8 +518,9 @@ export function createTypeScriptProjectRunner(
       files.set(absoluteProjectPath(file.path, request.project), decodeBytes(fileBytes(file)));
     }
 
+    const commandLine = explicitSourceFilesFromArgs(compiler, request.args, request.project, request.cwd);
     const configPath = configPathFromArgs(request.args, request.project, request.cwd);
-    const config = files.has(configPath)
+    const config = commandLine.fileNames.length === 0 && files.has(configPath)
       ? parseJsonObject(files.get(configPath)!)
       : null;
     const parsedConfig = parseConfig(
@@ -519,13 +535,13 @@ export function createTypeScriptProjectRunner(
     const rootNames = [
       ...parsedConfig.traceKernelLibPaths,
       TRACEKERNEL_OVERLAY_PATH,
-      ...sourceRootsFromProject(request.project, parsedConfig),
+      ...sourceRootsFromProject(request.project, parsedConfig, commandLine.fileNames),
     ];
     const outputs = new Map<string, string>();
     const host = createCompilerHost(compiler, request.project, files, outputs, compilerOptions);
     const program = compiler.createProgram(rootNames, compilerOptions, host);
     const emit = program.emit();
-    const diagnostics = [...parsedConfig.errors, ...compiler.getPreEmitDiagnostics(program), ...emit.diagnostics]
+    const diagnostics = [...commandLine.errors, ...parsedConfig.errors, ...compiler.getPreEmitDiagnostics(program), ...emit.diagnostics]
       .filter((diagnostic) => !isTraceKernelTypeScriptLibPath(diagnostic.file?.fileName));
     const stderr = diagnostics.map((diagnostic) => formatDiagnostic(compiler, diagnostic, request.project)).join('\n');
     const resultFiles: RuntimeFileChange[] = compilerOptions.noEmit

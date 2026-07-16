@@ -317,7 +317,7 @@ function createProjectEventBudget() {
         }
 
         truncatedOutputStreams.add(event.stream);
-        const marker = `\n[tracekernel: ${event.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+        const marker = `\n[${event.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
         const data = `${projectTruncateUtf8(event.data, Math.max(0, remaining))}${marker}`;
         outputBytes[event.stream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + projectUtf8Bytes(marker);
         return data ? { ...event, data } : null;
@@ -2019,7 +2019,7 @@ class TraceKernelHttpBridge {
     this.listeners.delete(listenerId);
     this.listenerInfo.delete(listenerId);
     this.listenerReady.delete(listenerId);
-    this.listenerFailures.set(listenerId, error || 'TraceKernel HTTP listener registration failed');
+    this.listenerFailures.set(listenerId, error || 'Network listener registration failed');
   }
 
   abortRequest(_requestId) {
@@ -2038,7 +2038,7 @@ class TraceKernelHttpBridge {
           type: 'kernel-http-error',
           requestId,
           listenerId,
-          error: `TraceKernel HTTP listener not found: ${listenerId}`,
+          error: `Network listener not found: ${listenerId}`,
         },
       });
       return;
@@ -2329,7 +2329,7 @@ class _TraceKernelHttpHandle:
             await asyncio.sleep(0.001)
         self.raise_if_failed()
         if not self.ready:
-            raise OSError("TraceKernel HTTP listener registration did not complete")
+            raise OSError("Network listener registration did not complete")
         return None
 
     def close(self):
@@ -2663,14 +2663,14 @@ def _install_tracekernel_asgi_modules():
                 or any(_char in _header_name for _char in "\\r\\n\\x00")
                 or any(_char in _header_value for _char in "\\r\\n\\x00")
             ):
-                raise ValueError("Invalid TraceKernel HTTP header")
+                raise ValueError("Invalid HTTP header")
             _headers.append((_header_name, _header_value))
         return _headers
 
     def _tracekernel_http_validate_component(_value, _label):
         _text = str(_value)
         if any(_char in _text for _char in "\\r\\n\\x00"):
-            raise ValueError("Invalid TraceKernel HTTP " + str(_label))
+            raise ValueError("Invalid HTTP " + str(_label))
         return _text
 
     def _tracekernel_http_server_request_bytes(_request):
@@ -3000,7 +3000,7 @@ def _install_tracekernel_asgi_modules():
             or any(_char in _query for _char in "\\r\\n\\x00")
             or any(_char in str(_request.get("method") or "GET") for _char in "\\r\\n\\x00")
         ):
-            raise ValueError("Invalid TraceKernel ASGI request")
+            raise ValueError("Invalid ASGI request")
         _headers = [
             (_name.encode("latin1"), _value.encode("latin1"))
             for _name, _value in _tracekernel_http_header_pairs(_request)
@@ -3246,7 +3246,7 @@ class _TraceProjectStream(io.StringIO):
             self._bytes_written += _bytes
             return _text
         self._truncated = True
-        _marker = f"\\n[tracekernel: {self._stream} output truncated after {_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\\n"
+        _marker = f"\\n[{self._stream} output truncated after {_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\\n"
         _out = _project_truncate_utf8(_text, max(0, _remaining)) + _marker
         self._bytes_written = _PROJECT_MAX_OUTPUT_STREAM_BYTES + _project_utf8_len(_marker)
         return _out

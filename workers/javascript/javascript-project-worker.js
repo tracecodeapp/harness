@@ -319,6 +319,7 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
 );
 
 // packages/harness-core/src/runtime-language-info.ts
+var BROWSER_PROJECT_NODE_COMPAT_VERSION = "22.0.0";
 var SUPPORTED_LANGUAGE_RUNTIME_INFOS = Object.freeze(
   Object.values(LANGUAGE_RUNTIME_INFOS)
 );
@@ -415,6 +416,23 @@ function readRuntimeCommandStdinPipeBytes(pipe, maxLength = RUNTIME_STDIN_PIPE_D
   }
   Atomics.store(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
   return out;
+}
+var RUNTIME_SIGNAL_EXIT_CODES = /* @__PURE__ */ new Map([
+  ["SIGHUP", 1],
+  ["SIGINT", 2],
+  ["SIGQUIT", 3],
+  ["SIGKILL", 9],
+  ["SIGTERM", 15]
+]);
+function runtimeAbortSignalName(signal, fallback = "SIGTERM") {
+  const reason = signal?.reason;
+  const raw = typeof reason?.signal === "string" && reason.signal.trim() ? reason.signal.trim() : fallback;
+  const normalized = raw.toUpperCase().startsWith("SIG") ? raw.toUpperCase() : `SIG${raw.toUpperCase()}`;
+  return RUNTIME_SIGNAL_EXIT_CODES.has(normalized) ? normalized : fallback;
+}
+function runtimeSignalExitCode(signalName) {
+  const normalized = signalName.toUpperCase().startsWith("SIG") ? signalName.toUpperCase() : `SIG${signalName.toUpperCase()}`;
+  return 128 + (RUNTIME_SIGNAL_EXIT_CODES.get(normalized) ?? RUNTIME_SIGNAL_EXIT_CODES.get("SIGTERM"));
 }
 function createRuntimeProjectIoBridge(onEvent) {
   return {
@@ -546,6 +564,68 @@ function runtimeFileChangeByteSize(change) {
   }
   return size;
 }
+function runtimeErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function isRuntimeAbortError(error) {
+  return error instanceof Error && error.name === "AbortError";
+}
+function isRuntimeTimeoutError(error) {
+  const message = runtimeErrorMessage(error).toLowerCase();
+  return message.includes("timed out") || message.includes("timeout");
+}
+function runtimeProjectInfrastructureFailure(error, signal) {
+  const diagnostic = runtimeErrorMessage(error);
+  const aborted = isRuntimeAbortError(error) || signal?.aborted;
+  if (aborted) {
+    const signalName = runtimeAbortSignalName(signal);
+    const signalCode = RUNTIME_SIGNAL_EXIT_CODES.get(signalName) ?? RUNTIME_SIGNAL_EXIT_CODES.get("SIGTERM");
+    return {
+      stdout: "",
+      stderr: "",
+      exitCode: 128 + signalCode,
+      error: {
+        code: "EINTR",
+        errno: 4,
+        syscall: "wait4",
+        message: "Process interrupted by signal",
+        detail: {
+          signal: signalName,
+          signalCode,
+          diagnostic
+        }
+      }
+    };
+  }
+  if (isRuntimeTimeoutError(error)) {
+    return {
+      stdout: "",
+      stderr: "",
+      exitCode: 124,
+      error: {
+        code: "ETIMEDOUT",
+        errno: 110,
+        message: "Process timed out",
+        detail: { diagnostic }
+      }
+    };
+  }
+  return {
+    stdout: "",
+    stderr: "",
+    exitCode: runtimeSignalExitCode("SIGKILL"),
+    error: {
+      code: "EIO",
+      errno: 5,
+      message: "Runtime process terminated unexpectedly",
+      detail: {
+        signal: "SIGKILL",
+        signalCode: RUNTIME_SIGNAL_EXIT_CODES.get("SIGKILL"),
+        diagnostic
+      }
+    }
+  };
+}
 var RuntimeProjectOutputTracker = class {
   stdoutStreamed = "";
   stderrStreamed = "";
@@ -557,6 +637,32 @@ var RuntimeProjectOutputTracker = class {
   emitMissingFinalOutput(result, output) {
     this.emitMissingStreamOutput("stdout", result.stdout, this.stdoutStreamed, output);
     this.emitMissingStreamOutput("stderr", result.stderr, this.stderrStreamed, output);
+  }
+  /**
+   * Return a complete final transcript when a command also emitted live output events.
+   *
+   * Nested commands can be interrupted after streaming output but before their parent has copied
+   * that output into its returned result. In that case the returned value is a shorter prefix of
+   * the transcript already shown in the terminal. Treating it as new output replays that prefix.
+   */
+  completeFinalOutput(result) {
+    return {
+      stdout: this.completeStreamOutput(result.stdout, this.stdoutStreamed),
+      stderr: this.completeStreamOutput(result.stderr, this.stderrStreamed)
+    };
+  }
+  completeStreamOutput(finalOutput, streamedOutput) {
+    if (!streamedOutput) return finalOutput;
+    if (!finalOutput) return streamedOutput;
+    if (finalOutput.includes(streamedOutput)) return finalOutput;
+    if (streamedOutput.includes(finalOutput)) return streamedOutput;
+    const maximumOverlap = Math.min(streamedOutput.length, finalOutput.length);
+    for (let overlap = maximumOverlap; overlap > 0; overlap -= 1) {
+      if (streamedOutput.endsWith(finalOutput.slice(0, overlap))) {
+        return `${streamedOutput}${finalOutput.slice(overlap)}`;
+      }
+    }
+    return `${streamedOutput}${finalOutput}`;
   }
   emitMissingStreamOutput(stream, finalOutput, streamedOutput, output) {
     if (!finalOutput) return;
@@ -570,6 +676,24 @@ var RuntimeProjectOutputTracker = class {
     }
   }
 };
+async function awaitRuntimeAbortable(promise, signal) {
+  if (!signal) return { aborted: false, value: await promise };
+  if (signal.aborted) return { aborted: true };
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve({ aborted: true });
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve({ aborted: false, value });
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
 var RuntimeProjectEventQueue = class {
   queue = Promise.resolve();
   enqueue(event, options) {
@@ -582,7 +706,12 @@ var RuntimeProjectEventQueue = class {
       const change = normalizeRuntimeFileChange(event.change);
       const phase = event.phase ?? "live";
       if (options.signal?.aborted) return;
-      const shouldEmit = await options.applyFileChange(change, phase, { signal: options.signal });
+      const applied = await awaitRuntimeAbortable(
+        options.applyFileChange(change, phase, { signal: options.signal }),
+        options.signal
+      );
+      if (!("value" in applied)) return;
+      const shouldEmit = applied.value;
       if (options.signal?.aborted) return;
       if (shouldEmit === false) return;
       options.emit({
@@ -616,7 +745,7 @@ var RuntimeProjectLiveIoController = class {
   abortController = new AbortController();
   abortInputSignal;
   abortInputListener;
-  appliedFileChangePaths = /* @__PURE__ */ new Set();
+  appliedFileChanges = /* @__PURE__ */ new Map();
   outputBytes = { stdout: 0, stderr: 0 };
   truncatedOutputStreams = /* @__PURE__ */ new Set();
   liveFileChangeCount = 0;
@@ -654,7 +783,7 @@ var RuntimeProjectLiveIoController = class {
           if (this.abortController.signal.aborted) return false;
           const shouldEmit = await this.options.applyFileChange?.(change, phase, applyOptions);
           if (this.abortController.signal.aborted) return false;
-          this.appliedFileChangePaths.add(runtimeFileChangePath(change));
+          this.appliedFileChanges.set(runtimeFileChangePath(change), JSON.stringify(change));
           return shouldEmit;
         } finally {
           this.pendingFileChanges = Math.max(0, this.pendingFileChanges - 1);
@@ -681,7 +810,7 @@ var RuntimeProjectLiveIoController = class {
     }
     this.truncatedOutputStreams.add(event.stream);
     const marker = `
-[tracekernel: ${event.stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]
+[${event.stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]
 `;
     const truncated = `${runtimeProjectTruncateUtf8(event.data, Math.max(0, remaining))}${marker}`;
     this.outputBytes[event.stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
@@ -705,13 +834,13 @@ var RuntimeProjectLiveIoController = class {
     await this.eventQueue?.flush();
   }
   filterAppliedResultFiles(result) {
-    if (this.appliedFileChangePaths.size === 0) return result;
-    const appliedFileChangePaths = new Set(this.appliedFileChangePaths);
-    this.appliedFileChangePaths.clear();
-    return filterRuntimeCommandResultFiles(
-      result,
-      (change) => appliedFileChangePaths.has(runtimeFileChangePath(change))
-    );
+    if (this.appliedFileChanges.size === 0) return result;
+    const appliedFileChanges = new Map(this.appliedFileChanges);
+    this.appliedFileChanges.clear();
+    return filterRuntimeCommandResultFiles(result, (change) => {
+      const normalized = normalizeRuntimeFileChange(change);
+      return appliedFileChanges.get(runtimeFileChangePath(normalized)) === JSON.stringify(normalized);
+    });
   }
   emitMissingFinalOutput(result, output) {
     this.outputTracker.emitMissingFinalOutput(result, output);
@@ -1277,7 +1406,7 @@ function publicRuntimeKernelInfo(info) {
     },
     host: {
       hostname: "tracevm",
-      osName: "tracecode"
+      osName: "tracekernel"
     },
     workspace: {
       id: workspaceName,
@@ -4051,7 +4180,7 @@ function fallbackKernelInfo(project, workspace) {
     },
     host: {
       hostname: "tracevm",
-      osName: "tracecode"
+      osName: "tracekernel"
     },
     workspace: {
       id: `${workspaceName}-${startedAt.replace(/[:.]/g, "-")}`,
@@ -4075,7 +4204,7 @@ function browserReadonlyKernelNamespacePath(path) {
   const raw = workspacePathInputToString(path).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   return raw === "/skills" || raw.startsWith("/skills/") ? raw : null;
 }
-function createBrowserProcSnapshot(kernelFiles) {
+function createBrowserProcSnapshot(kernelFiles, request) {
   const files = /* @__PURE__ */ new Map();
   const directoryEntries = /* @__PURE__ */ new Map();
   const ensureDirectory = (path) => {
@@ -4099,6 +4228,28 @@ function createBrowserProcSnapshot(kernelFiles) {
   };
   ensureDirectory("/skills");
   for (const file of kernelFiles ?? []) addFile(file.path, file.contents);
+  if (request?.process) {
+    const argv = processArgvForRequest(request);
+    const command = argv.join(" ");
+    const status = [
+      `Name:	${(request.scriptPath || "node").split("/").at(-1) || "node"}`,
+      "State:	R (running)",
+      `Pid:	${request.process.pid}`,
+      `PPid:	${request.process.ppid}`,
+      `PGid:	${request.process.pgid}`,
+      `Sid:	${request.process.sid}`,
+      "FDSize:	3",
+      "Uid:	1000	1000	1000	1000",
+      "Gid:	1000	1000	1000	1000",
+      `Command:	${command}`,
+      ""
+    ].join("\n");
+    const cmdline = `${argv.join("\0")}\0`;
+    for (const root of ["/proc/self", `/proc/${request.process.pid}`]) {
+      addFile(`${root}/status`, status);
+      addFile(`${root}/cmdline`, cmdline);
+    }
+  }
   const directories = /* @__PURE__ */ new Map();
   for (const [path, entries] of directoryEntries) {
     if (path === "/" || !(path === "/proc" || path.startsWith("/proc/") || path === "/skills" || path.startsWith("/skills/"))) continue;
@@ -4553,24 +4704,39 @@ function workspaceUsername(workspaceHome) {
   const parts = workspaceHome.split("/").filter(Boolean);
   return parts[parts.length - 1] ?? "browser";
 }
-function createOsApi(workspaceRoot) {
+function createOsApi(workspaceRoot, kernelInfo) {
   const home = inferWorkspaceHome(workspaceRoot);
+  const cpuCount = Math.max(1, Math.min(8, Math.floor(globalThis.navigator?.hardwareConcurrency ?? 2)));
+  const cpu = () => ({
+    model: "Virtual CPU",
+    speed: 2400,
+    times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 }
+  });
   return {
     EOL: "\n",
-    arch: () => "wasm32",
-    cpus: () => [],
+    devNull: "/dev/null",
+    arch: () => "x64",
+    availableParallelism: () => cpuCount,
+    cpus: () => Array.from({ length: cpuCount }, cpu),
     endianness: () => "LE",
+    freemem: () => 6 * 1024 * 1024 * 1024,
     homedir: () => home,
-    hostname: () => "tracevm",
-    platform: () => "browser",
-    release: () => "",
+    hostname: () => kernelInfo.host.hostname,
+    loadavg: () => [0, 0, 0],
+    machine: () => "x86_64",
+    networkInterfaces: () => ({}),
+    platform: () => "tracekernel",
+    release: () => kernelInfo.version,
     tmpdir: () => "/tmp",
+    totalmem: () => 8 * 1024 * 1024 * 1024,
     type: () => "tracekernel",
+    uptime: () => 0,
+    version: () => kernelInfo.version,
     userInfo: () => ({
       username: workspaceUsername(home),
-      uid: -1,
-      gid: -1,
-      shell: null,
+      uid: 1e3,
+      gid: 1e3,
+      shell: "/bin/bash",
       homedir: home
     })
   };
@@ -5268,6 +5434,19 @@ function normalizeHttpClientRequest(args) {
     url
   };
 }
+function runtimeKernelNetworkCause(response, url) {
+  const code = response.error?.code || "ECONNREFUSED";
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  const message = code === "EPROTONOSUPPORT" ? response.error?.message.replace(/^EPROTONOSUPPORT:\s*/, "") || `Protocol "${url.protocol.replace(/:$/, "")}" not supported` : code === "EAGAIN" || code === "ERATELIMIT" ? "Resource temporarily unavailable" : `connect ${code} ${url.hostname}:${port}`;
+  return Object.assign(new Error(message), {
+    code,
+    ...code.startsWith("EHOST") || code === "ECONNREFUSED" ? { address: url.hostname, port: Number(port) } : {}
+  });
+}
+function runtimeKernelFetchError(response, url) {
+  const cause = runtimeKernelNetworkCause(response, url);
+  return Object.assign(new TypeError("fetch failed"), { cause });
+}
 function createHttpApi(kernelHttp, signal) {
   const activeHandles = /* @__PURE__ */ new Set();
   const activeClientAborters = /* @__PURE__ */ new Set();
@@ -5299,7 +5478,7 @@ function createHttpApi(kernelHttp, signal) {
     const server = {
       listening: false,
       listen: (...args) => {
-        if (!kernelHttp) throw Object.assign(new Error("ENOSYS: tracekernel HTTP is not available"), { code: "ENOSYS" });
+        if (!kernelHttp) throw Object.assign(new Error("ENOSYS: network subsystem is unavailable"), { code: "ENOSYS" });
         const port = typeof args[0] === "number" || typeof args[0] === "string" ? Number(args[0]) : 80;
         const host = typeof args[1] === "string" ? args[1] : void 0;
         const callback = args.find((arg) => typeof arg === "function");
@@ -5427,7 +5606,7 @@ function createHttpApi(kernelHttp, signal) {
         if (!kernelHttp) {
           activeClientRequests += 1;
           queueMicrotask(() => {
-            events.emit("error", Object.assign(new Error("ENOSYS: tracekernel HTTP is not available"), { code: "ENOSYS" }));
+            events.emit("error", Object.assign(new Error("ENOSYS: network subsystem is unavailable"), { code: "ENOSYS" }));
             activeClientRequests -= 1;
             notifyCloseWaiters();
           });
@@ -5488,7 +5667,7 @@ function createHttpApi(kernelHttp, signal) {
         }).then((response) => {
           if (destroyed) return;
           if (response.status === 0) {
-            events.emit("error", Object.assign(new Error(response.body ?? "connect ECONNREFUSED"), { code: "ECONNREFUSED" }));
+            events.emit("error", runtimeKernelNetworkCause(response, requestOptions.url));
             finishClientRequest();
             return;
           }
@@ -5529,6 +5708,17 @@ function createHttpApi(kernelHttp, signal) {
   };
   const get = (...args) => {
     const clientRequest = request(...args);
+    clientRequest.end();
+    return clientRequest;
+  };
+  const httpsRequest = (...args) => {
+    const first = args[0];
+    if (typeof first === "string" || first instanceof URL) return request(...args);
+    const options = first && typeof first === "object" ? { ...first, protocol: first.protocol ?? "https:" } : { protocol: "https:" };
+    return request(options, ...args.slice(1));
+  };
+  const httpsGet = (...args) => {
+    const clientRequest = httpsRequest(...args);
     clientRequest.end();
     return clientRequest;
   };
@@ -5651,7 +5841,7 @@ function createHttpApi(kernelHttp, signal) {
     }
   }
   const fetch = async (input, init) => {
-    if (!kernelHttp) throw Object.assign(new Error("ENOSYS: tracekernel HTTP is not available"), { code: "ENOSYS" });
+    if (!kernelHttp) throw Object.assign(new Error("ENOSYS: network subsystem is unavailable"), { code: "ENOSYS" });
     const request2 = new TraceKernelRequest(input, init);
     const url = new URL(request2.url);
     const body = request2.bodyForDispatch();
@@ -5701,7 +5891,7 @@ function createHttpApi(kernelHttp, signal) {
       }).then((response) => {
         if (!active) return;
         if (response.status === 0) {
-          reject(Object.assign(new TypeError(response.body ?? "fetch failed"), { code: "ECONNREFUSED" }));
+          reject(runtimeKernelFetchError(response, url));
           finishFetch();
           return;
         }
@@ -5722,6 +5912,11 @@ function createHttpApi(kernelHttp, signal) {
       Server: function Server(requestListener) {
         return createServer(requestListener);
       },
+      STATUS_CODES: HTTP_STATUS_CODES
+    },
+    httpsModule: {
+      request: httpsRequest,
+      get: httpsGet,
       STATUS_CODES: HTTP_STATUS_CODES
     },
     fetch,
@@ -5782,10 +5977,7 @@ var permanentBrowserDynamicConstructorPrototypes = Object.freeze([
   })
 ]);
 function permanentBrowserAuthorityError(name) {
-  return Object.assign(
-    new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`),
-    { code: "EACCES" }
-  );
+  return new ReferenceError(`${name} is not defined`);
 }
 function permanentBrowserDeniedAuthority(name) {
   const deny = function deniedBrowserWorkerAuthority() {
@@ -5794,7 +5986,7 @@ function permanentBrowserDeniedAuthority(name) {
   return typeof Proxy === "function" ? new Proxy(deny, {
     apply: () => deny(),
     construct: () => deny(),
-    get: (_target, property) => property === Symbol.toStringTag ? "TraceKernelDeniedCapability" : permanentBrowserDeniedAuthority(`${name}.${String(property)}`),
+    get: (_target, property) => property === Symbol.toStringTag ? "Function" : permanentBrowserDeniedAuthority(`${name}.${String(property)}`),
     set: () => {
       throw permanentBrowserAuthorityError(name);
     }
@@ -5881,15 +6073,15 @@ function installBrowserHttpGlobalLockdown(httpApi, authorityMode = "temporary") 
     return installPermanentBrowserWorkerAuthorityBoundary(httpApi);
   }
   const global = globalThis;
-  const blockedNetworkApi = (name) => function blockedTraceKernelNetworkApi() {
-    throw Object.assign(new Error(`EACCES: ${name} is not available inside TraceKernel browser execution`), { code: "EACCES" });
+  const blockedNetworkApi = (name) => function blockedBrowserNetworkApi() {
+    throw new ReferenceError(`${name} is not defined`);
   };
   const blockedAuthorityObject = (name) => {
     const deny = blockedNetworkApi(name);
     return typeof Proxy === "function" ? new Proxy(deny, {
       apply: () => deny(),
       construct: () => deny(),
-      get: (_target, property) => property === Symbol.toStringTag ? "TraceKernelDeniedCapability" : deny
+      get: (_target, property) => property === Symbol.toStringTag ? "Function" : deny
     }) : deny;
   };
   const replacements = {
@@ -6354,6 +6546,12 @@ function formatBrowserJavaScriptErrorForStderr(error) {
   return `${String(error)}
 `;
 }
+function isBrowserJavaScriptUserStackFrame(line, sourcePath) {
+  return line.includes(sourcePath) || line.includes("/workspace/") || line.includes("/home/");
+}
+function isBrowserJavaScriptInternalStackFrame(line) {
+  return line.includes("/@fs/") || line.includes("/packages/harness-") || line.includes("/dist/browser/project.js") || line.includes("/workers/javascript-project-worker.js") || line.includes("javascript-project-worker.js:") || line.includes("blob:") || line.includes("runBrowserJavaScriptProjectRequest") || line.includes("executeEntrypoint") || line.includes("executeModule") || line.includes("resolveModulePath") || line.includes("requireModule") || line.includes("createHttpApi") || line.includes("registerHttpListener") || line.includes("at new Function") || line.includes("at new AsyncFunction");
+}
 function sanitizeBrowserJavaScriptStack(error, sourcePath) {
   if (!(error instanceof Error) || typeof error.stack !== "string" || !error.stack.trim()) {
     return error;
@@ -6362,41 +6560,56 @@ function sanitizeBrowserJavaScriptStack(error, sourcePath) {
     /\(eval at [^,]+ \([^)]*\), <anonymous>:(\d+):(\d+)\)/g,
     (_match, line, column) => `(${sourcePath}:${Math.max(1, Number(line) - 2)}:${column})`
   );
-  const lines = [];
-  for (const line of mappedStack.split("\n")) {
-    if (line.includes("/@fs/") || line.includes("/dist/browser/project.js") || line.includes("runBrowserJavaScriptProjectRequest") || line.includes("executeEntrypoint") || line.includes("executeModule")) {
-      break;
+  const stackLines = mappedStack.split("\n");
+  const lines = [stackLines[0] ?? error.message];
+  for (const line of stackLines.slice(1)) {
+    if (isBrowserJavaScriptUserStackFrame(line, sourcePath)) {
+      lines.push(line);
+      continue;
     }
-    lines.push(line);
+    if (isBrowserJavaScriptInternalStackFrame(line)) continue;
   }
+  if (lines.length === 1) lines.push(`    at ${sourcePath}:1:1`);
   Object.defineProperty(error, "stack", {
     configurable: true,
-    value: (lines.length > 0 ? lines : [mappedStack.split("\n")[0] ?? error.message]).join("\n")
+    value: lines.join("\n")
   });
   return error;
 }
 function processArgvForRequest(request) {
+  const executable = "/usr/local/bin/node";
   if (request.source === "argument") {
-    return ["node", ...request.args];
+    return [executable, ...request.args];
   }
   if (request.source === "stdin") {
-    return ["node", "-", ...request.args];
+    return [executable, "-", ...request.args];
   }
-  return ["node", request.scriptPath, ...request.args];
+  const requestedScriptPath = request.scriptPath || "<anonymous>";
+  const scriptPath = requestedScriptPath.startsWith("/") ? requestedScriptPath : `${request.project.workspaceRoot ?? request.project.cwd ?? "/workspace"}/${normalizeProjectPath([
+    workspaceCwdPath(request),
+    requestedScriptPath
+  ].filter(Boolean).join("/"))}`;
+  return [executable, scriptPath, ...request.args];
 }
 function requireModulesForRequest(request) {
   return Array.isArray(request.options?.require) ? request.options.require.filter((item) => typeof item === "string") : [];
 }
 async function runBrowserJavaScriptProjectRequest(request, options, executionState) {
   if (options.allowDynamicEval === false) {
-    const stderr2 = "node: browser JavaScript project runner requires dynamic evaluation\n";
+    const stderr2 = "node: JavaScript runtime is unavailable\n";
     const io2 = createRuntimeProjectIoBridge(request.onEvent);
     io2.output("stderr", stderr2);
-    io2.status("process-exit", "Browser Node exited", { command: "node", exitCode: 1 });
+    io2.status("process-exit", "Browser Node exited", { command: "node", exitCode: 126 });
     return {
       stdout: "",
       stderr: stderr2,
-      exitCode: 1
+      exitCode: 126,
+      error: {
+        code: "ENOEXEC",
+        errno: 8,
+        message: "JavaScript runtime is unavailable",
+        detail: { diagnostic: "Dynamic evaluation is disabled" }
+      }
     };
   }
   const stdout = [];
@@ -6419,7 +6632,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const workspaceRoot = workspacePathContext.root;
   const kernelInfo = request.project.kernel ?? fallbackKernelInfo(request.project, workspacePathContext);
   const kernelDevices = request.project.kernelDevices;
-  const procSnapshot = createBrowserProcSnapshot(request.project.kernelFiles);
+  const procSnapshot = createBrowserProcSnapshot(request.project.kernelFiles, request);
   const cwdPath = workspaceCwdPath(request);
   const hiddenFiles = Array.from(new Set(
     (request.project.hiddenFiles ?? []).map((path) => normalizeWorkspaceEntryPath(path, "", false, workspacePathContext))
@@ -6729,11 +6942,25 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     () => deviceInputClosed("/dev/stdin"),
     eventLoopApi.setTimeout
   );
+  const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
   const processApi = {
     argv: processArgvForRequest(request),
+    execArgv: [],
+    execPath: "/usr/local/bin/node",
     env: request.env,
+    version: `v${nodeVersion}`,
+    versions: { node: nodeVersion },
+    release: { name: "node" },
+    platform: "tracekernel",
+    arch: "x64",
+    pid: request.process?.pid ?? 1,
+    ppid: request.process?.ppid ?? 0,
+    title: "node",
     exitCode: void 0,
     cwd: () => request.cwd,
+    nextTick: (callback, ...args) => {
+      globalThis.queueMicrotask(() => callback(...args));
+    },
     stdin: stdinDevice,
     stdout: createWritableDevice("/dev/stdout", 1),
     stderr: createWritableDevice("/dev/stderr", 2),
@@ -6746,7 +6973,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   };
   const nodePathSearchEntries = nodePathEntries(request, cwdPath, workspacePathContext);
   const pathApi = createPathApi(() => cwdPath, workspaceRoot);
-  const osApi = createOsApi(workspaceRoot);
+  const osApi = createOsApi(workspaceRoot, kernelInfo);
   const urlApi = createUrlApi();
   const assertApi = createAssertApi();
   const eventsApi = createEventsApi();
@@ -9360,6 +9587,19 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     options.projectUserAuthorityMode ?? "temporary"
   );
   const restoreTimerGlobals = installBrowserTimerGlobals(eventLoopApi);
+  let hostGlobalsRestored = false;
+  const restoreHostGlobals = () => {
+    if (hostGlobalsRestored) return;
+    hostGlobalsRestored = true;
+    eventLoopApi.clearAll();
+    restoreTimerGlobals();
+    restoreHttpGlobals();
+  };
+  executionState.cleanupHostGlobals = restoreHostGlobals;
+  if (executionState.cancelled) {
+    restoreHostGlobals();
+    return { stdout: "", stderr: "", exitCode: 1 };
+  }
   const builtins = /* @__PURE__ */ new Map([
     ["fs", fsApi],
     ["node:fs", fsApi],
@@ -9375,6 +9615,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ["node:buffer", { Buffer: BrowserBuffer }],
     ["http", httpApi.module],
     ["node:http", httpApi.module],
+    ["https", httpApi.httpsModule],
+    ["node:https", httpApi.httpsModule],
     ["zlib", zlibApi],
     ["node:zlib", zlibApi],
     ["assert", assertApi],
@@ -9607,7 +9849,23 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     await httpApi.waitForClose();
     await eventLoopApi.drain();
     liveIo.close();
-    await liveIo.flush();
+    try {
+      await liveIo.flush();
+    } catch (error) {
+      const failed = runtimeProjectInfrastructureFailure(error, executionState.abortController.signal);
+      const hostIo = createRuntimeProjectIoBridge(request.onEvent);
+      hostIo.status("process-exit", "Browser Node exited", {
+        command: "node",
+        exitCode: failed.exitCode,
+        error: failed.error?.message,
+        ...failed.error?.detail ?? {}
+      });
+      return {
+        ...failed,
+        stdout: stdout.join(""),
+        stderr: stderr.join("")
+      };
+    }
     const resultFiles = [
       ...Array.from(fileStore.entries()).filter(([path, contents]) => !byteEqual(originalFiles.get(path), contents)).sort(([left], [right]) => left.localeCompare(right)).map(([path, contents]) => bytesToRuntimeFile(path, contents)),
       ...Array.from(originalFiles.keys()).filter((path) => !fileStore.has(path)).sort((left, right) => left.localeCompare(right)).map((path) => ({ path, deleted: true }))
@@ -9631,8 +9889,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   } catch (error) {
     httpApi.closeAll();
     eventLoopApi.clearAll();
-    const exitCode = typeof error.exitCode === "number" ? error.exitCode : 1;
-    const stderrSuffix = error.suppressStderr ? "" : formatBrowserJavaScriptErrorForStderr(error);
+    const sourcePath = processArgvForRequest(request)[1] ?? `${request.project.workspaceRoot ?? request.project.cwd ?? "/workspace"}/[eval]`;
+    const displayError = sanitizeBrowserJavaScriptStack(error, sourcePath);
+    const exitCode = typeof displayError.exitCode === "number" ? displayError.exitCode : 1;
+    const stderrSuffix = displayError.suppressStderr ? "" : formatBrowserJavaScriptErrorForStderr(displayError);
     const hostIo = createRuntimeProjectIoBridge(request.onEvent);
     if (stderrSuffix) {
       stderr.push(stderrSuffix);
@@ -9642,15 +9902,17 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     try {
       await liveIo.flush();
     } catch (flushError) {
-      const flushStderr = flushError instanceof Error ? `${flushError.message}
-` : `${String(flushError)}
-`;
-      hostIo.output("stderr", flushStderr);
-      hostIo.status("process-exit", "Browser Node exited", { command: "node", exitCode: 1 });
+      const failed = runtimeProjectInfrastructureFailure(flushError, executionState.abortController.signal);
+      hostIo.status("process-exit", "Browser Node exited", {
+        command: "node",
+        exitCode: failed.exitCode,
+        error: failed.error?.message,
+        ...failed.error?.detail ?? {}
+      });
       return {
+        ...failed,
         stdout: stdout.join(""),
-        stderr: stderr.join("") + flushStderr,
-        exitCode: 1
+        stderr: stderr.join("")
       };
     }
     hostIo.status("process-exit", "Browser Node exited", { command: "node", exitCode });
@@ -9660,8 +9922,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       exitCode
     };
   } finally {
-    restoreTimerGlobals();
-    restoreHttpGlobals();
+    restoreHostGlobals();
+    if (executionState.cleanupHostGlobals === restoreHostGlobals) {
+      executionState.cleanupHostGlobals = void 0;
+    }
   }
 }
 
@@ -9789,7 +10053,7 @@ var WorkerKernelHttpBridge = class {
         type: "kernel-http-error",
         requestId,
         listenerId,
-        error: `TraceKernel HTTP listener not found: ${listenerId}`
+        error: `Network listener not found: ${listenerId}`
       });
       return;
     }

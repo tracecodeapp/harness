@@ -173,6 +173,9 @@ import type {
   RuntimeWorkspaceEvent,
   RuntimeWorkspaceEventHandler,
   RuntimeWorkspaceKernel,
+  RuntimeWorkspaceProcess,
+  RuntimeWorkspaceProcessOptions,
+  RuntimeWorkspaceProcessSignalPolicy,
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
   RuntimeWorkspaceUnsubscribe,
@@ -313,6 +316,7 @@ import {
   type RuntimeFinalDiffPreparedChange,
 } from './fs-observed';
 import {
+  decodeCommandStdin,
   leadingPersistentCdTarget,
   parseSimpleCommandWords,
   parseTerminalCommandList,
@@ -585,6 +589,7 @@ interface RuntimeKernelProcessRecord {
   readonly command: string;
   readonly cwd: string;
   readonly actor: RuntimeWorkspaceActor;
+  readonly signalPolicy: RuntimeWorkspaceProcessSignalPolicy;
   readonly startedAt: string;
   readonly abortController?: AbortController;
   state: RuntimeKernelProcessState;
@@ -834,7 +839,7 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
     },
     host: {
       hostname: normalizeKernelNamePart(config?.host?.hostname ?? 'tracevm', 'tracevm'),
-      osName: config?.host?.osName ?? 'tracecode',
+      osName: config?.host?.osName ?? 'tracekernel',
     },
     workspace: {
       id: config?.workspace?.id ?? createWorkspaceId(workspaceName, startedAt),
@@ -954,6 +959,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         try {
           result = await runner({
             ...request,
+            ...(commandContext?.process
+              ? {
+                  process: {
+                    pid: commandContext.process.pid,
+                    ppid: commandContext.process.ppid,
+                    pgid: commandContext.process.pgid,
+                    sid: commandContext.process.sid,
+                  },
+                }
+              : {}),
             ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
             ...(signal ? { signal } : {}),
             kernelHttp: this.createKernelHttpBridge(commandContext),
@@ -964,6 +979,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           } as Request);
         } finally {
           acceptingRunnerEvents = false;
+        }
+        // just-bash preserves the standard stdout/stderr/exitCode fields from a
+        // custom command but does not retain harness-specific result metadata.
+        // Carry structured runner failures on the command context so the outer
+        // workspace result can expose them to the host without printing them in
+        // the learner's terminal.
+        if (result.error && commandContext && !commandContext.kernelError) {
+          commandContext.kernelError = result.error;
         }
         if (runtimeIo) {
           await runtimeIo.flush();
@@ -982,13 +1005,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
     this.traceKernelCommandRegistry = createTraceKernelCommandRegistry(options, packageManagerConfig);
     this.traceKernelCommandNames = new Set(this.traceKernelCommandRegistry.map((command) => command.name));
-    const emitPackageManagerOutput: PackageManagerOutputEmitter = (stream, data) => {
+    const emitPackageManagerOutput: PackageManagerOutputEmitter = (stream, data, context) => {
       this.emitLocalRuntimeEvent({
         type: 'output',
         stream,
         device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr',
         data,
-      });
+      }, this.resolveCommandContext(context));
     };
     const includeHiddenFilesForCurrentCommand = (ctx?: CommandContext) => this.resolveCommandContext(ctx)?.includeHiddenFiles === true;
     const snapshotProjectForCurrentCommand = (_ctx: CommandContext, includeHiddenFiles: boolean) =>
@@ -1017,9 +1040,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       defineCommand('fg', async (args, ctx) => this.runKernelJobPlacement(args, 'fg', ctx)),
       defineCommand('kill', async (args, ctx) => this.runKernelKill(args, 'kill', ctx)),
       defineCommand('jobs', async (args, ctx) => this.runKernelJobs(args, ctx)),
+      defineCommand('lsof', async (args, ctx) => this.runKernelLsof(args, ctx)),
       defineCommand('ls', async (args, ctx) => this.runKernelAwareLs(args, ctx)),
+      defineCommand('pgrep', async (args, ctx) => this.runKernelProcessMatch(args, 'pgrep', ctx)),
       defineCommand('ping', async (args, ctx) => this.runKernelPing(args, ctx)),
+      defineCommand('pkill', async (args, ctx) => this.runKernelProcessMatch(args, 'pkill', ctx)),
       defineCommand('ps', async (args, ctx) => this.runKernelPs(args, ctx)),
+      defineCommand('ss', async (args, ctx) => this.runKernelSs(args, ctx)),
       defineCommand('tracekernelctl', (args, ctx) => this.runTraceKernelCtl(args, ctx)),
       defineCommand('wait', (args, ctx) => this.runKernelWait(args, 'wait', ctx)),
       defineCommand('which', async (args, ctx) => this.runTraceKernelWhich(args, 'which', ctx)),
@@ -1030,7 +1057,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}fg`, async (args, ctx) => this.runKernelJobPlacement(args, 'fg', ctx)),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}kill`, async (args, ctx) => this.runKernelKill(args, 'kill', ctx)),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}jobs`, async (args, ctx) => this.runKernelJobs(args, ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}lsof`, async (args, ctx) => this.runKernelLsof(args, ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}pgrep`, async (args, ctx) => this.runKernelProcessMatch(args, 'pgrep', ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}pkill`, async (args, ctx) => this.runKernelProcessMatch(args, 'pkill', ctx)),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}ps`, async (args, ctx) => this.runKernelPs(args, ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}ss`, async (args, ctx) => this.runKernelSs(args, ctx)),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`, (args, ctx) => this.runKernelWait(args, 'wait', ctx)),
     ].map((command) => this.withKernelCommandSignal(command as CustomCommand));
     this.bashOptions = {
@@ -1156,7 +1187,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): void {
     if (this.hasHttpCapability(actor, capability)) return;
     throw Object.assign(
-      new Error(`EACCES: TraceKernel HTTP ${capability} is not allowed for actor ${actor.kind}:${actor.id}`),
+      new Error(`EACCES: network ${capability} is not permitted`),
       { code: 'EACCES' }
     );
   }
@@ -1194,7 +1225,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     } catch {
       return this.httpErrorResponse(
         400,
-        this.createHttpError('EINVAL', `TraceKernel HTTP URL rejected: ${options.url}`)
+        this.createHttpError('EINVAL', `EINVAL: invalid URL: ${options.url}`)
       );
     }
     return this.dispatchHttpRequest({
@@ -1268,6 +1299,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     url: URL,
     reason: string
   ): RuntimeKernelHttpResponse {
+    if (reason === 'unknown-host') {
+      const message = `getaddrinfo ENOTFOUND ${url.hostname}`;
+      this.recordHttpRequest({
+        method: normalizedRequest.method,
+        url: normalizedRequest.url,
+        error: 'ENOTFOUND',
+      });
+      return {
+        status: 0,
+        body: `${message}\n`,
+        error: this.createHttpError('ENOTFOUND', message),
+      };
+    }
     const port = url.port || (url.protocol === 'https:' ? '443' : '80');
     const message = `EHOSTUNREACH: host ${url.hostname} is unreachable (${reason})`;
     this.recordHttpRequest({
@@ -1322,7 +1366,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const entries = Object.entries(headers);
     if (entries.length === 0) return undefined;
     if (entries.length > TRACEKERNEL_HTTP_MAX_HEADER_COUNT) {
-      throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP header count limit exceeded'), { code: 'EMSGSIZE' });
+      throw Object.assign(new Error('EMSGSIZE: HTTP header count limit exceeded'), { code: 'EMSGSIZE' });
     }
     let headerBytes = 0;
     const normalized: Record<string, string> = {};
@@ -1336,7 +1380,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       headerBytes += key.length + text.length;
       if (headerBytes > TRACEKERNEL_HTTP_MAX_HEADER_BYTES) {
-        throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP header byte limit exceeded'), { code: 'EMSGSIZE' });
+        throw Object.assign(new Error('EMSGSIZE: HTTP header byte limit exceeded'), { code: 'EMSGSIZE' });
       }
       normalized[key] = text;
     }
@@ -1356,7 +1400,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): readonly [string, string][] | undefined {
     if (!rawHeaders) return undefined;
     if (rawHeaders.length > TRACEKERNEL_HTTP_MAX_HEADER_COUNT) {
-      throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP raw header count limit exceeded'), { code: 'EMSGSIZE' });
+      throw Object.assign(new Error('EMSGSIZE: HTTP raw header count limit exceeded'), { code: 'EMSGSIZE' });
     }
     let headerBytes = 0;
     const normalized: [string, string][] = [];
@@ -1374,7 +1418,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       headerBytes += key.length + text.length;
       if (headerBytes > TRACEKERNEL_HTTP_MAX_HEADER_BYTES) {
-        throw Object.assign(new Error('EMSGSIZE: TraceKernel HTTP raw header byte limit exceeded'), { code: 'EMSGSIZE' });
+        throw Object.assign(new Error('EMSGSIZE: HTTP raw header byte limit exceeded'), { code: 'EMSGSIZE' });
       }
       normalized.push([key, text]);
     }
@@ -1398,10 +1442,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     try {
       bytes = runtimeHttpBodyBytes(message);
     } catch {
-      throw Object.assign(new Error(`EINVAL: invalid TraceKernel HTTP ${direction} body encoding`), { code: 'EINVAL' });
+      throw Object.assign(new Error(`EINVAL: invalid HTTP ${direction} body encoding`), { code: 'EINVAL' });
     }
     if (bytes.byteLength > TRACEKERNEL_HTTP_MAX_BODY_BYTES) {
-      throw Object.assign(new Error(`EMSGSIZE: TraceKernel HTTP ${direction} body limit exceeded`), { code: 'EMSGSIZE' });
+      throw Object.assign(new Error(`EMSGSIZE: HTTP ${direction} body limit exceeded`), { code: 'EMSGSIZE' });
     }
   }
 
@@ -1410,7 +1454,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     try {
       url = new URL(String(request.url));
     } catch {
-      return { ok: false, error: this.createHttpError('EINVAL', 'EINVAL: invalid TraceKernel HTTP request URL') };
+      return { ok: false, error: this.createHttpError('EINVAL', 'EINVAL: invalid HTTP request URL') };
     }
     let rawHeaders: readonly [string, string][] | undefined;
     let explicitHeaders: Record<string, string> | undefined;
@@ -1456,7 +1500,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private normalizeHttpResponse(response: RuntimeKernelHttpResponse): RuntimeKernelHttpResponse {
     const status = Math.trunc(Number(response.status));
     if (!Number.isFinite(status) || status < 100 || status > 599) {
-      throw Object.assign(new Error(`EINVAL: invalid TraceKernel HTTP response status '${response.status}'`), {
+      throw Object.assign(new Error(`EINVAL: invalid HTTP response status '${response.status}'`), {
         code: 'EINVAL',
       });
     }
@@ -1491,7 +1535,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!normalized) return defaultHost;
     if (normalized === '::' || normalized === '*') {
       if (actor.kind === 'runtime') {
-        throw Object.assign(new Error('EACCES: TraceKernel HTTP wildcard listen is not allowed for runtime actors'), {
+        throw Object.assign(new Error('EACCES: wildcard listen is not permitted'), {
           code: 'EACCES',
         });
       }
@@ -1499,7 +1543,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     if (normalized === 'localhost') return '127.0.0.1';
     if (this.isHttpWildcardHost(normalized) && actor.kind === 'runtime') {
-      throw Object.assign(new Error('EACCES: TraceKernel HTTP wildcard listen is not allowed for runtime actors'), {
+      throw Object.assign(new Error('EACCES: wildcard listen is not permitted'), {
         code: 'EACCES',
       });
     }
@@ -1534,7 +1578,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       if (this.nextEphemeralHttpPort > 65535) this.nextEphemeralHttpPort = 49152;
       if (!this.hasHttpListenerOnPort(candidate, 'http')) return candidate;
     }
-    throw Object.assign(new Error('EADDRNOTAVAIL: no ephemeral TraceKernel HTTP ports available'), { code: 'EADDRNOTAVAIL' });
+    throw Object.assign(new Error('EADDRNOTAVAIL: no ephemeral ports available'), { code: 'EADDRNOTAVAIL' });
   }
 
   private httpListenerKey(host: string, port: number, protocol: 'http'): string {
@@ -1571,11 +1615,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.assertHttpCapability(actor, 'listen');
     const listenerOwner = owner;
     if (!listenerOwner) {
-      throw Object.assign(new Error('EINVAL: listen requires an active tracekernel process'), { code: 'EINVAL' });
+      throw Object.assign(new Error('EINVAL: listen requires an active process context'), { code: 'EINVAL' });
     }
     const protocol = options.protocol ?? 'http';
     if (protocol !== 'http') {
-      throw Object.assign(new Error(`EPROTONOSUPPORT: unsupported TraceKernel HTTP protocol '${protocol}'`), {
+      throw Object.assign(new Error(`EPROTONOSUPPORT: unsupported protocol '${protocol}'`), {
         code: 'EPROTONOSUPPORT',
       });
     }
@@ -1583,7 +1627,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const port = this.normalizeHttpListenPort(options.port);
     const key = this.httpListenerKey(host, port, protocol);
     if (!this.httpListeners.has(key) && this.httpListeners.size >= TRACEKERNEL_HTTP_LISTENER_LIMIT) {
-      throw Object.assign(new Error('EAGAIN: TraceKernel HTTP listener limit reached'), { code: 'EAGAIN' });
+      throw Object.assign(new Error('EAGAIN: resource temporarily unavailable'), { code: 'EAGAIN' });
     }
     if (this.findHttpBindConflict(host, port, protocol)) {
       throw Object.assign(new Error(`EADDRINUSE: address already in use ${host}:${port}`), { code: 'EADDRINUSE' });
@@ -1656,7 +1700,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     message: string
   ): string {
     if (requester.kind === 'runtime' && listener.actor.kind !== 'runtime') {
-      return 'TraceKernel HTTP listener failed\n';
+      return 'Internal Server Error\n';
     }
     return `${message}\n`;
   }
@@ -1756,7 +1800,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (this.httpLifecycleAbortController.signal.aborted) {
       abortHandlerRequest();
       onInvocationSkipped?.();
-      return settleFailure('EINTR', 'TraceKernel HTTP workspace has been disposed\n');
+      return settleFailure('EINTR', 'Network request interrupted\n');
     }
     const handlerResponse = invoke(requestAbortController.signal);
     const races: Array<Promise<RuntimeKernelHttpResponse>> = [handlerResponse];
@@ -1766,7 +1810,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           abortHandlerRequest();
           resolve(settleFailure(
             'ETIMEDOUT',
-            options.timeoutBody ?? `TraceKernel HTTP request timed out after ${timeoutMs} milliseconds\n`
+            options.timeoutBody ?? `Network request timed out after ${timeoutMs} milliseconds\n`
           ));
         }, timeoutMs);
       }));
@@ -1775,7 +1819,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
         abortListener = () => {
           abortHandlerRequest();
-          resolve(settleFailure('EINTR', 'TraceKernel HTTP request aborted\n'));
+          resolve(settleFailure('EINTR', 'Network request aborted\n'));
         };
         signal.addEventListener('abort', abortListener, { once: true });
       }));
@@ -1783,7 +1827,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     races.push(new Promise<RuntimeKernelHttpResponse>((resolve) => {
       lifecycleAbortListener = () => {
         abortHandlerRequest();
-        resolve(settleFailure('EINTR', 'TraceKernel HTTP workspace has been disposed\n'));
+        resolve(settleFailure('EINTR', 'Network request interrupted\n'));
       };
       this.httpLifecycleAbortController.signal.addEventListener('abort', lifecycleAbortListener, { once: true });
     }));
@@ -1800,20 +1844,34 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private externalHttpBlockedResponse(
     normalizedRequest: RuntimeKernelHttpRequest,
-    status: 403 | 429,
+    _status: 403 | 429,
     error: string,
     reason: string
   ): RuntimeKernelHttpResponse {
     this.recordHttpRequest({
       method: normalizedRequest.method,
       url: normalizedRequest.url,
-      error,
+      error: this.sanitizeHttpDiagnosticField(`${error}:${reason}`),
       external: true,
     });
+    const url = new URL(normalizedRequest.url);
+    const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+    const publicCode = error === 'EPROTONOSUPPORT'
+      ? error
+      : error === 'EAGAIN' || error === 'ERATELIMIT'
+        ? 'EAGAIN'
+        : 'EHOSTUNREACH';
+    const publicMessage = publicCode === 'EPROTONOSUPPORT'
+      ? `Protocol "${url.protocol.replace(/:$/, '')}" not supported`
+      : publicCode === 'EAGAIN'
+        ? 'Resource temporarily unavailable'
+        : `Failed to connect to ${url.hostname} port ${port}: Host unreachable`;
     return {
-      status,
-      body: `tracekernel: external fetch blocked: ${reason}\n`,
-      error: this.createHttpError(error, `tracekernel: external fetch blocked: ${reason}`),
+      // Policy denial is a transport failure, not a response produced by the
+      // requested host. Browser fetch/http and curl translate this separately.
+      status: 0,
+      body: `${publicMessage}\n`,
+      error: this.createHttpError(publicCode, `${publicCode}: ${publicMessage}`),
     };
   }
 
@@ -1845,11 +1903,42 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     const blocklistReason = isBlockedExternalHttpHost(url);
     if (blocklistReason) {
+      const hostname = url.hostname.replace(/^\[|\]$/g, '');
+      if (!hostname.includes('.') && !hostname.includes(':') && hostname !== 'localhost' && !/^\d+(?:\.\d+){3}$/.test(hostname)) {
+        const message = `getaddrinfo ENOTFOUND ${hostname}`;
+        this.recordHttpRequest({
+          method: normalizedRequest.method,
+          url: normalizedRequest.url,
+          error: this.sanitizeHttpDiagnosticField(`ENOTFOUND:${blocklistReason}`),
+          external: true,
+        });
+        this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: 'ENOTFOUND' });
+        return {
+          status: 0,
+          body: `${message}\n`,
+          error: this.createHttpError('ENOTFOUND', message),
+        };
+      }
       return this.externalHttpBlockedResponse(normalizedRequest, 403, 'EHOSTBLOCKED', blocklistReason);
     }
     const hostResolution = this.resolveHost(url.hostname.replace(/^\[|\]$/g, ''));
     if (!hostResolution.reachable) {
       const allowlistReason = this.runtimeExternalHttpAllowlistReason(config, url);
+      if (!allowlistReason && hostResolution.reason === 'unknown-host') {
+        const message = `getaddrinfo ENOTFOUND ${url.hostname}`;
+        this.recordHttpRequest({
+          method: normalizedRequest.method,
+          url: normalizedRequest.url,
+          error: 'ENOTFOUND',
+          external: true,
+        });
+        this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: 'ENOTFOUND' });
+        return {
+          status: 0,
+          body: `${message}\n`,
+          error: this.createHttpError('ENOTFOUND', message),
+        };
+      }
       return this.externalHttpBlockedResponse(
         normalizedRequest,
         403,
@@ -1863,8 +1952,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     if (options.signal?.aborted || this.httpLifecycleAbortController.signal.aborted) {
       const body = this.httpLifecycleAbortController.signal.aborted
-        ? 'TraceKernel HTTP workspace has been disposed\n'
-        : 'TraceKernel HTTP request aborted\n';
+        ? 'Network request interrupted\n'
+        : 'Network request aborted\n';
       this.recordHttpRequest({
         method: normalizedRequest.method,
         url: normalizedRequest.url,
@@ -1900,7 +1989,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!Number.isFinite(requestedTimeoutMs)) {
       return this.httpErrorResponse(
         400,
-        this.createHttpError('EINVAL', `TraceKernel HTTP timeout rejected: ${options.timeoutMs}`)
+        this.createHttpError('EINVAL', `EINVAL: invalid network timeout: ${options.timeoutMs}`)
       );
     }
     const timeoutMs = Math.min(config.timeoutMs, requestedTimeoutMs);
@@ -1946,6 +2035,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         return normalizedResponse;
       } catch (error) {
         const message = this.sanitizeHttpDiagnosticField(error instanceof Error ? error.message : String(error));
+        const rawCode = typeof (error as { code?: unknown } | null)?.code === 'string'
+          ? String((error as { code: string }).code).toUpperCase()
+          : '';
+        const publicCode = ['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'ETIMEDOUT']
+          .includes(rawCode)
+          ? rawCode
+          : 'ECONNRESET';
+        const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+        const publicMessage = `connect ${publicCode} ${url.hostname}:${port}`;
         if (!settled) {
           this.recordHttpRequest({
             method: normalizedRequest.method,
@@ -1955,7 +2053,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           });
           this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: message });
         }
-        return { status: 502, body: `tracekernel: external fetch failed: ${message}\n` };
+        return {
+          status: 0,
+          body: `${publicMessage}\n`,
+          error: this.createHttpError(publicCode, publicMessage),
+        };
       } finally {
         this.activeExternalHttpRequests = Math.max(0, this.activeExternalHttpRequests - 1);
       }
@@ -2022,8 +2124,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       return {
         status: 0,
-        body: 'TraceKernel HTTP workspace has been disposed\n',
-        error: this.createHttpError('EINTR', 'TraceKernel HTTP workspace has been disposed'),
+        body: 'Network request interrupted\n',
+        error: this.createHttpError('EINTR', 'Network request interrupted'),
       };
     }
     if (!listener) {
@@ -2055,15 +2157,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       });
       return {
         status: 503,
-        body: 'TraceKernel HTTP request limit reached\n',
-        error: this.createHttpError('EAGAIN', 'TraceKernel HTTP request limit reached'),
+        body: 'Resource temporarily unavailable\n',
+        error: this.createHttpError('EAGAIN', 'Resource temporarily unavailable'),
       };
     }
     const timeoutMs = options.timeoutMs === undefined ? undefined : Math.max(1, Math.ceil(Number(options.timeoutMs)));
     if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) {
       return this.httpErrorResponse(
         400,
-        this.createHttpError('EINVAL', `TraceKernel HTTP timeout rejected: ${options.timeoutMs}`)
+        this.createHttpError('EINVAL', `EINVAL: invalid network timeout: ${options.timeoutMs}`)
       );
     }
     const signal = options.signal;
@@ -2078,8 +2180,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.recordHttpJournal(normalizedRequest, url, 'listener', actor, options.commandContext, { error: 'EINTR' });
       return {
         status: 0,
-        body: 'TraceKernel HTTP request aborted\n',
-        error: this.createHttpError('EINTR', 'TraceKernel HTTP request aborted'),
+        body: 'Network request aborted\n',
+        error: this.createHttpError('EINTR', 'Network request aborted'),
       };
     }
 
@@ -2184,6 +2286,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       command: 'tracekernel',
       cwd: this.cwd,
       actor: SYSTEM_ACTOR,
+      signalPolicy: 'system-only',
       startedAt: this.projectSession?.lifecycle.createdAt ?? new Date(0).toISOString(),
       state: 'running',
       foreground: true,
@@ -2270,7 +2373,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private recordFileChangeJournal(
     event: RuntimeCommandFileChangeEvent,
-    commandContext?: RuntimeCommandExecutionContext
+    commandContext?: RuntimeCommandExecutionContext,
+    process: RuntimeKernelProcessRecord | undefined = commandContext?.process as RuntimeKernelProcessRecord | undefined
   ): void {
     const actor = event.actor ?? commandContext?.actor ?? SYSTEM_ACTOR;
     const change = event.change;
@@ -2282,7 +2386,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       op,
       path: change.path,
       actor: this.journalActorId(actor) ?? 'system:system',
-      ...(commandContext?.process.pid !== undefined ? { pid: commandContext.process.pid } : {}),
+      ...(process?.pid !== undefined ? { pid: process.pid } : {}),
       ...(event.phase ? { phase: event.phase } : {}),
     }, commandContext, actor);
   }
@@ -2401,15 +2505,22 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const error = this.signalCommandError(process);
     return {
       stdout: '',
-      stderr: error ? `${error.message}\n` : '',
+      // wait4/EINTR describes TraceKernel's parent-side bookkeeping. A real
+      // foreground shell does not print that syscall detail as child stderr.
+      stderr: '',
       exitCode: 128 + (process.signalCode ?? 15),
       ...(error ? { error } : {}),
     };
   }
 
-  private signalProcess(process: RuntimeKernelProcessRecord, signalName = 'SIGTERM'): boolean {
+  private signalProcess(
+    process: RuntimeKernelProcessRecord,
+    signalName = 'SIGTERM',
+    authority: 'workspace' | 'system' = 'workspace'
+  ): boolean {
     const signal = normalizeTraceKernelSignal(signalName);
     if (!signal || process.state === 'exited') return false;
+    if (process.signalPolicy === 'system-only' && authority !== 'system') return false;
     process.signal = signal.name;
     process.signalCode = signal.code;
     process.state = 'signaled';
@@ -2420,14 +2531,23 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return true;
   }
 
-  private signalProcessGroup(pgid: number, signalName = 'SIGTERM', currentPid?: number): number {
+  private signalProcessGroup(
+    pgid: number,
+    signalName = 'SIGTERM',
+    currentPid?: number
+  ): { signaled: number; denied: number } {
     let signaled = 0;
+    let denied = 0;
     for (const process of this.activeProcessRecords()) {
       if (process.pgid !== pgid || process.pid === currentPid || process.pid === 1 || process.state === 'exited') continue;
+      if (process.signalPolicy === 'system-only') {
+        denied += 1;
+        continue;
+      }
       if (this.signalProcess(process, signalName)) signaled += 1;
     }
     if (signaled > 0) this.recordKernelEvent('process-group-signal', undefined, { pgid, signal: normalizeTraceKernelSignal(signalName)?.name, count: signaled });
-    return signaled;
+    return { signaled, denied };
   }
 
   private setProcessGroupForeground(pgid: number, foreground: boolean): void {
@@ -2785,7 +2905,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             ? 'Z (zombie)'
             : 'X (dead)';
     return [
-      `Name:\t${process.command.split(/\s+/, 1)[0] || 'tracekernel'}`,
+      `Name:\t${process.command.split(/\s+/, 1)[0] || 'bash'}`,
       `State:\t${state}`,
       `Pid:\t${process.pid}`,
       `PPid:\t${process.ppid}`,
@@ -2962,7 +3082,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdinPipe: commandContext.stdinPipe,
-      preserveScriptPath: true,
       commandContext,
     });
     return result ?? { stdout: '', stderr: `bash: ${expandedInvocation.scriptFile}: Exec format error\n`, exitCode: 126 };
@@ -2981,11 +3100,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (error.code === 'ETIMEDOUT') {
       return { stdout: '', stderr: response.body?.startsWith('curl: (28)') ? response.body : 'curl: (28) Operation timed out\n', exitCode: 28 };
     }
+    if (error.code === 'ENOTFOUND') {
+      const host = /\s([^\s:]+)(?::\d+)?$/.exec(error.message)?.[1] ?? 'unknown';
+      return { stdout: '', stderr: `curl: (6) Could not resolve host: ${host}\n`, exitCode: 6 };
+    }
     if (
       error.code === 'EACCES' ||
       error.code === 'EHOSTBLOCKED' ||
       error.code === 'EHOSTUNREACH' ||
-      error.code === 'ECONNREFUSED'
+      error.code === 'ECONNREFUSED' ||
+      error.code === 'ECONNRESET' ||
+      error.code === 'ENETUNREACH' ||
+      error.code === 'EAGAIN' ||
+      error.code === 'ERATELIMIT'
     ) {
       if (response.body?.startsWith('curl: (7)')) return { stdout: '', stderr: response.body, exitCode: 7 };
       const message = error.message.replace(/^[A-Z][A-Z0-9_]*:\s*/, '').replace(/^tracekernel:\s*/, '');
@@ -3003,6 +3130,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     let appendDataToQuery = false;
     let outputPath: string | undefined;
     let timeoutMs: number | undefined;
+    let verbose = false;
+    let silent = false;
+    let showError = false;
+    let followLocation = false;
+    let writeOut: string | undefined;
+    let failWithBody = false;
     const headers: Record<string, string> = {};
     const rawHeaders: Array<[string, string]> = [];
     const urls: string[] = [];
@@ -3020,7 +3153,39 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
     for (let index = 0; index < args.length; index += 1) {
       const arg = args[index] ?? '';
-      if (arg === '-s' || arg === '--silent' || arg === '-L' || arg === '--location') continue;
+      if (arg === '--silent') {
+        silent = true;
+        continue;
+      }
+      if (arg === '--show-error') {
+        showError = true;
+        continue;
+      }
+      if (arg === '--location') {
+        followLocation = true;
+        continue;
+      }
+      if (arg === '--insecure') continue;
+      if (/^-[sSfLiIkv]+$/.test(arg)) {
+        for (const flag of arg.slice(1)) {
+          if (flag === 's') silent = true;
+          else if (flag === 'S') showError = true;
+          else if (flag === 'f') failOnHttpError = true;
+          else if (flag === 'i') includeHeaders = true;
+          else if (flag === 'I') {
+            method ??= 'HEAD';
+            includeHeaders = true;
+            headOnly = true;
+          } else if (flag === 'v') verbose = true;
+          else if (flag === 'L') followLocation = true;
+          // -k is an accepted no-op in TraceKernel's deterministic network.
+        }
+        continue;
+      }
+      if (arg === '-v' || arg === '--verbose') {
+        verbose = true;
+        continue;
+      }
       if (arg === '-i' || arg === '--include') {
         includeHeaders = true;
         continue;
@@ -3033,6 +3198,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       if (arg === '-f' || arg === '--fail') {
         failOnHttpError = true;
+        continue;
+      }
+      if (arg === '--fail-with-body') {
+        failOnHttpError = true;
+        failWithBody = true;
         continue;
       }
       if (arg === '-G' || arg === '--get') {
@@ -3050,7 +3220,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         if (!outputPath) return { stdout: '', stderr: 'curl: option requires an argument -- output\n', exitCode: 2 };
         continue;
       }
-      if (arg === '--max-time') {
+      if (arg === '-w' || arg === '--write-out') {
+        const next = args[++index];
+        if (next === undefined) return { stdout: '', stderr: 'curl: option requires an argument -- w\n', exitCode: 2 };
+        writeOut = next;
+        continue;
+      }
+      if (arg.startsWith('--write-out=')) {
+        writeOut = arg.slice('--write-out='.length);
+        continue;
+      }
+      if (arg === '--max-time' || arg === '--connect-timeout') {
         const next = args[++index];
         if (!next) return { stdout: '', stderr: 'curl: option requires an argument -- max-time\n', exitCode: 2 };
         const seconds = Number(next);
@@ -3062,6 +3242,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const value = arg.slice('--max-time='.length);
         const seconds = Number(value);
         if (!Number.isFinite(seconds) || seconds < 0) return { stdout: '', stderr: `curl: invalid --max-time value: ${value}\n`, exitCode: 2 };
+        timeoutMs = Math.max(1, Math.ceil(seconds * 1000));
+        continue;
+      }
+      if (arg.startsWith('--connect-timeout=')) {
+        const value = arg.slice('--connect-timeout='.length);
+        const seconds = Number(value);
+        if (!Number.isFinite(seconds) || seconds < 0) return { stdout: '', stderr: `curl: invalid --connect-timeout value: ${value}\n`, exitCode: 2 };
         timeoutMs = Math.max(1, Math.ceil(seconds * 1000));
         continue;
       }
@@ -3137,7 +3324,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (urls.length !== 1) {
       return {
         stdout: '',
-        stderr: urls.length === 0 ? 'curl: no URL specified\n' : 'curl: multiple URLs are not supported by tracekernel curl\n',
+        stderr: urls.length === 0 ? 'curl: no URL specified\n' : 'curl: (2) multiple URLs are not supported\n',
         exitCode: 2,
       };
     }
@@ -3157,34 +3344,85 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       body = undefined;
       if (method === undefined || method === 'POST') method = 'GET';
     }
-    const request: RuntimeKernelHttpRequest = {
-      method: method ?? 'GET',
-      url: url.toString(),
-      path: `${url.pathname}${url.search}`,
-      headers,
-      ...(rawHeaders.length > 0 ? { rawHeaders } : {}),
-      ...(body !== undefined ? { body } : {}),
-    };
     const commandContext = this.resolveCommandContext(ctx);
-    const response = await this.dispatchHttpRequest(request, {
-      ...(timeoutMs !== undefined ? {
-        timeoutMs,
-        timeoutBody: `curl: (28) Operation timed out after ${timeoutMs} milliseconds\n`,
-      } : {}),
-      ...(ctx.signal ? { signal: ctx.signal } : {}),
-      ...(commandContext?.actor ? { actor: commandContext.actor } : {}),
-      ...(commandContext ? { commandContext } : {}),
-    });
-    const kernelError = this.kernelCurlErrorResult(response);
-    if (kernelError) return kernelError;
-    if (response.status === 0 && response.body?.startsWith('curl: (28)')) {
-      return { stdout: '', stderr: response.body ?? 'curl: (28) Operation timed out\n', exitCode: 28 };
-    }
-    if (response.status === 0) {
-      return { stdout: '', stderr: response.body ?? 'curl: connection failed\n', exitCode: 7 };
-    }
-    if (failOnHttpError && response.status >= 400) {
-      return { stdout: '', stderr: `curl: (22) The requested URL returned error: ${response.status}\n`, exitCode: 22 };
+    let effectiveUrl = url;
+    let effectiveMethod = method ?? 'GET';
+    let effectiveBody = body;
+    let response!: RuntimeKernelHttpResponse;
+    let request!: RuntimeKernelHttpRequest;
+    let redirectCount = 0;
+    const credentialOrigin = effectiveUrl.origin;
+    while (true) {
+      const requestHeaders = { ...headers };
+      let requestRawHeaders = [...rawHeaders];
+      if (effectiveUrl.origin !== credentialOrigin) {
+        delete requestHeaders.authorization;
+        delete requestHeaders.cookie;
+        delete requestHeaders['proxy-authorization'];
+        requestRawHeaders = requestRawHeaders.filter(([name]) =>
+          !['authorization', 'cookie', 'proxy-authorization'].includes(name.toLowerCase())
+        );
+      }
+      request = {
+        method: effectiveMethod,
+        url: effectiveUrl.toString(),
+        path: `${effectiveUrl.pathname}${effectiveUrl.search}`,
+        headers: requestHeaders,
+        ...(requestRawHeaders.length > 0 ? { rawHeaders: requestRawHeaders } : {}),
+        ...(effectiveBody !== undefined ? { body: effectiveBody } : {}),
+      };
+      response = await this.dispatchHttpRequest(request, {
+        ...(timeoutMs !== undefined ? {
+          timeoutMs,
+          timeoutBody: `curl: (28) Operation timed out after ${timeoutMs} milliseconds\n`,
+        } : {}),
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+        ...(commandContext?.actor ? { actor: commandContext.actor } : {}),
+        ...(commandContext ? { commandContext } : {}),
+      });
+      const kernelError = this.kernelCurlErrorResult(response);
+      if (kernelError) {
+        return silent && !showError ? { ...kernelError, stderr: '' } : kernelError;
+      }
+      if (response.status === 0 && response.body?.startsWith('curl: (28)')) {
+        return {
+          stdout: '',
+          stderr: silent && !showError ? '' : response.body ?? 'curl: (28) Operation timed out\n',
+          exitCode: 28,
+        };
+      }
+      if (response.status === 0) {
+        return {
+          stdout: '',
+          stderr: silent && !showError ? '' : response.body ?? 'curl: connection failed\n',
+          exitCode: 7,
+        };
+      }
+      const location = this.httpHeaderValue(response.headers, 'location');
+      if (!followLocation || !location || ![301, 302, 303, 307, 308].includes(response.status)) break;
+      redirectCount += 1;
+      if (redirectCount > 20) {
+        return {
+          stdout: '',
+          stderr: silent && !showError ? '' : 'curl: (47) Maximum (20) redirects followed\n',
+          exitCode: 47,
+        };
+      }
+      let nextUrl: URL;
+      try {
+        nextUrl = new URL(location, effectiveUrl);
+      } catch {
+        return {
+          stdout: '',
+          stderr: silent && !showError ? '' : `curl: (3) The redirect target URL could not be parsed: ${location}\n`,
+          exitCode: 3,
+        };
+      }
+      effectiveUrl = nextUrl;
+      if (effectiveMethod !== 'HEAD' && (response.status === 303 || ([301, 302].includes(response.status) && effectiveMethod === 'POST'))) {
+        effectiveMethod = 'GET';
+        effectiveBody = undefined;
+      }
     }
     const responseHeaders = includeHeaders
       ? [
@@ -3197,23 +3435,58 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const responseBodyBytes = headOnly ? new Uint8Array() : runtimeHttpBodyBytes(response);
     const responseBody = decodeUtf8(responseBodyBytes) ?? new TextDecoder().decode(responseBodyBytes);
     const outputBody = `${responseHeaders}${responseBody}`;
+    const writeOutText = writeOut === undefined
+      ? ''
+      : writeOut
+          .replace(/%\{http_code\}/g, String(response.status).padStart(3, '0'))
+          .replace(/%\{url_effective\}/g, effectiveUrl.toString())
+          .replace(/%\{size_download\}/g, String(responseBodyBytes.byteLength))
+          .replace(/%\{content_type\}/g, response.headers?.['content-type'] ?? '')
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t');
+    const verboseOutput = verbose
+      ? [
+          `* Connected to ${effectiveUrl.hostname} (${effectiveUrl.hostname}) port ${effectiveUrl.port || (effectiveUrl.protocol === 'https:' ? '443' : '80')}`,
+          `> ${request.method} ${request.path} HTTP/1.1`,
+          `> Host: ${effectiveUrl.host}`,
+          ...rawHeaders.map(([name, value]) => `> ${name}: ${value}`),
+          '>',
+          `< HTTP/1.1 ${response.status}`,
+          ...Object.entries(response.headers ?? {}).map(([name, value]) => `< ${name}: ${value}`),
+          '<',
+        ].join('\n') + '\n'
+      : '';
+    if (failOnHttpError && response.status >= 400) {
+      return {
+        stdout: `${failWithBody ? outputBody : ''}${writeOutText}`,
+        stderr: `${verboseOutput}${silent && !showError ? '' : `curl: (22) The requested URL returned error: ${response.status}\n`}`,
+        exitCode: 22,
+      };
+    }
     if (outputPath !== undefined) {
       try {
-        const absoluteOutputPath = resolveWorkspaceContextPath(ctx, this.cwd, outputPath, 'curl output path');
-        await ctx.fs.mkdir(dirname(absoluteOutputPath), { recursive: true });
-        if (responseHeaders) {
-          await ctx.fs.writeFile(absoluteOutputPath, outputBody);
-        } else {
-          await ctx.fs.writeFile(absoluteOutputPath, responseBodyBytes);
+        if (outputPath !== '/dev/null') {
+          const absoluteOutputPath = resolveWorkspaceContextPath(ctx, this.cwd, outputPath, 'curl output path');
+          const parent = await ctx.fs.stat(dirname(absoluteOutputPath));
+          if (!parent.isDirectory) throw new Error('Output parent is not a directory');
+          if (responseHeaders) {
+            await ctx.fs.writeFile(absoluteOutputPath, outputBody);
+          } else {
+            await ctx.fs.writeFile(absoluteOutputPath, responseBodyBytes);
+          }
         }
-      } catch (error) {
-        return { stdout: '', stderr: `curl: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 23 };
+      } catch {
+        return {
+          stdout: '',
+          stderr: silent && !showError ? '' : 'curl: (23) Failed writing received data to disk/application\n',
+          exitCode: 23,
+        };
       }
-      return { stdout: '', stderr: '', exitCode: 0 };
+      return { stdout: writeOutText, stderr: verboseOutput, exitCode: 0 };
     }
     return {
-      stdout: outputBody,
-      stderr: '',
+      stdout: `${outputBody}${writeOutText}`,
+      stderr: verboseOutput,
       exitCode: 0,
     };
   }
@@ -3250,7 +3523,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (hosts.length !== 1) {
       return {
         stdout: '',
-        stderr: hosts.length === 0 ? 'ping: missing host operand\n' : 'ping: multiple hosts are not supported by tracekernel ping\n',
+        stderr: hosts.length === 0 ? 'ping: missing host operand\n' : 'ping: multiple hosts are not supported\n',
         exitCode: 2,
       };
     }
@@ -3305,16 +3578,39 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return { stdout, stderr, exitCode };
   }
 
-  private runTraceKernelCommandBuiltin(args: string[], ctx: CommandContext): RuntimeCommandResult {
+  private async runTraceKernelCommandBuiltin(
+    args: string[],
+    ctx: CommandContext
+  ): Promise<RuntimeCommandResult> {
     const option = args[0];
     if (option === '-v' || option === '-V') {
       return this.runTraceKernelWhich(args.slice(1), 'command', ctx);
     }
-    return {
-      stdout: '',
-      stderr: 'command: only -v and -V are supported by TraceKernel command discovery\n',
-      exitCode: 2,
-    };
+    let commandIndex = 0;
+    while (args[commandIndex] === '-p' || args[commandIndex] === '--') {
+      commandIndex += 1;
+    }
+    const executable = args[commandIndex];
+    if (!executable) return { stdout: '', stderr: '', exitCode: 0 };
+    if (!ctx.exec) {
+      return {
+        stdout: '',
+        stderr: `command: ${executable}: command not found\n`,
+        exitCode: 127,
+      };
+    }
+    const standardPathCommand = /^\/(?:usr\/)?bin\/([^/]+)$/u.exec(executable)?.[1];
+    const resolvedExecutable =
+      traceKernelBinCommandName(executable) ?? standardPathCommand ?? executable;
+    return ctx.exec(resolvedExecutable, {
+      cwd: ctx.cwd,
+      env: commandEnv(ctx),
+      replaceEnv: true,
+      stdin: decodeCommandStdin(ctx.stdin),
+      stdinKind: 'bytes',
+      signal: ctx.signal,
+      args: args.slice(commandIndex + 1),
+    });
   }
 
   private async runTraceKernelCtl(args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
@@ -3358,6 +3654,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       if (args.length > 1) {
         return { stdout: '', stderr: 'usage: tracekernelctl reset\n', exitCode: 2 };
       }
+      if (this.activeProcessRecords().some((process) => process.signalPolicy === 'system-only')) {
+        return {
+          stdout: '',
+          stderr: 'tracekernelctl: reset: Operation not permitted\n',
+          exitCode: 1,
+        };
+      }
       await this.kernelControl?.reset?.();
       await this.destroyNow({ reason: 'tracekernelctl-reset', clearStorage: true });
       return { stdout: 'tracekernelctl: reset complete\n', stderr: '', exitCode: 0 };
@@ -3376,13 +3679,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       if (target < 0) {
         const pgid = Math.abs(target);
-        const count = this.signalProcessGroup(pgid, signal.name, this.resolveCommandContext(ctx)?.process.pid);
-        if (count === 0) return { stdout: '', stderr: `tracekernelctl: no such process group: ${pgid}\n`, exitCode: 3 };
-        return { stdout: `tracekernelctl: sent ${signal.name} to process group ${pgid} (${count} process${count === 1 ? '' : 'es'})\n`, stderr: '', exitCode: 0 };
+        const result = this.signalProcessGroup(pgid, signal.name, this.resolveCommandContext(ctx)?.process.pid);
+        if (result.denied > 0 && result.signaled === 0) {
+          return { stdout: '', stderr: `tracekernelctl: kill ${pgid}: Operation not permitted\n`, exitCode: 1 };
+        }
+        if (result.signaled === 0) return { stdout: '', stderr: `tracekernelctl: no such process group: ${pgid}\n`, exitCode: 3 };
+        return { stdout: `tracekernelctl: sent ${signal.name} to process group ${pgid} (${result.signaled} process${result.signaled === 1 ? '' : 'es'})\n`, stderr: '', exitCode: 0 };
       }
       const process = this.findProcessRecord(target);
       if (!process || process.state === 'exited') {
         return { stdout: '', stderr: `tracekernelctl: no such process: ${target}\n`, exitCode: 3 };
+      }
+      if (process.signalPolicy === 'system-only') {
+        return { stdout: '', stderr: `tracekernelctl: kill ${target}: Operation not permitted\n`, exitCode: 1 };
       }
       if (!this.signalProcess(process, signal.name)) {
         return { stdout: '', stderr: `tracekernelctl: no such process: ${target}\n`, exitCode: 3 };
@@ -3493,7 +3802,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
 
     for (const [index, input] of options.positional.entries()) {
-      if (index > 0 && stdout && !stdout.endsWith('\n\n')) stdout += '\n';
       const absolutePath = ctx.fs.resolvePath(ctx.cwd, input);
       try {
         const stat = await statPath(absolutePath);
@@ -3502,6 +3810,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           stdout += await renderEntry(absolutePath, input);
           continue;
         }
+        if (index > 0 && stdout && !stdout.endsWith('\n\n')) stdout += '\n';
         await renderDirectory(input, absolutePath, multipleTargets || options.recursive, options.recursive);
       } catch {
         stderr += `ls: cannot access '${input}': No such file or directory\n`;
@@ -3511,13 +3820,250 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return { stdout, stderr, exitCode };
   }
 
+  private processDisplayName(process: RuntimeKernelProcessRecord): string {
+    const executable = process.command.trim().split(/\s+/, 1)[0] ?? process.command;
+    return executable.split('/').pop() || executable || 'process';
+  }
+
+  private processStat(process: RuntimeKernelProcessRecord): string {
+    const state = process.state === 'running'
+      ? 'R'
+      : process.state === 'queued'
+        ? 'S'
+        : process.state === 'zombie'
+          ? 'Z'
+          : process.state === 'signaled'
+            ? 'X'
+            : 'S';
+    return `${state}${process.foreground ? '+' : ''}`;
+  }
+
+  private processStartLabel(process: RuntimeKernelProcessRecord): string {
+    const startedAt = new Date(process.startedAt);
+    if (Number.isNaN(startedAt.getTime())) return '--:--';
+    return startedAt.toISOString().slice(11, 16);
+  }
+
+  private processRecordsForInspection(ctx?: CommandContext): RuntimeKernelProcessRecord[] {
+    const currentPid = this.resolveCommandContext(ctx)?.process.pid;
+    return [this.principalProcessRecord(), ...this.activeProcessRecords()]
+      .filter((process) => process.pid !== currentPid);
+  }
+
+  private runKernelSs(args: string[], _ctx: CommandContext): RuntimeCommandResult {
+    const longFlags = new Map([
+      ['--listening', 'l'],
+      ['--tcp', 't'],
+      ['--numeric', 'n'],
+      ['--processes', 'p'],
+    ]);
+    let flags = '';
+    let invalid = false;
+    for (const arg of args) {
+      const longFlag = longFlags.get(arg);
+      if (longFlag) {
+        flags += longFlag;
+        continue;
+      }
+      if (/^-[ltnp]+$/.test(arg)) {
+        flags += arg.slice(1);
+        continue;
+      }
+      invalid = true;
+      break;
+    }
+    if (invalid) {
+      return { stdout: '', stderr: 'Usage: ss [-ltnp]\n', exitCode: 2 };
+    }
+    const showListeners = flags.includes('l');
+    const showProcesses = flags.includes('p');
+    const listeners = [...this.httpListeners.values()]
+      .map((listener) => listener.info)
+      .sort((left, right) => left.port - right.port || left.host.localeCompare(right.host));
+    const rows = listeners
+      .filter(() => showListeners || flags.length === 0)
+      .map((listener) => {
+        const process = this.findProcessRecord(listener.pid);
+        const processColumn = showProcesses
+          ? ` users:((\"${this.processDisplayName(process ?? this.principalProcessRecord())}\",pid=${listener.pid},fd=3))`
+          : '';
+        return `LISTEN 0      511    ${listener.host}:${listener.port}      0.0.0.0:*${processColumn}`;
+      });
+    return {
+      stdout: [
+        `State  Recv-Q Send-Q Local Address:Port Peer Address:Port${showProcesses ? ' Process' : ''}`,
+        ...rows,
+      ].join('\n') + '\n',
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private runKernelLsof(args: string[], _ctx: CommandContext): RuntimeCommandResult {
+    let port: number | undefined;
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index] ?? '';
+      if (arg === '-i') {
+        const selector = args[++index];
+        if (!selector) return { stdout: '', stderr: 'lsof: option requires an argument -- i\n', exitCode: 1 };
+        const match = /^:(\d+)$/.exec(selector);
+        if (!match) return { stdout: '', stderr: `lsof: unsupported network selector: ${selector}\n`, exitCode: 1 };
+        port = Number(match[1]);
+        continue;
+      }
+      const match = /^-i:(\d+)$/.exec(arg);
+      if (match) {
+        port = Number(match[1]);
+        continue;
+      }
+      return { stdout: '', stderr: `lsof: unsupported option: ${arg}\n`, exitCode: 1 };
+    }
+    if (port === undefined) {
+      return { stdout: '', stderr: 'lsof: usage: lsof -i :PORT\n', exitCode: 1 };
+    }
+    const listeners = [...this.httpListeners.values()]
+      .map((listener) => listener.info)
+      .filter((listener) => listener.port === port)
+      .sort((left, right) => left.pid - right.pid);
+    if (listeners.length === 0) return { stdout: '', stderr: '', exitCode: 1 };
+    const rows = listeners.map((listener) => {
+      const process = this.findProcessRecord(listener.pid);
+      return [
+        this.processDisplayName(process ?? this.principalProcessRecord()).padEnd(9, ' '),
+        String(listener.pid).padStart(5, ' '),
+        this.kernelInfo.user.username.padEnd(8, ' '),
+        '3u',
+        'IPv4',
+        '-'.padStart(8, ' '),
+        '0t0'.padStart(8, ' '),
+        'TCP',
+        `${listener.host}:${listener.port} (LISTEN)`,
+      ].join(' ');
+    });
+    return {
+      stdout: ['COMMAND     PID USER     FD TYPE   DEVICE SIZE/OFF NODE NAME', ...rows].join('\n') + '\n',
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private runKernelProcessMatch(
+    args: string[],
+    commandName: 'pgrep' | 'pkill',
+    ctx: CommandContext
+  ): RuntimeCommandResult {
+    let fullCommand = false;
+    let exact = false;
+    let listName = false;
+    let listFull = false;
+    let signalName = 'SIGTERM';
+    const positional: string[] = [];
+    for (const arg of args) {
+      if (arg === '--') {
+        positional.push(...args.slice(args.indexOf(arg) + 1));
+        break;
+      }
+      if (arg === '-f') {
+        fullCommand = true;
+        continue;
+      }
+      if (arg === '-x') {
+        exact = true;
+        continue;
+      }
+      if (commandName === 'pgrep' && arg === '-l') {
+        listName = true;
+        continue;
+      }
+      if (commandName === 'pgrep' && arg === '-a') {
+        listFull = true;
+        continue;
+      }
+      if (commandName === 'pgrep' && /^-[aflx]+$/.test(arg)) {
+        fullCommand ||= arg.includes('f');
+        exact ||= arg.includes('x');
+        listName ||= arg.includes('l');
+        listFull ||= arg.includes('a');
+        continue;
+      }
+      if (commandName === 'pkill' && /^-[fx]+$/.test(arg)) {
+        fullCommand ||= arg.includes('f');
+        exact ||= arg.includes('x');
+        continue;
+      }
+      if (commandName === 'pkill' && arg.startsWith('-') && arg.length > 1) {
+        const signal = normalizeTraceKernelSignal(arg.slice(1));
+        if (!signal) return { stdout: '', stderr: `${commandName}: invalid signal: ${arg.slice(1)}\n`, exitCode: 2 };
+        signalName = signal.name;
+        continue;
+      }
+      if (arg.startsWith('-')) {
+        return { stdout: '', stderr: `usage: ${commandName} [-f] [-x]${commandName === 'pgrep' ? ' [-a|-l]' : ' [-SIGNAL]'} pattern\n`, exitCode: 2 };
+      }
+      positional.push(arg);
+    }
+    if (positional.length !== 1) {
+      return { stdout: '', stderr: `usage: ${commandName} [-f] [-x]${commandName === 'pgrep' ? ' [-a|-l]' : ' [-SIGNAL]'} pattern\n`, exitCode: 2 };
+    }
+    let pattern: RegExp;
+    try {
+      pattern = new RegExp(exact ? `^(?:${positional[0]})$` : positional[0]);
+    } catch {
+      return { stdout: '', stderr: `${commandName}: invalid regular expression\n`, exitCode: 2 };
+    }
+    const matches = this.processRecordsForInspection(ctx).filter((process) => {
+      const candidate = fullCommand ? process.command : this.processDisplayName(process);
+      return pattern.test(candidate);
+    });
+    if (matches.length === 0) return { stdout: '', stderr: '', exitCode: 1 };
+    if (commandName === 'pgrep') {
+      const rows = matches.map((process) => listFull
+        ? `${process.pid} ${process.command}`
+        : listName
+          ? `${process.pid} ${this.processDisplayName(process)}`
+          : String(process.pid));
+      return { stdout: `${rows.join('\n')}\n`, stderr: '', exitCode: 0 };
+    }
+    let denied = 0;
+    let signaled = 0;
+    for (const process of matches) {
+      if (this.signalProcess(process, signalName)) signaled += 1;
+      else denied += 1;
+    }
+    if (signaled === 0 && denied > 0) {
+      return { stdout: '', stderr: `${commandName}: Operation not permitted\n`, exitCode: 1 };
+    }
+    return { stdout: '', stderr: '', exitCode: 0 };
+  }
+
   private runKernelPs(args: string[], _ctx: CommandContext): RuntimeCommandResult {
     const supported = new Set(['', '-e', '-f', '-ef', 'aux']);
     const mode = args.join('');
     if (!supported.has(mode)) {
       return { stdout: '', stderr: 'usage: ps [-e|-f|-ef|aux]\n', exitCode: 2 };
     }
-    const rows = [this.principalProcessRecord(), ...this.activeProcessRecords()].map((process) =>
+    const processes = [this.principalProcessRecord(), ...this.activeProcessRecords()];
+    if (mode === 'aux') {
+      const rows = processes.map((process) => [
+        this.kernelInfo.user.username.padEnd(8, ' '),
+        String(process.pid).padStart(5, ' '),
+        '0.0'.padStart(4, ' '),
+        '0.0'.padStart(4, ' '),
+        '0'.padStart(7, ' '),
+        '0'.padStart(5, ' '),
+        (process.tty === '?' ? '?' : process.tty.replace('/dev/', '')).padEnd(7, ' '),
+        this.processStat(process).padEnd(4, ' '),
+        this.processStartLabel(process).padEnd(5, ' '),
+        '0:00'.padStart(5, ' '),
+        process.command,
+      ].join(' '));
+      return {
+        stdout: ['USER       PID %CPU %MEM    VSZ   RSS TTY     STAT START  TIME COMMAND', ...rows].join('\n') + '\n',
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    const rows = processes.map((process) =>
       [
         String(process.pid).padStart(5, ' '),
         String(process.ppid).padStart(5, ' '),
@@ -3623,7 +4169,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       if (target < 0) {
         const pgid = Math.abs(target);
-        if (this.signalProcessGroup(pgid, signal.name, this.resolveCommandContext(ctx)?.process.pid) === 0) {
+        const groupResult = this.signalProcessGroup(pgid, signal.name, this.resolveCommandContext(ctx)?.process.pid);
+        if (groupResult.denied > 0 && groupResult.signaled === 0) {
+          return { stdout: '', stderr: `${commandName}: (${pgid}) - Operation not permitted\n`, exitCode: 1 };
+        }
+        if (groupResult.signaled === 0) {
           return { stdout: '', stderr: `${commandName}: no such process group: ${pgid}\n`, exitCode: 3 };
         }
         continue;
@@ -3631,6 +4181,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const process = this.findProcessRecord(target);
       if (!process || process.state === 'exited') {
         return { stdout: '', stderr: `${commandName}: no such process: ${target}\n`, exitCode: 3 };
+      }
+      if (process.signalPolicy === 'system-only') {
+        return { stdout: '', stderr: `${commandName}: (${target}) - Operation not permitted\n`, exitCode: 1 };
       }
       this.signalProcess(process, signal.name);
     }
@@ -3721,16 +4274,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private assertNotDestroyed(): void {
     if (!this.destroyed) return;
-    throw Object.assign(new Error('EINVAL: tracekernel session has been destroyed'), { code: 'EINVAL' });
+    throw Object.assign(new Error('EINVAL: project session is no longer available'), { code: 'EINVAL' });
   }
 
   private assertWorkspaceUsableForMutation(operation: string): void {
     this.assertNotDestroyed();
+    if (this.isReadonlyPolicySuspended()) return;
     const lifecycle = this.projectSession?.lifecycle;
     if (lifecycle?.expiresAt && !lifecycle.expiredAt) {
       this.transitionExpiredIfDue(Date.now());
     }
-    if (this.isReadonlyPolicySuspended()) return;
     if (!this.isSessionExpired()) return;
     const expirationBehavior = this.projectSession?.lifecycle.expirationBehavior;
     if (expirationBehavior === 'none') return;
@@ -3755,7 +4308,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private assertWorkspaceUsableForRun(command: string): RuntimeCommandResult | null {
     if (this.destroyed) {
-      return { stdout: '', stderr: 'tracekernel session has been destroyed\n', exitCode: 1 };
+      return { stdout: '', stderr: 'project session is no longer available\n', exitCode: 1 };
     }
     const lifecycle = this.projectSession?.lifecycle;
     if (lifecycle?.expiresAt && !lifecycle.expiredAt) {
@@ -3890,7 +4443,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private async resolveTerminalCwd(currentCwd: string, target: string): Promise<string> {
-    const absolutePath = this.resolveTerminalNavigationPath(currentCwd, target);
+    const absolutePath = isWithinWorkspace(this.kernelInfo.home, this.cwd)
+      ? this.resolveTerminalNavigationPath(currentCwd, target)
+      : this.resolveTerminalPath(currentCwd, target);
     const statTarget = kernelStatTarget(absolutePath, this.kernelInfo);
     const stat = statTarget.kind === 'stat'
       ? { isDirectory: statTarget.stat.isDirectory }
@@ -4131,7 +4686,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return data;
     }
     context.truncatedOutputStreams.add(stream);
-    const marker = `\n[tracekernel: ${stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+    const marker = `\n[${stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
     const chunk = `${runtimeProjectTruncateUtf8(data, Math.max(0, remaining))}${marker}`;
     context.outputBytes[stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
     return chunk;
@@ -4152,7 +4707,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     contents: string,
     actor: RuntimeWorkspaceActor,
     encoding?: RuntimeFileEncoding,
-    phase: RuntimeFileMutationPhase = 'live'
+    phase: RuntimeFileMutationPhase = 'live',
+    process?: RuntimeKernelProcessRecord
   ): Promise<void> {
     this.assertActorFileCapability(actor, 'write', path);
     this.assertWorkspaceUsableForMutation('write');
@@ -4189,7 +4745,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       },
       phase,
       actor,
-    });
+    }, undefined, process);
   }
 
   async writeFiles(files: readonly RuntimeFile[]): Promise<void> {
@@ -4547,18 +5103,26 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   async runCommand(command: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
+    return this.runCommandAs(command, options);
+  }
+
+  private async runCommandAs(
+    command: string,
+    options: RuntimeCommandOptions = {},
+    parent?: RuntimeKernelProcessRecord
+  ): Promise<RuntimeCommandResult> {
     const unusable = this.assertWorkspaceUsableForRun(command);
     if (unusable) return unusable;
     const commandCwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
     const stdinPipe = options.stdinPipe;
-    const actor = this.createRuntimeActor();
+    const actor = parent?.actor ?? this.createRuntimeActor();
     const abortController = new AbortController();
     const pid = this.nextPid++;
     const terminalPresentation = options.presentation === 'terminal';
     const foreground = options.foreground ?? terminalPresentation;
     const process: RuntimeKernelProcessRecord = {
       pid,
-      ppid: 1,
+      ppid: parent?.pid ?? 1,
       pgid: pid,
       sid: 1,
       fds: this.standardProcessFileDescriptors(),
@@ -4566,6 +5130,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       command,
       cwd: commandCwd,
       actor,
+      signalPolicy: 'standard',
       startedAt: new Date().toISOString(),
       abortController,
       state: 'queued',
@@ -4648,11 +5213,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
         const bash = this.createBash(options.executionLimits, commandContext, commandFs);
         const baselineEnv = options.onEnvChanges ? { ...bash.getEnv(), ...(options.env ?? {}) } : undefined;
+        // Closed stdin pipes represent complete input supplied with a command
+        // (for example a captured file, fixture, or non-interactive API call).
+        // Feed that input into just-bash so every command in the shell program
+        // sees normal shell stdin. Keep open pipes on the command context for
+        // live terminal/runtime input, where bytes can arrive after execution
+        // has started.
+        const shellStdin = stdinPipe && runtimeCommandStdinPipeClosed(stdinPipe)
+          ? this.readDevice('/dev/stdin', commandContext)
+          : undefined;
         const result = await bash.exec(command, {
           cwd: commandCwd,
           env: options.env,
           signal: abortController.signal,
           args: options.args,
+          ...(shellStdin !== undefined ? { stdin: shellStdin } : {}),
         });
         if (baselineEnv && options.onEnvChanges) {
           options.onEnvChanges(runtimeCommandEnvChanges(baselineEnv, result.env));
@@ -4661,10 +5236,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const output = this.captureReturnedOutput(commandContext, result);
         this.emitReturnedOutputEvents(output, commandContext);
         processExitCode = result.exitCode;
-        if (commandContext.kernelError?.code === 'EINTR' && process.signal) {
-          const signalResult = this.signalCommandResult(process);
-          processExitCode = signalResult.exitCode;
-          return signalResult;
+        const commandError = commandContext.kernelError ?? (result as RuntimeCommandResult).error;
+        if (commandError?.code === 'EINTR') {
+          const interruptedBy = commandError.detail?.signal;
+          const interruptedSignal = typeof interruptedBy === 'string'
+            ? normalizeTraceKernelSignal(interruptedBy)
+            : null;
+          if (!process.signal && interruptedSignal) {
+            process.signal = interruptedSignal.name;
+            process.signalCode = interruptedSignal.code;
+          }
+          if (process.signal) {
+            const signalResult = this.signalCommandResult(process);
+            processExitCode = signalResult.exitCode;
+            return signalResult;
+          }
         }
         return {
           stdout: `${output.stdout}${commandContext.deviceStdout}`,
@@ -4686,7 +5272,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           this.emitReturnedOutputEvents(output, commandContext);
           return { ...result, ...output };
         }
-        if (isRuntimeWorkspaceStorageLimitError(error)) {
+        if (
+          isKernelReadonlyError(error) ||
+          isRuntimeFileGenerationConflict(error) ||
+          isRuntimeWorkspaceStorageLimitError(error)
+        ) {
+          this.recordKernelCommandError(error);
           const result = kernelCommandFailure(error);
           const output = this.captureReturnedOutput(commandContext, result);
           processExitCode = result.exitCode;
@@ -4836,6 +5427,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   async runProjectCommand(name: string, options: RuntimeProjectCommandOptions = {}): Promise<RuntimeCommandResult> {
+    return this.runProjectCommandAs(name, options);
+  }
+
+  private async runProjectCommandAs(
+    name: string,
+    options: RuntimeProjectCommandOptions = {},
+    parent?: RuntimeKernelProcessRecord
+  ): Promise<RuntimeCommandResult> {
     const unusable = this.assertWorkspaceUsableForRun(name);
     if (unusable) return unusable;
     const command = this.projectSessionCommands?.[name];
@@ -4865,7 +5464,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       executionLimits?: RuntimeCommandExecutionLimits
     ): Promise<RuntimeCommandResult> => {
       const commandCwd = options.cwd ?? step.cwd;
-      return this.runCommand(step.command, {
+      return this.runCommandAs(step.command, {
         ...options,
         ...(executionLimits ? { executionLimits } : {}),
         cwd: commandCwd
@@ -4876,7 +5475,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           ...(step.env ?? {}),
           ...(options.env ?? {}),
         },
-      });
+      }, parent);
     };
     if (!('steps' in command)) {
       return runStep(command);
@@ -4918,13 +5517,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       aggregateOutputBytes += truncatedBytes;
       if (aggregateRemaining <= streamRemaining) {
         aggregateOutputExceeded = true;
-        const marker = `\n[tracekernel: project command output truncated after ${aggregateOutputLimitBytes} bytes]\n`;
+        const marker = `\n[command output truncated after ${aggregateOutputLimitBytes} bytes]\n`;
         outputBytes[stream] += runtimeProjectUtf8Bytes(marker);
         aggregateOutputBytes += runtimeProjectUtf8Bytes(marker);
         return `${current}${truncated}${marker}`;
       }
       truncatedOutputStreams.add(stream);
-      const marker = `\n[tracekernel: ${stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+      const marker = `\n[${stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
       outputBytes[stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
       aggregateOutputBytes += runtimeProjectUtf8Bytes(marker);
       return `${current}${truncated}${marker}`;
@@ -5005,13 +5604,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   createTerminalSession(options: RuntimeProjectTerminalSessionOptions = {}): RuntimeProjectTerminalSession {
+    return this.createTerminalSessionAs(options);
+  }
+
+  private createTerminalSessionAs(
+    options: RuntimeProjectTerminalSessionOptions = {},
+    parent?: RuntimeKernelProcessRecord
+  ): RuntimeProjectTerminalSession {
     this.assertNotDestroyed();
     return new RuntimeProjectWorkspaceTerminalSession(
       {
         workspaceRoot: this.cwd,
         kernelInfo: this.kernelInfo,
         resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
-        runCommand: (command, commandOptions) => this.runCommand(command, commandOptions),
+        runCommand: (command, commandOptions) => this.runCommandAs(command, commandOptions, parent),
         jobRecords: () => this.terminalJobRecords(),
         isVerbose: () => this.terminalVerbose,
       },
@@ -5108,7 +5714,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       cwd,
       env,
       stdinPipe: options.stdinPipe,
-      preserveScriptPath: false,
       commandContext,
     });
   }
@@ -5119,7 +5724,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     cwd: string;
     env: Record<string, string>;
     stdinPipe?: RuntimeCommandOptions['stdinPipe'];
-    preserveScriptPath: boolean;
     commandContext: RuntimeCommandExecutionContext;
   }): Promise<RuntimeCommandResult | null> {
     const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, request.cwd, request.executable, this.kernelInfo.workspaceAlias));
@@ -5130,9 +5734,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { stdout: '', stderr: `bash: ${request.executable}: Exec format error\n`, exitCode: 126 };
     }
 
-    const scriptPath = request.preserveScriptPath
-      ? request.executable
-      : request.executable.startsWith('./') ? request.executable.slice(2) : request.executable;
+    const scriptPath = request.executable.startsWith('./')
+      ? request.executable.slice(2)
+      : request.executable;
     const result = await this.cppRunner({
       code: '',
       source: 'run',
@@ -5345,6 +5949,121 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
   }
 
+  private createWorkspaceProcess(options: RuntimeWorkspaceProcessOptions): RuntimeWorkspaceProcess {
+    this.assertNotDestroyed();
+    const name = options.name.trim();
+    if (!name) throw new Error('Runtime workspace process name must not be empty.');
+    const cwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
+    const pid = this.nextPid++;
+    const process: RuntimeKernelProcessRecord = {
+      pid,
+      ppid: 1,
+      pgid: pid,
+      sid: 1,
+      fds: this.standardProcessFileDescriptors(),
+      tty: '?',
+      command: name,
+      cwd,
+      actor: options.actor,
+      signalPolicy: options.signalPolicy ?? 'standard',
+      startedAt: new Date().toISOString(),
+      state: 'running',
+      foreground: false,
+    };
+    this.processTable.set(process.pid, process);
+    this.recordKernelEvent('process-start', process.pid, {
+      ppid: process.ppid,
+      pgid: process.pgid,
+      sid: process.sid,
+      command: name,
+      cwd,
+      signalPolicy: process.signalPolicy,
+    });
+    this.recordJournal({
+      kind: 'process',
+      op: 'exec',
+      pid: process.pid,
+      ppid: process.ppid,
+      argv: name,
+      cwd,
+      actor: this.journalActorId(process.actor),
+    }, undefined, process.actor);
+    let disposed = false;
+    const assertActive = (): void => {
+      if (disposed || !this.processTable.has(process.pid)) {
+        throw new Error(`Runtime workspace process is no longer active: ${name} (${process.pid})`);
+      }
+    };
+    return {
+      pid: process.pid,
+      name,
+      actor: process.actor,
+      signalPolicy: process.signalPolicy,
+      readFile: (path, encoding) => {
+        assertActive();
+        this.assertActorFileCapability(process.actor, 'read', path);
+        return this.readFile(path, encoding, { publicProc: false });
+      },
+      writeFile: (path, contents, encoding) => {
+        assertActive();
+        return this.writeFileAs(path, contents, process.actor, encoding, 'live', process);
+      },
+      deleteFile: (path) => {
+        assertActive();
+        return this.deleteFileAs(path, process.actor, 'live', process);
+      },
+      applyFileChange: (change, phase = 'live') => {
+        assertActive();
+        return withSuspendedFsNotifications(this.bash.fs, async () => {
+          await this.applyFileChangeAs(change, process.actor, phase, process);
+        });
+      },
+      runCommand: (command, commandOptions = {}) => {
+        assertActive();
+        return this.runCommandAs(command, {
+          ...commandOptions,
+          cwd: commandOptions.cwd ?? cwd,
+          env: { ...(options.env ?? {}), ...(commandOptions.env ?? {}) },
+        }, process);
+      },
+      runProjectCommand: (commandName, commandOptions = {}) => {
+        assertActive();
+        return this.runProjectCommandAs(commandName, {
+          ...commandOptions,
+          cwd: commandOptions.cwd ?? cwd,
+          env: { ...(options.env ?? {}), ...(commandOptions.env ?? {}) },
+        }, process);
+      },
+      createTerminalSession: (sessionOptions = {}) => {
+        assertActive();
+        return this.createTerminalSessionAs({
+          ...sessionOptions,
+          cwd: sessionOptions.cwd ?? cwd,
+          env: { ...(options.env ?? {}), ...(sessionOptions.env ?? {}) },
+        }, process);
+      },
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        for (const child of this.activeProcessRecords()) {
+          if (child.ppid === process.pid) this.signalProcess(child, 'SIGTERM', 'system');
+        }
+        this.processTable.delete(process.pid);
+        process.state = 'exited';
+        process.exitCode = 0;
+        process.endedAt = new Date().toISOString();
+        this.recordKernelEvent('process-exit', process.pid, { exitCode: 0, authority: 'system' });
+        this.recordJournal({
+          kind: 'process',
+          op: 'exit',
+          pid: process.pid,
+          exitCode: 0,
+          actor: this.journalActorId(process.actor),
+        }, undefined, process.actor);
+      },
+    };
+  }
+
   private createKernel(): RuntimeWorkspaceKernel {
     const workspace = this;
     return {
@@ -5356,6 +6075,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.assertActorFileCapability(actor, 'read', path);
         return this.readFile(path, encoding, { publicProc: false });
       },
+      createProcess: (options) => this.createWorkspaceProcess(options),
       writeFile: (path, contents, actor = PRINCIPAL_ACTOR, encoding) => this.writeFileAs(path, contents, actor, encoding, 'live'),
       writeSkillFiles: (files, actor = SYSTEM_ACTOR) => this.writeSkillFilesAs(files, actor),
       deleteFile: (path, actor = PRINCIPAL_ACTOR) => this.deleteFileAs(path, actor, 'live'),
@@ -5373,7 +6093,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private async applyFileChangeAs(
     change: RuntimeFileChange,
     actor: RuntimeWorkspaceActor,
-    phase: RuntimeFileMutationPhase
+    phase: RuntimeFileMutationPhase,
+    process?: RuntimeKernelProcessRecord
   ): Promise<void> {
     this.assertActorFileCapability(
       actor,
@@ -5384,13 +6105,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       change.path
     );
     this.assertWorkspaceUsableForMutation('apply');
-    await this.applyFileChangeToWorkspace(change, actor, phase, true);
+    await this.applyFileChangeToWorkspace(change, actor, phase, true, process);
   }
 
   private async deleteFileAs(
     path: string,
     actor: RuntimeWorkspaceActor,
-    phase: RuntimeFileMutationPhase
+    phase: RuntimeFileMutationPhase,
+    process?: RuntimeKernelProcessRecord
   ): Promise<void> {
     this.assertActorFileCapability(actor, 'delete', path);
     const removeTarget = kernelRemoveTarget(path);
@@ -5406,7 +6128,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       change: { path: relativePath, deleted: true },
       phase,
       actor,
-    });
+    }, undefined, process);
   }
 
   private createRuntimeActor(): RuntimeWorkspaceActor {
@@ -5430,7 +6152,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): RuntimeProjectLiveIoController {
     return new RuntimeProjectLiveIoController({
       actor: actor ?? SYSTEM_ACTOR,
-      applyFileChange: (change, phase) => this.applyRuntimeFileChangeSilently(change, phase),
+      applyFileChange: (change, phase) => this.applyRuntimeFileChangeSilently(change, phase, context?.()),
       onEvent: (event) => this.emitRuntimeEvent(event, context?.()),
       signal,
     });
@@ -5474,9 +6196,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     await context?.runtimeIo.flush();
   }
 
-  private async applyRuntimeFileChangeSilently(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): Promise<void> {
+  private async applyRuntimeFileChangeSilently(
+    change: RuntimeFileChange,
+    phase: RuntimeFileMutationPhase,
+    context?: RuntimeCommandExecutionContext
+  ): Promise<void> {
     await withSuspendedFsNotifications(this.bash.fs, async () => {
-      await this.applyFileChangeToWorkspace(change, SYSTEM_ACTOR, phase, false);
+      await this.applyFileChangeToWorkspace(change, SYSTEM_ACTOR, phase, false, undefined, context);
     });
   }
 
@@ -5484,7 +6210,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     change: RuntimeFileChange,
     actor: RuntimeWorkspaceActor,
     phase: RuntimeFileMutationPhase,
-    emit: boolean
+    emit: boolean,
+    process?: RuntimeKernelProcessRecord,
+    context?: RuntimeCommandExecutionContext
   ): Promise<void> {
     const mutationTarget = kernelMutationTarget(change.path);
     if (mutationTarget.kind === 'error') {
@@ -5494,7 +6222,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const relativePath = this.toWorkspaceRelativePath(change.path);
     if (isRuntimeDirectoryChange(change)) {
       const absolutePath = this.toWorkspaceEntryPath(change.path);
-      await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
         if (change.deleted === true) {
           this.assertWorkspaceSubtreeWritable(absolutePath, 'delete');
           await fs.rm(absolutePath, { force: true, recursive: true });
@@ -5508,14 +6236,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           change: { path: relativePath, directory: true, ...(change.deleted === true ? { deleted: true } : {}) },
           phase,
           actor,
-        });
+        }, undefined, process);
       }
       return;
     }
 
     if ((change as RuntimeFileDeletion).deleted === true) {
       const absolutePath = this.toWorkspacePath(change.path);
-      await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
         this.assertWorkspacePathWritable(absolutePath, 'delete');
         await fs.rm(absolutePath, { force: true });
       }, 'delete');
@@ -5525,7 +6253,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           change: { path: relativePath, deleted: true },
           phase,
           actor,
-        });
+        }, undefined, process);
       }
       return;
     }
@@ -5537,7 +6265,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return;
     }
     const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
-    await this.fs.withBaseMutation([absolutePath], async (fs) => {
+    await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
       this.assertWorkspacePathWritable(absolutePath, 'write');
       if (normalizedEncoding === 'base64') {
         await fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
@@ -5551,7 +6279,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         change: { path: relativePath, contents: changedFile.contents, ...(normalizedEncoding === 'base64' ? { encoding: 'base64' as const } : {}) },
         phase,
         actor,
-      });
+      }, undefined, process);
     }
   }
 
@@ -5571,11 +6299,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private emitLocalRuntimeEvent(event: RuntimeCommandEvent, context?: RuntimeCommandExecutionContext): void {
+  private emitLocalRuntimeEvent(
+    event: RuntimeCommandEvent,
+    context?: RuntimeCommandExecutionContext,
+    process?: RuntimeKernelProcessRecord
+  ): void {
     if (event.type === 'file-change') {
       const actor = event.actor ?? context?.actor;
       const enriched = this.enrichRuntimeEvent(event, actor) as RuntimeCommandFileChangeEvent;
-      this.recordFileChangeJournal(enriched, context);
+      this.recordFileChangeJournal(enriched, context, process);
       event = enriched;
     }
     const runtimeIo = context?.runtimeIo;
@@ -5824,6 +6556,9 @@ export type {
   RuntimeWorkspaceHttpJsonResponse,
   RuntimeWorkspaceHttpRequestOptions,
   RuntimeWorkspaceKernel,
+  RuntimeWorkspaceProcess,
+  RuntimeWorkspaceProcessOptions,
+  RuntimeWorkspaceProcessSignalPolicy,
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
   RuntimeWorkspaceUnsubscribe,

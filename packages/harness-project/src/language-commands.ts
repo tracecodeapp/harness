@@ -52,7 +52,7 @@ import {
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
 } from '@tracecode/harness-core';
-import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
+import { BROWSER_PROJECT_NODE_COMPAT_VERSION, getLanguageRuntimeInfo } from '@tracecode/harness-core';
 import type { Language } from '@tracecode/harness-core';
 import type {
   CommandContext,
@@ -225,49 +225,53 @@ export function createTraceKernelCommandRegistry(
   packageManagerConfig: NormalizedRuntimePackageManagerConfig | null
 ): TraceKernelCommandInfo[] {
   const commands: TraceKernelCommandInfo[] = [
-    commandInfo('bg', 'control', 'tracekernel job control'),
-    commandInfo('curl', 'tool', 'tracekernel HTTP bridge'),
-    commandInfo('fg', 'control', 'tracekernel job control'),
-    commandInfo('jobs', 'control', 'tracekernel job control'),
-    commandInfo('kill', 'control', 'tracekernel process control'),
-    commandInfo('ls', 'tool', 'tracekernel-aware directory listing'),
-    commandInfo('ping', 'tool', 'tracekernel reachability probe'),
-    commandInfo('ps', 'control', 'tracekernel process table'),
-    commandInfo('tracekernelctl', 'control', 'tracekernel control plane'),
-    commandInfo(TRACEKERNEL_EXEC_COMMAND, 'control', 'tracekernel virtual executable dispatcher'),
-    commandInfo('wait', 'control', 'tracekernel process control'),
-    commandInfo('which', 'tool', 'tracekernel command resolver'),
-    commandInfo('command', 'tool', 'tracekernel command resolver'),
+    commandInfo('bg', 'control', 'shell job control'),
+    commandInfo('curl', 'tool', 'HTTP client'),
+    commandInfo('fg', 'control', 'shell job control'),
+    commandInfo('jobs', 'control', 'shell job control'),
+    commandInfo('kill', 'control', 'process control'),
+    commandInfo('lsof', 'tool', 'open file and network socket inspection'),
+    commandInfo('ls', 'tool', 'directory listing'),
+    commandInfo('pgrep', 'control', 'process lookup'),
+    commandInfo('ping', 'tool', 'network reachability probe'),
+    commandInfo('pkill', 'control', 'process control'),
+    commandInfo('ps', 'control', 'process table'),
+    commandInfo('ss', 'tool', 'socket inspection'),
+    commandInfo('tracekernelctl', 'control', 'kernel control plane'),
+    commandInfo(TRACEKERNEL_EXEC_COMMAND, 'control', 'virtual executable dispatcher'),
+    commandInfo('wait', 'control', 'process control'),
+    commandInfo('which', 'tool', 'command resolver'),
+    commandInfo('command', 'tool', 'command resolver'),
   ];
 
   if (options.pythonRunner) {
     commands.push(
-      languageCommandInfo('python', 'python3', 'Python project command adapter'),
-      languageCommandInfo('python', 'python', 'Python project command adapter')
+      languageCommandInfo('python', 'python3', 'CPython runtime'),
+      languageCommandInfo('python', 'python', 'CPython runtime')
     );
   }
   if (options.nodeRunner) {
     commands.push(languageCommandInfo(
       'javascript',
       'node',
-      'Node-compatible JavaScript project command adapter',
-      'Adapter command for JavaScript project execution; browser workspaces run this through the worker-backed JavaScript lane.'
+      'Node.js-compatible runtime',
+      'Node.js-compatible command for JavaScript project execution.'
     ));
   }
   if (options.typescriptRunner) {
-    commands.push(languageCommandInfo('typescript', 'tsc', 'TypeScript project compile adapter'));
+    commands.push(languageCommandInfo('typescript', 'tsc', 'TypeScript compiler'));
   }
   if (options.javaRunner) {
     commands.push(
-      languageCommandInfo('java', 'javac', 'Java project compile adapter'),
-      languageCommandInfo('java', 'java', 'Java project run adapter')
+      languageCommandInfo('java', 'javac', 'OpenJDK compiler'),
+      languageCommandInfo('java', 'java', 'OpenJDK runtime')
     );
   }
   if (options.cppRunner) {
     for (const compiler of ['clang++', 'clang', 'gcc', 'cc', 'g++', 'c++']) {
-      commands.push(languageCommandInfo('cpp', compiler, 'C/C++ project compile adapter'));
+      commands.push(languageCommandInfo('cpp', compiler, 'Clang/LLVM compiler'));
     }
-    commands.push(commandInfo('a.out', 'virtual-executable', 'C++ virtual executable adapter', {
+    commands.push(commandInfo('a.out', 'virtual-executable', 'native executable', {
       language: 'cpp',
       displayName: getLanguageRuntimeInfo('cpp').displayName,
       versionLabel: getLanguageRuntimeInfo('cpp').versionLabel,
@@ -275,12 +279,12 @@ export function createTraceKernelCommandRegistry(
     }));
   }
   if (options.csharpRunner) {
-    commands.push(languageCommandInfo('csharp', 'dotnet', '.NET/C# project command adapter'));
+    commands.push(languageCommandInfo('csharp', 'dotnet', '.NET SDK'));
   }
   if (packageManagerConfig?.managers.includes('npm')) {
     commands.push(
-      commandInfo('npm', 'package-manager', 'npm-compatible project package manager adapter'),
-      commandInfo('npx', 'package-manager', 'npm-compatible project executable adapter')
+      commandInfo('npm', 'package-manager', 'npm package manager'),
+      commandInfo('npx', 'package-manager', 'npm package executable')
     );
   }
 
@@ -332,7 +336,10 @@ export function createPythonProjectCommands(
     if (isCommandResult(parsed)) return parsed;
 
     if (parsed.showVersion) {
-      return { stdout: 'Python project command adapter\n', stderr: '', exitCode: 0 };
+      const version = /CPython\s+([0-9.]+)/.exec(getLanguageRuntimeInfo('python').runtime.detail ?? '')?.[1]
+        ?? /Python\s+([0-9.]+)/.exec(getLanguageRuntimeInfo('python').versionLabel)?.[1]
+        ?? '3';
+      return { stdout: `Python ${version}\n`, stderr: '', exitCode: 0 };
     }
 
     const stdin = decodeCommandStdin(ctx.stdin);
@@ -428,7 +435,7 @@ export function createNodeProjectCommands(
     if (isNodeCommandResult(parsed)) return parsed;
 
     if (parsed.showVersion) {
-      return { stdout: 'Node project command adapter\n', stderr: '', exitCode: 0 };
+      return { stdout: `v${BROWSER_PROJECT_NODE_COMPAT_VERSION}\n`, stderr: '', exitCode: 0 };
     }
 
     const stdin = decodeCommandStdin(ctx.stdin);
@@ -533,7 +540,8 @@ export function createTypeScriptProjectCommands(
     const parsed = parseTscInvocation(args);
     if (isTscCommandResult(parsed)) return parsed;
     if (parsed.showVersion) {
-      return { stdout: 'TypeScript project command adapter\n', stderr: '', exitCode: 0 };
+      const version = getLanguageRuntimeInfo('typescript').compiler?.version ?? 'unknown';
+      return { stdout: `Version ${version}\n`, stderr: '', exitCode: 0 };
     }
     return applyCommandResultFiles(ctx, workspaceRoot, await runWithCommandContext(runner, {
       code: '',
@@ -582,7 +590,8 @@ export function createJavaProjectCommands(
     if (isJavacCommandResult(parsed)) return parsed;
 
     if (parsed.showVersion) {
-      return { stdout: 'Java project command adapter\n', stderr: '', exitCode: 0 };
+      const version = getLanguageRuntimeInfo('java').compiler?.version ?? 'unknown';
+      return { stdout: `javac ${version}\n`, stderr: '', exitCode: 0 };
     }
 
     return applyCommandResultFiles(ctx, workspaceRoot, await runWithCommandContext(runner, {
@@ -608,7 +617,16 @@ export function createJavaProjectCommands(
     if (isJavaCommandResult(parsed)) return parsed;
 
     if (parsed.showVersion) {
-      return { stdout: 'Java project command adapter\n', stderr: '', exitCode: 0 };
+      const version = getLanguageRuntimeInfo('java').runtime.version ?? 'unknown';
+      const banner = [
+        `openjdk ${version}`,
+        `OpenJDK Runtime Environment (build ${version})`,
+        `OpenJDK 64-Bit Server VM (build ${version}, mixed mode)`,
+        '',
+      ].join('\n');
+      return expandedArgs.includes('-version')
+        ? { stdout: '', stderr: banner, exitCode: 0 }
+        : { stdout: banner, stderr: '', exitCode: 0 };
     }
 
     let parsedJar: { scriptFile: string | null; scriptArgs: string[] };
@@ -696,7 +714,12 @@ export function createCppProjectCommands(
     if (isCppCompileCommandResult(parsed)) return parsed;
 
     if (parsed.showVersion) {
-      return { stdout: `${compilerCommand} project command adapter\n`, stderr: '', exitCode: 0 };
+      const version = getLanguageRuntimeInfo('cpp').compiler?.version ?? 'unknown';
+      return {
+        stdout: `clang version ${version}\nTarget: wasm32-unknown-wasi\nThread model: posix\n`,
+        stderr: '',
+        exitCode: 0,
+      };
     }
 
     const result = await runWithCommandContext(runner, {
@@ -774,7 +797,28 @@ export function createCSharpProjectCommands(
     if (isDotnetCommandResult(parsed)) return parsed;
 
     if (parsed.showVersion) {
-      return { stdout: 'C# project command adapter\n', stderr: '', exitCode: 0 };
+      const version = getLanguageRuntimeInfo('csharp').runtime.version ?? 'unknown';
+      if (expandedArgs.includes('--info')) {
+        return {
+          stdout: [
+            '.NET SDK:',
+            ` Version:           ${version}`,
+            '',
+            'Runtime Environment:',
+            ' OS Name:     tracekernel',
+            ' OS Platform: tracekernel',
+            ' RID:         tracekernel-x64',
+            '',
+            'Host:',
+            `  Version:      ${version}`,
+            '  Architecture: x64',
+            '',
+          ].join('\n'),
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      return { stdout: `${version}\n`, stderr: '', exitCode: 0 };
     }
 
     const project = filterReadonlySnapshotFiles(
