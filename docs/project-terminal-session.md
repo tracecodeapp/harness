@@ -7,7 +7,7 @@ and live stdin handoff for programs that ask the user for input.
 
 Use this API for IDE terminals, fullscreen project terminals, interview
 workspaces, and any consumer UI that needs to show an active
-`user@host cwd %` command line.
+`user@host cwd $` command line.
 
 ## Basic Usage
 
@@ -61,7 +61,8 @@ async function submitCommand(command: string): Promise<void> {
     },
   });
 
-  if (result.exitCode !== 0) appendLine(`exit ${result.exitCode}`, 'exit');
+  // Keep exitCode for command state and automation. Interactive shells do not
+  // print a synthetic `exit N` line after every failed command.
 }
 
 function submitInput(value: string): void {
@@ -98,7 +99,7 @@ interface RuntimeProjectTerminalInputState {
 
 Render the row from `label`, `hidden`, and `disabled`.
 
-- `command`: the terminal is ready for a shell command. `label` is the shell prompt, for example `ada@tracevm weather-api %`.
+- `command`: the terminal is ready for a shell command. `label` is the shell prompt, for example `ada@tracevm weather-api $`.
 - `busy`: a command is running but the process has not requested stdin. Hide or disable the input row; this matches normal terminal behavior while a foreground process owns the tty.
 - `stdin`: the running process printed an unterminated stdout prompt. `label` is that process prompt, for example `Name: `. Submit user text with `terminal.writeStdin(...)`.
 
@@ -107,6 +108,7 @@ State changes are emitted through `onTerminalEvent` with one of these reasons:
 - `command-start`
 - `stdin-prompt`
 - `stdin-submit`
+- `stdin-eof`
 - `command-finish`
 
 The session also accepts a per-run `onTerminalEvent` in `terminal.run(command,
@@ -161,6 +163,24 @@ By default, terminal sessions hide status events unless TraceKernel verbose mode
 is enabled. Direct `workspace.runCommand(...)` calls still receive status events
 normally.
 
+### Error presentation
+
+Treat stdout and stderr as program-owned terminal streams. Language syntax
+errors, compiler diagnostics, uncaught exceptions, missing files, and command
+errors remain visible there with workspace paths and the exit code the native
+tool would normally use. Do not append a generic `exit N` line; shells do not do
+that for every failed foreground command.
+
+Runner infrastructure is a separate boundary. A worker crash, execution-host
+failure, bridge timeout, or kernel-side file synchronization failure returns a
+nonzero result with a structured `result.error` and status-event metadata, but
+does not print worker URLs, host filesystem paths, request IDs, or bridge stack
+traces as if the learner's process wrote them. UIs may present a concise product
+recovery state from the structured error, while diagnostics and telemetry keep
+the internal detail. A signal uses shell-compatible exit status (`128 + signal`);
+for Ctrl+C, render the terminal's `^C` behavior rather than an internal syscall
+exception.
+
 ## Live Stdin
 
 `terminal.run(command)` creates the live stdin pipe for terminal commands. Most
@@ -174,8 +194,36 @@ When a program asks for input:
 4. The UI echoes `${state.label}${value}` as a committed stdin line.
 5. The UI calls `terminal.writeStdin(value + "\n")`.
 
-`writeStdin` returns `false` if no foreground process is currently waiting for
-terminal stdin.
+`writeStdin` returns `false` if no foreground process owns terminal stdin.
+Call `terminal.endStdin()` for Ctrl+D. It closes the foreground process's stdin
+without interrupting the process, allowing normal EOF handlers to run.
+
+## Terminal Controls
+
+`clear` and `exit` are terminal-session operations, not workspace-wide
+mutations. They arrive through `onTerminalEvent` as structured `control`
+events:
+
+```ts
+if (event.type === 'control' && event.action === 'clear') clearRenderedLines();
+if (event.type === 'control' && event.action === 'exit') closeTerminalTab();
+```
+
+After `exit`, `terminal.closed` is `true` and further commands fail with
+`EBADF`. Sibling terminal sessions and background workspace processes remain
+available. Ctrl+L is a UI keyboard binding: consumers should clear their
+rendered transcript through the same path as the `clear` control event.
+
+Foreground output may use carriage returns to redraw one line. Consumers should
+treat `\r` as a cursor reset within the current line, rather than committing a
+new line, so progress output behaves like a terminal instead of producing a log
+of every intermediate percentage.
+
+TraceKernel also provides the common inspection commands used while debugging a
+service: `ps aux`, `pgrep`, `pkill`, `ss -ltnp`, and `lsof -i :PORT`. They report
+TraceKernel's own process and listener model; they do not claim a Linux kernel
+identity. Git repository emulation and suspended-job control such as Ctrl+Z are
+separate capabilities and are not part of this terminal-session contract.
 
 Browser live stdin and browser C/C++ execution require `SharedArrayBuffer` and
 `Atomics`. Serve browser consumers with cross-origin isolation headers:
