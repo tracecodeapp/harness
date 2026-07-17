@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## Unreleased
+
+### Fixed
+
+- Made encrypted Project workspace persistence safe on WebKit by completing revision allocation and AES-GCM encryption before opening the IndexedDB write transaction. The harness now queues the first object-store request synchronously with transaction creation instead of allowing Safari to auto-commit an idle transaction.
+
+### Added
+
+- Added a real-browser encrypted Project persistence gate. Regular CI covers Chromium, while the scheduled compatibility matrix covers Chromium, Firefox, and WebKit through save, load, revision, flush, and clear behavior.
+
 ## [0.11.2] - 2026-07-15
 
 ### Fixed

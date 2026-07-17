@@ -55,6 +55,7 @@ jobs:
       - name: Test project and shared runtime contracts
         run: |
           pnpm test:project
+          pnpm test:kernel-storage-browser
           pnpm test:runtime-contract
           pnpm test:standalone-boundary
       - name: Build
