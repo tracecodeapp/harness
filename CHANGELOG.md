@@ -4,11 +4,12 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
-## Unreleased
+## [0.11.3] - 2026-07-17
 
 ### Fixed
 
 - Made encrypted Project workspace persistence safe on WebKit by completing revision allocation and AES-GCM encryption before opening the IndexedDB write transaction. The harness now queues the first object-store request synchronously with transaction creation instead of allowing Safari to auto-commit an idle transaction.
+- Bundled Turndown's Domino fallback into the published package so clean Node consumers can import Project and native workspace entry points without relying on an undeclared ancestor dependency.
 
 ### Added
 

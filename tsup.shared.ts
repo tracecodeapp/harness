@@ -16,7 +16,20 @@ export const commonConfig = {
     js: 'var define = undefined;',
   },
   skipNodeModulesBundle: true,
-  noExternal: ['just-bash', 'balanced-match', 'brace-expansion', 'diff', 'fflate', 'minimatch', 'sprintf-js', 'turndown'],
+  // just-bash uses turndown for its HTML-to-Markdown command. Turndown selects
+  // Domino when no native DOMParser exists, so both packages must stay inside
+  // the published bundle; otherwise clean Node consumers fail at module load.
+  noExternal: [
+    'just-bash',
+    '@mixmark-io/domino',
+    'balanced-match',
+    'brace-expansion',
+    'diff',
+    'fflate',
+    'minimatch',
+    'sprintf-js',
+    'turndown',
+  ],
   external: ['typescript'],
 } as const;
 
