@@ -76,6 +76,29 @@ public static partial class CompilerHost
         public required LinkedListNode<string> RecencyNode { get; init; }
     }
 
+    private sealed class ProjectWorkspaceSnapshot
+    {
+        public Dictionary<string, ProjectFileState> Files { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, ProjectDirectoryState> Directories { get; } = new(StringComparer.Ordinal);
+    }
+
+    private sealed record ProjectFileState(byte[] Bytes, int Mode, double AtimeMs, double MtimeMs)
+    {
+        public CSharpProjectFileChange ToChange(string path) => EncodeProjectFileChange(path, Bytes, Mode, AtimeMs, MtimeMs);
+    }
+
+    private sealed record ProjectDirectoryState(int Mode, double AtimeMs, double MtimeMs)
+    {
+        public CSharpProjectFileChange ToChange(string path) => new()
+        {
+            Path = path,
+            Directory = true,
+            Mode = Mode,
+            AtimeMs = AtimeMs,
+            MtimeMs = MtimeMs,
+        };
+    }
+
     private sealed class UserExecutionLoadContext : AssemblyLoadContext
     {
         public UserExecutionLoadContext(string name) : base(name, isCollectible: true)
@@ -258,7 +281,7 @@ public static partial class CompilerHost
             }
 
             ResetProjectLiveEventBudgets();
-            PrepareProjectWorkspace(request, out Dictionary<string, byte[]> beforeSnapshot);
+            PrepareProjectWorkspace(request, out ProjectWorkspaceSnapshot beforeSnapshot);
             string cwd = ResolveProjectPath(request.Cwd);
             Directory.CreateDirectory(cwd);
             Directory.SetCurrentDirectory(cwd);
@@ -2534,7 +2557,7 @@ public sealed class ProjectFileStream : System.IO.FileStream
 
     private static void PrepareProjectWorkspace(
         CSharpProjectCommandRequest request,
-        out Dictionary<string, byte[]> beforeSnapshot
+        out ProjectWorkspaceSnapshot beforeSnapshot
     )
     {
         if (Directory.Exists(ProjectWorkspaceRoot))
@@ -2559,44 +2582,139 @@ public sealed class ProjectFileStream : System.IO.FileStream
             string absolutePath = ResolveProjectPath(relativePath);
             Directory.CreateDirectory(Path.GetDirectoryName(absolutePath) ?? ProjectWorkspaceRoot);
             File.WriteAllBytes(absolutePath, DecodeProjectFileBytes(file));
+            if (file.Mode is int mode)
+            {
+                File.SetUnixFileMode(absolutePath, (UnixFileMode)(mode & 0x0fff));
+            }
+            if (file.AtimeMs is double atimeMs)
+            {
+                File.SetLastAccessTimeUtc(absolutePath, DateTimeOffset.FromUnixTimeMilliseconds((long)atimeMs).UtcDateTime);
+            }
+            if (file.MtimeMs is double mtimeMs)
+            {
+                File.SetLastWriteTimeUtc(absolutePath, DateTimeOffset.FromUnixTimeMilliseconds((long)mtimeMs).UtcDateTime);
+            }
+        }
+
+        foreach (CSharpProjectDirectoryMetadata metadata in request.Project.DirectoryMetadata)
+        {
+            string relativePath = NormalizeProjectPath(metadata.Path);
+            string absolutePath = ResolveProjectPath(relativePath);
+            if (!Directory.Exists(absolutePath))
+            {
+                throw new DirectoryNotFoundException($"Directory metadata path does not exist: {metadata.Path}");
+            }
+            if (metadata.Mode is int mode)
+            {
+                File.SetUnixFileMode(absolutePath, (UnixFileMode)(mode & 0x0fff));
+            }
+            if (metadata.AtimeMs is double atimeMs)
+            {
+                Directory.SetLastAccessTimeUtc(absolutePath, DateTimeOffset.FromUnixTimeMilliseconds((long)atimeMs).UtcDateTime);
+            }
+            if (metadata.MtimeMs is double mtimeMs)
+            {
+                Directory.SetLastWriteTimeUtc(absolutePath, DateTimeOffset.FromUnixTimeMilliseconds((long)mtimeMs).UtcDateTime);
+            }
         }
 
         beforeSnapshot = SnapshotProjectWorkspace();
     }
 
-    private static Dictionary<string, byte[]> SnapshotProjectWorkspace()
+    private static ProjectWorkspaceSnapshot SnapshotProjectWorkspace()
     {
-        Dictionary<string, byte[]> files = new(StringComparer.Ordinal);
+        ProjectWorkspaceSnapshot snapshot = new();
         if (!Directory.Exists(ProjectWorkspaceRoot))
         {
-            return files;
+            return snapshot;
         }
-
-        foreach (string filePath in Directory.EnumerateFiles(ProjectWorkspaceRoot, "*", SearchOption.AllDirectories))
-        {
-            string relativePath = Path.GetRelativePath(ProjectWorkspaceRoot, filePath).Replace('\\', '/');
-            files[relativePath] = File.ReadAllBytes(filePath);
-        }
-        return files;
+        SnapshotProjectDirectory(ProjectWorkspaceRoot, snapshot);
+        return snapshot;
     }
 
-    private static List<CSharpProjectFileChange> DiffProjectWorkspace(Dictionary<string, byte[]> beforeSnapshot)
+    private static void SnapshotProjectDirectory(string directoryPath, ProjectWorkspaceSnapshot snapshot)
     {
-        Dictionary<string, byte[]> afterSnapshot = SnapshotProjectWorkspace();
+        foreach (string entryPath in Directory.EnumerateFileSystemEntries(directoryPath))
+        {
+            string relativePath = Path.GetRelativePath(ProjectWorkspaceRoot, entryPath).Replace('\\', '/');
+            FileSystemInfo info = Directory.Exists(entryPath)
+                ? new DirectoryInfo(entryPath)
+                : new FileInfo(entryPath);
+            if (info is DirectoryInfo)
+            {
+                SnapshotProjectDirectory(entryPath, snapshot);
+                snapshot.Directories[relativePath] = SnapshotProjectDirectoryMetadata(entryPath);
+                continue;
+            }
+            snapshot.Files[relativePath] = SnapshotProjectFile(entryPath);
+        }
+    }
+
+    private static ProjectFileState SnapshotProjectFile(string path)
+    {
+        int mode = (int)File.GetUnixFileMode(path) & 0x0fff;
+        DateTime atimeUtc = File.GetLastAccessTimeUtc(path);
+        DateTime mtimeUtc = File.GetLastWriteTimeUtc(path);
+        byte[] bytes = File.ReadAllBytes(path);
+        File.SetLastAccessTimeUtc(path, atimeUtc);
+        return new ProjectFileState(
+            bytes,
+            mode,
+            new DateTimeOffset(atimeUtc).ToUnixTimeMilliseconds(),
+            new DateTimeOffset(mtimeUtc).ToUnixTimeMilliseconds()
+        );
+    }
+
+    private static ProjectDirectoryState SnapshotProjectDirectoryMetadata(string path)
+    {
+        int mode = (int)File.GetUnixFileMode(path) & 0x0fff;
+        double atimeMs = new DateTimeOffset(Directory.GetLastAccessTimeUtc(path)).ToUnixTimeMilliseconds();
+        double mtimeMs = new DateTimeOffset(Directory.GetLastWriteTimeUtc(path)).ToUnixTimeMilliseconds();
+        return new ProjectDirectoryState(mode, atimeMs, mtimeMs);
+    }
+
+    private static List<CSharpProjectFileChange> DiffProjectWorkspace(ProjectWorkspaceSnapshot beforeSnapshot)
+    {
+        ProjectWorkspaceSnapshot afterSnapshot = SnapshotProjectWorkspace();
         List<CSharpProjectFileChange> changes = new();
 
-        foreach ((string path, byte[] afterBytes) in afterSnapshot.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+        foreach ((string path, ProjectFileState afterFile) in afterSnapshot.Files.OrderBy(entry => entry.Key, StringComparer.Ordinal))
         {
-            if (beforeSnapshot.TryGetValue(path, out byte[]? beforeBytes) && beforeBytes.SequenceEqual(afterBytes))
+            if (beforeSnapshot.Files.TryGetValue(path, out ProjectFileState? beforeFile)
+                && beforeFile.Mode == afterFile.Mode
+                && beforeFile.AtimeMs == afterFile.AtimeMs
+                && beforeFile.MtimeMs == afterFile.MtimeMs
+                && beforeFile.Bytes.SequenceEqual(afterFile.Bytes))
             {
                 continue;
             }
-            changes.Add(EncodeProjectFileChange(path, afterBytes));
+            changes.Add(afterFile.ToChange(path));
         }
 
-        foreach (string deletedPath in beforeSnapshot.Keys.Except(afterSnapshot.Keys, StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal))
+        foreach ((string path, ProjectDirectoryState metadata) in afterSnapshot.Directories.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+        {
+            if (beforeSnapshot.Directories.TryGetValue(path, out ProjectDirectoryState? beforeMetadata)
+                && beforeMetadata == metadata)
+            {
+                continue;
+            }
+            changes.Add(metadata.ToChange(path));
+        }
+
+        foreach (string deletedPath in beforeSnapshot.Files.Keys
+            .Except(afterSnapshot.Files.Keys, StringComparer.Ordinal)
+            .Except(afterSnapshot.Directories.Keys, StringComparer.Ordinal)
+            .OrderBy(path => path, StringComparer.Ordinal))
         {
             changes.Add(new CSharpProjectFileChange { Path = deletedPath, Deleted = true });
+        }
+
+        foreach (string deletedPath in beforeSnapshot.Directories.Keys
+            .Except(afterSnapshot.Directories.Keys, StringComparer.Ordinal)
+            .Except(afterSnapshot.Files.Keys, StringComparer.Ordinal)
+            .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            changes.Add(new CSharpProjectFileChange { Path = deletedPath, Directory = true, Deleted = true });
         }
 
         return changes;
@@ -2867,12 +2985,24 @@ public sealed class ProjectFileStream : System.IO.FileStream
 
     private static CSharpProjectFileChange EncodeProjectDirectoryChange(string path, bool deleted = false)
     {
-        return new CSharpProjectFileChange
+        CSharpProjectFileChange change = new()
         {
             Path = path,
             Directory = true,
             Deleted = deleted,
         };
+        if (!deleted)
+        {
+            string absolutePath = ResolveProjectPath(path);
+            if (Directory.Exists(absolutePath))
+            {
+                ProjectDirectoryState metadata = SnapshotProjectDirectoryMetadata(absolutePath);
+                change.Mode = metadata.Mode;
+                change.AtimeMs = metadata.AtimeMs;
+                change.MtimeMs = metadata.MtimeMs;
+            }
+        }
+        return change;
     }
 
     private static string? ProjectRelativePathForRuntimePath(string path)
@@ -3017,7 +3147,13 @@ public sealed class ProjectFileStream : System.IO.FileStream
         }
     }
 
-    private static CSharpProjectFileChange EncodeProjectFileChange(string path, byte[] bytes)
+    private static CSharpProjectFileChange EncodeProjectFileChange(
+        string path,
+        byte[] bytes,
+        int? mode = null,
+        double? atimeMs = null,
+        double? mtimeMs = null
+    )
     {
         string text = Encoding.UTF8.GetString(bytes);
         if (Encoding.UTF8.GetBytes(text).SequenceEqual(bytes))
@@ -3027,6 +3163,9 @@ public sealed class ProjectFileStream : System.IO.FileStream
                 Path = path,
                 Contents = text,
                 Encoding = "utf8",
+                Mode = mode,
+                AtimeMs = atimeMs,
+                MtimeMs = mtimeMs,
             };
         }
 
@@ -3035,6 +3174,9 @@ public sealed class ProjectFileStream : System.IO.FileStream
             Path = path,
             Contents = Convert.ToBase64String(bytes),
             Encoding = "base64",
+            Mode = mode,
+            AtimeMs = atimeMs,
+            MtimeMs = mtimeMs,
         };
     }
 

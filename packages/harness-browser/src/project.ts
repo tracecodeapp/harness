@@ -1013,7 +1013,9 @@ export async function createBrowserProjectWorkspace(
       ? {
           ...workspaceOptions.projectSession,
           files: policyFiles,
+          symlinks: [],
           directories: [],
+          directoryMetadata: [],
         }
       : workspaceOptions.projectSession;
 
@@ -1023,7 +1025,9 @@ export async function createBrowserProjectWorkspace(
       ...(hasStoredWorkspace
         ? {
             files: storedSnapshot.files,
+            symlinks: storedSnapshot.symlinks,
             directories: storedSnapshot.directories,
+            directoryMetadata: storedSnapshot.directoryMetadata,
             entrypoint: storedSnapshot.entrypoint ?? workspaceOptions.entrypoint,
           }
         : {}),

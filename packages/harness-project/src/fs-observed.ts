@@ -28,13 +28,16 @@ import {
   runtimeKernelDeviceOutputRoute,
   runtimeKernelDirectoryTarget,
   runtimeKernelFileCopyTarget,
-  runtimeKernelFileReadErrorMessage,
+  runtimeKernelFileReadErrorCode,
+  runtimeKernelFileReadFsErrorMessage,
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
   runtimeKernelMkdirTarget,
   runtimeKernelMetadataErrorMessage,
+  runtimeKernelMetadataErrorCode,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationErrorMessage,
+  runtimeKernelMutationErrorCode,
   runtimeKernelMutationTarget,
   runtimeKernelReadErrorMessage,
   runtimeKernelReadTarget,
@@ -45,7 +48,8 @@ import {
   runtimeKernelVirtualDevices,
   runtimeKernelVirtualFiles,
   runtimeKernelVirtualPaths,
-  runtimeKernelWriteErrorMessage,
+  runtimeKernelWriteErrorCode,
+  runtimeKernelWriteFsErrorMessage,
   runtimeKernelWriteTarget,
   publicRuntimeKernelVirtualFiles,
   publicRuntimeKernelInfo,
@@ -71,6 +75,8 @@ import type {
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileDeletion,
+  RuntimeSymlink,
+  RuntimeDirectory,
   RuntimeDirectoryChange,
   RuntimeFileEncoding,
   RuntimeKernelInfo,
@@ -161,6 +167,9 @@ export interface RuntimeCommandExecutionContext {
     [key: string]: any;
   };
   readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
+  readonly terminal?: RuntimeCommandOptions['terminal'];
+  umask: number;
+  readonly onUmaskChange?: RuntimeCommandOptions['onUmaskChange'];
   readonly includeHiddenFiles?: boolean;
   readonly runtimeIo: RuntimeProjectLiveIoController;
   readonly generationBaseline: RuntimeFileSystemGenerationSnapshot;
@@ -172,6 +181,7 @@ export interface RuntimeCommandExecutionContext {
   outputBytes: Record<RuntimeCommandEventStream, number>;
   truncatedOutputStreams: Set<RuntimeCommandEventStream>;
   externalHttpRequestCount?: number;
+  handledSignal?: string;
 }
 
 
@@ -201,7 +211,9 @@ export function kernelWriteTarget(path: string): ReturnType<typeof runtimeKernel
 
 
 export function throwKernelWriteTargetError(path: string, target: Extract<ReturnType<typeof runtimeKernelWriteTarget>, { kind: 'error' }>): never {
-  throw new Error(runtimeKernelWriteErrorMessage(path, target));
+  throw Object.assign(new Error(runtimeKernelWriteFsErrorMessage(path, target)), {
+    code: runtimeKernelWriteErrorCode(target.reason),
+  });
 }
 
 
@@ -248,7 +260,9 @@ export function throwKernelMutationTargetError(
   target: Extract<ReturnType<typeof runtimeKernelMutationTarget>, { kind: 'error' }>,
   deviceMessage = `Kernel device namespace is read-only: ${path}`
 ): never {
-  throw new Error(runtimeKernelMutationErrorMessage(path, target, { deviceMessage }));
+  throw Object.assign(new Error(runtimeKernelMutationErrorMessage(path, target, { deviceMessage })), {
+    code: runtimeKernelMutationErrorCode(target.reason),
+  });
 }
 
 
@@ -301,7 +315,9 @@ export function kernelReadTargetError(
   path: string,
   target: Extract<ReturnType<typeof runtimeKernelReadTarget>, { kind: 'error' }>
 ): Error {
-  return new Error(runtimeKernelReadErrorMessage(path, target));
+  return Object.assign(new Error(runtimeKernelReadErrorMessage(path, target)), {
+    code: target.reason === 'permission-denied' ? 'EBADF' : 'ENOENT',
+  });
 }
 
 
@@ -309,7 +325,9 @@ export function throwKernelFileReadTargetError(
   path: string,
   target: Extract<ReturnType<typeof runtimeKernelFileReadTarget>, { kind: 'error' }>
 ): never {
-  throw new Error(runtimeKernelFileReadErrorMessage(path, target));
+  throw Object.assign(new Error(runtimeKernelFileReadFsErrorMessage(path, target)), {
+    code: runtimeKernelFileReadErrorCode(target.reason),
+  });
 }
 
 
@@ -323,12 +341,18 @@ export function throwKernelMetadataTargetError(
   path: string,
   target: Extract<ReturnType<typeof runtimeKernelMetadataTarget>, { kind: 'error' }>
 ): never {
-  throw new Error(runtimeKernelMetadataErrorMessage(path, target));
+  throw Object.assign(new Error(runtimeKernelMetadataErrorMessage(path, target)), {
+    code: runtimeKernelMetadataErrorCode(target.reason),
+  });
 }
 
 
 export function isRuntimeDirectoryChange(change: RuntimeFileChange): change is RuntimeDirectoryChange {
   return (change as RuntimeDirectoryChange).directory === true;
+}
+
+export function isRuntimeSymlinkChange(change: RuntimeFileChange): change is RuntimeSymlink {
+  return (change as RuntimeSymlink).symlink === true;
 }
 
 
@@ -351,6 +375,8 @@ export async function collectSnapshotFiles(
   absolutePath: string,
   files: RuntimeFile[],
   directories: string[],
+  symlinks: RuntimeSymlink[],
+  directoryMetadata: RuntimeDirectory[] = [],
   seenDirectories = new Set<string>()
 ): Promise<void> {
   if (!isWithinWorkspace(cwd, absolutePath)) {
@@ -358,7 +384,14 @@ export async function collectSnapshotFiles(
   }
 
   const stat = await fs.lstat(absolutePath);
-  if (runtimeFileSystemEntryIsSymlink(stat)) return;
+  if (runtimeFileSystemEntryIsSymlink(stat)) {
+    symlinks.push({
+      path: toProjectPath(cwd, absolutePath),
+      symlink: true,
+      target: await fs.readlink(absolutePath),
+    });
+    return;
+  }
   if (stat.isFile) {
     const bytes = await fs.readFileBuffer(absolutePath);
     const text = decodeUtf8(bytes);
@@ -366,6 +399,8 @@ export async function collectSnapshotFiles(
       path: toProjectPath(cwd, absolutePath),
       contents: text ?? base64FromBytes(bytes),
       encoding: text === null ? 'base64' : 'utf8',
+      ...(typeof stat.mode === 'number' ? { mode: stat.mode & 0o7777 } : {}),
+      ...(stat.mtime instanceof Date ? { mtimeMs: stat.mtime.getTime() } : {}),
     });
     return;
   }
@@ -375,10 +410,20 @@ export async function collectSnapshotFiles(
   if (seenDirectories.has(directoryKey)) return;
   seenDirectories.add(directoryKey);
   const directoryPath = toProjectDirectoryPath(cwd, absolutePath);
-  if (directoryPath !== null) directories.push(directoryPath);
+  if (directoryPath !== null) {
+    const atime = (stat as { atime?: Date; atimeMs?: number }).atime;
+    const atimeMs = atime instanceof Date ? atime.getTime() : (stat as { atimeMs?: number }).atimeMs;
+    directories.push(directoryPath);
+    directoryMetadata.push({
+      path: directoryPath,
+      ...(typeof stat.mode === 'number' ? { mode: stat.mode & 0o7777 } : {}),
+      ...(typeof atimeMs === 'number' ? { atimeMs } : {}),
+      ...(stat.mtime instanceof Date ? { mtimeMs: stat.mtime.getTime() } : {}),
+    });
+  }
 
   for (const entry of await fs.readdir(absolutePath)) {
-    await collectSnapshotFiles(fs, cwd, `${absolutePath}/${entry}`, files, directories, seenDirectories);
+    await collectSnapshotFiles(fs, cwd, `${absolutePath}/${entry}`, files, directories, symlinks, directoryMetadata, seenDirectories);
   }
 }
 
@@ -448,9 +493,13 @@ export async function snapshotCommandContext(
 ): Promise<RuntimeProjectSnapshot> {
   const files: RuntimeFile[] = [];
   const directories: string[] = [];
-  await collectSnapshotFiles(ctx.fs, workspaceRoot, workspaceRoot, files, directories);
+  const symlinks: RuntimeSymlink[] = [];
+  const directoryMetadata: RuntimeDirectory[] = [];
+  await collectSnapshotFiles(ctx.fs, workspaceRoot, workspaceRoot, files, directories, symlinks, directoryMetadata);
   files.sort((left, right) => left.path.localeCompare(right.path));
   directories.sort((left, right) => left.localeCompare(right));
+  symlinks.sort((left, right) => left.path.localeCompare(right.path));
+  directoryMetadata.sort((left, right) => left.path.localeCompare(right.path));
   const publicKernel = kernel ? publicRuntimeKernelInfo(kernel) : undefined;
   const kernelFiles = kernel ? await snapshotRuntimeKernelVirtualFiles(ctx.fs, kernel) : undefined;
   const snapshot: RuntimeProjectSnapshot = {
@@ -461,7 +510,9 @@ export async function snapshotCommandContext(
     ...(kernel ? { kernelDevices: runtimeKernelVirtualDevices() } : {}),
     ...(kernelFiles ? { kernelFiles } : {}),
     files,
+    ...(symlinks.length > 0 ? { symlinks } : {}),
     ...(directories.length > 0 ? { directories } : {}),
+    ...(directoryMetadata.length > 0 ? { directoryMetadata } : {}),
     ...(readonlyFiles && readonlyFiles.length > 0 ? { readonlyFiles: [...readonlyFiles] } : {}),
     ...(includeHiddenFiles && hiddenFiles && hiddenFiles.length > 0 ? { hiddenFiles: [...hiddenFiles] } : {}),
     ...(entrypoint ? { entrypoint } : {}),
@@ -482,7 +533,10 @@ export function filterReadonlySnapshotFiles(
     .filter((path) => path.includes('/') && !keep.has(path)));
   if (readonly.size === 0) return snapshot;
   const files = snapshot.files.filter((file) => !readonly.has(normalizeRuntimeProjectPath(file.path)));
-  return files.length === snapshot.files.length ? snapshot : { ...snapshot, files };
+  const symlinks = snapshot.symlinks?.filter((symlink) => !readonly.has(normalizeRuntimeProjectPath(symlink.path)));
+  return files.length === snapshot.files.length && symlinks?.length === snapshot.symlinks?.length
+    ? snapshot
+    : { ...snapshot, files, ...(symlinks && symlinks.length > 0 ? { symlinks } : { symlinks: undefined }) };
 }
 
 
@@ -494,15 +548,22 @@ export function filterHiddenSnapshotFiles(
   const hidden = new Set(hiddenFiles.map((path) => normalizeRuntimeProjectPath(path)));
   if (hidden.size === 0) return snapshot;
   const files = snapshot.files.filter((file) => !hidden.has(normalizeRuntimeProjectPath(file.path)));
+  const symlinks = snapshot.symlinks?.filter((symlink) => !hidden.has(normalizeRuntimeProjectPath(symlink.path)));
   const directories = snapshot.directories?.filter((directory) => {
     const normalized = normalizeRuntimeProjectPath(directory);
     return ![...hidden].some((hiddenPath) => hiddenPath === normalized || hiddenPath.startsWith(`${normalized}/`));
   });
-  const { directories: _directories, hiddenFiles: _hiddenFiles, ...rest } = snapshot;
+  const directoryMetadata = snapshot.directoryMetadata?.filter((directory) => {
+    const normalized = normalizeRuntimeProjectPath(directory.path);
+    return ![...hidden].some((hiddenPath) => hiddenPath === normalized || hiddenPath.startsWith(`${normalized}/`));
+  });
+  const { directories: _directories, directoryMetadata: _directoryMetadata, symlinks: _symlinks, hiddenFiles: _hiddenFiles, ...rest } = snapshot;
   return {
     ...rest,
     files,
+    ...(symlinks && symlinks.length > 0 ? { symlinks } : {}),
     ...(directories && directories.length > 0 ? { directories } : {}),
+    ...(directoryMetadata && directoryMetadata.length > 0 ? { directoryMetadata } : {}),
   };
 }
 
@@ -569,6 +630,21 @@ export function isKernelReadonlyError(error: unknown): boolean {
   return (error as { code?: unknown }).code === 'EROFS'
     && error instanceof Error
     && error.message.startsWith('EROFS: readonly project ');
+}
+
+export function isKernelVirtualFilesystemError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return (
+    code === 'EBADF' ||
+    code === 'EISDIR' ||
+    code === 'ENOENT' ||
+    code === 'ENOTDIR' ||
+    code === 'EROFS'
+  ) && (
+    error.message.startsWith('Kernel ') ||
+    /^[A-Z]+: /u.test(error.message)
+  );
 }
 
 
@@ -655,12 +731,20 @@ export async function applyCommandResultFiles(
             await ctx.fs.rm(absolutePath, { force: true, recursive: true });
           } else {
             await ctx.fs.mkdir(absolutePath, { recursive: true });
+            await applyRuntimeEntryMetadata(ctx.fs, absolutePath, file);
           }
           onFileChange?.(file, phase, commandContext);
           return;
         }
         if ((file as { deleted?: boolean }).deleted === true) {
           await ctx.fs.rm(absolutePath, { force: true });
+          onFileChange?.(file, phase, commandContext);
+          return;
+        }
+        if (isRuntimeSymlinkChange(file)) {
+          await ctx.fs.mkdir(dirname(absolutePath), { recursive: true });
+          await ctx.fs.rm(absolutePath, { force: true, recursive: true });
+          await ctx.fs.symlink(file.target, absolutePath);
           onFileChange?.(file, phase, commandContext);
           return;
         }
@@ -671,12 +755,14 @@ export async function applyCommandResultFiles(
         } else {
           await ctx.fs.writeFile(absolutePath, changedFile.contents);
         }
+        await applyRuntimeEntryMetadata(ctx.fs, absolutePath, changedFile);
         onFileChange?.(changedFile, phase, commandContext);
       });
     });
   } catch (error) {
     if (
       isKernelReadonlyError(error) ||
+      isKernelVirtualFilesystemError(error) ||
       isRuntimeFileGenerationConflict(error) ||
       isRuntimeWorkspaceStorageLimitError(error)
     ) {
@@ -696,7 +782,7 @@ export function prepareFinalDiffChange(workspaceRoot: string, file: RuntimeFileC
     ? toWorkspaceEntryPath(workspaceRoot, file.path)
     : (file as RuntimeFileDeletion).deleted === true
       ? toWorkspacePath(workspaceRoot, file.path)
-      : toWorkspacePath(workspaceRoot, (file as RuntimeFile).path);
+      : toWorkspacePath(workspaceRoot, file.path);
   const kind: RuntimeFileSystemMutationKind = isRuntimeDirectoryChange(file)
     ? file.deleted === true ? 'recursive-delete' : 'directory-create'
     : (file as RuntimeFileDeletion).deleted === true
@@ -712,11 +798,18 @@ export function prepareFinalDiffChange(workspaceRoot: string, file: RuntimeFileC
           await fs.rm(absolutePath, { force: true, recursive: true });
         } else {
           await fs.mkdir(absolutePath, { recursive: true });
+          await applyRuntimeEntryMetadata(fs, absolutePath, file);
         }
         return;
       }
       if ((file as RuntimeFileDeletion).deleted === true) {
         await fs.rm(absolutePath, { force: true });
+        return;
+      }
+      if (isRuntimeSymlinkChange(file)) {
+        await fs.mkdir(dirname(absolutePath), { recursive: true });
+        await fs.rm(absolutePath, { force: true, recursive: true });
+        await fs.symlink(file.target, absolutePath);
         return;
       }
       const changedFile = file as RuntimeFile;
@@ -725,8 +818,25 @@ export function prepareFinalDiffChange(workspaceRoot: string, file: RuntimeFileC
       } else {
         await fs.writeFile(absolutePath, changedFile.contents);
       }
+      await applyRuntimeEntryMetadata(fs, absolutePath, changedFile);
     },
   };
+}
+
+async function applyRuntimeEntryMetadata(
+  fs: CommandContext['fs'],
+  path: string,
+  file: RuntimeFile | RuntimeDirectoryChange
+): Promise<void> {
+  if (file.mode !== undefined) await fs.chmod(path, file.mode);
+  if (file.atimeMs === undefined && file.mtimeMs === undefined) return;
+  const stat = await fs.stat(path);
+  const currentMtime = stat.mtime instanceof Date ? stat.mtime.getTime() : 0;
+  await fs.utimes(
+    path,
+    new Date(file.atimeMs ?? currentMtime),
+    new Date(file.mtimeMs ?? currentMtime)
+  );
 }
 
 
@@ -998,6 +1108,15 @@ interface RuntimeWorkspaceQuotaEntry {
 
 type RuntimeWorkspaceQuotaChanges = Map<string, RuntimeWorkspaceQuotaEntry | null>;
 
+export interface RuntimeWorkspaceStorageUsage {
+  usedBytes: number;
+  capacityBytes: number;
+  availableBytes: number;
+  usedEntries: number;
+  capacityEntries: number;
+  availableEntries: number;
+}
+
 
 /**
  * A metadata-only quota boundary around the backing filesystem.
@@ -1039,6 +1158,18 @@ class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
     if (this.initialized) return;
     await this.rebuildLedger();
     this.initialized = true;
+  }
+
+  async storageUsage(): Promise<RuntimeWorkspaceStorageUsage> {
+    await this.ensureInitialized();
+    return {
+      usedBytes: this.totalWorkspaceBytes,
+      capacityBytes: this.limits.maxWorkspaceBytes,
+      availableBytes: Math.max(0, this.limits.maxWorkspaceBytes - this.totalWorkspaceBytes),
+      usedEntries: this.totalWorkspaceEntries,
+      capacityEntries: this.limits.maxEntryCount,
+      availableEntries: Math.max(0, this.limits.maxEntryCount - this.totalWorkspaceEntries),
+    };
   }
 
   private async rebuildLedger(): Promise<void> {
@@ -1302,6 +1433,12 @@ class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
           }
         } else if ((change as RuntimeFileDeletion).deleted === true) {
           projected.delete(path);
+        } else if (isRuntimeSymlinkChange(change)) {
+          this.ensureSnapshotParents(projected, path);
+          projected.set(path, {
+            kind: 'symlink',
+            size: new TextEncoder().encode(change.target).byteLength,
+          });
         } else {
           this.ensureSnapshotParents(projected, path);
           projected.set(path, {
@@ -1564,6 +1701,10 @@ export class KernelObservedFileSystem implements IFileSystem {
     return new Map(this.generations);
   }
 
+  storageUsage(): Promise<RuntimeWorkspaceStorageUsage> {
+    return this.quotaFileSystem.storageUsage();
+  }
+
   get mutationVersion(): number {
     return this.mutationCounter;
   }
@@ -1761,6 +1902,10 @@ export class KernelObservedFileSystem implements IFileSystem {
     }
     if ((change.change as RuntimeFileDeletion).deleted === true) {
       this.assertWritable(change.absolutePath, 'delete');
+      return;
+    }
+    if (isRuntimeSymlinkChange(change.change)) {
+      this.assertWritable(change.absolutePath, 'symlink');
       return;
     }
     try {
@@ -2150,7 +2295,7 @@ export class KernelObservedFileSystem implements IFileSystem {
   private assertDynamicVirtualWritable(path: string, operation: string): void {
     if (!this.dynamicProc.readonlyNamespace(this.mapPath(path))) return;
     throw Object.assign(
-      new Error(`EROFS: kernel virtual path is read-only, ${operation} '${path}'`),
+      new Error(`EROFS: read-only file system, ${operation} '${path}'`),
       { code: 'EROFS' }
     );
   }
@@ -2314,6 +2459,9 @@ export class KernelObservedFileSystem implements IFileSystem {
         throw error;
       }
       await this.base.writeFile(mappedPath, content, options);
+      if (mutationKind === 'file-create' && context) {
+        await this.base.chmod(mappedPath, 0o666 & ~context.umask);
+      }
       this.inodeForPath(mappedPath);
       this.recordMutation(context, [mappedPath], mutationKind);
       await this.emitFileWrite(context, mappedPath);
@@ -2342,6 +2490,9 @@ export class KernelObservedFileSystem implements IFileSystem {
     await this.withMutationLocks(context, [mappedPath], mutationKind, async () => {
       this.assertWritable(mappedPath, 'append');
       await this.base.appendFile(mappedPath, content, options);
+      if (mutationKind === 'file-create' && context) {
+        await this.base.chmod(mappedPath, 0o666 & ~context.umask);
+      }
       this.inodeForPath(mappedPath);
       this.recordMutation(context, [mappedPath], mutationKind);
       await this.emitFileWrite(context, mappedPath);
@@ -2404,6 +2555,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       await this.base.mkdir(mappedPath, options);
       for (const directoryPath of createdDirectories) {
         this.inodeForPath(directoryPath);
+        if (context) await this.base.chmod(directoryPath, 0o777 & ~context.umask);
       }
       if (createdDirectories.length > 0) this.recordMutation(context, createdDirectories, 'directory-create');
       for (const directoryPath of createdDirectories) {
@@ -2721,6 +2873,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       this.assertWritable(mappedPath, 'symlink');
       await this.base.symlink(target, mappedPath);
       this.recordMutation(context, [mappedPath], 'file-create');
+      this.emitSymlinkCreate(context, mappedPath, target);
     });
   }
 
@@ -2946,6 +3099,13 @@ export class KernelObservedFileSystem implements IFileSystem {
     const projectPath = toProjectPath(this.workspaceRoot(), path);
     if (!this.tryReserveLiveFileChange(context, projectPath)) return;
     this.onFileChange(context, { path: projectPath, deleted: true });
+  }
+
+  private emitSymlinkCreate(context: RuntimeCommandExecutionContext | undefined, path: string, target: string): void {
+    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
+    const projectPath = toProjectPath(this.workspaceRoot(), path);
+    if (!this.tryReserveLiveFileChange(context, projectPath, runtimeProjectUtf8Bytes(target))) return;
+    this.onFileChange(context, { path: projectPath, symlink: true, target });
   }
 
   private emitDirectoryCreate(context: RuntimeCommandExecutionContext | undefined, path: string): void {

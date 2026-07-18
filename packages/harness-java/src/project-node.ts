@@ -1,6 +1,20 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, lstat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readlink,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import {
@@ -88,6 +102,65 @@ async function writeProjectFile(root: string, file: JavaProjectFile): Promise<vo
 
 async function writeProjectDirectory(root: string, path: string): Promise<void> {
   await mkdir(join(root, assertSafeProjectPath(path)), { recursive: true });
+}
+
+function workspaceRelativeSymlinkTarget(root: string, linkPath: string, target: string): string {
+  if (target.includes('\0')) throw new Error('Project symlink target must not contain NUL bytes.');
+  const normalized = target.replace(/\\/g, '/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
+    throw new Error(`Native Java project provider cannot preserve absolute symlink target: ${target}`);
+  }
+  const materializedTarget = resolve(dirname(linkPath), normalized);
+  const relativeTarget = relative(root, materializedTarget).replace(/\\/g, '/');
+  if (relativeTarget.startsWith('..')) {
+    throw new Error(`Project symlink target must stay inside the workspace: ${target}`);
+  }
+  return normalized;
+}
+
+async function writeProjectSymlink(
+  root: string,
+  entry: NonNullable<JavaProjectSnapshot['symlinks']>[number]
+): Promise<void> {
+  const relativePath = assertSafeProjectPath(entry.path);
+  const linkPath = join(root, relativePath);
+  await mkdir(dirname(linkPath), { recursive: true });
+  await symlink(workspaceRelativeSymlinkTarget(root, linkPath, entry.target), linkPath);
+}
+
+async function applyProjectDirectoryMetadata(
+  root: string,
+  entry: NonNullable<JavaProjectSnapshot['directoryMetadata']>[number]
+): Promise<void> {
+  const targetPath = join(root, assertSafeProjectPath(entry.path));
+  await mkdir(targetPath, { recursive: true });
+  if (entry.mode !== undefined) {
+    await chmod(targetPath, entry.mode & 0o7777);
+  }
+  if (entry.atimeMs !== undefined || entry.mtimeMs !== undefined) {
+    const current = await stat(targetPath);
+    await utimes(
+      targetPath,
+      entry.atimeMs === undefined ? current.atime : new Date(entry.atimeMs),
+      entry.mtimeMs === undefined ? current.mtime : new Date(entry.mtimeMs)
+    );
+  }
+}
+
+async function applyProjectFileMetadata(root: string, file: JavaProjectFile): Promise<void> {
+  if (file.mode === undefined && file.atimeMs === undefined && file.mtimeMs === undefined) return;
+  const targetPath = join(root, assertSafeProjectPath(file.path));
+  if (file.mode !== undefined) {
+    await chmod(targetPath, file.mode & 0o7777);
+  }
+  if (file.atimeMs !== undefined || file.mtimeMs !== undefined) {
+    const current = await stat(targetPath);
+    await utimes(
+      targetPath,
+      file.atimeMs === undefined ? current.atime : new Date(file.atimeMs),
+      file.mtimeMs === undefined ? current.mtime : new Date(file.mtimeMs)
+    );
+  }
 }
 
 function fileBytes(file: JavaProjectFile): Buffer {
@@ -221,6 +294,97 @@ async function snapshotDirectories(root: string): Promise<Set<string>> {
   return directories;
 }
 
+interface NativeDirectoryMetadata {
+  mode: number;
+  atimeMs: number;
+  mtimeMs: number;
+}
+
+type NativeFileMetadata = NativeDirectoryMetadata;
+
+function nativeDirectoryMetadata(info: { mode: number; atimeMs: number; mtimeMs: number }): NativeDirectoryMetadata {
+  return {
+    mode: info.mode & 0o7777,
+    atimeMs: info.atimeMs,
+    mtimeMs: info.mtimeMs,
+  };
+}
+
+async function collectDirectoryMetadata(
+  root: string,
+  absolutePath: string,
+  metadata: Map<string, NativeDirectoryMetadata>
+): Promise<void> {
+  const info = await lstat(absolutePath);
+  if (info.isSymbolicLink() || !info.isDirectory()) return;
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  for (const entry of await readdir(absolutePath)) {
+    await collectDirectoryMetadata(root, join(absolutePath, entry), metadata);
+  }
+  if (relativePath && !relativePath.startsWith('..')) {
+    // Capture after readdir so the baseline includes any atime transition caused
+    // by the snapshot traversal itself (notably on relatime-style mounts).
+    metadata.set(relativePath, nativeDirectoryMetadata(await lstat(absolutePath)));
+  }
+}
+
+async function snapshotDirectoryMetadata(root: string): Promise<Map<string, NativeDirectoryMetadata>> {
+  const metadata = new Map<string, NativeDirectoryMetadata>();
+  await collectDirectoryMetadata(root, root, metadata);
+  return metadata;
+}
+
+async function collectFileMetadata(
+  root: string,
+  absolutePath: string,
+  metadata: Map<string, NativeFileMetadata>
+): Promise<void> {
+  const info = await lstat(absolutePath);
+  if (info.isSymbolicLink()) return;
+  if (info.isDirectory()) {
+    for (const entry of await readdir(absolutePath)) {
+      await collectFileMetadata(root, join(absolutePath, entry), metadata);
+    }
+    return;
+  }
+  if (!info.isFile()) return;
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (relativePath && !relativePath.startsWith('..')) {
+    metadata.set(relativePath, nativeDirectoryMetadata(info));
+  }
+}
+
+async function snapshotFileMetadata(root: string): Promise<Map<string, NativeFileMetadata>> {
+  const metadata = new Map<string, NativeFileMetadata>();
+  await collectFileMetadata(root, root, metadata);
+  return metadata;
+}
+
+function directoryMetadataChanged(left: NativeDirectoryMetadata, right: NativeDirectoryMetadata): boolean {
+  return left.mode !== right.mode || left.atimeMs !== right.atimeMs || left.mtimeMs !== right.mtimeMs;
+}
+
+async function collectSymlinkTargets(root: string, absolutePath: string, symlinks: Map<string, string>): Promise<void> {
+  const info = await lstat(absolutePath);
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (info.isSymbolicLink()) {
+    if (relativePath && !relativePath.startsWith('..')) {
+      symlinks.set(relativePath, await readlink(absolutePath));
+    }
+    return;
+  }
+  if (!info.isDirectory()) return;
+  for (const entry of await readdir(absolutePath)) {
+    await collectSymlinkTargets(root, join(absolutePath, entry), symlinks);
+  }
+}
+
+async function snapshotSymlinkTargets(root: string): Promise<Map<string, string>> {
+  const symlinks = new Map<string, string>();
+  await collectSymlinkTargets(root, root, symlinks);
+  return symlinks;
+}
+
 function explicitlySnapshottedProjectDirectories(project: JavaProjectSnapshot): Set<string> {
   return new Set((project.directories ?? []).map((directory) => assertSafeProjectPath(directory)));
 }
@@ -229,24 +393,63 @@ async function collectChangedFiles(
   root: string,
   absolutePath: string,
   baselineFiles: Map<string, Buffer>,
+  baselineFileMetadata: Map<string, NativeFileMetadata>,
+  baselineSymlinks: Map<string, string>,
   baselineDirectories: Set<string>,
+  baselineDirectoryMetadata: Map<string, NativeDirectoryMetadata>,
   deletableDirectories: Set<string>,
   files: RuntimeFileChange[]
 ): Promise<void> {
   const info = await lstat(absolutePath);
-  if (info.isSymbolicLink()) return;
   const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (info.isSymbolicLink()) {
+    if (!relativePath || relativePath.startsWith('..')) return;
+    const target = await readlink(absolutePath);
+    const baseline = baselineSymlinks.get(relativePath);
+    baselineSymlinks.delete(relativePath);
+    baselineFiles.delete(relativePath);
+    baselineFileMetadata.delete(relativePath);
+    baselineDirectories.delete(relativePath);
+    baselineDirectoryMetadata.delete(relativePath);
+    deletableDirectories.delete(relativePath);
+    if (baseline !== target) files.push({ path: relativePath, symlink: true, target });
+    return;
+  }
   if (info.isDirectory()) {
+    let previousMetadata: NativeDirectoryMetadata | undefined;
+    let existedAtBaseline = false;
     if (relativePath && !relativePath.startsWith('..')) {
+      baselineFiles.delete(relativePath);
+      baselineFileMetadata.delete(relativePath);
+      baselineSymlinks.delete(relativePath);
+      previousMetadata = baselineDirectoryMetadata.get(relativePath);
+      baselineDirectoryMetadata.delete(relativePath);
       if (baselineDirectories.has(relativePath)) {
+        existedAtBaseline = true;
         baselineDirectories.delete(relativePath);
         deletableDirectories.delete(relativePath);
-      } else {
-        files.push({ path: relativePath, directory: true });
       }
     }
     for (const entry of await readdir(absolutePath)) {
-      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, baselineDirectories, deletableDirectories, files);
+      await collectChangedFiles(
+        root,
+        join(absolutePath, entry),
+        baselineFiles,
+        baselineFileMetadata,
+        baselineSymlinks,
+        baselineDirectories,
+        baselineDirectoryMetadata,
+        deletableDirectories,
+        files
+      );
+    }
+    if (relativePath && !relativePath.startsWith('..')) {
+      // Compare after walking children, matching snapshotDirectoryMetadata's
+      // ordering so this scanner cannot manufacture an atime-only final diff.
+      const currentMetadata = nativeDirectoryMetadata(await lstat(absolutePath));
+      if (!existedAtBaseline || (previousMetadata && directoryMetadataChanged(previousMetadata, currentMetadata))) {
+        files.push({ path: relativePath, directory: true, ...currentMetadata });
+      }
     }
     return;
   }
@@ -257,26 +460,54 @@ async function collectChangedFiles(
 
   const contents = await readFile(absolutePath);
   const baseline = baselineFiles.get(relativePath);
+  const currentMetadata = nativeDirectoryMetadata(info);
+  const baselineMetadata = baselineFileMetadata.get(relativePath);
   baselineFiles.delete(relativePath);
-  if (baseline && Buffer.compare(baseline, contents) === 0) return;
+  baselineFileMetadata.delete(relativePath);
+  baselineSymlinks.delete(relativePath);
+  baselineDirectories.delete(relativePath);
+  baselineDirectoryMetadata.delete(relativePath);
+  deletableDirectories.delete(relativePath);
+  if (
+    baseline &&
+    Buffer.compare(baseline, contents) === 0 &&
+    baselineMetadata &&
+    !directoryMetadataChanged(baselineMetadata, currentMetadata)
+  ) return;
 
   const utf8 = contents.toString('utf8');
   files.push(
     Buffer.compare(Buffer.from(utf8, 'utf8'), contents) === 0
-      ? { path: relativePath, contents: utf8 }
-      : { path: relativePath, contents: contents.toString('base64'), encoding: 'base64' }
+      ? { path: relativePath, contents: utf8, ...currentMetadata }
+      : { path: relativePath, contents: contents.toString('base64'), encoding: 'base64', ...currentMetadata }
   );
 }
 
 async function changedProjectFiles(
   root: string,
   baselineFiles: Map<string, Buffer>,
+  baselineFileMetadata: Map<string, NativeFileMetadata>,
+  baselineSymlinks: Map<string, string>,
   baselineDirectories: Set<string>,
+  baselineDirectoryMetadata: Map<string, NativeDirectoryMetadata>,
   deletableDirectories: Set<string>
 ): Promise<RuntimeFileChange[]> {
   const files: RuntimeFileChange[] = [];
-  await collectChangedFiles(root, root, baselineFiles, baselineDirectories, deletableDirectories, files);
+  await collectChangedFiles(
+    root,
+    root,
+    baselineFiles,
+    baselineFileMetadata,
+    baselineSymlinks,
+    baselineDirectories,
+    baselineDirectoryMetadata,
+    deletableDirectories,
+    files
+  );
   for (const path of baselineFiles.keys()) {
+    files.push({ path, deleted: true });
+  }
+  for (const path of baselineSymlinks.keys()) {
     files.push({ path, deleted: true });
   }
   for (const path of deletableDirectories) {
@@ -655,13 +886,26 @@ export function createNativeJavaProjectRunner(
       for (const directory of request.project.directories ?? []) {
         await writeProjectDirectory(root, directory);
       }
+      for (const entry of request.project.symlinks ?? []) {
+        await writeProjectSymlink(root, entry);
+      }
+      for (const file of request.project.files) {
+        await applyProjectFileMetadata(root, file);
+      }
+      // Apply directory metadata last because materializing descendants updates parent mtimes.
+      for (const entry of request.project.directoryMetadata ?? []) {
+        await applyProjectDirectoryMetadata(root, entry);
+      }
 
       const cwd = cwdForRequest(request, root);
       await mkdir(cwd, { recursive: true });
       const jarPath = request.source === 'run' ? jarPathForRequest(request, root, cwd) : null;
       if (request.source === 'run' && jarPath) {
         const baseline = await snapshotFileBytes(root);
+        const baselineFileMetadata = await snapshotFileMetadata(root);
+        const baselineSymlinks = await snapshotSymlinkTargets(root);
         const baselineDirectories = await snapshotDirectories(root);
+        const baselineDirectoryMetadata = await snapshotDirectoryMetadata(root);
         const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
         const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-jar', jarPath, ...request.args], {
           cwd,
@@ -672,7 +916,15 @@ export function createNativeJavaProjectRunner(
           timeoutLabel: 'java',
           onEvent: request.onEvent,
         });
-        const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
+        const files = await changedProjectFiles(
+          root,
+          baseline,
+          baselineFileMetadata,
+          baselineSymlinks,
+          baselineDirectories,
+          baselineDirectoryMetadata,
+          deletableDirectories
+        );
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...run, files };
       }
@@ -680,7 +932,10 @@ export function createNativeJavaProjectRunner(
       const runClasspath = request.source === 'run' ? classpathEntriesForRequest(request, root, cwd).join(delimiter) : '';
       if (request.source === 'run' && effectiveJavaClasspath(request)) {
         const baseline = await snapshotFileBytes(root);
+        const baselineFileMetadata = await snapshotFileMetadata(root);
+        const baselineSymlinks = await snapshotSymlinkTargets(root);
         const baselineDirectories = await snapshotDirectories(root);
+        const baselineDirectoryMetadata = await snapshotDirectoryMetadata(root);
         const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
         const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
           cwd,
@@ -691,13 +946,24 @@ export function createNativeJavaProjectRunner(
           timeoutLabel: 'java',
           onEvent: request.onEvent,
         });
-        const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
+        const files = await changedProjectFiles(
+          root,
+          baseline,
+          baselineFileMetadata,
+          baselineSymlinks,
+          baselineDirectories,
+          baselineDirectoryMetadata,
+          deletableDirectories
+        );
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...run, files };
       }
 
       const compileBaseline = request.source === 'compile' ? await snapshotFileBytes(root) : null;
+      const compileBaselineFileMetadata = request.source === 'compile' ? await snapshotFileMetadata(root) : null;
+      const compileBaselineSymlinks = request.source === 'compile' ? await snapshotSymlinkTargets(root) : null;
       const compileBaselineDirectories = request.source === 'compile' ? await snapshotDirectories(root) : null;
+      const compileBaselineDirectoryMetadata = request.source === 'compile' ? await snapshotDirectoryMetadata(root) : null;
       const compileDeletableDirectories = request.source === 'compile'
         ? explicitlySnapshottedProjectDirectories(request.project)
         : null;
@@ -714,7 +980,10 @@ export function createNativeJavaProjectRunner(
         const files = await changedProjectFiles(
           root,
           compileBaseline ?? new Map(),
+          compileBaselineFileMetadata ?? new Map(),
+          compileBaselineSymlinks ?? new Map(),
           compileBaselineDirectories ?? new Set(),
+          compileBaselineDirectoryMetadata ?? new Map(),
           compileDeletableDirectories ?? new Set()
         );
         emitRuntimeCommandFileChanges(request.onEvent, files);
@@ -725,7 +994,10 @@ export function createNativeJavaProjectRunner(
       }
 
       const baseline = await snapshotFileBytes(root);
+      const baselineFileMetadata = await snapshotFileMetadata(root);
+      const baselineSymlinks = await snapshotSymlinkTargets(root);
       const baselineDirectories = await snapshotDirectories(root);
+      const baselineDirectoryMetadata = await snapshotDirectoryMetadata(root);
       const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
       const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
         cwd,
@@ -736,7 +1008,15 @@ export function createNativeJavaProjectRunner(
         timeoutLabel: 'java',
         onEvent: request.onEvent,
       });
-      const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
+      const files = await changedProjectFiles(
+        root,
+        baseline,
+        baselineFileMetadata,
+        baselineSymlinks,
+        baselineDirectories,
+        baselineDirectoryMetadata,
+        deletableDirectories
+      );
       emitRuntimeCommandFileChanges(request.onEvent, files);
       return {
         stdout: `${compile.stdout}${run.stdout}`,

@@ -20,7 +20,12 @@ interface CppProjectWorkerFile {
   contents?: string;
   encoding?: string;
   directory?: true;
+  symlink?: true;
+  target?: string;
   deleted?: true;
+  mode?: number;
+  atimeMs?: number;
+  mtimeMs?: number;
 }
 
 interface CppProjectWorkerResponse {
@@ -556,6 +561,10 @@ async function main(): Promise<void> {
         },
         { path: 'src/helper.hpp', contents: 'int helper_value();\\n' },
         { path: 'src/helper.cpp', contents: '#include "helper.hpp"\\nint helper_value() { return 42; }\\n' },
+        { path: 'src/data/target.txt', contents: 'target\\n', mode: 0o600, atimeMs: 1_640_000_000_000, mtimeMs: 1_640_000_100_000 },
+        { path: 'src/data-dir/nested.txt', contents: 'nested\\n' },
+        { path: 'src/unchanged.txt', contents: 'unchanged\\n', mode: 0o640, atimeMs: 1_650_000_000_000, mtimeMs: 1_650_000_100_000 },
+        { path: 'src/replace-file', contents: 'replace me\\n' },
         { path: 'src/dev/.keep', contents: '' },
         {
           path: 'src/absolute_main.cpp',
@@ -600,6 +609,59 @@ async function main(): Promise<void> {
         {
           path: 'src/empty_dir_main.cpp',
           contents: '#include <dirent.h>\\n#include <iostream>\\n#include <string>\\nint main() { DIR* child = opendir("empty/child"); std::cout << (child ? "dir" : "missing") << "\\\\n"; if (child) closedir(child); DIR* parent = opendir("empty"); bool saw = false; if (parent) { while (dirent* entry = readdir(parent)) { if (std::string(entry->d_name) == "child") saw = true; } closedir(parent); } std::cout << (saw ? "child" : "missing") << "\\\\n"; }\\n',
+        },
+        {
+          path: 'src/symlink_main.cpp',
+          contents: [
+            '#include <cerrno>',
+            '#include <cstring>',
+            '#include <dirent.h>',
+            '#include <fcntl.h>',
+            '#include <fstream>',
+            '#include <iostream>',
+            '#include <string>',
+            '#include <sys/stat.h>',
+            '#include <unistd.h>',
+            'int main() {',
+            '  char target[128] = {0};',
+            '  ssize_t target_size = readlink("relative-link", target, sizeof(target));',
+            '  std::cout << "readlink:" << std::string(target, target_size > 0 ? static_cast<size_t>(target_size) : 0) << "\\\\n";',
+            '  struct stat lst = {}; struct stat st = {};',
+            '  std::cout << "types:" << (lstat("relative-link", &lst) == 0 && S_ISLNK(lst.st_mode)) << ":" << (stat("relative-link", &st) == 0 && S_ISREG(st.st_mode)) << "\\\\n";',
+            '  std::ifstream relative("relative-link"); std::string relative_text; std::getline(relative, relative_text);',
+            '  std::ifstream absolute("absolute-link"); std::string absolute_text; std::getline(absolute, absolute_text);',
+            '  std::ifstream parent_relative("links/up-link"); std::string parent_relative_text; std::getline(parent_relative, parent_relative_text);',
+            '  std::ifstream nested("dir-link/nested.txt"); std::string nested_text; std::getline(nested, nested_text);',
+            '  std::cout << "reads:" << relative_text << ":" << absolute_text << ":" << parent_relative_text << ":" << nested_text << "\\\\n";',
+            '  struct stat dangling_lstat = {}; struct stat dangling_stat = {};',
+            '  std::cout << "dangling:" << (lstat("dangling-link", &dangling_lstat) == 0 && S_ISLNK(dangling_lstat.st_mode)) << ":" << (stat("dangling-link", &dangling_stat) != 0) << "\\\\n";',
+            '  int dangling_fd = open("dangling-link", O_CREAT | O_WRONLY, 0644); if (dangling_fd >= 0) { write(dangling_fd, "made\\\\n", 5); close(dangling_fd); }',
+            '  std::ifstream made("made-through-link.txt"); std::string made_text; std::getline(made, made_text); std::cout << "made:" << made_text << "\\\\n";',
+            '  errno = 0; int loop_result = stat("loop-a", &st); std::cout << "loop:" << (loop_result != 0 && errno == ELOOP) << "\\\\n";',
+            '  DIR* root = opendir("."); bool saw_link = false; if (root) { while (dirent* entry = readdir(root)) { if (std::string(entry->d_name) == "relative-link" && entry->d_type == DT_LNK) saw_link = true; } closedir(root); }',
+            '  std::cout << "dirent:" << saw_link << "\\\\n";',
+            '  std::cout << "unlink:" << (unlink("relative-link") == 0) << ":" << (stat("data/target.txt", &st) == 0) << "\\\\n";',
+            '  std::cout << "create:" << (symlink("created.txt", "created-link") == 0) << "\\\\n";',
+            '  std::ofstream("created-link") << "created\\\\n";',
+            '  std::ifstream created("created.txt"); std::string created_text; std::getline(created, created_text); std::cout << "created-read:" << created_text << "\\\\n";',
+            '  errno = 0; std::cout << "escape:" << (symlink("../../outside.txt", "escape-link") != 0 && errno == EACCES) << "\\\\n";',
+            '  errno = 0; std::cout << "absolute-escape:" << (symlink("/outside.txt", "absolute-escape-link") != 0 && errno == EACCES) << "\\\\n";',
+            '  errno = 0; std::cout << "empty-target:" << (symlink("", "empty-link") != 0 && errno == ENOENT) << "\\\\n";',
+            '  errno = 0; std::cout << "workspace-namespace:" << (symlink("/workspace/etc/owned", "namespace-link") != 0 && errno == EACCES) << "\\\\n";',
+            '  std::cout << "etc-link:" << (symlink("/etc/os-release", "etc-link") == 0) << "\\\\n";',
+            '  std::ifstream os_release("etc-link"); std::string os_name; std::getline(os_release, os_name); std::cout << "etc-read:" << os_name << "\\\\n";',
+            '  errno = 0; int etc_fd = open("etc-link", O_WRONLY); std::cout << "etc-write:" << (etc_fd < 0 && errno == EROFS) << "\\\\n"; if (etc_fd >= 0) close(etc_fd);',
+            '  std::ofstream("data/target.txt", std::ios::app) << "updated\\\\n";',
+            '  struct timespec times[2] = {{1700000000, 0}, {1700000100, 0}};',
+            '  std::cout << "file-times:" << (utimensat(AT_FDCWD, "data/target.txt", times, 0) == 0) << "\\\\n";',
+            '  std::cout << "dir-times:" << (utimensat(AT_FDCWD, "data-dir", times, 0) == 0) << "\\\\n";',
+            '  std::cout << "replace-file:" << (unlink("replace-file") == 0 && mkdir("replace-file", 0755) == 0) << "\\\\n";',
+            '  std::cout << "replace-dir:" << (rmdir("replace-dir") == 0) << "\\\\n"; std::ofstream("replace-dir") << "now a file\\\\n";',
+            '  std::cout << "replace-link:" << (unlink("replace-link") == 0) << "\\\\n"; std::ofstream("replace-link") << "now regular\\\\n";',
+            '  return 0;',
+            '}',
+            '',
+          ].join('\\n'),
         },
         {
           path: 'src/no_device_main.cpp',
@@ -678,6 +740,69 @@ async function main(): Promise<void> {
           kernelDevices: traceKernelDevices.filter((device) => device.path !== '/dev/log'),
         },
       });
+      const symlinkProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/symlink_main.cpp',
+        args: ['/workspace/src/symlink_main.cpp', '-o', '/workspace/out/symlink-app'],
+        cwd: '/workspace/src',
+        env: {},
+        project: { files: projectFiles },
+      });
+      const symlinkProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/symlink-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        project: {
+          files: [...projectFiles, ...(symlinkProjectCompile.files || [])],
+          symlinks: [
+            { path: 'src/relative-link', symlink: true, target: 'data\\\\target.txt' },
+            { path: 'src/absolute-link', symlink: true, target: '/workspace/src/data/target.txt' },
+            { path: 'src/links/up-link', symlink: true, target: '../data/target.txt' },
+            { path: 'src/dir-link', symlink: true, target: 'data-dir' },
+            { path: 'src/dangling-link', symlink: true, target: 'made-through-link.txt' },
+            { path: 'src/loop-a', symlink: true, target: 'loop-b' },
+            { path: 'src/loop-b', symlink: true, target: 'loop-a' },
+            { path: 'src/replace-link', symlink: true, target: 'data/target.txt' },
+          ],
+          directories: ['src/replace-dir', 'src/unchanged-dir'],
+          directoryMetadata: [
+            { path: 'src/data-dir', mode: 0o750, atimeMs: 1_660_000_000_000, mtimeMs: 1_660_000_100_000 },
+            { path: 'src/unchanged-dir', mode: 0o700, atimeMs: 1_670_000_000_000, mtimeMs: 1_670_000_100_000 },
+          ],
+          kernelFiles: [{ path: '/etc/os-release', contents: 'NAME=TraceKernel\\n' }],
+        },
+      });
+      let escapingSnapshotError = '';
+      try {
+        await send('execute-project-cpp', {
+          source: 'run',
+          scriptPath: '/workspace/out/symlink-app',
+          args: [],
+          cwd: '/workspace/src',
+          env: {},
+          project: {
+            files: [...projectFiles, ...(symlinkProjectCompile.files || [])],
+            symlinks: [{ path: 'src/escape-link', symlink: true, target: '../../outside.txt' }],
+          },
+        });
+      } catch (error) {
+        escapingSnapshotError = String(error && error.message || error);
+      }
+      let protectedSnapshotError = '';
+      try {
+        await send('execute-project-cpp', {
+          source: 'run',
+          scriptPath: '/workspace/out/symlink-app',
+          args: [],
+          cwd: '/workspace/src',
+          env: {},
+          project: { files: [...projectFiles, ...(symlinkProjectCompile.files || []), { path: 'etc/owned', contents: 'nope\\n' }] },
+        });
+      } catch (error) {
+        protectedSnapshotError = String(error && error.message || error);
+      }
       const absoluteProjectCompile = await send('execute-project-cpp', {
         source: 'compile',
         scriptPath: '/workspace/src/absolute_main.cpp',
@@ -1112,6 +1237,10 @@ async function main(): Promise<void> {
         projectCompile,
         projectRun,
         projectDeviceLeakRun,
+        symlinkProjectCompile,
+        symlinkProjectRun,
+        escapingSnapshotError,
+        protectedSnapshotError,
         absoluteProjectCompile,
         absoluteProjectRun,
         inlineAbsoluteIncludeCompile,
@@ -1168,6 +1297,10 @@ async function main(): Promise<void> {
     const projectCompile = results.projectCompile as CppProjectWorkerResponse;
     const projectRun = results.projectRun as CppProjectWorkerResponse;
     const projectDeviceLeakRun = results.projectDeviceLeakRun as CppProjectWorkerResponse;
+    const symlinkProjectCompile = results.symlinkProjectCompile as CppProjectWorkerResponse;
+    const symlinkProjectRun = results.symlinkProjectRun as CppProjectWorkerResponse;
+    const escapingSnapshotError = results.escapingSnapshotError as string;
+    const protectedSnapshotError = results.protectedSnapshotError as string;
     const absoluteProjectCompile = results.absoluteProjectCompile as {
       stdout?: string;
       stderr?: string;
@@ -1430,7 +1563,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-null:0\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
-        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nrename-file-onto-dir:blocked\nopen-dir-write:blocked\nopen-dir-truncate:blocked\nrename-dir-onto-file:blocked\nrename-dir-existing:blocked\nrename-dir-descendant:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
+        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nrename-file-onto-dir:blocked\nopen-dir-write:blocked\nopen-dir-truncate:blocked\nrename-dir-onto-file:blocked\nrename-dir-existing:blocked\nrename-dir-descendant:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:ok\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
         projectRun.stdout?.includes('device-out\ncapture-device\ntee-device\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
@@ -1510,6 +1643,76 @@ async function main(): Promise<void> {
       `C++ browser project run should not leak manifest-provided devices between requests: ${JSON.stringify(projectDeviceLeakRun)}`
     );
     assertCondition(
+      symlinkProjectCompile.exitCode === 0,
+      `C++ browser symlink fixture should compile: ${JSON.stringify(symlinkProjectCompile)}`
+    );
+    assertCondition(
+      symlinkProjectRun.exitCode === 0 &&
+        symlinkProjectRun.stdout === [
+          'readlink:data/target.txt',
+          'types:1:1',
+          'reads:target:target:target:nested',
+          'dangling:1:1',
+          'made:made',
+          'loop:1',
+          'dirent:1',
+          'unlink:1:1',
+          'create:1',
+          'created-read:created',
+          'escape:1',
+          'absolute-escape:1',
+          'empty-target:1',
+          'workspace-namespace:1',
+          'etc-link:1',
+          'etc-read:NAME=TraceKernel',
+          'etc-write:1',
+          'file-times:1',
+          'dir-times:1',
+          'replace-file:1',
+          'replace-dir:1',
+          'replace-link:1',
+          '',
+        ].join('\n'),
+      `C++ browser project runtime should preserve relative, absolute, directory, dangling, and cyclic symlink semantics: ${JSON.stringify(symlinkProjectRun)}`
+    );
+    assertCondition(
+      escapingSnapshotError.includes('escapes the workspace') &&
+        protectedSnapshotError.includes('TraceKernel /etc namespace'),
+      `C++ browser project snapshots should reject workspace escapes and protected namespace collisions: ${JSON.stringify({ escapingSnapshotError, protectedSnapshotError })}`
+    );
+    assertCondition(
+      symlinkProjectRun.files?.some((file) => file.path === 'src/relative-link' && file.deleted === true) === true &&
+        symlinkProjectRun.files?.some((file) => file.path === 'src/created-link' && file.symlink === true && file.target === 'created.txt') === true &&
+        symlinkProjectRun.files?.some((file) => file.path === 'src/made-through-link.txt' && file.contents === 'made\n') === true &&
+        symlinkProjectRun.files?.some((file) => file.path === 'src/created.txt' && file.contents === 'created\n') === true &&
+        symlinkProjectRun.files?.some((file) => file.path === 'src/data/target.txt' && file.contents === 'target\nupdated\n' && file.mode === 0o600 && file.atimeMs === 1_700_000_000_000 && file.mtimeMs === 1_700_000_100_000) === true &&
+        symlinkProjectRun.files?.some((file) => file.path === 'src/data-dir' && file.directory === true && file.mode === 0o750 && file.atimeMs === 1_700_000_000_000 && file.mtimeMs === 1_700_000_100_000) === true &&
+        symlinkProjectRun.files?.some((file) => file.path === 'src/unchanged.txt' || file.path === 'src/unchanged-dir') !== true &&
+        symlinkProjectRun.files?.some((file) => file.path === 'src/absolute-link' || file.path === 'src/dir-link' || file.path === 'src/loop-a') !== true,
+      `C++ browser project symlink diffs should preserve link identity and omit untouched seeded links: ${JSON.stringify(symlinkProjectRun.files)}`
+    );
+    for (const [path, predicate] of [
+      ['src/replace-file', (file: CppProjectWorkerFile) => file.directory === true && file.deleted !== true],
+      ['src/replace-dir', (file: CppProjectWorkerFile) => file.contents === 'now a file\n'],
+      ['src/replace-link', (file: CppProjectWorkerFile) => file.contents === 'now regular\n' && file.symlink !== true],
+    ] as const) {
+      const changes = symlinkProjectRun.files?.filter((file) => file.path === path) ?? [];
+      assertCondition(
+        changes.length === 1 && predicate(changes[0]),
+        `C++ browser project type replacement should emit one non-conflicting change for ${path}: ${JSON.stringify(changes)}`
+      );
+    }
+    assertCondition(
+      symlinkProjectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/created-link' &&
+        event.change.symlink === true &&
+        event.change.target === 'created.txt'
+      )) === true,
+      `C++ browser project symlink creation should emit a first-class live mutation: ${JSON.stringify(symlinkProjectRun.events)}`
+    );
+    assertCondition(
       projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\n') === true,
       `C++ browser project run should return generated text file: ${JSON.stringify(projectRun)}`
     );
@@ -1538,8 +1741,9 @@ async function main(): Promise<void> {
       `C++ browser project run should persist hard-link snapshots: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
-      projectRun.files?.some((file) => file.path === 'src/link-symlink.txt' || file.path === 'src/link-proc.txt') !== true,
-      `C++ browser project run should not persist unsupported symlinks or kernel hard links: ${JSON.stringify(projectRun)}`
+      projectRun.files?.some((file) => file.path === 'src/link-symlink.txt' && file.symlink === true && file.target === 'link-source.txt') === true &&
+        projectRun.files?.some((file) => file.path === 'src/link-proc.txt') !== true,
+      `C++ browser project run should persist symbolic links without inventing kernel hard links: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/dev/local.txt' && file.contents === 'local-dev\n') === true,

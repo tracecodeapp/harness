@@ -44,7 +44,7 @@ function assertTerminalFidelity(
 
 async function testNativeCommandIdentity(): Promise<void> {
   const fail = async (): Promise<never> => {
-    throw new Error('version commands must not start a language worker');
+    throw new Error('metadata commands must not start a language worker');
   };
   const workspace = await createBrowserProjectWorkspace({
     providers: ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'],
@@ -99,6 +99,127 @@ async function testNativeCommandIdentity(): Promise<void> {
       );
       assertTerminalFidelity(result, command, { allowKernelIdentity: command === 'dotnet --info' });
     }
+
+    const helpCases = [
+      ['bg --help', 'bg'],
+      ['curl -h', 'curl'],
+      ['fg --help', 'fg'],
+      ['getconf --help', 'getconf'],
+      ['getent --help', 'getent'],
+      ['groups --help', 'groups'],
+      ['jobs --help', 'jobs'],
+      ['kill --help', 'kill'],
+      ['lsof -?', 'lsof'],
+      ['locale --help', 'locale'],
+      ['ls --help', 'ls'],
+      ['man --help', 'man'],
+      ['mktemp --help', 'mktemp'],
+      ['pgrep -h', 'pgrep'],
+      ['ping --help', 'ping'],
+      ['pkill --help', 'pkill'],
+      ['ps --help', 'ps'],
+      ['ss -h', 'ss'],
+      ['stty --help', 'stty'],
+      ['tput --help', 'tput'],
+      ['tracekernelctl --help', 'tracekernelctl'],
+      ['tracekernel-exec --help', 'tracekernel-exec'],
+      ['tty --help', 'tty'],
+      ['wait --help', 'wait'],
+      ['wget -h', 'wget'],
+      ['which --help', 'which'],
+      ['command --help', 'command'],
+      ['python3 -h', 'python3'],
+      ['python --help', 'python'],
+      ['node -h', 'node'],
+      ['tsc --help', 'tsc'],
+      ['javac -?', 'javac'],
+      ['java -help', 'java'],
+      ['clang++ --help', 'clang++'],
+      ['clang --help', 'clang'],
+      ['gcc --help', 'gcc'],
+      ['g++ --help', 'g++'],
+      ['cc --help', 'cc'],
+      ['c++ --help', 'c++'],
+      ['a.out --help', 'a.out'],
+      ['dotnet -h', 'dotnet'],
+      ['npm --help', 'npm'],
+      ['npx -h', 'npx'],
+    ] as const;
+
+    for (const [command, commandName] of helpCases) {
+      const result = await workspace.runCommand(command);
+      assertCondition(
+        result.exitCode === 0 &&
+          result.stderr === '' &&
+          result.stdout.startsWith(`${commandName} - `) &&
+          result.stdout.includes(`Usage: ${commandName}`) &&
+          result.stdout.includes('display this help and exit'),
+        `${command} should expose concise command help without loading its runtime: ${JSON.stringify(result)}`
+      );
+      assertTerminalFidelity(result, command, { allowKernelIdentity: commandName.startsWith('tracekernel') });
+    }
+
+    const inheritedHelpFailures: string[] = [];
+    for (const commandName of [
+      'basename',
+      'cat',
+      'chmod',
+      'cp',
+      'cut',
+      'date',
+      'dirname',
+      'env',
+      'find',
+      'grep',
+      'head',
+      'mkdir',
+      'mv',
+      'rm',
+      'rmdir',
+      'sed',
+      'sort',
+      'tail',
+      'tee',
+      'touch',
+      'tr',
+      'uniq',
+      'wc',
+      'xargs',
+    ]) {
+      const builtinHelp = await workspace.runCommand(`${commandName} --help`);
+      if (builtinHelp.exitCode !== 0 || !builtinHelp.stdout.includes(`Usage: ${commandName}`)) {
+        inheritedHelpFailures.push(`${commandName}: ${JSON.stringify(builtinHelp)}`);
+      }
+      assertTerminalFidelity(builtinHelp, `${commandName} --help`);
+    }
+    assertCondition(
+      inheritedHelpFailures.length === 0,
+      `inherited command help should remain available:\n${inheritedHelpFailures.join('\n')}`
+    );
+
+    const shortLs = await workspace.runCommand('ls -h');
+    assertCondition(
+      shortLs.exitCode === 0 && !shortLs.stdout.includes('Usage:'),
+      `ls -h should retain its human-readable-size meaning: ${JSON.stringify(shortLs)}`
+    );
+
+    const scriptHelpArgument = await workspace.runCommand(
+      `node -e "console.log(process.argv.slice(1).join(','))" --help`
+    );
+    assertCondition(
+      scriptHelpArgument.exitCode === 0 && scriptHelpArgument.stdout === '--help\n',
+      `help flags after a Node program should remain program arguments: ${JSON.stringify(scriptHelpArgument)}`
+    );
+
+   const commandMetadata = await workspace.runCommand('cat /tracekernel/bin/curl');
+    const explicitCommandHelp = await workspace.runCommand('/tracekernel/bin/curl --help');
+    assertCondition(
+      commandMetadata.exitCode === 0 &&
+        commandMetadata.stdout === '#!/bin/sh\nexec tracekernel-dispatch-curl "$@"\n' &&
+        explicitCommandHelp.exitCode === 0 &&
+        explicitCommandHelp.stdout.includes('Usage: curl [OPTIONS] URL'),
+      `virtual bin shims should dispatch explicit paths through the same help contract: ${JSON.stringify({ commandMetadata, explicitCommandHelp })}`
+    );
 
     const implicitStart = await workspace.runCommand('npm start');
     assertCondition(
@@ -363,17 +484,213 @@ async function testInteractiveTerminalContract(): Promise<void> {
           '',
         ].join('\n'),
       },
+      {
+        path: 'graceful-server.js',
+        contents: [
+          'const http = require("node:http")',
+          'const server = http.createServer((_request, response) => response.end("ok\\n"))',
+          'server.listen(3010, "127.0.0.1", () => console.log("graceful-ready"))',
+          'process.on("SIGINT", () => server.close(() => console.log("graceful-closed")))',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node-tool',
+        contents: '#!/usr/bin/env node\nconsole.log("node-shebang:" + process.argv.slice(2).join(","))\n',
+      },
+      {
+        path: 'shell-tool',
+        contents: '#!/bin/sh\nprintf "shell-shebang:%s\\n" "$*"\n',
+      },
+      {
+        path: 'plain-tool',
+        contents: 'printf "shell-fallback:%s\\n" "$*"\n',
+      },
+      {
+        path: 'missing-tool',
+        contents: '#!/missing/interpreter\nprintf "should-not-run\\n"\n',
+      },
     ],
   });
 
   try {
     const controlEvents: Array<{ action: string; exitCode?: number }> = [];
     const terminal = workspace.createTerminalSession({
+      columns: 132,
+      rows: 41,
       onTerminalEvent: (event) => {
         if (event.type === 'control') controlEvents.push(event);
       },
     });
     const otherTerminal = workspace.createTerminalSession();
+
+    const identity = await terminal.run('printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$USER" "$LOGNAME" "$HOME" "$HOSTNAME" "$SHELL" "$TMPDIR" "$TERM" "$OSTYPE" "$MACHTYPE" "$HOSTTYPE"; whoami; id; hostname; uname -a');
+    assertCondition(
+      identity.exitCode === 0 &&
+        identity.stdout.startsWith('user|user|/home/user|tracevm|/bin/bash|/tmp|dumb|tracekernel|x86_64-tracekernel|x86_64\nuser\nuid=1000(user) gid=1000(user) groups=1000(user)\ntracevm\nTraceKernel tracevm ') &&
+        identity.stdout.includes(' x86_64 x86_64 x86_64 TraceKernel\n') &&
+        !identity.stdout.includes('Linux'),
+      `the prompt, environment, and discovery commands should describe one TraceKernel identity: ${JSON.stringify(identity)}`
+    );
+
+    const terminalShape = await terminal.run("node -e \"console.log([process.stdin.isTTY,process.stdout.isTTY,process.stderr.isTTY,process.stdout.columns,process.stdout.rows,process.env.TERM,process.env.NO_COLOR].join('|'))\"");
+    const capturedShape = await workspace.runCommand("node -e \"console.log([process.stdin.isTTY,process.stdout.isTTY,process.stderr.isTTY].join('|'))\"");
+    assertCondition(
+      terminalShape.stdout === 'true|true|true|132|41|dumb|1\n' &&
+        capturedShape.stdout === 'false|false|false\n',
+      `runtimes should distinguish an attached terminal from captured programmatic execution: ${JSON.stringify({ terminalShape, capturedShape })}`
+    );
+    terminal.resize(96, 30);
+    const resizedShape = await terminal.run("node -e \"console.log(process.stdout.columns + 'x' + process.stdout.rows + '|' + process.env.COLUMNS + 'x' + process.env.LINES)\"");
+    assertCondition(
+      resizedShape.stdout === '96x30|96x30\n',
+      `terminal dimensions should update for subsequent commands: ${JSON.stringify(resizedShape)}`
+    );
+    const terminalDiscovery = await terminal.run('stty size; tput cols; tput lines; tput colors; man stty');
+    const capturedStty = await workspace.runCommand('stty size');
+    assertCondition(
+      terminalDiscovery.exitCode === 0 &&
+        terminalDiscovery.stdout.startsWith('30 96\n96\n30\n-1\nstty - inspect terminal line settings\n') &&
+        capturedStty.exitCode === 1 && capturedStty.stderr.includes('Inappropriate ioctl for device'),
+      `terminal capability discovery should reflect the attached session without pretending captured commands have a TTY: ${JSON.stringify({ terminalDiscovery, capturedStty })}`
+    );
+
+    const terminalIdentity = await terminal.run('tty; tty -s; test -t 0; [ -t 1 ]; test ! -t 9; locale charmap; getconf OPEN_MAX; groups; getent passwd user; getent hosts localhost');
+    const capturedTty = await workspace.runCommand('tty');
+    const capturedTtyTest = await workspace.runCommand('test -t 0; printf "%s" $?');
+    assertCondition(
+      terminalIdentity.exitCode === 0 &&
+        terminalIdentity.stdout === '/dev/tty\nUTF-8\n1024\nuser\nuser:x:1000:1000:TraceKernel user:/home/user:/bin/bash\n127.0.0.1 localhost\n' &&
+        capturedTty.exitCode === 1 && capturedTty.stdout === 'not a tty\n' &&
+        capturedTtyTest.exitCode === 0 && capturedTtyTest.stdout === '1',
+      `terminal and identity discovery should report the attached TraceKernel environment truthfully: ${JSON.stringify({ terminalIdentity, capturedTty, capturedTtyTest })}`
+    );
+    const identityFiles = await terminal.run("cat /etc/os-release; cat /etc/hostname; cat /etc/passwd");
+    const runtimeIdentityFiles = await terminal.run("node -e \"const fs=require('node:fs');console.log(fs.readFileSync('/etc/hostname','utf8').trim());try{fs.writeFileSync('/etc/hostname','other')}catch(error){console.log(error.code)}\"");
+    const refusedIdentityMutation = await terminal.run('printf other > /etc/hostname');
+    const identityDirectory = await workspace.readDir('/etc');
+    const passwdStat = await workspace.stat('/etc/passwd');
+    assertCondition(
+      identityFiles.exitCode === 0 &&
+        identityFiles.stdout.includes('NAME=\"TraceKernel\"\nID=tracekernel\n') &&
+        identityFiles.stdout.includes('\ntracevm\nroot:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:TraceKernel user:/home/user:/bin/bash\n') &&
+        runtimeIdentityFiles.exitCode === 0 && runtimeIdentityFiles.stdout === 'tracevm\nEROFS\n' &&
+        refusedIdentityMutation.exitCode !== 0 && refusedIdentityMutation.stderr.includes('read-only file system') &&
+        identityDirectory.join(',') === 'group,hostname,hosts,nsswitch.conf,os-release,passwd,shells' &&
+        passwdStat.isFile && passwdStat.mode === 0o644 && passwdStat.uid === 0 && passwdStat.gid === 0,
+      `standard identity files should expose the same read-only TraceKernel identity in the shell, workspace, and browser runtimes: ${JSON.stringify({ identityFiles, runtimeIdentityFiles, refusedIdentityMutation, identityDirectory, passwdStat })}`
+    );
+    const commandDiscovery = await terminal.run('type ls; type df; command -v ls; command -V df; which df');
+    assertCondition(
+      commandDiscovery.exitCode === 0 && commandDiscovery.stdout === [
+        'ls is /tracekernel/bin/ls',
+        'df is /tracekernel/bin/df',
+        '/tracekernel/bin/ls',
+        'df is /tracekernel/bin/df',
+        '/tracekernel/bin/df',
+        '',
+      ].join('\n'),
+      `shell discovery surfaces should agree on TraceKernel command paths: ${JSON.stringify(commandDiscovery)}`
+    );
+
+    const initialUmask = await terminal.run('umask');
+    const privateCreation = await terminal.run('umask 077; touch private-file; mkdir private-dir; umask -S');
+    const persistedUmask = await terminal.run('umask');
+    const capturedUmask = await workspace.runCommand('umask');
+    const privateFile = await workspace.stat('private-file');
+    const privateDirectory = await workspace.stat('private-dir');
+    const symbolicUmask = await terminal.run('umask u=rwx,g=rx,o=; umask -p; umask -S');
+    assertCondition(
+      initialUmask.stdout === '0022\n' &&
+        privateCreation.exitCode === 0 && privateCreation.stdout === 'u=rwx,g=,o=\n' &&
+        persistedUmask.stdout === '0077\n' && capturedUmask.stdout === '0022\n' &&
+        (privateFile.mode! & 0o777) === 0o600 && (privateDirectory.mode! & 0o777) === 0o700 &&
+        symbolicUmask.exitCode === 0 && symbolicUmask.stdout === 'umask 0027\nu=rwx,g=rx,o=\n',
+      `umask should persist within a terminal, accept shell-shaped symbolic modes, and govern file and directory creation modes: ${JSON.stringify({ initialUmask, privateCreation, persistedUmask, capturedUmask, privateFile, privateDirectory, symbolicUmask })}`
+    );
+    const filesystemUsage = await terminal.run('df -k .; df -h .; df -i .');
+    const nodeFilesystemUsage = await terminal.run("node -e \"const s=require('node:fs').statfsSync('.'); console.log((s.blocks*s.bsize)+'|'+s.files)\"");
+    assertCondition(
+      filesystemUsage.exitCode === 0 &&
+        filesystemUsage.stdout.includes('Filesystem 1K-blocks Used Available Use% Mounted on\ntracekernel ') &&
+        filesystemUsage.stdout.includes('Filesystem Size Used Available Use% Mounted on\ntracekernel ') &&
+        filesystemUsage.stdout.includes('Filesystem Inodes IUsed IFree IUse% Mounted on\ntracekernel ') &&
+        nodeFilesystemUsage.exitCode === 0 && nodeFilesystemUsage.stdout === '67108864|10000\n',
+      `df and browser Node statfs should expose one workspace quota ledger: ${JSON.stringify({ filesystemUsage, nodeFilesystemUsage })}`
+    );
+    const mountTopology = await terminal.run('mount; cat /proc/mounts; cat /proc/self/mountinfo');
+    const temporaryMountModes = await terminal.run("stat -c '%a' /tmp /var/tmp");
+    const refusedMount = await terminal.run('mount none /tmp');
+    const refusedSystemWrite = await terminal.run('printf bad > /system-file');
+    assertCondition(
+      mountTopology.exitCode === 0 &&
+        mountTopology.stdout.includes('tracekernel:system on / type tracefs (ro,relatime)\n') &&
+        mountTopology.stdout.includes('tracekernel:tmp on /tmp type tracefs (rw,nosuid,nodev)\n') &&
+        mountTopology.stdout.includes('tracekernel:var-tmp on /var/tmp type tracefs (rw,nosuid,nodev)\n') &&
+        mountTopology.stdout.includes('tracekernel:workspace on /workspace type tracefs (rw,relatime)\n') &&
+        mountTopology.stdout.includes('tracekernel:proc on /proc type traceproc (ro,nosuid,nodev,noexec)\n') &&
+        mountTopology.stdout.includes('tracekernel:skills /skills tracefs ro,nosuid,nodev,noexec 0 0\n') &&
+        mountTopology.stdout.includes('26 20 0:3 / /proc ro,nosuid,nodev,noexec - traceproc tracekernel:proc ro\n') &&
+        temporaryMountModes.exitCode === 0 && temporaryMountModes.stdout === '1777\n1777\n' &&
+        refusedMount.exitCode === 32 && refusedMount.stderr.includes('filesystem topology is fixed') &&
+        refusedSystemWrite.exitCode !== 0 && refusedSystemWrite.stderr.includes('read-only file system'),
+      `mount, /proc/mounts, and mountinfo should expose and enforce one immutable TraceKernel topology: ${JSON.stringify({ mountTopology, temporaryMountModes, refusedMount, refusedSystemWrite })}`
+    );
+    const entryUsage = await terminal.run("mkdir -p usage/nested; printf abc > usage/a; printf 12345 > usage/nested/b; du -ba usage; du -sk usage");
+    assertCondition(
+      entryUsage.exitCode === 0 && entryUsage.stdout === [
+        '3\tusage/a',
+        '5\tusage/nested/b',
+        '5\tusage/nested',
+        '8\tusage',
+        '1\tusage',
+        '',
+      ].join('\n'),
+      `du should report logical file and directory usage with common project-script flags: ${JSON.stringify(entryUsage)}`
+    );
+    const metadataSetup = await terminal.run('printf metadata > mode-file; chmod 640 mode-file');
+    const nodeReadMetadata = await terminal.run("node -e \"const fs=require('node:fs');const s=fs.statSync('mode-file');console.log((s.mode&511).toString(8)+'|'+s.uid+'|'+s.gid);fs.chmodSync('mode-file',0o600);fs.utimesSync('mode-file',new Date(1700000000000),new Date(1700000005000))\"");
+    const persistedMetadata = await workspace.stat('mode-file');
+    assertCondition(
+      metadataSetup.exitCode === 0 &&
+        nodeReadMetadata.exitCode === 0 && nodeReadMetadata.stdout === '640|1000|1000\n' &&
+        (persistedMetadata.mode! & 0o777) === 0o600 &&
+        persistedMetadata.mtimeMs === 1700000005000,
+      `browser runtimes should receive and persist file permissions and timestamps instead of resetting metadata per command: ${JSON.stringify({ nodeReadMetadata, persistedMetadata })}`
+    );
+    const statMetadata = await terminal.run("ln -s mode-file mode-link; stat -c '%F|%a|%Y|%y|%U|%G' mode-file; stat -c '%F|%N' mode-link; stat -L -c '%F|%N' mode-link");
+    assertCondition(
+      statMetadata.exitCode === 0 && statMetadata.stdout === [
+        'regular file|600|1700000005|2023-11-14 22:13:25.000 +0000|user|user',
+        "symbolic link|'mode-link' -> 'mode-file'",
+        "regular file|'mode-link'",
+        '',
+      ].join('\n'),
+      `stat should expose useful GNU-style metadata fields and distinguish lstat from dereference: ${JSON.stringify(statMetadata)}`
+    );
+
+    const scriptExecution = await terminal.run('chmod +x node-tool shell-tool plain-tool missing-tool; ./node-tool one two; ./shell-tool three four; ./plain-tool five; ./missing-tool');
+    assertCondition(
+      scriptExecution.exitCode === 127 &&
+        scriptExecution.stdout === 'node-shebang:one,two\nshell-shebang:three four\nshell-fallback:five\n' &&
+        scriptExecution.stderr === 'bash: ./missing-tool: cannot execute: required file not found\n',
+      `workspace executables should honor supported shebangs, preserve shell fallback, and reject missing interpreters: ${JSON.stringify(scriptExecution)}`
+    );
+
+    const signals = await terminal.run('kill -l; kill -l 15; kill -l TERM');
+    assertCondition(
+      signals.exitCode === 0 && signals.stdout.includes('15) TERM') && signals.stdout.endsWith('TERM\n15\n'),
+      `kill should expose and translate the signals TraceKernel actually supports: ${JSON.stringify(signals)}`
+    );
+
+    const descriptorAliases = await workspace.runCommand(
+      "node -e \"const fs=require('node:fs'); const input=fs.readFileSync('/dev/fd/0','utf8'); fs.writeFileSync('/dev/fd/1','out:' + input); fs.writeFileSync('/dev/fd/2','err:' + input)\"",
+      { stdinPipe: createRuntimeCommandStdinPipeFromText('descriptor\n') }
+    );
+    assertCondition(
+      descriptorAliases.exitCode === 0 && descriptorAliases.stdout === 'out:descriptor\n' && descriptorAliases.stderr === 'err:descriptor\n',
+      `standard descriptor aliases should route through the command's real stdin, stdout, and stderr: ${JSON.stringify(descriptorAliases)}`
+    );
 
     const pipeline = await terminal.run("printf 'beta\\nalpha\\nalpha\\n' | sort | uniq -c > counts.txt; cat counts.txt");
     assertCondition(
@@ -413,13 +730,36 @@ async function testInteractiveTerminalContract(): Promise<void> {
       `clear should use the terminal control channel: ${JSON.stringify({ clear, controlEvents })}`
     );
 
+    const history = await terminal.run('history 3');
+    assertCondition(
+      history.stdout.includes('node ../read-stdin.js') && history.stdout.trimEnd().endsWith('history 3') && terminal.history.at(-1) === 'history 3',
+      `terminal history should be owned by the session and exposed to host UIs: ${JSON.stringify({ history, entries: terminal.history.slice(-3) })}`
+    );
+
+    let gracefulReady!: () => void;
+    const gracefulReadyPromise = new Promise<void>((resolve) => { gracefulReady = resolve; });
+    const gracefulTerminal = workspace.createTerminalSession();
+    const gracefulRun = gracefulTerminal.run('node graceful-server.js', {
+      onEvent: (event) => {
+        if (event.type === 'output' && event.stream === 'stdout' && event.data.includes('graceful-ready')) gracefulReady();
+      },
+    });
+    await gracefulReadyPromise;
+    assertCondition(gracefulTerminal.interrupt(), 'Ctrl+C should deliver SIGINT to the foreground runtime');
+    const gracefulResult = await gracefulRun;
+    assertCondition(
+      gracefulResult.exitCode === 0 && gracefulResult.error === undefined && gracefulResult.stdout.includes('graceful-closed'),
+      `a runtime signal handler should be allowed to close resources and finish naturally: ${JSON.stringify(gracefulResult)}`
+    );
+
     const background = await otherTerminal.run('sleep 30 &');
     const jobs = await otherTerminal.run('jobs -l');
     const sleeping = await otherTerminal.run('pgrep -x sleep');
+    const sleepingExists = await otherTerminal.run('kill -0 $(pgrep -x sleep)');
     assertCondition(
       background.exitCode === 0 && jobs.exitCode === 0 && jobs.stdout.includes('sleep 30') &&
-        sleeping.exitCode === 0 && /^\d+\n$/.test(sleeping.stdout),
-      `background jobs should remain inspectable after the prompt returns: ${JSON.stringify({ background, jobs, sleeping })}`
+        sleeping.exitCode === 0 && /^\d+\n$/.test(sleeping.stdout) && sleepingExists.exitCode === 0,
+      `background jobs should remain inspectable and support signal-zero existence probes after the prompt returns: ${JSON.stringify({ background, jobs, sleeping, sleepingExists })}`
     );
     const stopped = await otherTerminal.run('pkill -x sleep; wait');
     const noSleepingProcess = await otherTerminal.run('pgrep -x sleep');
@@ -597,6 +937,13 @@ async function testBrowserProcessAndNetworkInspection(): Promise<void> {
     assertCondition(
       curl.exitCode === 0 && curl.stdout === '200 application/json 12\n',
       `common curl flags should compose like the native CLI: ${JSON.stringify(curl)}`
+    );
+    const wgetStdout = await inspectionTerminal.run('wget -qO- http://127.0.0.1:3000/');
+    const wgetFile = await inspectionTerminal.run('wget -q http://127.0.0.1:3000/artifact.json');
+    assertCondition(
+      wgetStdout.exitCode === 0 && wgetStdout.stdout === '{"ok":true}\n' &&
+        wgetFile.exitCode === 0 && await workspace.readFile('artifact.json') === '{"ok":true}\n',
+      `wget should use the kernel HTTP transport for stdout and file downloads: ${JSON.stringify({ wgetStdout, wgetFile })}`
     );
 
     const combinedHead = await inspectionTerminal.run('curl -sSIL http://127.0.0.1:3000/');
@@ -786,7 +1133,7 @@ async function testPatchedJustBashCompatibility(): Promise<void> {
     const utilities = await workspace.runCommand(`
       printf 'simple\\n' | base32 -w0; printf '\\n'
       printf hello | cksum
-      id -u root
+      id -u
       printf data > source
       install -D source nested/copy
       link source alias
@@ -794,7 +1141,7 @@ async function testPatchedJustBashCompatibility(): Promise<void> {
     `);
     assertCondition(
       utilities.exitCode === 0 &&
-        utilities.stdout === 'ONUW24DMMUFA====\n3287646509 5\n0\nok\n' &&
+        utilities.stdout === 'ONUW24DMMUFA====\n3287646509 5\n1000\nok\n' &&
         utilities.stderr === '',
       `common file and identity utilities should run through the installed browser patch: ${JSON.stringify(utilities)}`
     );
@@ -808,6 +1155,26 @@ async function testPatchedJustBashCompatibility(): Promise<void> {
         suppliedStdin.stdout === 'from-stdin\nONUW24DMMUFA====\n' &&
         suppliedStdin.stderr === '',
       `closed command stdin should reach the shell without affecting pipeline stdin: ${JSON.stringify(suppliedStdin)}`
+    );
+
+    const descriptorStdin = await workspace.runCommand(
+      "cat /dev/stdin; printf 'from-pipeline\\n' | cat /dev/fd/0",
+      { stdinPipe: createRuntimeCommandStdinPipeFromText('from-device\n') }
+    );
+    assertCondition(
+      descriptorStdin.exitCode === 0 && descriptorStdin.stdout === 'from-device\nfrom-pipeline\n' && descriptorStdin.stderr === '',
+      `shell utilities should treat standard descriptor paths as aliases for their actual stdin stream: ${JSON.stringify(descriptorStdin)}`
+    );
+
+    const temporaryEntries = await workspace.runCommand([
+      'temp_file=$(mktemp)',
+      'temp_dir=$(mktemp -d -p /var/tmp trace.XXXXXX)',
+      '[ -f "$temp_file" ] && [ -d "$temp_dir" ]',
+      'printf "%s|%s\\n" "$temp_file" "$temp_dir"',
+    ].join('; '));
+    assertCondition(
+      temporaryEntries.exitCode === 0 && /^\/tmp\/tmp\.[a-z0-9]+\|\/var\/tmp\/trace\.[a-z0-9]+\n$/.test(temporaryEntries.stdout),
+      `standard temporary directories and mktemp creation should work without project-specific setup: ${JSON.stringify(temporaryEntries)}`
     );
 
     const delegatedCommand = await workspace.runCommand(

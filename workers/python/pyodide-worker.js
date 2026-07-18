@@ -1281,14 +1281,16 @@ function normalizePyodideFsAbsolutePath(path, basePath = '/') {
   return `/${parts.join('/')}`;
 }
 
-function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
+function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices, workspaceRoot = '/workspace') {
   const fs = pyodide?.FS;
   const normalizedRoot = normalizePyodideFsAbsolutePath(projectRoot);
+  const normalizedWorkspaceRoot = normalizePyodideFsAbsolutePath(workspaceRoot) || '/workspace';
   if (!fs || !normalizedRoot || typeof self.__tracecodeProjectEvent !== 'function') {
     return () => {};
   }
 
   const patched = [];
+  const rawFsUtime = typeof fs.utime === 'function' ? fs.utime.bind(fs) : null;
   const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8', { fatal: true }) : null;
   const textDecoderLossy = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
   const devices = normalizeProjectKernelDevices(kernelDevices);
@@ -1477,6 +1479,20 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
 
   const isSymlinkStat = (stat) => Boolean(stat && typeof fs.isLink === 'function' && fs.isLink(stat.mode));
 
+  const runtimeMetadataFromStat = (info) => {
+    if (!info) return {};
+    const toMilliseconds = (value) => {
+      if (value instanceof Date) return value.getTime();
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric : undefined;
+    };
+    return {
+      mode: Number(info.mode) & 0o7777,
+      ...(toMilliseconds(info.atime) !== undefined ? { atimeMs: toMilliseconds(info.atime) } : {}),
+      ...(toMilliseconds(info.mtime) !== undefined ? { mtimeMs: toMilliseconds(info.mtime) } : {}),
+    };
+  };
+
   const runtimeFileChange = (path) => {
     const relative = relativePath(path);
     if (!relative || typeof fs.readFile !== 'function') return null;
@@ -1489,18 +1505,55 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
       }
       const rawContents = fs.readFile(path, { encoding: 'binary' });
       const contents = rawContents instanceof Uint8Array ? rawContents : new Uint8Array(rawContents);
+      if (rawFsUtime && stat) {
+        const atime = stat.atime instanceof Date ? stat.atime.getTime() : Number(stat.atime);
+        const mtime = stat.mtime instanceof Date ? stat.mtime.getTime() : Number(stat.mtime);
+        if (Number.isFinite(atime) && Number.isFinite(mtime)) {
+          try {
+            rawFsUtime(path, atime, mtime);
+          } catch {
+            // Provider observation must not mutate user-visible timestamps.
+          }
+        }
+      }
       if (contents.byteLength > PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) return null;
       if (textDecoder) {
         try {
-          return { path: relative, contents: textDecoder.decode(contents) };
+          return { path: relative, contents: textDecoder.decode(contents), ...runtimeMetadataFromStat(stat) };
         } catch {
           // Fall through to base64 for non-UTF-8 bytes.
         }
       }
-      return { path: relative, contents: bytesToBase64(contents), encoding: 'base64' };
+      return { path: relative, contents: bytesToBase64(contents), encoding: 'base64', ...runtimeMetadataFromStat(stat) };
     } catch {
       return null;
     }
+  };
+
+  const runtimeSymlinkChange = (path, explicitTarget) => {
+    const relative = relativePath(path);
+    if (!relative) return null;
+    const linkStat = pathStat(path, false);
+    if (!isSymlinkStat(linkStat)) return null;
+    let target = explicitTarget;
+    if (target === undefined && typeof fs.readlink === 'function') {
+      try {
+        target = fs.readlink(path);
+      } catch {
+        return null;
+      }
+    }
+    if (typeof target !== 'string' || !target) return null;
+    target = target.replace(/\\/g, '/');
+    const normalizedTarget = normalizePyodideFsAbsolutePath(target);
+    if (target.startsWith('/') && normalizedTarget) {
+      if (normalizedTarget === normalizedRoot) {
+        target = normalizedWorkspaceRoot;
+      } else if (normalizedTarget.startsWith(`${normalizedRoot}/`)) {
+        target = normalizedWorkspaceRoot + normalizedTarget.slice(normalizedRoot.length);
+      }
+    }
+    return { path: relative, symlink: true, target };
   };
 
   const emitFileChange = (path) => {
@@ -1508,6 +1561,24 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     if (change) {
       emitProjectEvent({ type: 'file-change', phase: 'live', change });
     }
+  };
+
+  const emitSymlinkChange = (path, explicitTarget) => {
+    const change = runtimeSymlinkChange(path, explicitTarget);
+    if (change) {
+      emitProjectEvent({ type: 'file-change', phase: 'live', change });
+    }
+  };
+
+  const runtimeDirectoryChange = (path) => {
+    const relative = relativePath(path);
+    const info = pathStat(path, false);
+    if (!relative || !info || typeof fs.isDir !== 'function' || !fs.isDir(info.mode)) return null;
+    return {
+      path: relative,
+      directory: true,
+      ...runtimeMetadataFromStat(info),
+    };
   };
 
   const emitFileDelete = (path) => {
@@ -1518,9 +1589,9 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   };
 
   const emitDirectoryCreate = (path) => {
-    const relative = relativePath(path);
-    if (relative) {
-      emitProjectEvent({ type: 'file-change', phase: 'live', change: { path: relative, directory: true } });
+    const change = runtimeDirectoryChange(path);
+    if (change) {
+      emitProjectEvent({ type: 'file-change', phase: 'live', change });
     }
   };
 
@@ -1552,7 +1623,10 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     budget.count += 1;
     const stat = pathStat(path, false);
     if (!stat) return;
-    if (isSymlinkStat(stat)) return;
+    if (isSymlinkStat(stat)) {
+      emitSymlinkChange(path);
+      return;
+    }
     if (fs.isFile(stat.mode)) {
       emitFileChange(path);
       return;
@@ -1707,9 +1781,22 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   patch('rename', (original) => function patchedRename(oldPath, newPath, ...args) {
     rejectProjectMutation(oldPath, 'rename');
     rejectProjectMutation(newPath, 'rename');
-    const oldIsDirectory = isDirectoryPath(oldPath);
+    const oldStat = pathStat(oldPath, false);
+    const oldIsSymlink = isSymlinkStat(oldStat);
+    const oldIsDirectory = !oldIsSymlink && isDirectoryPath(oldPath);
+    let oldLinkTarget;
+    if (oldIsSymlink && typeof fs.readlink === 'function') {
+      try {
+        oldLinkTarget = fs.readlink(oldPath);
+      } catch {
+        oldLinkTarget = undefined;
+      }
+    }
     const result = original.call(this, oldPath, newPath, ...args);
-    if (oldIsDirectory) {
+    if (oldIsSymlink) {
+      emitFileDelete(oldPath);
+      emitSymlinkChange(newPath, oldLinkTarget);
+    } else if (oldIsDirectory) {
       emitDirectoryDelete(oldPath);
       emitPathSnapshot(newPath);
     } else {
@@ -1720,14 +1807,27 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   });
 
   patch('symlink', (original) => function patchedSymlink(oldPath, newPath, ...args) {
-    rejectProjectMutation(oldPath, 'symlink');
     rejectProjectMutation(newPath, 'symlink');
-    if (relativePath(newPath)) {
-      const error = new Error('Symbolic links are not supported by the project file manifest');
-      error.code = 'ENOSYS';
+    const canonicalOldPath = String(oldPath || '').replace(/\\/g, '/');
+    const newPathCandidate = resolveFsMutationPath(newPath);
+    const newPathParent = newPathCandidate?.resolved?.replace(/\/[^/]*$/, '') || normalizedRoot;
+    const targetCandidate = resolveFsMutationPath(
+      canonicalOldPath.startsWith('/')
+        ? canonicalOldPath
+        : `${newPathParent}/${canonicalOldPath}`
+    );
+    if (
+      relativePath(newPath) &&
+      targetCandidate?.resolved !== normalizedRoot &&
+      !targetCandidate?.resolved?.startsWith(`${normalizedRoot}/`)
+    ) {
+      const error = new Error(`Project symbolic link target must stay within the workspace: ${oldPath}`);
+      error.code = 'EACCES';
       throw error;
     }
-    return original.call(this, oldPath, newPath, ...args);
+    const result = original.call(this, canonicalOldPath, newPath, ...args);
+    emitSymlinkChange(newPath, canonicalOldPath);
+    return result;
   });
 
   return () => {
@@ -2164,6 +2264,10 @@ _workspace_alias = _normalize_virtual_root(_workspace_alias_value) if _workspace
 shutil.rmtree(_root, ignore_errors=True)
 os.makedirs(_root, exist_ok=True)
 _original_file_bytes = {}
+_original_file_state = {}
+_original_symlink_targets = {}
+_remembered_symlink_targets = {}
+_original_directory_state = {}
 _PROJECT_MAX_OUTPUT_STREAM_BYTES = ${PROJECT_MAX_OUTPUT_STREAM_BYTES}
 _PROJECT_MAX_LIVE_FILE_CHANGES = ${PROJECT_MAX_LIVE_FILE_CHANGES}
 _PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = ${PROJECT_MAX_LIVE_FILE_CHANGE_BYTES}
@@ -2218,24 +2322,75 @@ def _project_file_size_within_live_budget(_absolute_path, _relative_path):
         return True
     return _size + _project_utf8_len(_relative_path) <= _PROJECT_MAX_LIVE_FILE_CHANGE_BYTES
 
-for _directory in _request.get("project", {}).get("directories", []):
-    _relative_directory = str(_directory).replace("\\\\", "/")
-    if (
-        not _relative_directory
-        or _relative_directory.startswith("/")
-        or ".." in [part for part in _relative_directory.split("/") if part]
-    ):
-        raise ValueError(f"Unsafe project directory path: {_relative_directory}")
-    os.makedirs(os.path.join(_root, _relative_directory), exist_ok=True)
-
-for _file in _request.get("project", {}).get("files", []):
-    _relative_path = str(_file.get("path", "")).replace("\\\\", "/")
+def _safe_project_entry_path(_value, _kind):
+    _relative_path = str(_value or "").replace("\\\\", "/")
+    _parts = [part for part in _relative_path.split("/") if part and part != "."]
     if (
         not _relative_path
         or _relative_path.startswith("/")
-        or ".." in [part for part in _relative_path.split("/") if part]
+        or ".." in _parts
+        or not _parts
     ):
-        raise ValueError(f"Unsafe project file path: {_relative_path}")
+        raise ValueError(f"Unsafe project {_kind} path: {_relative_path}")
+    return "/".join(_parts)
+
+def _internal_project_symlink_target(_relative_link_path, _target):
+    _target_text = str(_target or "").replace("\\\\", "/")
+    if not _target_text:
+        raise ValueError("Project symbolic link target must not be empty")
+    if _target_text.startswith("/"):
+        _candidate_roots = [_workspace_root]
+        if _workspace_alias:
+            _candidate_roots.append(_workspace_alias)
+        for _candidate_root in _candidate_roots:
+            if _target_text == _candidate_root:
+                return _root
+            if _target_text.startswith(_candidate_root + "/"):
+                _relative_target = _target_text[len(_candidate_root) + 1:].lstrip("/")
+                _normalized_relative_target = os.path.normpath(_relative_target).replace(os.sep, "/")
+                if (
+                    _normalized_relative_target == ".."
+                    or _normalized_relative_target.startswith("../")
+                    or _normalized_relative_target.startswith("/")
+                ):
+                    raise ValueError(f"Project symbolic link target must stay within the workspace: {_target_text}")
+                if _normalized_relative_target == ".":
+                    return _root
+                return os.path.join(_root, _normalized_relative_target)
+        if _target_text == _root or _target_text.startswith(_root + "/"):
+            raise ValueError("Project symbolic link target must use the workspace path")
+        raise ValueError(f"Project symbolic link target must stay within the workspace: {_target_text}")
+    _resolved_relative = os.path.normpath(os.path.join(os.path.dirname(_relative_link_path), _target_text)).replace(os.sep, "/")
+    if _resolved_relative == ".." or _resolved_relative.startswith("../") or _resolved_relative.startswith("/"):
+        raise ValueError(f"Project symbolic link target must stay within the workspace: {_target_text}")
+    return _target_text
+
+def _directory_state(_absolute_path):
+    _info = os.lstat(_absolute_path)
+    if not stat.S_ISDIR(_info.st_mode):
+        return None
+    return {
+        "mode": stat.S_IMODE(_info.st_mode),
+        "atimeMs": int(round(float(_info.st_atime) * 1000)),
+        "mtimeMs": int(round(float(_info.st_mtime) * 1000)),
+    }
+
+def _file_state(_absolute_path):
+    _info = os.lstat(_absolute_path)
+    if not stat.S_ISREG(_info.st_mode):
+        return None
+    return {
+        "mode": stat.S_IMODE(_info.st_mode),
+        "atimeMs": int(round(float(_info.st_atime) * 1000)),
+        "mtimeMs": int(round(float(_info.st_mtime) * 1000)),
+    }
+
+for _directory in _request.get("project", {}).get("directories", []):
+    _relative_directory = _safe_project_entry_path(_directory, "directory")
+    os.makedirs(os.path.join(_root, _relative_directory), exist_ok=True)
+
+for _file in _request.get("project", {}).get("files", []):
+    _relative_path = _safe_project_entry_path(_file.get("path", ""), "file")
     _target = os.path.join(_root, _relative_path)
     os.makedirs(os.path.dirname(_target), exist_ok=True)
     if _file.get("encoding") == "base64":
@@ -2245,10 +2400,56 @@ for _file in _request.get("project", {}).get("files", []):
     _original_file_bytes[_relative_path] = _contents
     with open(_target, "wb") as _handle:
         _handle.write(_contents)
+    if _file.get("mode") is not None:
+        os.chmod(_target, int(_file.get("mode")) & 0o7777)
+    if _file.get("atimeMs") is not None or _file.get("mtimeMs") is not None:
+        _current_state = _file_state(_target)
+        _atime = float(_file.get("atimeMs", _current_state["atimeMs"])) / 1000
+        _mtime = float(_file.get("mtimeMs", _current_state["mtimeMs"])) / 1000
+        os.utime(_target, (_atime, _mtime))
+    _original_file_state[_relative_path] = _file_state(_target)
+
+for _symlink in _request.get("project", {}).get("symlinks", []):
+    if not isinstance(_symlink, dict):
+        raise ValueError("Project symbolic link entry must be an object")
+    _relative_link_path = _safe_project_entry_path(_symlink.get("path", ""), "symbolic link")
+    _link_target = str(_symlink.get("target", "")).replace("\\\\", "/")
+    _target = os.path.join(_root, _relative_link_path)
+    os.makedirs(os.path.dirname(_target), exist_ok=True)
+    os.symlink(_internal_project_symlink_target(_relative_link_path, _link_target), _target)
+    _original_symlink_targets[_relative_link_path] = _link_target
+    _remembered_symlink_targets[_relative_link_path] = _link_target
+
+for _directory_metadata in _request.get("project", {}).get("directoryMetadata", []):
+    if not isinstance(_directory_metadata, dict):
+        raise ValueError("Project directory metadata entry must be an object")
+    _relative_directory = _safe_project_entry_path(_directory_metadata.get("path", ""), "directory metadata")
+    _absolute_directory = os.path.join(_root, _relative_directory)
+    if not os.path.isdir(_absolute_directory) or os.path.islink(_absolute_directory):
+        raise ValueError(f"Project directory metadata references a missing directory: {_relative_directory}")
+    if _directory_metadata.get("mode") is not None:
+        os.chmod(_absolute_directory, int(_directory_metadata.get("mode")) & 0o7777)
+    if _directory_metadata.get("atimeMs") is not None or _directory_metadata.get("mtimeMs") is not None:
+        _current_state = _directory_state(_absolute_directory)
+        _atime = float(_directory_metadata.get("atimeMs", _current_state["atimeMs"])) / 1000
+        _mtime = float(_directory_metadata.get("mtimeMs", _current_state["mtimeMs"])) / 1000
+        os.utime(_absolute_directory, (_atime, _mtime))
+
+for _dirpath, _dirnames, _filenames in os.walk(_root, followlinks=False):
+    if os.path.islink(_dirpath):
+        _dirnames[:] = []
+        continue
+    _relative_directory = os.path.relpath(_dirpath, _root).replace(os.sep, "/")
+    if _relative_directory != ".":
+        _original_directory_state[_relative_directory] = _directory_state(_dirpath)
 
 _restore_provider_fs_mutation_events = lambda: None
 try:
-    _restore_provider_fs_mutation_events = _js_self.__tracecodeInstallProjectFsMutationEvents(_root, json.dumps(_project_info.get("kernelDevices", [])))
+    _restore_provider_fs_mutation_events = _js_self.__tracecodeInstallProjectFsMutationEvents(
+        _root,
+        json.dumps(_project_info.get("kernelDevices", [])),
+        _workspace_root,
+    )
 except Exception:
     _restore_provider_fs_mutation_events = lambda: None
 
@@ -2270,6 +2471,8 @@ _exit_code = 0
 _restore_workspace_paths = lambda: None
 _active_project_cwd = _root
 _project_original_open = builtins.open
+_project_original_readlink = os.readlink
+_project_original_utime = os.utime
 
 def _read_project_input_byte(_device="/dev/stdin"):
     try:
@@ -3126,6 +3329,36 @@ def _project_snapshot_absolute_path(_absolute_path):
         return None
     return _absolute
 
+def _project_symlink_target_for_absolute(_absolute_path, _fallback_target=None):
+    _relative_path = _project_relative_path_from_absolute(_absolute_path)
+    if _relative_path in _remembered_symlink_targets:
+        return _remembered_symlink_targets[_relative_path]
+    _target = _fallback_target
+    if _target is None:
+        try:
+            _target = _project_original_readlink(_absolute_path)
+        except Exception:
+            return None
+    _target_text = str(_target).replace("\\\\", "/")
+    if _target_text == _root:
+        return _workspace_root
+    if _target_text.startswith(_root + "/"):
+        return _workspace_root + _target_text[len(_root):]
+    return _target_text
+
+def _runtime_symlink_change_for_absolute(_absolute_path, _fallback_target=None):
+    try:
+        _info = os.lstat(_absolute_path)
+    except Exception:
+        return None
+    if not stat.S_ISLNK(_info.st_mode):
+        return None
+    _relative_path = _project_relative_path_from_absolute(_absolute_path)
+    _target = _project_symlink_target_for_absolute(_absolute_path, _fallback_target)
+    if not _relative_path or not _target:
+        return None
+    return {"path": _relative_path, "symlink": True, "target": _target}
+
 def _project_snapshot_directory_key(_absolute_path):
     try:
         _stat = os.lstat(_absolute_path)
@@ -3140,21 +3373,38 @@ def _runtime_file_change_for_absolute(_absolute_path):
         return None
     if not _project_file_size_within_live_budget(_absolute_path, _relative_path):
         return None
-    with _project_original_open(_absolute_path, "rb") as _handle:
-        _contents = _handle.read()
+    _file_metadata = _file_state(_absolute_path)
+    try:
+        with _project_original_open(_absolute_path, "rb") as _handle:
+            _contents = _handle.read()
+    finally:
+        if _file_metadata is not None:
+            try:
+                _project_original_utime(
+                    _absolute_path,
+                    (_file_metadata["atimeMs"] / 1000, _file_metadata["mtimeMs"] / 1000),
+                )
+            except Exception:
+                pass
     if len(_contents) + _project_utf8_len(_relative_path) > _PROJECT_MAX_LIVE_FILE_CHANGE_BYTES:
         return None
     try:
-        return {"path": _relative_path, "contents": _contents.decode("utf-8")}
+        return {"path": _relative_path, "contents": _contents.decode("utf-8"), **(_file_metadata or {})}
     except UnicodeDecodeError:
         return {
             "path": _relative_path,
             "contents": base64.b64encode(_contents).decode("ascii"),
             "encoding": "base64",
+            **(_file_metadata or {}),
         }
 
 def _emit_file_change_for_absolute(_absolute_path):
     _change = _runtime_file_change_for_absolute(_absolute_path)
+    if _change is not None:
+        _emit_project_event({"type": "file-change", "phase": "live", "change": _change})
+
+def _emit_symlink_change_for_absolute(_absolute_path, _fallback_target=None):
+    _change = _runtime_symlink_change_for_absolute(_absolute_path, _fallback_target)
     if _change is not None:
         _emit_project_event({"type": "file-change", "phase": "live", "change": _change})
 
@@ -3171,9 +3421,17 @@ def _emit_directory_change_for_absolute(_absolute_path, _deleted=False):
         _change = {"path": _relative_path, "directory": True}
         if _deleted:
             _change["deleted"] = True
+        else:
+            _change.update(_directory_state(_absolute_path) or {})
         _emit_project_event({"type": "file-change", "phase": "live", "change": _change})
 
 def _emit_path_snapshot_for_absolute(_absolute_path):
+    try:
+        if os.path.islink(_absolute_path):
+            _emit_symlink_change_for_absolute(_absolute_path)
+            return
+    except Exception:
+        return
     _absolute_path = _project_snapshot_absolute_path(_absolute_path)
     if _absolute_path is None:
         return
@@ -3576,6 +3834,16 @@ def _project_files_after_execution():
     _files = []
     _seen_paths = set()
     _seen_dirs = set()
+    _seen_directory_paths = set()
+    _seen_symlink_paths = set()
+    _pre_walk_directory_state = {}
+    for _relative_directory in _original_directory_state:
+        _absolute_directory = os.path.join(_root, _relative_directory)
+        try:
+            if os.path.isdir(_absolute_directory) and not os.path.islink(_absolute_directory):
+                _pre_walk_directory_state[_relative_directory] = _directory_state(_absolute_directory)
+        except Exception:
+            pass
     for _dirpath, _dirnames, _filenames in os.walk(_root, followlinks=False):
         _dirpath = _project_snapshot_absolute_path(_dirpath)
         if _dirpath is None or not os.path.isdir(_dirpath):
@@ -3586,35 +3854,79 @@ def _project_files_after_execution():
             _dirnames[:] = []
             continue
         _seen_dirs.add(_directory_key)
+        _relative_directory = os.path.relpath(_dirpath, _root).replace(os.sep, "/")
+        if _relative_directory != ".":
+            _seen_directory_paths.add(_relative_directory)
+            _current_directory_state = _pre_walk_directory_state.get(_relative_directory, _directory_state(_dirpath))
+            if _original_directory_state.get(_relative_directory) != _current_directory_state:
+                _files.append({
+                    "path": _relative_directory,
+                    "directory": True,
+                    **(_current_directory_state or {}),
+                })
         _safe_dirnames = []
         for _dirname in _dirnames:
             _child_path = os.path.join(_dirpath, _dirname)
-            if _project_snapshot_absolute_path(_child_path) is not None and os.path.isdir(_child_path):
+            if os.path.islink(_child_path):
+                _relative_path = os.path.relpath(_child_path, _root).replace(os.sep, "/")
+                _seen_symlink_paths.add(_relative_path)
+                _change = _runtime_symlink_change_for_absolute(_child_path)
+                if _change is not None and _original_symlink_targets.get(_relative_path) != _change.get("target"):
+                    _files.append(_change)
+            elif _project_snapshot_absolute_path(_child_path) is not None and os.path.isdir(_child_path):
                 _safe_dirnames.append(_dirname)
         _dirnames[:] = sorted(_safe_dirnames)
         for _filename in sorted(_filenames):
             _absolute_path = os.path.join(_dirpath, _filename)
+            if os.path.islink(_absolute_path):
+                _relative_path = os.path.relpath(_absolute_path, _root).replace(os.sep, "/")
+                _seen_symlink_paths.add(_relative_path)
+                _change = _runtime_symlink_change_for_absolute(_absolute_path)
+                if _change is not None and _original_symlink_targets.get(_relative_path) != _change.get("target"):
+                    _files.append(_change)
+                continue
             _absolute_path = _project_snapshot_absolute_path(_absolute_path)
             if _absolute_path is None or not os.path.isfile(_absolute_path):
                 continue
             _relative_path = os.path.relpath(_absolute_path, _root).replace(os.sep, "/")
             _seen_paths.add(_relative_path)
-            with open(_absolute_path, "rb") as _handle:
-                _contents = _handle.read()
-            if _original_file_bytes.get(_relative_path) == _contents:
+            _current_file_state = _file_state(_absolute_path)
+            try:
+                with _project_original_open(_absolute_path, "rb") as _handle:
+                    _contents = _handle.read()
+            finally:
+                if _current_file_state is not None:
+                    try:
+                        _project_original_utime(
+                            _absolute_path,
+                            (_current_file_state["atimeMs"] / 1000, _current_file_state["mtimeMs"] / 1000),
+                        )
+                    except Exception:
+                        pass
+            if (
+                _original_file_bytes.get(_relative_path) == _contents
+                and _original_file_state.get(_relative_path) == _current_file_state
+            ):
                 continue
             try:
                 _text = _contents.decode("utf-8")
-                _files.append({"path": _relative_path, "contents": _text})
+                _files.append({"path": _relative_path, "contents": _text, **(_current_file_state or {})})
             except UnicodeDecodeError:
                 _files.append({
                     "path": _relative_path,
                     "contents": base64.b64encode(_contents).decode("ascii"),
                     "encoding": "base64",
+                    **(_current_file_state or {}),
                 })
     for _relative_path in sorted(_original_file_bytes.keys()):
-        if _relative_path not in _seen_paths:
+        if _relative_path not in _seen_paths and _relative_path not in _seen_symlink_paths:
             _files.append({"path": _relative_path, "deleted": True})
+    for _relative_path in sorted(_original_symlink_targets.keys()):
+        if _relative_path not in _seen_symlink_paths and _relative_path not in _seen_paths:
+            _files.append({"path": _relative_path, "deleted": True})
+    for _relative_path in sorted(_original_directory_state.keys(), key=lambda value: (value.count("/"), value), reverse=True):
+        if _relative_path not in _seen_directory_paths:
+            _files.append({"path": _relative_path, "directory": True, "deleted": True})
     return _files
 
 def _project_cwd():
@@ -4612,7 +4924,14 @@ def _install_virtual_workspace_paths():
             _mapped_path = _map_workspace_path(_path)
             _absolute_path = _absolute_mapped_path(_mapped_path)
             _result = _original(_mapped_path, *args, **kwargs)
+            if _name == "readlink":
+                return _project_symlink_target_for_absolute(_absolute_path, _result)
+            if _name == "realpath":
+                return _virtual_workspace_path(_result)
             if _name in ("remove", "unlink"):
+                _relative_path = _project_relative_path_from_absolute(_absolute_path)
+                if _relative_path:
+                    _remembered_symlink_targets.pop(_relative_path, None)
                 _emit_file_delete_for_absolute(_absolute_path)
             elif _name in ("chmod", "chown", "utime"):
                 _emit_path_snapshot_for_absolute(_absolute_path)
@@ -4635,21 +4954,40 @@ def _install_virtual_workspace_paths():
                         _destination_handle.write(_source_handle.read())
                 return None
         def _patched_two(_src, _dst, *args, **kwargs):
+            if _name == "symlink":
+                _reject_kernel_mutation(_dst, _name)
+                _mapped_dst = _map_workspace_path(_dst)
+                _absolute_dst = _absolute_mapped_path(_mapped_dst)
+                _relative_dst = _project_relative_path_from_absolute(_absolute_dst)
+                if not _relative_dst:
+                    raise ValueError(f"Project symbolic link path must stay within the workspace: {_dst}")
+                _source_text = (os.fsdecode(os.fspath(_src)) if isinstance(_src, (str, bytes, os.PathLike)) else str(_src)).replace("\\\\", "/")
+                _internal_src = _internal_project_symlink_target(_relative_dst, _source_text)
+                _result = _original(_internal_src, _mapped_dst, *args, **kwargs)
+                _remembered_symlink_targets[_relative_dst] = _source_text
+                _emit_symlink_change_for_absolute(_absolute_dst, _source_text)
+                return _result
             _reject_kernel_mutation(_src, _name)
             _reject_kernel_mutation(_dst, _name)
-            if _name == "symlink":
-                raise OSError(
-                    getattr(__import__("errno"), "ENOSYS", 38),
-                    "Symbolic links are not supported by the project file manifest",
-                )
             _mapped_src = _map_workspace_path(_src)
             _mapped_dst = _map_workspace_path(_dst)
             _absolute_src = _absolute_mapped_path(_mapped_src)
             _absolute_dst = _absolute_mapped_path(_mapped_dst)
-            _src_is_directory = bool(_absolute_src and os.path.isdir(_absolute_src))
+            _src_is_symlink = bool(_absolute_src and os.path.islink(_absolute_src))
+            _src_is_directory = bool(_absolute_src and not _src_is_symlink and os.path.isdir(_absolute_src))
+            _source_relative = _project_relative_path_from_absolute(_absolute_src) if _absolute_src else None
+            _destination_relative = _project_relative_path_from_absolute(_absolute_dst) if _absolute_dst else None
+            _source_link_target = _remembered_symlink_targets.get(_source_relative) if _source_relative else None
             _result = _original(_mapped_src, _mapped_dst, *args, **kwargs)
             if _name in ("rename", "replace"):
-                if _src_is_directory:
+                if _src_is_symlink:
+                    if _source_relative:
+                        _remembered_symlink_targets.pop(_source_relative, None)
+                    if _destination_relative and _source_link_target is not None:
+                        _remembered_symlink_targets[_destination_relative] = _source_link_target
+                    _emit_file_delete_for_absolute(_absolute_src)
+                    _emit_symlink_change_for_absolute(_absolute_dst, _source_link_target)
+                elif _src_is_directory:
                     _emit_directory_change_for_absolute(_absolute_src, True)
                     _emit_path_snapshot_for_absolute(_absolute_dst)
                 else:

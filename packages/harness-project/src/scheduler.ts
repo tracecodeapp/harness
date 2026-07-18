@@ -134,11 +134,11 @@ export class RuntimeKernelInterruptedError extends Error {
 export class RuntimeKernelAdmissionRejectedError extends Error {
   readonly code = 'EAGAIN';
   readonly errno = 11;
-  readonly syscall = 'sched';
 
   constructor(
     readonly path: string,
-    message = `EAGAIN: resource temporarily unavailable, ${path}`
+    message = `EAGAIN: resource temporarily unavailable, ${path}`,
+    readonly syscall: 'sched' | 'fork' = 'sched'
   ) {
     super(message);
   }

@@ -75,6 +75,24 @@ public sealed class CSharpProjectSnapshot
 
     [JsonPropertyName("directories")]
     public List<string> Directories { get; set; } = new();
+
+    [JsonPropertyName("directoryMetadata")]
+    public List<CSharpProjectDirectoryMetadata> DirectoryMetadata { get; set; } = new();
+}
+
+public sealed class CSharpProjectDirectoryMetadata
+{
+    [JsonPropertyName("path")]
+    public string Path { get; set; } = string.Empty;
+
+    [JsonPropertyName("mode")]
+    public int? Mode { get; set; }
+
+    [JsonPropertyName("atimeMs")]
+    public double? AtimeMs { get; set; }
+
+    [JsonPropertyName("mtimeMs")]
+    public double? MtimeMs { get; set; }
 }
 
 public sealed class CSharpProjectFile
@@ -87,6 +105,15 @@ public sealed class CSharpProjectFile
 
     [JsonPropertyName("encoding")]
     public string? Encoding { get; set; }
+
+    [JsonPropertyName("mode")]
+    public int? Mode { get; set; }
+
+    [JsonPropertyName("atimeMs")]
+    public double? AtimeMs { get; set; }
+
+    [JsonPropertyName("mtimeMs")]
+    public double? MtimeMs { get; set; }
 }
 
 public sealed class CSharpProjectFileChange
@@ -97,6 +124,18 @@ public sealed class CSharpProjectFileChange
     [JsonPropertyName("directory")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Directory { get; set; }
+
+    [JsonPropertyName("mode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Mode { get; set; }
+
+    [JsonPropertyName("atimeMs")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? AtimeMs { get; set; }
+
+    [JsonPropertyName("mtimeMs")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? MtimeMs { get; set; }
 
     [JsonPropertyName("contents")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

@@ -720,7 +720,9 @@ function comparableProjectSnapshot(snapshot: Awaited<ReturnType<RuntimeWorkspace
       contents: file.contents,
       ...(file.encoding ? { encoding: file.encoding } : {}),
     })),
+    symlinks: snapshot.symlinks ?? [],
     directories: snapshot.directories ?? [],
+    directoryMetadata: snapshot.directoryMetadata ?? [],
   };
 }
 
@@ -812,6 +814,7 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
       { path: 'docs/old.txt', contents: 'old\n' },
     ],
     directories: ['empty', 'removed-empty'],
+    symlinks: [{ path: 'current-link', symlink: true, target: 'src/main.txt' }],
   });
   const base = await workspace.snapshot();
   await workspace.writeFile('src/main.txt', 'changed\n');
@@ -820,6 +823,8 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
   await workspace.deleteFile('docs/old.txt');
   await workspace.remove('removed-empty', { recursive: true });
   await workspace.mkdir('new-empty/deep');
+  await workspace.runCommand('chmod 700 empty');
+  await workspace.runCommand('rm current-link; ln -s src/new.txt current-link; ln -s src/main.txt added-link');
 
   const patchIdentity = {
     base: {
@@ -838,15 +843,20 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
       patch.changes.some((change) => change.kind === 'write' && change.path === 'assets/bin.dat' && change.encoding === 'base64') &&
       patch.changes.some((change) => change.kind === 'delete' && change.path === 'docs/old.txt') &&
       patch.changes.some((change) => change.kind === 'rmdir' && change.path === 'removed-empty') &&
-      patch.changes.some((change) => change.kind === 'mkdir' && change.path === 'new-empty/deep'),
-    `exportPatch should describe writes, deletes, binary files, and empty directory changes: ${JSON.stringify(patch)}`
+      patch.changes.some((change) => change.kind === 'mkdir' && change.path === 'new-empty/deep') &&
+      patch.changes.some((change) => change.kind === 'directory' && change.path === 'empty' && change.mode === 0o700) &&
+      patch.changes.some((change) => change.kind === 'symlink' && change.path === 'current-link' && change.target === 'src/new.txt') &&
+      patch.changes.some((change) => change.kind === 'symlink' && change.path === 'added-link' && change.target === 'src/main.txt' && change.baseHash === null),
+    `exportPatch should describe writes, deletes, binary files, symlinks, and empty directory changes: ${JSON.stringify(patch)}`
   );
 
   const restoredEvents: RuntimeWorkspaceEvent[] = [];
   const restored = await createRuntimeWorkspace({
     entrypoint: base.entrypoint,
     files: base.files,
+    symlinks: base.symlinks,
     directories: base.directories,
+    directoryMetadata: base.directoryMetadata,
   });
   restored.watch((event) => {
     if (event.type === 'file-change') restoredEvents.push(event);
@@ -877,7 +887,9 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
   const staleBaseWorkspace = await createRuntimeWorkspace({
     entrypoint: changedBase.entrypoint,
     files: changedBase.files,
+    symlinks: changedBase.symlinks,
     directories: changedBase.directories,
+    directoryMetadata: changedBase.directoryMetadata,
   });
   await assertRejectsAsync(
     () => staleBaseWorkspace.importPatch(changedBase, patch, patchIdentity),
@@ -888,7 +900,9 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
   const dirtyWorkspace = await createRuntimeWorkspace({
     entrypoint: base.entrypoint,
     files: base.files,
+    symlinks: base.symlinks,
     directories: base.directories,
+    directoryMetadata: base.directoryMetadata,
   });
   await dirtyWorkspace.writeFile('local-only.txt', 'dirty\n');
   await assertRejectsAsync(
@@ -913,7 +927,9 @@ async function testWorkspaceProjectPatchExportImport(): Promise<void> {
   const invalidWorkspace = await createRuntimeWorkspace({
     entrypoint: base.entrypoint,
     files: base.files,
+    symlinks: base.symlinks,
     directories: base.directories,
+    directoryMetadata: base.directoryMetadata,
   });
   await assertRejectsAsync(
     () => invalidWorkspace.importPatch(base, invalidPatch, patchIdentity),
@@ -1458,10 +1474,10 @@ async function testTraceKernelRuntimeDiscovery(): Promise<void> {
       binEntries.includes('node') && binEntries.includes('python3') && binEntries.includes('npm'),
       `virtual bin directory should list available commands: ${JSON.stringify(binEntries)}`
     );
-    const nodeDescriptor = JSON.parse(await workspace.readFile('/tracekernel/bin/node')) as { name: string; kind: string; language?: string };
+    const nodeShim = await workspace.readFile('/tracekernel/bin/node');
     assertCondition(
-      nodeDescriptor.name === 'node' && nodeDescriptor.kind === 'runtime' && nodeDescriptor.language === 'javascript',
-      `virtual bin command descriptors should be readable: ${JSON.stringify(nodeDescriptor)}`
+      nodeShim === '#!/bin/sh\nexec tracekernel-dispatch-node "$@"\n',
+      `virtual bin commands should be executable dispatch shims: ${JSON.stringify(nodeShim)}`
     );
 
     const whichNode = await workspace.runCommand('which node python3 missing-tool');
@@ -1513,9 +1529,12 @@ async function testTraceKernelSkillsRoot(): Promise<void> {
     assertCondition(copy.exitCode === 0, `skills files should be copyable into the workspace: ${JSON.stringify(copy)}`);
     assertCondition(await workspace.readFile('copied-skill.md') === 'search skill\n', 'copied skill files should preserve contents');
 
-    await assertRejectsAsync(
-      () => workspace.runCommand('printf "mutate\\n" > /skills/provider/search.md'),
-      'skills files should reject shell writes'
+    const refusedSkillWrite = await workspace.runCommand('printf "mutate\\n" > /skills/provider/search.md');
+    assertCondition(
+      refusedSkillWrite.exitCode !== 0 &&
+        refusedSkillWrite.error?.code === 'EROFS' &&
+        refusedSkillWrite.stderr.includes('read-only file system'),
+      `skills files should reject shell writes as normal command failures: ${JSON.stringify(refusedSkillWrite)}`
     );
     await assertRejectsAsync(
       () => workspace.writeFile('/skills/new.md', 'no\n'),
@@ -5337,7 +5356,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const renameDirectoryResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); fs.mkdirSync(\\"rename-tree/child\\", { recursive: true }); fs.mkdirSync(\\"rename-tree/empty\\"); fs.writeFileSync(\\"rename-tree/child/value.txt\\", \\"moved\\\\n\\"); fs.renameSync(\\"rename-tree\\", \\"renamed-tree\\"); await fsp.mkdir(\\"async-rename-tree/child\\", { recursive: true }); await fsp.writeFile(\\"async-rename-tree/child/value.txt\\", \\"async-moved\\\\n\\"); await fsp.rename(\\"async-rename-tree\\", \\"async-renamed-tree\\"); console.log(fs.readFileSync(\\"renamed-tree/child/value.txt\\", \\"utf8\\")); console.log(fs.statSync(\\"renamed-tree/empty\\").isDirectory()); console.log(await fsp.readFile(\\"async-renamed-tree/child/value.txt\\", \\"utf8\\"));"',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); fs.mkdirSync(\\"rename-tree/child\\", { recursive: true }); fs.mkdirSync(\\"rename-tree/empty\\"); fs.writeFileSync(\\"rename-tree/child/value.txt\\", \\"moved\\\\n\\"); fs.chmodSync(\\"rename-tree/empty\\", 0o711); fs.utimesSync(\\"rename-tree/empty\\", 100, 200); fs.chmodSync(\\"rename-tree/child/value.txt\\", 0o600); fs.utimesSync(\\"rename-tree/child/value.txt\\", 300, 400); fs.renameSync(\\"rename-tree\\", \\"renamed-tree\\"); await fsp.mkdir(\\"async-rename-tree/child\\", { recursive: true }); await fsp.writeFile(\\"async-rename-tree/child/value.txt\\", \\"async-moved\\\\n\\"); await fsp.rename(\\"async-rename-tree\\", \\"async-renamed-tree\\"); console.log(fs.readFileSync(\\"renamed-tree/child/value.txt\\", \\"utf8\\")); console.log(fs.statSync(\\"renamed-tree/empty\\").isDirectory()); console.log(await fsp.readFile(\\"async-renamed-tree/child/value.txt\\", \\"utf8\\"));"',
   ].join(' '), { onEvent: (event) => renameDirectoryEvents.push(event) });
   assertCondition(renameDirectoryResult.exitCode === 0, `browser node directory rename workflow should succeed: ${renameDirectoryResult.stderr}`);
   assertCondition(
@@ -5346,6 +5365,16 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   assertCondition(await workspace.readFile('renamed-tree/child/value.txt') === 'moved\n', 'browser node renameSync should persist moved directory files');
   assertCondition((await workspace.stat('renamed-tree/empty')).isDirectory, 'browser node renameSync should persist moved empty directories');
+  const renamedEmptyStat = await workspace.stat('renamed-tree/empty');
+  const renamedFileStat = await workspace.stat('renamed-tree/child/value.txt');
+  assertCondition(
+    renamedEmptyStat.mode === 0o711 && renamedEmptyStat.mtimeMs === 200_000,
+    `browser node directory rename should preserve directory mode and mtime: ${JSON.stringify(renamedEmptyStat)}`
+  );
+  assertCondition(
+    renamedFileStat.mode === 0o600 && renamedFileStat.mtimeMs === 400_000,
+    `browser node directory rename should preserve child file mode and mtime: ${JSON.stringify(renamedFileStat)}`
+  );
   await assertRejectsAsync(() => workspace.readFile('rename-tree/child/value.txt'), 'browser node renameSync should remove old directory files');
   assertCondition(await workspace.readFile('async-renamed-tree/child/value.txt') === 'async-moved\n', 'browser node async rename should persist moved directory files');
   await assertRejectsAsync(() => workspace.readFile('async-rename-tree/child/value.txt'), 'browser node async rename should remove old directory files');
@@ -5420,13 +5449,19 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   ].join(' '), { onEvent: (event) => linkEvents.push(event) });
   assertCondition(linkResult.exitCode === 0, `browser node link workflow should succeed: ${linkResult.stderr}`);
   assertCondition(
-    linkResult.stdout === 'readlink:EINVAL\nsymlink:ENOSYS\nsymlink-dev:EROFS\nlink-proc:EROFS\nlinked\nlinked\nlinked\n\n4:4:true\nmutated\nmutated\n\nfalse:3:mutated\n\n',
+    linkResult.stdout === 'readlink:EINVAL\nsymlink:ok\nsymlink-dev:EROFS\nlink-proc:EROFS\nlinked\nlinked\nlinked\n\n4:4:true\nmutated\nmutated\n\nfalse:3:mutated\n\n',
     `browser node link/readlink/symlink APIs should have stable kernel-aligned semantics: ${linkResult.stdout}`
   );
   await assertRejectsAsync(() => workspace.readFile('link-source.txt'), 'browser node unlink should remove only one hard-link name');
   assertCondition(await workspace.readFile('link-sync.txt') === 'mutated\n', 'browser node hard-link writes should persist through linked names');
   assertCondition(await workspace.readFile('link-callback.txt') === 'mutated\n', 'browser node callback hard link should share linked file contents');
   assertCondition(await workspace.readFile('link-async.txt') === 'mutated\n', 'browser node fs.promises hard link should share linked file contents');
+  assertCondition(
+    (await workspace.snapshot()).symlinks?.some((symlink) => (
+      symlink.path === 'link-symlink.txt' && symlink.target === 'link-source.txt'
+    )) === true,
+    'browser node symlink creation should persist the link identity instead of flattening or dropping it'
+  );
   assertCondition(
     linkEvents.some((event) =>
       event.type === 'file-change' &&
@@ -5448,6 +5483,29 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
         'contents' in event.change
       ),
     `browser node link APIs should stream live file snapshots: ${JSON.stringify(linkEvents)}`
+  );
+
+  const symlinkEvents: RuntimeCommandEvent[] = [];
+  const symlinkResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const code = (fn) => { try { fn(); return \\"ok\\"; } catch (error) { return error.code; } }; fs.writeFileSync(\\"symlink-target.txt\\", \\"one\\n\\"); fs.symlinkSync(\\"symlink-target.txt\\", \\"symlink-alias.txt\\"); console.log(fs.readlinkSync(\\"symlink-alias.txt\\")); console.log(fs.lstatSync(\\"symlink-alias.txt\\").isSymbolicLink(), fs.statSync(\\"symlink-alias.txt\\").isFile(), fs.readdirSync(\\".\\", { withFileTypes: true }).find((entry) => entry.name === \\"symlink-alias.txt\\").isSymbolicLink()); fs.writeFileSync(\\"symlink-alias.txt\\", \\"two\\n\\"); console.log(fs.readFileSync(\\"symlink-target.txt\\", \\"utf8\\").trim()); fs.unlinkSync(\\"symlink-alias.txt\\"); console.log(fs.existsSync(\\"symlink-target.txt\\"), fs.existsSync(\\"symlink-alias.txt\\")); fs.symlinkSync(\\"created-through-link.txt\\", \\"dangling-link.txt\\"); console.log(fs.lstatSync(\\"dangling-link.txt\\").isSymbolicLink(), code(() => fs.statSync(\\"dangling-link.txt\\")), fs.existsSync(\\"dangling-link.txt\\")); fs.writeFileSync(\\"dangling-link.txt\\", \\"created\\n\\"); console.log(fs.readFileSync(\\"created-through-link.txt\\", \\"utf8\\").trim()); fs.symlinkSync(\\"loop-b\\", \\"loop-a\\"); fs.symlinkSync(\\"loop-a\\", \\"loop-b\\"); console.log(code(() => fs.statSync(\\"loop-a\\"))); fs.mkdirSync(\\"linked-dir\\"); fs.writeFileSync(\\"linked-dir/value.txt\\", \\"directory\\n\\"); fs.symlinkSync(\\"linked-dir\\", \\"dir-alias\\"); console.log(fs.readFileSync(\\"dir-alias/value.txt\\", \\"utf8\\").trim(), fs.readdirSync(\\"dir-alias\\").join(\\",\\")); fs.writeFileSync(\\"linked-dir/module.js\\", \\"module.exports = 41;\\n\\"); fs.symlinkSync(\\"linked-dir/module.js\\", \\"module-alias.js\\"); console.log(require(\\"./module-alias.js\\") + require(\\"./dir-alias/module.js\\")); await fsp.symlink(\\"symlink-target.txt\\", \\"async-alias.txt\\"); console.log(await fsp.readlink(\\"async-alias.txt\\"), (await fsp.lstat(\\"async-alias.txt\\")).isSymbolicLink());"',
+  ].join(' '), { onEvent: (event) => symlinkEvents.push(event) });
+  assertCondition(symlinkResult.exitCode === 0, `browser node symlink workflow should succeed: ${symlinkResult.stderr}`);
+  assertCondition(
+    symlinkResult.stdout === 'symlink-target.txt\ntrue true true\ntwo\ntrue false\ntrue ENOENT false\ncreated\nELOOP\ndirectory value.txt\n82\nsymlink-target.txt true\n',
+    `browser node symlinks should follow native stat, read, write, directory, dangling-link, and loop semantics: ${symlinkResult.stdout}`
+  );
+  assertCondition(
+    symlinkEvents.some((event) => (
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'async-alias.txt' &&
+      'symlink' in event.change &&
+      event.change.symlink === true &&
+      event.change.target === 'symlink-target.txt'
+    )),
+    `browser node symlink APIs should stream first-class link mutations: ${JSON.stringify(symlinkEvents)}`
   );
 
   const cpEvents: RuntimeCommandEvent[] = [];
@@ -5566,22 +5624,22 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const metadataResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error) => error ? reject(error) : resolve())); fs.writeFileSync(\\"metadata.txt\\", \\"meta\\\\n\\"); fs.chmodSync(\\"metadata.txt\\", 0o755); fs.chownSync(\\"metadata.txt\\", 1, 1); fs.utimesSync(\\"metadata.txt\\", new Date(0), new Date(0)); await call((done) => fs.chmod(\\"metadata.txt\\", 0o644, done)); await call((done) => fs.chown(\\"metadata.txt\\", 2, 2, done)); await call((done) => fs.utimes(\\"metadata.txt\\", 1, 1, done)); const fd = fs.openSync(\\"metadata.txt\\", \\"r+\\"); fs.fchmodSync(fd, 0o600); fs.fchownSync(fd, 3, 3); fs.futimesSync(fd, 2, 2); await call((done) => fs.fchmod(fd, 0o600, done)); await call((done) => fs.fchown(fd, 4, 4, done)); await call((done) => fs.futimes(fd, 3, 3, done)); fs.closeSync(fd); await fsp.chmod(\\"metadata.txt\\", 0o644); await fsp.chown(\\"metadata.txt\\", 5, 5); await fsp.utimes(\\"metadata.txt\\", 4, 4); const handle = await fsp.open(\\"metadata.txt\\", \\"r+\\"); await handle.chmod(0o644); await handle.chown(6, 6); await handle.utimes(5, 5); await handle.close(); console.log(fs.readFileSync(\\"metadata.txt\\", \\"utf8\\"));"',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error) => error ? reject(error) : resolve())); const code = (fn) => { try { fn(); return \\"ok\\"; } catch (error) { return error.code; } }; fs.writeFileSync(\\"metadata.txt\\", \\"meta\\\\n\\"); fs.chmodSync(\\"metadata.txt\\", 0o755); console.log(code(() => fs.chownSync(\\"metadata.txt\\", 1, 1))); fs.chownSync(\\"metadata.txt\\", 1000, 1000); fs.utimesSync(\\"metadata.txt\\", new Date(0), new Date(0)); await call((done) => fs.chmod(\\"metadata.txt\\", 0o644, done)); await call((done) => fs.chown(\\"metadata.txt\\", 1000, 1000, done)); await call((done) => fs.utimes(\\"metadata.txt\\", 1, 1, done)); const fd = fs.openSync(\\"metadata.txt\\", \\"r+\\"); fs.fchmodSync(fd, 0o600); console.log(code(() => fs.fchownSync(fd, 3, 3))); fs.fchownSync(fd, 1000, 1000); fs.futimesSync(fd, 2, 2); await call((done) => fs.fchmod(fd, 0o600, done)); await call((done) => fs.fchown(fd, 1000, 1000, done)); await call((done) => fs.futimes(fd, 3, 3, done)); fs.closeSync(fd); await fsp.chmod(\\"metadata.txt\\", 0o644); await fsp.chown(\\"metadata.txt\\", 1000, 1000); await fsp.utimes(\\"metadata.txt\\", 4, 4); const handle = await fsp.open(\\"metadata.txt\\", \\"r+\\"); await handle.chmod(0o644); await handle.chown(1000, 1000); await handle.utimes(5, 5); await handle.close(); console.log(fs.readFileSync(\\"metadata.txt\\", \\"utf8\\"));"',
   ].join(' '));
   assertCondition(metadataResult.exitCode === 0, `browser node metadata no-op workflow should succeed: ${metadataResult.stderr}`);
   assertCondition(
-    metadataResult.stdout === 'meta\n\n',
+    metadataResult.stdout === 'EPERM\nEPERM\nmeta\n\n',
     `browser node metadata APIs should validate and preserve file contents: ${metadataResult.stdout}`
   );
 
   const statsMetadataResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const flush = () => new Promise((resolve) => queueMicrotask(resolve)); fs.writeFileSync(\\"stats-meta.txt\\", \\"abcdef\\"); const changes = []; fs.watchFile(\\"stats-meta.txt\\", (curr, prev) => changes.push((prev.mode & 0o777).toString(8) + \\"->\\" + (curr.mode & 0o777).toString(8) + \\":\\" + prev.uid + \\"->\\" + curr.uid + \\":\\" + prev.mtimeMs + \\"->\\" + curr.mtimeMs)); fs.chmodSync(\\"stats-meta.txt\\", 0o751); await flush(); fs.chownSync(\\"stats-meta.txt\\", 12, 34); await flush(); fs.utimesSync(\\"stats-meta.txt\\", new Date(1000), new Date(2000)); await flush(); fs.unwatchFile(\\"stats-meta.txt\\"); const fd = fs.openSync(\\"stats-meta.txt\\", \\"r+\\"); fs.fchmodSync(fd, 0o640); fs.fchownSync(fd, 56, 78); fs.futimesSync(fd, 3, 4); const fstat = fs.fstatSync(fd); fs.closeSync(fd); const handle = await fsp.open(\\"stats-meta.txt\\", \\"r+\\"); await handle.chmod(0o600); await handle.chown(90, 91); await handle.utimes(5, 6); const hstat = await handle.stat(); await handle.close(); const stat = fs.statSync(\\"stats-meta.txt\\"); console.log(changes.join(\\"|\\")); console.log((fstat.mode & 0o777).toString(8), fstat.uid, fstat.gid, fstat.mtimeMs); console.log((stat.mode & 0o777).toString(8), stat.uid, stat.gid, stat.mtimeMs, stat.size, stat.blocks, stat.blksize, stat.nlink, stat.ino > 0); console.log(stat.isFile(), stat.isDirectory(), stat.isBlockDevice(), stat.isCharacterDevice(), stat.isFIFO(), stat.isSocket(), stat.isSymbolicLink()); console.log((hstat.mode & 0o777).toString(8), hstat.uid, hstat.gid, hstat.mtime.getTime());"',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const flush = () => new Promise((resolve) => queueMicrotask(resolve)); fs.writeFileSync(\\"stats-meta.txt\\", \\"abcdef\\"); const changes = []; fs.watchFile(\\"stats-meta.txt\\", (curr, prev) => changes.push((prev.mode & 0o777).toString(8) + \\"->\\" + (curr.mode & 0o777).toString(8) + \\":\\" + prev.uid + \\"->\\" + curr.uid + \\":\\" + (prev.mtimeMs === curr.mtimeMs))); fs.chmodSync(\\"stats-meta.txt\\", 0o751); await flush(); fs.chownSync(\\"stats-meta.txt\\", 1000, 1000); await flush(); fs.utimesSync(\\"stats-meta.txt\\", new Date(1000), new Date(2000)); await flush(); fs.unwatchFile(\\"stats-meta.txt\\"); const fd = fs.openSync(\\"stats-meta.txt\\", \\"r+\\"); fs.fchmodSync(fd, 0o640); fs.fchownSync(fd, 1000, 1000); fs.futimesSync(fd, 3, 4); const fstat = fs.fstatSync(fd); fs.closeSync(fd); const handle = await fsp.open(\\"stats-meta.txt\\", \\"r+\\"); await handle.chmod(0o600); await handle.chown(1000, 1000); await handle.utimes(5, 6); const hstat = await handle.stat(); await handle.close(); const stat = fs.statSync(\\"stats-meta.txt\\"); console.log(changes.join(\\"|\\")); console.log((fstat.mode & 0o777).toString(8), fstat.uid, fstat.gid, fstat.mtimeMs); console.log((stat.mode & 0o777).toString(8), stat.uid, stat.gid, stat.mtimeMs, stat.size, stat.blocks, stat.blksize, stat.nlink, stat.ino > 0); console.log(stat.isFile(), stat.isDirectory(), stat.isBlockDevice(), stat.isCharacterDevice(), stat.isFIFO(), stat.isSocket(), stat.isSymbolicLink()); console.log((hstat.mode & 0o777).toString(8), hstat.uid, hstat.gid, hstat.mtime.getTime());"',
   ].join(' '));
   assertCondition(statsMetadataResult.exitCode === 0, `browser node Stats metadata workflow should succeed: ${statsMetadataResult.stderr}`);
   assertCondition(
-    statsMetadataResult.stdout === '644->751:0->0:2->2|751->751:0->12:2->2|751->751:12->12:2->2000\n640 56 78 4000\n600 90 91 6000 6 1 4096 1 true\ntrue false false false false false false\n600 90 91 6000\n',
+    statsMetadataResult.stdout === '644->751:1000->1000:true|751->751:1000->1000:false\n640 1000 1000 4000\n600 1000 1000 6000 6 1 4096 1 true\ntrue false false false false false false\n600 1000 1000 6000\n',
     `browser node Stats metadata should track mode, owner, times, and predicates: ${statsMetadataResult.stdout}`
   );
 
@@ -5621,11 +5679,11 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const metadataWatchResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); const flush = () => new Promise((resolve) => queueMicrotask(resolve)); fs.writeFileSync(\\"metadata-watch.txt\\", \\"ok\\\\n\\"); const events = []; const watcher = fs.watch(\\"metadata-watch.txt\\", (type, name) => events.push(type + \\":\\" + name)); fs.chmodSync(\\"metadata-watch.txt\\", 0o600); fs.chownSync(\\"metadata-watch.txt\\", 3, 4); fs.utimesSync(\\"metadata-watch.txt\\", 1, 2); await flush(); watcher.close(); console.log(events.filter((event) => event === \\"change:metadata-watch.txt\\").length);"',
+    '"const fs = require(\\"node:fs\\"); const flush = () => new Promise((resolve) => queueMicrotask(resolve)); fs.writeFileSync(\\"metadata-watch.txt\\", \\"ok\\\\n\\"); const events = []; const watcher = fs.watch(\\"metadata-watch.txt\\", (type, name) => events.push(type + \\":\\" + name)); fs.chmodSync(\\"metadata-watch.txt\\", 0o600); fs.chownSync(\\"metadata-watch.txt\\", 1000, 1000); fs.utimesSync(\\"metadata-watch.txt\\", 1, 2); await flush(); watcher.close(); console.log(events.filter((event) => event === \\"change:metadata-watch.txt\\").length);"',
   ].join(' '));
   assertCondition(metadataWatchResult.exitCode === 0, `browser node metadata watch workflow should succeed: ${metadataWatchResult.stderr}`);
   assertCondition(
-    metadataWatchResult.stdout === '3\n',
+    metadataWatchResult.stdout === '2\n',
     `browser node fs.watch should observe metadata mutations: ${metadataWatchResult.stdout}`
   );
 
@@ -6222,7 +6280,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   ].join(' '));
   assertCondition(devFsResult.exitCode === 0, `browser node /dev fs workflow should succeed: ${devFsResult.stderr}`);
   assertCondition(
-    devFsResult.stdout === 'null,stderr,stdin,stdout,tty\nnull:true:false:true:false:false:false|stderr:true:false:true:false:false:false|stdin:true:false:true:false:false:false|stdout:true:false:true:false:false:false|tty:true:false:true:false:false:false\ntrue:true:false\ntrue:false\ntrue:false\nENOTDIR\n',
+    devFsResult.stdout === 'fd,null,stderr,stdin,stdout,tty\nfd:false:true:false:false:false:false|null:true:false:true:false:false:false|stderr:true:false:true:false:false:false|stdin:true:false:true:false:false:false|stdout:true:false:true:false:false:false|tty:true:false:true:false:false:false\ntrue:true:false\ntrue:false\ntrue:false\nENOTDIR\n',
     `browser node fs should expose tracekernel /dev namespace: ${devFsResult.stdout}`
   );
 
@@ -6687,10 +6745,12 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
           path: 'server.js',
           contents: [
             'const http = require("node:http");',
-            'http.createServer((req, res) => {',
+            'const server = http.createServer((req, res) => {',
             '  res.writeHead(200, { "content-type": "text/plain" });',
             '  res.end(req.method + " " + req.url + "\\n");',
-            '}).listen(3100, "127.0.0.1");',
+            '});',
+            'server.listen(3100, "127.0.0.1");',
+            'process.on("SIGTERM", () => server.close(() => console.log("worker-server-closed")));',
             '',
           ].join('\n'),
         },
@@ -6769,7 +6829,11 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
     assertCondition(serverPid !== undefined, `worker-backed listener row should include pid: ${listeners}`);
     const killed = await workspace.runCommand(`kill ${serverPid}`);
     assertCondition(killed.exitCode === 0, `worker-backed server should be killable: ${JSON.stringify(killed)}`);
-    await workspace.runCommand(`wait ${serverPid}`);
+    const waited = await workspace.runCommand(`wait ${serverPid}`);
+    assertCondition(
+      waited.exitCode === 0,
+      `worker-backed signal handlers should close resources and exit naturally: ${JSON.stringify(waited)}`
+    );
   } finally {
     restoreHostGlobals();
   }
@@ -10088,48 +10152,43 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     }),
     'IndexedDB kernel storage should require an explicit non-empty database name'
   );
-  await assertRejectsAsync(
-    () => createBrowserProjectWorkspace({
-      kernelStorage: {
-        async load() {
-          return {
-            version: 1,
-            savedAt: new Date().toISOString(),
-            snapshot: {
-              files: [{ path: '../escape.js', contents: 'escape\n' }],
-            },
-          };
+  const malformedStoredSnapshots = [
+    {
+      label: 'unsafe file paths',
+      snapshot: { files: [{ path: '../escape.js', contents: 'escape\n' }] },
+    },
+    {
+      label: 'duplicate directory paths',
+      snapshot: { files: [], directories: ['src', 'src'] },
+    },
+    {
+      label: 'orphan directory metadata',
+      snapshot: { files: [], directories: ['src'], directoryMetadata: [{ path: 'missing', mode: 0o700 }] },
+    },
+    {
+      label: 'file and directory path conflicts',
+      snapshot: { files: [{ path: 'src', contents: 'file\n' }], directories: ['src'] },
+    },
+  ];
+  for (const malformed of malformedStoredSnapshots) {
+    await assertRejectsAsync(
+      () => createBrowserProjectWorkspace({
+        kernelStorage: {
+          async load() {
+            return {
+              version: 1,
+              savedAt: new Date().toISOString(),
+              snapshot: malformed.snapshot,
+            };
+          },
+          async save() {},
+          async flush() {},
         },
-        async save() {},
-        async flush() {},
-      },
-      pythonWorkerClient: {
-        async executeProjectPython() {
-          throw new Error('unexpected Python runner call');
-        },
-        terminate() {},
-      },
-      javaWorkerClient: {
-        async executeProjectJava() {
-          throw new Error('unexpected Java runner call');
-        },
-        terminate() {},
-      },
-      csharpWorkerClient: {
-        async executeProjectCSharp() {
-          throw new Error('unexpected C# runner call');
-        },
-        terminate() {},
-      },
-      cppWorkerClient: {
-        async executeProjectCpp() {
-          throw new Error('unexpected C++ runner call');
-        },
-        terminate() {},
-      },
-    }),
-    'browser kernel storage should reject malformed stored workspace snapshots before hydration'
-  );
+        ...throwingBrowserWorkerClients(),
+      }),
+      `browser kernel storage should reject ${malformed.label} before hydration`
+    );
+  }
 
   let pythonTimeoutMs: number | undefined;
   let javaTimeoutMs: number | undefined;
@@ -10809,7 +10868,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
 
     const procInfo = JSON.parse(await workspace.readFile('/proc/kernel/info')) as typeof workspace.kernel.info;
     assertCondition(procInfo.workspace.root === '/workspace', 'browser workspace public /proc should expose virtual workspace root');
-    assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self,tracekernel', 'browser workspace /proc should list virtual namespaces');
+    assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,mounts,self,tracekernel', 'browser workspace /proc should list virtual namespaces and the canonical mount table');
     assertCondition((await workspace.readDir('/proc/kernel')).join(',') === 'info,version', 'browser workspace /proc/kernel should list info and version');
     assertCondition(
       (await workspace.readDir('/proc/tracekernel')).join(',') === 'commands,events,inodes,locks,net,processes,runtimes,sched',
@@ -11865,7 +11924,10 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     ),
     `runCommand onEvent should preserve /dev/tty source device: ${JSON.stringify(deviceCommandEvents)}`
   );
-  assertCondition((await deviceWorkspace.readDir('/dev')).join(',') === 'null,stderr,stdin,stdout,tty', '/dev should list kernel devices');
+  assertCondition((await deviceWorkspace.readDir('/dev')).join(',') === 'fd,null,stderr,stdin,stdout,tty', '/dev should list kernel devices');
+  assertCondition((await deviceWorkspace.readDir('/dev/fd')).join(',') === '0,1,2', '/dev/fd should list standard descriptors');
+  const fdStat = await deviceWorkspace.stat('/dev/fd');
+  assertCondition(fdStat.isDirectory && !fdStat.isFile, '/dev/fd should stat as a directory');
   const stdoutStat = await deviceWorkspace.stat('/dev/stdout');
   assertCondition(stdoutStat.isFile && !stdoutStat.isDirectory, '/dev/stdout should stat as a file device');
   assertCondition(await deviceWorkspace.readFile('/dev/null') === '', '/dev/null reads should return EOF');
@@ -12124,7 +12186,7 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   const homeWrite = await session.run('mkdir outside-project');
   assertCondition(
     homeWrite.exitCode !== 0 &&
-      homeWrite.stderr.includes('EROFS: project workspace is read-only outside'),
+      homeWrite.stderr.includes('EROFS: read-only file system'),
     `terminal writes outside the project should fail at kernel boundary: ${JSON.stringify(homeWrite)}`
   );
   const cdBackToWorkspace = await session.run('cd weather-api');
@@ -13790,6 +13852,8 @@ async function testTraceKernelInfoConfig(): Promise<void> {
   assertCondition(procInfo.user.username === 'obi', 'kernel /proc info should expose username');
   assertCondition(procInfo.workspace.root === '/home/obi/weather-api', 'kernel /proc info should expose workspace root');
   const mountInfo = await workspace.kernel.readFile('/proc/self/mountinfo');
+  assertCondition(mountInfo.includes('tracekernel:system'), 'kernel /proc mountinfo should expose the read-only system root');
+  assertCondition(mountInfo.includes('tracekernel:tmp') && mountInfo.includes('tracekernel:var-tmp'), 'kernel /proc mountinfo should expose writable temporary mounts');
   assertCondition(mountInfo.includes('tracekernel:workspace'), 'kernel /proc mountinfo should expose workspace mount');
   assertCondition(mountInfo.includes('/home/obi/weather-api'), 'kernel /proc mountinfo should expose canonical workspace mountpoint');
   assertCondition(mountInfo.includes('/workspace'), 'kernel /proc mountinfo should expose compatibility alias mountpoint');
@@ -13810,7 +13874,7 @@ async function testTraceKernelInfoConfig(): Promise<void> {
   assertCondition(await workspace.exists('/proc/kernel/version'), 'kernel /proc version should exist');
   const procVersionStat = await workspace.stat('/proc/kernel/version');
   assertCondition(procVersionStat.isFile && !procVersionStat.isDirectory, 'kernel /proc version should stat as file');
-  assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self,tracekernel', 'kernel /proc should list virtual namespaces');
+  assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,mounts,self,tracekernel', 'kernel /proc should list virtual namespaces and the canonical mount table');
   assertCondition((await workspace.readDir('/proc/kernel')).join(',') === 'info,version', 'kernel /proc/kernel should list info and version');
   await assertRejectsAsync(() => workspace.writeFile('/proc/kernel/info', '{}\n'), 'kernel /proc should be read-only');
 

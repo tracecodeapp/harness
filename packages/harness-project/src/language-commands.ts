@@ -120,6 +120,15 @@ export type RuntimeProjectSnapshotProvider = (
 ) => Promise<RuntimeProjectSnapshot>;
 
 
+export interface TraceKernelCommandHelp {
+  summary: string;
+  usage: string;
+  options?: readonly string[];
+  notes?: readonly string[];
+  flags?: readonly string[];
+}
+
+
 export interface TraceKernelCommandInfo {
   name: string;
   path: string;
@@ -130,6 +139,7 @@ export interface TraceKernelCommandInfo {
   displayName?: string;
   versionLabel?: string;
   description?: string;
+  help?: TraceKernelCommandHelp;
 }
 
 
@@ -204,6 +214,86 @@ export function commandInfo(
 }
 
 
+function commandHelp(
+  summary: string,
+  usage: string,
+  options: readonly string[] = [],
+  config: { notes?: readonly string[]; flags?: readonly string[] } = {}
+): TraceKernelCommandHelp {
+  return {
+    summary,
+    usage,
+    ...(options.length > 0 ? { options } : {}),
+    ...(config.notes ? { notes: config.notes } : {}),
+    flags: config.flags ?? ['--help'],
+  };
+}
+
+
+function languageHelp(name: string): TraceKernelCommandHelp {
+  if (name === 'python' || name === 'python3') {
+    return commandHelp('run Python code', `${name} [OPTIONS] [-c COMMAND | -m MODULE | SCRIPT] [ARG]...`, [
+      '-c COMMAND          execute the Python code in COMMAND',
+      '-m MODULE           run a supported library module as a script',
+      '-V, --version       print the Python version and exit',
+      '-                   read the program from standard input',
+    ], { flags: ['--help', '-h'] });
+  }
+  if (name === 'node') {
+    return commandHelp('run JavaScript with the Node.js-compatible runtime', 'node [OPTIONS] [SCRIPT] [ARG]...', [
+      '-e, --eval CODE     evaluate JavaScript code',
+      '-p, --print CODE    evaluate and print the result',
+      '-r, --require MOD   preload a supported module',
+      '--input-type TYPE   set the input module type',
+      '-v, --version       print the runtime version and exit',
+      '-                   read the program from standard input',
+    ], { flags: ['--help', '-h'] });
+  }
+  if (name === 'tsc') {
+    return commandHelp('compile a TypeScript project', 'tsc [OPTIONS] [FILE]...', [
+      '-p, --project PATH  compile the project at PATH',
+      '--noEmit            type-check without writing output files',
+      '-v, --version       print the compiler version and exit',
+    ], { flags: ['--help', '-h'] });
+  }
+  if (name === 'javac') {
+    return commandHelp('compile Java source files', 'javac [OPTIONS] SOURCE...', [
+      '-cp, -classpath PATH  specify the class path',
+      '-d DIR               write class files under DIR',
+      '--release RELEASE    compile for the specified Java release',
+      '--enable-preview     enable preview language features',
+      '--version            print the compiler version and exit',
+    ], { flags: ['--help', '-help', '-h', '-?'] });
+  }
+  if (name === 'java') {
+    return commandHelp('run a Java application', 'java [OPTIONS] MAINCLASS [ARG]...\n       java [OPTIONS] -jar JARFILE [ARG]...', [
+      '-cp, -classpath PATH  specify the class path',
+      '-jar JARFILE          execute the main class in JARFILE',
+      '-DNAME=VALUE          set a system property',
+      '-ea                    enable assertions',
+      '--enable-preview      allow preview class files',
+      '--version             print the runtime version and exit',
+    ], { flags: ['--help', '-help', '-h', '-?'] });
+  }
+  if (name === 'dotnet') {
+    return commandHelp('build and run .NET applications', 'dotnet [OPTIONS] [COMMAND] [ARG]...', [
+      '--info              display .NET environment information',
+      '--version           print the SDK version and exit',
+      'build [PROJECT]     build a project',
+      'run [-- ARGS...]    build and run a project',
+    ], { flags: ['--help', '-h'] });
+  }
+  return commandHelp('compile C and C++ source files', `${name} [OPTIONS] FILE...`, [
+    '-o FILE             write the executable to FILE',
+    '-I DIR              add an include search path',
+    '-D NAME[=VALUE]     define a preprocessor macro',
+    '-std=STANDARD       select the language standard',
+    '-c                  compile without linking',
+    '--version           print the compiler version and exit',
+  ]);
+}
+
+
 export function languageCommandInfo(
   language: Language,
   name: string,
@@ -216,6 +306,7 @@ export function languageCommandInfo(
     displayName: info.displayName,
     versionLabel: info.versionLabel,
     ...(description ? { description } : {}),
+    help: languageHelp(name),
   });
 }
 
@@ -225,23 +316,244 @@ export function createTraceKernelCommandRegistry(
   packageManagerConfig: NormalizedRuntimePackageManagerConfig | null
 ): TraceKernelCommandInfo[] {
   const commands: TraceKernelCommandInfo[] = [
-    commandInfo('bg', 'control', 'shell job control'),
-    commandInfo('curl', 'tool', 'HTTP client'),
-    commandInfo('fg', 'control', 'shell job control'),
-    commandInfo('jobs', 'control', 'shell job control'),
-    commandInfo('kill', 'control', 'process control'),
-    commandInfo('lsof', 'tool', 'open file and network socket inspection'),
-    commandInfo('ls', 'tool', 'directory listing'),
-    commandInfo('pgrep', 'control', 'process lookup'),
-    commandInfo('ping', 'tool', 'network reachability probe'),
-    commandInfo('pkill', 'control', 'process control'),
-    commandInfo('ps', 'control', 'process table'),
-    commandInfo('ss', 'tool', 'socket inspection'),
-    commandInfo('tracekernelctl', 'control', 'kernel control plane'),
-    commandInfo(TRACEKERNEL_EXEC_COMMAND, 'control', 'virtual executable dispatcher'),
-    commandInfo('wait', 'control', 'process control'),
-    commandInfo('which', 'tool', 'command resolver'),
-    commandInfo('command', 'tool', 'command resolver'),
+    commandInfo('bg', 'control', 'shell job control', {
+      help: commandHelp('move a job to the background', 'bg [PID|%JOB]'),
+    }),
+    commandInfo('curl', 'tool', 'HTTP client', {
+      help: commandHelp('transfer data from or to a URL', 'curl [OPTIONS] URL', [
+        '-d, --data DATA       send form data in a request body',
+        '--json JSON           send a JSON request body',
+        '-G, --get             append supplied data to the query string',
+        '-H, --header HEADER   add a request header',
+        '-X, --request METHOD  specify the request method',
+        '-i, --include         include response headers',
+        '-I, --head            fetch response headers only',
+        '-f, --fail            fail on HTTP error status',
+        '--fail-with-body      fail on HTTP error and retain the body',
+        '-L, --location        follow redirects',
+        '-o, --output FILE     write the response body to FILE',
+        '-w, --write-out FMT   print response metadata using FMT',
+        '--max-time SECONDS    limit the operation duration',
+        '-s, --silent          suppress progress and errors',
+        '-S, --show-error      show errors when used with --silent',
+        '-v, --verbose         show request and response details',
+        '-k, --insecure        allow connections without certificate checks',
+      ], { flags: ['--help', '-h'] }),
+    }),
+    commandInfo('df', 'tool', 'filesystem capacity', {
+      help: commandHelp('report logical workspace filesystem usage', 'df [OPTION]... [FILE]...', [
+        '-h, --human-readable  print human-readable byte counts',
+        '-i, --inodes          report entry capacity instead of bytes',
+        '-k                    report 1024-byte blocks',
+        '-P                    use the portable output shape',
+      ]),
+    }),
+    commandInfo('du', 'tool', 'filesystem usage', {
+      help: commandHelp('estimate logical workspace entry usage', 'du [OPTION]... [FILE]...', [
+        '-a, --all             write counts for files as well as directories',
+        '-b, --bytes           print exact logical byte counts',
+        '-h, --human-readable  print human-readable byte counts',
+        '-k                    print 1024-byte logical block counts',
+        '-s, --summarize       display only a total for each argument',
+        '-c, --total           append a grand total',
+        '--max-depth=N         print directories at most N levels below an argument',
+      ]),
+    }),
+    commandInfo('fg', 'control', 'shell job control', {
+      help: commandHelp('move a job to the foreground', 'fg [PID|%JOB]'),
+    }),
+    commandInfo('getconf', 'tool', 'system configuration lookup', {
+      help: commandHelp('query system configuration values', 'getconf NAME'),
+    }),
+    commandInfo('getent', 'tool', 'identity and host database lookup', {
+      help: commandHelp('query an identity or host database', 'getent DATABASE [KEY]'),
+    }),
+    commandInfo('groups', 'tool', 'group identity', {
+      help: commandHelp('display group membership', 'groups [USER]'),
+    }),
+    commandInfo('jobs', 'control', 'shell job control', {
+      help: commandHelp('display active jobs', 'jobs [-l]', [
+        '-l                  include process IDs',
+      ]),
+    }),
+    commandInfo('hostname', 'tool', 'kernel host identity', {
+      help: commandHelp('display the TraceKernel host name', 'hostname [-s|-f]', [
+        '-s                  display the short host name',
+        '-f                  display the configured host name',
+      ]),
+    }),
+    commandInfo('id', 'tool', 'kernel user identity', {
+      help: commandHelp('display user and group identity', 'id [-u|-g] [-n] [USER]', [
+        '-u                  display only the user ID',
+        '-g                  display only the primary group ID',
+        '-n                  display the name instead of a numeric ID',
+      ]),
+    }),
+    commandInfo('kill', 'control', 'process control', {
+      help: commandHelp('send a signal to a process or process group', 'kill [-SIGNAL] PID...', [
+        '-SIGNAL             signal name or number; SIGTERM is the default',
+        '--                  end option processing',
+      ]),
+    }),
+    commandInfo('lsof', 'tool', 'open file and network socket inspection', {
+      help: commandHelp('list processes listening on a TCP port', 'lsof -i :PORT', [
+        '-i :PORT            select a listening TCP port',
+      ], { flags: ['--help', '-h', '-?'] }),
+    }),
+    commandInfo('locale', 'tool', 'locale configuration', {
+      help: commandHelp('display locale configuration', 'locale [-a|charmap]'),
+    }),
+    commandInfo('ls', 'tool', 'directory listing', {
+      help: commandHelp('list directory contents', 'ls [OPTION]... [FILE]...', [
+        '-a, --all            include entries starting with .',
+        '-A, --almost-all     include hidden entries except . and ..',
+        '-d, --directory      list directories themselves',
+        '-F, --classify       append file-type indicators',
+        '-h, --human-readable print human-readable sizes with -l',
+        '-l                   use a long listing format',
+        '-r, --reverse        reverse the selected ordering',
+        '-R, --recursive      list subdirectories recursively',
+        '-S                   sort by size, largest first',
+        '-t                   sort by modification time, newest first',
+        '-1                   list one entry per line',
+      ]),
+    }),
+    commandInfo('man', 'tool', 'command manual', {
+      help: commandHelp('display the manual for an available command', 'man COMMAND'),
+    }),
+    commandInfo('mktemp', 'tool', 'temporary file creation', {
+      help: commandHelp('create a unique temporary file or directory', 'mktemp [OPTION]... [TEMPLATE]', [
+        '-d, --directory     create a directory instead of a file',
+        '-p, --tmpdir DIR    interpret TEMPLATE relative to DIR',
+        '--suffix=SUFFIX     append SUFFIX to the generated name',
+        '-u, --dry-run       print a name without creating it',
+        '-q, --quiet         suppress creation diagnostics',
+      ]),
+    }),
+    commandInfo('mount', 'tool', 'mounted filesystem inspection', {
+      help: commandHelp('display the TraceKernel filesystem topology', 'mount [-l]', [
+        '-l, --show-labels   include the virtual filesystem source label',
+      ]),
+    }),
+    commandInfo('pgrep', 'control', 'process lookup', {
+      help: commandHelp('find processes by name or command line', 'pgrep [-aflx] PATTERN', [
+        '-a                  list PID and full command line',
+        '-f                  match against the full command line',
+        '-l                  list PID and process name',
+        '-x                  require an exact match',
+      ], { flags: ['--help', '-h'] }),
+    }),
+    commandInfo('ping', 'tool', 'network reachability probe', {
+      help: commandHelp('send reachability probes to a host', 'ping [-c COUNT] HOST', [
+        '-c COUNT            stop after COUNT replies',
+      ], { flags: ['--help', '-h'] }),
+    }),
+    commandInfo('pkill', 'control', 'process control', {
+      help: commandHelp('signal processes selected by name or command line', 'pkill [-fx] [-SIGNAL] PATTERN', [
+        '-f                  match against the full command line',
+        '-x                  require an exact match',
+        '-SIGNAL             signal name or number; SIGTERM is the default',
+      ], { flags: ['--help', '-h'] }),
+    }),
+    commandInfo('ps', 'control', 'process table', {
+      help: commandHelp('display the process table', 'ps [-e|-f|-ef|aux]', [
+        '-e                  include every process',
+        '-f                  use the full process format',
+        'aux                 use the BSD-style process format',
+      ]),
+    }),
+    commandInfo('ss', 'tool', 'socket inspection', {
+      help: commandHelp('display listening sockets', 'ss [-ltnp]', [
+        '-l, --listening     display listening sockets',
+        '-t, --tcp           select TCP sockets',
+        '-n, --numeric       keep addresses and ports numeric',
+        '-p, --processes     show the owning process',
+      ], { flags: ['--help', '-h'] }),
+    }),
+    commandInfo('stat', 'tool', 'file metadata inspection', {
+      help: commandHelp('display file status', 'stat [OPTION]... FILE...', [
+        '-L, --dereference   follow symbolic links',
+        '-c, --format FORMAT use FORMAT instead of the default display',
+        'FORMAT              supports %n %N %s %F %a %A %u %U %g %G %Y %y %i %h',
+      ]),
+    }),
+    commandInfo('stty', 'tool', 'terminal settings inspection', {
+      help: commandHelp('inspect terminal line settings', 'stty [-a|size]', [
+        '-a                  display the supported terminal settings',
+        'size                print terminal rows and columns',
+      ]),
+    }),
+    commandInfo('tput', 'tool', 'terminal capability lookup', {
+      help: commandHelp('query capabilities of the current terminal', 'tput CAPABILITY', [
+        'cols                print the terminal width',
+        'lines               print the terminal height',
+        'colors              print the supported color count',
+        'longname            print the terminal description',
+      ]),
+    }),
+    commandInfo('tracekernelctl', 'control', 'kernel control plane', {
+      help: commandHelp('inspect and control the TraceKernel workspace', 'tracekernelctl COMMAND [ARG]...', [
+        'status              display kernel and scheduler status',
+        'verbose [MODE]      toggle or set verbose terminal output',
+        'kill PID [SIGNAL]   signal a workspace process',
+        'wait [PID]          wait for a child process to exit',
+        'reset               reset the workspace when policy permits',
+      ]),
+    }),
+    commandInfo('tty', 'tool', 'terminal identity', {
+      help: commandHelp('print the terminal connected to standard input', 'tty [-s]', [
+        '-s                  print nothing; return terminal status only',
+      ]),
+    }),
+    commandInfo('umask', 'control', 'file creation mask', {
+      help: commandHelp('display or set the shell file creation mask', 'umask [-p|-S] [MODE]', [
+        '-p                  print a reusable shell command',
+        '-S                  display the mask as symbolic allowed permissions',
+        'MODE                set an octal or symbolic permission mask',
+      ]),
+    }),
+    commandInfo('uname', 'tool', 'kernel identity', {
+      help: commandHelp('display TraceKernel system information', 'uname [OPTION]...', [
+        '-a, --all           display all available fields',
+        '-s                  display the kernel name',
+        '-n                  display the host name',
+        '-r                  display the kernel release',
+        '-v                  display the kernel build identity',
+        '-m                  display the machine architecture',
+        '-o                  display the operating system name',
+      ]),
+    }),
+    commandInfo(TRACEKERNEL_EXEC_COMMAND, 'control', 'virtual executable dispatcher', {
+      help: commandHelp('dispatch a TraceKernel virtual executable', `${TRACEKERNEL_EXEC_COMMAND} EXECUTABLE [ARG]...`),
+    }),
+    commandInfo('wait', 'control', 'process control', {
+      help: commandHelp('wait for a child process to exit', 'wait [PID]'),
+    }),
+    commandInfo('wget', 'tool', 'HTTP downloader', {
+      help: commandHelp('retrieve a resource over HTTP or HTTPS', 'wget [OPTION]... URL', [
+        '-q, --quiet         suppress non-error output',
+        '-O, --output-document FILE  write the response to FILE; use - for stdout',
+        '--spider            check that the resource is reachable without downloading it',
+        '-T, --timeout SECONDS  limit the operation duration',
+        '--header HEADER     add a request header',
+        '--post-data DATA    send DATA in a POST request',
+      ], { flags: ['--help', '-h'] }),
+    }),
+    commandInfo('which', 'tool', 'command resolver', {
+      help: commandHelp('locate commands in the command path', 'which [-a] COMMAND...', [
+        '-a                  print every matching path',
+      ]),
+    }),
+    commandInfo('whoami', 'tool', 'kernel user identity', {
+      help: commandHelp('display the current user name', 'whoami'),
+    }),
+    commandInfo('command', 'tool', 'command resolver', {
+      help: commandHelp('execute a command or describe how it resolves', 'command [-pVv] COMMAND [ARG]...', [
+        '-p                  use the standard command path',
+        '-v                  print the resolved command path',
+        '-V                  print the resolved command path',
+      ]),
+    }),
   ];
 
   if (options.pythonRunner) {
@@ -276,6 +588,7 @@ export function createTraceKernelCommandRegistry(
       displayName: getLanguageRuntimeInfo('cpp').displayName,
       versionLabel: getLanguageRuntimeInfo('cpp').versionLabel,
       description: 'Default C++ project executable produced by compile commands.',
+      help: commandHelp('run the default compiled C++ executable', 'a.out [ARG]...'),
     }));
   }
   if (options.csharpRunner) {
@@ -283,8 +596,23 @@ export function createTraceKernelCommandRegistry(
   }
   if (packageManagerConfig?.managers.includes('npm')) {
     commands.push(
-      commandInfo('npm', 'package-manager', 'npm package manager'),
-      commandInfo('npx', 'package-manager', 'npm package executable')
+      commandInfo('npm', 'package-manager', 'npm package manager', {
+        help: commandHelp('run package scripts and inspect the project package', 'npm COMMAND [ARG]...', [
+          'run [SCRIPT]       list scripts or run SCRIPT',
+          'start              run the start script',
+          'test               run the test script',
+          'exec COMMAND       run a package executable',
+          'install            install declared dependencies',
+          'list               list declared dependencies',
+          '-v, --version      print the npm-compatible version and exit',
+        ], { flags: ['--help', '-h'] }),
+      }),
+      commandInfo('npx', 'package-manager', 'npm package executable', {
+        help: commandHelp('run a package executable', 'npx COMMAND [ARG]...', [
+          '-v, --version      print the npm-compatible version and exit',
+          '--                  end npx option processing',
+        ], { flags: ['--help', '-h'] }),
+      })
     );
   }
 
@@ -479,7 +807,7 @@ export function createNodeProjectCommands(
           exitCode: 1,
         };
       }
-      code = stat.isFile ? await ctx.fs.readFile(absolutePath) : '';
+      code = stat.isFile ? stripNodeShebang(await ctx.fs.readFile(absolutePath)) : '';
       scriptPath = toProjectPath(workspaceRoot, absolutePath);
       source = 'file';
     } else if (stdin.trim().length > 0) {
@@ -521,6 +849,11 @@ export function createNodeProjectCommands(
   return [
     defineCommand('node', runNode),
   ];
+}
+
+function stripNodeShebang(code: string): string {
+  if (!code.startsWith('#!')) return code;
+  return code.replace(/^#![^\r\n]*(?:\r?\n|$)/, (line) => line.replace(/[^\r\n]/g, ' '));
 }
 
 

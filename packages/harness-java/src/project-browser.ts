@@ -32,11 +32,16 @@ export interface BrowserJavaProjectRunnerOptions {
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
-function unsupportedBrowserJavaResult(request: JavaProjectCommandRequest, stderr: string): JavaProjectCommandResult {
+function unsupportedBrowserJavaResult(
+  request: JavaProjectCommandRequest,
+  stderr: string,
+  error?: JavaProjectCommandResult['error']
+): JavaProjectCommandResult {
   const result: JavaProjectCommandResult = {
     stdout: '',
     stderr,
     exitCode: 2,
+    ...(error ? { error } : {}),
   };
   const io = createRuntimeProjectIoBridge(request.onEvent);
   io.status(
@@ -73,6 +78,19 @@ export function createBrowserJavaProjectRunner(
 ): JavaProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
+    if ((request.project.symlinks?.length ?? 0) > 0) {
+      return Promise.resolve(
+        unsupportedBrowserJavaResult(
+          request,
+          'java: ENOTSUP: browser project provider cannot materialize symbolic links\n',
+          {
+            code: 'ENOTSUP',
+            message: 'Browser Java project provider cannot materialize symbolic links.',
+            syscall: 'materialize',
+          }
+        )
+      );
+    }
     if (request.options?.enablePreview === true) {
       return Promise.resolve(
         unsupportedBrowserJavaResult(request, 'java: --enable-preview is not supported by this runtime\n')

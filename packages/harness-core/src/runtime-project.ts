@@ -23,6 +23,16 @@ export interface RuntimeFile {
   path: string;
   contents: string;
   encoding?: RuntimeFileEncoding;
+  /** Permission bits, without the file-type bits. */
+  mode?: number;
+  atimeMs?: number;
+  mtimeMs?: number;
+}
+
+export interface RuntimeSymlink {
+  path: string;
+  symlink: true;
+  target: string;
 }
 
 export interface RuntimeFileDeletion {
@@ -34,9 +44,15 @@ export interface RuntimeDirectoryChange {
   path: string;
   directory: true;
   deleted?: true;
+  /** Permission bits, without the file-type bits. */
+  mode?: number;
+  atimeMs?: number;
+  mtimeMs?: number;
 }
 
-export type RuntimeFileChange = RuntimeFile | RuntimeFileDeletion | RuntimeDirectoryChange;
+export type RuntimeDirectory = Omit<RuntimeDirectoryChange, 'directory' | 'deleted'>;
+
+export type RuntimeFileChange = RuntimeFile | RuntimeSymlink | RuntimeFileDeletion | RuntimeDirectoryChange;
 
 export type RuntimeWorkspaceActorKind = 'principal' | 'test' | 'hidden-test' | 'runtime' | 'system';
 
@@ -174,6 +190,12 @@ export interface RuntimeTraceKernelConfig {
   host?: RuntimeKernelHostConfig;
   workspace?: RuntimeKernelWorkspaceConfig;
   workspaceAlias?: string | false;
+  /**
+   * Maximum number of processes in the workspace process table, including the
+   * kernel's PID 1, persistent host-created processes, queued/running commands,
+   * and unreaped zombies. Omit for no explicit process-table limit.
+   */
+  maxProcesses?: number;
   scheduler?: RuntimeTraceKernelSchedulerConfig;
 }
 
@@ -218,11 +240,22 @@ export interface RuntimeKernelInfo {
   workspaceAlias?: string;
 }
 
+export interface RuntimeProjectStorageSnapshot {
+  usedBytes: number;
+  capacityBytes: number;
+  availableBytes: number;
+  usedEntries: number;
+  capacityEntries: number;
+  availableEntries: number;
+}
+
 export interface RuntimeProjectSnapshot {
   files: RuntimeFile[];
+  symlinks?: RuntimeSymlink[];
   kernelFiles?: RuntimeFile[];
   kernelDevices?: RuntimeKernelDeviceInfo[];
   directories?: string[];
+  directoryMetadata?: RuntimeDirectory[];
   readonlyFiles?: readonly string[];
   hiddenFiles?: readonly string[];
   entrypoint?: string;
@@ -230,6 +263,7 @@ export interface RuntimeProjectSnapshot {
   workspaceRoot?: string;
   workspaceAlias?: string;
   kernel?: RuntimeKernelInfo;
+  storage?: RuntimeProjectStorageSnapshot;
 }
 
 export interface RuntimeProjectPatchBase {
@@ -259,9 +293,28 @@ export interface RuntimeProjectPatchFileDelete {
   baseHash: string;
 }
 
+export interface RuntimeProjectPatchSymlinkWrite {
+  kind: 'symlink';
+  path: string;
+  target: string;
+  baseHash: string | null;
+}
+
 export interface RuntimeProjectPatchDirectoryCreate {
   kind: 'mkdir';
   path: string;
+  mode?: number;
+  atimeMs?: number;
+  mtimeMs?: number;
+}
+
+export interface RuntimeProjectPatchDirectoryWrite {
+  kind: 'directory';
+  path: string;
+  mode?: number;
+  atimeMs?: number;
+  mtimeMs?: number;
+  baseHash: string;
 }
 
 export interface RuntimeProjectPatchDirectoryDelete {
@@ -271,8 +324,10 @@ export interface RuntimeProjectPatchDirectoryDelete {
 
 export type RuntimeProjectPatchChange =
   | RuntimeProjectPatchFileWrite
+  | RuntimeProjectPatchSymlinkWrite
   | RuntimeProjectPatchFileDelete
   | RuntimeProjectPatchDirectoryCreate
+  | RuntimeProjectPatchDirectoryWrite
   | RuntimeProjectPatchDirectoryDelete;
 
 export interface RuntimeProjectPatch {
@@ -554,7 +609,9 @@ export interface RuntimeProjectSession {
   env?: Record<string, string>;
   commands?: Record<string, RuntimeProjectSessionCommandDefinition>;
   files?: readonly RuntimeProjectSessionFile[];
+  symlinks?: readonly RuntimeSymlink[];
   directories?: readonly string[];
+  directoryMetadata?: readonly RuntimeDirectory[];
   skills?: readonly RuntimeFile[];
   createdAt?: string;
   lastOpenedAt?: string;
@@ -588,6 +645,19 @@ export interface RuntimeCommandExecutionLimits {
   timeoutMs?: number;
 }
 
+/**
+ * Capabilities of the host terminal attached to a command. This is absent for
+ * programmatic executions, so runtimes can distinguish a real terminal
+ * session from captured pipes without guessing from presentation metadata.
+ */
+export interface RuntimeProjectTerminalCapabilities {
+  isTTY: true;
+  columns: number;
+  rows: number;
+  term: string;
+  colorLevel: 0 | 1 | 2 | 3;
+}
+
 export interface RuntimeCommandOptions {
   cwd?: string;
   env?: Record<string, string>;
@@ -595,6 +665,9 @@ export interface RuntimeCommandOptions {
   signal?: AbortSignal;
   args?: string[];
   presentation?: 'programmatic' | 'terminal';
+  terminal?: RuntimeProjectTerminalCapabilities;
+  /** Process file-creation mask. Defaults to 0022 for a fresh shell. */
+  umask?: number;
   foreground?: boolean;
   retainOnExit?: boolean;
   includeHiddenFiles?: boolean;
@@ -608,6 +681,8 @@ export interface RuntimeCommandOptions {
    * that bypass the shell (virtual executables).
    */
   onEnvChanges?: (changes: Record<string, string | undefined>) => void;
+  /** Receives a foreground shell's updated file-creation mask. */
+  onUmaskChange?: (umask: number) => void;
 }
 
 export interface RuntimeCommandCompletionMatch {
@@ -732,6 +807,23 @@ export function runtimeCommandStdinPipeRemainingBytes(pipe: RuntimeCommandStdinS
   return runtimeCommandStdinPipeAvailable(runtimeCommandStdinPipeState(pipe));
 }
 
+export function peekRuntimeCommandStdinPipeBytes(
+  pipe: RuntimeCommandStdinSharedBuffer,
+  maxLength = RUNTIME_STDIN_PIPE_DEFAULT_CAPACITY
+): Uint8Array {
+  const state = runtimeCommandStdinPipeState(pipe);
+  const available = runtimeCommandStdinPipeAvailable(state);
+  if (available <= 0 || maxLength <= 0) return new Uint8Array();
+  const readIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
+  const capacity = state.bytes.byteLength;
+  const length = Math.min(Math.floor(maxLength), available);
+  const out = new Uint8Array(length);
+  const firstLength = Math.min(length, capacity - readIndex);
+  out.set(state.bytes.subarray(readIndex, readIndex + firstLength), 0);
+  if (firstLength < length) out.set(state.bytes.subarray(0, length - firstLength), firstLength);
+  return out;
+}
+
 export function readRuntimeCommandStdinPipeBytes(
   pipe: RuntimeCommandStdinSharedBuffer,
   maxLength = RUNTIME_STDIN_PIPE_DEFAULT_CAPACITY
@@ -758,6 +850,8 @@ export interface RuntimeCommandResult {
   exitCode: number;
   files?: RuntimeFileChange[];
   error?: RuntimeCommandError;
+  /** A runtime caught this signal and completed its own shutdown path. */
+  handledSignal?: string;
 }
 
 const RUNTIME_SIGNAL_EXIT_CODES = new Map<string, number>([
@@ -997,11 +1091,24 @@ export function normalizeRuntimeFileChange(change: RuntimeFileChange): RuntimeFi
   }
   const path = normalizeRuntimeFileChangePath((change as { path?: unknown }).path);
   const directory = (change as { directory?: unknown }).directory;
+  const symlink = (change as { symlink?: unknown }).symlink;
+  const target = (change as { target?: unknown }).target;
   const deleted = (change as { deleted?: unknown }).deleted;
   const contents = (change as { contents?: unknown }).contents;
   const encoding = (change as { encoding?: unknown }).encoding;
+  const mode = (change as { mode?: unknown }).mode;
+  const atimeMs = (change as { atimeMs?: unknown }).atimeMs;
+  const mtimeMs = (change as { mtimeMs?: unknown }).mtimeMs;
+  const metadata = {
+    ...(mode !== undefined ? { mode: normalizeRuntimeFileMode(mode, path) } : {}),
+    ...(atimeMs !== undefined ? { atimeMs: normalizeRuntimeFileTimestamp(atimeMs, path, 'atimeMs') } : {}),
+    ...(mtimeMs !== undefined ? { mtimeMs: normalizeRuntimeFileTimestamp(mtimeMs, path, 'mtimeMs') } : {}),
+  };
   if (directory !== undefined && directory !== true) {
     throw Object.assign(new Error(`EINVAL: TraceKernel file-change directory flag must be true: ${path}`), { code: 'EINVAL' });
+  }
+  if (symlink !== undefined && symlink !== true) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change symlink flag must be true: ${path}`), { code: 'EINVAL' });
   }
   if (deleted !== undefined && deleted !== true) {
     throw Object.assign(new Error(`EINVAL: TraceKernel file-change deleted flag must be true: ${path}`), { code: 'EINVAL' });
@@ -1009,22 +1116,57 @@ export function normalizeRuntimeFileChange(change: RuntimeFileChange): RuntimeFi
   if (encoding !== undefined && encoding !== 'base64') {
     throw Object.assign(new Error(`EINVAL: TraceKernel file-change encoding is unsupported: ${path}`), { code: 'EINVAL' });
   }
+  if (symlink === true) {
+    if (directory !== undefined || deleted !== undefined || contents !== undefined || encoding !== undefined) {
+      throw Object.assign(new Error(`EINVAL: TraceKernel symlink file-change must only include a target: ${path}`), { code: 'EINVAL' });
+    }
+    if (Object.keys(metadata).length > 0) {
+      throw Object.assign(new Error(`EINVAL: TraceKernel symlink file-change metadata is unsupported: ${path}`), { code: 'EINVAL' });
+    }
+    if (typeof target !== 'string' || target.length === 0 || target.includes('\0')) {
+      throw Object.assign(new Error(`EINVAL: TraceKernel symlink file-change target is invalid: ${path}`), { code: 'EINVAL' });
+    }
+    return { path, symlink: true, target };
+  }
+  if (target !== undefined) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel non-symlink file-change must not include a target: ${path}`), { code: 'EINVAL' });
+  }
   if (directory === true) {
     if (contents !== undefined || encoding !== undefined) {
       throw Object.assign(new Error(`EINVAL: TraceKernel directory file-change must not include contents: ${path}`), { code: 'EINVAL' });
     }
-    return { path, directory: true, ...(deleted === true ? { deleted: true } : {}) };
+    if (deleted === true && Object.keys(metadata).length > 0) {
+      throw Object.assign(new Error(`EINVAL: TraceKernel deleted directory file-change must not include metadata: ${path}`), { code: 'EINVAL' });
+    }
+    return { path, directory: true, ...metadata, ...(deleted === true ? { deleted: true } : {}) };
   }
   if (deleted === true) {
     if (contents !== undefined || encoding !== undefined) {
       throw Object.assign(new Error(`EINVAL: TraceKernel delete file-change must not include contents: ${path}`), { code: 'EINVAL' });
+    }
+    if (Object.keys(metadata).length > 0) {
+      throw Object.assign(new Error(`EINVAL: TraceKernel delete file-change metadata is unsupported: ${path}`), { code: 'EINVAL' });
     }
     return { path, deleted: true };
   }
   if (typeof contents !== 'string') {
     throw Object.assign(new Error(`EINVAL: TraceKernel file-change contents must be a string: ${path}`), { code: 'EINVAL' });
   }
-  return { path, contents, ...(encoding === 'base64' ? { encoding } : {}) };
+  return { path, contents, ...(encoding === 'base64' ? { encoding } : {}), ...metadata };
+}
+
+function normalizeRuntimeFileMode(value: unknown, path: string): number {
+  if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 0o7777) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change mode is invalid: ${path}`), { code: 'EINVAL' });
+  }
+  return value as number;
+}
+
+function normalizeRuntimeFileTimestamp(value: unknown, path: string, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw Object.assign(new Error(`EINVAL: TraceKernel file-change ${field} is invalid: ${path}`), { code: 'EINVAL' });
+  }
+  return value;
 }
 
 export function emitRuntimeCommandFileChanges(
@@ -1078,6 +1220,9 @@ export function runtimeProjectTruncateUtf8(value: string, maxBytes: number): str
 
 function runtimeFileChangeByteSize(change: RuntimeFileChange): number {
   let size = runtimeProjectUtf8Bytes(change.path);
+  if ((change as RuntimeSymlink).symlink === true) {
+    return size + runtimeProjectUtf8Bytes((change as RuntimeSymlink).target);
+  }
   const file = change as RuntimeFile;
   if (file.contents !== undefined) {
     size += file.encoding === 'base64'
@@ -1652,6 +1797,8 @@ export interface RuntimeProjectTerminalSession {
   readonly cwd: string;
   readonly prompt: RuntimeProjectTerminalPrompt;
   readonly inputState: RuntimeProjectTerminalInputState;
+  readonly terminal: RuntimeProjectTerminalCapabilities;
+  readonly history: readonly string[];
   readonly closed: boolean;
   /**
    * Interrupt the active foreground command as if the user pressed Ctrl+C.
@@ -1661,12 +1808,18 @@ export interface RuntimeProjectTerminalSession {
   /** Close the active process stdin as if the user pressed Ctrl+D. */
   endStdin(): boolean;
   writeStdin(data: string): boolean;
+  /** Resize the attached terminal for subsequent commands. */
+  resize(columns: number, rows: number): void;
   run(command: string, options?: RuntimeProjectTerminalRunOptions): Promise<RuntimeCommandResult>;
 }
 
 export interface RuntimeProjectTerminalSessionOptions {
   cwd?: string;
   env?: Record<string, string>;
+  columns?: number;
+  rows?: number;
+  term?: string;
+  umask?: number;
   onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 }
 
@@ -1724,6 +1877,7 @@ export interface RuntimeProjectCommandRequest<
   cwd: string;
   env: Record<string, string>;
   process?: RuntimeProjectProcessInfo;
+  terminal?: RuntimeProjectTerminalCapabilities;
   stdinPipe?: RuntimeCommandStdinSharedBuffer;
   project: RuntimeProjectSnapshot;
   kernelHttp?: RuntimeKernelHttpBridge;

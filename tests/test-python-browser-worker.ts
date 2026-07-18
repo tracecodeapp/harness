@@ -13,6 +13,12 @@ interface PythonProjectWorkerFile {
   contents?: string;
   encoding?: 'utf8' | 'base64';
   deleted?: true;
+  symlink?: true;
+  target?: string;
+  directory?: true;
+  mode?: number;
+  atimeMs?: number;
+  mtimeMs?: number;
 }
 
 interface PythonProjectWorkerResponse {
@@ -788,11 +794,42 @@ async function main(): Promise<void> {
       const directoryRun = await send('execute-project-python', {
         source: 'argument',
         scriptPath: '<string>',
-        code: 'import os\\nprint(os.path.isdir("/workspace/empty/child"))\\nprint(",".join(os.listdir("/workspace/empty")))\\n',
+        code: [
+          'import os',
+          'import stat',
+          'path = "/workspace/empty/child"',
+          'before = os.stat(path)',
+          'print(os.path.isdir(path))',
+          'print(",".join(os.listdir("/workspace/empty")))',
+          'print(oct(stat.S_IMODE(before.st_mode)))',
+          'print(str(int(before.st_atime)) + ":" + str(int(before.st_mtime)))',
+          'os.chmod(path, 0o750)',
+          'os.utime(path, (3, 4))',
+          'after = os.stat(path)',
+          'print(oct(stat.S_IMODE(after.st_mode)))',
+          'print(str(int(after.st_atime)) + ":" + str(int(after.st_mtime)))',
+          'file_path = "/workspace/metadata.txt"',
+          'file_before = os.stat(file_path)',
+          'print(oct(stat.S_IMODE(file_before.st_mode)))',
+          'print(str(int(file_before.st_atime)) + ":" + str(int(file_before.st_mtime)))',
+          'os.chmod(file_path, 0o600)',
+          'os.utime(file_path, (5, 6))',
+        ].join('\\n'),
         args: [],
         cwd: '/workspace',
         env: {},
-        project: { cwd: '/workspace', directories: ['empty/child'], files: [] },
+        project: {
+          cwd: '/workspace',
+          directories: ['empty/child', 'stable-dir'],
+          directoryMetadata: [
+            { path: 'empty/child', mode: 0o701, atimeMs: 1000, mtimeMs: 2000 },
+            { path: 'stable-dir', mode: 0o711, atimeMs: 7000, mtimeMs: 8000 },
+          ],
+          files: [
+            { path: 'metadata.txt', contents: 'stable\\n', mode: 0o640, atimeMs: 1000, mtimeMs: 2000 },
+            { path: 'stable-file.txt', contents: 'unchanged\\n', mode: 0o644, atimeMs: 7000, mtimeMs: 8000 },
+          ],
+        },
       });
 
       const linkApiRun = await send('execute-project-python', {
@@ -820,6 +857,8 @@ async function main(): Promise<void> {
           '    print("readlink:ok")',
           'except OSError:',
           '    print("readlink:blocked")',
+          'print("link-target:" + os.readlink("/workspace/link-symlink.txt"))',
+          'print("provider-target:" + os.readlink("/workspace/provider-symlink.txt"))',
           'print(open("/workspace/link-hard.txt", "r", encoding="utf-8").read(), end="")',
         ].join('\\n'),
         args: [],
@@ -827,6 +866,105 @@ async function main(): Promise<void> {
         env: {},
         project: { cwd: '/workspace', files: [] },
       });
+
+      const snapshotSymlinkRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import errno',
+          'import os',
+          'import stat',
+          'print(stat.S_ISLNK(os.lstat("/workspace/relative-link.txt").st_mode))',
+          'print(stat.S_ISREG(os.stat("/workspace/relative-link.txt").st_mode))',
+          'print(os.readlink("/workspace/relative-link.txt"))',
+          'print(os.readlink("/workspace/absolute-link.txt"))',
+          'print(os.readlink("/workspace/backslash-link.txt"))',
+          'print(open("/workspace/relative-link.txt", encoding="utf-8").read().strip())',
+          'print(open("/workspace/absolute-link.txt", encoding="utf-8").read().strip())',
+          'print(open("/workspace/backslash-link.txt", encoding="utf-8").read().strip())',
+          'print(open("/workspace/nested/parent-link.txt", encoding="utf-8").read().strip())',
+          'print(",".join(os.listdir("/workspace/directory-link")))',
+          'print(str(os.path.lexists("/workspace/dangling-link.txt")) + ":" + str(os.path.exists("/workspace/dangling-link.txt")))',
+          'try:',
+          '    open("/workspace/dangling-link.txt", encoding="utf-8")',
+          'except FileNotFoundError as error:',
+          '    print("dangling:" + ("ENOENT" if error.errno == errno.ENOENT else str(error.errno)))',
+          'try:',
+          '    open("/workspace/loop-a", encoding="utf-8")',
+          'except OSError as error:',
+          '    print("loop:" + ("ELOOP" if error.errno == errno.ELOOP else str(error.errno)))',
+          'with open("/workspace/relative-link.txt", "w", encoding="utf-8") as handle:',
+          '    handle.write("updated through link\\\\n")',
+          'os.unlink("/workspace/absolute-link.txt")',
+          'print(os.path.exists("/workspace/target.txt"))',
+          'os.symlink("target.txt", "/workspace/created-link.txt")',
+          'os.rename("/workspace/created-link.txt", "/workspace/renamed-link.txt")',
+          'print(os.readlink("/workspace/renamed-link.txt"))',
+          'os.symlink(r"target-dir\\\\value.txt", "/workspace/created-backslash-link.txt")',
+          'print(os.readlink("/workspace/created-backslash-link.txt"))',
+          'print(open("/workspace/created-backslash-link.txt", encoding="utf-8").read().strip())',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        project: {
+          cwd: '/workspace',
+          directories: ['target-dir'],
+          files: [
+            { path: 'target.txt', contents: 'snapshot target\\n' },
+            { path: 'target-dir/value.txt', contents: 'directory target\\n' },
+          ],
+          symlinks: [
+            { path: 'relative-link.txt', symlink: true, target: 'target.txt' },
+            { path: 'absolute-link.txt', symlink: true, target: '/workspace/target.txt' },
+            { path: 'backslash-link.txt', symlink: true, target: '\\\\workspace\\\\target.txt' },
+            { path: 'directory-link', symlink: true, target: 'target-dir' },
+            { path: 'dangling-link.txt', symlink: true, target: 'missing.txt' },
+            { path: 'nested/parent-link.txt', symlink: true, target: '../target.txt' },
+            { path: 'loop-a', symlink: true, target: 'loop-b' },
+            { path: 'loop-b', symlink: true, target: 'loop-a' },
+          ],
+        },
+      });
+
+      const escapingSymlinkErrors = [];
+      for (const escapeCase of [
+        { cwd: '/workspace', target: '../../outside' },
+        { cwd: '/workspace', target: '/workspace/a/../../outside' },
+        {
+          cwd: '/home/ada/project',
+          workspaceRoot: '/home/ada/project',
+          workspaceAlias: '/workspace',
+          target: '/home/ada/project/a/../../outside',
+        },
+        {
+          cwd: '/home/ada/project',
+          workspaceRoot: '/home/ada/project',
+          workspaceAlias: '/workspace',
+          target: '/workspace/a/../../outside',
+        },
+      ]) {
+        try {
+          await send('execute-project-python', {
+            source: 'argument',
+            scriptPath: '<string>',
+            code: 'pass',
+            args: [],
+            cwd: escapeCase.cwd,
+            env: {},
+            project: {
+              cwd: escapeCase.cwd,
+              ...(escapeCase.workspaceRoot ? { workspaceRoot: escapeCase.workspaceRoot } : {}),
+              ...(escapeCase.workspaceAlias ? { workspaceAlias: escapeCase.workspaceAlias } : {}),
+              files: [],
+              symlinks: [{ path: 'nested/escape', symlink: true, target: escapeCase.target }],
+            },
+          });
+          escapingSymlinkErrors.push('accepted');
+        } catch (error) {
+          escapingSymlinkErrors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
 
       const statvfsRun = await send('execute-project-python', {
         source: 'argument',
@@ -1289,7 +1427,7 @@ async function main(): Promise<void> {
         // Terminating the worker is how this smoke test stops the long-lived server.
       }
 
-      return { classicPoisonRun, classicIsolationProbe, fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outboundHttpTimeouts, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams, asgiInspect, asgiDelete, asgiConflict, stdlibEnqueue, stdlibInspect, stdlibDequeue };
+      return { classicPoisonRun, classicIsolationProbe, fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, snapshotSymlinkRun, escapingSymlinkErrors, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outboundHttpRun, outboundHttpTimeouts, outsideCwdError, asgiEnqueue, asgiDequeue, asgiRouteParams, asgiInspect, asgiDelete, asgiConflict, stdlibEnqueue, stdlibInspect, stdlibDequeue };
     })()`) as {
       classicPoisonRun: { success: boolean; output: unknown; error?: string };
       classicIsolationProbe: { success: boolean; output: unknown; error?: string };
@@ -1307,6 +1445,8 @@ async function main(): Promise<void> {
       vectoredFdRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
       linkApiRun: PythonProjectWorkerResponse;
+      snapshotSymlinkRun: PythonProjectWorkerResponse;
+      escapingSymlinkErrors: string[];
       statvfsRun: PythonProjectWorkerResponse;
       providerKernelVirtualMutationRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
@@ -1934,22 +2074,43 @@ async function main(): Promise<void> {
     );
     assertCondition(results.directoryRun.exitCode === 0, `Python project directory source should succeed: ${results.directoryRun.stderr}`);
     assertCondition(
-      results.directoryRun.stdout === 'True\nchild\n',
-      `Python project worker should materialize snapshot directories: ${JSON.stringify(results.directoryRun.stdout)}`
+      results.directoryRun.stdout === 'True\nchild\n0o701\n1:2\n0o750\n3:4\n0o640\n1:2\n',
+      `Python project worker should materialize snapshot directory metadata: ${JSON.stringify(results.directoryRun.stdout)}`
+    );
+    assertCondition(
+      findFile(results.directoryRun, 'empty/child')?.directory === true &&
+        findFile(results.directoryRun, 'empty/child')?.mode === 0o750 &&
+        findFile(results.directoryRun, 'empty/child')?.atimeMs === 3000 &&
+        findFile(results.directoryRun, 'empty/child')?.mtimeMs === 4000,
+      `Python project worker should persist changed directory metadata: ${JSON.stringify(results.directoryRun.files)}`
+    );
+    assertCondition(
+      findFile(results.directoryRun, 'metadata.txt')?.contents === 'stable\n' &&
+        findFile(results.directoryRun, 'metadata.txt')?.mode === 0o600 &&
+        findFile(results.directoryRun, 'metadata.txt')?.atimeMs === 5000 &&
+        findFile(results.directoryRun, 'metadata.txt')?.mtimeMs === 6000,
+      `Python project worker should materialize and persist regular-file metadata: ${JSON.stringify(results.directoryRun.files)}`
+    );
+    assertCondition(
+      findFile(results.directoryRun, 'stable-file.txt') === undefined &&
+        findFile(results.directoryRun, 'stable-dir') === undefined,
+      `Python final scanning must not manufacture atime-only metadata diffs: ${JSON.stringify(results.directoryRun.files)}`
     );
     assertCondition(results.linkApiRun.exitCode === 0, `Python project link API run should succeed: ${results.linkApiRun.stderr}`);
     assertCondition(
-      results.linkApiRun.stdout === 'symlink:ENOSYS\nprovider-symlink:blocked\nreadlink:blocked\nlinked\n',
-      `Python project link APIs should use manifest-representable semantics: ${JSON.stringify(results.linkApiRun.stdout)}`
+      results.linkApiRun.stdout === 'symlink:ok\nprovider-symlink:ok\nreadlink:blocked\nlink-target:/workspace/link-source.txt\nprovider-target:/workspace/link-source.txt\nlinked\n',
+      `Python project link APIs should use native symbolic-link semantics: ${JSON.stringify(results.linkApiRun.stdout)}`
     );
     assertCondition(
       findFile(results.linkApiRun, 'link-hard.txt')?.contents === 'linked\n',
       'Python project hard links should persist as regular file snapshots'
     );
     assertCondition(
-      findFile(results.linkApiRun, 'link-symlink.txt') === undefined &&
-        findFile(results.linkApiRun, 'provider-symlink.txt') === undefined,
-      'Python project symlinks should not appear in final file diffs'
+      findFile(results.linkApiRun, 'link-symlink.txt')?.symlink === true &&
+        findFile(results.linkApiRun, 'link-symlink.txt')?.target === '/workspace/link-source.txt' &&
+        findFile(results.linkApiRun, 'provider-symlink.txt')?.symlink === true &&
+        findFile(results.linkApiRun, 'provider-symlink.txt')?.target === '/workspace/link-source.txt',
+      `Python project symlinks should appear in final file diffs: ${JSON.stringify(results.linkApiRun.files)}`
     );
     assertCondition(
       results.linkApiRun.events?.some((event) => (
@@ -1965,8 +2126,49 @@ async function main(): Promise<void> {
         event.type === 'file-change' &&
         event.phase === 'live' &&
         (event.change?.path === 'link-symlink.txt' || event.change?.path === 'provider-symlink.txt')
-      )) !== true,
-      `Python project rejected symlinks should not stream file mutations: ${JSON.stringify(results.linkApiRun.events)}`
+      )) === true,
+      `Python project symlinks should stream live mutations: ${JSON.stringify(results.linkApiRun.events)}`
+    );
+    assertCondition(
+      results.snapshotSymlinkRun.exitCode === 0,
+      `Python project snapshot symlink run should succeed: ${results.snapshotSymlinkRun.stderr}`
+    );
+    assertCondition(
+      results.snapshotSymlinkRun.stdout === [
+        'True',
+        'True',
+        'target.txt',
+        '/workspace/target.txt',
+        '/workspace/target.txt',
+        'snapshot target',
+        'snapshot target',
+        'snapshot target',
+        'snapshot target',
+        'value.txt',
+        'True:False',
+        'dangling:ENOENT',
+        'loop:ELOOP',
+        'True',
+        'target.txt',
+        'target-dir/value.txt',
+        'directory target',
+        '',
+      ].join('\n'),
+      `Python project snapshot symlinks should preserve lstat/readlink/stat/open semantics: ${JSON.stringify(results.snapshotSymlinkRun.stdout)}`
+    );
+    assertCondition(
+      findFile(results.snapshotSymlinkRun, 'target.txt')?.contents === 'updated through link\n' &&
+        findFile(results.snapshotSymlinkRun, 'absolute-link.txt')?.deleted === true &&
+        findFile(results.snapshotSymlinkRun, 'renamed-link.txt')?.symlink === true &&
+        findFile(results.snapshotSymlinkRun, 'renamed-link.txt')?.target === 'target.txt' &&
+        findFile(results.snapshotSymlinkRun, 'created-backslash-link.txt')?.symlink === true &&
+        findFile(results.snapshotSymlinkRun, 'created-backslash-link.txt')?.target === 'target-dir/value.txt',
+      `Python project snapshot symlink changes should persist without dereferencing link identities: ${JSON.stringify(results.snapshotSymlinkRun.files)}`
+    );
+    assertCondition(
+      results.escapingSymlinkErrors.length === 4 &&
+        results.escapingSymlinkErrors.every((error) => error.includes('Project symbolic link target must stay within the workspace')),
+      `Python project snapshot symlinks must reject relative, canonical-root, and alias traversal: ${JSON.stringify(results.escapingSymlinkErrors)}`
     );
     assertCondition(results.statvfsRun.exitCode === 0, `Python project statvfs run should succeed: ${results.statvfsRun.stderr}`);
     assertCondition(

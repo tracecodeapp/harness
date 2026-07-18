@@ -11,6 +11,7 @@ import {
   createRuntimeCommandStdinPipeFromText,
   createRuntimeProjectHiddenCommandAccess,
   createRuntimeProjectIoBridge,
+  peekRuntimeCommandStdinPipeBytes,
   readRuntimeCommandStdinPipeBytes,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES,
@@ -54,12 +55,16 @@ import {
   runtimeKernelFileCopyTarget,
   runtimeKernelFileReadErrorMessage,
   runtimeKernelFileReadTarget,
+  runtimeKernelIdentityDirEntries,
+  runtimeKernelIdentityEntryKind,
+  runtimeKernelIdentityStat,
   runtimeKernelLinkTarget,
   runtimeKernelMkdirTarget,
   runtimeKernelMetadataErrorMessage,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationErrorMessage,
   runtimeKernelMutationTarget,
+  runtimeKernelMounts,
   runtimeKernelReadErrorMessage,
   runtimeKernelReadTarget,
   runtimeKernelRenameTarget,
@@ -74,6 +79,7 @@ import {
   publicRuntimeKernelInfo,
   publicRuntimeKernelVirtualFiles,
   readPublicRuntimeProcFile,
+  readRuntimeKernelIdentityFile,
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
@@ -109,6 +115,8 @@ import type {
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileDeletion,
+  RuntimeSymlink,
+  RuntimeDirectory,
   RuntimeDirectoryChange,
   RuntimeFileEncoding,
   RuntimeKernelHostConfig,
@@ -159,9 +167,11 @@ import type {
   RuntimeProjectPatchBase,
   RuntimeProjectPatchChange,
   RuntimeProjectPatchDirectoryCreate,
+  RuntimeProjectPatchDirectoryWrite,
   RuntimeProjectPatchDirectoryDelete,
   RuntimeProjectPatchFileDelete,
   RuntimeProjectPatchFileWrite,
+  RuntimeProjectPatchSymlinkWrite,
   RuntimeProjectPatchOptions,
   RuntimeProjectLiveIoControllerOptions,
   RuntimeProjectWorkerBridgeOptions,
@@ -185,6 +195,7 @@ import {
   DEFAULT_CWD,
   TRACE_KERNEL_NAME,
   TRACEKERNEL_BIN_PATH,
+  TRACEKERNEL_COMMAND_DISPATCH_PREFIX,
   TRACEKERNEL_EXEC_COMMAND,
   TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS,
   TRACEKERNEL_SHELL_COMMAND_PREFIX,
@@ -277,7 +288,9 @@ import {
   filterReadonlySnapshotDeletions,
   filterReadonlySnapshotFiles,
   isRuntimeDirectoryChange,
+  isRuntimeSymlinkChange,
   isKernelReadonlyError,
+  isKernelVirtualFilesystemError,
   isRuntimeFileGenerationConflict,
   isRuntimeWorkspaceStorageLimitError,
   kernelAccessTarget,
@@ -329,6 +342,7 @@ import {
 import {
   createPackageManagerProjectCommands,
   normalizePackageManagerConfig,
+  shellQuote,
   type PackageManagerOutputEmitter,
   type NormalizedRuntimePackageManagerConfig,
 } from './package-manager';
@@ -350,6 +364,8 @@ import {
   parseRuntimeLsArgs,
   runtimeLsIndicator,
   runtimeLsFormatLine,
+  runtimeLsHumanSize,
+  runtimeLsMode,
   type RuntimeLsEntry,
   type RuntimeLsStat,
 } from './ls';
@@ -436,7 +452,9 @@ export interface CreateRuntimeWorkspaceOptions {
   projectSession?: RuntimeProjectSession;
   hiddenCommandAccess?: RuntimeProjectHiddenCommandAccess;
   files?: readonly RuntimeFile[];
+  symlinks?: readonly RuntimeSymlink[];
   directories?: readonly string[];
+  directoryMetadata?: readonly RuntimeDirectory[];
   skills?: readonly RuntimeFile[];
   entrypoint?: string;
   cwd?: string;
@@ -854,6 +872,22 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
   };
 }
 
+function createTraceKernelEnvironment(info: RuntimeKernelInfo): Record<string, string> {
+  return {
+    HOME: info.home,
+    USER: info.user.username,
+    LOGNAME: info.user.username,
+    HOSTNAME: info.host.hostname,
+    SHELL: '/bin/bash',
+    PATH: `${TRACEKERNEL_BIN_PATH}:/usr/local/bin:/usr/bin:/bin`,
+    TMPDIR: '/tmp',
+    LANG: 'C.UTF-8',
+    OSTYPE: 'tracekernel',
+    MACHTYPE: 'x86_64-tracekernel',
+    HOSTTYPE: 'x86_64',
+  };
+}
+
 export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
   readonly projectSession?: RuntimeProjectSessionInfo;
@@ -862,11 +896,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   readonly kernelInfo: RuntimeKernelInfo;
   private readonly bash: Bash;
   private readonly bashOptions: BashOptions;
+  private readonly baseEnv: Record<string, string>;
   private readonly fs: KernelObservedFileSystem;
   // Cached RuntimeFile objects are immutable; consumers must shallow-copy arrays before filtering.
-  private snapshotCache: { version: number; files: RuntimeFile[]; directories: string[]; kernelFiles: RuntimeFile[] } | null = null;
+  private snapshotCache: { version: number; files: RuntimeFile[]; directories: string[]; directoryMetadata: RuntimeDirectory[]; symlinks: RuntimeSymlink[]; kernelFiles: RuntimeFile[] } | null = null;
   private readonly fsLocks = new RuntimeFileSystemLockCoordinator();
   private readonly commandScheduler: RuntimeCommandScheduler;
+  private readonly maxProcesses: number | null;
   private readonly externalHttp?: NormalizedRuntimeExternalHttpConfig;
   private readonly entrypoint?: string;
   private readonly kernelControl?: RuntimeTraceKernelControlOptions;
@@ -874,7 +910,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly projectSessionCommands?: Record<string, RuntimeProjectSessionCommand>;
   private readonly hiddenCommandAccess?: RuntimeProjectHiddenCommandAccess;
   private readonly traceKernelCommandRegistry: TraceKernelCommandInfo[];
-  private readonly traceKernelCommandNames: ReadonlySet<string>;
+  private readonly traceKernelCommandDispatchNames: ReadonlyMap<string, string>;
   private readonly skillFiles = new Map<string, RuntimeFile>();
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly processTable = new Map<number, RuntimeKernelProcessRecord>();
@@ -896,6 +932,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private nextHttpListenerSeq = 1;
   private nextHttpRequestSeq = 1;
   private nextEphemeralHttpPort = 49152;
+  private nextTemporaryEntry = 1;
   private activeHttpRequests = 0;
   private activeExternalHttpRequests = 0;
   private workspaceExternalHttpRequestCount = 0;
@@ -905,6 +942,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
+    this.baseEnv = { ...createTraceKernelEnvironment(this.kernelInfo), ...(options.env ?? {}) };
     this.externalHttp = normalizeRuntimeExternalHttpConfig(options.externalHttp);
     this.http = {
       request: (requestOptions) => this.requestHttp(requestOptions),
@@ -912,6 +950,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       listen: (listenOptions, handler) => this.listenHttp(listenOptions, handler),
     };
     this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler));
+    this.maxProcesses = Number.isFinite(options.kernel?.maxProcesses)
+      ? Math.max(1, Math.floor(options.kernel?.maxProcesses ?? 1))
+      : null;
     this.cwd = this.kernelInfo.workspaceRoot;
     const projectSession = options.projectSession ? createProjectSessionInfo(options.projectSession, this.kernelInfo) : undefined;
     this.projectSessionCommands = projectSession?.commands;
@@ -970,15 +1011,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                 }
               : {}),
             ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
+            ...(commandContext?.terminal ? { terminal: commandContext.terminal } : {}),
             ...(signal ? { signal } : {}),
             kernelHttp: this.createKernelHttpBridge(commandContext),
             onEvent: (event) => {
-              if (!acceptingRunnerEvents || signal?.aborted) return;
+              if (!acceptingRunnerEvents) return;
               this.handleRuntimeCommandEvent(event, commandContext);
             },
           } as Request);
         } finally {
           acceptingRunnerEvents = false;
+        }
+        if (result.handledSignal && commandContext) {
+          commandContext.handledSignal = result.handledSignal;
         }
         // just-bash preserves the standard stdout/stderr/exitCode fields from a
         // custom command but does not retain harness-specific result metadata.
@@ -1004,7 +1049,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       Boolean(options.nodeRunner || options.typescriptRunner)
     );
     this.traceKernelCommandRegistry = createTraceKernelCommandRegistry(options, packageManagerConfig);
-    this.traceKernelCommandNames = new Set(this.traceKernelCommandRegistry.map((command) => command.name));
     const emitPackageManagerOutput: PackageManagerOutputEmitter = (stream, data, context) => {
       this.emitLocalRuntimeEvent({
         type: 'output',
@@ -1016,7 +1060,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const includeHiddenFilesForCurrentCommand = (ctx?: CommandContext) => this.resolveCommandContext(ctx)?.includeHiddenFiles === true;
     const snapshotProjectForCurrentCommand = (_ctx: CommandContext, includeHiddenFiles: boolean) =>
       this.snapshotForCommand(includeHiddenFiles);
-    const customCommands: CustomCommand[] = [
+    const exposedCustomCommands: CustomCommand[] = [
       ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
@@ -1037,19 +1081,38 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
       defineCommand('bg', async (args, ctx) => this.runKernelJobPlacement(args, 'bg', ctx)),
       defineCommand('curl', async (args, ctx) => this.runKernelCurl(args, ctx)),
+      defineCommand('df', async (args, ctx) => this.runKernelDf(args, ctx)),
+      defineCommand('du', async (args, ctx) => this.runKernelDu(args, ctx)),
       defineCommand('fg', async (args, ctx) => this.runKernelJobPlacement(args, 'fg', ctx)),
+      defineCommand('getconf', async (args) => this.runKernelGetconf(args)),
+      defineCommand('getent', async (args) => this.runKernelGetent(args)),
+      defineCommand('groups', async (args) => this.runKernelGroups(args)),
       defineCommand('kill', async (args, ctx) => this.runKernelKill(args, 'kill', ctx)),
       defineCommand('jobs', async (args, ctx) => this.runKernelJobs(args, ctx)),
+      defineCommand('hostname', async (args) => this.runKernelHostname(args)),
+      defineCommand('id', async (args) => this.runKernelId(args)),
       defineCommand('lsof', async (args, ctx) => this.runKernelLsof(args, ctx)),
+      defineCommand('locale', async (args) => this.runKernelLocale(args)),
       defineCommand('ls', async (args, ctx) => this.runKernelAwareLs(args, ctx)),
+      defineCommand('man', async (args) => this.runKernelMan(args)),
+      defineCommand('mktemp', async (args, ctx) => this.runKernelMktemp(args, ctx)),
+      defineCommand('mount', async (args) => this.runKernelMount(args)),
       defineCommand('pgrep', async (args, ctx) => this.runKernelProcessMatch(args, 'pgrep', ctx)),
       defineCommand('ping', async (args, ctx) => this.runKernelPing(args, ctx)),
       defineCommand('pkill', async (args, ctx) => this.runKernelProcessMatch(args, 'pkill', ctx)),
       defineCommand('ps', async (args, ctx) => this.runKernelPs(args, ctx)),
       defineCommand('ss', async (args, ctx) => this.runKernelSs(args, ctx)),
+      defineCommand('stat', async (args, ctx) => this.runKernelStat(args, ctx)),
+      defineCommand('stty', async (args, ctx) => this.runKernelStty(args, ctx)),
+      defineCommand('tput', async (args, ctx) => this.runKernelTput(args, ctx)),
       defineCommand('tracekernelctl', (args, ctx) => this.runTraceKernelCtl(args, ctx)),
+      defineCommand('tty', async (args, ctx) => this.runKernelTty(args, ctx)),
+      defineCommand('umask', async (args, ctx) => this.runKernelUmask(args, ctx)),
+      defineCommand('uname', async (args) => this.runKernelUname(args)),
       defineCommand('wait', (args, ctx) => this.runKernelWait(args, 'wait', ctx)),
+      defineCommand('wget', async (args, ctx) => this.runKernelWget(args, ctx)),
       defineCommand('which', async (args, ctx) => this.runTraceKernelWhich(args, 'which', ctx)),
+      defineCommand('whoami', async (args) => this.runKernelWhoami(args)),
       defineCommand('command', async (args, ctx) => this.runTraceKernelCommandBuiltin(args, ctx)),
       ...(options.customCommands ?? []),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}bg`, async (args, ctx) => this.runKernelJobPlacement(args, 'bg', ctx)),
@@ -1062,12 +1125,27 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}pkill`, async (args, ctx) => this.runKernelProcessMatch(args, 'pkill', ctx)),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}ps`, async (args, ctx) => this.runKernelPs(args, ctx)),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}ss`, async (args, ctx) => this.runKernelSs(args, ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}test`, async (args, ctx) => this.runKernelTestBuiltin(args, 'test', ctx)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}test-bracket`, async (args, ctx) => this.runKernelTestBuiltin(args, '[', ctx)),
       defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`, (args, ctx) => this.runKernelWait(args, 'wait', ctx)),
-    ].map((command) => this.withKernelCommandSignal(command as CustomCommand));
+    ];
+    this.traceKernelCommandDispatchNames = new Map(
+      exposedCustomCommands.map((command) => [
+        command.name,
+        `${TRACEKERNEL_COMMAND_DISPATCH_PREFIX}${command.name}`,
+      ])
+    );
+    const customCommands: CustomCommand[] = [
+      ...exposedCustomCommands,
+      ...exposedCustomCommands.map((command) => this.aliasKernelCommand(
+        command,
+        this.traceKernelCommandDispatchNames.get(command.name)!
+      )),
+    ].map((command) => this.withKernelCommandSignal(command));
     this.bashOptions = {
       fs: this.fs,
       cwd: this.cwd,
-      env: options.env,
+      env: this.baseEnv,
       commands: options.commands as never,
       customCommands: customCommands.length > 0 ? customCommands : undefined,
       python: options.python,
@@ -1081,7 +1159,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (isRuntimeCommand(command)) {
       return {
         ...command,
-        execute: (args, ctx) => command.execute(args, this.withCurrentKernelSignal(ctx)),
+        execute: (args, ctx) => {
+          const help = this.traceKernelCommandHelp(command.name, args);
+          if (help) return Promise.resolve(help);
+          return command.execute(args, this.withCurrentKernelSignal(ctx));
+        },
       };
     }
     if (isRuntimeLazyCommand(command)) {
@@ -1091,6 +1173,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       };
     }
     return command;
+  }
+
+  private aliasKernelCommand(command: CustomCommand, name: string): CustomCommand {
+    if (isRuntimeCommand(command)) return { ...command, name };
+    return {
+      name,
+      load: async () => ({ ...(await command.load()), name }),
+    };
   }
 
   private withCurrentKernelSignal(ctx: CommandContext): CommandContext {
@@ -1111,18 +1201,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     bash.registerTransformPlugin({
       name: 'tracekernel-command-rewrite',
       transform: ({ ast }: { ast: unknown }) => {
-        rewriteTraceKernelBinInvocationsInAst(ast, this.traceKernelCommandNames);
-        rewriteKernelShellCommandInvocationsInAst(ast);
         const executableTransformCwd = commandContext?.executableTransformCwd;
-        if (this.hasVirtualExecutableLoaders() && executableTransformCwd) {
+        if (executableTransformCwd) {
           rewriteVirtualExecutableInvocationsInAst(
             ast,
             executableTransformCwd,
             this.cwd,
             this.kernelInfo.workspaceAlias,
-            this.virtualExecutableRecords
+            this.virtualExecutableRecords,
+            true
           );
         }
+        rewriteKernelShellCommandInvocationsInAst(ast);
+        rewriteTraceKernelBinInvocationsInAst(ast, this.traceKernelCommandDispatchNames);
         return { ast };
       },
     } as never);
@@ -2326,6 +2417,36 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       .sort((left, right) => left.pid - right.pid);
   }
 
+  /** PID 1 occupies a real process-table slot even though it is not mutable. */
+  private processTableUsage(): number {
+    return 1 + this.activeProcessRecords().length;
+  }
+
+  private processAdmissionError(command: string): RuntimeKernelAdmissionRejectedError | null {
+    if (this.maxProcesses === null || this.processTableUsage() < this.maxProcesses) return null;
+    return new RuntimeKernelAdmissionRejectedError(
+      command,
+      `EAGAIN: resource temporarily unavailable, fork '${command}'`,
+      'fork'
+    );
+  }
+
+  private recordProcessAdmissionRejection(
+    command: string,
+    error: RuntimeKernelAdmissionRejectedError,
+    actor?: RuntimeWorkspaceActor
+  ): void {
+    this.recordKernelEvent('process-reject', undefined, {
+      command,
+      code: error.code,
+      errno: error.errno,
+      syscall: error.syscall,
+      activeProcesses: this.processTableUsage(),
+      maxProcesses: this.maxProcesses ?? 'unlimited',
+      ...(actor ? { actor: this.journalActorId(actor) } : {}),
+    });
+  }
+
   private recordKernelEvent(type: string, pid?: number, detail?: Record<string, unknown>): void {
     this.kernelEventLog.push({
       seq: this.nextKernelEventSeq++,
@@ -2578,6 +2699,48 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
   }
 
+  private runKernelWaitForParent(
+    args: readonly string[],
+    commandName: 'wait' | 'tracekernelctl',
+    currentPid?: number
+  ): Promise<RuntimeCommandResult> {
+    if (args.length > 1) {
+      const usage = commandName === 'wait' ? 'wait [pid]' : 'tracekernelctl wait [pid]';
+      return Promise.resolve({ stdout: '', stderr: `usage: ${usage}\n`, exitCode: 2 });
+    }
+    if (args[0] === undefined) return this.reapZombieProcess(undefined, commandName, currentPid);
+    const pid = Number(args[0]);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return Promise.resolve({ stdout: '', stderr: `${commandName}: invalid pid: ${args[0]}\n`, exitCode: 22 });
+    }
+    return this.reapZombieProcess(pid, commandName, currentPid);
+  }
+
+  /**
+   * `wait` is a shell builtin backed by wait4, not a child process. Execute a
+   * lone, static wait command in the existing parent (or PID 1 for direct
+   * workspace calls) so a full process table can still reap its zombies.
+   */
+  private tryRunInProcessWaitCommand(
+    command: string,
+    parent?: RuntimeKernelProcessRecord
+  ): Promise<RuntimeCommandResult> | null {
+    const words = parseSimpleCommandWords(command);
+    if (!words || words.length === 0) return null;
+    const rawCommandName = words[0] ?? '';
+    const commandName = traceKernelBinCommandName(rawCommandName) ?? rawCommandName;
+    const currentPid = parent?.pid ?? 1;
+    if (commandName === 'wait' || commandName === `${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`) {
+      const help = this.traceKernelCommandHelp('wait', words.slice(1));
+      if (help) return Promise.resolve(help);
+      return this.runKernelWaitForParent(words.slice(1), 'wait', currentPid);
+    }
+    if (commandName === 'tracekernelctl' && words[1] === 'wait') {
+      return this.runKernelWaitForParent(words.slice(2), 'tracekernelctl', currentPid);
+    }
+    return null;
+  }
+
   private waitForZombieProcess(pid?: number, currentPid?: number): Promise<RuntimeKernelProcessRecord | undefined> {
     this.purgeZombieProcessTable();
     const zombie = pid === undefined ? this.firstZombieProcessRecord() : this.zombieProcessTable.get(pid)?.process;
@@ -2623,28 +2786,50 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private traceKernelCommandInfo(nameOrPath: string): TraceKernelCommandInfo | undefined {
-    const commandName = traceKernelBinCommandName(nameOrPath) ?? nameOrPath;
+    const rawCommandName = traceKernelBinCommandName(nameOrPath) ?? nameOrPath;
+    const dispatchCommandName = rawCommandName.startsWith(TRACEKERNEL_COMMAND_DISPATCH_PREFIX)
+      ? rawCommandName.slice(TRACEKERNEL_COMMAND_DISPATCH_PREFIX.length)
+      : rawCommandName;
+    const commandName = dispatchCommandName.startsWith(TRACEKERNEL_SHELL_COMMAND_PREFIX)
+      ? dispatchCommandName.slice(TRACEKERNEL_SHELL_COMMAND_PREFIX.length)
+      : dispatchCommandName;
     return this.traceKernelCommandRegistry.find((command) => command.name === commandName);
   }
 
   private renderTraceKernelBinCommand(info: TraceKernelCommandInfo): string {
-    return JSON.stringify({
-      schema: 'tracekernel.command.v1',
-      name: info.name,
-      path: info.path,
-      kind: info.kind,
-      available: info.available,
-      adapter: info.adapter,
-      ...(info.language ? { language: info.language } : {}),
-      ...(info.displayName ? { displayName: info.displayName } : {}),
-      ...(info.versionLabel ? { versionLabel: info.versionLabel } : {}),
-      ...(info.description ? { description: info.description } : {}),
-    }, null, 2) + '\n';
+    const dispatchName = this.traceKernelCommandDispatchNames.get(info.name)
+      ?? `${TRACEKERNEL_COMMAND_DISPATCH_PREFIX}${info.name}`;
+    return `#!/bin/sh\nexec ${dispatchName} "$@"\n`;
+  }
+
+  private traceKernelCommandHelp(name: string, args: readonly string[]): RuntimeCommandResult | null {
+    const info = this.traceKernelCommandInfo(name);
+    const help = info?.help;
+    if (!help || args.length !== 1 || !(help.flags ?? ['--help']).includes(args[0]!)) return null;
+    const flags = help.flags ?? ['--help'];
+    const helpFlags = flags.join(', ');
+    const helpOption = `${helpFlags}${' '.repeat(Math.max(1, 20 - helpFlags.length))}display this help and exit`;
+    return {
+      stdout: [
+        `${info.name} - ${help.summary}`,
+        '',
+        `Usage: ${help.usage}`,
+        ...((help.options?.length ?? 0) > 0 || flags.length > 0
+          ? ['', 'Options:', ...(help.options ?? []).map((option) => `  ${option}`), `  ${helpOption}`]
+          : []),
+        ...((help.notes?.length ?? 0) > 0
+          ? ['', 'Notes:', ...help.notes!.map((note) => `  ${note}`)]
+          : []),
+      ].join('\n') + '\n',
+      stderr: '',
+      exitCode: 0,
+    };
   }
 
   private readDynamicTraceKernelFile(path: string): string | null {
     const commandName = traceKernelBinCommandName(path);
     if (!commandName) return null;
+    if (commandName.startsWith(TRACEKERNEL_COMMAND_DISPATCH_PREFIX)) return null;
     const info = this.traceKernelCommandInfo(commandName);
     return info ? this.renderTraceKernelBinCommand(info) : null;
   }
@@ -2755,7 +2940,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
   }
 
+  private readDynamicIdentityFile(path: string): string | null {
+    return runtimeKernelIdentityEntryKind(path) === 'file'
+      ? readRuntimeKernelIdentityFile(path, this.kernelInfo)
+      : null;
+  }
+
+  private readDynamicIdentityDir(path: string): RuntimeDynamicProcEntry[] | null {
+    const entries = runtimeKernelIdentityDirEntries(path);
+    return entries?.map((name) => ({ name, kind: 'file' as const })) ?? null;
+  }
+
   private readDynamicVirtualFile(path: string, context?: RuntimeCommandExecutionContext): string | null {
+    const identityFile = this.readDynamicIdentityFile(path);
+    if (identityFile !== null) return identityFile;
     const skillFile = this.readDynamicSkillsFile(path);
     if (skillFile !== null) return skillFile;
     const traceKernelFile = this.readDynamicTraceKernelFile(path);
@@ -2764,15 +2962,24 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private readDynamicVirtualDir(path: string, context?: RuntimeCommandExecutionContext): RuntimeDynamicProcEntry[] | null {
-    return this.readDynamicSkillsDir(path) ?? this.readDynamicTraceKernelDir(path) ?? this.readDynamicProcDir(path, context);
+    return this.readDynamicIdentityDir(path) ??
+      this.readDynamicSkillsDir(path) ??
+      this.readDynamicTraceKernelDir(path) ??
+      this.readDynamicProcDir(path, context);
   }
 
   private dynamicVirtualEntryKind(path: string, context?: RuntimeCommandExecutionContext): 'file' | 'directory' | null {
-    return this.dynamicSkillsEntryKind(path) ?? this.dynamicTraceKernelEntryKind(path) ?? this.dynamicProcEntryKind(path, context);
+    return runtimeKernelIdentityEntryKind(path) ??
+      this.dynamicSkillsEntryKind(path) ??
+      this.dynamicTraceKernelEntryKind(path) ??
+      this.dynamicProcEntryKind(path, context);
   }
 
   private dynamicVirtualStat(path: string, context?: RuntimeCommandExecutionContext): RuntimeKernelVirtualStat | null {
-    return this.dynamicSkillsStat(path) ?? this.dynamicTraceKernelStat(path) ?? this.dynamicProcStat(path, context);
+    return runtimeKernelIdentityStat(path, this.kernelInfo) ??
+      this.dynamicSkillsStat(path) ??
+      this.dynamicTraceKernelStat(path) ??
+      this.dynamicProcStat(path, context);
   }
 
   private readDynamicProcFile(path: string, context?: RuntimeCommandExecutionContext): string | null {
@@ -2813,6 +3020,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (procPath === '/proc') {
       return [
         { name: 'kernel', kind: 'directory' },
+        { name: 'mounts', kind: 'file' },
         { name: 'self', kind: 'directory' },
         { name: 'tracekernel', kind: 'directory' },
         ...this.activeProcessRecords().map((process) => ({ name: String(process.pid), kind: 'directory' as const })),
@@ -3033,6 +3241,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private renderProcScheduler(): string {
     const active = this.activeProcessRecords();
     const scheduler = this.commandScheduler.snapshot();
+    const processTableUsage = 1 + active.length;
     const queued = active.filter((process) => process.state === 'queued').length;
     const running = active.filter((process) => process.state === 'running').length;
     const zombies = active.filter((process) => process.state === 'zombie').length;
@@ -3043,6 +3252,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       `zombies\t${zombies}`,
       `admitted\t${scheduler.running}`,
       `waiting\t${scheduler.queued}`,
+      `processes\t${processTableUsage}`,
+      `max_processes\t${this.maxProcesses ?? 'unlimited'}`,
+      `available_processes\t${this.maxProcesses === null ? 'unlimited' : Math.max(0, this.maxProcesses - processTableUsage)}`,
       `max_concurrent\t${scheduler.maxConcurrentCommands}`,
       `max_queued\t${scheduler.maxQueuedCommands ?? 'unlimited'}`,
       `next_pid\t${this.nextPid}`,
@@ -3084,7 +3296,83 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       stdinPipe: commandContext.stdinPipe,
       commandContext,
     });
-    return result ?? { stdout: '', stderr: `bash: ${expandedInvocation.scriptFile}: Exec format error\n`, exitCode: 126 };
+    if (result) return result;
+    return this.executeWorkspaceScript(
+      expandedInvocation.scriptFile,
+      expandedInvocation.scriptArgs,
+      ctx
+    );
+  }
+
+  private async executeWorkspaceScript(
+    executable: string,
+    args: readonly string[],
+    ctx: CommandContext
+  ): Promise<RuntimeCommandResult> {
+    let absolutePath: string;
+    try {
+      absolutePath = resolveWorkspaceContextPath(ctx, this.cwd, executable, 'Executable path');
+    } catch (error) {
+      return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 126 };
+    }
+    const stat = await ctx.fs.stat(absolutePath).catch(() => null);
+    if (!stat) {
+      return { stdout: '', stderr: `bash: ${executable}: No such file or directory\n`, exitCode: 127 };
+    }
+    if (!stat.isFile) {
+      return { stdout: '', stderr: `bash: ${executable}: Is a directory\n`, exitCode: 126 };
+    }
+    if ((stat.mode & 0o111) === 0) {
+      return { stdout: '', stderr: `bash: ${executable}: Permission denied\n`, exitCode: 126 };
+    }
+
+    const source = await ctx.fs.readFile(absolutePath);
+    const firstLine = source.split(/\r?\n/, 1)[0] ?? '';
+    const shebang = firstLine.startsWith('#!') ? firstLine.slice(2).trim() : '';
+    const invocation = this.workspaceScriptInterpreterInvocation(shebang, executable, args);
+    if (invocation === null) {
+      return {
+        stdout: '',
+        stderr: `bash: ${executable}: cannot execute: required file not found\n`,
+        exitCode: 127,
+      };
+    }
+    if (!ctx.exec) {
+      return { stdout: '', stderr: 'bash: internal error: exec function not available\n', exitCode: 1 };
+    }
+    return ctx.exec(invocation, {
+      env: Object.fromEntries(ctx.env.entries()),
+      cwd: ctx.cwd,
+      stdin: String(ctx.stdin),
+      stdinKind: 'bytes',
+      signal: this.withCurrentKernelSignal(ctx).signal,
+    });
+  }
+
+  private workspaceScriptInterpreterInvocation(
+    shebang: string,
+    executable: string,
+    args: readonly string[]
+  ): string | null {
+    const scriptAndArgs = [executable, ...args].map(shellQuote).join(' ');
+    if (!shebang) return `bash ${scriptAndArgs}`;
+
+    const words = shebang.split(/\s+/).filter(Boolean);
+    const interpreterPath = words.shift();
+    if (!interpreterPath?.startsWith('/')) return null;
+    let interpreter = interpreterPath.split('/').pop() ?? '';
+    let interpreterArgs = words;
+    if (interpreter === 'env') {
+      if (interpreterArgs[0] === '-S') interpreterArgs = interpreterArgs.slice(1);
+      while (interpreterArgs[0] === '-i' || interpreterArgs[0] === '--ignore-environment') {
+        interpreterArgs = interpreterArgs.slice(1);
+      }
+      interpreter = interpreterArgs.shift() ?? '';
+    }
+    const supported = this.traceKernelCommandInfo(interpreter);
+    if (!supported && interpreter !== 'bash' && interpreter !== 'sh') return null;
+    const command = interpreter === 'sh' ? 'bash' : interpreter;
+    return [command, ...interpreterArgs, executable, ...args].map(shellQuote).join(' ');
   }
 
   private kernelCurlErrorResult(response: RuntimeKernelHttpResponse): RuntimeCommandResult | undefined {
@@ -3545,6 +3833,255 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return { stdout: `${lines.join('\n')}\n`, stderr: '', exitCode: 0 };
   }
 
+  private async runKernelStat(args: readonly string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
+    let dereference = false;
+    let format: string | undefined;
+    const paths: string[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index]!;
+      if (arg === '-L' || arg === '--dereference') dereference = true;
+      else if (arg === '-c' || arg === '--format') {
+        const value = args[++index];
+        if (value === undefined) return { stdout: '', stderr: `stat: option requires an argument -- '${arg === '-c' ? 'c' : 'format'}'\n`, exitCode: 1 };
+        format = value;
+      } else if (arg.startsWith('--format=')) format = arg.slice('--format='.length);
+      else if (arg.startsWith('-')) return { stdout: '', stderr: `stat: invalid option -- '${arg.slice(1)}'\n`, exitCode: 1 };
+      else paths.push(arg);
+    }
+    if (paths.length === 0) return { stdout: '', stderr: 'stat: missing operand\n', exitCode: 1 };
+
+    let stdout = '';
+    let stderr = '';
+    let exitCode = 0;
+    for (const path of paths) {
+      const absolutePath = mapWorkspaceAlias(
+        this.cwd,
+        this.kernelInfo.workspaceAlias,
+        normalizeTerminalAbsolutePath(ctx.fs.resolvePath(ctx.cwd, path))
+      );
+      const stat = await (dereference ? ctx.fs.stat(absolutePath) : ctx.fs.lstat(absolutePath)).catch(() => null) as (RuntimeLsStat & { ino?: number }) | null;
+      if (!stat) {
+        stderr += `stat: cannot stat '${path}': No such file or directory\n`;
+        exitCode = 1;
+        continue;
+      }
+      const isLink = stat.isSymbolicLink === true;
+      const linkTarget = isLink ? await ctx.fs.readlink(absolutePath).catch(() => null) : null;
+      const mode = stat.mode ?? (stat.isDirectory ? 0o755 : 0o644);
+      const mtimeMs = stat.mtime instanceof Date ? stat.mtime.getTime() : stat.mtimeMs ?? 0;
+      const type = isLink ? 'symbolic link' : stat.isDirectory ? 'directory' : stat.isCharacterDevice ? 'character special file' : 'regular file';
+      const quotedName = `'${path}'${linkTarget === null ? '' : ` -> '${linkTarget}'`}`;
+      const formattedTime = `${new Date(mtimeMs).toISOString().replace('T', ' ').replace('Z', '')} +0000`;
+      const renderFormat = (template: string) => template.replace(/%([%nNsFaAuUgGYyih])/g, (_match, directive: string) => {
+        switch (directive) {
+          case '%': return '%';
+          case 'n': return path;
+          case 'N': return quotedName;
+          case 's': return String(stat.size ?? 0);
+          case 'F': return type;
+          case 'a': return (mode & 0o7777).toString(8);
+          case 'A': return runtimeLsMode(stat);
+          case 'u': return String(stat.uid ?? 1000);
+          case 'U': return stat.owner ?? this.kernelInfo.user.username;
+          case 'g': return String(stat.gid ?? 1000);
+          case 'G': return stat.group ?? this.kernelInfo.user.username;
+          case 'Y': return String(Math.floor(mtimeMs / 1000));
+          case 'y': return formattedTime;
+          case 'i': return String(stat.ino ?? 0);
+          case 'h': return String(stat.nlink ?? 1);
+          default: return `%${directive}`;
+        }
+      });
+      if (format !== undefined) {
+        stdout += `${renderFormat(format)}\n`;
+      } else {
+        stdout += [
+          `  File: ${quotedName}`,
+          `  Size: ${stat.size ?? 0}\t\tBlocks: ${Math.ceil((stat.size ?? 0) / 512)}`,
+          `Access: (${(mode & 0o7777).toString(8).padStart(4, '0')}/${runtimeLsMode(stat)})`,
+          `Modify: ${formattedTime}`,
+        ].join('\n') + '\n';
+      }
+    }
+    return { stdout, stderr, exitCode };
+  }
+
+  private async runKernelDf(args: readonly string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
+    let humanReadable = false;
+    let inodes = false;
+    const paths: string[] = [];
+    for (const arg of args) {
+      if (arg === '--human-readable') humanReadable = true;
+      else if (arg === '--inodes') inodes = true;
+      else if (/^-[hkiP]+$/.test(arg)) {
+        humanReadable ||= arg.includes('h');
+        inodes ||= arg.includes('i');
+      } else if (arg.startsWith('-')) {
+        return { stdout: '', stderr: `df: unrecognized option '${arg}'\n`, exitCode: 1 };
+      } else {
+        paths.push(arg);
+      }
+    }
+    for (const path of paths.length > 0 ? paths : [ctx.cwd]) {
+      if (!(await ctx.fs.exists(path))) {
+        return { stdout: '', stderr: `df: ${path}: No such file or directory\n`, exitCode: 1 };
+      }
+    }
+    const usage = await this.fs.storageUsage();
+    if (inodes) {
+      const percent = usage.capacityEntries === 0
+        ? (usage.usedEntries === 0 ? 0 : 100)
+        : Math.min(100, Math.ceil((usage.usedEntries / usage.capacityEntries) * 100));
+      return {
+        stdout: [
+          'Filesystem Inodes IUsed IFree IUse% Mounted on',
+          `tracekernel ${usage.capacityEntries} ${usage.usedEntries} ${usage.availableEntries} ${percent}% ${this.cwd}`,
+        ].join('\n') + '\n',
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    const capacityBlocks = Math.ceil(usage.capacityBytes / 1024);
+    const usedBlocks = Math.ceil(usage.usedBytes / 1024);
+    const availableBlocks = Math.max(0, capacityBlocks - usedBlocks);
+    const percent = usage.capacityBytes === 0
+      ? (usage.usedBytes === 0 ? 0 : 100)
+      : Math.min(100, Math.ceil((usage.usedBytes / usage.capacityBytes) * 100));
+    const capacity = humanReadable ? runtimeLsHumanSize(usage.capacityBytes) : String(capacityBlocks);
+    const used = humanReadable ? runtimeLsHumanSize(usage.usedBytes) : String(usedBlocks);
+    const available = humanReadable ? runtimeLsHumanSize(usage.availableBytes) : String(availableBlocks);
+    return {
+      stdout: [
+        `Filesystem ${humanReadable ? 'Size' : '1K-blocks'} Used Available Use% Mounted on`,
+        `tracekernel ${capacity} ${used} ${available} ${percent}% ${this.cwd}`,
+      ].join('\n') + '\n',
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private async runKernelDu(args: readonly string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
+    let allEntries = false;
+    let bytes = false;
+    let humanReadable = false;
+    let summarize = false;
+    let total = false;
+    let maxDepth: number | undefined;
+    let endOfOptions = false;
+    const paths: string[] = [];
+    for (const arg of args) {
+      if (!endOfOptions && arg === '--') {
+        endOfOptions = true;
+        continue;
+      }
+      if (!endOfOptions && arg.startsWith('--max-depth=')) {
+        const value = arg.slice('--max-depth='.length);
+        if (!/^\d+$/.test(value)) {
+          return { stdout: '', stderr: `du: invalid maximum depth '${value}'\n`, exitCode: 1 };
+        }
+        maxDepth = Number(value);
+        continue;
+      }
+      if (!endOfOptions && arg === '--all') allEntries = true;
+      else if (!endOfOptions && arg === '--bytes') bytes = true;
+      else if (!endOfOptions && arg === '--human-readable') humanReadable = true;
+      else if (!endOfOptions && arg === '--summarize') summarize = true;
+      else if (!endOfOptions && arg === '--total') total = true;
+      else if (!endOfOptions && /^-[abhksc]+$/.test(arg)) {
+        allEntries ||= arg.includes('a');
+        bytes ||= arg.includes('b');
+        humanReadable ||= arg.includes('h');
+        summarize ||= arg.includes('s');
+        total ||= arg.includes('c');
+      } else if (!endOfOptions && arg.startsWith('-')) {
+        return { stdout: '', stderr: `du: unrecognized option '${arg}'\n`, exitCode: 1 };
+      } else {
+        paths.push(arg);
+      }
+    }
+    if (summarize && maxDepth !== undefined) {
+      return { stdout: '', stderr: 'du: warning: summarizing conflicts with --max-depth\n', exitCode: 1 };
+    }
+
+    const formatSize = (size: number): string => {
+      if (bytes) return String(size);
+      if (humanReadable) return runtimeLsHumanSize(size);
+      return String(Math.ceil(size / 1024));
+    };
+    const rows: Array<{ path: string; size: number }> = [];
+    const visit = async (absolutePath: string, displayPath: string, depth: number): Promise<number> => {
+      let stat: Awaited<ReturnType<CommandContext['fs']['lstat']>>;
+      try {
+        stat = await ctx.fs.lstat(absolutePath);
+      } catch {
+        throw new Error(`du: cannot access '${displayPath}': No such file or directory`);
+      }
+      if (!stat.isDirectory) {
+        if (depth === 0 || allEntries) rows.push({ path: displayPath, size: stat.size });
+        return stat.size;
+      }
+      let size = 0;
+      for (const entry of (await ctx.fs.readdir(absolutePath)).sort()) {
+        const childAbsolutePath = absolutePath === '/' ? `/${entry}` : `${absolutePath.replace(/\/$/, '')}/${entry}`;
+        const childDisplayPath = displayPath === '/'
+          ? `/${entry}`
+          : displayPath === '.'
+            ? `./${entry}`
+            : `${displayPath.replace(/\/$/, '')}/${entry}`;
+        size += await visit(childAbsolutePath, childDisplayPath, depth + 1);
+      }
+      if (!summarize && (maxDepth === undefined || depth <= maxDepth)) rows.push({ path: displayPath, size });
+      else if (depth === 0) rows.push({ path: displayPath, size });
+      return size;
+    };
+
+    let grandTotal = 0;
+    try {
+      for (const path of paths.length > 0 ? paths : ['.']) {
+        const absolutePath = resolveWorkspaceContextPath(ctx, this.cwd, path, 'du path');
+        grandTotal += await visit(absolutePath, path, 0);
+      }
+    } catch (error) {
+      return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+    }
+    if (total) rows.push({ path: 'total', size: grandTotal });
+    return {
+      stdout: rows.map((row) => `${formatSize(row.size)}\t${row.path}`).join('\n') + (rows.length > 0 ? '\n' : ''),
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private runKernelMount(args: readonly string[]): RuntimeCommandResult {
+    let endOfOptions = false;
+    const operands: string[] = [];
+    for (const arg of args) {
+      if (!endOfOptions && arg === '--') {
+        endOfOptions = true;
+        continue;
+      }
+      if (!endOfOptions && (arg === '-l' || arg === '--show-labels')) {
+        continue;
+      }
+      if (!endOfOptions && arg.startsWith('-')) {
+        return { stdout: '', stderr: `mount: unrecognized option '${arg}'\n`, exitCode: 1 };
+      }
+      operands.push(arg);
+    }
+    if (operands.length > 0) {
+      return {
+        stdout: '',
+        stderr: 'mount: TraceKernel filesystem topology is fixed for the lifetime of a workspace\n',
+        exitCode: 32,
+      };
+    }
+    const rows = runtimeKernelMounts(this.kernelInfo).map((mount) => {
+      const options = mount.options.join(',');
+      return `${mount.source} on ${mount.target} type ${mount.type} (${options})`;
+    });
+    return { stdout: `${rows.join('\n')}\n`, stderr: '', exitCode: 0 };
+  }
+
   private runTraceKernelWhich(args: string[], commandName: string, _ctx: CommandContext): RuntimeCommandResult {
     const names: string[] = [];
     let endOfOptions = false;
@@ -3583,8 +4120,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     ctx: CommandContext
   ): Promise<RuntimeCommandResult> {
     const option = args[0];
-    if (option === '-v' || option === '-V') {
+    if (option === '-v') {
       return this.runTraceKernelWhich(args.slice(1), 'command', ctx);
+    }
+    if (option === '-V') {
+      const discovered = this.runTraceKernelWhich(args.slice(1), 'command', ctx);
+      return discovered.exitCode === 0
+        ? {
+            ...discovered,
+            stdout: discovered.stdout.trimEnd().split('\n').map((path) => {
+              const name = path.slice(path.lastIndexOf('/') + 1);
+              return `${name} is ${path}`;
+            }).join('\n') + '\n',
+          }
+        : discovered;
     }
     let commandIndex = 0;
     while (args[commandIndex] === '-p' || args[commandIndex] === '--') {
@@ -3628,6 +4177,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           `scheduler.running=${scheduler.running}`,
           `scheduler.queued=${scheduler.queued}`,
           `scheduler.maxQueued=${scheduler.maxQueuedCommands ?? 'unlimited'}`,
+          `processes.active=${this.processTableUsage()}`,
+          `processes.max=${this.maxProcesses ?? 'unlimited'}`,
           ...(this.kernelInfo.workspaceAlias ? [`alias=${this.kernelInfo.workspaceAlias}`] : []),
         ].join('\n') + '\n',
         stderr: '',
@@ -3699,17 +4250,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { stdout: `tracekernelctl: sent ${signal.name} to ${target}\n`, stderr: '', exitCode: 0 };
     }
     if (command === 'wait') {
-      if (args.length > 2) {
-        return { stdout: '', stderr: 'usage: tracekernelctl wait [pid]\n', exitCode: 2 };
-      }
-      if (args[1] === undefined) {
-        return this.reapZombieProcess(undefined, 'tracekernelctl', this.resolveCommandContext(ctx)?.process.pid);
-      }
-      const pid = Number(args[1]);
-      if (!Number.isInteger(pid) || pid <= 0) {
-        return { stdout: '', stderr: `tracekernelctl: invalid pid: ${args[1]}\n`, exitCode: 22 };
-      }
-      return this.reapZombieProcess(pid, 'tracekernelctl', this.resolveCommandContext(ctx)?.process.pid);
+      return this.runKernelWaitForParent(args.slice(1), 'tracekernelctl', this.resolveCommandContext(ctx)?.process.pid);
     }
     return {
       stdout: '',
@@ -4151,14 +4692,34 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (args.length === 0) {
       return { stdout: '', stderr: `usage: ${commandName} [-SIGNAL] <pid>...\n`, exitCode: 2 };
     }
+    if (args[0] === '-l' || args[0] === '--list') {
+      if (args.length === 1) {
+        const signals = [...TRACEKERNEL_SIGNAL_NUMBERS.entries()]
+          .map(([name, number]) => `${number}) ${name.slice(3)}`)
+          .join(' ');
+        return { stdout: `${signals}\n`, stderr: '', exitCode: 0 };
+      }
+      if (args.length === 2) {
+        const signal = normalizeTraceKernelSignal(args[1]);
+        if (!signal) return { stdout: '', stderr: `${commandName}: invalid signal: ${args[1]}\n`, exitCode: 1 };
+        return {
+          stdout: /^\d+$/.test(args[1]!) ? `${signal.name.slice(3)}\n` : `${signal.code}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      return { stdout: '', stderr: `usage: ${commandName} -l [SIGNAL]\n`, exitCode: 2 };
+    }
     let signalName = 'SIGTERM';
     let pidArgs = args[0] === '--' ? args.slice(1) : args;
     const first = pidArgs[0] ?? '';
+    const probeOnly = first === '-0';
+    if (probeOnly) pidArgs = pidArgs.slice(1);
     if (first.startsWith('-') && first.length > 1 && !/^-?[0-9]+$/.test(first)) {
       signalName = first.slice(1);
       pidArgs = pidArgs.slice(1);
     }
-    const signal = normalizeTraceKernelSignal(signalName);
+    const signal = probeOnly ? { name: '0', code: 0 } : normalizeTraceKernelSignal(signalName);
     if (!signal) return { stdout: '', stderr: `${commandName}: invalid signal: ${signalName}\n`, exitCode: 22 };
     if (pidArgs.length === 0) return { stdout: '', stderr: `usage: ${commandName} [-SIGNAL] <pid>...\n`, exitCode: 2 };
 
@@ -4169,6 +4730,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       if (target < 0) {
         const pgid = Math.abs(target);
+        if (probeOnly) {
+          const exists = this.activeProcessRecords().some((process) => process.pgid === pgid);
+          if (!exists) return { stdout: '', stderr: `${commandName}: no such process group: ${pgid}\n`, exitCode: 3 };
+          continue;
+        }
         const groupResult = this.signalProcessGroup(pgid, signal.name, this.resolveCommandContext(ctx)?.process.pid);
         if (groupResult.denied > 0 && groupResult.signaled === 0) {
           return { stdout: '', stderr: `${commandName}: (${pgid}) - Operation not permitted\n`, exitCode: 1 };
@@ -4185,26 +4751,508 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       if (process.signalPolicy === 'system-only') {
         return { stdout: '', stderr: `${commandName}: (${target}) - Operation not permitted\n`, exitCode: 1 };
       }
-      this.signalProcess(process, signal.name);
+      if (!probeOnly) this.signalProcess(process, signal.name);
     }
     return { stdout: '', stderr: '', exitCode: 0 };
   }
 
   private runKernelWait(args: string[], commandName: string, _ctx: CommandContext): Promise<RuntimeCommandResult> {
-    if (args.length > 1) {
-      return Promise.resolve({ stdout: '', stderr: `usage: ${commandName} [pid]\n`, exitCode: 2 });
+    return this.runKernelWaitForParent(
+      args,
+      commandName === 'tracekernelctl' ? 'tracekernelctl' : 'wait',
+      this.resolveCommandContext(_ctx)?.process.pid
+    );
+  }
+
+  private runKernelWhoami(args: readonly string[]): RuntimeCommandResult {
+    if (args.length > 0) {
+      return { stdout: '', stderr: `whoami: extra operand '${args[0]}'\n`, exitCode: 1 };
     }
-    if (args[0] === undefined) return this.reapZombieProcess(undefined, commandName, this.resolveCommandContext(_ctx)?.process.pid);
-    const pid = Number(args[0]);
-    if (!Number.isInteger(pid) || pid <= 0) {
-      return Promise.resolve({ stdout: '', stderr: `${commandName}: invalid pid: ${args[0]}\n`, exitCode: 22 });
+    return { stdout: `${this.kernelInfo.user.username}\n`, stderr: '', exitCode: 0 };
+  }
+
+  private runKernelHostname(args: readonly string[]): RuntimeCommandResult {
+    if (args.length > 1 || (args.length === 1 && args[0] !== '-s' && args[0] !== '-f')) {
+      return { stdout: '', stderr: 'usage: hostname [-s|-f]\n', exitCode: 1 };
     }
-    return this.reapZombieProcess(pid, commandName, this.resolveCommandContext(_ctx)?.process.pid);
+    return { stdout: `${this.kernelInfo.host.hostname}\n`, stderr: '', exitCode: 0 };
+  }
+
+  private runKernelId(args: readonly string[]): RuntimeCommandResult {
+    const username = this.kernelInfo.user.username;
+    const userId = 1000;
+    const groupId = 1000;
+    if (args.length === 0) {
+      return {
+        stdout: `uid=${userId}(${username}) gid=${groupId}(${username}) groups=${groupId}(${username})\n`,
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    const flags = new Set(args.filter((arg) => arg.startsWith('-')).flatMap((arg) => arg.slice(1).split('')));
+    const operands = args.filter((arg) => !arg.startsWith('-'));
+    if (operands.length > 1 || (operands[0] !== undefined && operands[0] !== username)) {
+      const operand = operands[0] ?? '';
+      return { stdout: '', stderr: `id: '${operand}': no such user\n`, exitCode: 1 };
+    }
+    if ([...flags].some((flag) => !'ugn'.includes(flag)) || flags.has('n') && !flags.has('u') && !flags.has('g')) {
+      return { stdout: '', stderr: 'usage: id [-u|-g] [-n] [USER]\n', exitCode: 1 };
+    }
+    if (flags.has('u')) return { stdout: `${flags.has('n') ? username : userId}\n`, stderr: '', exitCode: 0 };
+    if (flags.has('g')) return { stdout: `${flags.has('n') ? username : groupId}\n`, stderr: '', exitCode: 0 };
+    return {
+      stdout: `uid=${userId}(${username}) gid=${groupId}(${username}) groups=${groupId}(${username})\n`,
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private runKernelGroups(args: readonly string[]): RuntimeCommandResult {
+    const username = this.kernelInfo.user.username;
+    if (args.length > 1 || (args[0] !== undefined && args[0] !== username)) {
+      const operand = args[0] ?? '';
+      return { stdout: '', stderr: `groups: '${operand}': no such user\n`, exitCode: 1 };
+    }
+    return {
+      stdout: args.length === 0 ? `${username}\n` : `${username} : ${username}\n`,
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private runKernelGetconf(args: readonly string[]): RuntimeCommandResult {
+    const values: Record<string, string> = {
+      PATH: `${TRACEKERNEL_BIN_PATH}:/usr/local/bin:/usr/bin:/bin`,
+      ARG_MAX: '2097152',
+      OPEN_MAX: '1024',
+      PAGESIZE: '65536',
+      PAGE_SIZE: '65536',
+      _NPROCESSORS_ONLN: '1',
+    };
+    if (args.length !== 1) {
+      return { stdout: '', stderr: 'usage: getconf NAME\n', exitCode: 2 };
+    }
+    const value = values[args[0]!];
+    if (value === undefined) {
+      return { stdout: '', stderr: `getconf: Unrecognized variable '${args[0]}'\n`, exitCode: 2 };
+    }
+    return { stdout: `${value}\n`, stderr: '', exitCode: 0 };
+  }
+
+  private runKernelGetent(args: readonly string[]): RuntimeCommandResult {
+    const database = args[0];
+    const keys = args.slice(1);
+    const username = this.kernelInfo.user.username;
+    if (!database) return { stdout: '', stderr: 'usage: getent database [key ...]\n', exitCode: 2 };
+    if (database === 'passwd') {
+      if (keys.length > 1) return { stdout: '', stderr: '', exitCode: 2 };
+      if (keys[0] !== undefined && keys[0] !== username && keys[0] !== '1000') {
+        return { stdout: '', stderr: '', exitCode: 2 };
+      }
+      return {
+        stdout: `${username}:x:1000:1000:TraceKernel user:${this.baseEnv.HOME}:/bin/bash\n`,
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    if (database === 'group') {
+      if (keys.length > 1) return { stdout: '', stderr: '', exitCode: 2 };
+      if (keys[0] !== undefined && keys[0] !== username && keys[0] !== '1000') {
+        return { stdout: '', stderr: '', exitCode: 2 };
+      }
+      return { stdout: `${username}:x:1000:${username}\n`, stderr: '', exitCode: 0 };
+    }
+    if (database === 'hosts' || database === 'ahosts') {
+      if (keys.length !== 1) return { stdout: '', stderr: '', exitCode: 2 };
+      const host = keys[0]!;
+      const resolution = this.resolveHost(host);
+      if (!resolution.reachable) return { stdout: '', stderr: '', exitCode: 2 };
+      return { stdout: `${resolution.ip} ${host}\n`, stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: `Unknown database: ${database}\n`, exitCode: 1 };
+  }
+
+  private runKernelLocale(args: readonly string[]): RuntimeCommandResult {
+    if (args.length === 1 && args[0] === '-a') {
+      return { stdout: 'C\nC.utf8\nPOSIX\n', stderr: '', exitCode: 0 };
+    }
+    if (args.length === 1 && args[0] === 'charmap') {
+      return { stdout: 'UTF-8\n', stderr: '', exitCode: 0 };
+    }
+    if (args.length > 0) {
+      return { stdout: '', stderr: `locale: unknown name '${args[0]}'\n`, exitCode: 1 };
+    }
+    const lang = this.baseEnv.LANG ?? 'C.UTF-8';
+    return {
+      stdout: [
+        `LANG=${lang}`,
+        'LANGUAGE=',
+        `LC_CTYPE="${lang}"`,
+        `LC_NUMERIC="${lang}"`,
+        `LC_TIME="${lang}"`,
+        `LC_COLLATE="${lang}"`,
+        `LC_MONETARY="${lang}"`,
+        `LC_MESSAGES="${lang}"`,
+        `LC_PAPER="${lang}"`,
+        `LC_NAME="${lang}"`,
+        `LC_ADDRESS="${lang}"`,
+        `LC_TELEPHONE="${lang}"`,
+        `LC_MEASUREMENT="${lang}"`,
+        `LC_IDENTIFICATION="${lang}"`,
+        'LC_ALL=',
+      ].join('\n') + '\n',
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private runKernelTty(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
+    if (args.length > 0 && (args.length !== 1 || args[0] !== '-s')) {
+      return { stdout: '', stderr: 'usage: tty [-s]\n', exitCode: 2 };
+    }
+    if (!this.terminalForCommand(ctx)?.isTTY) {
+      return { stdout: args[0] === '-s' ? '' : 'not a tty\n', stderr: '', exitCode: 1 };
+    }
+    return { stdout: args[0] === '-s' ? '' : '/dev/tty\n', stderr: '', exitCode: 0 };
+  }
+
+  private runKernelTestBuiltin(
+    args: string[],
+    commandName: 'test' | '[',
+    ctx: CommandContext
+  ): RuntimeCommandResult {
+    const expression = commandName === '[' && args.at(-1) === ']' ? args.slice(0, -1) : args;
+    const bracketClosed = commandName !== '[' || args.at(-1) === ']';
+    const negated = expression[0] === '!';
+    const ttyExpression = negated ? expression.slice(1) : expression;
+    if (bracketClosed && ttyExpression.length === 2 && ttyExpression[0] === '-t') {
+      const rawFd = ttyExpression[1] ?? '';
+      const fd = /^\d+$/.test(rawFd) ? Number(rawFd) : -1;
+      const attached = this.terminalForCommand(ctx)?.isTTY === true && fd >= 0 && fd <= 2;
+      return { stdout: '', stderr: '', exitCode: (negated ? !attached : attached) ? 0 : 1 };
+    }
+    return { stdout: '', stderr: `${commandName}: invalid terminal test\n`, exitCode: 2 };
+  }
+
+  private runKernelUname(args: readonly string[]): RuntimeCommandResult {
+    const fields = {
+      s: 'TraceKernel',
+      n: this.kernelInfo.host.hostname,
+      r: this.kernelInfo.version,
+      v: `TraceKernel ${this.kernelInfo.version}`,
+      m: 'x86_64',
+      p: 'x86_64',
+      i: 'x86_64',
+      o: 'TraceKernel',
+    } as const;
+    const requested = args.length === 0 ? ['s'] : args.flatMap((arg) => {
+      if (arg === '--all') return ['a'];
+      if (arg.startsWith('--')) {
+        const names: Record<string, keyof typeof fields> = {
+          '--kernel-name': 's',
+          '--nodename': 'n',
+          '--kernel-release': 'r',
+          '--kernel-version': 'v',
+          '--machine': 'm',
+          '--processor': 'p',
+          '--hardware-platform': 'i',
+          '--operating-system': 'o',
+        };
+        return names[arg] ? [names[arg]!] : ['?'];
+      }
+      return arg.startsWith('-') ? arg.slice(1).split('') : ['?'];
+    });
+    if (requested.includes('?') || requested.some((flag) => flag !== 'a' && !(flag in fields))) {
+      return { stdout: '', stderr: 'uname: invalid option\n', exitCode: 1 };
+    }
+    const order: Array<keyof typeof fields> = ['s', 'n', 'r', 'v', 'm', 'p', 'i', 'o'];
+    const selected = requested.includes('a') ? order : order.filter((flag) => requested.includes(flag));
+    return { stdout: `${selected.map((flag) => fields[flag]).join(' ')}\n`, stderr: '', exitCode: 0 };
+  }
+
+  private runKernelUmask(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
+    const commandContext = this.resolveCommandContext(ctx);
+    const current = commandContext?.umask ?? 0o022;
+    if (args.length === 0) {
+      return { stdout: `${current.toString(8).padStart(4, '0')}\n`, stderr: '', exitCode: 0 };
+    }
+    if (args.length === 1 && args[0] === '-p') {
+      return { stdout: `umask ${current.toString(8).padStart(4, '0')}\n`, stderr: '', exitCode: 0 };
+    }
+    if (args.length === 1 && args[0] === '-S') {
+      const allowed = 0o777 & ~current;
+      const permissions = (bits: number) => `${bits & 4 ? 'r' : ''}${bits & 2 ? 'w' : ''}${bits & 1 ? 'x' : ''}`;
+      return {
+        stdout: `u=${permissions((allowed >> 6) & 7)},g=${permissions((allowed >> 3) & 7)},o=${permissions(allowed & 7)}\n`,
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    if (args.length !== 1) {
+      return { stdout: '', stderr: `bash: umask: ${args.join(' ')}: invalid symbolic mode operator\n`, exitCode: 1 };
+    }
+    const rawMode = args[0]!;
+    let next: number;
+    if (/^[0-7]{1,4}$/.test(rawMode)) {
+      next = Number.parseInt(rawMode, 8);
+      if (next > 0o777) {
+        return { stdout: '', stderr: `bash: umask: ${rawMode}: octal number out of range\n`, exitCode: 1 };
+      }
+    } else {
+      const clauses = rawMode.split(',');
+      let allowed = 0o777 & ~current;
+      for (const clause of clauses) {
+        const match = /^([ugoa]*)([+=-][rwx]*)+$/.exec(clause);
+        if (!match) {
+          return { stdout: '', stderr: `bash: umask: ${rawMode}: invalid symbolic mode operator\n`, exitCode: 1 };
+        }
+        const whoText = match[1] || 'a';
+        const classes = new Set(whoText.includes('a') ? ['u', 'g', 'o'] : [...whoText]);
+        const classMask = (classes.has('u') ? 0o700 : 0) |
+          (classes.has('g') ? 0o070 : 0) |
+          (classes.has('o') ? 0o007 : 0);
+        const operations = clause.slice(match[1]!.length).match(/[+=-][rwx]*/g) ?? [];
+        for (const operation of operations) {
+          const permissionText = operation.slice(1);
+          const permissionBits = (permissionText.includes('r') ? 4 : 0) |
+            (permissionText.includes('w') ? 2 : 0) |
+            (permissionText.includes('x') ? 1 : 0);
+          const requested = (classes.has('u') ? permissionBits << 6 : 0) |
+            (classes.has('g') ? permissionBits << 3 : 0) |
+            (classes.has('o') ? permissionBits : 0);
+          if (operation[0] === '=') allowed = (allowed & ~classMask) | requested;
+          else if (operation[0] === '+') allowed |= requested;
+          else allowed &= ~requested;
+        }
+      }
+      next = 0o777 & ~allowed;
+    }
+    if (commandContext) {
+      commandContext.umask = next;
+      commandContext.onUmaskChange?.(next);
+    }
+    return { stdout: '', stderr: '', exitCode: 0 };
+  }
+
+  private runKernelMan(args: readonly string[]): RuntimeCommandResult {
+    const command = args.find((arg) => !arg.startsWith('-'));
+    if (!command) {
+      return { stdout: '', stderr: 'What manual page do you want?\n', exitCode: 1 };
+    }
+    const info = this.traceKernelCommandInfo(command);
+    if (!info?.help) {
+      return { stdout: '', stderr: `No manual entry for ${command}\n`, exitCode: 1 };
+    }
+    return this.traceKernelCommandHelp(info.name, ['--help']) ?? {
+      stdout: '',
+      stderr: `No manual entry for ${command}\n`,
+      exitCode: 1,
+    };
+  }
+
+  private terminalForCommand(ctx: CommandContext): RuntimeCommandOptions['terminal'] | undefined {
+    return this.resolveCommandContext(ctx)?.terminal;
+  }
+
+  private runKernelStty(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
+    const terminal = this.terminalForCommand(ctx);
+    if (!terminal?.isTTY) {
+      return {
+        stdout: '',
+        stderr: 'stty: standard input: Inappropriate ioctl for device\n',
+        exitCode: 1,
+      };
+    }
+    if (args.length === 0) {
+      return { stdout: `speed 38400 baud; rows ${terminal.rows}; columns ${terminal.columns}; line = 0;\n`, stderr: '', exitCode: 0 };
+    }
+    if (args.length === 1 && args[0] === 'size') {
+      return { stdout: `${terminal.rows} ${terminal.columns}\n`, stderr: '', exitCode: 0 };
+    }
+    if (args.length === 1 && args[0] === '-a') {
+      return {
+        stdout: [
+          `speed 38400 baud; rows ${terminal.rows}; columns ${terminal.columns}; line = 0;`,
+          'intr = ^C; quit = ^\\; erase = ^?; kill = ^U; eof = ^D;',
+          'echo icanon isig',
+        ].join('\n') + '\n',
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    return {
+      stdout: '',
+      stderr: `stty: unsupported terminal setting: ${args.join(' ')}\n`,
+      exitCode: 1,
+    };
+  }
+
+  private runKernelTput(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
+    const terminal = this.terminalForCommand(ctx);
+    if (!terminal?.isTTY) {
+      return { stdout: '', stderr: 'tput: No value for $TERM and no -T specified\n', exitCode: 2 };
+    }
+    const capability = args[0];
+    if (!capability) return { stdout: '', stderr: 'tput: missing operand\n', exitCode: 2 };
+    if (capability === 'cols') return { stdout: `${terminal.columns}\n`, stderr: '', exitCode: 0 };
+    if (capability === 'lines') return { stdout: `${terminal.rows}\n`, stderr: '', exitCode: 0 };
+    if (capability === 'colors') {
+      const colors = [-1, 16, 256, 16_777_216][terminal.colorLevel] ?? -1;
+      return { stdout: `${colors}\n`, stderr: '', exitCode: 0 };
+    }
+    if (capability === 'longname') return { stdout: `${terminal.columns}-column ${terminal.term} terminal\n`, stderr: '', exitCode: 0 };
+    // TERM=dumb deliberately has no cursor-addressing or styling sequences.
+    if (['clear', 'el', 'ed', 'cup', 'bold', 'sgr0', 'setaf', 'setab'].includes(capability)) {
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: `tput: unknown terminfo capability '${capability}'\n`, exitCode: 4 };
+  }
+
+  private async runKernelWget(args: readonly string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
+    let outputDocument: string | undefined;
+    let spider = false;
+    let quiet = false;
+    let url: string | undefined;
+    const curlArgs: string[] = ['-L'];
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index]!;
+      if (arg === '-q' || arg === '--quiet') quiet = true;
+      else if (arg === '--spider') spider = true;
+      else if (arg === '-O' || arg === '--output-document') {
+        outputDocument = args[index + 1];
+        if (outputDocument === undefined) return { stdout: '', stderr: 'wget: option requires an argument -- O\n', exitCode: 2 };
+        index += 1;
+      } else if (arg.startsWith('--output-document=')) outputDocument = arg.slice('--output-document='.length);
+      else if (arg.startsWith('-O') && arg.length > 2) outputDocument = arg.slice(2);
+      else if (arg === '-T' || arg === '--timeout') {
+        const timeout = args[index + 1];
+        if (timeout === undefined) return { stdout: '', stderr: 'wget: option requires an argument -- T\n', exitCode: 2 };
+        curlArgs.push('--max-time', timeout);
+        index += 1;
+      } else if (arg.startsWith('--timeout=')) curlArgs.push('--max-time', arg.slice('--timeout='.length));
+      else if (arg === '--header') {
+        const header = args[index + 1];
+        if (header === undefined) return { stdout: '', stderr: 'wget: option requires an argument -- header\n', exitCode: 2 };
+        curlArgs.push('--header', header);
+        index += 1;
+      } else if (arg.startsWith('--header=')) curlArgs.push('--header', arg.slice('--header='.length));
+      else if (arg === '--post-data') {
+        const data = args[index + 1];
+        if (data === undefined) return { stdout: '', stderr: 'wget: option requires an argument -- post-data\n', exitCode: 2 };
+        curlArgs.push('--data', data);
+        index += 1;
+      } else if (arg.startsWith('--post-data=')) curlArgs.push('--data', arg.slice('--post-data='.length));
+      else if (arg === '--') {
+        if (args[index + 1] !== undefined) url = args[++index];
+      } else if (arg === '-qO-' || arg === '-O-') {
+        quiet ||= arg.startsWith('-q');
+        outputDocument = '-';
+      } else if (arg.startsWith('-')) {
+        return { stdout: '', stderr: `wget: unrecognized option '${arg}'\n`, exitCode: 2 };
+      } else if (!url) url = arg;
+      else return { stdout: '', stderr: `wget: multiple URLs are not supported in one invocation\n`, exitCode: 2 };
+    }
+    if (!url) return { stdout: '', stderr: 'wget: missing URL\n', exitCode: 1 };
+    if (quiet) curlArgs.push('--silent');
+    if (spider) {
+      curlArgs.push('--head', '--fail');
+      outputDocument = '-';
+    }
+    if (outputDocument === undefined) {
+      try {
+        const parsed = new URL(url);
+        outputDocument = parsed.pathname.split('/').filter(Boolean).pop() || 'index.html';
+      } catch {
+        return { stdout: '', stderr: `wget: invalid URL '${url}'\n`, exitCode: 1 };
+      }
+    }
+    if (outputDocument !== '-') curlArgs.push('--output', outputDocument);
+    curlArgs.push(url);
+    if (!ctx.exec) return { stdout: '', stderr: 'wget: HTTP transport is unavailable\n', exitCode: 1 };
+    return ctx.exec('curl', {
+      cwd: ctx.cwd,
+      env: commandEnv(ctx),
+      replaceEnv: true,
+      stdin: decodeCommandStdin(ctx.stdin),
+      stdinKind: 'bytes',
+      signal: ctx.signal,
+      args: curlArgs,
+    });
+  }
+
+  private async runKernelMktemp(args: readonly string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
+    let directory = false;
+    let dryRun = false;
+    let quiet = false;
+    let parent = ctx.env.get('TMPDIR') || '/tmp';
+    let suffix = '';
+    let template: string | undefined;
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index]!;
+      if (arg === '-d' || arg === '--directory') directory = true;
+      else if (arg === '-u' || arg === '--dry-run') dryRun = true;
+      else if (arg === '-q' || arg === '--quiet') quiet = true;
+      else if (arg === '-t') continue;
+      else if (arg === '-p' || arg === '--tmpdir') {
+        const value = args[index + 1];
+        if (!value) return { stdout: '', stderr: 'mktemp: option requires an argument\n', exitCode: 1 };
+        parent = value;
+        index += 1;
+      } else if (arg.startsWith('--tmpdir=')) parent = arg.slice('--tmpdir='.length) || parent;
+      else if (arg.startsWith('--suffix=')) suffix = arg.slice('--suffix='.length);
+      else if (arg.startsWith('-')) return { stdout: '', stderr: `mktemp: invalid option -- '${arg}'\n`, exitCode: 1 };
+      else if (template === undefined) template = arg;
+      else return { stdout: '', stderr: `mktemp: extra operand '${arg}'\n`, exitCode: 1 };
+    }
+    const rawTemplate = template ?? 'tmp.XXXXXXXXXX';
+    const slashIndex = rawTemplate.lastIndexOf('/');
+    if (slashIndex >= 0) {
+      parent = rawTemplate.slice(0, slashIndex) || '/';
+      template = rawTemplate.slice(slashIndex + 1);
+    } else {
+      template = rawTemplate;
+    }
+    const match = template.match(/X{3,}(?!.*X)/);
+    if (!match || match.index === undefined) {
+      return { stdout: '', stderr: `mktemp: too few X's in template '${rawTemplate}'\n`, exitCode: 1 };
+    }
+    const normalizedParent = parent.startsWith('/')
+      ? normalizeWorkspaceCwd(parent)
+      : normalizeWorkspaceCwd(`${ctx.cwd}/${parent}`);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const token = (this.nextTemporaryEntry++).toString(36).padStart(match[0].length, '0').slice(-match[0].length);
+      const name = `${template.slice(0, match.index)}${token}${template.slice(match.index + match[0].length)}${suffix}`;
+      const path = normalizeWorkspaceCwd(`${normalizedParent}/${name}`);
+      if (await ctx.fs.exists(path)) continue;
+      if (!dryRun) {
+        try {
+          if (directory) await ctx.fs.mkdir(path);
+          else await ctx.fs.writeFile(path, '');
+        } catch (error) {
+          if (quiet) return { stdout: '', stderr: '', exitCode: 1 };
+          return { stdout: '', stderr: `mktemp: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+        }
+      }
+      return { stdout: `${path}\n`, stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: quiet ? '' : 'mktemp: failed to create a unique temporary entry\n', exitCode: 1 };
   }
 
   async ensureReady(): Promise<void> {
     this.assertNotDestroyed();
-    await this.fs.withBaseMutation([this.cwd], (fs) => fs.mkdir(this.cwd, { recursive: true }), 'directory-create');
+    const systemDirectories = [
+      '/home',
+      this.kernelInfo.home,
+      '/tmp',
+      '/var',
+      '/var/tmp',
+      this.cwd,
+    ];
+    await this.fs.withBaseMutation(systemDirectories, async (fs) => {
+      for (const path of systemDirectories) await fs.mkdir(path, { recursive: true });
+      await fs.chmod('/tmp', 0o1777);
+      await fs.chmod('/var/tmp', 0o1777);
+    }, 'directory-create');
   }
 
   async writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
@@ -4301,7 +5349,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private assertDynamicVirtualWritable(path: string, operation: string): void {
     if (!isTraceKernelVirtualNamespacePath(path) && !isRuntimeSkillsNamespacePath(path)) return;
     throw Object.assign(
-      new Error(`EROFS: kernel virtual path is read-only, ${operation} '${path}'`),
+      new Error(`EROFS: read-only file system, ${operation} '${path}'`),
       { code: 'EROFS' }
     );
   }
@@ -4364,15 +5412,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return [...this.readonlyFiles].some((path) => path.startsWith(prefix));
   }
 
-  private isHomePathOutsideWorkspace(absolutePath: string): boolean {
-    return isWithinWorkspace(this.kernelInfo.home, absolutePath) && !isWithinWorkspace(this.cwd, absolutePath);
+  private isPathOutsideWritableMounts(absolutePath: string): boolean {
+    return !isWithinWorkspace(this.cwd, absolutePath) &&
+      !isWithinWorkspace('/tmp', absolutePath) &&
+      !isWithinWorkspace('/var/tmp', absolutePath);
   }
 
   private assertWorkspacePathWritable(absolutePath: string, operation: string): void {
     this.assertWorkspaceUsableForMutation(operation);
-    if (this.isHomePathOutsideWorkspace(absolutePath)) {
+    if (this.isPathOutsideWritableMounts(absolutePath)) {
       throw Object.assign(
-        new Error(`EROFS: project workspace is read-only outside '${this.cwd}', ${operation} '${absolutePath}'`),
+        new Error(`EROFS: read-only file system, ${operation} '${absolutePath}'`),
         { code: 'EROFS' }
       );
     }
@@ -4388,9 +5438,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private assertWorkspaceSubtreeWritable(absolutePath: string, operation: string): void {
     this.assertWorkspaceUsableForMutation(operation);
-    if (this.isHomePathOutsideWorkspace(absolutePath)) {
+    if (this.isPathOutsideWritableMounts(absolutePath)) {
       throw Object.assign(
-        new Error(`EROFS: project workspace is read-only outside '${this.cwd}', ${operation} '${absolutePath}'`),
+        new Error(`EROFS: read-only file system, ${operation} '${absolutePath}'`),
         { code: 'EROFS' }
       );
     }
@@ -5113,9 +6163,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<RuntimeCommandResult> {
     const unusable = this.assertWorkspaceUsableForRun(command);
     if (unusable) return unusable;
+    const inProcessWait = this.tryRunInProcessWaitCommand(command, parent);
+    if (inProcessWait) return inProcessWait;
+    const actor = parent?.actor ?? this.createRuntimeActor();
+    const admissionError = this.processAdmissionError(command);
+    if (admissionError) {
+      this.recordProcessAdmissionRejection(command, admissionError, actor);
+      return {
+        stdout: '',
+        stderr: 'bash: fork: Resource temporarily unavailable\n',
+        exitCode: admissionError.errno,
+        error: admissionError.toCommandError(),
+      };
+    }
     const commandCwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
     const stdinPipe = options.stdinPipe;
-    const actor = parent?.actor ?? this.createRuntimeActor();
     const abortController = new AbortController();
     const pid = this.nextPid++;
     const terminalPresentation = options.presentation === 'terminal';
@@ -5142,6 +6204,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       actor,
       process,
       stdinPipe,
+      terminal: options.terminal,
+      umask: Number.isInteger(options.umask) && options.umask !== undefined && options.umask >= 0 && options.umask <= 0o777
+        ? options.umask
+        : 0o022,
+      onUmaskChange: options.onUmaskChange,
       includeHiddenFiles: options.includeHiddenFiles,
       runtimeIo: this.createRuntimeLiveIoController(actor, abortController.signal, () => commandContext),
       generationBaseline: this.fs.snapshotGenerations(),
@@ -5212,7 +6279,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
 
         const bash = this.createBash(options.executionLimits, commandContext, commandFs);
-        const baselineEnv = options.onEnvChanges ? { ...bash.getEnv(), ...(options.env ?? {}) } : undefined;
+        const commandEnv = { ...this.baseEnv, ...(options.env ?? {}) };
+        const baselineEnv = options.onEnvChanges ? { ...bash.getEnv(), ...commandEnv } : undefined;
         // Closed stdin pipes represent complete input supplied with a command
         // (for example a captured file, fixture, or non-interactive API call).
         // Feed that input into just-bash so every command in the shell program
@@ -5220,11 +6288,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         // live terminal/runtime input, where bytes can arrive after execution
         // has started.
         const shellStdin = stdinPipe && runtimeCommandStdinPipeClosed(stdinPipe)
-          ? this.readDevice('/dev/stdin', commandContext)
+          ? new TextDecoder().decode(peekRuntimeCommandStdinPipeBytes(stdinPipe))
           : undefined;
         const result = await bash.exec(command, {
           cwd: commandCwd,
-          env: options.env,
+          env: commandEnv,
           signal: abortController.signal,
           args: options.args,
           ...(shellStdin !== undefined ? { stdin: shellStdin } : {}),
@@ -5236,6 +6304,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const output = this.captureReturnedOutput(commandContext, result);
         this.emitReturnedOutputEvents(output, commandContext);
         processExitCode = result.exitCode;
+        if (commandContext.handledSignal && process.signal === commandContext.handledSignal) {
+          delete process.signal;
+          delete process.signalCode;
+          process.state = 'running';
+          this.recordKernelEvent('process-signal-handled', process.pid, {
+            signal: commandContext.handledSignal,
+          });
+        }
         const commandError = commandContext.kernelError ?? (result as RuntimeCommandResult).error;
         if (commandError?.code === 'EINTR') {
           const interruptedBy = commandError.detail?.signal;
@@ -5274,6 +6350,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         if (
           isKernelReadonlyError(error) ||
+          isKernelVirtualFilesystemError(error) ||
           isRuntimeFileGenerationConflict(error) ||
           isRuntimeWorkspaceStorageLimitError(error)
         ) {
@@ -5769,8 +6846,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private async snapshotFromCachedFiles(options: { entrypoint?: string; includeHidden?: boolean } = {}): Promise<RuntimeProjectSnapshot> {
     const cached = await this.collectWorkspaceFilesCached();
+    const storage = await this.fs.storageUsage();
     const files = [...cached.files];
     const directories = [...cached.directories];
+    const directoryMetadata = [...cached.directoryMetadata];
+    const symlinks = [...cached.symlinks];
     const kernelFiles = [...cached.kernelFiles];
     const publicKernel = publicRuntimeKernelInfo(this.kernelInfo);
     const snapshot: RuntimeProjectSnapshot = {
@@ -5780,8 +6860,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       kernel: publicKernel,
       kernelDevices: runtimeKernelVirtualDevices(),
       kernelFiles,
+      storage,
       files,
+      ...(symlinks.length > 0 ? { symlinks } : {}),
       ...(directories.length > 0 ? { directories } : {}),
+      ...(directoryMetadata.length > 0 ? { directoryMetadata } : {}),
       ...(this.projectSession?.readonlyFiles.length ? { readonlyFiles: [...this.projectSession.readonlyFiles] } : {}),
       ...(this.projectSession?.hiddenFiles.length ? { hiddenFiles: [...this.projectSession.hiddenFiles] } : {}),
       ...(options.entrypoint || this.entrypoint
@@ -5802,7 +6885,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
     for (const baseFile of [...base.files.values()].sort((left, right) => left.path.localeCompare(right.path))) {
       const currentFile = current.files.get(baseFile.path);
-      if (!currentFile) {
+      const currentSymlink = current.symlinks.get(baseFile.path);
+      if (currentSymlink) {
+        changes.push({ kind: 'symlink', path: currentSymlink.path, target: currentSymlink.target, baseHash: baseFile.hash });
+      } else if (!currentFile) {
         changes.push({ kind: 'delete', path: baseFile.path, baseHash: baseFile.hash });
       } else if (currentFile.hash !== baseFile.hash) {
         changes.push({
@@ -5816,7 +6902,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
 
     for (const currentFile of [...current.files.values()].sort((left, right) => left.path.localeCompare(right.path))) {
-      if (!base.files.has(currentFile.path)) {
+      if (!base.files.has(currentFile.path) && !base.symlinks.has(currentFile.path)) {
         changes.push({
           kind: 'write',
           path: currentFile.path,
@@ -5827,11 +6913,53 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
     }
 
-    for (const directory of [...base.directories].sort((left, right) => right.localeCompare(left))) {
+    for (const baseSymlink of [...base.symlinks.values()].sort((left, right) => left.path.localeCompare(right.path))) {
+      const currentSymlink = current.symlinks.get(baseSymlink.path);
+      const currentFile = current.files.get(baseSymlink.path);
+      if (currentFile) {
+        changes.push({
+          kind: 'write',
+          path: currentFile.path,
+          contents: currentFile.contents,
+          ...(currentFile.encoding === 'base64' ? { encoding: currentFile.encoding } : {}),
+          baseHash: baseSymlink.hash,
+        });
+      } else if (!currentSymlink) {
+        changes.push({ kind: 'delete', path: baseSymlink.path, baseHash: baseSymlink.hash });
+      } else if (currentSymlink.hash !== baseSymlink.hash) {
+        changes.push({ kind: 'symlink', path: currentSymlink.path, target: currentSymlink.target, baseHash: baseSymlink.hash });
+      }
+    }
+
+    for (const currentSymlink of [...current.symlinks.values()].sort((left, right) => left.path.localeCompare(right.path))) {
+      if (!base.files.has(currentSymlink.path) && !base.symlinks.has(currentSymlink.path)) {
+        changes.push({ kind: 'symlink', path: currentSymlink.path, target: currentSymlink.target, baseHash: null });
+      }
+    }
+
+    for (const directory of [...base.directories.keys()].sort((left, right) => right.localeCompare(left))) {
       if (!current.directories.has(directory)) changes.push({ kind: 'rmdir', path: directory });
     }
-    for (const directory of [...current.directories].sort((left, right) => left.localeCompare(right))) {
-      if (!base.directories.has(directory)) changes.push({ kind: 'mkdir', path: directory });
+    for (const directory of [...current.directories.values()].sort((left, right) => left.path.localeCompare(right.path))) {
+      const baseDirectory = base.directories.get(directory.path);
+      if (!baseDirectory) {
+        changes.push({
+          kind: 'mkdir',
+          path: directory.path,
+          ...(directory.mode !== undefined ? { mode: directory.mode } : {}),
+          ...(directory.atimeMs !== undefined ? { atimeMs: directory.atimeMs } : {}),
+          ...(directory.mtimeMs !== undefined ? { mtimeMs: directory.mtimeMs } : {}),
+        });
+      } else if (baseDirectory.hash !== directory.hash) {
+        changes.push({
+          kind: 'directory',
+          path: directory.path,
+          ...(directory.mode !== undefined ? { mode: directory.mode } : {}),
+          ...(directory.atimeMs !== undefined ? { atimeMs: directory.atimeMs } : {}),
+          ...(directory.mtimeMs !== undefined ? { mtimeMs: directory.mtimeMs } : {}),
+          baseHash: baseDirectory.hash,
+        });
+      }
     }
 
     return {
@@ -5939,6 +7067,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     } catch (error) {
       if (
         isKernelReadonlyError(error) ||
+        isKernelVirtualFilesystemError(error) ||
         isRuntimeFileGenerationConflict(error) ||
         isRuntimeWorkspaceStorageLimitError(error)
       ) {
@@ -5953,6 +7082,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.assertNotDestroyed();
     const name = options.name.trim();
     if (!name) throw new Error('Runtime workspace process name must not be empty.');
+    const admissionError = this.processAdmissionError(name);
+    if (admissionError) {
+      this.recordProcessAdmissionRejection(name, admissionError, options.actor);
+      throw admissionError;
+    }
     const cwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
     const pid = this.nextPid++;
     const process: RuntimeKernelProcessRecord = {
@@ -6228,12 +7362,29 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           await fs.rm(absolutePath, { force: true, recursive: true });
         } else {
           await fs.mkdir(absolutePath, { recursive: true });
+          if (change.mode !== undefined) await fs.chmod(absolutePath, change.mode);
+          if (change.atimeMs !== undefined || change.mtimeMs !== undefined) {
+            const stat = await fs.stat(absolutePath);
+            const currentMtime = stat.mtime instanceof Date ? stat.mtime.getTime() : 0;
+            await fs.utimes(
+              absolutePath,
+              new Date(change.atimeMs ?? currentMtime),
+              new Date(change.mtimeMs ?? currentMtime)
+            );
+          }
         }
       }, change.deleted === true ? 'recursive-delete' : 'directory-create');
       if (emit) {
         this.emitLocalRuntimeEvent({
           type: 'file-change',
-          change: { path: relativePath, directory: true, ...(change.deleted === true ? { deleted: true } : {}) },
+          change: {
+            path: relativePath,
+            directory: true,
+            ...(change.mode !== undefined ? { mode: change.mode } : {}),
+            ...(change.atimeMs !== undefined ? { atimeMs: change.atimeMs } : {}),
+            ...(change.mtimeMs !== undefined ? { mtimeMs: change.mtimeMs } : {}),
+            ...(change.deleted === true ? { deleted: true } : {}),
+          },
           phase,
           actor,
         }, undefined, process);
@@ -6258,10 +7409,34 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return;
     }
 
+    if (isRuntimeSymlinkChange(change)) {
+      const absolutePath = this.toWorkspaceEntryPath(change.path);
+      const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
+      await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
+        this.assertWorkspacePathWritable(absolutePath, 'symlink');
+        await fs.mkdir(dirname(absolutePath), { recursive: true });
+        await fs.rm(absolutePath, { force: true, recursive: true });
+        await fs.symlink(change.target, absolutePath);
+      }, mutationKind);
+      if (emit) {
+        this.emitLocalRuntimeEvent({
+          type: 'file-change',
+          change: { path: relativePath, symlink: true, target: change.target },
+          phase,
+          actor,
+        }, undefined, process);
+      }
+      return;
+    }
+
     const changedFile = change as RuntimeFile;
     const normalizedEncoding = assertSupportedEncoding(changedFile.encoding);
     const absolutePath = this.toWorkspacePath(changedFile.path);
-    if (this.isWorkspacePathReadOnly(absolutePath) && await this.runtimeFileChangeContentEquals(absolutePath, changedFile, normalizedEncoding)) {
+    if (
+      this.isWorkspacePathReadOnly(absolutePath) &&
+      changedFile.mode === undefined && changedFile.atimeMs === undefined && changedFile.mtimeMs === undefined &&
+      await this.runtimeFileChangeContentEquals(absolutePath, changedFile, normalizedEncoding)
+    ) {
       return;
     }
     const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
@@ -6272,11 +7447,28 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       } else {
         await fs.writeFile(absolutePath, changedFile.contents);
       }
+      if (changedFile.mode !== undefined) await fs.chmod(absolutePath, changedFile.mode);
+      if (changedFile.atimeMs !== undefined || changedFile.mtimeMs !== undefined) {
+        const stat = await fs.stat(absolutePath);
+        const currentMtime = stat.mtime instanceof Date ? stat.mtime.getTime() : 0;
+        await fs.utimes(
+          absolutePath,
+          new Date(changedFile.atimeMs ?? currentMtime),
+          new Date(changedFile.mtimeMs ?? currentMtime)
+        );
+      }
     }, mutationKind);
     if (emit) {
       this.emitLocalRuntimeEvent({
         type: 'file-change',
-        change: { path: relativePath, contents: changedFile.contents, ...(normalizedEncoding === 'base64' ? { encoding: 'base64' as const } : {}) },
+        change: {
+          path: relativePath,
+          contents: changedFile.contents,
+          ...(normalizedEncoding === 'base64' ? { encoding: 'base64' as const } : {}),
+          ...(changedFile.mode !== undefined ? { mode: changedFile.mode } : {}),
+          ...(changedFile.atimeMs !== undefined ? { atimeMs: changedFile.atimeMs } : {}),
+          ...(changedFile.mtimeMs !== undefined ? { mtimeMs: changedFile.mtimeMs } : {}),
+        },
         phase,
         actor,
       }, undefined, process);
@@ -6384,7 +7576,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
     const files: RuntimeFile[] = [];
     const directories: string[] = [];
-    await collectSnapshotFiles(fs, this.cwd, absolutePath, files, directories);
+    const symlinks: RuntimeSymlink[] = [];
+    await collectSnapshotFiles(fs, this.cwd, absolutePath, files, directories, symlinks);
     const directoryPath = toProjectDirectoryPath(this.cwd, absolutePath);
     const deletedDirectories = [
       ...directories,
@@ -6392,6 +7585,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     ].sort((left, right) => right.localeCompare(left));
     return [
       ...files.map((file): RuntimeFileDeletion => ({ path: file.path, deleted: true })),
+      ...symlinks.map((symlink): RuntimeFileDeletion => ({ path: symlink.path, deleted: true })),
       ...deletedDirectories.map((deletedPath): RuntimeDirectoryChange => ({
         path: deletedPath,
         directory: true,
@@ -6400,21 +7594,25 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     ];
   }
 
-  private async collectWorkspaceFilesCached(): Promise<{ files: RuntimeFile[]; directories: string[]; kernelFiles: RuntimeFile[] }> {
+  private async collectWorkspaceFilesCached(): Promise<{ files: RuntimeFile[]; directories: string[]; directoryMetadata: RuntimeDirectory[]; symlinks: RuntimeSymlink[]; kernelFiles: RuntimeFile[] }> {
     if (this.snapshotCache !== null && this.snapshotCache.version === this.fs.mutationVersion) {
       return this.snapshotCache;
     }
 
-    let lastWalk: { files: RuntimeFile[]; directories: string[]; kernelFiles: RuntimeFile[] } | null = null;
+    let lastWalk: { files: RuntimeFile[]; directories: string[]; directoryMetadata: RuntimeDirectory[]; symlinks: RuntimeSymlink[]; kernelFiles: RuntimeFile[] } | null = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const version = this.fs.mutationVersion;
       const files: RuntimeFile[] = [];
       const directories: string[] = [];
-      await this.collectFiles(this.cwd, files, directories);
+      const directoryMetadata: RuntimeDirectory[] = [];
+      const symlinks: RuntimeSymlink[] = [];
+      await this.collectFiles(this.cwd, files, directories, symlinks, directoryMetadata);
       files.sort((left, right) => left.path.localeCompare(right.path));
       directories.sort((left, right) => left.localeCompare(right));
+      symlinks.sort((left, right) => left.path.localeCompare(right.path));
+      directoryMetadata.sort((left, right) => left.path.localeCompare(right.path));
       const kernelFiles = await snapshotRuntimeKernelVirtualFiles(this.bash.fs, this.kernelInfo);
-      lastWalk = { files, directories, kernelFiles };
+      lastWalk = { files, directories, directoryMetadata, symlinks, kernelFiles };
       if (this.fs.mutationVersion === version) {
         this.snapshotCache = { version, ...lastWalk };
         return this.snapshotCache;
@@ -6424,12 +7622,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return lastWalk!;
   }
 
-  private async collectFiles(absolutePath: string, files: RuntimeFile[], directories: string[]): Promise<void> {
+  private async collectFiles(absolutePath: string, files: RuntimeFile[], directories: string[], symlinks: RuntimeSymlink[], directoryMetadata: RuntimeDirectory[]): Promise<void> {
     if (!isWithinWorkspace(this.cwd, absolutePath)) {
       throw new Error(`Refusing to snapshot path outside workspace: ${absolutePath}`);
     }
 
-    await collectSnapshotFiles(this.bash.fs, this.cwd, absolutePath, files, directories);
+    await collectSnapshotFiles(this.bash.fs, this.cwd, absolutePath, files, directories, symlinks, directoryMetadata);
   }
 }
 
@@ -6437,9 +7635,13 @@ export async function createRuntimeWorkspace(
   options: CreateRuntimeWorkspaceOptions = {}
 ): Promise<RuntimeProjectWorkspace> {
   const sessionDirectories = options.projectSession?.directories ?? [];
+  const sessionDirectoryMetadata = options.projectSession?.directoryMetadata ?? [];
   const sessionFiles = options.projectSession?.files ?? [];
+  const sessionSymlinks = options.projectSession?.symlinks ?? [];
   const suppliedDirectories = options.directories ?? [];
+  const suppliedDirectoryMetadata = options.directoryMetadata ?? [];
   const suppliedFiles = options.files ?? [];
+  const suppliedSymlinks = options.symlinks ?? [];
   options = normalizeRuntimeWorkspaceOptions(options);
   const workspace = new RuntimeProjectWorkspace(options);
   await workspace.ensureReady();
@@ -6453,11 +7655,26 @@ export async function createRuntimeWorkspace(
       }
     });
   }
+  if (sessionDirectoryMetadata.length > 0) {
+    await workspace.withSuspendedReadonlyPolicy(async () => {
+      for (const directory of sessionDirectoryMetadata) {
+        await workspace.applyKernelFileChange({ ...directory, directory: true });
+      }
+    });
+  }
   for (const directory of suppliedDirectories) {
     await workspace.mkdir(directory);
   }
+  for (const directory of suppliedDirectoryMetadata) {
+    await workspace.applyKernelFileChange({ ...directory, directory: true });
+  }
   if (sessionFiles.length > 0) {
     await workspace.withSuspendedReadonlyPolicy(() => workspace.writeFiles(sessionFiles));
+  }
+  if (sessionSymlinks.length > 0) {
+    await workspace.withSuspendedReadonlyPolicy(async () => {
+      for (const symlink of sessionSymlinks) await workspace.applyKernelFileChange(symlink);
+    });
   }
   if (suppliedFiles.length > 0) {
     const authoritativeFiles = new Map(
@@ -6478,6 +7695,7 @@ export async function createRuntimeWorkspace(
       await workspace.writeFile(path, file.contents, file.encoding);
     }
   }
+  for (const symlink of suppliedSymlinks) await workspace.applyKernelFileChange(symlink);
   return workspace;
 }
 
@@ -6496,6 +7714,10 @@ export type {
   KernelJournalRecord,
   RuntimeFile,
   RuntimeFileChange,
+  RuntimeFileDeletion,
+  RuntimeSymlink,
+  RuntimeDirectory,
+  RuntimeDirectoryChange,
   RuntimeFileEncoding,
   RuntimeKernelHostConfig,
   RuntimeKernelHostInfo,
@@ -6538,9 +7760,11 @@ export type {
   RuntimeProjectPatchBase,
   RuntimeProjectPatchChange,
   RuntimeProjectPatchDirectoryCreate,
+  RuntimeProjectPatchDirectoryWrite,
   RuntimeProjectPatchDirectoryDelete,
   RuntimeProjectPatchFileDelete,
   RuntimeProjectPatchFileWrite,
+  RuntimeProjectPatchSymlinkWrite,
   RuntimeProjectPatchOptions,
   RuntimeProjectLiveIoControllerOptions,
   RuntimeProjectWorkerBridgeOptions,

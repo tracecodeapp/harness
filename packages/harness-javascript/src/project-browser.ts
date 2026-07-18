@@ -268,10 +268,12 @@ export function createBrowserTypeScriptProjectRunner(
   });
 }
 
-interface BrowserJavaScriptProjectExecutionState {
+export interface BrowserJavaScriptProjectExecutionState {
   cancelled: boolean;
   abortController: AbortController;
   cleanupHostGlobals?: () => void;
+  dispatchSignal?: (signal: string) => boolean;
+  handledSignal?: string;
 }
 
 type ModuleRecord = {
@@ -296,6 +298,7 @@ interface BrowserProcSnapshot {
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
+const DEFAULT_SIGNAL_GRACE_MS = 1_000;
 const AsyncFunction = Object.getPrototypeOf(async function noop() {
   // Intentionally empty.
 }).constructor as typeof Function;
@@ -780,7 +783,12 @@ function fallbackKernelInfo(project: RuntimeProjectSnapshot, workspace: Workspac
 function normalizeBrowserProcPath(path: unknown): string | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return raw === '/proc' || raw.startsWith('/proc/') || raw === '/skills' || raw.startsWith('/skills/')
+  return raw === '/proc' ||
+    raw.startsWith('/proc/') ||
+    raw === '/skills' ||
+    raw.startsWith('/skills/') ||
+    raw === '/etc' ||
+    raw.startsWith('/etc/')
     ? raw
     : null;
 }
@@ -788,7 +796,12 @@ function normalizeBrowserProcPath(path: unknown): string | null {
 function browserReadonlyKernelNamespacePath(path: unknown): string | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return raw === '/skills' || raw.startsWith('/skills/') ? raw : null;
+  return raw === '/skills' ||
+    raw.startsWith('/skills/') ||
+    raw === '/etc' ||
+    raw.startsWith('/etc/')
+    ? raw
+    : null;
 }
 
 function createBrowserProcSnapshot(
@@ -846,7 +859,9 @@ function createBrowserProcSnapshot(
       path === '/proc' ||
       path.startsWith('/proc/') ||
       path === '/skills' ||
-      path.startsWith('/skills/')
+      path.startsWith('/skills/') ||
+      path === '/etc' ||
+      path.startsWith('/etc/')
     )) continue;
     directories.set(path, [...entries.values()].sort((left, right) => left.name.localeCompare(right.name)));
   }
@@ -1116,7 +1131,8 @@ function createReadableStdinDevice(
   readBytes: (size?: number) => Uint8Array,
   remainingBytes: () => number,
   isClosed: () => boolean = () => true,
-  schedulePoll: (callback: () => void, delay: number) => unknown = (callback, delay) => setTimeout(callback, delay)
+  schedulePoll: (callback: () => void, delay: number) => unknown = (callback, delay) => setTimeout(callback, delay),
+  terminal?: RuntimeProjectCommandRequest['terminal']
 ) {
   let encoding: string | undefined;
   let flowScheduled = false;
@@ -1124,6 +1140,7 @@ function createReadableStdinDevice(
   let destroyed = false;
   let ended = false;
   let readableFlowing: boolean | null = null;
+  let rawMode = false;
   const dataListeners: Array<(chunk?: BrowserBuffer | string) => void> = [];
   const endListeners: Array<(chunk?: BrowserBuffer | string) => void> = [];
 
@@ -1194,7 +1211,14 @@ function createReadableStdinDevice(
   const stream = {
     fd: 0,
     readable: true,
-    isTTY: false,
+    isTTY: terminal?.isTTY === true,
+    get isRaw() {
+      return rawMode;
+    },
+    setRawMode: (enabled = true) => {
+      rawMode = Boolean(enabled);
+      return stream;
+    },
     get readableEnded() {
       return ended;
     },
@@ -3612,6 +3636,8 @@ interface BrowserJavaScriptProjectPendingMessage {
   httpListeners: Map<string, RuntimeKernelHttpListenerHandle>;
   httpRequests: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
   httpDispatchAbortControllers: Map<string, AbortController>;
+  abortCleanup?: () => void;
+  signalGraceTimeoutId?: ReturnType<typeof setTimeout>;
 }
 
 function createBrowserJavaScriptProjectAbortError(): Error {
@@ -3649,6 +3675,8 @@ function createBrowserJavaScriptProjectPolicyFailureRunner(diagnostic: string): 
 }
 
 class BrowserJavaScriptProjectWorkerClient {
+  private readonly hostSetTimeout = globalThis.setTimeout.bind(globalThis);
+  private readonly hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
   private worker: BrowserJavaScriptProjectWorkerLike | null = null;
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
@@ -3679,9 +3707,8 @@ class BrowserJavaScriptProjectWorkerClient {
     }
     const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
     return this.executeWithTimeout(
-      () => this.sendMessage('execute-project-javascript', workerRequest, onEvent, kernelHttp),
-      timeoutMs,
-      signal
+      () => this.sendMessage('execute-project-javascript', workerRequest, onEvent, kernelHttp, signal),
+      timeoutMs
     );
   }
 
@@ -3754,7 +3781,8 @@ class BrowserJavaScriptProjectWorkerClient {
     type: string,
     payload: unknown,
     onEvent?: (event: RuntimeCommandEvent) => void,
-    kernelHttp?: RuntimeKernelHttpBridge
+    kernelHttp?: RuntimeKernelHttpBridge,
+    signal?: AbortSignal
   ): Promise<RuntimeCommandResult> {
     const worker = this.getWorker();
     const id = String(++this.messageId);
@@ -3767,7 +3795,7 @@ class BrowserJavaScriptProjectWorkerClient {
         };
         channel.port1.start?.();
       }
-      this.pendingMessages.set(id, {
+      const pending: BrowserJavaScriptProjectPendingMessage = {
         protocolToken,
         resolve,
         reject,
@@ -3777,7 +3805,8 @@ class BrowserJavaScriptProjectWorkerClient {
         httpListeners: new Map(),
         httpRequests: new Map(),
         httpDispatchAbortControllers: new Map(),
-      });
+      };
+      this.pendingMessages.set(id, pending);
       const message: BrowserJavaScriptProjectWorkerMessage = {
         id,
         type,
@@ -3790,6 +3819,19 @@ class BrowserJavaScriptProjectWorkerClient {
         worker.postMessage(message, [channel.port2]);
       } else {
         worker.postMessage(message);
+      }
+      if (signal) {
+        const onAbort = (): void => {
+          if (!this.pendingMessages.has(id)) return;
+          this.postWorkerMessage(id, 'runtime-signal', { signal: runtimeAbortSignalName(signal) });
+          pending.signalGraceTimeoutId = this.hostSetTimeout(() => {
+            if (!this.pendingMessages.has(id)) return;
+            this.terminateAndReset(createBrowserJavaScriptProjectAbortError());
+          }, DEFAULT_SIGNAL_GRACE_MS);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        pending.abortCleanup = () => signal.removeEventListener('abort', onAbort);
+        if (signal.aborted) onAbort();
       }
     });
   }
@@ -3912,7 +3954,7 @@ class BrowserJavaScriptProjectWorkerClient {
     });
   }
 
-  private postWorkerMessage(commandId: string, type: string, payload: RuntimeKernelHttpProtocolMessage): void {
+  private postWorkerMessage(commandId: string, type: string, payload: unknown): void {
     const pending = this.pendingMessages.get(commandId);
     if (!pending) return;
     const message: BrowserJavaScriptProjectWorkerMessage = {
@@ -3939,6 +3981,8 @@ class BrowserJavaScriptProjectWorkerClient {
   }
 
   private cleanupPendingKernelHttp(pending: BrowserJavaScriptProjectPendingMessage): void {
+    pending.abortCleanup?.();
+    if (pending.signalGraceTimeoutId !== undefined) this.hostClearTimeout(pending.signalGraceTimeoutId);
     for (const listener of pending.httpListeners.values()) listener.close();
     pending.httpListeners.clear();
     for (const request of pending.httpRequests.values()) request.reject(new Error('JavaScript project worker finished before HTTP response.'));
@@ -3956,7 +4000,7 @@ class BrowserJavaScriptProjectWorkerClient {
     return new Promise<RuntimeCommandResult>((resolve, reject) => {
       let settled = false;
       const cleanup = () => {
-        clearTimeout(timeoutId);
+        this.hostClearTimeout(timeoutId);
         signal?.removeEventListener('abort', onAbort);
       };
       const rejectOnce = (error: Error) => {
@@ -3970,7 +4014,7 @@ class BrowserJavaScriptProjectWorkerClient {
         this.terminateAndReset(abortError);
         rejectOnce(abortError);
       };
-      const timeoutId = setTimeout(() => {
+      const timeoutId = this.hostSetTimeout(() => {
         const timeoutError = new Error(`node: execution timed out after ${timeoutMs}ms`);
         this.terminateAndReset(timeoutError);
         rejectOnce(timeoutError);
@@ -4139,6 +4183,7 @@ export function createBrowserJavaScriptProjectRunner(
     const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
     const hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let signalGraceTimeoutId: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
     let forcedResult: RuntimeCommandResult | undefined;
     let resolveForcedResult!: (result: RuntimeCommandResult) => void;
@@ -4157,6 +4202,10 @@ export function createBrowserJavaScriptProjectRunner(
       if (timeoutId !== undefined) {
         hostClearTimeout(timeoutId);
         timeoutId = undefined;
+      }
+      if (signalGraceTimeoutId !== undefined) {
+        hostClearTimeout(signalGraceTimeoutId);
+        signalGraceTimeoutId = undefined;
       }
       if (abortListener) {
         request.signal?.removeEventListener('abort', abortListener);
@@ -4185,18 +4234,25 @@ export function createBrowserJavaScriptProjectRunner(
       abortListener = () => {
         if (forcedResult) return;
         const signal = runtimeAbortSignalName(request.signal);
-        const failure = runtimeProjectInfrastructureFailure(
-          Object.assign(new Error('Execution interrupted'), { name: 'AbortError' }),
-          request.signal
-        );
-        const io = createRuntimeProjectIoBridge(request.onEvent);
-        io.status('process-exit', 'Browser Node interrupted', {
-          command: 'node',
-          exitCode: failure.exitCode,
-          signal,
-          error: failure.error?.message,
-        });
-        forceResult(failure);
+        const interrupt = (): void => {
+          const failure = runtimeProjectInfrastructureFailure(
+            Object.assign(new Error('Execution interrupted'), { name: 'AbortError' }),
+            request.signal
+          );
+          const io = createRuntimeProjectIoBridge(request.onEvent);
+          io.status('process-exit', 'Browser Node interrupted', {
+            command: 'node',
+            exitCode: failure.exitCode,
+            signal,
+            error: failure.error?.message,
+          });
+          forceResult(failure);
+        };
+        if (executionState.dispatchSignal?.(signal)) {
+          signalGraceTimeoutId = hostSetTimeout(interrupt, DEFAULT_SIGNAL_GRACE_MS);
+          return;
+        }
+        interrupt();
       };
       request.signal.addEventListener('abort', abortListener, { once: true });
       if (request.signal.aborted) abortListener();
@@ -4284,10 +4340,18 @@ export async function runBrowserJavaScriptProjectRequest(
     const visibleProjectFiles = request.project.files.filter((file) =>
       !isHiddenProjectPath(assertSafeWorkspaceFilePath(file.path, '', workspacePathContext))
     );
+    const visibleProjectSymlinks = (request.project.symlinks ?? []).filter((symlink) =>
+      !isHiddenProjectPath(assertSafeWorkspaceFilePath(symlink.path, '', workspacePathContext))
+    );
     const modules = new Map(
       visibleProjectFiles
         .filter((file) => file.encoding !== 'base64')
-        .map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), file.contents])
+        .map((file) => [
+          assertSafeWorkspaceFilePath(file.path, '', workspacePathContext),
+          file.contents.startsWith('#!')
+            ? file.contents.replace(/^#![^\r\n]*(?:\r?\n|$)/, (line) => line.replace(/[^\r\n]/g, ' '))
+            : file.contents,
+        ])
     );
     const virtualTextFiles = new Map<string, string>();
     const virtualTypeScriptPackagePaths = [
@@ -4318,12 +4382,47 @@ export async function runBrowserJavaScriptProjectRequest(
     const fileStore = new Map(
       visibleProjectFiles.map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), fileBytes(file)] as const)
     );
+    const symlinkStore = new Map(
+      visibleProjectSymlinks.map((symlink) => [
+        assertSafeWorkspaceFilePath(symlink.path, '', workspacePathContext),
+        symlink.target,
+      ] as const)
+    );
     for (const [path, contents] of virtualTextFiles) {
       fileStore.set(path, textEncoder.encode(contents));
+    }
+    const initialVisibleBytes = visibleProjectFiles.reduce((total, file) => total + fileBytes(file).byteLength, 0) +
+      visibleProjectSymlinks.reduce((total, symlink) => total + utf8Bytes(symlink.target).byteLength, 0);
+    const initialVisibleEntries = new Set([
+      ...visibleProjectFiles.map((file) => assertSafeWorkspaceFilePath(file.path, '', workspacePathContext)),
+      ...visibleProjectSymlinks.map((symlink) => assertSafeWorkspaceFilePath(symlink.path, '', workspacePathContext)),
+      ...(request.project.directories ?? []).map((directory) =>
+        normalizeWorkspaceEntryPath(directory, '', true, workspacePathContext)
+      ).filter(Boolean),
+    ]);
+    const unmodeledStorageBytes = Math.max(0, (request.project.storage?.usedBytes ?? initialVisibleBytes) - initialVisibleBytes);
+    const unmodeledStorageEntries = Math.max(
+      0,
+      (request.project.storage?.usedEntries ?? initialVisibleEntries.size) - initialVisibleEntries.size
+    );
+    const virtualStorageEntries = new Set<string>();
+    for (const path of virtualTextFiles.keys()) {
+      virtualStorageEntries.add(path);
+      const parts = path.split('/');
+      for (let index = 1; index < parts.length; index += 1) {
+        const directory = parts.slice(0, index).join('/');
+        if (!initialVisibleEntries.has(directory)) virtualStorageEntries.add(directory);
+      }
     }
     const directoryStore = new Set<string>(['']);
     for (const filePath of fileStore.keys()) {
       const parts = filePath.split('/');
+      for (let index = 1; index < parts.length; index += 1) {
+        directoryStore.add(parts.slice(0, index).join('/'));
+      }
+    }
+    for (const symlinkPath of symlinkStore.keys()) {
+      const parts = symlinkPath.split('/');
       for (let index = 1; index < parts.length; index += 1) {
         directoryStore.add(parts.slice(0, index).join('/'));
       }
@@ -4337,6 +4436,12 @@ export async function runBrowserJavaScriptProjectRequest(
         directoryStore.add(parts.slice(0, index).join('/'));
       }
     }
+    const projectDirectoryMetadata = new Map(
+      (request.project.directoryMetadata ?? []).map((directory) => [
+        normalizeWorkspaceEntryPath(directory.path, '', true, workspacePathContext),
+        directory,
+      ])
+    );
     type BrowserEntryMetadata = {
       atimeMs: number;
       birthtimeMs: number;
@@ -4346,22 +4451,38 @@ export async function runBrowserJavaScriptProjectRequest(
       mtimeMs: number;
       uid: number;
     };
-    let fsTimestampMs = 1;
-    const createEntryMetadata = (mode?: number): BrowserEntryMetadata => ({
-      atimeMs: fsTimestampMs,
-      birthtimeMs: fsTimestampMs,
-      ctimeMs: fsTimestampMs,
-      gid: 0,
+    let fsTimestampMs = Math.max(1, ...visibleProjectFiles.map((file) => file.mtimeMs ?? 1));
+    const createEntryMetadata = (
+      mode?: number,
+      timestamps: { atimeMs?: number; mtimeMs?: number } = {}
+    ): BrowserEntryMetadata => ({
+      atimeMs: timestamps.atimeMs ?? timestamps.mtimeMs ?? fsTimestampMs,
+      birthtimeMs: timestamps.mtimeMs ?? fsTimestampMs,
+      ctimeMs: timestamps.mtimeMs ?? fsTimestampMs,
+      gid: 1000,
       mode,
-      mtimeMs: fsTimestampMs,
-      uid: 0,
+      mtimeMs: timestamps.mtimeMs ?? fsTimestampMs,
+      uid: 1000,
     });
     const entryMetadata = new Map<string, BrowserEntryMetadata>(
-      Array.from(fileStore.keys()).map((filePath) => [filePath, createEntryMetadata(0o100644)])
+      visibleProjectFiles.map((file) => {
+        const filePath = assertSafeWorkspaceFilePath(file.path, '', workspacePathContext);
+        return [filePath, createEntryMetadata(0o100000 | (file.mode ?? 0o644), file)] as const;
+      })
     );
+    for (const symlinkPath of symlinkStore.keys()) {
+      entryMetadata.set(symlinkPath, createEntryMetadata(0o120777));
+    }
+    for (const path of virtualTextFiles.keys()) {
+      entryMetadata.set(path, createEntryMetadata(0o100644));
+    }
     for (const directoryPath of directoryStore) {
       if (!entryMetadata.has(directoryPath)) {
-        entryMetadata.set(directoryPath, createEntryMetadata(0o40755));
+        const metadata = projectDirectoryMetadata.get(directoryPath);
+        entryMetadata.set(directoryPath, createEntryMetadata(
+          0o40000 | (metadata?.mode ?? 0o755),
+          { atimeMs: metadata?.atimeMs, mtimeMs: metadata?.mtimeMs }
+        ));
       }
     }
     const touchEntryMetadata = (path: string): void => {
@@ -4371,10 +4492,10 @@ export async function runBrowserJavaScriptProjectRequest(
         atimeMs: previous?.atimeMs ?? fsTimestampMs,
         birthtimeMs: previous?.birthtimeMs ?? fsTimestampMs,
         ctimeMs: fsTimestampMs,
-        gid: previous?.gid ?? 0,
+        gid: previous?.gid ?? 1000,
         mode: previous?.mode,
         mtimeMs: fsTimestampMs,
-        uid: previous?.uid ?? 0,
+        uid: previous?.uid ?? 1000,
       });
     };
     const updateEntryMetadata = (path: string, update: Partial<BrowserEntryMetadata>): void => {
@@ -4389,6 +4510,14 @@ export async function runBrowserJavaScriptProjectRequest(
     const deleteEntryMetadata = (path: string): void => {
       fsTimestampMs += 1;
       entryMetadata.delete(path);
+    };
+    const runtimeFileForPath = (path: string, bytes: Uint8Array): JavaScriptProjectFile => {
+      const metadata = entryMetadata.get(path);
+      return {
+        ...bytesToRuntimeFile(path, bytes),
+        ...(metadata?.mode !== undefined ? { mode: metadata.mode & 0o7777 } : {}),
+        ...(metadata ? { atimeMs: metadata.atimeMs, mtimeMs: metadata.mtimeMs } : {}),
+      };
     };
     const hardLinkGroups = new Map<string, Set<string>>();
     const hardLinkGroupForPath = (path: string): Set<string> => hardLinkGroups.get(path) ?? new Set([path]);
@@ -4423,9 +4552,73 @@ export async function runBrowserJavaScriptProjectRequest(
       const group = hardLinkGroups.get(path);
       return inodeForPath(group ? [...group].sort((left, right) => left.localeCompare(right))[0] ?? path : path);
     };
+    const resolveStoredSymlinkPath = (path: string, followFinal = true): string => {
+      let current = path;
+      for (let depth = 0; depth < 40; depth += 1) {
+        const parts = current.split('/').filter(Boolean);
+        const limit = followFinal ? parts.length : Math.max(0, parts.length - 1);
+        let linkIndex = -1;
+        let linkPath = '';
+        for (let index = 0; index < limit; index += 1) {
+          const candidate = parts.slice(0, index + 1).join('/');
+          if (symlinkStore.has(candidate)) {
+            linkIndex = index;
+            linkPath = candidate;
+            break;
+          }
+        }
+        if (linkIndex === -1) return current;
+        const target = symlinkStore.get(linkPath)!;
+        const targetPath = normalizeWorkspaceEntryPath(target, dirname(linkPath), true, workspacePathContext);
+        const suffix = parts.slice(linkIndex + 1).join('/');
+        current = suffix
+          ? normalizeWorkspaceEntryPath(`${targetPath}/${suffix}`, '', true, workspacePathContext)
+          : targetPath;
+      }
+      throw Object.assign(new Error(`ELOOP: too many symbolic links encountered, stat '${path}'`), { code: 'ELOOP' });
+    };
+    const resolveWorkspaceEntryPath = (path: unknown, followFinal = true): string =>
+      resolveStoredSymlinkPath(
+        normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext),
+        followFinal
+      );
     const originalFiles = new Map(fileStore);
+    const originalSymlinks = new Map(symlinkStore);
+    const originalDirectoryMetadata = new Map(
+      [...directoryStore].map((path) => [path, { ...(entryMetadata.get(path) ?? createEntryMetadata(0o40755)) }])
+    );
     const cache = new Map<string, ModuleRecord>();
     const requireCache: Record<string, ModuleRecord> = {};
+    const symlinkModuleAliases = new Set<string>();
+    const refreshSymlinkModuleAliases = (): void => {
+      for (const alias of symlinkModuleAliases) {
+        modules.delete(alias);
+        cache.delete(alias);
+        delete requireCache[workspaceFilename(alias, workspaceRoot)];
+      }
+      symlinkModuleAliases.clear();
+      for (const linkPath of symlinkStore.keys()) {
+        let resolved: string;
+        try {
+          resolved = resolveStoredSymlinkPath(linkPath);
+        } catch {
+          continue;
+        }
+        const linkedModule = modules.get(resolved);
+        if (linkedModule !== undefined && !fileStore.has(linkPath)) {
+          modules.set(linkPath, linkedModule);
+          symlinkModuleAliases.add(linkPath);
+        }
+        const prefix = `${resolved}/`;
+        for (const [modulePath, contents] of [...modules.entries()]) {
+          if (!modulePath.startsWith(prefix) || symlinkModuleAliases.has(modulePath)) continue;
+          const alias = `${linkPath}/${modulePath.slice(prefix.length)}`;
+          if (fileStore.has(alias)) continue;
+          modules.set(alias, contents);
+          symlinkModuleAliases.add(alias);
+        }
+      }
+    };
     let mainModule: ModuleRecord | undefined;
 
     const emitOutput = (
@@ -4507,7 +4700,17 @@ export async function runBrowserJavaScriptProjectRequest(
       const stream = {
         fd,
         writable: true,
-        isTTY: false,
+        isTTY: request.terminal?.isTTY === true,
+        columns: request.terminal?.columns,
+        rows: request.terminal?.rows,
+        getColorDepth: () => request.terminal?.colorLevel === 3
+          ? 24
+          : request.terminal?.colorLevel === 2
+            ? 8
+            : request.terminal?.colorLevel === 1
+              ? 4
+              : 1,
+        hasColors: () => (request.terminal?.colorLevel ?? 0) > 0,
         get closed() {
           return closed;
         },
@@ -4595,9 +4798,34 @@ export async function runBrowserJavaScriptProjectRequest(
       (size) => readDeviceBytes('/dev/stdin', size),
       () => remainingDeviceBytes('/dev/stdin'),
       () => deviceInputClosed('/dev/stdin'),
-      eventLoopApi.setTimeout
+      eventLoopApi.setTimeout,
+      request.terminal
     );
     const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
+    const processListeners = new Map<string, Array<(...args: unknown[]) => void>>();
+    const addProcessListener = (event: string, listener: (...args: unknown[]) => void): void => {
+      if ((event === 'SIGKILL' || event === 'SIGSTOP')) {
+        throw Object.assign(new Error(`uv_signal_start EINVAL`), { code: 'EINVAL', errno: -22, syscall: 'uv_signal_start' });
+      }
+      const next = processListeners.get(event) ?? [];
+      next.push(listener);
+      processListeners.set(event, next);
+    };
+    const removeProcessListener = (event: string, listener: (...args: unknown[]) => void): void => {
+      const next = (processListeners.get(event) ?? []).filter((candidate) => candidate !== listener);
+      if (next.length === 0) processListeners.delete(event);
+      else processListeners.set(event, next);
+    };
+    const emitProcessEvent = (event: string, ...args: unknown[]): boolean => {
+      const current = [...(processListeners.get(event) ?? [])];
+      for (const listener of current) listener(...args);
+      return current.length > 0;
+    };
+    executionState.dispatchSignal = (signal) => {
+      const handled = emitProcessEvent(signal, signal);
+      if (handled) executionState.handledSignal = signal;
+      return handled;
+    };
     const processApi = {
       argv: processArgvForRequest(request),
       execArgv: [] as string[],
@@ -4616,6 +4844,38 @@ export async function runBrowserJavaScriptProjectRequest(
       nextTick: (callback: (...args: unknown[]) => void, ...args: unknown[]) => {
         globalThis.queueMicrotask(() => callback(...args));
       },
+      on: (event: string, listener: (...args: unknown[]) => void) => {
+        addProcessListener(event, listener);
+        return processApi;
+      },
+      addListener: (event: string, listener: (...args: unknown[]) => void) => {
+        addProcessListener(event, listener);
+        return processApi;
+      },
+      once: (event: string, listener: (...args: unknown[]) => void) => {
+        const wrapped = (...args: unknown[]) => {
+          removeProcessListener(event, wrapped);
+          listener(...args);
+        };
+        addProcessListener(event, wrapped);
+        return processApi;
+      },
+      removeListener: (event: string, listener: (...args: unknown[]) => void) => {
+        removeProcessListener(event, listener);
+        return processApi;
+      },
+      off: (event: string, listener: (...args: unknown[]) => void) => {
+        removeProcessListener(event, listener);
+        return processApi;
+      },
+      removeAllListeners: (event?: string) => {
+        if (event === undefined) processListeners.clear();
+        else processListeners.delete(event);
+        return processApi;
+      },
+      listeners: (event: string) => [...(processListeners.get(event) ?? [])],
+      listenerCount: (event: string) => processListeners.get(event)?.length ?? 0,
+      emit: emitProcessEvent,
       stdin: stdinDevice,
       stdout: createWritableDevice('/dev/stdout', 1),
       stderr: createWritableDevice('/dev/stderr', 2),
@@ -4724,16 +4984,48 @@ export async function runBrowserJavaScriptProjectRequest(
       }
       return (hash >>> 0) || 1;
     };
-    const statForNormalizedPath = (normalized: string): BrowserFileStat | null => {
-      const isFile = fileStore.has(normalized);
-      const prefix = normalized ? `${normalized}/` : '';
+    const statForNormalizedPath = (normalized: string, followFinal = true): BrowserFileStat | null => {
+      if (!followFinal && symlinkStore.has(normalized)) {
+        const target = symlinkStore.get(normalized)!;
+        const metadata = entryMetadata.get(normalized) ?? createEntryMetadata(0o120777);
+        return {
+          atimeMs: metadata.atimeMs,
+          birthtimeMs: metadata.birthtimeMs,
+          blksize: 4096,
+          blocks: Math.ceil(utf8Bytes(target).byteLength / 512),
+          ctimeMs: metadata.ctimeMs,
+          dev: 1,
+          gid: metadata.gid,
+          ino: inodeForPath(normalized),
+          mode: metadata.mode ?? 0o120777,
+          mtimeMs: metadata.mtimeMs,
+          nlink: 1,
+          rdev: 0,
+          size: utf8Bytes(target).byteLength,
+          uid: metadata.uid,
+          atime: new Date(metadata.atimeMs),
+          birthtime: new Date(metadata.birthtimeMs),
+          ctime: new Date(metadata.ctimeMs),
+          mtime: new Date(metadata.mtimeMs),
+          isBlockDevice: () => false,
+          isCharacterDevice: () => false,
+          isFIFO: () => false,
+          isFile: () => false,
+          isDirectory: () => false,
+          isSocket: () => false,
+          isSymbolicLink: () => true,
+        };
+      }
+      const resolved = resolveStoredSymlinkPath(normalized, followFinal);
+      const isFile = fileStore.has(resolved);
+      const prefix = resolved ? `${resolved}/` : '';
       const isDirectory = !isFile && (
-        directoryStore.has(normalized) ||
+        directoryStore.has(resolved) ||
         Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix))
       );
       if (!isFile && !isDirectory) return null;
-      const metadata = entryMetadata.get(normalized) ?? createEntryMetadata(isDirectory ? 0o40755 : 0o100644);
-      const size = isFile ? fileStore.get(normalized)?.byteLength ?? 0 : 0;
+      const metadata = entryMetadata.get(resolved) ?? createEntryMetadata(isDirectory ? 0o40755 : 0o100644);
+      const size = isFile ? fileStore.get(resolved)?.byteLength ?? 0 : 0;
       const mode = metadata.mode ?? (isDirectory ? 0o40755 : 0o100644);
       return {
         atimeMs: metadata.atimeMs,
@@ -4743,10 +5035,10 @@ export async function runBrowserJavaScriptProjectRequest(
         ctimeMs: metadata.ctimeMs,
         dev: 1,
         gid: metadata.gid,
-        ino: isFile ? linkedInodeForPath(normalized) : inodeForPath(normalized),
+        ino: isFile ? linkedInodeForPath(resolved) : inodeForPath(resolved),
         mode,
         mtimeMs: metadata.mtimeMs,
-        nlink: isDirectory ? 2 : hardLinkGroupForPath(normalized).size,
+        nlink: isDirectory ? 2 : hardLinkGroupForPath(resolved).size,
         rdev: 0,
         size,
         uid: metadata.uid,
@@ -4804,14 +5096,30 @@ export async function runBrowserJavaScriptProjectRequest(
       return statForKernelPath(statTarget.path, statTarget.stat);
     };
     const browserFileSystemStat = (bigint = false): BrowserFileSystemStat => {
+      const blockSize = 4096;
+      const capacityBytes = request.project.storage?.capacityBytes ?? 64 * 1024 * 1024;
+      const capacityEntries = request.project.storage?.capacityEntries ?? 10_000;
+      const visibleBytes = Array.from(fileStore.entries()).reduce(
+        (total, [path, bytes]) => total + (virtualStorageEntries.has(path) ? 0 : bytes.byteLength),
+        0
+      ) + Array.from(symlinkStore.values()).reduce((total, target) => total + utf8Bytes(target).byteLength, 0);
+      const visibleEntries = new Set([
+        ...Array.from(fileStore.keys()).filter((path) => !virtualStorageEntries.has(path)),
+        ...Array.from(symlinkStore.keys()),
+        ...Array.from(directoryStore).filter((path) => path !== '' && !virtualStorageEntries.has(path)),
+      ]).size;
+      const usedBytes = Math.min(capacityBytes, unmodeledStorageBytes + visibleBytes);
+      const usedEntries = Math.min(capacityEntries, unmodeledStorageEntries + visibleEntries);
+      const blocks = Math.ceil(capacityBytes / blockSize);
+      const usedBlocks = Math.ceil(usedBytes / blockSize);
       const stats = {
         type: 0x74726365,
-        bsize: 4096,
-        blocks: 1_048_576,
-        bfree: 1_048_000,
-        bavail: 1_048_000,
-        files: 1_000_000,
-        ffree: 999_000,
+        bsize: blockSize,
+        blocks,
+        bfree: Math.max(0, blocks - usedBlocks),
+        bavail: Math.max(0, blocks - usedBlocks),
+        files: capacityEntries,
+        ffree: Math.max(0, capacityEntries - usedEntries),
       };
       if (!bigint) return stats;
       return Object.fromEntries(
@@ -4898,7 +5206,13 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const emitDirectoryCreate = (path: string): void => {
       if (!path) return;
-      io.fileChange({ path, directory: true }, 'live');
+      const metadata = entryMetadata.get(path);
+      io.fileChange({
+        path,
+        directory: true,
+        ...(metadata?.mode !== undefined ? { mode: metadata.mode & 0o7777 } : {}),
+        ...(metadata ? { atimeMs: metadata.atimeMs, mtimeMs: metadata.mtimeMs } : {}),
+      }, 'live');
     };
     const emitDirectoryDelete = (path: string): void => {
       if (!path) return;
@@ -4909,7 +5223,7 @@ export async function runBrowserJavaScriptProjectRequest(
         throw createRuntimeKernelReadonlyFileError(normalized, operation);
       }
     };
-    const setFileBytes = (path: string, bytes: Uint8Array): void => {
+    const setFileBytes = (path: string, bytes: Uint8Array, preservedMetadata?: BrowserEntryMetadata): void => {
       const linkedPaths = Array.from(hardLinkGroupForPath(path))
         .filter((linkedPath) => fileStore.has(linkedPath) || linkedPath === path);
       for (const linkedPath of linkedPaths) {
@@ -4923,12 +5237,18 @@ export async function runBrowserJavaScriptProjectRequest(
         if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
         if (!existed) emitDirectoryCreate(directoryPath);
       }
+      let movedMetadata: BrowserEntryMetadata | undefined;
+      if (preservedMetadata) {
+        fsTimestampMs += 1;
+        movedMetadata = { ...preservedMetadata, ctimeMs: fsTimestampMs };
+      }
       for (const linkedPath of linkedPaths) {
         fileStore.set(linkedPath, bytes);
-        touchEntryMetadata(linkedPath);
+        if (movedMetadata) entryMetadata.set(linkedPath, { ...movedMetadata });
+        else touchEntryMetadata(linkedPath);
         syncTextModule(linkedPath, bytes);
         cache.delete(linkedPath);
-        io.fileChange(bytesToRuntimeFile(linkedPath, bytes), 'live');
+        io.fileChange(runtimeFileForPath(linkedPath, bytes), 'live');
         notifyFsWatchers('change', linkedPath);
         notifyWatchFileWatchers(linkedPath);
       }
@@ -5210,14 +5530,19 @@ export async function runBrowserJavaScriptProjectRequest(
       }
       const device = openTarget?.kind === 'device' ? openTarget.device : null;
       const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
-      const normalized = device || optionFd !== null ? null : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+      const rawNormalized = device || optionFd !== null
+        ? null
+        : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+      const normalized = rawNormalized === null ? null : resolveStoredSymlinkPath(rawNormalized);
       if (normalized !== null) {
         assertWorkspaceFileWritePath(normalized, path, 'write');
+        if (parsed.exclusive && rawNormalized !== null && (
+          fileStore.has(rawNormalized) || symlinkStore.has(rawNormalized) || directoryStore.has(rawNormalized)
+        )) {
+          throw Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), { code: 'EEXIST' });
+        }
         if (!parsed.create && !fileStore.has(normalized)) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
-        }
-        if (parsed.exclusive && fileStore.has(normalized)) {
-          throw Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), { code: 'EEXIST' });
         }
       }
       if (normalized !== null && parsed.truncate) {
@@ -5413,8 +5738,15 @@ export async function runBrowserJavaScriptProjectRequest(
           : `EROFS: read-only file system, unlink '${path}'`;
         throwRuntimeRemoveTargetError(removeTarget, message);
       }
-      const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+      const normalized = resolveWorkspaceEntryPath(path, false);
       assertReadonlyFilePath(normalized, 'delete');
+      if (symlinkStore.delete(normalized)) {
+        deleteEntryMetadata(normalized);
+        io.fileChange({ path: normalized, deleted: true }, 'live');
+        notifyFsWatchers('rename', normalized);
+        notifyWatchFileWatchers(normalized);
+        return;
+      }
       if (!fileStore.delete(normalized)) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, unlink '${path}'`), { code: 'ENOENT' });
       }
@@ -5462,7 +5794,7 @@ export async function runBrowserJavaScriptProjectRequest(
         return true;
       }
       if (readTarget?.kind === 'error') return false;
-      const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      const normalized = resolveWorkspaceEntryPath(path);
       const prefix = normalized ? `${normalized}/` : '';
       return fileStore.has(normalized)
         || directoryStore.has(normalized)
@@ -5477,6 +5809,10 @@ export async function runBrowserJavaScriptProjectRequest(
       for (let index = 1; index < parts.length; index += 1) {
         const directoryPath = parts.slice(0, index).join('/');
         if (fileStore.has(directoryPath)) return directoryPath;
+        if (symlinkStore.has(directoryPath)) {
+          const resolved = resolveStoredSymlinkPath(directoryPath);
+          if (fileStore.has(resolved)) return directoryPath;
+        }
       }
       return null;
     };
@@ -5485,7 +5821,7 @@ export async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`ENOTDIR: not a directory, ${syscall} '${path}'`), { code: 'ENOTDIR' });
       }
       const parent = dirname(normalized);
-      const parentPath = parent === '' ? '' : parent;
+      const parentPath = parent === '' ? '' : resolveStoredSymlinkPath(parent);
       if (parentPath && !directoryStore.has(parentPath)) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${path}'`), { code: 'ENOENT' });
       }
@@ -5509,7 +5845,7 @@ export async function runBrowserJavaScriptProjectRequest(
         const reason = accessTarget.reason === 'not-found' ? 'no such file or directory' : 'permission denied';
         throw Object.assign(new Error(`${code}: ${reason}, access '${path}'`), { code });
       }
-      const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      const normalized = resolveWorkspaceEntryPath(path);
       if (workspaceFileAncestor(normalized) !== null) {
         throw Object.assign(new Error(`ENOTDIR: not a directory, access '${path}'`), { code: 'ENOTDIR' });
       }
@@ -5530,6 +5866,24 @@ export async function runBrowserJavaScriptProjectRequest(
       }
     };
     const notifyMetadataMutation = (path: string): void => {
+      const bytes = fileStore.get(path);
+      const metadata = entryMetadata.get(path);
+      if (bytes && metadata) {
+        io.fileChange({
+          ...bytesToRuntimeFile(path, bytes),
+          ...(metadata.mode !== undefined ? { mode: metadata.mode & 0o7777 } : {}),
+          atimeMs: metadata.atimeMs,
+          mtimeMs: metadata.mtimeMs,
+        }, 'live');
+      } else if (directoryStore.has(path) && metadata && path !== '') {
+        io.fileChange({
+          path,
+          directory: true,
+          ...(metadata.mode !== undefined ? { mode: metadata.mode & 0o7777 } : {}),
+          atimeMs: metadata.atimeMs,
+          mtimeMs: metadata.mtimeMs,
+        }, 'live');
+      }
       notifyFsWatchers('change', path);
       notifyWatchFileWatchers(path);
     };
@@ -5744,8 +6098,8 @@ export async function runBrowserJavaScriptProjectRequest(
         });
       }
 
-      const normalizedSource = normalizeWorkspaceEntryPath(source, cwdPath, true, workspacePathContext);
-      const normalizedDestination = normalizeWorkspaceEntryPath(destination, cwdPath, true, workspacePathContext);
+      const normalizedSource = resolveWorkspaceEntryPath(source, false);
+      const normalizedDestination = resolveWorkspaceEntryPath(destination, false);
       const sourcePath = workspaceFilename(normalizedSource, workspaceRoot);
       const destinationPath = workspaceFilename(normalizedDestination, workspaceRoot);
       if (options.filter && !options.filter(sourcePath, destinationPath)) return;
@@ -5753,6 +6107,33 @@ export async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`${source} and dest cannot be the same ${destination}`), {
           code: 'ERR_FS_CP_EINVAL',
         });
+      }
+
+      const sourceLinkTarget = symlinkStore.get(normalizedSource);
+      if (sourceLinkTarget !== undefined) {
+        if (
+          (fileStore.has(normalizedDestination) || symlinkStore.has(normalizedDestination) || directoryStore.has(normalizedDestination)) &&
+          options.force === false
+        ) {
+          if (options.errorOnExist) {
+            throw Object.assign(new Error(`EEXIST: file already exists, cp '${destination}'`), { code: 'EEXIST' });
+          }
+          return;
+        }
+        assertWorkspaceParentDirectoryPath(normalizedDestination, destination, 'cp');
+        if (directoryStore.has(normalizedDestination)) {
+          throw Object.assign(new Error(`Cannot overwrite directory ${destination} with non-directory ${source}`), {
+            code: 'ERR_FS_CP_NON_DIR_TO_DIR',
+          });
+        }
+        if (fileStore.has(normalizedDestination)) deleteFile(destination);
+        if (symlinkStore.has(normalizedDestination)) deleteFile(destination);
+        symlinkStore.set(normalizedDestination, sourceLinkTarget);
+        entryMetadata.set(normalizedDestination, createEntryMetadata(0o120777));
+        io.fileChange({ path: normalizedDestination, symlink: true, target: sourceLinkTarget }, 'live');
+        notifyFsWatchers('rename', normalizedDestination);
+        notifyWatchFileWatchers(normalizedDestination);
+        return;
       }
 
       const sourceBytes = fileStore.get(normalizedSource);
@@ -5782,10 +6163,11 @@ export async function runBrowserJavaScriptProjectRequest(
 
       const sourcePrefix = normalizedSource ? `${normalizedSource}/` : '';
       const descendantFiles = Array.from(fileStore.entries()).filter(([filePath]) => filePath.startsWith(sourcePrefix));
+      const descendantSymlinks = Array.from(symlinkStore.entries()).filter(([linkPath]) => linkPath.startsWith(sourcePrefix));
       const descendantDirectories = Array.from(directoryStore).filter((directoryPath) =>
         directoryPath === normalizedSource || directoryPath.startsWith(sourcePrefix)
       );
-      if (!directoryStore.has(normalizedSource) && descendantFiles.length === 0 && descendantDirectories.length === 0) {
+      if (!directoryStore.has(normalizedSource) && descendantFiles.length === 0 && descendantSymlinks.length === 0 && descendantDirectories.length === 0) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, cp '${source}' -> '${destination}'`), { code: 'ENOENT' });
       }
       if (!options.recursive) {
@@ -5804,6 +6186,7 @@ export async function runBrowserJavaScriptProjectRequest(
 
       const destinationDirectoryExisted = directoryStore.has(normalizedDestination);
       directoryStore.add(normalizedDestination);
+      if (!entryMetadata.has(normalizedDestination)) touchEntryMetadata(normalizedDestination);
       if (!destinationDirectoryExisted) emitDirectoryCreate(normalizedDestination);
       for (const directoryPath of descendantDirectories) {
         const relative = directoryPath === normalizedSource ? '' : directoryPath.slice(sourcePrefix.length);
@@ -5813,6 +6196,7 @@ export async function runBrowserJavaScriptProjectRequest(
         }
         const existed = directoryStore.has(nextDirectory);
         directoryStore.add(nextDirectory);
+        if (!entryMetadata.has(nextDirectory)) touchEntryMetadata(nextDirectory);
         if (!existed) emitDirectoryCreate(nextDirectory);
       }
       for (const [filePath, bytes] of descendantFiles) {
@@ -5822,6 +6206,16 @@ export async function runBrowserJavaScriptProjectRequest(
           continue;
         }
         setFileBytes(nextPath, new Uint8Array(bytes));
+      }
+      for (const [linkPath, target] of descendantSymlinks) {
+        const relative = linkPath.slice(sourcePrefix.length);
+        const nextPath = normalizedDestination ? `${normalizedDestination}/${relative}` : relative;
+        if (options.filter && !options.filter(workspaceFilename(linkPath, workspaceRoot), workspaceFilename(nextPath, workspaceRoot))) {
+          continue;
+        }
+        symlinkStore.set(nextPath, target);
+        entryMetadata.set(nextPath, createEntryMetadata(0o120777));
+        io.fileChange({ path: nextPath, symlink: true, target }, 'live');
       }
     };
     const fsApi = {
@@ -5877,8 +6271,9 @@ export async function runBrowserJavaScriptProjectRequest(
       chownSync: (path: unknown, uid: unknown, gid: unknown) => {
         const normalized = metadataPathForEntry(path);
         if (normalized !== null) {
-          updateEntryMetadata(normalized, { uid: Number(uid) || 0, gid: Number(gid) || 0 });
-          notifyMetadataMutation(normalized);
+          if (Number(uid) !== 1000 || Number(gid) !== 1000) {
+            throw Object.assign(new Error(`EPERM: operation not permitted, chown '${path}'`), { code: 'EPERM' });
+          }
         }
         return undefined;
       },
@@ -6026,7 +6421,13 @@ export async function runBrowserJavaScriptProjectRequest(
           });
           return fd;
         }
-        const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        const rawNormalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        const normalized = resolveStoredSymlinkPath(rawNormalized);
+        if (parsed.exclusive && (
+          fileStore.has(rawNormalized) || symlinkStore.has(rawNormalized) || directoryStore.has(rawNormalized)
+        )) {
+          throw Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), { code: 'EEXIST' });
+        }
         const directoryPrefix = normalized ? `${normalized}/` : '';
         const isDirectory = directoryStore.has(normalized) || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(directoryPrefix));
         if (isDirectory) {
@@ -6049,8 +6450,6 @@ export async function runBrowserJavaScriptProjectRequest(
           }
           assertWorkspaceFileWritePath(normalized, path, 'write', 'open');
           setFileBytes(normalized, new Uint8Array());
-        } else if (parsed.exclusive) {
-          throw Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), { code: 'EEXIST' });
         } else if (parsed.truncate) {
           assertWorkspaceFileWritePath(normalized, path, 'truncate', 'open');
           setFileBytes(normalized, new Uint8Array());
@@ -6304,8 +6703,9 @@ export async function runBrowserJavaScriptProjectRequest(
       fchownSync: (fd: number, uid: unknown, gid: unknown) => {
         const path = descriptorMetadataPath(fd, 'fchown');
         if (path !== null) {
-          updateEntryMetadata(path, { uid: Number(uid) || 0, gid: Number(gid) || 0 });
-          notifyMetadataMutation(path);
+          if (Number(uid) !== 1000 || Number(gid) !== 1000) {
+            throw Object.assign(new Error('EPERM: operation not permitted, fchown'), { code: 'EPERM' });
+          }
         }
         return undefined;
       },
@@ -6390,7 +6790,7 @@ export async function runBrowserJavaScriptProjectRequest(
             sourceBytes = readDescriptorFileBytes(optionFd);
           }
         } else {
-          const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+          const normalized = resolveWorkspaceEntryPath(path);
           if (workspaceFileAncestor(normalized) !== null) {
             throw Object.assign(new Error(`ENOTDIR: not a directory, open '${path}'`), { code: 'ENOTDIR' });
           }
@@ -6437,7 +6837,7 @@ export async function runBrowserJavaScriptProjectRequest(
         if (readTarget?.kind === 'error') {
           throwRuntimeReadTargetError(readTarget, runtimeKernelFileReadFsErrorMessage(String(path), readTarget));
         }
-        const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        const normalized = resolveWorkspaceEntryPath(path);
         if (workspaceFileAncestor(normalized) !== null) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, open '${path}'`), { code: 'ENOTDIR' });
         }
@@ -6475,7 +6875,7 @@ export async function runBrowserJavaScriptProjectRequest(
           writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
-        const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        const normalized = resolveWorkspaceEntryPath(path);
         assertWorkspaceFileWritePath(normalized, path, 'write', 'open');
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
       },
@@ -6501,7 +6901,7 @@ export async function runBrowserJavaScriptProjectRequest(
           writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
-        const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        const normalized = resolveWorkspaceEntryPath(path);
         assertWorkspaceFileWritePath(normalized, path, 'append', 'open');
         const previous = fileStore.get(normalized) ?? new Uint8Array();
         const next = bytesFromFsWriteValue(value, options);
@@ -6542,7 +6942,7 @@ export async function runBrowserJavaScriptProjectRequest(
             : sourceTarget.reason === 'permission-denied'
               ? `EBADF: bad file descriptor, copyfile '${source}' -> '${destination}'`
               : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`);
-        } else sourceBytes = fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath, workspacePathContext));
+        } else sourceBytes = fileStore.get(resolveWorkspaceEntryPath(source));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }
@@ -6550,7 +6950,7 @@ export async function runBrowserJavaScriptProjectRequest(
           writeDevice(copyTarget.device, textFromBytes(sourceBytes));
           return;
         }
-        const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath, workspacePathContext);
+        const normalizedDestination = resolveWorkspaceEntryPath(destination);
         assertWorkspaceFileWritePath(normalizedDestination, destination, 'copy', 'copyfile');
         if ((Number(mode) & fsConstants.COPYFILE_EXCL) !== 0 && fileSystemEntryExists(workspaceFilename(normalizedDestination, workspaceRoot))) {
           throw Object.assign(new Error(`EEXIST: file already exists, copyfile '${source}' -> '${destination}'`), { code: 'EEXIST' });
@@ -6595,7 +6995,7 @@ export async function runBrowserJavaScriptProjectRequest(
         linkPaths(normalizedSource, normalizedDestination);
         syncTextModule(normalizedDestination, bytes);
         cache.delete(normalizedDestination);
-        io.fileChange(bytesToRuntimeFile(normalizedDestination, bytes), 'live');
+        io.fileChange(runtimeFileForPath(normalizedDestination, bytes), 'live');
         notifyFsWatchers('change', normalizedDestination);
         notifyWatchFileWatchers(normalizedDestination);
       },
@@ -6607,12 +7007,30 @@ export async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback?.(error as Error));
         }
       },
-      symlinkSync: (_target: unknown, linkPath: unknown) => {
+      symlinkSync: (target: unknown, linkPath: unknown) => {
         const symlinkTarget = runtimeSymlinkTarget(linkPath, kernelDevices);
         if (symlinkTarget?.kind === 'error') {
           throwRuntimeSymlinkTargetError(symlinkTarget, runtimeKernelMutationFsErrorMessage(String(linkPath), symlinkTarget, 'symlink'));
         }
-        throw Object.assign(new Error(`ENOSYS: function not implemented, symlink '${linkPath}'`), { code: 'ENOSYS' });
+        const targetText = workspacePathInputToString(target);
+        if (targetText.length === 0) {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, symlink '${targetText}' -> '${linkPath}'`), { code: 'ENOENT' });
+        }
+        const normalizedLink = resolveWorkspaceEntryPath(linkPath, false);
+        assertReadonlyFilePath(normalizedLink, 'symlink');
+        assertWorkspaceParentDirectoryPath(normalizedLink, linkPath, 'symlink');
+        if (
+          fileStore.has(normalizedLink) ||
+          symlinkStore.has(normalizedLink) ||
+          directoryStore.has(normalizedLink)
+        ) {
+          throw Object.assign(new Error(`EEXIST: file already exists, symlink '${targetText}' -> '${linkPath}'`), { code: 'EEXIST' });
+        }
+        symlinkStore.set(normalizedLink, targetText);
+        entryMetadata.set(normalizedLink, createEntryMetadata(0o120777));
+        io.fileChange({ path: normalizedLink, symlink: true, target: targetText }, 'live');
+        notifyFsWatchers('rename', normalizedLink);
+        notifyWatchFileWatchers(normalizedLink);
       },
       symlink: (target: unknown, linkPath: unknown, typeOrCallback?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
         const done = typeof typeOrCallback === 'function' ? typeOrCallback : callback;
@@ -6623,13 +7041,23 @@ export async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
-      readlinkSync: (path: unknown, _options?: string | { encoding?: string | null } | null) => {
+      readlinkSync: (path: unknown, options?: string | { encoding?: string | null } | null) => {
         const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
         if (readTarget?.kind && readTarget.kind !== 'workspace') {
           throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: 'EINVAL' });
         }
-        assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
-        throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: 'EINVAL' });
+        const normalized = resolveWorkspaceEntryPath(path, false);
+        const target = symlinkStore.get(normalized);
+        if (target === undefined) {
+          const exists = fileStore.has(normalized) || directoryStore.has(normalized);
+          const code = exists ? 'EINVAL' : 'ENOENT';
+          const reason = exists ? 'invalid argument' : 'no such file or directory';
+          throw Object.assign(new Error(`${code}: ${reason}, readlink '${path}'`), { code });
+        }
+        const encoding = typeof options === 'string' ? options : options?.encoding;
+        return encoding === null || encoding === 'buffer'
+          ? BrowserBuffer.from(target)
+          : BrowserBuffer.from(target).toString(encoding ?? 'utf8');
       },
       readlink: (path: unknown, optionsOrCallback?: string | { encoding?: string | null } | null | ((error: Error | null, linkString?: unknown) => void), callback?: (error: Error | null, linkString?: unknown) => void) => {
         const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
@@ -6661,12 +7089,13 @@ export async function runBrowserJavaScriptProjectRequest(
             runtimeKernelMutationFsErrorMessage(String(oldPath), renameTarget, 'rename', String(newPath))
           );
         }
-        const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
-        const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
+        const normalizedOldPath = resolveWorkspaceEntryPath(oldPath, false);
+        const normalizedNewPath = resolveWorkspaceEntryPath(newPath, false);
         if (normalizedOldPath === normalizedNewPath) {
           const prefix = normalizedOldPath ? `${normalizedOldPath}/` : '';
           if (
             fileStore.has(normalizedOldPath) ||
+            symlinkStore.has(normalizedOldPath) ||
             directoryStore.has(normalizedOldPath) ||
             Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix)) ||
             Array.from(directoryStore).some((directoryPath) => directoryPath.startsWith(prefix))
@@ -6675,8 +7104,31 @@ export async function runBrowserJavaScriptProjectRequest(
           }
           throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${oldPath}' -> '${newPath}'`), { code: 'ENOENT' });
         }
+        const linkTarget = symlinkStore.get(normalizedOldPath);
+        if (linkTarget !== undefined) {
+          assertReadonlyFilePath(normalizedOldPath, 'move');
+          assertReadonlyFilePath(normalizedNewPath, 'move');
+          assertWorkspaceParentDirectoryPath(normalizedNewPath, newPath, 'rename');
+          if (directoryStore.has(normalizedNewPath)) {
+            throw Object.assign(new Error(`EISDIR: illegal operation on a directory, rename '${oldPath}' -> '${newPath}'`), { code: 'EISDIR' });
+          }
+          if (fileStore.has(normalizedNewPath)) deleteFile(newPath);
+          if (symlinkStore.has(normalizedNewPath)) deleteFile(newPath);
+          symlinkStore.delete(normalizedOldPath);
+          deleteEntryMetadata(normalizedOldPath);
+          io.fileChange({ path: normalizedOldPath, deleted: true }, 'live');
+          symlinkStore.set(normalizedNewPath, linkTarget);
+          entryMetadata.set(normalizedNewPath, createEntryMetadata(0o120777));
+          io.fileChange({ path: normalizedNewPath, symlink: true, target: linkTarget }, 'live');
+          notifyFsWatchers('rename', normalizedOldPath);
+          notifyWatchFileWatchers(normalizedOldPath);
+          notifyFsWatchers('rename', normalizedNewPath);
+          notifyWatchFileWatchers(normalizedNewPath);
+          return;
+        }
         const bytes = fileStore.get(normalizedOldPath);
         if (bytes) {
+          const sourceMetadata = entryMetadata.get(normalizedOldPath);
           assertReadonlyFilePath(normalizedOldPath, 'move');
           assertWorkspaceFileWritePath(normalizedNewPath, newPath, 'move', 'rename');
           fileStore.delete(normalizedOldPath);
@@ -6688,7 +7140,7 @@ export async function runBrowserJavaScriptProjectRequest(
           io.fileChange({ path: normalizedOldPath, deleted: true }, 'live');
           notifyFsWatchers('rename', normalizedOldPath);
           notifyWatchFileWatchers(normalizedOldPath);
-          setFileBytes(normalizedNewPath, bytes);
+          setFileBytes(normalizedNewPath, bytes, sourceMetadata);
           notifyFsWatchers('rename', normalizedNewPath);
           return;
         }
@@ -6700,7 +7152,16 @@ export async function runBrowserJavaScriptProjectRequest(
         const sourceFiles = Array.from(fileStore.entries())
           .filter(([filePath]) => filePath.startsWith(oldPrefix))
           .sort(([left], [right]) => left.localeCompare(right));
-        if (sourceDirectories.length === 0 && sourceFiles.length === 0) {
+        const sourceSymlinks = Array.from(symlinkStore.entries())
+          .filter(([linkPath]) => linkPath.startsWith(oldPrefix))
+          .sort(([left], [right]) => left.localeCompare(right));
+        const sourceFileMetadata = new Map(
+          sourceFiles.map(([filePath]) => [filePath, entryMetadata.get(filePath)] as const)
+        );
+        const sourceDirectoryMetadata = new Map(
+          sourceDirectories.map((directoryPath) => [directoryPath, entryMetadata.get(directoryPath)] as const)
+        );
+        if (sourceDirectories.length === 0 && sourceFiles.length === 0 && sourceSymlinks.length === 0) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${oldPath}' -> '${newPath}'`), { code: 'ENOENT' });
         }
         for (const [filePath] of sourceFiles) {
@@ -6714,9 +7175,11 @@ export async function runBrowserJavaScriptProjectRequest(
 
         const existingDestinationFiles = fileStore.has(normalizedNewPath)
           || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(`${normalizedNewPath}/`));
+        const existingDestinationSymlinks = symlinkStore.has(normalizedNewPath)
+          || Array.from(symlinkStore.keys()).some((linkPath) => linkPath.startsWith(`${normalizedNewPath}/`));
         const existingDestinationDirectories = directoryStore.has(normalizedNewPath)
           || Array.from(directoryStore).some((directoryPath) => directoryPath.startsWith(`${normalizedNewPath}/`));
-        if (existingDestinationFiles || existingDestinationDirectories) {
+        if (existingDestinationFiles || existingDestinationSymlinks || existingDestinationDirectories) {
           throw Object.assign(new Error(`EEXIST: file already exists, rename '${oldPath}' -> '${newPath}'`), { code: 'EEXIST' });
         }
 
@@ -6733,6 +7196,13 @@ export async function runBrowserJavaScriptProjectRequest(
           notifyFsWatchers('rename', filePath);
           notifyWatchFileWatchers(filePath);
         }
+        for (const [linkPath] of sourceSymlinks) {
+          symlinkStore.delete(linkPath);
+          deleteEntryMetadata(linkPath);
+          io.fileChange({ path: linkPath, deleted: true }, 'live');
+          notifyFsWatchers('rename', linkPath);
+          notifyWatchFileWatchers(linkPath);
+        }
         for (const directoryPath of [...sourceDirectories].sort((left, right) => right.length - left.length || right.localeCompare(left))) {
           directoryStore.delete(directoryPath);
           deleteEntryMetadata(directoryPath);
@@ -6744,7 +7214,13 @@ export async function runBrowserJavaScriptProjectRequest(
           const nextDirectory = relative ? `${normalizedNewPath}/${relative}` : normalizedNewPath;
           const existed = directoryStore.has(nextDirectory);
           directoryStore.add(nextDirectory);
-          if (!entryMetadata.has(nextDirectory)) touchEntryMetadata(nextDirectory);
+          const metadata = sourceDirectoryMetadata.get(directoryPath);
+          if (metadata) {
+            fsTimestampMs += 1;
+            entryMetadata.set(nextDirectory, { ...metadata, ctimeMs: fsTimestampMs });
+          } else if (!entryMetadata.has(nextDirectory)) {
+            touchEntryMetadata(nextDirectory);
+          }
           if (!existed) {
             emitDirectoryCreate(nextDirectory);
             notifyDirectoryMutation(nextDirectory);
@@ -6753,8 +7229,17 @@ export async function runBrowserJavaScriptProjectRequest(
         for (const [filePath, fileBytes] of sourceFiles) {
           const relative = filePath.slice(oldPrefix.length);
           const nextPath = normalizedNewPath ? `${normalizedNewPath}/${relative}` : relative;
-          setFileBytes(nextPath, fileBytes);
+          setFileBytes(nextPath, fileBytes, sourceFileMetadata.get(filePath));
           notifyFsWatchers('rename', nextPath);
+        }
+        for (const [linkPath, target] of sourceSymlinks) {
+          const relative = linkPath.slice(oldPrefix.length);
+          const nextPath = normalizedNewPath ? `${normalizedNewPath}/${relative}` : relative;
+          symlinkStore.set(nextPath, target);
+          entryMetadata.set(nextPath, createEntryMetadata(0o120777));
+          io.fileChange({ path: nextPath, symlink: true, target }, 'live');
+          notifyFsWatchers('rename', nextPath);
+          notifyWatchFileWatchers(nextPath);
         }
       },
       rename: (oldPath: unknown, newPath: unknown, callback?: (error?: Error | null) => void) => {
@@ -6780,16 +7265,17 @@ export async function runBrowserJavaScriptProjectRequest(
           if (removeTarget?.kind === 'error') {
             throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, 'rm'));
           }
-          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
-          if (fileStore.has(normalized)) {
+          const normalized = resolveWorkspaceEntryPath(path, false);
+          if (fileStore.has(normalized) || symlinkStore.has(normalized)) {
             deleteFile(path);
             return;
           }
           const prefix = normalized ? `${normalized}/` : '';
           assertWorkspaceParentDirectoryPath(normalized, path, 'rm');
           const descendantFiles = Array.from(fileStore.keys()).filter((filePath) => filePath.startsWith(prefix));
+          const descendantSymlinks = Array.from(symlinkStore.keys()).filter((linkPath) => linkPath.startsWith(prefix));
           const descendantDirectories = Array.from(directoryStore).filter((directoryPath) => directoryPath !== normalized && directoryPath.startsWith(prefix));
-          if (directoryStore.has(normalized) || descendantFiles.length > 0 || descendantDirectories.length > 0) {
+          if (directoryStore.has(normalized) || descendantFiles.length > 0 || descendantSymlinks.length > 0 || descendantDirectories.length > 0) {
             if (!options?.recursive) {
               throw Object.assign(new Error(`ERR_FS_EISDIR: path is a directory, rm '${path}'`), { code: 'ERR_FS_EISDIR' });
             }
@@ -6804,6 +7290,14 @@ export async function runBrowserJavaScriptProjectRequest(
               io.fileChange({ path: filePath, deleted: true }, 'live');
               notifyFsWatchers('rename', filePath);
               notifyWatchFileWatchers(filePath);
+            }
+            for (const linkPath of descendantSymlinks) {
+              assertReadonlyFilePath(linkPath, 'delete');
+              symlinkStore.delete(linkPath);
+              deleteEntryMetadata(linkPath);
+              io.fileChange({ path: linkPath, deleted: true }, 'live');
+              notifyFsWatchers('rename', linkPath);
+              notifyWatchFileWatchers(linkPath);
             }
             for (const directoryPath of Array.from(directoryStore)) {
               if (directoryPath === normalized || directoryPath.startsWith(prefix)) {
@@ -6834,14 +7328,7 @@ export async function runBrowserJavaScriptProjectRequest(
       },
       existsSync: (path: unknown) => {
         try {
-          const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices, procSnapshot);
-          if (accessTarget?.kind === 'allowed') return true;
-          if (accessTarget?.kind === 'denied') return false;
-          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
-          const prefix = normalized ? `${normalized}/` : '';
-          return fileStore.has(normalized)
-            || directoryStore.has(normalized)
-            || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix));
+          return fileSystemEntryExists(path);
         } catch {
           return false;
         }
@@ -6854,7 +7341,7 @@ export async function runBrowserJavaScriptProjectRequest(
         const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
         const makeDirent = (
           name: string,
-          type: 'file' | 'directory',
+          type: 'file' | 'directory' | 'symlink',
           parentPath: string,
           characterDevice = false
         ) => ({
@@ -6867,7 +7354,7 @@ export async function runBrowserJavaScriptProjectRequest(
           isFIFO: () => false,
           isFile: () => type === 'file',
           isSocket: () => false,
-          isSymbolicLink: () => false,
+          isSymbolicLink: () => type === 'symlink',
         });
         if (directoryTarget?.kind === 'directory') {
           const names = directoryTarget.entries.map((entry) => entry.name);
@@ -6884,16 +7371,16 @@ export async function runBrowserJavaScriptProjectRequest(
             ? `ENOTDIR: not a directory, scandir '${path}'`
             : `ENOENT: no such file or directory, scandir '${path}'`);
         }
-        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+        const normalized = resolveWorkspaceEntryPath(path);
         if (workspaceFileAncestor(normalized) !== null || fileStore.has(normalized)) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
         }
         const prefix = normalized ? `${normalized}/` : '';
         const recursive = typeof options === 'object' && options?.recursive === true;
-        const makeWorkspaceDirent = (name: string, type: 'file' | 'directory', parentPath = normalized) =>
+        const makeWorkspaceDirent = (name: string, type: 'file' | 'directory' | 'symlink', parentPath = normalized) =>
           makeDirent(name, type, workspaceFilename(parentPath, workspaceRoot));
         if (recursive) {
-          const entries = new Map<string, 'file' | 'directory'>();
+          const entries = new Map<string, 'file' | 'directory' | 'symlink'>();
           for (const directoryPath of directoryStore) {
             if (directoryPath === normalized || !directoryPath.startsWith(prefix)) continue;
             const rest = directoryPath.slice(prefix.length);
@@ -6903,6 +7390,11 @@ export async function runBrowserJavaScriptProjectRequest(
             if (!filePath.startsWith(prefix)) continue;
             const rest = filePath.slice(prefix.length);
             if (rest) entries.set(rest, 'file');
+          }
+          for (const linkPath of symlinkStore.keys()) {
+            if (!linkPath.startsWith(prefix)) continue;
+            const rest = linkPath.slice(prefix.length);
+            if (rest) entries.set(rest, 'symlink');
           }
           if (entries.size === 0 && !fileStore.has(normalized) && !directoryStore.has(normalized)) {
             throw Object.assign(new Error(`ENOENT: no such file or directory, scandir '${path}'`), { code: 'ENOENT' });
@@ -6920,7 +7412,7 @@ export async function runBrowserJavaScriptProjectRequest(
             return makeWorkspaceDirent(name, type, parentPath);
           });
         }
-        const entries = new Map<string, 'file' | 'directory'>();
+        const entries = new Map<string, 'file' | 'directory' | 'symlink'>();
         for (const filePath of fileStore.keys()) {
           if (!filePath.startsWith(prefix)) continue;
           const rest = filePath.slice(prefix.length);
@@ -6935,6 +7427,14 @@ export async function runBrowserJavaScriptProjectRequest(
           if (!rest) continue;
           const name = rest.split('/')[0] ?? rest;
           if (!entries.has(name)) entries.set(name, 'directory');
+        }
+        for (const linkPath of symlinkStore.keys()) {
+          if (!linkPath.startsWith(prefix)) continue;
+          const rest = linkPath.slice(prefix.length);
+          if (!rest) continue;
+          const [name, ...remaining] = rest.split('/');
+          if (!name) continue;
+          entries.set(name, remaining.length > 0 ? 'directory' : 'symlink');
         }
         if (entries.size === 0 && !fileStore.has(normalized) && !directoryStore.has(normalized)) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, scandir '${path}'`), { code: 'ENOENT' });
@@ -7038,7 +7538,24 @@ export async function runBrowserJavaScriptProjectRequest(
         }
         return browserStatsResult(stats, options);
       },
-      lstatSync: (path: unknown, options?: BrowserStatOptions) => fsApi.statSync(path, options),
+      lstatSync: (path: unknown, options?: BrowserStatOptions) => {
+        const kernelStats = statForKernelTarget(path, options);
+        if (kernelStats === undefined) return undefined;
+        let stats = kernelStats;
+        if (stats === null) {
+          const normalized = resolveWorkspaceEntryPath(path, false);
+          if (workspaceFileAncestor(normalized) !== null) {
+            if (options?.throwIfNoEntry === false) return undefined;
+            throw Object.assign(new Error(`ENOTDIR: not a directory, lstat '${path}'`), { code: 'ENOTDIR' });
+          }
+          stats = statForNormalizedPath(normalized, false);
+        }
+        if (!stats) {
+          if (options?.throwIfNoEntry === false) return undefined;
+          throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), { code: 'ENOENT' });
+        }
+        return browserStatsResult(stats, options);
+      },
       statfsSync: (path: unknown, options?: { bigint?: boolean }) => {
         fsApi.statSync(path);
         return browserFileSystemStat(Boolean(options?.bigint));
@@ -7570,11 +8087,13 @@ export async function runBrowserJavaScriptProjectRequest(
     );
     const requireModule = (specifier: string, parentPath: string, parentModule: ModuleRecord | null = null) => {
       if (builtins.has(specifier)) return builtins.get(specifier);
+      refreshSymlinkModuleAliases();
       const normalizedSpecifier = normalizeModuleSpecifier(specifier);
       return executeModule(resolveModulePath(modules, normalizedSpecifier, parentPath, nodePathSearchEntries, 'require'), parentModule);
     };
     const resolveRequireModule = (specifier: string, parentPath: string): string => {
       if (builtins.has(specifier)) return specifier;
+      refreshSymlinkModuleAliases();
       const normalizedSpecifier = normalizeModuleSpecifier(specifier);
       return workspaceFilename(resolveModulePath(modules, normalizedSpecifier, parentPath, nodePathSearchEntries, 'require'), workspaceRoot);
     };
@@ -7603,7 +8122,7 @@ export async function runBrowserJavaScriptProjectRequest(
     const importModule = (specifier: string, parentPath: string) => (
       builtins.has(specifier)
         ? Promise.resolve(builtins.get(specifier))
-        : Promise.resolve(executeModule(resolveModulePath(modules, normalizeModuleSpecifier(specifier), parentPath, nodePathSearchEntries, 'import')))
+        : (refreshSymlinkModuleAliases(), Promise.resolve(executeModule(resolveModulePath(modules, normalizeModuleSpecifier(specifier), parentPath, nodePathSearchEntries, 'import'))))
     );
     const preloadParentPath = cwdPath ? `${cwdPath}/repl.js` : 'repl.js';
 
@@ -7696,6 +8215,7 @@ export async function runBrowserJavaScriptProjectRequest(
     };
 
     const executeEntrypoint = async (modulePath: string): Promise<void> => {
+      refreshSymlinkModuleAliases();
       const normalizedPath = moduleCandidates(modules, modulePath, 'import').find((candidate) => modules.has(candidate));
       if (!normalizedPath) {
         throw new Error(`Cannot find module '${modulePath}'`);
@@ -7835,11 +8355,44 @@ export async function runBrowserJavaScriptProjectRequest(
         ...Array.from(fileStore.entries())
         .filter(([path, contents]) => !byteEqual(originalFiles.get(path), contents))
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([path, contents]) => bytesToRuntimeFile(path, contents)),
+        .map(([path, contents]) => runtimeFileForPath(path, contents)),
         ...Array.from(originalFiles.keys())
-          .filter((path) => !fileStore.has(path))
+          .filter((path) => !fileStore.has(path) && !symlinkStore.has(path))
           .sort((left, right) => left.localeCompare(right))
           .map((path): RuntimeFileChange => ({ path, deleted: true })),
+        ...Array.from(symlinkStore.entries())
+          .filter(([path, target]) => originalSymlinks.get(path) !== target)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([path, target]): RuntimeFileChange => ({ path, symlink: true, target })),
+        ...Array.from(originalSymlinks.keys())
+          .filter((path) => !symlinkStore.has(path) && !fileStore.has(path))
+          .sort((left, right) => left.localeCompare(right))
+          .map((path): RuntimeFileChange => ({ path, deleted: true })),
+        ...Array.from(directoryStore)
+          .filter((path) => path !== '')
+          .filter((path) => {
+            const current = entryMetadata.get(path);
+            const original = originalDirectoryMetadata.get(path);
+            return !original || !current ||
+              current.mode !== original.mode ||
+              current.atimeMs !== original.atimeMs ||
+              current.mtimeMs !== original.mtimeMs;
+          })
+          .sort((left, right) => left.localeCompare(right))
+          .map((path): RuntimeFileChange => {
+            const metadata = entryMetadata.get(path) ?? createEntryMetadata(0o40755);
+            return {
+              path,
+              directory: true,
+              ...(metadata.mode !== undefined ? { mode: metadata.mode & 0o7777 } : {}),
+              atimeMs: metadata.atimeMs,
+              mtimeMs: metadata.mtimeMs,
+            };
+          }),
+        ...Array.from(originalDirectoryMetadata.keys())
+          .filter((path) => path !== '' && !directoryStore.has(path))
+          .sort((left, right) => right.localeCompare(left))
+          .map((path): RuntimeFileChange => ({ path, directory: true, deleted: true })),
       ]
         .sort((left, right) => left.path.localeCompare(right.path));
       const files = liveIo.filterAppliedResultFiles({
@@ -7856,6 +8409,7 @@ export async function runBrowserJavaScriptProjectRequest(
         stdout: stdout.join(''),
         stderr: stderr.join(''),
         exitCode,
+        ...(executionState.handledSignal ? { handledSignal: executionState.handledSignal } : {}),
         ...(files.length > 0 ? { files } : {}),
       };
     } catch (error) {

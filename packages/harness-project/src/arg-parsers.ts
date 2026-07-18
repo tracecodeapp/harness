@@ -872,6 +872,7 @@ export function rewriteKernelShellCommandInvocationsInAst(ast: unknown): void {
     const candidate = command as {
       type?: unknown;
       name?: unknown;
+      args?: unknown[];
       clauses?: Array<{ condition?: unknown; body?: unknown }>;
       elseBody?: unknown;
       body?: unknown;
@@ -880,6 +881,19 @@ export function rewriteKernelShellCommandInvocationsInAst(ast: unknown): void {
     switch (candidate?.type) {
       case 'SimpleCommand': {
         const name = literalWordValue(candidate.name);
+        const args = candidate.args ?? [];
+        const unaryTtyTest = name === 'test' && (
+          (args.length === 2 && literalWordValue(args[0]) === '-t') ||
+          (args.length === 3 && literalWordValue(args[0]) === '!' && literalWordValue(args[1]) === '-t')
+        );
+        const bracketTtyTest = name === '[' && (
+          (args.length === 3 && literalWordValue(args[0]) === '-t' && literalWordValue(args[2]) === ']') ||
+          (args.length === 4 && literalWordValue(args[0]) === '!' && literalWordValue(args[1]) === '-t' && literalWordValue(args[3]) === ']')
+        );
+        if (unaryTtyTest || bracketTtyTest) {
+          candidate.name = literalWord(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}${bracketTtyTest ? 'test-bracket' : 'test'}`);
+          return;
+        }
         const rewrite = name ? TRACEKERNEL_SHELL_COMMAND_REWRITES.get(name) : undefined;
         if (rewrite) candidate.name = literalWord(rewrite);
         return;
@@ -929,7 +943,10 @@ export function rewriteKernelShellCommandInvocationsInAst(ast: unknown): void {
 }
 
 
-export function rewriteTraceKernelBinInvocationsInAst(ast: unknown, commandNames: ReadonlySet<string>): void {
+export function rewriteTraceKernelBinInvocationsInAst(
+  ast: unknown,
+  commandDispatchNames: ReadonlyMap<string, string>
+): void {
   const transformStatements = (statements: unknown): void => {
     if (!Array.isArray(statements)) return;
     for (const statement of statements) transformStatement(statement);
@@ -947,8 +964,9 @@ export function rewriteTraceKernelBinInvocationsInAst(ast: unknown, commandNames
     switch (candidate?.type) {
       case 'SimpleCommand': {
         const name = literalWordValue(candidate.name);
-        const commandName = name ? traceKernelBinCommandName(name) : null;
-        if (commandName && commandNames.has(commandName)) candidate.name = literalWord(commandName);
+        const commandName = name ? traceKernelBinCommandName(name) ?? name : null;
+        const dispatchName = commandName ? commandDispatchNames.get(commandName) : undefined;
+        if (dispatchName) candidate.name = literalWord(dispatchName);
         return;
       }
       case 'If':
@@ -1001,7 +1019,8 @@ export function rewriteVirtualExecutableInvocationsInAst(
   initialCwd: string,
   workspaceRoot: string,
   workspaceAlias: string | undefined,
-  executableRecords: ReadonlyMap<string, VirtualExecutableRecord>
+  executableRecords: ReadonlyMap<string, VirtualExecutableRecord>,
+  rewriteWorkspaceScripts = false
 ): void {
   const availableExecutableRecords = new Map(executableRecords);
 
@@ -1063,7 +1082,10 @@ export function rewriteVirtualExecutableInvocationsInAst(
         const name = literalWordValue(candidate.name);
         if (!name) return;
         const resolvedExecutablePath = resolveExecutableInvocationPath(cwd, name);
-        if (resolvedExecutablePath && availableExecutableRecords.has(resolvedExecutablePath)) {
+        if (
+          resolvedExecutablePath &&
+          (rewriteWorkspaceScripts || availableExecutableRecords.has(resolvedExecutablePath))
+        ) {
           candidate.args = [literalWord(name), ...(candidate.args ?? [])];
           candidate.name = literalWord(TRACEKERNEL_EXEC_COMMAND);
         }

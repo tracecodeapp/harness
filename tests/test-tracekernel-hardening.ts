@@ -3545,10 +3545,26 @@ async function testTraceKernelTraversalSkipsSymlinkCycles(): Promise<void> {
     const snapshot = await workspace.snapshot();
     assertCondition(
       snapshot.files.some((file) => file.path === 'loop/value.txt') &&
+        snapshot.symlinks?.some((symlink) => symlink.path === 'loop/self' && symlink.target === '/workspace/loop') === true &&
         !snapshot.files.some((file) => file.path.startsWith('loop/self/')) &&
         !snapshot.directories?.some((directory) => directory.startsWith('loop/self')),
       `workspace snapshots should not follow symlink cycles: ${JSON.stringify(snapshot)}`
     );
+
+    const hydrated = await createRuntimeWorkspace({
+      files: snapshot.files,
+      directories: snapshot.directories,
+      symlinks: snapshot.symlinks,
+    });
+    try {
+      const hydratedLink = await hydrated.runCommand('readlink loop/self; cat loop/self/value.txt');
+      assertCondition(
+        hydratedLink.exitCode === 0 && hydratedLink.stdout === '/workspace/loop\nvalue\n',
+        `snapshot hydration should restore symlink identity and resolution: ${JSON.stringify(hydratedLink)}`
+      );
+    } finally {
+      hydrated.dispose();
+    }
 
     const result = await workspace.runCommand('ls -RF loop');
     assertCondition(result.exitCode === 0, `recursive ls symlink-cycle test should finish: ${JSON.stringify(result)}`);

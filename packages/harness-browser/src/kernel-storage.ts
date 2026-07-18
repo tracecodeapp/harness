@@ -1,6 +1,8 @@
 import type {
   RuntimeFile,
+  RuntimeDirectory,
   RuntimeProjectSnapshot,
+  RuntimeSymlink,
   RuntimeWorkspace,
   RuntimeWorkspaceUnsubscribe,
 } from '@tracecode/harness-core';
@@ -574,17 +576,61 @@ function normalizeStoredSnapshot(stored: BrowserKernelStorageSnapshot): RuntimeP
     return normalized;
   });
 
+  let symlinks: RuntimeSymlink[] | undefined;
+  if (snapshot.symlinks !== undefined) {
+    if (!Array.isArray(snapshot.symlinks)) {
+      throw new Error('IndexedDB kernel storage snapshot symlinks must be an array.');
+    }
+    const seenSymlinks = new Set<string>();
+    symlinks = snapshot.symlinks.map((symlink, index) => {
+      const normalized = normalizeStoredSymlink(symlink, `IndexedDB kernel storage snapshot symlinks[${index}]`);
+      if (seenFiles.has(normalized.path) || seenSymlinks.has(normalized.path)) {
+        throw new Error(`IndexedDB kernel storage snapshot contains duplicate entry path: ${normalized.path}`);
+      }
+      seenSymlinks.add(normalized.path);
+      return normalized;
+    }).sort((left, right) => left.path.localeCompare(right.path));
+  }
+
   let directories: string[] | undefined;
+  const seenDirectories = new Set<string>();
   if (snapshot.directories !== undefined) {
     if (!Array.isArray(snapshot.directories)) {
       throw new Error('IndexedDB kernel storage snapshot directories must be an array.');
     }
-    directories = [...new Set(snapshot.directories.map((directory, index) => {
+    directories = snapshot.directories.map((directory, index) => {
       if (typeof directory !== 'string') {
         throw new Error(`IndexedDB kernel storage snapshot directories[${index}] must be a string.`);
       }
-      return normalizeRuntimeProjectPath(directory);
-    }))].sort((left, right) => left.localeCompare(right));
+      const normalized = normalizeRuntimeProjectPath(directory);
+      if (seenDirectories.has(normalized)) {
+        throw new Error(`IndexedDB kernel storage snapshot contains duplicate directory path: ${normalized}`);
+      }
+      if (seenFiles.has(normalized) || symlinks?.some((symlink) => symlink.path === normalized)) {
+        throw new Error(`IndexedDB kernel storage snapshot contains conflicting entry path: ${normalized}`);
+      }
+      seenDirectories.add(normalized);
+      return normalized;
+    }).sort((left, right) => left.localeCompare(right));
+  }
+
+  let directoryMetadata: RuntimeDirectory[] | undefined;
+  if (snapshot.directoryMetadata !== undefined) {
+    if (!Array.isArray(snapshot.directoryMetadata)) {
+      throw new Error('IndexedDB kernel storage snapshot directoryMetadata must be an array.');
+    }
+    const seenDirectoryMetadata = new Set<string>();
+    directoryMetadata = snapshot.directoryMetadata.map((directory, index) => {
+      const normalized = normalizeStoredDirectory(directory, `IndexedDB kernel storage snapshot directoryMetadata[${index}]`);
+      if (seenDirectoryMetadata.has(normalized.path)) {
+        throw new Error(`IndexedDB kernel storage snapshot contains duplicate directory metadata path: ${normalized.path}`);
+      }
+      if (!seenDirectories.has(normalized.path)) {
+        throw new Error(`IndexedDB kernel storage snapshot directory metadata references missing directory path: ${normalized.path}`);
+      }
+      seenDirectoryMetadata.add(normalized.path);
+      return normalized;
+    }).sort((left, right) => left.path.localeCompare(right.path));
   }
 
   let entrypoint: string | undefined;
@@ -597,8 +643,44 @@ function normalizeStoredSnapshot(stored: BrowserKernelStorageSnapshot): RuntimeP
 
   return {
     files,
+    ...(symlinks && symlinks.length > 0 ? { symlinks } : {}),
     ...(directories && directories.length > 0 ? { directories } : {}),
+    ...(directoryMetadata && directoryMetadata.length > 0 ? { directoryMetadata } : {}),
     ...(entrypoint ? { entrypoint } : {}),
+  };
+}
+
+function normalizeStoredDirectory(value: unknown, label: string): RuntimeDirectory {
+  if (!isRecord(value)) throw new Error(`${label} must be an object.`);
+  if (typeof value.path !== 'string') throw new Error(`${label}.path must be a string.`);
+  if (value.mode !== undefined && (!Number.isInteger(value.mode) || (value.mode as number) < 0 || (value.mode as number) > 0o7777)) {
+    throw new Error(`${label}.mode must be permission bits.`);
+  }
+  for (const field of ['atimeMs', 'mtimeMs'] as const) {
+    const timestamp = value[field];
+    if (timestamp !== undefined && (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp < 0)) {
+      throw new Error(`${label}.${field} must be a non-negative finite timestamp.`);
+    }
+  }
+  return {
+    path: normalizeRuntimeProjectPath(value.path),
+    ...(value.mode !== undefined ? { mode: value.mode as number } : {}),
+    ...(value.atimeMs !== undefined ? { atimeMs: value.atimeMs as number } : {}),
+    ...(value.mtimeMs !== undefined ? { mtimeMs: value.mtimeMs as number } : {}),
+  };
+}
+
+function normalizeStoredSymlink(value: unknown, label: string): RuntimeSymlink {
+  if (!isRecord(value)) throw new Error(`${label} must be an object.`);
+  if (typeof value.path !== 'string') throw new Error(`${label}.path must be a string.`);
+  if (value.symlink !== true) throw new Error(`${label}.symlink must be true.`);
+  if (typeof value.target !== 'string' || value.target.length === 0 || value.target.includes('\0')) {
+    throw new Error(`${label}.target must be a non-empty string without NUL bytes.`);
+  }
+  return {
+    path: normalizeRuntimeProjectPath(value.path),
+    symlink: true,
+    target: value.target,
   };
 }
 
@@ -610,9 +692,21 @@ function normalizeStoredFile(value: unknown, label: string): RuntimeFile {
   if (value.encoding !== undefined && value.encoding !== 'utf8' && value.encoding !== 'base64') {
     throw new Error(`${label}.encoding must be "utf8" or "base64".`);
   }
+  if (value.mode !== undefined && (!Number.isInteger(value.mode) || (value.mode as number) < 0 || (value.mode as number) > 0o7777)) {
+    throw new Error(`${label}.mode must be permission bits.`);
+  }
+  for (const field of ['atimeMs', 'mtimeMs'] as const) {
+    const timestamp = value[field];
+    if (timestamp !== undefined && (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp < 0)) {
+      throw new Error(`${label}.${field} must be a non-negative finite timestamp.`);
+    }
+  }
   return {
     path,
     contents: value.contents,
     ...(value.encoding ? { encoding: value.encoding } : {}),
+    ...(value.mode !== undefined ? { mode: value.mode as number } : {}),
+    ...(value.atimeMs !== undefined ? { atimeMs: value.atimeMs as number } : {}),
+    ...(value.mtimeMs !== undefined ? { mtimeMs: value.mtimeMs as number } : {}),
   };
 }

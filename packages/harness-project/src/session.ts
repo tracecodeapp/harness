@@ -261,9 +261,17 @@ export function normalizeRuntimeWorkspaceOptions(
       ...(session.directories ?? []),
       ...(options.directories ?? []),
     ],
+    directoryMetadata: [
+      ...(session.directoryMetadata ?? []),
+      ...(options.directoryMetadata ?? []),
+    ],
     files: [
       ...(session.files ?? []),
       ...(options.files ?? []),
+    ],
+    symlinks: [
+      ...(session.symlinks ?? []),
+      ...(options.symlinks ?? []),
     ],
     skills: [
       ...(session.skills ?? []),

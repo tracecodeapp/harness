@@ -1233,7 +1233,13 @@ function emitProjectFileSnapshot(path) {
     const stat = fs.stat(path);
     if (!stat || !fs.isFile(stat.mode)) return;
     const bytes = fs.readFile(path, { encoding: 'binary' });
-    emitProjectEvent({ type: 'file-change', phase: 'live', change: encodeRuntimeFileChange(relativePath, bytes) });
+    const change = encodeRuntimeFileChange(relativePath, bytes);
+    change.mode = Number(stat.mode) & 0x0fff;
+    const atimeMs = runtimeFsTimestampMs(stat.atime);
+    const mtimeMs = runtimeFsTimestampMs(stat.mtime);
+    if (atimeMs !== undefined) change.atimeMs = atimeMs;
+    if (mtimeMs !== undefined) change.mtimeMs = mtimeMs;
+    emitProjectEvent({ type: 'file-change', phase: 'live', change });
   } catch {
     // The file may have been deleted or may be a special device.
   }
@@ -1248,7 +1254,29 @@ function emitProjectFileDelete(path) {
 function emitProjectDirectoryCreate(path) {
   const relativePath = normalizeProjectFsPath(path);
   if (!relativePath) return;
-  emitProjectEvent({ type: 'file-change', phase: 'live', change: { path: relativePath, directory: true } });
+  const change = { path: relativePath, directory: true };
+  const fs = runtimeModule?.FS;
+  if (fs) {
+    try {
+      const stat = fs.stat(path);
+      if (stat) {
+        change.mode = Number(stat.mode) & 0x0fff;
+        const atimeMs = runtimeFsTimestampMs(stat.atime);
+        const mtimeMs = runtimeFsTimestampMs(stat.mtime);
+        if (atimeMs !== undefined) change.atimeMs = atimeMs;
+        if (mtimeMs !== undefined) change.mtimeMs = mtimeMs;
+      }
+    } catch {
+      // Metadata is best-effort for a live event; the final diff remains authoritative.
+    }
+  }
+  emitProjectEvent({ type: 'file-change', phase: 'live', change });
+}
+
+function runtimeFsTimestampMs(value) {
+  if (value instanceof Date) return value.getTime();
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
 }
 
 function emitProjectDirectoryDelete(path) {
@@ -1575,7 +1603,7 @@ function installRuntimeFsHooks(runtime) {
     fs.symlink = function symlinkWithProjectEvents(oldPath, newPath) {
       if (activeProjectIo) {
         throwKernelVirtualMutationError(newPath, 'symlink');
-        throwKernelFsError(newPath, 'symlink', 'ENOTSUP', 'symbolic links are not supported by the project file manifest');
+        throwKernelFsError(newPath, 'symlink', 'ENOTSUP', 'symbolic links are not supported by this runtime');
       }
       return originalSymlink.apply(this, arguments);
     };

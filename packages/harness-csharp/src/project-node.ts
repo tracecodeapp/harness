@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { access, chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, lstat, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, readFile, readdir, readlink, realpath, rm, lstat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, relative } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   emitRuntimeCommandFileChanges,
   emitRuntimeCommandOutput,
@@ -17,6 +17,7 @@ import type {
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
+  RuntimeDirectory,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
@@ -78,17 +79,136 @@ async function writeProjectFile(root: string, file: CSharpProjectFile): Promise<
 
   if (file.encoding === 'base64') {
     await writeFile(targetPath, Buffer.from(file.contents, 'base64'));
-    if (shouldRestoreExecutableMode(relativePath)) {
-      await chmod(targetPath, 0o755);
-    }
-    return;
+  } else {
+    await writeFile(targetPath, file.contents, 'utf8');
   }
-
-  await writeFile(targetPath, file.contents, 'utf8');
+  if (file.mode !== undefined) {
+    await chmod(targetPath, file.mode & 0o7777);
+  } else if (file.encoding === 'base64' && shouldRestoreExecutableMode(relativePath)) {
+    await chmod(targetPath, 0o755);
+  }
+  if (file.atimeMs !== undefined || file.mtimeMs !== undefined) {
+    const info = await lstat(targetPath);
+    await utimes(targetPath, new Date(file.atimeMs ?? info.atimeMs), new Date(file.mtimeMs ?? info.mtimeMs));
+  }
 }
 
 async function writeProjectDirectory(root: string, path: string): Promise<void> {
   await mkdir(join(root, assertSafeProjectPath(path)), { recursive: true });
+}
+
+async function writeProjectDirectoryMetadata(root: string, metadata: RuntimeDirectory): Promise<void> {
+  const absolutePath = join(root, assertSafeProjectPath(metadata.path));
+  if (metadata.mode !== undefined) await chmod(absolutePath, metadata.mode & 0o7777);
+  if (metadata.atimeMs !== undefined || metadata.mtimeMs !== undefined) {
+    const info = await lstat(absolutePath);
+    await utimes(
+      absolutePath,
+      new Date(metadata.atimeMs ?? info.atimeMs),
+      new Date(metadata.mtimeMs ?? info.mtimeMs)
+    );
+  }
+}
+
+async function reapplyProjectMetadata(root: string, project: CSharpProjectSnapshot): Promise<void> {
+  for (const file of project.files) {
+    if (file.mode === undefined && file.atimeMs === undefined && file.mtimeMs === undefined) continue;
+    const absolutePath = join(root, assertSafeProjectPath(file.path));
+    if (file.mode !== undefined) await chmod(absolutePath, file.mode & 0o7777);
+    if (file.atimeMs !== undefined || file.mtimeMs !== undefined) {
+      const info = await lstat(absolutePath);
+      await utimes(absolutePath, new Date(file.atimeMs ?? info.atimeMs), new Date(file.mtimeMs ?? info.mtimeMs));
+    }
+  }
+  for (const metadata of project.directoryMetadata ?? []) {
+    await writeProjectDirectoryMetadata(root, metadata);
+  }
+}
+
+async function writeProjectSymlink(root: string, path: string, target: string): Promise<void> {
+  const relativePath = assertSafeProjectPath(path);
+  if (!target || target.includes('\0')) throw new Error(`Invalid symbolic link target for ${path}.`);
+  const normalizedTarget = target.replace(/\\/g, '/');
+  if (/^[A-Za-z]:/u.test(normalizedTarget) || isAbsolute(normalizedTarget)) {
+    throw Object.assign(new Error(`ENOTSUP: absolute symbolic link targets are not supported by this runtime`), { code: 'ENOTSUP' });
+  }
+  const absolutePath = join(root, relativePath);
+  const resolvedTarget = resolve(dirname(absolutePath), normalizedTarget);
+  const targetFromRoot = relative(root, resolvedTarget);
+  if (targetFromRoot === '..' || targetFromRoot.startsWith(`..${sep}`) || isAbsolute(targetFromRoot)) {
+    throw Object.assign(new Error(`EACCES: symbolic link target escapes the workspace`), { code: 'EACCES' });
+  }
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await symlink(normalizedTarget, absolutePath);
+}
+
+async function collectSymlinks(root: string, absolutePath: string, symlinks: Map<string, string>): Promise<void> {
+  const info = await lstat(absolutePath);
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (info.isSymbolicLink()) {
+    if (relativePath && !relativePath.startsWith('..') && !relativePath.startsWith('.tracecode-build/')) {
+      symlinks.set(relativePath, await readlink(absolutePath));
+    }
+    return;
+  }
+  if (!info.isDirectory()) return;
+  for (const entry of await readdir(absolutePath)) {
+    await collectSymlinks(root, join(absolutePath, entry), symlinks);
+  }
+}
+
+async function snapshotSymlinks(root: string): Promise<Map<string, string>> {
+  const symlinks = new Map<string, string>();
+  await collectSymlinks(root, root, symlinks);
+  return symlinks;
+}
+
+interface NativeDirectoryMetadata {
+  mode: number;
+  atimeMs: number;
+  mtimeMs: number;
+}
+
+type NativeFileMetadata = NativeDirectoryMetadata;
+
+async function collectFileMetadata(root: string, absolutePath: string, metadata: Map<string, NativeFileMetadata>): Promise<void> {
+  const info = await lstat(absolutePath);
+  if (info.isSymbolicLink()) return;
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (info.isDirectory()) {
+    for (const entry of await readdir(absolutePath)) {
+      await collectFileMetadata(root, join(absolutePath, entry), metadata);
+    }
+    return;
+  }
+  if (!info.isFile() || !relativePath || relativePath.startsWith('..') || relativePath.startsWith('.tracecode-build/')) return;
+  metadata.set(relativePath, { mode: info.mode & 0o7777, atimeMs: info.atimeMs, mtimeMs: info.mtimeMs });
+}
+
+async function snapshotFileMetadata(root: string): Promise<Map<string, NativeFileMetadata>> {
+  const metadata = new Map<string, NativeFileMetadata>();
+  await collectFileMetadata(root, root, metadata);
+  return metadata;
+}
+
+async function collectDirectoryMetadata(root: string, absolutePath: string, metadata: Map<string, NativeDirectoryMetadata>): Promise<void> {
+  const before = await lstat(absolutePath);
+  if (before.isSymbolicLink() || !before.isDirectory()) return;
+  const entries = await readdir(absolutePath);
+  const info = await lstat(absolutePath);
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (relativePath && !relativePath.startsWith('..') && !relativePath.startsWith('.tracecode-build/')) {
+    metadata.set(relativePath, { mode: info.mode & 0o7777, atimeMs: info.atimeMs, mtimeMs: info.mtimeMs });
+  }
+  for (const entry of entries) {
+    await collectDirectoryMetadata(root, join(absolutePath, entry), metadata);
+  }
+}
+
+async function snapshotDirectoryMetadata(root: string): Promise<Map<string, NativeDirectoryMetadata>> {
+  const metadata = new Map<string, NativeDirectoryMetadata>();
+  await collectDirectoryMetadata(root, root, metadata);
+  return metadata;
 }
 
 function fileBytes(file: CSharpProjectFile): Buffer {
@@ -110,7 +230,10 @@ async function collectFileBytes(root: string, absolutePath: string, files: Map<s
 
   const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
   if (!relativePath || relativePath.startsWith('..') || relativePath.startsWith('.tracecode-build/')) return;
-  files.set(relativePath, await readFile(absolutePath));
+  const beforeRead = await lstat(absolutePath);
+  const contents = await readFile(absolutePath);
+  await utimes(absolutePath, beforeRead.atimeMs / 1000, beforeRead.mtimeMs / 1000);
+  files.set(relativePath, contents);
 }
 
 async function collectDirectories(root: string, absolutePath: string, directories: Set<string>): Promise<void> {
@@ -149,22 +272,51 @@ async function collectChangedFiles(
   baselineFiles: Map<string, Buffer>,
   baselineDirectories: Set<string>,
   deletableDirectories: Set<string>,
+  baselineSymlinks: Map<string, string>,
+  baselineFileMetadata: Map<string, NativeFileMetadata>,
+  baselineDirectoryMetadata: Map<string, NativeDirectoryMetadata>,
   files: RuntimeFileChange[]
 ): Promise<void> {
   const info = await lstat(absolutePath);
-  if (info.isSymbolicLink()) return;
   const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (info.isSymbolicLink()) {
+    if (!relativePath || relativePath.startsWith('..') || relativePath.startsWith('.tracecode-build/')) return;
+    const target = await readlink(absolutePath);
+    const baseline = baselineSymlinks.get(relativePath);
+    baselineFiles.delete(relativePath);
+    baselineFileMetadata.delete(relativePath);
+    baselineDirectories.delete(relativePath);
+    deletableDirectories.delete(relativePath);
+    baselineDirectoryMetadata.delete(relativePath);
+    baselineSymlinks.delete(relativePath);
+    if (baseline !== target) files.push({ path: relativePath, symlink: true, target });
+    return;
+  }
   if (info.isDirectory()) {
     if (relativePath && !relativePath.startsWith('..') && !relativePath.startsWith('.tracecode-build/')) {
+      baselineFiles.delete(relativePath);
+      baselineFileMetadata.delete(relativePath);
+      baselineSymlinks.delete(relativePath);
       if (baselineDirectories.has(relativePath)) {
         baselineDirectories.delete(relativePath);
         deletableDirectories.delete(relativePath);
       } else {
+        baselineDirectoryMetadata.delete(relativePath);
         files.push({ path: relativePath, directory: true });
       }
     }
     for (const entry of await readdir(absolutePath)) {
-      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, baselineDirectories, deletableDirectories, files);
+      await collectChangedFiles(
+        root,
+        join(absolutePath, entry),
+        baselineFiles,
+        baselineDirectories,
+        deletableDirectories,
+        baselineSymlinks,
+        baselineFileMetadata,
+        baselineDirectoryMetadata,
+        files
+      );
     }
     return;
   }
@@ -173,16 +325,34 @@ async function collectChangedFiles(
 
   if (!relativePath || relativePath.startsWith('..') || relativePath.startsWith('.tracecode-build/')) return;
 
+  const currentInfo = await lstat(absolutePath);
+  const currentMetadata: NativeFileMetadata = {
+    mode: currentInfo.mode & 0o7777,
+    atimeMs: currentInfo.atimeMs,
+    mtimeMs: currentInfo.mtimeMs,
+  };
   const contents = await readFile(absolutePath);
+  await utimes(absolutePath, currentInfo.atimeMs / 1000, currentInfo.mtimeMs / 1000);
+  baselineSymlinks.delete(relativePath);
+  baselineDirectories.delete(relativePath);
+  deletableDirectories.delete(relativePath);
+  baselineDirectoryMetadata.delete(relativePath);
   const baseline = baselineFiles.get(relativePath);
+  const baselineMetadata = baselineFileMetadata.get(relativePath);
   baselineFiles.delete(relativePath);
-  if (baseline && Buffer.compare(baseline, contents) === 0) return;
+  baselineFileMetadata.delete(relativePath);
+  const contentsUnchanged = baseline !== undefined && Buffer.compare(baseline, contents) === 0;
+  const metadataUnchanged = baselineMetadata !== undefined
+    && baselineMetadata.mode === currentMetadata.mode
+    && baselineMetadata.atimeMs === currentMetadata.atimeMs
+    && baselineMetadata.mtimeMs === currentMetadata.mtimeMs;
+  if (contentsUnchanged && metadataUnchanged) return;
 
   const utf8 = contents.toString('utf8');
   files.push(
     Buffer.compare(Buffer.from(utf8, 'utf8'), contents) === 0
-      ? { path: relativePath, contents: utf8 }
-      : { path: relativePath, contents: contents.toString('base64'), encoding: 'base64' }
+      ? { path: relativePath, contents: utf8, ...currentMetadata }
+      : { path: relativePath, contents: contents.toString('base64'), encoding: 'base64', ...currentMetadata }
   );
 }
 
@@ -190,15 +360,42 @@ async function changedProjectFiles(
   root: string,
   baselineFiles: Map<string, Buffer>,
   baselineDirectories: Set<string>,
-  deletableDirectories: Set<string>
+  deletableDirectories: Set<string>,
+  baselineSymlinks: Map<string, string>,
+  baselineFileMetadata: Map<string, NativeFileMetadata>,
+  baselineDirectoryMetadata: Map<string, NativeDirectoryMetadata>
 ): Promise<RuntimeFileChange[]> {
   const files: RuntimeFileChange[] = [];
-  await collectChangedFiles(root, root, baselineFiles, baselineDirectories, deletableDirectories, files);
+  await collectChangedFiles(
+    root,
+    root,
+    baselineFiles,
+    baselineDirectories,
+    deletableDirectories,
+    baselineSymlinks,
+    baselineFileMetadata,
+    baselineDirectoryMetadata,
+    files
+  );
   for (const path of baselineFiles.keys()) {
     files.push({ path, deleted: true });
   }
   for (const path of deletableDirectories) {
     files.push({ path, directory: true, deleted: true });
+  }
+  for (const path of baselineSymlinks.keys()) {
+    files.push({ path, deleted: true });
+  }
+  const currentDirectoryMetadata = await snapshotDirectoryMetadata(root);
+  for (const [path, current] of currentDirectoryMetadata) {
+    const baseline = baselineDirectoryMetadata.get(path);
+    if (baseline && baseline.mode === current.mode && baseline.atimeMs === current.atimeMs && baseline.mtimeMs === current.mtimeMs) continue;
+    const existing = files.find((change) => change.path === path && 'directory' in change && change.directory && !('deleted' in change && change.deleted));
+    if (existing && 'directory' in existing) {
+      Object.assign(existing, current);
+    } else {
+      files.push({ path, directory: true, ...current });
+    }
   }
   files.sort((left, right) => left.path.localeCompare(right.path));
   return files;
@@ -607,6 +804,12 @@ export function createNativeCSharpProjectRunner(
       for (const directory of request.project.directories ?? []) {
         await writeProjectDirectory(root, directory);
       }
+      for (const symlinkEntry of request.project.symlinks ?? []) {
+        await writeProjectSymlink(root, symlinkEntry.path, symlinkEntry.target);
+      }
+      for (const metadata of request.project.directoryMetadata ?? []) {
+        await writeProjectDirectoryMetadata(root, metadata);
+      }
 
       const cwd = cwdForRequest(request, root);
       await mkdir(cwd, { recursive: true });
@@ -614,9 +817,12 @@ export function createNativeCSharpProjectRunner(
       const projectArg = join(root, projectPath);
 
       if (request.source === 'compile') {
+        const baselineFileMetadata = await snapshotFileMetadata(root);
         const baseline = await snapshotFileBytes(root);
         const baselineDirectories = await snapshotDirectories(root);
         const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
+        const baselineSymlinks = await snapshotSymlinks(root);
+        const baselineDirectoryMetadata = await snapshotDirectoryMetadata(root);
         const result = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, request.args, request.project)], {
           cwd,
           env: request.env,
@@ -627,7 +833,16 @@ export function createNativeCSharpProjectRunner(
           onEvent: request.onEvent,
         });
         if (result.exitCode !== 0) return result;
-        const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
+        await reapplyProjectMetadata(root, request.project);
+        const files = await changedProjectFiles(
+          root,
+          baseline,
+          baselineDirectories,
+          deletableDirectories,
+          baselineSymlinks,
+          baselineFileMetadata,
+          baselineDirectoryMetadata
+        );
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...result, files };
       }
@@ -644,9 +859,13 @@ export function createNativeCSharpProjectRunner(
         if (build.exitCode !== 0) return build;
       }
 
+      await reapplyProjectMetadata(root, request.project);
+      const baselineFileMetadata = await snapshotFileMetadata(root);
       const baseline = await snapshotFileBytes(root);
       const baselineDirectories = await snapshotDirectories(root);
       const deletableDirectories = explicitlySnapshottedProjectDirectories(request.project);
+      const baselineSymlinks = await snapshotSymlinks(root);
+      const baselineDirectoryMetadata = await snapshotDirectoryMetadata(root);
       const run = await runProcess(resolvedDotnetCommand, ['run', '--project', projectArg, '--no-build', '--no-launch-profile', '--', ...request.args], {
         cwd,
         env: request.env,
@@ -656,7 +875,15 @@ export function createNativeCSharpProjectRunner(
         timeoutLabel: 'dotnet run',
         onEvent: request.onEvent,
       });
-      const files = await changedProjectFiles(root, baseline, baselineDirectories, deletableDirectories);
+      const files = await changedProjectFiles(
+        root,
+        baseline,
+        baselineDirectories,
+        deletableDirectories,
+        baselineSymlinks,
+        baselineFileMetadata,
+        baselineDirectoryMetadata
+      );
       emitRuntimeCommandFileChanges(request.onEvent, files);
       return { ...run, files };
     } finally {
