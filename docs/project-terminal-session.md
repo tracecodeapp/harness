@@ -39,6 +39,8 @@ function renderInputState(state: RuntimeProjectTerminalInputState): void {
 }
 
 const terminal = workspace.createTerminalSession({
+  columns: 120,
+  rows: 32,
   onTerminalEvent: (event) => {
     if (event.type === 'input-state') renderInputState(event.state);
   },
@@ -138,11 +140,74 @@ Use `terminal.prompt.text` when echoing submitted commands. Use
 `terminal.inputState.label` when echoing stdin responses, because stdin prompts
 belong to the running process rather than the shell.
 
+The workspace and every terminal start with one coherent TraceKernel identity:
+`USER`, `LOGNAME`, `HOME`, `HOSTNAME`, `SHELL`, `PATH`, `TMPDIR`, and `LANG`
+match the configured kernel user and host. The standard home, `/tmp`, and
+`/var/tmp` directories exist before the first command. `whoami`, `id`,
+`hostname`, and `uname` report that identity; `uname` reports TraceKernel and
+never invents a Linux host. `/tracekernel/bin` leads `PATH`, making shell
+discovery commands report the same virtual executable path used for dispatch.
+
+Each terminal also owns a file-creation mask, defaulting to `0022`. `umask`
+prints it, `umask MODE` accepts octal or symbolic updates for later submissions
+in that terminal, `umask -S` shows the corresponding allowed permissions, and
+`umask -p` emits a reusable shell command. New files and directories created by
+shell commands honor the active mask. Programmatic
+`workspace.runCommand(...)` calls are separate process invocations and start
+from `0022` unless the caller supplies `RuntimeCommandOptions.umask`.
+
+`df`, `df -h`, and `df -i` report the workspace's logical byte and entry
+capacity. These values come from the same quota ledger that accepts or rejects
+filesystem writes, rather than from fabricated host-disk statistics. The
+reported filesystem is therefore `tracekernel`, mounted at the configured
+workspace root. Browser Node's `fs.statfs` reads the same capacity snapshot and
+updates its free-space view as the running process mutates files. `du` reports
+logical usage below individual workspace paths without claiming host allocation
+details that TraceKernel does not model.
+
+`mount`, `/proc/mounts`, and `/proc/self/mountinfo` are rendered from one
+TraceKernel mount table. They describe a read-only system root, explicit
+writable `/tmp`, `/var/tmp`, workspace, and device mounts, and read-only proc,
+control, and skills namespaces without claiming a Linux backing filesystem.
+The same topology is enforced by mutation policy: absolute writes outside the
+workspace and temporary mounts fail with `EROFS`. The topology is fixed for a
+workspace; attempts to add or change mounts fail as an unsupported privileged
+operation.
+
+The standard identity files under `/etc` come from that same kernel model.
+`os-release` identifies TraceKernel rather than Linux, while `passwd`, `group`,
+`hostname`, `hosts`, `nsswitch.conf`, and `shells` agree with the active user,
+host, and shell environment. The namespace is root-owned and read-only, and
+the same files are forwarded into browser runtime snapshots so a Node process
+does not observe a different machine from the terminal that launched it.
+
+File permission bits and access/modify timestamps cross runtime boundaries as
+part of the project snapshot and file-change contract. A mode set by the shell
+is therefore visible to browser Node, and `chmod` or `utimes` performed by that
+process remains visible to the next terminal command and after IndexedDB
+hydration. Browser processes run as the TraceKernel user; ownership changes the
+unprivileged user cannot perform fail with `EPERM` instead of reporting a
+temporary success.
+
 For apps that need a visible user shell and background agent commands in the
 same project, keep both on one workspace. The user-facing terminal session owns
 one foreground process at a time, while agent calls can use
 `workspace.runCommand(...)` and the kernel scheduler. Simulated HTTP servers and
 clients share that same workspace; see [TraceKernel HTTP Simulation](./tracekernel-http.md).
+
+Set `kernel.maxProcesses` when a workspace needs a hard process-table limit.
+The limit counts PID 1, persistent processes created through
+`workspace.kernel.createProcess(...)`, queued and running commands, and
+unreaped zombies. A command that cannot obtain a process-table slot returns a
+structured `EAGAIN` error for the `fork` syscall; synchronous host-process
+creation throws the same error. No PID or process journal entry is created for
+the failed fork. `/proc/tracekernel/sched` and `tracekernelctl status` expose
+current usage and the configured ceiling. This limit is kernel-wide and is
+therefore separate from per-command `executionLimits` and scheduler concurrency.
+The lone `wait` and `tracekernelctl wait` forms execute as builtins in their
+existing parent process (PID 1 for direct workspace calls), so an exhausted
+table can still reap a zombie without attempting the very fork that the reap
+would make possible.
 
 ## Output Events
 
@@ -219,11 +284,54 @@ treat `\r` as a cursor reset within the current line, rather than committing a
 new line, so progress output behaves like a terminal instead of producing a log
 of every intermediate percentage.
 
+### Geometry, capabilities, and history
+
+Each terminal exposes `terminal.terminal`, `terminal.history`, and
+`terminal.resize(columns, rows)`. Pass the rendered terminal dimensions when
+creating or resizing a session. Subsequent commands receive `COLUMNS`, `LINES`,
+`TERM=dumb`, and `NO_COLOR=1`; browser Node exposes the same geometry through
+`process.stdout.columns`, `process.stdout.rows`, and its TTY flags. Direct
+`workspace.runCommand(...)` calls are captured commands and therefore report
+non-TTY stdio.
+
+`history`, `history N`, and `history -c` operate on the session-owned history.
+Host UIs should use the same `terminal.history` collection for Arrow Up and
+Arrow Down navigation instead of keeping a second, divergent command list.
+`stty size` and the supported `tput` queries expose the current geometry. Since
+the default terminal is deliberately `dumb`, it advertises no color or cursor
+addressing capability.
+
+### Signals
+
+`terminal.interrupt()` sends `SIGINT` to the foreground process. `kill`,
+`pkill`, and kernel control operations deliver the requested signal to the
+target process. Browser Node programs may register normal `process.on('SIGINT',
+...)` or `process.on('SIGTERM', ...)` handlers and receive a short grace period
+to close servers, flush work, and exit naturally. An unhandled signal retains
+the shell-compatible `128 + signal` status. `SIGKILL` and `SIGSTOP` cannot be
+caught, matching Node's process API.
+
+`kill -l` reports only the signals implemented by the kernel. `kill -0 PID`
+checks whether a process is visible and signalable without changing its state.
+Executable workspace files use their shebang interpreter when it is available;
+text executables without a shebang use the normal shell fallback, while a
+missing shebang interpreter fails instead of silently treating the file as a
+shell script.
+
+The device namespace includes `/dev/stdin`, `/dev/stdout`, `/dev/stderr`,
+`/dev/tty`, `/dev/null`, and `/dev/fd/{0,1,2}`. Descriptor aliases route to the
+current command's real streams; they are not ordinary persisted files.
+
 TraceKernel also provides the common inspection commands used while debugging a
-service: `ps aux`, `pgrep`, `pkill`, `ss -ltnp`, and `lsof -i :PORT`. They report
-TraceKernel's own process and listener model; they do not claim a Linux kernel
-identity. Git repository emulation and suspended-job control such as Ctrl+Z are
-separate capabilities and are not part of this terminal-session contract.
+service: `ps aux`, `pgrep`, `pkill`, `ss -ltnp`, `lsof -i :PORT`, `wget`,
+`mktemp`, `man`, `df`, `du`, `mount`, `stat`, `tty`, `locale`, `getconf`, `getent`, and `groups`. They
+report TraceKernel's own process, listener, storage, and identity models; they
+do not claim a Linux kernel identity. Shell `test -t FD` and `[ -t FD ]` report
+attached terminal descriptors while captured commands remain non-TTY. `wget`
+uses the same allowlisted HTTP transport as `curl`. Raw
+TCP/UDP sockets and `nc` are intentionally not simulated by the current HTTP
+transport. Git repository emulation and suspended-job control such as Ctrl+Z
+are separate capabilities and are not part of this terminal-session contract.
 
 Browser live stdin and browser C/C++ execution require `SharedArrayBuffer` and
 `Atomics`. Serve browser consumers with cross-origin isolation headers:

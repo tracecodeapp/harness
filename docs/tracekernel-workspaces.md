@@ -238,6 +238,41 @@ Multi-file final diffs are preflighted as a transaction so a rejected mutation
 does not leave a partially applied workspace. Apps can lower or raise the three
 limits with `maxWorkspaceBytes`, `maxFileBytes`, and `maxEntryCount`.
 
+## Filesystem Entry Fidelity
+
+Project snapshots distinguish regular files, directories, and symbolic links.
+Symbolic links retain their link text and identity through live changes, final
+diffs, patches, and persistence; snapshotting never replaces a link with the
+contents of its target. Regular files and directories likewise carry their
+permission bits and access/modify timestamps across command boundaries.
+Malformed persisted trees are rejected when an entry path is duplicated across
+kinds, directory entries repeat, or directory metadata names a directory that
+does not exist.
+
+Language providers must either preserve those observable semantics or reject
+the unsupported snapshot before user code starts. They must not flatten links,
+rewrite link text into a different meaning, or report metadata changes caused
+only by the provider's own snapshot scan. Browser Node and browser Python use
+their runtime filesystems directly. Native Java and native C# can materialize
+safe relative links, but reject absolute link targets because their temporary
+host roots cannot preserve virtual absolute `readlink` and rename behavior.
+Browser Java and browser C# reject snapshots containing links with `ENOTSUP`
+until their upstream virtual filesystems can expose genuine link semantics.
+Browser C# preserves regular-file and directory metadata through its managed
+host. Browser Java preserves that metadata in the TraceKernel workspace, but
+CheerpJ does not currently expose the POSIX metadata surface to Java code, so
+Java code cannot inspect or mutate those bits in a browser command.
+
+Browser C++ preserves symbolic-link identity and file/directory timestamps at
+runtime. It reserves `/dev`, `/proc`, `/etc`, and the top-level roots of
+manifest-provided virtual files so workspace entries cannot alias kernel-owned
+namespaces. Its current WASI preview1 ABI does not expose Unix permission bits
+or a permission-mutation syscall: supplied modes are retained through snapshot
+and diff reconciliation, but C/C++ code cannot observe or change those bits.
+The runtime VFS supports links after compilation; the compiler's flat input VFS
+cannot represent link inodes, so a source or include path that depends on a
+symbolic link is not supported during the compile step.
+
 ## Persistence
 
 Browser project workspaces can persist snapshots through `kernelStorage`.

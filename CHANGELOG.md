@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## Unreleased
+
+### Added
+
+- Added a first-class terminal capability contract with TTY state, dimensions, resize support, session-owned history, and browser Node stdio geometry. Terminal commands now receive consistent `TERM`, `NO_COLOR`, `COLUMNS`, and `LINES` values.
+- Added coherent TraceKernel user and host discovery through `whoami`, `id`, `hostname`, and `uname`, standard home and temporary directories, `mktemp`, command manuals, terminal capability inspection, `wget`, and `/dev/fd/{0,1,2}` descriptor aliases.
+- Added terminal and environment discovery through `tty`, `locale`, `getconf`, `getent`, and `groups`. `kill -l` now lists the signals the kernel actually supports, and `kill -0` performs a process or process-group existence check without sending a signal.
+- Added persistent per-terminal `umask` state. Numeric and symbolic masks, reusable `-p` output, and symbolic display now match shell expectations; captured commands start from `0022`, and the active mask governs newly created file and directory permissions.
+- Added `df` reporting backed by the enforced workspace quota ledger. Byte, human-readable, and inode views now expose the actual logical capacity and usage that govern project writes.
+- Added a TraceKernel-native `du` with byte, block, human-readable, summary, all-entry, depth, and total views over logical workspace contents.
+- Added one canonical immutable mount table behind `mount`, `/proc/mounts`, and `/proc/self/mountinfo`, including a read-only system root, explicit writable temporary, workspace, and device filesystems, plus read-only proc, control, and skills namespaces.
+- Added a TraceKernel-native `stat` with symbolic-link dereferencing and the common GNU format fields used by project scripts, including permission, ownership, timestamp, inode, and link-count views.
+- Added a read-only `/etc` identity namespace backed by the active TraceKernel user, host, and version. Shell commands, workspace APIs, and browser runtimes now share `os-release`, `passwd`, `group`, `hostname`, `hosts`, `nsswitch.conf`, and `shells`.
+- Added an optional kernel-wide process-table ceiling. `kernel.maxProcesses` accounts for PID 1, host-owned processes, commands, and unreaped zombies; exhausted forks fail with structured `EAGAIN` without consuming a PID, and usage is visible through TraceKernel diagnostics.
+
+### Fixed
+
+- Browser Node signal listeners can now handle `SIGINT` and `SIGTERM`, close active resources, and exit naturally before the kernel forces termination. Worker-backed execution uses host-owned timers for the grace boundary so guest timer globals cannot delay or capture it.
+- Closed stdin is snapshotted non-destructively when entering the project shell, preserving input for compiled executables in commands such as `compile && run`, while shell utilities still receive normal standard input.
+- Patched the installed browser shell so `/dev/stdin` and `/dev/fd/0` resolve to the active command input rather than synthetic filesystem entries.
+- Workspace executable paths now honor supported shebang interpreters, preserve Bash's text-file fallback when no shebang is present, retain Node shebang line numbering, and fail with command status 127 when the requested interpreter does not exist.
+- Shell `test -t` and `[ -t ... ]` now report attached terminal descriptors without changing any other `test` expression behavior.
+- Browser Node `fs.statfs` now derives block and entry capacity from the same enforced workspace quota snapshot as `df`, and tracks mutations made during the running process instead of reporting fabricated host-disk values.
+- Project file snapshots and file-change transactions now preserve permission bits and access/modify timestamps across shell commands, browser Node processes, final diffs, project patches, and encrypted IndexedDB persistence. Browser files are owned by the TraceKernel user instead of synthetic root, and unsupported ownership changes fail with `EPERM` rather than disappearing after the process exits.
+- TraceKernel's executable directory now participates in `PATH`, so `type`, `command -v`, `command -V`, and `which` agree on the executable users actually invoke instead of exposing just-bash's compatibility stubs under `/usr/bin`. Executable shims dispatch through private command identities after shell parsing, including inside nested npm lifecycle shells.
+- Kernel filesystem policy failures now retain their POSIX error codes across shell redirections and command boundaries. Read-only and invalid virtual-path operations end the command normally instead of escaping as runner exceptions.
+- Project snapshots, patches, encrypted persistence, and browser Node execution now retain symbolic links as links and preserve directory permission and timestamp metadata. Persisted snapshots reject duplicate directories, cross-kind path conflicts, and orphan directory metadata instead of silently normalizing corrupt state.
+
+### Changed
+
+- TraceKernel's default environment now reports one virtual-machine identity and no Linux identity through shell machine variables. Raw TCP/UDP sockets remain an explicit unsupported boundary; HTTP tools continue to use the allowlisted kernel transport.
+
 ## [0.11.3] - 2026-07-17
 
 ### Fixed
