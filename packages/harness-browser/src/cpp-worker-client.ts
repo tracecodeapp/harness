@@ -196,6 +196,7 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 export class CppWorkerClient {
+  private disposed = false;
   private worker: BrowserWorkerLike | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
@@ -244,7 +245,12 @@ export class CppWorkerClient {
     return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
+  private assertNotDisposed(): void {
+    if (this.disposed) throw new Error('C++ worker client has been terminated.');
+  }
+
   private getWorker(): BrowserWorkerLike {
+    this.assertNotDisposed();
     if (this.worker) return this.worker;
 
     if (!this.isSupported()) {
@@ -417,7 +423,9 @@ export class CppWorkerClient {
     kernelHttp?: RuntimeKernelHttpBridge,
     expectedLifecycleGeneration?: number
   ): Promise<T> {
+    this.assertNotDisposed();
     await this.options.assetPreflight?.();
+    this.assertNotDisposed();
     if (
       expectedLifecycleGeneration !== undefined &&
       expectedLifecycleGeneration !== this.executionLifecycleGeneration
@@ -426,6 +434,7 @@ export class CppWorkerClient {
     }
     if (this.messageRequiresCompilerAssets(type, payload)) {
       await this.options.runtimeAssetPreflight?.();
+      this.assertNotDisposed();
     }
     const worker = this.getWorker();
     await this.waitForWorkerReady();
@@ -944,6 +953,11 @@ export class CppWorkerClient {
     const coordinatorGeneration = this.compilerCoordinatorGeneration;
 
     const cacheKey = await this.compilerArtifactCacheKey(message.payload);
+    // Hashing is asynchronous. The caller may cancel and retire this client
+    // while Web Crypto is still producing the cache key. Never let that stale
+    // continuation create a new compiler iframe after terminate() has already
+    // removed the client's owned resources.
+    if (coordinatorGeneration !== this.compilerCoordinatorGeneration || worker !== this.worker) return;
     const cached = cacheKey ? this.cachedCompilerArtifact(cacheKey) : null;
     const compiled = cached ?? (this.externalCompilerUrl
       ? await this.compileWithExternalUrl(message.payload)
@@ -1051,6 +1065,11 @@ export class CppWorkerClient {
   }
 
   private ensureCompilerFrame(): Promise<void> {
+    try {
+      this.assertNotDisposed();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     if (!this.compilerFrameUrl || typeof document === 'undefined') {
       return Promise.reject(new Error('C++ compiler frame is not available.'));
     }
@@ -1368,6 +1387,8 @@ export class CppWorkerClient {
   }
 
   terminate(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.terminateAndReset();
   }
 }
