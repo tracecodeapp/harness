@@ -1,3 +1,9 @@
+import * as Cause from 'effect/Cause';
+import * as Context from 'effect/Context';
+import * as Effect from 'effect/Effect';
+import * as Exit from 'effect/Exit';
+import * as Layer from 'effect/Layer';
+import * as ManagedRuntime from 'effect/ManagedRuntime';
 import type {
   Language,
   LanguageRuntimeProfile,
@@ -28,6 +34,7 @@ import {
   createBrowserExecutionWorkerHost,
   type BrowserExecutionWorkerHost,
   type BrowserExecutionWorkerHostOptions,
+  type BrowserWorkerFactory,
 } from './execution-host';
 import {
   createBrowserRuntimeEnvironment,
@@ -69,7 +76,6 @@ export interface CreateBrowserHarnessOptions {
     initTimeoutMs?: number;
     executionTimeoutMs?: number;
     tracingTimeoutMs?: number;
-    interviewTimeoutMs?: number;
     workerIdleTimeoutMs?: number;
     programCacheLimit?: number;
     usePrecompiledHeader?: boolean;
@@ -99,133 +105,231 @@ export interface BrowserHarness {
   dispose(): void;
 }
 
-class BrowserHarnessRuntime implements BrowserHarness {
-  readonly assets: BrowserHarnessAssets;
+/**
+ * The validated, immutable inputs every layer in the harness graph reads from.
+ * Produced eagerly (and purely — no resources) so option validation still
+ * throws synchronously from `createBrowserHarness`.
+ */
+interface ResolvedHarnessContext {
+  readonly options: CreateBrowserHarnessOptions;
   readonly environment: BrowserRuntimeEnvironment;
+  readonly assets: BrowserHarnessAssets;
   readonly supportedLanguages: readonly Language[];
+  readonly executionHostProviders: ReadonlySet<Language>;
+  readonly preflight: (
+    runtime: BrowserRuntimeId,
+    assetNames: readonly string[]
+  ) => () => Promise<void>;
+  readonly manifestAsset: (
+    runtime: BrowserRuntimeId,
+    name: string
+  ) => BrowserRuntimeAssetDescriptor | undefined;
+  readonly manifestAssetCollection: (
+    runtime: BrowserRuntimeId,
+    name: string
+  ) => Readonly<Record<string, BrowserRuntimeAssetDescriptor>> | undefined;
+}
 
-  private readonly pythonWorkerClient: PythonWorkerClient;
-  private readonly javaScriptWorkerClient: JavaScriptWorkerClient;
-  private readonly javaWorkerClient: JavaWorkerClient;
-  private readonly csharpWorkerClient: CSharpWorkerClient;
-  private readonly cppWorkerClient: CppWorkerClient;
-  private readonly executionHost?: BrowserExecutionWorkerHost;
-  private readonly executionHostProviders: ReadonlySet<Language>;
-  private readonly clients: Record<Language, RuntimeClient>;
+function resolveHarnessContext(options: CreateBrowserHarnessOptions): ResolvedHarnessContext {
+  if (
+    options.environment &&
+    (options.assetBaseUrl !== undefined || options.assets !== undefined || options.providers !== undefined ||
+      options.engine !== undefined || options.featureOverrides !== undefined)
+  ) {
+    throw new TypeError(
+      'CreateBrowserHarnessOptions.environment cannot be combined with asset, provider, engine, or feature overrides.'
+    );
+  }
+  const environment = options.environment ?? createBrowserRuntimeEnvironment({
+    assetBaseUrl: options.assetBaseUrl,
+    assets: options.assets,
+    providers: options.providers,
+    surface: 'classic',
+    engine: options.engine,
+    featureOverrides: options.featureOverrides,
+  });
+  const assets = environment.assets;
+  const supportedLanguages = environment.providers;
+  const assetPreflight = createBrowserRuntimeAssetPreflight(assets.runtimeManifests);
+  const preflight = (runtime: BrowserRuntimeId, assetNames: readonly string[]) =>
+    () => assetPreflight.preflight(runtime, assetNames);
+  const manifestAsset = (
+    runtime: BrowserRuntimeId,
+    name: string
+  ): BrowserRuntimeAssetDescriptor | undefined => {
+    const manifest = assets.runtimeManifests?.[runtime];
+    const value = (manifest?.assets as Record<string, unknown> | undefined)?.[name];
+    return value && typeof value === 'object' && typeof (value as { url?: unknown }).url === 'string'
+      ? value as BrowserRuntimeAssetDescriptor
+      : undefined;
+  };
+  const manifestAssetCollection = (
+    runtime: BrowserRuntimeId,
+    name: string
+  ): Readonly<Record<string, BrowserRuntimeAssetDescriptor>> | undefined => {
+    const manifest = assets.runtimeManifests?.[runtime];
+    const value = (manifest?.assets as Record<string, unknown> | undefined)?.[name];
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Readonly<Record<string, BrowserRuntimeAssetDescriptor>>
+      : undefined;
+  };
 
-  constructor(options: CreateBrowserHarnessOptions = {}) {
-    if (
-      options.environment &&
-      (options.assetBaseUrl !== undefined || options.assets !== undefined || options.providers !== undefined ||
-        options.engine !== undefined || options.featureOverrides !== undefined)
-    ) {
+  if (assets.runtimeManifests?.java?.assets.loader && options.java?.cheerpjLoaderUrl) {
+    throw new TypeError(
+      'Java runtime assets cannot combine manifest.assets.loader with java.cheerpjLoaderUrl.'
+    );
+  }
+
+  const executionHostProviders = new Set<Language>();
+  for (const language of options.executionHost
+    ? options.executionHost.providers ?? supportedLanguages
+    : []) {
+    if (!supportedLanguages.includes(language)) {
       throw new TypeError(
-        'CreateBrowserHarnessOptions.environment cannot be combined with asset, provider, engine, or feature overrides.'
+        `executionHost provider ${JSON.stringify(language)} is not selected by this browser harness.`
       );
     }
-    this.environment = options.environment ?? createBrowserRuntimeEnvironment({
-      assetBaseUrl: options.assetBaseUrl,
-      assets: options.assets,
-      providers: options.providers,
-      surface: 'classic',
-      engine: options.engine,
-      featureOverrides: options.featureOverrides,
-    });
-    this.assets = this.environment.assets;
-    this.supportedLanguages = this.environment.providers;
-    const assetPreflight = createBrowserRuntimeAssetPreflight(this.assets.runtimeManifests);
-    const preflight = (runtime: BrowserRuntimeId, assetNames: readonly string[]) =>
-      () => assetPreflight.preflight(runtime, assetNames);
-    const manifestAsset = (
-      runtime: BrowserRuntimeId,
-      name: string
-    ): BrowserRuntimeAssetDescriptor | undefined => {
-      const manifest = this.assets.runtimeManifests?.[runtime];
-      const value = (manifest?.assets as Record<string, unknown> | undefined)?.[name];
-      return value && typeof value === 'object' && typeof (value as { url?: unknown }).url === 'string'
-        ? value as BrowserRuntimeAssetDescriptor
-        : undefined;
-    };
-    const manifestAssetCollection = (
-      runtime: BrowserRuntimeId,
-      name: string
-    ): Readonly<Record<string, BrowserRuntimeAssetDescriptor>> | undefined => {
-      const manifest = this.assets.runtimeManifests?.[runtime];
-      const value = (manifest?.assets as Record<string, unknown> | undefined)?.[name];
-      return value && typeof value === 'object' && !Array.isArray(value)
-        ? value as Readonly<Record<string, BrowserRuntimeAssetDescriptor>>
-        : undefined;
-    };
-    const pythonPackageDescriptors = manifestAssetCollection('python', 'packages');
-    const javaManifest = this.assets.runtimeManifests?.java;
-    const csharpDependencyDescriptors = manifestAssetCollection('csharp', 'dependencies');
-    if (javaManifest?.assets.loader && options.java?.cheerpjLoaderUrl) {
-      throw new TypeError(
-        'Java runtime assets cannot combine manifest.assets.loader with java.cheerpjLoaderUrl.'
-      );
+    executionHostProviders.add(language);
+  }
+  if (options.executionHost && executionHostProviders.size === 0) {
+    throw new TypeError('executionHost.providers must select at least one Classic provider.');
+  }
+  if (
+    supportedLanguages.includes('javascript') &&
+    supportedLanguages.includes('typescript') &&
+    executionHostProviders.has('javascript') !== executionHostProviders.has('typescript')
+  ) {
+    throw new TypeError(
+      'JavaScript and TypeScript share one Classic worker and must be routed through executionHost together.'
+    );
+  }
+
+  return {
+    options,
+    environment,
+    assets,
+    supportedLanguages,
+    executionHostProviders,
+    preflight,
+    manifestAsset,
+    manifestAssetCollection,
+  };
+}
+
+class HarnessContext extends Context.Tag('BrowserHarness/Context')<
+  HarnessContext,
+  ResolvedHarnessContext
+>() {}
+
+interface ExecutionHostSlot {
+  readonly host: BrowserExecutionWorkerHost | undefined;
+  readonly workerFactoryFor: (language: Language) => BrowserWorkerFactory | undefined;
+}
+
+class ExecutionHostService extends Context.Tag('BrowserHarness/ExecutionHost')<
+  ExecutionHostService,
+  ExecutionHostSlot
+>() {}
+
+/**
+ * The execution host as a scoped resource. If anything after acquisition
+ * fails (e.g. the worker-origin validation below, or any downstream client
+ * layer), the layer build unwinds and the host finalizer disposes the iframe
+ * and MessageChannel — the old constructor's manual try/catch, structurally.
+ */
+const executionHostLayer = Layer.scoped(
+  ExecutionHostService,
+  Effect.gen(function* () {
+    const ctx = yield* HarnessContext;
+    if (!ctx.options.executionHost || ctx.executionHostProviders.size === 0) {
+      return { host: undefined, workerFactoryFor: () => undefined };
     }
-    const executionHostProviders = new Set<Language>();
-    for (const language of options.executionHost
-      ? options.executionHost.providers ?? this.supportedLanguages
-      : []) {
-      if (!this.supportedLanguages.includes(language)) {
-        throw new TypeError(
-          `executionHost provider ${JSON.stringify(language)} is not selected by this browser harness.`
+
+    const host = yield* Effect.acquireRelease(
+      Effect.sync(() => createBrowserExecutionWorkerHost(ctx.options.executionHost!)),
+      (acquired) => Effect.sync(() => acquired.dispose())
+    );
+
+    const workerUrls = new Map<Language, string>([
+      ['python', ctx.assets.pythonWorker],
+      ['javascript', ctx.assets.javascriptWorker],
+      ['typescript', ctx.assets.javascriptWorker],
+      ['java', ctx.assets.javaWorker],
+      ['csharp', ctx.assets.csharpWorker],
+      ['cpp', ctx.assets.cppWorker],
+    ]);
+    for (const language of ctx.executionHostProviders) {
+      const workerUrl = new URL(workerUrls.get(language)!, `${host.origin}/`);
+      if (workerUrl.origin !== host.origin) {
+        return yield* Effect.fail(
+          new Error(
+            `${language} worker origin ${JSON.stringify(workerUrl.origin)} must match executionHost origin ${JSON.stringify(host.origin)}.`
+          )
         );
       }
-      executionHostProviders.add(language);
     }
-    if (options.executionHost && executionHostProviders.size === 0) {
-      throw new TypeError('executionHost.providers must select at least one Classic provider.');
-    }
-    if (
-      this.supportedLanguages.includes('javascript') &&
-      this.supportedLanguages.includes('typescript') &&
-      executionHostProviders.has('javascript') !== executionHostProviders.has('typescript')
-    ) {
-      throw new TypeError(
-        'JavaScript and TypeScript share one Classic worker and must be routed through executionHost together.'
-      );
-    }
-    this.executionHostProviders = executionHostProviders;
-    this.executionHost = options.executionHost && executionHostProviders.size > 0
-      ? createBrowserExecutionWorkerHost(options.executionHost)
-      : undefined;
-    const hosted = (language: Language): boolean => this.executionHostProviders.has(language);
-    const workerFactoryFor = (language: Language) => hosted(language)
-      ? this.executionHost?.workerFactory
-      : undefined;
-    if (this.executionHost) {
-      const workerUrls = new Map<Language, string>([
-        ['python', this.assets.pythonWorker],
-        ['javascript', this.assets.javascriptWorker],
-        ['typescript', this.assets.javascriptWorker],
-        ['java', this.assets.javaWorker],
-        ['csharp', this.assets.csharpWorker],
-        ['cpp', this.assets.cppWorker],
-      ]);
-      for (const language of this.executionHostProviders) {
-        const workerUrl = new URL(workerUrls.get(language)!, `${this.executionHost.origin}/`);
-        if (workerUrl.origin !== this.executionHost.origin) {
-          this.executionHost.dispose();
-          throw new Error(
-            `${language} worker origin ${JSON.stringify(workerUrl.origin)} must match executionHost origin ${JSON.stringify(this.executionHost.origin)}.`
-          );
-        }
-      }
-    }
-    try {
-      const pythonWorkerFactory = workerFactoryFor('python');
-      this.pythonWorkerClient = new PythonWorkerClient({
-      workerUrl: this.assets.pythonWorker,
-      ...(pythonWorkerFactory ? { workerFactory: pythonWorkerFactory } : {}),
-      compileCacheLimit: options.python?.compileCacheLimit,
-      ...(this.assets.runtimeManifests?.python?.workerFormat
-        ? { workerFormat: this.assets.runtimeManifests.python.workerFormat }
+
+    return {
+      host,
+      workerFactoryFor: (language: Language) =>
+        ctx.executionHostProviders.has(language) ? host.workerFactory : undefined,
+    };
+  })
+);
+
+class PythonWorkerClientService extends Context.Tag('BrowserHarness/PythonWorkerClient')<
+  PythonWorkerClientService,
+  PythonWorkerClient
+>() {}
+
+class JavaScriptWorkerClientService extends Context.Tag('BrowserHarness/JavaScriptWorkerClient')<
+  JavaScriptWorkerClientService,
+  JavaScriptWorkerClient
+>() {}
+
+class JavaWorkerClientService extends Context.Tag('BrowserHarness/JavaWorkerClient')<
+  JavaWorkerClientService,
+  JavaWorkerClient
+>() {}
+
+class CSharpWorkerClientService extends Context.Tag('BrowserHarness/CSharpWorkerClient')<
+  CSharpWorkerClientService,
+  CSharpWorkerClient
+>() {}
+
+class CppWorkerClientService extends Context.Tag('BrowserHarness/CppWorkerClient')<
+  CppWorkerClientService,
+  CppWorkerClient
+>() {}
+
+/** Construct a worker client as a scoped resource whose finalizer terminates it. */
+const scopedWorkerClient = <Client extends { terminate(): void }>(
+  construct: (ctx: ResolvedHarnessContext, hostSlot: ExecutionHostSlot) => Client
+) =>
+  Effect.gen(function* () {
+    const ctx = yield* HarnessContext;
+    const hostSlot = yield* ExecutionHostService;
+    return yield* Effect.acquireRelease(
+      Effect.sync(() => construct(ctx, hostSlot)),
+      (client) => Effect.sync(() => client.terminate())
+    );
+  });
+
+const pythonWorkerClientLayer = Layer.scoped(
+  PythonWorkerClientService,
+  scopedWorkerClient((ctx, hostSlot) => {
+    const workerFactory = hostSlot.workerFactoryFor('python');
+    const pythonPackageDescriptors = ctx.manifestAssetCollection('python', 'packages');
+    return new PythonWorkerClient({
+      workerUrl: ctx.assets.pythonWorker,
+      ...(workerFactory ? { workerFactory } : {}),
+      compileCacheLimit: ctx.options.python?.compileCacheLimit,
+      ...(ctx.assets.runtimeManifests?.python?.workerFormat
+        ? { workerFormat: ctx.assets.runtimeManifests.python.workerFormat }
         : {}),
-      debug: options.debug,
-      assetPreflight: preflight('python', ['worker', 'snippets']),
-      runtimeAssetPreflight: preflight('python', [
+      debug: ctx.options.debug,
+      assetPreflight: ctx.preflight('python', ['worker', 'snippets']),
+      runtimeAssetPreflight: ctx.preflight('python', [
         'runtimeCore',
         'runtimeLoader',
         'runtimeIndex',
@@ -233,16 +337,16 @@ class BrowserHarnessRuntime implements BrowserHarness {
         'packages',
       ]),
       runtimeAssets: {
-        runtimeCoreUrl: this.assets.pythonRuntimeCore,
-        snippetsUrl: this.assets.pythonSnippets,
-        ...(manifestAsset('python', 'runtimeLoader')?.url
-          ? { loaderUrl: manifestAsset('python', 'runtimeLoader')?.url }
+        runtimeCoreUrl: ctx.assets.pythonRuntimeCore,
+        snippetsUrl: ctx.assets.pythonSnippets,
+        ...(ctx.manifestAsset('python', 'runtimeLoader')?.url
+          ? { loaderUrl: ctx.manifestAsset('python', 'runtimeLoader')?.url }
           : {}),
-        ...(manifestAsset('python', 'runtimeIndex')?.url
-          ? { indexUrl: manifestAsset('python', 'runtimeIndex')?.url }
+        ...(ctx.manifestAsset('python', 'runtimeIndex')?.url
+          ? { indexUrl: ctx.manifestAsset('python', 'runtimeIndex')?.url }
           : {}),
-        ...(this.assets.runtimeManifests?.python?.loaderFormat
-          ? { loaderFormat: this.assets.runtimeManifests.python.loaderFormat }
+        ...(ctx.assets.runtimeManifests?.python?.loaderFormat
+          ? { loaderFormat: ctx.assets.runtimeManifests.python.loaderFormat }
           : {}),
         ...(pythonPackageDescriptors
           ? {
@@ -253,30 +357,43 @@ class BrowserHarnessRuntime implements BrowserHarness {
           : {}),
       },
     });
-    const javaScriptWorkerFactory = workerFactoryFor('javascript') ?? workerFactoryFor('typescript');
-    this.javaScriptWorkerClient = new JavaScriptWorkerClient({
-      workerUrl: this.assets.javascriptWorker,
-      ...(javaScriptWorkerFactory ? { workerFactory: javaScriptWorkerFactory } : {}),
-      debug: options.debug,
-      assetPreflight: preflight('javascript', ['worker']),
-      runtimeAssetPreflight: preflight('javascript', ['libraries']),
-      ...(manifestAsset('javascript', 'libraries')?.url
-        ? { javascriptLibrariesUrl: manifestAsset('javascript', 'libraries')?.url }
+  })
+);
+
+const javaScriptWorkerClientLayer = Layer.scoped(
+  JavaScriptWorkerClientService,
+  scopedWorkerClient((ctx, hostSlot) => {
+    const workerFactory = hostSlot.workerFactoryFor('javascript') ?? hostSlot.workerFactoryFor('typescript');
+    return new JavaScriptWorkerClient({
+      workerUrl: ctx.assets.javascriptWorker,
+      ...(workerFactory ? { workerFactory } : {}),
+      debug: ctx.options.debug,
+      assetPreflight: ctx.preflight('javascript', ['worker']),
+      runtimeAssetPreflight: ctx.preflight('javascript', ['libraries']),
+      ...(ctx.manifestAsset('javascript', 'libraries')?.url
+        ? { javascriptLibrariesUrl: ctx.manifestAsset('javascript', 'libraries')?.url }
         : {}),
-      typescriptCompilerUrl: this.assets.typescriptCompiler,
-      typescriptCompilerPreflight: preflight('typescript', ['compiler']),
+      typescriptCompilerUrl: ctx.assets.typescriptCompiler,
+      typescriptCompilerPreflight: ctx.preflight('typescript', ['compiler']),
     });
-    const javaWorkerFactory = workerFactoryFor('java');
-    this.javaWorkerClient = new JavaWorkerClient({
-      workerUrl: this.assets.javaWorker,
-      ...(javaWorkerFactory ? { workerFactory: javaWorkerFactory, isolatedRuntimeStorage: true } : {}),
-      debug: options.debug,
-      workerIdleTimeoutMs: options.java?.workerIdleTimeoutMs,
-      compileCacheLimit: options.java?.compileCacheLimit,
-      externalCompilerUrl: options.java?.externalCompilerUrl,
-      cheerpjLoaderUrl: options.java?.cheerpjLoaderUrl,
-      assetPreflight: preflight('java', ['worker']),
-      runtimeAssetPreflight: preflight('java', [
+  })
+);
+
+const javaWorkerClientLayer = Layer.scoped(
+  JavaWorkerClientService,
+  scopedWorkerClient((ctx, hostSlot) => {
+    const workerFactory = hostSlot.workerFactoryFor('java');
+    const javaManifest = ctx.assets.runtimeManifests?.java;
+    return new JavaWorkerClient({
+      workerUrl: ctx.assets.javaWorker,
+      ...(workerFactory ? { workerFactory, isolatedRuntimeStorage: true } : {}),
+      debug: ctx.options.debug,
+      workerIdleTimeoutMs: ctx.options.java?.workerIdleTimeoutMs,
+      compileCacheLimit: ctx.options.java?.compileCacheLimit,
+      externalCompilerUrl: ctx.options.java?.externalCompilerUrl,
+      cheerpjLoaderUrl: ctx.options.java?.cheerpjLoaderUrl,
+      assetPreflight: ctx.preflight('java', ['worker']),
+      runtimeAssetPreflight: ctx.preflight('java', [
         'loader',
         'helperJar',
         'compilerJar',
@@ -286,34 +403,41 @@ class BrowserHarnessRuntime implements BrowserHarness {
       ...(javaManifest
         ? {
             runtimeAssets: {
-              ...(manifestAsset('java', 'loader')?.url
-                ? { loaderUrl: manifestAsset('java', 'loader')?.url }
+              ...(ctx.manifestAsset('java', 'loader')?.url
+                ? { loaderUrl: ctx.manifestAsset('java', 'loader')?.url }
                 : {}),
-              ...(manifestAsset('java', 'helperJar')?.url
-                ? { helperJarUrl: manifestAsset('java', 'helperJar')?.runtimePath ?? manifestAsset('java', 'helperJar')?.url }
+              ...(ctx.manifestAsset('java', 'helperJar')?.url
+                ? { helperJarUrl: ctx.manifestAsset('java', 'helperJar')?.runtimePath ?? ctx.manifestAsset('java', 'helperJar')?.url }
                 : {}),
-              ...(manifestAsset('java', 'compilerJar')?.url
-                ? { compilerJarUrl: manifestAsset('java', 'compilerJar')?.runtimePath ?? manifestAsset('java', 'compilerJar')?.url }
+              ...(ctx.manifestAsset('java', 'compilerJar')?.url
+                ? { compilerJarUrl: ctx.manifestAsset('java', 'compilerJar')?.runtimePath ?? ctx.manifestAsset('java', 'compilerJar')?.url }
                 : {}),
-              ...(manifestAsset('java', 'rewriterJar')?.url
-                ? { rewriterJarUrl: manifestAsset('java', 'rewriterJar')?.runtimePath ?? manifestAsset('java', 'rewriterJar')?.url }
+              ...(ctx.manifestAsset('java', 'rewriterJar')?.url
+                ? { rewriterJarUrl: ctx.manifestAsset('java', 'rewriterJar')?.runtimePath ?? ctx.manifestAsset('java', 'rewriterJar')?.url }
                 : {}),
-              ...(manifestAsset('java', 'parserJar')?.url
-                ? { parserJarUrl: manifestAsset('java', 'parserJar')?.runtimePath ?? manifestAsset('java', 'parserJar')?.url }
+              ...(ctx.manifestAsset('java', 'parserJar')?.url
+                ? { parserJarUrl: ctx.manifestAsset('java', 'parserJar')?.runtimePath ?? ctx.manifestAsset('java', 'parserJar')?.url }
                 : {}),
             },
           }
         : {}),
     });
-    const csharpWorkerFactory = workerFactoryFor('csharp');
-    this.csharpWorkerClient = new CSharpWorkerClient({
-      workerUrl: this.assets.csharpWorker,
-      ...(csharpWorkerFactory ? { workerFactory: csharpWorkerFactory } : {}),
-      assetBaseUrl: this.assets.csharpAssetBaseUrl,
-      debug: options.debug,
-      workerIdleTimeoutMs: options.csharp?.workerIdleTimeoutMs,
-      assetPreflight: preflight('csharp', ['worker']),
-      runtimeAssetPreflight: preflight('csharp', ['assetBaseUrl', 'dependencies']),
+  })
+);
+
+const csharpWorkerClientLayer = Layer.scoped(
+  CSharpWorkerClientService,
+  scopedWorkerClient((ctx, hostSlot) => {
+    const workerFactory = hostSlot.workerFactoryFor('csharp');
+    const csharpDependencyDescriptors = ctx.manifestAssetCollection('csharp', 'dependencies');
+    return new CSharpWorkerClient({
+      workerUrl: ctx.assets.csharpWorker,
+      ...(workerFactory ? { workerFactory } : {}),
+      assetBaseUrl: ctx.assets.csharpAssetBaseUrl,
+      debug: ctx.options.debug,
+      workerIdleTimeoutMs: ctx.options.csharp?.workerIdleTimeoutMs,
+      assetPreflight: ctx.preflight('csharp', ['worker']),
+      runtimeAssetPreflight: ctx.preflight('csharp', ['assetBaseUrl', 'dependencies']),
       ...(csharpDependencyDescriptors
         ? {
             runtimeDependencies: Object.fromEntries(
@@ -322,12 +446,18 @@ class BrowserHarnessRuntime implements BrowserHarness {
           }
         : {}),
     });
-    const cppWorkerFactory = workerFactoryFor('cpp');
-    this.cppWorkerClient = new CppWorkerClient({
-      workerUrl: this.assets.cppWorker,
-      ...(cppWorkerFactory ? { workerFactory: cppWorkerFactory } : {}),
-      assetPreflight: preflight('cpp', ['worker']),
-      runtimeAssetPreflight: preflight('cpp', [
+  })
+);
+
+const cppWorkerClientLayer = Layer.scoped(
+  CppWorkerClientService,
+  scopedWorkerClient((ctx, hostSlot) => {
+    const workerFactory = hostSlot.workerFactoryFor('cpp');
+    return new CppWorkerClient({
+      workerUrl: ctx.assets.cppWorker,
+      ...(workerFactory ? { workerFactory } : {}),
+      assetPreflight: ctx.preflight('cpp', ['worker']),
+      runtimeAssetPreflight: ctx.preflight('cpp', [
         'compilerFrame',
         'compilerWorker',
         'runtimeHeader',
@@ -337,36 +467,123 @@ class BrowserHarnessRuntime implements BrowserHarness {
         'sysroot',
         'toolchain',
       ]),
-      compilerFrameUrl: this.assets.cppCompilerFrame,
-      compilerWorkerUrl: this.assets.cppCompilerWorker,
-      clangWasmUrl: this.assets.cppClangWasm,
-      lldWasmUrl: this.assets.cppLldWasm,
-      sysrootUrl: this.assets.cppSysroot,
-      runtimeHeaderUrl: this.assets.cppRuntimeHeader,
-      compilerBundleUrl: this.assets.cppCompilerBundle,
-      toolchainIntegrity: this.assets.cppToolchainIntegrity,
-      debug: options.debug,
-      initTimeoutMs: options.cpp?.initTimeoutMs,
-      executionTimeoutMs: options.cpp?.executionTimeoutMs,
-      tracingTimeoutMs: options.cpp?.tracingTimeoutMs,
-      interviewTimeoutMs: options.cpp?.interviewTimeoutMs,
-      workerIdleTimeoutMs: options.cpp?.workerIdleTimeoutMs,
-      programCacheLimit: options.cpp?.programCacheLimit,
-      usePrecompiledHeader: options.cpp?.usePrecompiledHeader,
-      externalCompilerUrl: options.cpp?.externalCompilerUrl,
+      compilerFrameUrl: ctx.assets.cppCompilerFrame,
+      compilerWorkerUrl: ctx.assets.cppCompilerWorker,
+      clangWasmUrl: ctx.assets.cppClangWasm,
+      lldWasmUrl: ctx.assets.cppLldWasm,
+      sysrootUrl: ctx.assets.cppSysroot,
+      runtimeHeaderUrl: ctx.assets.cppRuntimeHeader,
+      compilerBundleUrl: ctx.assets.cppCompilerBundle,
+      toolchainIntegrity: ctx.assets.cppToolchainIntegrity,
+      debug: ctx.options.debug,
+      initTimeoutMs: ctx.options.cpp?.initTimeoutMs,
+      executionTimeoutMs: ctx.options.cpp?.executionTimeoutMs,
+      tracingTimeoutMs: ctx.options.cpp?.tracingTimeoutMs,
+      workerIdleTimeoutMs: ctx.options.cpp?.workerIdleTimeoutMs,
+      programCacheLimit: ctx.options.cpp?.programCacheLimit,
+      usePrecompiledHeader: ctx.options.cpp?.usePrecompiledHeader,
+      externalCompilerUrl: ctx.options.cpp?.externalCompilerUrl,
     });
-      this.clients = {
-        python: createPythonRuntimeClient(this.pythonWorkerClient),
-        javascript: createJavaScriptRuntimeClient('javascript', this.javaScriptWorkerClient),
-        typescript: createJavaScriptRuntimeClient('typescript', this.javaScriptWorkerClient),
-        java: createJavaRuntimeClient(this.javaWorkerClient),
-        csharp: createCSharpRuntimeClient(this.csharpWorkerClient),
-        cpp: createCppRuntimeClient(this.cppWorkerClient),
-      };
-    } catch (error) {
-      this.executionHost?.dispose();
-      throw error;
-    }
+  })
+);
+
+class RuntimeClientsService extends Context.Tag('BrowserHarness/RuntimeClients')<
+  RuntimeClientsService,
+  Readonly<Record<Language, RuntimeClient>>
+>() {}
+
+const runtimeClientsLayer = Layer.effect(
+  RuntimeClientsService,
+  Effect.gen(function* () {
+    const python = yield* PythonWorkerClientService;
+    const javascript = yield* JavaScriptWorkerClientService;
+    const java = yield* JavaWorkerClientService;
+    const csharp = yield* CSharpWorkerClientService;
+    const cpp = yield* CppWorkerClientService;
+    return {
+      python: createPythonRuntimeClient(python),
+      javascript: createJavaScriptRuntimeClient('javascript', javascript),
+      typescript: createJavaScriptRuntimeClient('typescript', javascript),
+      java: createJavaRuntimeClient(java),
+      csharp: createCSharpRuntimeClient(csharp),
+      cpp: createCppRuntimeClient(cpp),
+    };
+  })
+);
+
+interface HarnessWorkerClients {
+  readonly python: PythonWorkerClient;
+  readonly javascript: JavaScriptWorkerClient;
+  readonly java: JavaWorkerClient;
+  readonly csharp: CSharpWorkerClient;
+  readonly cpp: CppWorkerClient;
+}
+
+type HarnessServices =
+  | HarnessContext
+  | ExecutionHostService
+  | PythonWorkerClientService
+  | JavaScriptWorkerClientService
+  | JavaWorkerClientService
+  | CSharpWorkerClientService
+  | CppWorkerClientService
+  | RuntimeClientsService;
+
+class BrowserHarnessRuntime implements BrowserHarness {
+  readonly assets: BrowserHarnessAssets;
+  readonly environment: BrowserRuntimeEnvironment;
+  readonly supportedLanguages: readonly Language[];
+
+  private readonly managed: ManagedRuntime.ManagedRuntime<HarnessServices, Error>;
+  private readonly clients: Readonly<Record<Language, RuntimeClient>>;
+  private readonly workerClients: HarnessWorkerClients;
+  private readonly executionHostSlot: ExecutionHostSlot;
+  private readonly executionHostProviders: ReadonlySet<Language>;
+
+  constructor(options: CreateBrowserHarnessOptions = {}) {
+    // Pure option validation runs before any layer exists, keeping
+    // construction-time TypeErrors synchronous and resource-free.
+    const context = resolveHarnessContext(options);
+    this.environment = context.environment;
+    this.assets = context.assets;
+    this.supportedLanguages = context.supportedLanguages;
+    this.executionHostProviders = context.executionHostProviders;
+
+    const workerClientLayers = Layer.mergeAll(
+      pythonWorkerClientLayer,
+      javaScriptWorkerClientLayer,
+      javaWorkerClientLayer,
+      csharpWorkerClientLayer,
+      cppWorkerClientLayer
+    );
+    const harnessLayer = runtimeClientsLayer.pipe(
+      Layer.provideMerge(workerClientLayers),
+      Layer.provideMerge(executionHostLayer),
+      Layer.provideMerge(Layer.succeed(HarnessContext, context))
+    );
+    this.managed = ManagedRuntime.make(harnessLayer);
+
+    // Force the graph eagerly: the previous constructor built everything
+    // up front, and construction failures must keep surfacing here. A build
+    // failure unwinds already-acquired finalizers (host disposal) on its own.
+    this.clients = this.runHarnessSync(RuntimeClientsService);
+    this.workerClients = this.runHarnessSync(
+      Effect.all({
+        python: PythonWorkerClientService,
+        javascript: JavaScriptWorkerClientService,
+        java: JavaWorkerClientService,
+        csharp: CSharpWorkerClientService,
+        cpp: CppWorkerClientService,
+      })
+    );
+    this.executionHostSlot = this.runHarnessSync(ExecutionHostService);
+  }
+
+  /** Run against the harness runtime, rethrowing failures/defects unwrapped. */
+  private runHarnessSync<A>(effect: Effect.Effect<A, Error, HarnessServices>): A {
+    const exit = this.managed.runSyncExit(effect);
+    if (Exit.isSuccess(exit)) return exit.value;
+    throw Cause.squash(exit.cause);
   }
 
   getClient(language: Language): RuntimeClient {
@@ -404,7 +621,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
     return Promise.all([
       this.environment.preflight(language),
       this.executionHostProviders.has(language)
-        ? this.executionHost?.ready() ?? Promise.resolve()
+        ? this.executionHostSlot.host?.ready() ?? Promise.resolve()
         : Promise.resolve(),
     ]).then(([readiness]) => readiness);
   }
@@ -412,7 +629,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
   preflight(): Promise<BrowserRuntimeEnvironmentReport> {
     return Promise.all([
       this.environment.preflightAll(),
-      this.executionHost?.ready() ?? Promise.resolve(),
+      this.executionHostSlot.host?.ready() ?? Promise.resolve(),
     ]).then(([report]) => report);
   }
 
@@ -421,19 +638,19 @@ class BrowserHarnessRuntime implements BrowserHarness {
       return Promise.reject(new Error(`Runtime for language "${language}" is not selected in this browser environment.`));
     }
     if (language === 'python') {
-      return this.pythonWorkerClient.warmup();
+      return this.workerClients.python.warmup();
     }
     if (language === 'java') {
-      return this.javaWorkerClient.warmup();
+      return this.workerClients.java.warmup();
     }
     if (language === 'cpp') {
-      return this.cppWorkerClient.warmup();
+      return this.workerClients.cpp.warmup();
     }
     if (language === 'csharp') {
-      return this.csharpWorkerClient.warmup();
+      return this.workerClients.csharp.warmup();
     }
     if (language === 'typescript') {
-      return this.javaScriptWorkerClient.warmup('typescript');
+      return this.workerClients.javascript.warmup('typescript');
     }
     return this.getClient(language).init();
   }
@@ -441,31 +658,31 @@ class BrowserHarnessRuntime implements BrowserHarness {
   disposeLanguage(language: Language): void {
     if (!this.supportedLanguages.includes(language)) return;
     if (language === 'python') {
-      this.pythonWorkerClient.terminate();
+      this.workerClients.python.terminate();
       return;
     }
     if (language === 'java') {
-      this.javaWorkerClient.terminate();
+      this.workerClients.java.terminate();
       return;
     }
     if (language === 'csharp') {
-      this.csharpWorkerClient.terminate();
+      this.workerClients.csharp.terminate();
       return;
     }
     if (language === 'cpp') {
-      this.cppWorkerClient.terminate();
+      this.workerClients.cpp.terminate();
       return;
     }
-    this.javaScriptWorkerClient.terminate();
+    this.workerClients.javascript.terminate();
   }
 
   dispose(): void {
-    this.pythonWorkerClient.terminate();
-    this.javaScriptWorkerClient.terminate();
-    this.javaWorkerClient.terminate();
-    this.csharpWorkerClient.terminate();
-    this.cppWorkerClient.terminate();
-    this.executionHost?.dispose();
+    // Close the runtime's scope: every worker client finalizer runs first,
+    // then the execution host's — reverse acquisition order, by construction.
+    const exit = Effect.runSyncExit(this.managed.disposeEffect);
+    if (Exit.isFailure(exit)) {
+      throw Cause.squash(exit.cause);
+    }
   }
 }
 

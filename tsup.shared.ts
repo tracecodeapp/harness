@@ -16,7 +16,7 @@ export const commonConfig = {
     js: 'var define = undefined;',
   },
   skipNodeModulesBundle: true,
-  noExternal: ['just-bash', 'balanced-match', 'brace-expansion', 'diff', 'fflate', 'minimatch', 'sprintf-js', 'turndown'],
+  noExternal: ['just-bash', 'balanced-match', 'brace-expansion', 'diff', 'effect', 'fflate', 'minimatch', 'sprintf-js', 'turndown'],
   external: ['typescript'],
 } as const;
 

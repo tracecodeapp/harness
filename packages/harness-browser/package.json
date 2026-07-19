@@ -46,6 +46,7 @@
   },
   "sideEffects": false,
   "dependencies": {
-    "@tracecode/harness-core": "workspace:*"
+    "@tracecode/harness-core": "workspace:*",
+    "effect": "^3.22.0"
   }
 }
