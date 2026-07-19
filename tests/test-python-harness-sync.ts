@@ -18,7 +18,7 @@ const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core
 const SHARED_POLICY_PATH = join(process.cwd(), 'workers', 'shared', 'runtime-kernel-policy-classic.js');
 const LEGACY_RUNTIME_PATH = join(process.cwd(), 'packages', 'harness-python', 'src', 'pyodide.ts');
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -157,11 +157,11 @@ async function assertWorkerInitWarmupContract(
 
   const warmupMessage = await send('warmup');
   assertCondition(warmupMessage.type === 'warmup-result', 'Python worker warmup should return warmup-result');
-  assertCondition(loadPyodideCount === 1, 'Python worker warmup should load Pyodide exactly once');
+  assertCondition((loadPyodideCount as number) === 1, 'Python worker warmup should load Pyodide exactly once');
 
   const repeatedWarmupMessage = await send('warmup');
   assertCondition(repeatedWarmupMessage.type === 'warmup-result', 'Repeated Python worker warmup should return warmup-result');
-  assertCondition(loadPyodideCount === 1, 'Repeated Python worker warmup should reuse the loaded runtime');
+  assertCondition((loadPyodideCount as number) === 1, 'Repeated Python worker warmup should reuse the loaded runtime');
 
   console.log('PASS: Python worker init stays light and warmup loads runtime');
 }
@@ -505,6 +505,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

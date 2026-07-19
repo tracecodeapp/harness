@@ -155,24 +155,13 @@ async function main(): Promise<void> {
       const harness = createBrowserHarness({ assetBaseUrl: '/workers' });
       try {
         const client = harness.getClient('javascript');
-        const control = await client.executeCode(
-          'function add(a, b) { return a + b; }',
-          'add',
-          { a: 2, b: 3 },
-          'function'
-        );
-        const computed = await client.executeCode(
-          `function escape() {
+        const control = await client.executeCode({ code: 'function add(a, b) { return a + b; }', functionName: 'add', inputs: { a: 2, b: 3 }, executionStyle: 'function' });
+        const computed = await client.executeCode({ code: `function escape() {
   const key = 'con' + 'structor';
   const scope = ({})[key][key]('return self')();
   return scope.fetch(${JSON.stringify(`${testOrigin}/authority-escape/classic-computed`)});
-}`,
-          'escape',
-          {},
-          'function'
-        );
-        const deferred = await client.executeCode(
-          `async function escapeLater() {
+}`, functionName: 'escape', inputs: {}, executionStyle: 'function' });
+        const deferred = await client.executeCode({ code: `async function escapeLater() {
   const key = 'con' + 'structor';
   const scope = ({})[key][key]('return self')();
   const schedule = scope.setTimeout;
@@ -184,30 +173,17 @@ async function main(): Promise<void> {
       reject(error);
     }
   }, 0));
-}`,
-          'escapeLater',
-          {},
-          'function'
-        );
-        const typed = await harness.getClient('typescript').executeCode(
-          'function multiply(a: number, b: number): number { return a * b; }',
-          'multiply',
-          { a: 3, b: 4 },
-          'function'
-        );
-        const traced = await client.executeWithTracing(
-          'function increment(value) { return value + 1; }',
-          'increment',
-          { value: 8 }
-        );
+}`, functionName: 'escapeLater', inputs: {}, executionStyle: 'function' });
+        const typed = await harness.getClient('typescript').executeCode({ code: 'function multiply(a: number, b: number): number { return a * b; }', functionName: 'multiply', inputs: { a: 3, b: 4 }, executionStyle: 'function' });
+        const traced = await client.executeWithTracing({ code: 'function increment(value) { return value + 1; }', functionName: 'increment', inputs: { value: 8 } });
         return {
           control,
           computed,
           deferred,
           typed,
           traced: {
-            success: traced.success,
-            output: traced.output,
+            success: traced.kind === 'completed',
+            output: traced.kind === 'completed' ? traced.output : undefined,
             eventCount: traced.trace?.events?.length ?? 0,
           },
         };
@@ -216,16 +192,16 @@ async function main(): Promise<void> {
       }
     }, { testOrigin: origin });
 
-    assertCondition(classic.control.success && classic.control.output === 5, `Classic control failed: ${JSON.stringify(classic)}`);
+    assertCondition(classic.control.kind === 'completed' && classic.control.output === 5, `Classic control failed: ${JSON.stringify(classic)}`);
     assertCondition(
-      classic.computed.success === false && classic.computed.error?.includes('EACCES'),
+      classic.computed.kind === 'failed' && classic.computed.error.includes('EACCES'),
       `Classic computed Function escape was not denied: ${JSON.stringify(classic.computed)}`
     );
     assertCondition(
-      classic.deferred.success === false && classic.deferred.error?.includes('EACCES'),
+      classic.deferred.kind === 'failed' && classic.deferred.error.includes('EACCES'),
       `Classic deferred Function escape was not denied: ${JSON.stringify(classic.deferred)}`
     );
-    assertCondition(classic.typed.success && classic.typed.output === 12, `TypeScript control failed: ${JSON.stringify(classic.typed)}`);
+    assertCondition(classic.typed.kind === 'completed' && classic.typed.output === 12, `TypeScript control failed: ${JSON.stringify(classic.typed)}`);
     assertCondition(
       classic.traced.success && classic.traced.output === 9 && classic.traced.eventCount > 0,
       `Classic tracing control failed: ${JSON.stringify(classic.traced)}`
@@ -328,6 +304,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  console.error(error);
   process.exitCode = 1;
 });

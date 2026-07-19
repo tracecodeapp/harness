@@ -138,31 +138,19 @@ async function main(): Promise<void> {
       workerUrl: '/workers/javascript/javascript-worker.js',
       debug: false,
     });
-    const plainOnlyResult = await plainJavaScriptClient.executeCode(
-      'function add(a, b) { return a + b; }',
-      'add',
-      { a: 2, b: 3 },
-      'function',
-      'javascript'
-    );
+    const plainOnlyResult = await plainJavaScriptClient.executeCode({ code: 'function add(a, b) { return a + b; }', functionName: 'add', inputs: { a: 2, b: 3 }, executionStyle: 'function', language: 'javascript' });
     assertCondition(
-      plainOnlyResult.success === true && plainOnlyResult.output === 5,
+      plainOnlyResult.kind === 'completed' && plainOnlyResult.output === 5,
       `Plain-only JavaScript execution failed: ${JSON.stringify(plainOnlyResult)}`
     );
-    const computedConstructorEscape = await plainJavaScriptClient.executeCode(
-      `function escape() {
+    const computedConstructorEscape = await plainJavaScriptClient.executeCode({ code: `function escape() {
   const key = 'con' + 'structor';
   const scope = ({})[key][key]('return self')();
   return scope.fetch('https://escape.invalid/');
-}`,
-      'escape',
-      {},
-      'function',
-      'javascript'
-    );
+}`, functionName: 'escape', inputs: {}, executionStyle: 'function', language: 'javascript' });
     assertCondition(
-      computedConstructorEscape.success === false &&
-        computedConstructorEscape.error?.includes('EACCES') === true,
+      computedConstructorEscape.kind === 'failed' &&
+        computedConstructorEscape.error.includes('EACCES'),
       `Computed Function-constructor escape should fail at the executor boundary: ${JSON.stringify(computedConstructorEscape)}`
     );
     assertCondition(
@@ -182,18 +170,12 @@ async function main(): Promise<void> {
       debug: false,
     });
 
-    const poisonResult = await client.executeCode(
-      `function poison(value: number) {
+    const poisonResult = await client.executeCode({ code: `function poison(value: number) {
   (Array.prototype as any).__tracecodeLifecyclePoison = 7331;
   return value + 1;
-}`,
-      'poison',
-      { value: 1 },
-      'function',
-      'typescript'
-    );
+}`, functionName: 'poison', inputs: { value: 1 }, executionStyle: 'function', language: 'typescript' });
     assertCondition(
-      poisonResult.success === true && poisonResult.output === 2,
+      poisonResult.kind === 'completed' && poisonResult.output === 2,
       `First prepared TypeScript execution failed: ${JSON.stringify(poisonResult)}`
     );
     const firstCoordinator = VmJavaScriptWorker.instances.find((worker) => worker.role === 'coordinator');
@@ -205,17 +187,11 @@ async function main(): Promise<void> {
       'Execution-worker poisoning must not reach the trusted coordinator intrinsic'
     );
 
-    const inspectResult = await client.executeCode(
-      `function inspect(): number | null {
+    const inspectResult = await client.executeCode({ code: `function inspect(): number | null {
   return (Array.prototype as any).__tracecodeLifecyclePoison ?? null;
-}`,
-      'inspect',
-      {},
-      'function',
-      'typescript'
-    );
+}`, functionName: 'inspect', inputs: {}, executionStyle: 'function', language: 'typescript' });
     assertCondition(
-      inspectResult.success === true && inspectResult.output === null,
+      inspectResult.kind === 'completed' && inspectResult.output === null,
       `Disposable execution worker leaked a poisoned intrinsic into a later run: ${JSON.stringify(inspectResult)}`
     );
 
@@ -255,15 +231,9 @@ async function main(): Promise<void> {
     const prepareMessagesBeforeJavaScript = coordinatorWorkers[0].postedTypes.filter(
       (type) => type === 'prepare-execution'
     ).length;
-    const javaScriptResult = await client.executeCode(
-      'function add(a, b) { return a + b; }',
-      'add',
-      { a: 4, b: 5 },
-      'function',
-      'javascript'
-    );
+    const javaScriptResult = await client.executeCode({ code: 'function add(a, b) { return a + b; }', functionName: 'add', inputs: { a: 4, b: 5 }, executionStyle: 'function', language: 'javascript' });
     assertCondition(
-      javaScriptResult.success === true && javaScriptResult.output === 9,
+      javaScriptResult.kind === 'completed' && javaScriptResult.output === 9,
       `Plain JavaScript execution failed: ${JSON.stringify(javaScriptResult)}`
     );
     assertCondition(
@@ -276,31 +246,18 @@ async function main(): Promise<void> {
       'Plain JavaScript execution should bypass compiler preparation'
     );
 
-    const batchResult = await client.executeCodeBatch(
-      'function double(value: number): number { return value * 2; }',
-      'double',
-      [{ value: 2 }, { value: 5 }],
-      'function',
-      'typescript'
-    );
+    const batchResult = await client.executeCodeBatch({ code: 'function double(value: number): number { return value * 2; }', functionName: 'double', inputBatch: [{ value: 2 }, { value: 5 }], executionStyle: 'function', language: 'typescript' });
     assertCondition(
-      batchResult.success === true &&
-        JSON.stringify(batchResult.results.map((result) => result.output)) === JSON.stringify([4, 10]),
+      batchResult.results.every((result) => result.kind === 'completed') &&
+        JSON.stringify(batchResult.results.map((result) => (result.kind === 'completed' ? result.output : undefined))) === JSON.stringify([4, 10]),
       `Prepared TypeScript batch execution failed: ${JSON.stringify(batchResult)}`
     );
 
-    const traceResult = await client.executeWithTracing(
-      `function increment(value) {
+    const traceResult = await client.executeWithTracing({ code: `function increment(value) {
   return value + 1;
-}`,
-      'increment',
-      { value: 7 },
-      undefined,
-      'function',
-      'javascript'
-    );
+}`, functionName: 'increment', inputs: { value: 7 }, executionStyle: 'function', language: 'javascript' });
     assertCondition(
-      traceResult.success === true &&
+      traceResult.kind === 'completed' &&
         traceResult.output === 8 &&
         Array.isArray(traceResult.trace?.events) &&
         traceResult.trace.events.some((event) => event.kind === 'return'),
@@ -324,7 +281,7 @@ async function main(): Promise<void> {
     console.log('PASS: JavaScript/TypeScript coordinator and disposable execution lifecycle');
   } finally {
     if (originalWorker === undefined) {
-      delete (globalThis as typeof globalThis & { Worker?: typeof Worker }).Worker;
+      delete (globalThis as { Worker?: typeof Worker }).Worker;
     } else {
       Object.defineProperty(globalThis, 'Worker', {
         configurable: true,

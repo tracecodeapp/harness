@@ -40,6 +40,9 @@ interface CSharpWorkerResponse {
     compileMs?: number;
     runMs?: number;
     totalMs?: number;
+    batchMode?: string;
+    batchFallbackReason?: string;
+    batchCaseCount?: number;
   };
 }
 
@@ -53,6 +56,9 @@ interface CSharpWorkerBatchResponse {
     runMs?: number;
     totalMs?: number;
     hostCallMs?: number;
+    batchMode?: string;
+    batchFallbackReason?: string;
+    batchCaseCount?: number;
   };
 }
 
@@ -91,7 +97,10 @@ type CSharpProjectWorkerRequest = {
   cwd: string;
   env: Record<string, string>;
   stdinPipe?: { buffer: SharedArrayBuffer };
+  options?: Record<string, unknown>;
   project: {
+    cwd?: string;
+    workspaceAlias?: string;
     files: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
     kernelFiles?: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
     kernelDevices?: Array<{
@@ -164,7 +173,7 @@ function resolveDotnetCommand(): string {
   throw new Error('Unable to find dotnet. Set DOTNET_ROOT, install dotnet, or run scripts/update-csharp-wasm-runtime.sh.');
 }
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -421,15 +430,19 @@ async function runWorkerCase(
     timeoutMs?: number;
     maxTraceSteps?: number;
     executionStyle?: 'function' | 'solution-method' | 'ops-class';
-    messageType?: 'execute-code' | 'execute-code-interview' | 'execute-with-tracing';
+    messageType?: 'execute-code' | 'execute-with-tracing';
     pageBuiltInputs?: { kind: 'deep-node-chain'; depth: number };
+    maxLineEvents?: number;
+    maxSingleLineHits?: number;
+    maxStoredEvents?: number;
+    minimalTrace?: boolean;
   } = {}
 ): Promise<CSharpWorkerResponse> {
   return withProgress(`${options.messageType ?? (trace ? 'execute-with-tracing' : 'execute-code')} ${functionName || '<script>'}`, () =>
     page.evaluate(
     async ({ code, functionName, inputs, assetBaseUrl, trace, options, workerRequestTimeoutMs, debugProgress }) => {
       const harnessKey = '__tracecodeCSharpWorkerHarness';
-      const logProgress = (message) => {
+      const logProgress = (message: unknown) => {
         if (debugProgress) console.log(message);
       };
       async function createHarness() {
@@ -444,7 +457,7 @@ async function runWorkerCase(
             reject(error);
           }
           pending.clear();
-          globalThis[harnessKey] = undefined;
+          (globalThis as Record<string, unknown>)[harnessKey] = undefined;
         }
 
         worker.addEventListener('message', (event) => {
@@ -468,7 +481,7 @@ async function runWorkerCase(
           terminate(new Error(event.message || 'C# worker failed'));
         });
 
-        function send(type, payload) {
+        function send(type: string, payload?: unknown) {
           const id = String(++nextId);
           const protocolToken = 'csharp-test-token-' + id;
           return new Promise((resolve, reject) => {
@@ -487,19 +500,19 @@ async function runWorkerCase(
         return harness;
       }
 
-      let harness = globalThis[harnessKey];
+      let harness = (globalThis as Record<string, unknown>)[harnessKey] as Awaited<ReturnType<typeof createHarness>> | undefined;
       if (!harness || harness.assetBaseUrl !== assetBaseUrl) {
         harness = await createHarness();
-        globalThis[harnessKey] = harness;
+        (globalThis as Record<string, unknown>)[harnessKey] = harness;
       }
 
       const { messageType, ...requestOptions } = options;
       function buildInputsInPage() {
         if (requestOptions.pageBuiltInputs?.kind !== 'deep-node-chain') return inputs;
-        const root = { __type__: 'Node', val: 0, children: [] };
+        const root = { __type__: 'Node', val: 0, children: [] as unknown[] };
         let cursor = root;
         for (let depth = 0; depth < requestOptions.pageBuiltInputs.depth; depth++) {
-          const child = { __type__: 'Node', val: depth + 1, children: [] };
+          const child = { __type__: 'Node', val: depth + 1, children: [] as unknown[] };
           cursor.children = [child];
           cursor = child;
         }
@@ -576,7 +589,7 @@ async function runWorkerBatchCase(
           terminate(new Error(event.message || 'C# worker failed'));
         });
 
-        function send(type, payload) {
+        function send(type: string, payload?: unknown) {
           const id = String(++nextId);
           const protocolToken = 'csharp-test-token-' + id;
           return new Promise((resolve, reject) => {
@@ -616,7 +629,7 @@ async function runProjectWorkerCase(
   return withProgress(`execute-project-csharp ${request.source} ${request.scriptPath}`, () =>
     page.evaluate(
       async ({ request, assetBaseUrl, workerRequestTimeoutMs }) => {
-      function requestWithBrowserStdinPipe(request) {
+      function requestWithBrowserStdinPipe(request: Record<string, unknown>) {
         const bytes = Array.isArray(request.stdinPipeBytes) ? request.stdinPipeBytes : undefined;
         if (!bytes) return request;
         const buffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3 + Math.max(2, bytes.length + 1));
@@ -665,7 +678,7 @@ async function runProjectWorkerCase(
         terminate(new Error(event.message || 'C# worker failed'));
       });
 
-      function send(type, payload) {
+      function send(type: string, payload?: unknown) {
         const id = String(++nextId);
         const protocolToken = 'csharp-test-token-' + id;
         return new Promise((resolve, reject) => {
@@ -698,7 +711,7 @@ async function runProjectWorkerSequenceCase(
   return withProgress(`execute-project-csharp sequence ${requests.length}`, () =>
     page.evaluate(
       async ({ requests, assetBaseUrl, workerRequestTimeoutMs }) => {
-      function requestWithBrowserStdinPipe(request) {
+      function requestWithBrowserStdinPipe(request: Record<string, unknown>) {
         const bytes = Array.isArray(request.stdinPipeBytes) ? request.stdinPipeBytes : undefined;
         if (!bytes) return request;
         const buffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3 + Math.max(2, bytes.length + 1));
@@ -747,7 +760,7 @@ async function runProjectWorkerSequenceCase(
         terminate(new Error(event.message || 'C# worker failed'));
       });
 
-      function send(type, payload) {
+      function send(type: string, payload?: unknown) {
         const id = String(++nextId);
         const protocolToken = 'csharp-test-token-' + id;
         return new Promise((resolve, reject) => {
@@ -2025,22 +2038,6 @@ async function main(): Promise<void> {
         && event.target?.variable === 'j'
         && event.value === 0) === true,
       `C# worker one-line while body should emit scalar j write, received ${JSON.stringify(oneLineWhileLpsFallback.events)}`
-    );
-
-    const interviewAdd = await runWorkerCase(
-      page,
-      fixture('add.cs'),
-      'Add',
-      { a: 2, b: 3 },
-      assetBaseUrl,
-      false,
-      { messageType: 'execute-code-interview' }
-    );
-    assertCondition(interviewAdd.success, `C# worker interview Add should succeed: ${interviewAdd.error ?? 'unknown error'}`);
-    assertCondition(interviewAdd.output === 5, `C# worker interview Add should return 5, received ${JSON.stringify(interviewAdd.output)}`);
-    assertCondition(
-      !interviewAdd.events?.some((event) => event.kind !== 'stdout'),
-      `C# worker interview Add should return a non-trace execution result, received ${JSON.stringify(interviewAdd.events)}`
     );
 
     const tracedAdd = await runWorkerCase(
@@ -4416,7 +4413,7 @@ async function main(): Promise<void> {
       `C# worker traced dictionary increment should include keyed write indexSources, received ${JSON.stringify(tracedDictionaryIncrementProvenance.events)}`
     );
 
-    const tracedInterviewCollections = await runWorkerCase(
+    const tracedCollectionsCase = await runWorkerCase(
       page,
       [
         'using System.Collections.Generic;',
@@ -4439,24 +4436,24 @@ async function main(): Promise<void> {
       true
     );
     assertCondition(
-      tracedInterviewCollections.success,
-      `C# worker traced interview collections case should succeed: ${tracedInterviewCollections.error ?? 'unknown error'}`
+      tracedCollectionsCase.success,
+      `C# worker traced collections case should succeed: ${tracedCollectionsCase.error ?? 'unknown error'}`
     );
     assertCondition(
-      tracedInterviewCollections.output === 6,
-      `C# worker traced interview collections case should return 6, received ${JSON.stringify(tracedInterviewCollections.output)}`
+      tracedCollectionsCase.output === 6,
+      `C# worker traced collections case should return 6, received ${JSON.stringify(tracedCollectionsCase.output)}`
     );
     assertCondition(
-      tracedInterviewCollections.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'set' && event.method === 'Add') === true,
-      `C# worker traced interview collections case should include HashSet Add, received ${JSON.stringify(tracedInterviewCollections.events)}`
+      tracedCollectionsCase.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'set' && event.method === 'Add') === true,
+      `C# worker traced collections case should include HashSet Add, received ${JSON.stringify(tracedCollectionsCase.events)}`
     );
     assertCondition(
-      tracedInterviewCollections.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'queue' && event.method === 'Dequeue') === true,
-      `C# worker traced interview collections case should include Queue Dequeue, received ${JSON.stringify(tracedInterviewCollections.events)}`
+      tracedCollectionsCase.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'queue' && event.method === 'Dequeue') === true,
+      `C# worker traced collections case should include Queue Dequeue, received ${JSON.stringify(tracedCollectionsCase.events)}`
     );
     assertCondition(
-      tracedInterviewCollections.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'stack' && event.method === 'Pop') === true,
-      `C# worker traced interview collections case should include Stack Pop, received ${JSON.stringify(tracedInterviewCollections.events)}`
+      tracedCollectionsCase.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'stack' && event.method === 'Pop') === true,
+      `C# worker traced collections case should include Stack Pop, received ${JSON.stringify(tracedCollectionsCase.events)}`
     );
 
     const tracedNestedContains = await runWorkerCase(
@@ -4703,10 +4700,10 @@ async function main(): Promise<void> {
         (event.kind === 'write' || event.kind === 'snapshot')
         && event.line === 4
         && event.target?.variable === 'dead'
-        && event.value?.__type__ === 'set'
-        && Array.isArray(event.value.values)
-        && event.value.values.includes('0201')
-        && event.value.values.includes('0101')
+        && (event.value as { __type__?: string })?.__type__ === 'set'
+        && Array.isArray((event.value as { values?: unknown[] }).values)
+        && (event.value as { values?: unknown[] }).values?.includes('0201')
+        && (event.value as { values?: unknown[] }).values?.includes('0101')
       ) === true,
       `C# worker traced HashSet constructor consumption should not record an empty dead set, received ${JSON.stringify(tracedHashSetConstructorConsumption.events)}`
     );
@@ -6745,7 +6742,7 @@ async function main(): Promise<void> {
     );
     assertCondition(
       restrictedDeviceRun.events?.some(
-        (event) => event.type === 'output' && event.stream === 'stdout' && event.device === '/dev/stdout' && event.data.includes('stderr-routed')
+        (event) => event.type === 'output' && event.stream === 'stdout' && event.device === '/dev/stdout' && event.data?.includes('stderr-routed')
       ) === true,
       `C# project worker should route device output through kernelDevices, received ${JSON.stringify(restrictedDeviceRun.events)}`
     );
@@ -7741,6 +7738,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

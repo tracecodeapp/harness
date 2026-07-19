@@ -24,7 +24,7 @@ type TraceAccess = {
   method?: string;
   binding?: unknown;
   value?: unknown;
-  args?: unknown[];
+  args?: Record<string, unknown> | unknown[];
 };
 
 type TraceStep = {
@@ -50,7 +50,7 @@ type RuntimeTraceEvent = {
     variable?: string;
   };
   value?: unknown;
-  args?: unknown[];
+  args?: Record<string, unknown> | unknown[];
   callStack?: Array<{ function?: string; args?: Record<string, unknown> }>;
 };
 
@@ -81,7 +81,7 @@ type RuntimeCore = {
     inputs: Record<string, unknown>,
     executionStyle?: string,
     options?: Record<string, unknown>
-  ) => Promise<{ success: boolean; output: unknown; error?: string; consoleOutput?: string[] }>;
+  ) => Promise<{ success: boolean; output: unknown; error?: string; consoleOutput?: string[]; timeoutReason?: string }>;
   executeCodeBatch: (
     deps: RuntimeDeps & {
       INTERVIEW_GUARD_DEFAULTS: {
@@ -110,7 +110,7 @@ type RuntimeDeps = {
   toPythonLiteral: (value: unknown) => string;
 };
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -3737,6 +3737,86 @@ class Solution:
   console.log('PASS: Python executeCode hydrates annotated custom object inputs');
 }
 
+async function assertExecuteCodeGuestLimitsReportStructuredTrips(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  let now = 0;
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    INTERVIEW_GUARD_DEFAULTS: {
+      maxLineEvents: 10000,
+      maxSingleLineHits: 1000,
+      maxCallDepth: 100,
+      maxMemoryBytes: 8 * 1024 * 1024,
+      memoryCheckEvery: 10,
+    },
+    toPythonLiteral,
+    loadPyodideInstance: async () => {},
+    getPyodide: () => ({
+      runPythonAsync: async (code: string) => runPythonAsyncLikePyodide(code),
+    }),
+    performanceNow: () => ++now,
+  };
+
+  // Unlike the warmed Pyodide runtime, cold python3 runs the harness prelude's
+  // imports under the guard, so budgets here leave headroom (~10k line events)
+  // for import machinery before user code starts.
+  const result = await runtime.executeCode(
+    deps,
+    `def solve(n):
+    total = 0
+    while True:
+        total += n`,
+    'solve',
+    { n: 1 },
+    'function',
+    { interviewGuard: true, maxLineEvents: 100000, maxSingleLineHits: 1000 }
+  );
+  assertCondition(
+    result.success === false,
+    `Python guest limit trip should fail the case, received ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.timeoutReason === 'single-line-limit',
+    `Python guest limit trip should report a structured timeoutReason, received ${JSON.stringify(result)}`
+  );
+
+  const recursionResult = await runtime.executeCode(
+    deps,
+    `def solve(n):
+    def dive(depth):
+        return dive(depth + 1)
+    return dive(0)`,
+    'solve',
+    { n: 1 },
+    'function',
+    { interviewGuard: true, maxLineEvents: 100000, maxSingleLineHits: 10000, maxCallDepth: 100 }
+  );
+  assertCondition(
+    recursionResult.success === false && recursionResult.timeoutReason === 'recursion-limit',
+    `Python call-depth trip should report recursion-limit, received ${JSON.stringify(recursionResult)}`
+  );
+
+  const memoryResult = await runtime.executeCode(
+    deps,
+    `def solve(n):
+    hoard = []
+    while True:
+        hoard.append([0] * 100000)`,
+    'solve',
+    { n: 1 },
+    'function',
+    { interviewGuard: true, maxLineEvents: 100000, maxSingleLineHits: 10000, maxMemoryBytes: 8 * 1024 * 1024 }
+  );
+  assertCondition(
+    memoryResult.success === false && memoryResult.timeoutReason === 'memory-limit',
+    `Python memory trip should report memory-limit, received ${JSON.stringify(memoryResult)}`
+  );
+  console.log('PASS: Python executeCode guest limits report structured timeoutReason');
+}
+
 async function assertExecuteCodeBatchIsolatesGlobalsAndMutableInputs(): Promise<void> {
   const runtime = await loadRuntimeCore();
   let now = 0;
@@ -3940,12 +4020,13 @@ async function main(): Promise<void> {
   await assertBuiltinSumTraceRecordingIsBounded();
   await assertFunctionStyleFallsBackToSolutionMethod();
   await assertExecuteCodeHydratesAnnotatedCustomObjects();
+  await assertExecuteCodeGuestLimitsReportStructuredTrips();
   await assertExecuteCodeBatchIsolatesGlobalsAndMutableInputs();
   await assertVirtualScandirMatchesIteratorContract();
   console.log('\nPython runtime checks passed.');
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

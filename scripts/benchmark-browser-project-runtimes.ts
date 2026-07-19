@@ -1073,7 +1073,8 @@ async function runBrowserPlanItem(
 
         await benchmarkPhase?.('public-module-import');
         const moduleStartedAt = performance.now();
-        const publicProjectModule = await import('/benchmark-project-harness.mjs') as {
+        const publicProjectModulePath = '/benchmark-project-harness.mjs';
+        const publicProjectModule = await import(publicProjectModulePath) as {
           createBrowserProjectWorkspace(options: Record<string, unknown>): Promise<any>;
         };
         const moduleImportMs = performance.now() - moduleStartedAt;
@@ -1158,9 +1159,10 @@ async function runBrowserPlanItem(
         }
 
         try {
-          const runProjectCommand = async (label: string, command: string) => {
+          type CommandResult = { exitCode: number; stdout: string; stderr: string };
+          const runProjectCommand = async (label: string, command: string): Promise<CommandResult> => {
             const controller = new AbortController();
-            return withTimeout(label, workspace.runCommand(command, { signal: controller.signal }), controller);
+            return withTimeout(label, workspace.runCommand(command, { signal: controller.signal }), controller) as Promise<CommandResult>;
           };
           const commandShape = (result: { exitCode: number; stdout: string; stderr: string }) => ({
             command: fixture.command,
@@ -1347,7 +1349,7 @@ async function runBrowserPlanItem(
               const startedAt = performance.now();
               const timer = setTimeout(() => controller.abort(), 25);
               try {
-                const result = await workspace.runCommand('sleep 30', { signal: controller.signal });
+                const result = await (workspace.runCommand('sleep 30', { signal: controller.signal }) as Promise<CommandResult>);
                 return { result, wallMs: performance.now() - startedAt };
               } catch (error) {
                 return {
@@ -1396,7 +1398,7 @@ async function runBrowserPlanItem(
               const startedAt = performance.now();
               const timer = setTimeout(() => controller.abort(), 50);
               try {
-                const result = await workspace.runCommand(command, { signal: controller.signal });
+                const result = await (workspace.runCommand(command, { signal: controller.signal }) as Promise<CommandResult>);
                 return { command, result, wallMs: performance.now() - startedAt };
               } catch (error) {
                 return {

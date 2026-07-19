@@ -16,7 +16,9 @@ import {
   createRuntimeWorkspace,
   normalizeRuntimeWorkspaceStorageLimits,
 } from '../packages/harness-project/src/index';
-import { assertRuntimeFinalDiffBudget, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
+import { assertRuntimeFinalDiffBudget, type RuntimeCommandEvent, type RuntimeProjectCommandSource } from '../packages/harness-core/src/runtime-project';
+import type { JavaScriptProjectCommandRequest } from '../packages/harness-javascript/src/project-browser';
+import type { TypeScriptProjectCommandRequest } from '../packages/harness-javascript/src/typescript-project';
 import { createIndexedDbKernelStorage } from '../packages/harness-browser/src/project';
 import {
   createBrowserJavaScriptProjectRunner,
@@ -30,7 +32,7 @@ import { createNativeJavaProjectRunner } from '../packages/harness-java/src/proj
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -229,7 +231,7 @@ class ProtocolTestWorker {
         queueMicrotask(() => this.onmessage?.({ data: message } as MessageEvent));
       },
     };
-    (globalThis as typeof globalThis & { self?: unknown; postMessage?: unknown }).self = scope;
+    (globalThis as typeof globalThis & { self?: unknown; postMessage?: unknown }).self = scope as unknown as Window & typeof globalThis;
     (globalThis as typeof globalThis & { self?: unknown; postMessage?: unknown }).postMessage = scope.postMessage;
     try {
       await import(this.url);
@@ -249,7 +251,7 @@ async function withProtocolTestWorker(run: (workerUrl: string) => Promise<void>)
   const previousSelf = (globalThis as typeof globalThis & { self?: unknown }).self;
   const previousPostMessage = (globalThis as typeof globalThis & { postMessage?: unknown }).postMessage;
   const workers: ProtocolTestWorker[] = [];
-  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = class extends ProtocolTestWorker {
+  (globalThis as { Worker?: unknown }).Worker = class extends ProtocolTestWorker {
     constructor(url: string) {
       super(url);
       workers.push(this);
@@ -261,17 +263,17 @@ async function withProtocolTestWorker(run: (workerUrl: string) => Promise<void>)
   } finally {
     for (const worker of workers) worker.terminate();
     if (previousWorker === undefined) {
-      delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+      delete (globalThis as { Worker?: unknown }).Worker;
     } else {
       (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
     }
     if (previousSelf === undefined) {
-      delete (globalThis as typeof globalThis & { self?: unknown }).self;
+      delete (globalThis as { self?: unknown }).self;
     } else {
       (globalThis as typeof globalThis & { self?: unknown }).self = previousSelf;
     }
     if (previousPostMessage === undefined) {
-      delete (globalThis as typeof globalThis & { postMessage?: unknown }).postMessage;
+      delete (globalThis as { postMessage?: unknown }).postMessage;
     } else {
       (globalThis as typeof globalThis & { postMessage?: unknown }).postMessage = previousPostMessage;
     }
@@ -280,10 +282,10 @@ async function withProtocolTestWorker(run: (workerUrl: string) => Promise<void>)
 
 async function testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn(): Promise<void> {
   const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
-  delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+  delete (globalThis as { Worker?: unknown }).Worker;
   const request = {
     code: 'console.log("trusted-main-thread");',
-    source: 'inline' as const,
+    source: 'inline' as unknown as RuntimeProjectCommandSource,
     args: [],
     cwd: '/workspace',
     env: {},
@@ -294,7 +296,7 @@ async function testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn(): P
     },
   };
   try {
-    const defaultResult = await createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 })(request);
+    const defaultResult = await createBrowserJavaScriptProjectRunner({ timeoutMs: 1000 })((request as unknown as JavaScriptProjectCommandRequest));
     assertCondition(defaultResult.exitCode === 1, `browser JS without Worker should fail closed: ${JSON.stringify(defaultResult)}`);
     assertCondition(defaultResult.stdout === '', `browser JS default fallback should not execute same-realm code: ${JSON.stringify(defaultResult)}`);
     assertCondition(
@@ -305,7 +307,7 @@ async function testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn(): P
     const allowOnlyResult = await createBrowserJavaScriptProjectRunner({
       allowMainThreadExecution: true,
       timeoutMs: 1000,
-    })(request);
+    })((request as unknown as JavaScriptProjectCommandRequest));
     assertCondition(allowOnlyResult.exitCode === 1, `allowMainThreadExecution alone should fail closed: ${JSON.stringify(allowOnlyResult)}`);
     assertCondition(allowOnlyResult.stdout === '', `allowMainThreadExecution alone should not execute same-realm code: ${JSON.stringify(allowOnlyResult)}`);
     assertCondition(
@@ -318,7 +320,7 @@ async function testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn(): P
       trustedMainThreadExecution: true,
       hardened: true,
       timeoutMs: 1000,
-    })(request);
+    })((request as unknown as JavaScriptProjectCommandRequest));
     assertCondition(hardenedResult.exitCode === 1, `hardened browser JS should still require a Worker: ${JSON.stringify(hardenedResult)}`);
     assertCondition(hardenedResult.stdout === '', `hardened browser JS should not execute same-realm code: ${JSON.stringify(hardenedResult)}`);
     assertCondition(
@@ -330,14 +332,14 @@ async function testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn(): P
       allowMainThreadExecution: true,
       trustedMainThreadExecution: true,
       timeoutMs: 1000,
-    })(request);
+    })((request as unknown as JavaScriptProjectCommandRequest));
     assertCondition(
       trustedResult.exitCode === 0 && trustedResult.stdout === 'trusted-main-thread\n',
       `explicitly trusted main-thread browser JS should still work for same-realm tests: ${JSON.stringify(trustedResult)}`
     );
   } finally {
     if (previousWorker === undefined) {
-      delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+      delete (globalThis as { Worker?: unknown }).Worker;
     } else {
       (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
     }
@@ -390,7 +392,7 @@ async function testBrowserTypeScriptDomCompilerScriptPolicy(): Promise<void> {
   try {
     const defaultMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
       compilerUrl: '/workers/vendor/typescript.js',
-    })(request()));
+    })((request() as unknown as TypeScriptProjectCommandRequest)));
     assertCondition(
       defaultMessage.includes('requires a trusted compiler object or a worker-backed compiler'),
       `DOM TypeScript compiler script loading should remain disabled by default: ${defaultMessage}`
@@ -400,7 +402,7 @@ async function testBrowserTypeScriptDomCompilerScriptPolicy(): Promise<void> {
     const remoteMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
       allowDomCompilerScript: true,
       compilerUrl: 'https://cdn.example.com/typescript.js',
-    })(request()));
+    })((request() as unknown as TypeScriptProjectCommandRequest)));
     assertCondition(
       remoteMessage.includes('External TypeScript compiler DOM script URLs require allowExternalDomCompilerScript'),
       `Remote DOM TypeScript compiler scripts should require a second explicit opt-in: ${remoteMessage}`
@@ -411,7 +413,7 @@ async function testBrowserTypeScriptDomCompilerScriptPolicy(): Promise<void> {
       allowDomCompilerScript: true,
       allowExternalDomCompilerScript: true,
       compilerUrl: 'data:text/javascript,globalThis.ts={}',
-    })(request()));
+    })((request() as unknown as TypeScriptProjectCommandRequest)));
     assertCondition(
       dataUrlMessage.includes('must use http, https, or file'),
       `DOM TypeScript compiler script URLs should reject inline schemes: ${dataUrlMessage}`
@@ -422,7 +424,7 @@ async function testBrowserTypeScriptDomCompilerScriptPolicy(): Promise<void> {
     const externalFileMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
       allowDomCompilerScript: true,
       compilerUrl: 'file:///Users/example/typescript.js',
-    })(request()));
+    })((request() as unknown as TypeScriptProjectCommandRequest)));
     assertCondition(
       externalFileMessage.includes('External TypeScript compiler DOM script URLs require allowExternalDomCompilerScript'),
       `File TypeScript compiler scripts outside the document base should require explicit trust: ${externalFileMessage}`
@@ -433,13 +435,13 @@ async function testBrowserTypeScriptDomCompilerScriptPolicy(): Promise<void> {
     const sameOriginMessage = await rejectedMessage(() => createBrowserTypeScriptProjectRunner({
       allowDomCompilerScript: true,
       compilerUrl: '/workers/vendor/typescript.js',
-    })(request()));
+    })((request() as unknown as TypeScriptProjectCommandRequest)));
     assertCondition(
       sameOriginMessage.includes('Failed to load TypeScript compiler from https://tracecode.example/workers/vendor/typescript.js'),
       `Same-origin TypeScript compiler script should be allowed through to the DOM loader: ${sameOriginMessage}`
     );
     assertCondition(
-      appendedScripts.length === 1 &&
+      (appendedScripts.length as number) === 1 &&
         appendedScripts[0]?.src === 'https://tracecode.example/workers/vendor/typescript.js' &&
         appendedScripts[0]?.async === true,
       `Same-origin TypeScript compiler script should be normalized and appended: ${JSON.stringify(appendedScripts)}`
@@ -449,13 +451,13 @@ async function testBrowserTypeScriptDomCompilerScriptPolicy(): Promise<void> {
       allowDomCompilerScript: true,
       allowExternalDomCompilerScript: true,
       compilerUrl: 'https://cdn.example.com/typescript.js',
-    })(request()));
+    })((request() as unknown as TypeScriptProjectCommandRequest)));
     assertCondition(
       trustedRemoteMessage.includes('Failed to load TypeScript compiler from https://cdn.example.com/typescript.js'),
       `Explicitly trusted remote TypeScript compiler script should be allowed through to the DOM loader: ${trustedRemoteMessage}`
     );
     assertCondition(
-      appendedScripts.length === 2 &&
+      (appendedScripts.length as number) === 2 &&
         appendedScripts[1]?.src === 'https://cdn.example.com/typescript.js' &&
         appendedScripts[1]?.async === true,
       `Trusted remote TypeScript compiler script should be normalized and appended: ${JSON.stringify(appendedScripts)}`
@@ -509,7 +511,7 @@ async function testIndexedDbKernelStorageEncryptsSnapshots(): Promise<void> {
   };
   const fakeIndexedDb = {
     open() {
-      const request = { result: fakeDb, error: null } as IDBOpenDBRequest;
+      const request = { result: fakeDb, error: null } as unknown as IDBOpenDBRequest;
       queueMicrotask(() => {
         request.onupgradeneeded?.({} as IDBVersionChangeEvent);
         request.onsuccess?.({} as Event);
@@ -697,9 +699,9 @@ async function testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn(): Promise<
       workerIsolation: 'shared',
       timeoutMs: 1000,
     });
-    const result = await runner({
+    const result = await runner(({
       code: 'console.log("should-not-run");',
-      source: 'inline',
+      source: 'inline' as unknown as RuntimeProjectCommandSource,
       args: [],
       cwd: '/workspace',
       env: {},
@@ -708,7 +710,7 @@ async function testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn(): Promise<
         workspaceRoot: '/workspace',
         files: [],
       },
-    });
+    } as unknown as JavaScriptProjectCommandRequest));
 
     assertCondition(result.exitCode === 1, `untrusted shared browser JS worker should fail closed: ${JSON.stringify(result)}`);
     assertCondition(result.stdout === '', `untrusted shared browser JS worker should not execute project code: ${JSON.stringify(result)}`);
@@ -722,9 +724,9 @@ async function testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn(): Promise<
       workerIsolation: 'shared ' as 'shared',
       timeoutMs: 1000,
     });
-    const invalidIsolationResult = await invalidIsolationRunner({
+    const invalidIsolationResult = await invalidIsolationRunner(({
       code: 'console.log("should-not-run-invalid-isolation");',
-      source: 'inline',
+      source: 'inline' as unknown as RuntimeProjectCommandSource,
       args: [],
       cwd: '/workspace',
       env: {},
@@ -733,7 +735,7 @@ async function testBrowserJavaScriptSharedWorkerRequiresTrustedOptIn(): Promise<
         workspaceRoot: '/workspace',
         files: [],
       },
-    });
+    } as unknown as JavaScriptProjectCommandRequest));
 
     assertCondition(
       invalidIsolationResult.exitCode === 1,
@@ -1103,7 +1105,7 @@ async function testBrowserJavaScriptHiddenFilesAreNotMounted(): Promise<void> {
     `browser JS should not mount hidden project files for user code: ${JSON.stringify(result)}`
   );
   assertCondition(
-    !result.files?.some((file) => file.path.includes('secret') || file.contents.includes('secret')),
+    !result.files?.some((file) => file.path.includes('secret') || (file as { path: string; contents?: string }).contents?.includes('secret')),
     `hidden files should not leak through final diffs: ${JSON.stringify(result.files)}`
   );
 }
@@ -1120,7 +1122,7 @@ async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<voi
     'linkSync("normal.txt",".trace/link.txt")',
     'copyFileSync("normal.txt",".trace/copy.txt")',
   ];
-  const result = await runner({
+  const result = await runner(({
     code: [
       'const fs = require("node:fs");',
       `const operations = ${JSON.stringify(operations)};`,
@@ -1132,7 +1134,7 @@ async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<voi
       'try { console.log(`trace=${fs.readdirSync(".trace").join(",")}`); }',
       'catch (error) { console.log(`trace:${error.code}`); }',
     ].join('\n'),
-    source: 'inline',
+    source: 'inline' as unknown as RuntimeProjectCommandSource,
     args: [],
     cwd: '/workspace',
     env: {},
@@ -1147,7 +1149,7 @@ async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<voi
       hiddenFiles: ['.trace/hidden.txt'],
       readonlyFiles: ['readonly.txt', '.trace/hidden.txt'],
     },
-  });
+  } as unknown as JavaScriptProjectCommandRequest));
 
   assertCondition(result.exitCode === 0, `hidden namespace mutation matrix should complete: ${JSON.stringify(result)}`);
   assertCondition(
@@ -1167,20 +1169,20 @@ async function testBrowserJavaScriptHiddenNamespaceMutationMatrix(): Promise<voi
     `browser JS should reject writes into hidden namespaces: ${JSON.stringify(result)}`
   );
   assertCondition(
-    !result.files?.some((file) => file.path.startsWith('.trace/') || file.contents.includes('hidden')),
+    !result.files?.some((file) => file.path.startsWith('.trace/') || (file as { path: string; contents?: string }).contents?.includes('hidden')),
     `hidden namespace files should not leak through final diffs: ${JSON.stringify(result.files)}`
   );
 }
 
 async function testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamespace(): Promise<void> {
   const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
-  const result = await runner({
+  const result = await runner(({
     code: [
       'try { console.log("typescript:" + require("typescript").version); }',
       'catch (error) { console.log("typescript:missing"); }',
       '',
     ].join('\n'),
-    source: 'inline',
+    source: 'inline' as unknown as RuntimeProjectCommandSource,
     args: [],
     cwd: '/workspace',
     env: {},
@@ -1195,7 +1197,7 @@ async function testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamesp
       ],
       hiddenFiles: ['node_modules/typescript'],
     },
-  });
+  } as unknown as JavaScriptProjectCommandRequest));
 
   assertCondition(result.exitCode === 0, `hidden TypeScript package test should complete: ${JSON.stringify(result)}`);
   assertCondition(
@@ -1210,7 +1212,7 @@ async function testBrowserJavaScriptVirtualTypeScriptPackageRespectsHiddenNamesp
 
 async function testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics(): Promise<void> {
   const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
-  const result = await runner({
+  const result = await runner(({
     code: [
       'const fs = require("node:fs");',
       'fs.writeFileSync("append.txt", "abcdef");',
@@ -1224,7 +1226,7 @@ async function testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics(): Pro
       'console.log(fs.readFileSync("append.txt", "utf8"));',
       '',
     ].join('\n'),
-    source: 'inline',
+    source: 'inline' as unknown as RuntimeProjectCommandSource,
     args: [],
     cwd: '/workspace',
     env: {},
@@ -1233,7 +1235,7 @@ async function testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics(): Pro
       workspaceRoot: '/workspace',
       files: [],
     },
-  });
+  } as unknown as JavaScriptProjectCommandRequest));
 
   assertCondition(result.exitCode === 0, `fd append stream test should complete: ${JSON.stringify(result)}`);
   assertCondition(
@@ -1244,7 +1246,7 @@ async function testBrowserJavaScriptFdWriteStreamsPreserveAppendSemantics(): Pro
 
 async function testBrowserJavaScriptFileHandleStreamCloseStateIsNotSymbolForgeable(): Promise<void> {
   const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
-  const result = await runner({
+  const result = await runner(({
     code: [
       'const fs = require("node:fs");',
       'const handle = await fs.promises.open("close.txt", "w+");',
@@ -1259,7 +1261,7 @@ async function testBrowserJavaScriptFileHandleStreamCloseStateIsNotSymbolForgeab
       'catch (error) { console.log("late:" + error.code); }',
       '',
     ].join('\n'),
-    source: 'inline',
+    source: 'inline' as unknown as RuntimeProjectCommandSource,
     args: [],
     cwd: '/workspace',
     env: {},
@@ -1268,7 +1270,7 @@ async function testBrowserJavaScriptFileHandleStreamCloseStateIsNotSymbolForgeab
       workspaceRoot: '/workspace',
       files: [],
     },
-  });
+  } as unknown as JavaScriptProjectCommandRequest));
 
   assertCondition(result.exitCode === 0, `FileHandle close forgeability test should complete: ${JSON.stringify(result)}`);
   assertCondition(
@@ -1279,7 +1281,7 @@ async function testBrowserJavaScriptFileHandleStreamCloseStateIsNotSymbolForgeab
 
 async function testBrowserJavaScriptCpRejectsFileToRootDirectory(): Promise<void> {
   const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
-  const result = await runner({
+  const result = await runner(({
     code: [
       'const fs = require("node:fs");',
       'try { fs.cpSync("source.txt", "."); console.log("cp:ok"); }',
@@ -1287,7 +1289,7 @@ async function testBrowserJavaScriptCpRejectsFileToRootDirectory(): Promise<void
       'console.log("root=" + fs.readdirSync(".").join(","));',
       '',
     ].join('\n'),
-    source: 'inline',
+    source: 'inline' as unknown as RuntimeProjectCommandSource,
     args: [],
     cwd: '/workspace',
     env: {},
@@ -1296,7 +1298,7 @@ async function testBrowserJavaScriptCpRejectsFileToRootDirectory(): Promise<void
       workspaceRoot: '/workspace',
       files: [{ path: 'source.txt', contents: 'source\n' }],
     },
-  });
+  } as unknown as JavaScriptProjectCommandRequest));
 
   assertCondition(result.exitCode === 0, `cp root rejection test should complete: ${JSON.stringify(result)}`);
   assertCondition(
@@ -1311,9 +1313,9 @@ async function testBrowserJavaScriptCpRejectsFileToRootDirectory(): Promise<void
 
 async function testBrowserJavaScriptSyntaxErrorsHideRunnerInternals(): Promise<void> {
   const runner = createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 1000 });
-  const result = await runner({
+  const result = await runner(({
     code: 'const broken = ;\n',
-    source: 'inline',
+    source: 'inline' as unknown as RuntimeProjectCommandSource,
     args: [],
     cwd: '/workspace',
     env: {},
@@ -1322,7 +1324,7 @@ async function testBrowserJavaScriptSyntaxErrorsHideRunnerInternals(): Promise<v
       workspaceRoot: '/workspace',
       files: [],
     },
-  });
+  } as unknown as JavaScriptProjectCommandRequest));
 
   assertCondition(result.exitCode === 1, `syntax error should fail: ${JSON.stringify(result)}`);
   assertCondition(result.stderr.includes('SyntaxError'), `syntax error should be reported: ${JSON.stringify(result)}`);
@@ -1355,13 +1357,13 @@ async function testBrowserJavaScriptTimeoutWaitsForLiveFileChangeQueue(): Promis
     },
   });
   let settled = false;
-  const command = runner({
+  const command = runner(({
     code: [
       'const fs = require("node:fs");',
       'fs.writeFileSync("late.txt", "late\\n");',
       '',
     ].join('\n'),
-    source: 'inline',
+    source: 'inline' as unknown as RuntimeProjectCommandSource,
     args: [],
     cwd: '/workspace',
     env: {},
@@ -1370,7 +1372,7 @@ async function testBrowserJavaScriptTimeoutWaitsForLiveFileChangeQueue(): Promis
       workspaceRoot: '/workspace',
       files: [],
     },
-  }).finally(() => {
+  } as unknown as JavaScriptProjectCommandRequest)).finally(() => {
     settled = true;
   });
 
@@ -3187,7 +3189,7 @@ async function testKernelObservedFileSystemLiveFileChangesAreBudgeted(): Promise
         event.type === 'file-change' &&
         event.phase === 'live' &&
         event.change.path === 'small.txt' &&
-        event.change.contents === 'ok\n'
+        (event.change as { path: string; contents?: string }).contents === 'ok\n'
       ),
       `small live file-change should still stream after an oversized write is skipped: ${JSON.stringify(oversizedEvents)}`
     );

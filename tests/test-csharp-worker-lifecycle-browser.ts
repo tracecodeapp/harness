@@ -28,7 +28,7 @@ interface ProjectExecuteResult {
   exitCode: number;
 }
 
-function assertCondition(condition: boolean, message: string): asserts condition {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -259,6 +259,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(error);
   process.exitCode = 1;
 });

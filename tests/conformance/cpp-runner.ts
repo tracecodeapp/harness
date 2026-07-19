@@ -94,6 +94,8 @@ export async function loadCppConformanceBridge(): Promise<CppBridge> {
     console,
     TextEncoder,
     TextDecoder,
+    URL,
+    location: new URL(pathToFileURL(`${process.cwd()}/workers/cpp/cpp-worker.js`).href),
     WebAssembly,
     Date,
     performance,

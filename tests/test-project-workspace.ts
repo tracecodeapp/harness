@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import type { RuntimeWorkspaceStat } from '../packages/harness-core/src/runtime-project';
 import {
   type JavaScriptProjectCommandRequest,
   type JavaProjectCommandRequest,
@@ -63,7 +64,14 @@ const testDirectory = dirname(testFilePath);
 const expectedTraceKernelVersion = projectPackageJson.version;
 type TestRuntimeProjectSnapshot = Awaited<ReturnType<RuntimeWorkspace['snapshot']>>;
 
-function assertCondition(condition: boolean, message: string): void {
+// Loose views for asserting on discriminated-union payloads without per-site narrowing.
+type LooseFileChange = { path: string; contents?: string; encoding?: 'utf8' | 'base64'; deleted?: true; directory?: true };
+const looseChange = (change: unknown): LooseFileChange => change as LooseFileChange;
+type OutputEvent = Extract<RuntimeCommandEvent, { type: 'output' }>;
+const asJsProjectRequest = (request: Omit<JavaScriptProjectCommandRequest, 'scriptPath'> & { scriptPath?: string }) =>
+  request as JavaScriptProjectCommandRequest;
+
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -147,7 +155,7 @@ class FakeModuleWorker {
       },
     };
     try {
-      (globalThis as typeof globalThis & { self?: unknown }).self = scope;
+      (globalThis as typeof globalThis & { self?: unknown }).self = scope as unknown as Window & typeof globalThis;
       const importUrl = new URL(this.url);
       importUrl.searchParams.set('fake-worker-instance', String(this.instanceId));
       await import(importUrl.href);
@@ -3136,7 +3144,7 @@ async function testCommandAdapterWorkspaceCwd(): Promise<void> {
     result.stdout === '/workspace/src:src/index.js:lib/shared.js,src/index.js\n',
     `node adapter should preserve workspace-relative files and cwd separately: ${result.stdout}`
   );
-  assertCondition(received?.project.cwd === '/workspace', 'node adapter project snapshot should keep workspace root cwd');
+  assertCondition((received as JavaScriptProjectCommandRequest | null)?.project.cwd === '/workspace', 'node adapter project snapshot should keep workspace root cwd');
   assertCondition(await workspace.readFile('src/generated.txt') === 'created\n', 'node adapter should apply runner file changes from workspace root');
   assertCondition(
     await workspace.readFile('/workspace/src/absolute-generated.txt') === 'absolute-created\n',
@@ -4532,7 +4540,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     },
   });
 
-  const result = await runner({
+  const result = await runner(asJsProjectRequest({
     code: [
       'const fs = require("node:fs");',
       'fs.mkdirSync("live-dir/nested", { recursive: true });',
@@ -4550,7 +4558,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
       files: [],
     },
     onEvent: (event) => events.push(event),
-  });
+  }));
 
   assertCondition(result.exitCode === 0, `browser node applyFileChange hook command should succeed: ${result.stderr}`);
   assertCondition(result.stdout === 'after-live\n', `browser node applyFileChange hook should preserve stdout: ${result.stdout}`);
@@ -4576,7 +4584,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
       throw new Error(`reject-live:${change.path}`);
     },
   });
-  const failedResult = await failedRunner({
+  const failedResult = await failedRunner(asJsProjectRequest({
     code: 'const fs = require("node:fs"); fs.writeFileSync("bad-live-js.txt", "bad\\n"); console.log("after-bad-live");',
     source: 'argument',
     args: [],
@@ -4588,7 +4596,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
       files: [],
     },
     onEvent: (event) => failedEvents.push(event),
-  });
+  }));
 
   assertCondition(failedResult.exitCode === 1, `browser node failed applyFileChange hook should fail command: ${JSON.stringify(failedResult)}`);
   assertCondition(
@@ -4618,7 +4626,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
       timerAppliedChanges.push(`${phase}:${change.path}`);
       return true;
     },
-  })({
+  })(asJsProjectRequest({
     code: [
       'const fs = require("node:fs");',
       'setTimeout(() => {',
@@ -4637,7 +4645,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
       files: [],
     },
     onEvent: (event) => timerEvents.push(event),
-  });
+  }));
 
   assertCondition(timerResult.exitCode === 0, `browser node timer-backed live I/O should succeed: ${timerResult.stderr}`);
   assertCondition(
@@ -4659,7 +4667,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   const timerGlobalShadowResult = await createBrowserJavaScriptProjectRunner({
     allowMainThreadExecution: true,
     trustedMainThreadExecution: true,
-  })({
+  })(asJsProjectRequest({
     code: [
       'const setTimeout = 1;',
       'let clearInterval = 2;',
@@ -4675,7 +4683,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
       cwd: '/workspace',
       files: [],
     },
-  });
+  }));
   assertCondition(
     timerGlobalShadowResult.exitCode === 0 && timerGlobalShadowResult.stdout === '10\n',
     `browser node eval wrappers should allow lexical timer/global shadows: ${JSON.stringify(timerGlobalShadowResult)}`
@@ -4711,7 +4719,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   );
 
   const timeoutTimerEvents: RuntimeCommandEvent[] = [];
-  const timeoutTimerResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 5 })({
+  const timeoutTimerResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true, timeoutMs: 5 })(asJsProjectRequest({
     code: [
       'const fs = require("node:fs");',
       'setTimeout(() => {',
@@ -4728,7 +4736,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
       files: [],
     },
     onEvent: (event) => timeoutTimerEvents.push(event),
-  });
+  }));
   await new Promise((resolve) => setTimeout(resolve, 35));
   assertCondition(
     timeoutTimerResult.exitCode === 124 &&
@@ -4776,7 +4784,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
       return true;
     },
   });
-  const timeoutApplyRun = timeoutApplyRunner({
+  const timeoutApplyRun = timeoutApplyRunner(asJsProjectRequest({
     code: [
       'const fs = require("node:fs");',
       'fs.writeFileSync("timeout-apply-one.txt", "one\\n");',
@@ -4792,7 +4800,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
       files: [],
     },
     onEvent: (event) => timeoutApplyEvents.push(event),
-  });
+  }));
   await timeoutApplyStartedPromise;
   const timeoutApplyResult = await timeoutApplyRun;
   resolveTimeoutApply();
@@ -4816,7 +4824,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
 
 async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promise<void> {
   const events: RuntimeCommandEvent[] = [];
-  const result = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })({
+  const result = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })(asJsProjectRequest({
     code: [
       'const fs = require("node:fs");',
       'process.stdout.write(fs.readFileSync("/dev/tty", "utf8").trim() + "\\n");',
@@ -4861,7 +4869,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       ],
     },
     onEvent: (event) => events.push(event),
-  });
+  }));
 
   assertCondition(result.exitCode === 0, `browser node custom kernel device inventory should succeed: ${result.stderr}`);
   assertCondition(
@@ -4874,7 +4882,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
   );
   assertCondition(
     events.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
-      .map((event) => event.data)
+      .map((event) => (event as OutputEvent).data)
       .join('') === result.stderr,
     `browser node should stream custom device-routed stderr events: ${JSON.stringify(events)}`
   );
@@ -4884,7 +4892,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       event.stream === 'stderr' &&
       event.device === '/dev/stderr' &&
       event.sourceDevice === '/dev/tty'
-    ).map((event) => event.data).join('') === 'tty-device\ncopy-device\n',
+    ).map((event) => (event as OutputEvent).data).join('') === 'tty-device\ncopy-device\n',
     `browser node should preserve source device for custom-routed /dev/tty writes: ${JSON.stringify(events)}`
   );
   assertCondition(
@@ -4893,7 +4901,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       event.stream === 'stderr' &&
       event.device === '/dev/stderr' &&
       event.sourceDevice === '/dev/log'
-    ).map((event) => event.data).join('') === 'log-device\ncopy-device\n',
+    ).map((event) => (event as OutputEvent).data).join('') === 'log-device\ncopy-device\n',
     `browser node should support manifest-provided custom output devices: ${JSON.stringify(events)}`
   );
   assertCondition(
@@ -4902,7 +4910,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       event.stream === 'stdout' &&
       event.device === '/dev/stdout' &&
       event.sourceDevice === '/dev/pts/0'
-    ).map((event) => event.data).join('') === 'pts-device\n',
+    ).map((event) => (event as OutputEvent).data).join('') === 'pts-device\n',
     `browser node should support nested manifest output devices: ${JSON.stringify(events)}`
   );
   const customDeviceExitIndex = events.findIndex((event) => event.type === 'status' && event.phase === 'process-exit');
@@ -4935,7 +4943,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     `browser node custom device output events should stream before process-exit: ${JSON.stringify(events)}`
   );
 
-  const sharedStdinCursorResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })({
+  const sharedStdinCursorResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })(asJsProjectRequest({
     code: [
       'const fs = require("node:fs");',
       'process.stdin.setEncoding("utf8");',
@@ -4957,14 +4965,14 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
         { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
       ],
     },
-  });
+  }));
   assertCondition(sharedStdinCursorResult.exitCode === 0, `browser node shared stdin cursor case should succeed: ${sharedStdinCursorResult.stderr}`);
   assertCondition(
     sharedStdinCursorResult.stdout === 'process=one\n\ncustom=two<lf>three<lf>\n',
     `browser node process.stdin and /dev devices should share one stdin cursor: ${JSON.stringify(sharedStdinCursorResult)}`
   );
 
-  const restrictedResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })({
+  const restrictedResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })(asJsProjectRequest({
     code: [
       'const fs = require("node:fs");',
       'try { fs.readFileSync(0, "utf8"); console.log("fd0:ok"); } catch (error) { console.log("fd0:" + error.code); }',
@@ -4992,7 +5000,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
         { path: '/dev/tty', readable: false, writable: false },
       ],
     },
-  });
+  }));
   assertCondition(restrictedResult.exitCode === 0, `browser node restricted kernel device inventory should succeed: ${restrictedResult.stderr}`);
   assertCondition(
     restrictedResult.stdout === 'fd0:EBADF\nfd1:EBADF\nstdin:\nprocess:EBADF\nstdout-readfile:EBADF\nstdout-stream:EBADF\nstdout-copy:EBADF\nstdout-read-open:EBADF\nstdin-write-open:EBADF\n',
@@ -5310,7 +5318,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'rename-tree/child/value.txt' &&
-      event.change.deleted === true
+      looseChange(event.change).deleted === true
     ) &&
       renameDirectoryEvents.some((event) =>
         event.type === 'file-change' &&
@@ -5322,15 +5330,15 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
         event.type === 'file-change' &&
         event.phase === 'live' &&
         event.change.path === 'rename-tree/empty' &&
-        event.change.directory === true &&
-        event.change.deleted === true
+        looseChange(event.change).directory === true &&
+        looseChange(event.change).deleted === true
       ) &&
       renameDirectoryEvents.some((event) =>
         event.type === 'file-change' &&
         event.phase === 'live' &&
         event.change.path === 'renamed-tree/empty' &&
-        event.change.directory === true &&
-        event.change.deleted !== true
+        looseChange(event.change).directory === true &&
+        looseChange(event.change).deleted !== true
       ),
     `browser node directory rename should stream live old-tree deletes and new-tree snapshots: ${JSON.stringify(renameDirectoryEvents)}`
   );
@@ -5435,7 +5443,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'cp-sync/nested/value.txt' &&
-      event.change.contents === 'nested\n'
+      looseChange(event.change).contents === 'nested\n'
     ),
     `browser node cp should emit live file changes: ${JSON.stringify(cpEvents)}`
   );
@@ -5634,7 +5642,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'callback-dir/nested/value.txt' &&
-      event.change.contents === 'callback\nappend\n'
+      looseChange(event.change).contents === 'callback\nappend\n'
     ),
     `browser node callback fs writes should emit live file changes: ${JSON.stringify(callbackFsEvents)}`
   );
@@ -5653,7 +5661,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'fd.txt' &&
-      event.change.contents === 'hello\nbytes\nappend\n'
+      looseChange(event.change).contents === 'hello\nbytes\nappend\n'
     ),
     `browser node fd writes should emit live file changes: ${JSON.stringify(fdEvents)}`
   );
@@ -5712,7 +5720,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'handle-write.txt' &&
-      event.change.contents === 'onetwo'
+      looseChange(event.change).contents === 'onetwo'
     ),
     `browser node FileHandle writes should emit live file changes: ${JSON.stringify(fileHandleEvents)}`
   );
@@ -5781,7 +5789,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'vector.txt' &&
-      event.change.contents === 'abcdefghijkl'
+      looseChange(event.change).contents === 'abcdefghijkl'
     ),
     `browser node vector fd writes should emit live file changes: ${JSON.stringify(vectorEvents)}`
   );
@@ -5818,7 +5826,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'truncate.txt' &&
-      event.change.contents === 'ab\0\0'
+      looseChange(event.change).contents === 'ab\0\0'
     ),
     `browser node truncate should emit live zero-filled file changes: ${JSON.stringify(truncateEvents)}`
   );
@@ -5862,7 +5870,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'streamed.txt' &&
-      event.change.contents === 'one\ntwo\n'
+      looseChange(event.change).contents === 'one\ntwo\n'
     ),
     `browser node createWriteStream should emit live file mutations: ${JSON.stringify(streamEvents)}`
   );
@@ -6028,19 +6036,19 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'fd-streamed.txt' &&
-      event.change.contents === 'fd-one\nfd-two\n'
+      looseChange(event.change).contents === 'fd-one\nfd-two\n'
     ) &&
       fdStreamEvents.some((event) =>
         event.type === 'file-change' &&
         event.phase === 'live' &&
         event.change.path === 'fd-stream-start.txt' &&
-        event.change.contents === 'abXYZf'
+        looseChange(event.change).contents === 'abXYZf'
       ) &&
       fdStreamEvents.some((event) =>
         event.type === 'file-change' &&
         event.phase === 'live' &&
         event.change.path === 'fd-stream-append-start.txt' &&
-        event.change.contents === 'abcdefXY'
+        looseChange(event.change).contents === 'abcdefXY'
       ),
     `browser node fd createWriteStream should emit live file-change events: ${JSON.stringify(fdStreamEvents)}`
   );
@@ -6635,7 +6643,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
 
 async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
   const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
-  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = FakeModuleWorker;
+  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = FakeModuleWorker as unknown as typeof Worker;
   try {
     const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/src/project-browser-worker.ts')).href}?tracekernel-http=${Date.now()}`;
     const workspace = await createRuntimeWorkspace({
@@ -6731,7 +6739,7 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
 
 async function testExternalFetchFromJavaScriptWorker(): Promise<void> {
   const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
-  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = FakeModuleWorker;
+  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = FakeModuleWorker as unknown as typeof Worker;
   const seen: Array<{ method: string; url: string; body?: string }> = [];
   try {
     const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/src/project-browser-worker.ts')).href}?tracekernel-external-http=${Date.now()}`;
@@ -7331,7 +7339,7 @@ async function testBrowserJavaScriptProjectRunnerLiveIoEvents(): Promise<void> {
       event.phase === 'live' &&
       event.change.path === 'live.txt' &&
       !('deleted' in event.change) &&
-      event.change.contents === 'one\ntwo\n'
+      looseChange(event.change).contents === 'one\ntwo\n'
     ),
     `workspace watch should receive browser node live append events: ${JSON.stringify(watchEvents)}`
   );
@@ -7342,7 +7350,7 @@ async function testBrowserJavaScriptProjectRunnerLiveIoEvents(): Promise<void> {
       event.phase === 'live' &&
       event.change.path === 'empty-open.txt' &&
       !('deleted' in event.change) &&
-      event.change.contents === ''
+      looseChange(event.change).contents === ''
     ),
     `browser node onEvent should receive live zero-byte open creates: ${JSON.stringify(commandEvents)}`
   );
@@ -7363,7 +7371,7 @@ async function testBrowserJavaScriptProjectRunnerLiveIoEvents(): Promise<void> {
       event.phase === 'live' &&
       event.change.path === 'moved.txt' &&
       !('deleted' in event.change) &&
-      event.change.contents === 'one\ntwo\n'
+      looseChange(event.change).contents === 'one\ntwo\n'
     ),
     `browser node onEvent should receive live rename write events: ${JSON.stringify(commandEvents)}`
   );
@@ -8242,7 +8250,7 @@ async function testNativeCppProjectRunnerDirectAbsoluteDefaultScriptPath(): Prom
 
   assertCondition(result.exitCode === 0, `native C++ direct runner should accept /workspace default scriptPath: ${result.stderr}`);
   assertCondition(
-    result.files?.some((file) => file.path === 'src/a.out' && file.encoding === 'base64') === true,
+    result.files?.some((file) => file.path === 'src/a.out' && looseChange(file).encoding === 'base64') === true,
     `native C++ direct runner should emit default executable next to cwd scriptPath: ${JSON.stringify(result.files)}`
   );
   await assertRejectsAsync(
@@ -9338,15 +9346,15 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   });
 
   assertCondition(result.stdout === 'java-streamed\nrun:Main:2', 'browser java runner should delegate full project snapshot to worker client');
-  assertCondition(received?.scriptPath === 'Main', 'browser java runner should pass through request');
+  assertCondition((received as JavaProjectCommandRequest | null)?.scriptPath === 'Main', 'browser java runner should pass through request');
   assertCondition(
-    received?.project.files.some((file) => file.path === 'Helper.java') === true,
+    (received as JavaProjectCommandRequest | null)?.project.files.some((file) => file.path === 'Helper.java') === true,
     'browser java runner should include referenced helper sources in project requests'
   );
   assertCondition(
     events
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
-      .map((event) => event.data)
+      .map((event) => (event as OutputEvent).data)
       .join('') === result.stdout,
     `browser java runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
   );
@@ -9363,7 +9371,7 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'java-live-dir' &&
-      event.change.directory === true
+      looseChange(event.change).directory === true
     ),
     `browser java runner should forward worker live directory-change events: ${JSON.stringify(events)}`
   );
@@ -9506,15 +9514,15 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
   });
 
   assertCondition(result.stdout === 'streamed\nmain.py:2', 'pyodide runner should delegate full project snapshot to worker client');
-  assertCondition(received?.scriptPath === 'main.py', 'pyodide runner should pass through request');
+  assertCondition((received as PythonProjectCommandRequest | null)?.scriptPath === 'main.py', 'pyodide runner should pass through request');
   assertCondition(
-    received?.project.files.some((file) => file.path === 'helper.py') === true,
+    (received as PythonProjectCommandRequest | null)?.project.files.some((file) => file.path === 'helper.py') === true,
     'pyodide runner should include imported helper files in project requests'
   );
   assertCondition(
     events
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
-      .map((event) => event.data)
+      .map((event) => (event as OutputEvent).data)
       .join('') === result.stdout,
     `pyodide runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
   );
@@ -9651,15 +9659,15 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
   });
 
   assertCondition(result.stdout === 'csharp-streamed\nrun:<project>:alpha,beta:2', 'browser C# runner should delegate full project snapshot to worker client');
-  assertCondition(received?.scriptPath === '<project>', 'browser C# runner should pass through request');
+  assertCondition((received as CSharpProjectCommandRequest | null)?.scriptPath === '<project>', 'browser C# runner should pass through request');
   assertCondition(
-    received?.project.files.some((file) => file.path === 'Helper.cs') === true,
+    (received as CSharpProjectCommandRequest | null)?.project.files.some((file) => file.path === 'Helper.cs') === true,
     'browser C# runner should include sibling source files in project requests'
   );
   assertCondition(
     events
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
-      .map((event) => event.data)
+      .map((event) => (event as OutputEvent).data)
       .join('') === result.stdout,
     `browser C# runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
   );
@@ -9676,7 +9684,7 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'csharp-live-dir' &&
-      event.change.directory === true
+      looseChange(event.change).directory === true
     ),
     `browser C# runner should forward worker live directory-change events: ${JSON.stringify(events)}`
   );
@@ -9709,7 +9717,7 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
     noBuildResult.exitCode !== 0 && noBuildResult.stderr.includes('--no-build is not supported in the browser project environment'),
     `browser C# runner should reject no-build mode locally: ${noBuildResult.stderr}`
   );
-  assertCondition(received?.scriptPath === '<project>', 'browser C# no-build rejection should not invoke worker client');
+  assertCondition((received as CSharpProjectCommandRequest | null)?.scriptPath === '<project>', 'browser C# no-build rejection should not invoke worker client');
 }
 
 async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
@@ -9762,16 +9770,16 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
   });
 
   assertCondition(result.stdout === 'cpp-streamed\ncompile:main.cpp:main.cpp,helper.cpp,-o,a.out:3', 'browser C++ runner should delegate full project snapshot to worker client');
-  assertCondition(received?.scriptPath === 'main.cpp', 'browser C++ runner should pass through request');
+  assertCondition((received as CppProjectCommandRequest | null)?.scriptPath === 'main.cpp', 'browser C++ runner should pass through request');
   assertCondition(
-    received?.project.files.some((file) => file.path === 'helper.cpp') === true &&
-      received?.project.files.some((file) => file.path === 'helper.hpp') === true,
+    (received as CppProjectCommandRequest | null)?.project.files.some((file) => file.path === 'helper.cpp') === true &&
+      (received as CppProjectCommandRequest | null)?.project.files.some((file) => file.path === 'helper.hpp') === true,
     'browser C++ runner should include linked source and header files in project requests'
   );
   assertCondition(
     events
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
-      .map((event) => event.data)
+      .map((event) => (event as OutputEvent).data)
       .join('') === result.stdout,
     `browser C++ runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
   );
@@ -9788,7 +9796,7 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'live' &&
       event.change.path === 'cpp-live-dir' &&
-      event.change.directory === true
+      looseChange(event.change).directory === true
     ),
     `browser C++ runner should forward worker live directory-change events: ${JSON.stringify(events)}`
   );
@@ -11149,20 +11157,20 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'final-diff' &&
       event.change.path === 'event-dir' &&
-      event.change.directory === true
+      looseChange(event.change).directory === true
     ) &&
       events.some((event) =>
         event.type === 'file-change' &&
         event.phase === 'final-diff' &&
         event.change.path === 'event-dir/nested' &&
-        event.change.directory === true
+        looseChange(event.change).directory === true
       ) &&
       events.some((event) =>
         event.type === 'file-change' &&
         event.phase === 'final-diff' &&
         event.change.path === 'initial-empty/deep' &&
-        event.change.directory === true &&
-        event.change.deleted === true
+        looseChange(event.change).directory === true &&
+        looseChange(event.change).deleted === true
     ),
     `project command should emit final-diff directory changes for native runner directories: ${JSON.stringify(events)}`
   );
@@ -11227,14 +11235,14 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
       event.type === 'file-change' &&
       event.phase === 'final-diff' &&
       event.change.path === 'direct-dir/nested' &&
-      event.change.directory === true
+      looseChange(event.change).directory === true
     ) &&
       directEvents.some((event) =>
         event.type === 'file-change' &&
         event.phase === 'final-diff' &&
         event.change.path === 'direct-empty/deep' &&
-        event.change.directory === true &&
-        event.change.deleted === true
+        looseChange(event.change).directory === true &&
+        looseChange(event.change).deleted === true
     ),
     `direct native project runner should emit final-diff directory changes: ${JSON.stringify(directEvents)}`
   );
@@ -11257,8 +11265,8 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
   });
   assertCondition(partialSnapshotDelete.exitCode === 0, `partial snapshot delete should run: ${partialSnapshotDelete.stderr}`);
   assertCondition(
-    partialSnapshotDelete.files?.some((file) => file.path === 'src/main.py' && file.deleted === true) &&
-      !partialSnapshotDelete.files?.some((file) => file.path === 'src' && file.directory === true && file.deleted === true),
+    partialSnapshotDelete.files?.some((file) => file.path === 'src/main.py' && looseChange(file).deleted === true) &&
+      !partialSnapshotDelete.files?.some((file) => file.path === 'src' && looseChange(file).directory === true && looseChange(file).deleted === true),
     `partial snapshot deletes should not emit recursive ancestor directory tombstones: ${JSON.stringify(partialSnapshotDelete.files)}`
   );
   const partialHostWorkspace = await createRuntimeWorkspace({
@@ -11436,15 +11444,15 @@ async function testWorkspaceKernelEvents(): Promise<void> {
       event.actor?.kind === 'runtime' &&
       event.phase === 'final-diff' &&
       event.change.path === 'runtime-dir/nested' &&
-      event.change.directory === true
+      looseChange(event.change).directory === true
     ) &&
       events.some((event) =>
         event.type === 'file-change' &&
         event.actor?.kind === 'runtime' &&
         event.phase === 'final-diff' &&
         event.change.path === 'runtime-dir/nested' &&
-        event.change.directory === true &&
-        event.change.deleted === true
+        looseChange(event.change).directory === true &&
+        looseChange(event.change).deleted === true
       ),
     `workspace watch should report runtime final-diff directory changes: ${JSON.stringify(events)}`
   );
@@ -11504,15 +11512,15 @@ async function testWorkspaceKernelEvents(): Promise<void> {
       event.actor?.kind === 'runtime' &&
       event.phase === 'final-diff' &&
       event.change.path === 'generated-dir/nested' &&
-      event.change.directory === true
+      looseChange(event.change).directory === true
     ) &&
       commandEvents.some((event) =>
         event.type === 'file-change' &&
         event.actor?.kind === 'runtime' &&
         event.phase === 'final-diff' &&
         event.change.path === 'stale-dir/nested' &&
-        event.change.directory === true &&
-        event.change.deleted === true
+        looseChange(event.change).directory === true &&
+        looseChange(event.change).deleted === true
       ),
     `workspace watch should report command final-diff directory changes: ${JSON.stringify(commandEvents)}`
   );
@@ -11700,7 +11708,7 @@ async function testWorkspaceKernelEvents(): Promise<void> {
       event.phase === 'live' &&
       event.change.path === 'live.txt' &&
       !('deleted' in event.change) &&
-      event.change.contents === 'live\nagain\n'
+      looseChange(event.change).contents === 'live\nagain\n'
     ),
     `workspace watch should report live shell append writes: ${JSON.stringify(shellWatchEvents)}`
   );
@@ -11972,8 +11980,8 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
 
   const cdSrc = await session.run('cd src');
   assertCondition(cdSrc.exitCode === 0, `terminal cd should succeed: ${cdSrc.stderr}`);
-  assertCondition(session.cwd === '/home/obi/weather-api/src', `terminal cd should update session cwd: ${session.cwd}`);
-  assertCondition(session.prompt.text === 'obi@tracevm src %', `terminal prompt should follow cwd basename: ${session.prompt.text}`);
+  assertCondition((session.cwd as string) === '/home/obi/weather-api/src', `terminal cd should update session cwd: ${session.cwd}`);
+  assertCondition((session.prompt.text as string) === 'obi@tracevm src %', `terminal prompt should follow cwd basename: ${session.prompt.text}`);
 
   const pwd = await session.run('pwd');
   assertCondition(pwd.stdout === '/home/obi/weather-api/src\n', `terminal pwd should read session cwd: ${JSON.stringify(pwd)}`);
@@ -11986,7 +11994,7 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   assertCondition(
     compoundCd.exitCode === 0 &&
       compoundCd.stdout === '/home/obi/weather-api/src\n' &&
-      session.cwd === '/home/obi/weather-api/src',
+      (session.cwd as string) === '/home/obi/weather-api/src',
     `terminal compound cd should update session cwd after command completion: ${JSON.stringify({ compoundCd, cwd: session.cwd })}`
   );
   const compoundCdBack = await session.run('cd .. && pwd');
@@ -12025,8 +12033,8 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   );
 
   const cdHome = await session.run('cd ..');
-  assertCondition(cdHome.exitCode === 0 && session.cwd === '/home/obi', `terminal cd .. should allow read-only home navigation: ${session.cwd}`);
-  assertCondition(session.prompt.text === 'obi@tracevm ~ %', `terminal prompt should label home cwd: ${session.prompt.text}`);
+  assertCondition(cdHome.exitCode === 0 && (session.cwd as string) === '/home/obi', `terminal cd .. should allow read-only home navigation: ${session.cwd}`);
+  assertCondition((session.prompt.text as string) === 'obi@tracevm ~ %', `terminal prompt should label home cwd: ${session.prompt.text}`);
   const homePwd = await session.run('pwd');
   assertCondition(homePwd.stdout === '/home/obi\n', `terminal pwd should allow home cwd: ${JSON.stringify(homePwd)}`);
   const homeLs = await session.run('ls');
@@ -12087,11 +12095,11 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   );
   const aliasCd = await session.run('cd /workspace/src/nested');
   assertCondition(aliasCd.exitCode === 0, `terminal cd should accept workspace alias: ${aliasCd.stderr}`);
-  assertCondition(session.cwd === '/home/obi/weather-api/src/nested', `terminal alias cd should canonicalize cwd: ${session.cwd}`);
+  assertCondition((session.cwd as string) === '/home/obi/weather-api/src/nested', `terminal alias cd should canonicalize cwd: ${session.cwd}`);
 
   const escape = await session.run('cd ../../../..');
   assertCondition(escape.exitCode !== 0, 'terminal cd should reject home escapes');
-  assertCondition(session.cwd === '/home/obi/weather-api/src/nested', 'failed terminal cd should preserve cwd');
+  assertCondition((session.cwd as string) === '/home/obi/weather-api/src/nested', 'failed terminal cd should preserve cwd');
 
   const quietEvents: RuntimeCommandEvent[] = [];
   const quietNode = await session.run('node /workspace/main.js', { onEvent: (event) => quietEvents.push(event) });
@@ -12173,7 +12181,7 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   assertCondition(
     firstTerminalResult.exitCode === 0 &&
       firstTerminalResult.stdout === 'slow:done\n' &&
-      oneCommandSession.inputState.mode === 'command',
+      (oneCommandSession.inputState.mode as string) === 'command',
     `busy terminal session should return to command mode after its command completes: ${JSON.stringify({ firstTerminalResult, inputState: oneCommandSession.inputState })}`
   );
 
@@ -13548,7 +13556,7 @@ async function testProjectSessionLifecycle(): Promise<void> {
       resetEvents.some((event) =>
         event.type === 'lifecycle' &&
           event.phase === 'session-destroyed' &&
-          event.detail.reason === 'tracekernelctl-reset'
+          event.detail?.reason === 'tracekernelctl-reset'
       ),
     `tracekernelctl reset should run the reset hook and destroy the workspace: ${JSON.stringify({ reset, controlCalls, resetEvents })}`
   );
@@ -14208,6 +14216,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

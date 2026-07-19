@@ -310,7 +310,7 @@ assert.ok(
   `C++ generated helper function should be hidden, received ${JSON.stringify(helperScriptEvents)}`
 );
 assert.ok(
-  helperScriptEvents.every((event) => !event.callStack?.some((frame) => frame.function === 'tracecodeIntRangeWhere')),
+  helperScriptEvents.every((event) => !(event as { callStack?: Array<{ function?: string }> }).callStack?.some((frame) => frame.function === 'tracecodeIntRangeWhere')),
   `C++ generated helper call-stack frame should be hidden, received ${JSON.stringify(helperScriptEvents)}`
 );
 

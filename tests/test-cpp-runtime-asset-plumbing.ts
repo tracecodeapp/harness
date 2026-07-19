@@ -33,7 +33,7 @@ class AssetWorker {
 
   constructor(readonly url: string | URL, readonly options?: WorkerOptions) {
     AssetWorker.instances.push(this);
-    queueMicrotask(() => this.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent<WorkerMessage>));
+    queueMicrotask(() => this.onmessage?.({ data: { type: 'worker-ready' } } as unknown as MessageEvent<WorkerMessage>));
   }
 
   postMessage(message: WorkerMessage): void {
@@ -56,7 +56,7 @@ class AssetWorker {
         protocolToken: message.protocolToken,
         payload,
       },
-    } as MessageEvent<WorkerMessage>));
+    } as unknown as MessageEvent<WorkerMessage>));
   }
 
   terminate(): void {

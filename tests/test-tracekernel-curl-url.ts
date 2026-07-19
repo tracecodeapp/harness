@@ -10,7 +10,7 @@ import {
   resolveCurlUrl,
 } from '../packages/harness-project/src/curl-url';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 

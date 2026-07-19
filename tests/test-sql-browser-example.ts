@@ -68,7 +68,7 @@ async function runSqlBrowserSmoke(previewUrl: string): Promise<void> {
       'SQL browser smoke should advertise explain-json only when plan capture is enabled'
     );
     assertCondition(
-      result.trace.events.some((event) => event.kind === 'statement' && event.sql.operation === 'select'),
+      result.trace.events.some((event) => event.kind === 'statement' && event.sql?.operation === 'select'),
       'SQL browser smoke should include a select statement event'
     );
     assertCondition(
@@ -88,7 +88,7 @@ async function runSqlBrowserSmoke(previewUrl: string): Promise<void> {
       'SQL browser smoke should include a harness EXPLAIN estimate plan event'
     );
     assertCondition(
-      result.trace.events.some((event) => event.kind === 'result' && event.rows.rowCountKnown === 2),
+      result.trace.events.some((event) => event.kind === 'result' && event.rows?.rowCountKnown === 2),
       'SQL browser smoke should include the sampled SELECT result rows'
     );
     assertCondition(
@@ -160,6 +160,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

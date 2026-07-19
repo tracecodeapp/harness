@@ -9,7 +9,6 @@ import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
-import type { ExecutionResult } from '../packages/harness-core/src/types';
 import {
   createEmptyRuntimeTrace,
   type RuntimeTraceEventKind,
@@ -220,7 +219,7 @@ function selectedFixtureLanguages(): Language[] {
   return selected as Language[];
 }
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -553,7 +552,7 @@ function createJavaScriptWorkerHarness(workerSource: string) {
       }, 5000);
       pending.set(id, { protocolToken, resolve: resolve as (value: unknown) => void, reject, timeoutId });
     });
-    onmessage({ data: { id, type, payload, protocolToken } });
+    onmessage!({ data: { id, type, payload, protocolToken } });
     return responsePromise;
   }
 
@@ -570,7 +569,7 @@ async function executeJavaScriptTrace(
   const init = await harness.sendMessage<{ success: boolean }>('init');
   assertCondition(init.success === true, `${language} worker init failed`);
 
-  const result = await harness.sendMessage<ExecutionResult>('execute-with-tracing', {
+  const result = await harness.sendMessage<{ success: boolean; error?: string; trace: RuntimeTrace }>('execute-with-tracing', {
     code,
     functionName: fixture.functionName,
     inputs: fixture.inputs,
@@ -623,7 +622,7 @@ async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
     const runtime = await dotnet.withApplicationArguments('runtime-trace-fixtures').create();
     const config = runtime.getConfig();
     const exports = await runtime.getAssemblyExports(config.mainAssemblyName);
-    const compilerHost = exports.TraceCode?.CSharpHost?.CompilerHost as { Execute?: unknown } | undefined;
+    const compilerHost = (exports as { TraceCode?: { CSharpHost?: { CompilerHost?: unknown } } }).TraceCode?.CSharpHost?.CompilerHost as { Execute?: unknown } | undefined;
     if (typeof compilerHost?.Execute !== 'function') {
       throw new Error('Unable to locate TraceCode.CSharpHost.CompilerHost.Execute export.');
     }
@@ -772,13 +771,15 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
 
   const workerClient = {
     init: async () => ({ success: true, loadTimeMs: 0 }),
-    executeWithTracing: async (
-      code: string,
-      functionName: string,
-      inputs: Record<string, unknown>,
-      options: Record<string, unknown> | undefined,
-      executionStyle: string
-    ): Promise<JavaWorkerTraceResult> => {
+    executeWithTracing: async (call: {
+      code: string;
+      functionName: string | null;
+      inputs: Record<string, unknown>;
+      traceOptions?: Record<string, unknown>;
+      executionStyle?: string;
+    }): Promise<JavaWorkerTraceResult> => {
+      const { code, inputs, traceOptions: options, executionStyle = 'function' } = call;
+      const functionName = call.functionName ?? '';
       const [workerSource, augmentationSource, runtimeKernelPolicySource] = await Promise.all([
         readFile(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8'),
         readFile(JAVA_SOURCE_AUGMENTATIONS_PATH, 'utf8'),
@@ -800,7 +801,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         }, timeout);
         activeWorkerTimers.add(timer);
         return timer;
-      }) as typeof setTimeout;
+      }) as unknown as typeof setTimeout;
       const workerClearTimeout: typeof clearTimeout = ((timer?: string | number | NodeJS.Timeout) => {
         if (timer && typeof timer !== 'string' && typeof timer !== 'number') {
           activeWorkerTimers.delete(timer);
@@ -905,11 +906,12 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
         if (errorResponse) throw errorResponse;
-        if (!response) throw new Error('Timed out waiting for local Java worker response');
+        const settledResponse = response as unknown as JavaWorkerRawTraceResult | null;
+        if (!settledResponse) throw new Error('Timed out waiting for local Java worker response');
         return {
-          ...response,
-          trace: response.success
-            ? javaTraceHooksEventsToRuntimeTrace(response.events, response.sourceText, {
+          ...settledResponse,
+          trace: settledResponse.success
+            ? javaTraceHooksEventsToRuntimeTrace(settledResponse.events, settledResponse.sourceText, {
                 runId: 'java:run',
                 file: 'solution.java',
                 maxPathDepth: typeof options?.maxPathDepth === 'number' ? options.maxPathDepth : undefined,
@@ -923,9 +925,6 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
     executeCode: async () => {
       throw new Error('executeCode is not used by runtime trace fixtures');
     },
-    executeCodeInterviewMode: async () => {
-      throw new Error('executeCodeInterviewMode is not used by runtime trace fixtures');
-    },
     terminate: () => {
       void rootPromise.then((root) => rm(root, { recursive: true, force: true }));
     },
@@ -937,13 +936,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
 async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<FixtureTraceRun> {
   const workerClient = createLocalJavaWorkerClient();
   try {
-    const rawResult = await workerClient.executeWithTracing(
-      code,
-      fixture.functionName ?? '',
-      fixture.inputs,
-      runtimeTraceOptions(fixture),
-      fixture.executionStyle as Parameters<JavaWorkerClient['executeWithTracing']>[4]
-    );
+    const rawResult = await workerClient.executeWithTracing({ code: code, functionName: fixture.functionName ?? '', inputs: fixture.inputs, traceOptions: runtimeTraceOptions(fixture), executionStyle: fixture.executionStyle as 'function' | 'solution-method' | 'ops-class' });
     if (!rawResult.success) {
       throw new Error(`Java tracing failed for ${fixture.id}: ${rawResult.error ?? 'unknown error'}`);
     }
@@ -951,15 +944,9 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
       ...workerClient,
       executeWithTracing: async () => rawResult,
     } as unknown as JavaWorkerClient);
-    const result = await client.executeWithTracing(
-      code,
-      fixture.functionName,
-      fixture.inputs,
-      runtimeTraceOptions(fixture),
-      fixture.executionStyle
-    );
-    if (!result.success) {
-      throw new Error(`Java tracing failed for ${fixture.id}: ${result.error ?? 'unknown error'}`);
+    const result = await client.executeWithTracing({ code: code, functionName: fixture.functionName, inputs: fixture.inputs, traceOptions: runtimeTraceOptions(fixture), executionStyle: fixture.executionStyle });
+    if (result.kind !== 'completed') {
+      throw new Error(`Java tracing failed for ${fixture.id}: ${result.kind === 'failed' || result.kind === 'limit' ? result.error : 'unknown error'}`);
     }
     const rawSummary = summarizeJavaRawEmissions(rawResult.events);
     assertSupportedRawEmissions(rawSummary, `${fixture.id}:java`);
@@ -1050,7 +1037,7 @@ globalThis.__tracecodeCppFixture = { handleInit, handleExecuteWithTracing };`,
   await script.runInContext(context);
   const bridge = sandbox.__tracecodeCppFixture as {
     handleInit: (payload: unknown) => Promise<{ success: boolean; error?: string }>;
-    handleExecuteWithTracing: (payload: unknown) => Promise<ExecutionResult>;
+    handleExecuteWithTracing: (payload: unknown) => Promise<{ success: boolean; error?: string; trace: RuntimeTrace }>;
   };
   assertCondition(Boolean(bridge), 'C++ worker bridge did not initialize');
   const init = await bridge.handleInit({
@@ -1632,7 +1619,7 @@ async function runFixture(
 
   for (const language of Object.keys(traces) as Language[]) {
     const trace = traces[language];
-    assertCondition(Boolean(trace), `${fixture.id}: ${language} trace was not produced`);
+    assertCondition(trace, `${fixture.id}: ${language} trace was not produced`);
     const roleLines = roleLinesByLanguage[language] ?? {};
     const actual = projectRoleSignature(trace, roleLines);
     const expectedLineSequence = fixture.expectLineSequenceByLanguage?.[language] ?? fixture.expectLineSequence;
@@ -1842,5 +1829,5 @@ async function main(): Promise<void> {
 
 main().catch((error) => {
   console.error(error);
-  process.exit(1);
+  process.exitCode = 1;
 });

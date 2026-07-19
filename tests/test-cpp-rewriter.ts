@@ -3,7 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 

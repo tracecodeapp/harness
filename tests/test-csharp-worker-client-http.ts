@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { CSharpWorkerClient } from '../packages/harness-browser/src/csharp-worker-client';
+import { CSharpWorkerClient, type CSharpProjectCommandRequest } from '../packages/harness-browser/src/csharp-worker-client';
 import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpDispatchOptions,
@@ -269,7 +269,7 @@ async function testCSharpKernelHttpProtocol(): Promise<void> {
     assetBaseUrl: '/workers/vendor/csharp',
     debug: false,
   });
-  const execute = client.executeProjectCSharp({
+  const execute = client.executeProjectCSharp(({
     source: 'run',
     scriptPath: 'server.cs',
     args: [],
@@ -277,7 +277,7 @@ async function testCSharpKernelHttpProtocol(): Promise<void> {
     env: {},
     project: { cwd: '/workspace', files: [{ path: 'server.cs', contents: '' }] },
     kernelHttp: createKernelHttpBridge(state),
-  }, 1_000);
+  } as unknown as CSharpProjectCommandRequest), 1_000);
 
   await waitFor(() => Boolean(state.listenerHandler), 'CSharpWorkerClient should register the worker HTTP listener');
   const controller = new AbortController();
@@ -303,7 +303,7 @@ async function testCSharpKernelHttpProtocol(): Promise<void> {
   assertCondition(worker?.projectPayload !== undefined, 'C# worker should receive a project payload');
   assertCondition(!('kernelHttp' in worker.projectPayload), 'C# project payload must omit the function-bearing kernelHttp bridge');
   assertCondition(
-    worker.listenerRequest !== undefined && !('signal' in (worker.listenerRequest as Record<string, unknown>)),
+    worker.listenerRequest !== undefined && !('signal' in (worker.listenerRequest as unknown as Record<string, unknown>)),
     'C# worker-bound HTTP listener requests must omit AbortSignal'
   );
   assertCondition(worker.listenerAbortSeen, 'C# listener request abort should be forwarded to the worker');
@@ -332,7 +332,7 @@ async function testCSharpKernelHttpTimeoutCleanup(): Promise<void> {
   });
   let errorMessage = '';
   try {
-    await client.executeProjectCSharp({
+    await client.executeProjectCSharp(({
       source: 'run',
       scriptPath: 'timeout.cs',
       args: [],
@@ -340,7 +340,7 @@ async function testCSharpKernelHttpTimeoutCleanup(): Promise<void> {
       env: {},
       project: { cwd: '/workspace', files: [{ path: 'timeout.cs', contents: '' }] },
       kernelHttp: createKernelHttpBridge(state),
-    }, 25);
+    } as unknown as CSharpProjectCommandRequest), 25);
   } catch (error) {
     errorMessage = error instanceof Error ? error.message : String(error);
   }
@@ -364,7 +364,7 @@ async function testCSharpKernelHttpTerminationCleanup(): Promise<void> {
     assetBaseUrl: '/workers/vendor/csharp',
     debug: false,
   });
-  const execute = client.executeProjectCSharp({
+  const execute = client.executeProjectCSharp(({
     source: 'run',
     scriptPath: 'terminate.cs',
     args: [],
@@ -372,7 +372,7 @@ async function testCSharpKernelHttpTerminationCleanup(): Promise<void> {
     env: {},
     project: { cwd: '/workspace', files: [{ path: 'terminate.cs', contents: '' }] },
     kernelHttp: createKernelHttpBridge(state),
-  }, 1_000);
+  } as unknown as CSharpProjectCommandRequest), 1_000);
   await waitFor(() => Boolean(state.listenerHandler), 'C# termination test should register an HTTP listener');
   const listenerResponse = state.listenerHandler!({
     method: 'GET',
@@ -406,9 +406,9 @@ async function testCSharpKernelHttpTerminationCleanup(): Promise<void> {
   console.log('PASS: CSharpWorkerClient rejects pending HTTP responses and closes listeners on termination');
 }
 
-const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+const previousWorker = (globalThis as { Worker?: unknown }).Worker;
 const workerInstances: CSharpProtocolWorker[] = [];
-(globalThis as typeof globalThis & { Worker?: unknown }).Worker = class extends CSharpProtocolWorker {
+(globalThis as { Worker?: unknown }).Worker = class extends CSharpProtocolWorker {
   constructor(url: string | URL) {
     super(url);
     workerInstances.push(this);
@@ -421,8 +421,8 @@ try {
   await testCSharpKernelHttpTerminationCleanup();
 } finally {
   if (previousWorker === undefined) {
-    delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+    delete (globalThis as { Worker?: unknown }).Worker;
   } else {
-    (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
+    (globalThis as { Worker?: unknown }).Worker = previousWorker;
   }
 }

@@ -9,7 +9,7 @@ import {
   type RuntimeTrace,
 } from '../packages/harness-core/src/runtime-trace';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -20,7 +20,10 @@ function stableStringify(value: unknown): string {
   return '{' + Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(',') + '}';
 }
 
-function trace(language: RuntimeTrace['language'], events: Array<Omit<RuntimeTraceEvent, 'runId'>>): RuntimeTrace {
+// Omit over a union must distribute to keep variant-specific fields (function, target, ...).
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+function trace(language: RuntimeTrace['language'], events: Array<DistributiveOmit<RuntimeTraceEvent, 'runId'>>): RuntimeTrace {
   const runId = `${language}:test`;
   return {
     schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
@@ -32,11 +35,11 @@ function trace(language: RuntimeTrace['language'], events: Array<Omit<RuntimeTra
   };
 }
 
-function nativeJavaEvent(event: Omit<RuntimeTraceEvent, 'runId'>): string {
+function nativeJavaEvent(event: DistributiveOmit<RuntimeTraceEvent, 'runId'>): string {
   return `trace:${JSON.stringify(event)}`;
 }
 
-function javaTrace(events: Array<Omit<RuntimeTraceEvent, 'runId'>>, sourceText?: string): RuntimeTrace {
+function javaTrace(events: Array<DistributiveOmit<RuntimeTraceEvent, 'runId'>>, sourceText?: string): RuntimeTrace {
   return javaTraceHooksEventsToRuntimeTrace(events.map(nativeJavaEvent), sourceText, { runId: 'java:test', file: 'solution.java' });
 }
 
@@ -61,7 +64,7 @@ function assertParity(name: string, traces: Record<string, RuntimeTrace>, expect
 }
 
 function runIndexedReadParity(): void {
-  const events: Array<Omit<RuntimeTraceEvent, 'runId'>> = [
+  const events: Array<DistributiveOmit<RuntimeTraceEvent, 'runId'>> = [
     { kind: 'line', line: 2, function: 'solve' },
     { kind: 'snapshot', line: 2, target: { variable: 'nums' }, value: [1, 2] },
     { kind: 'snapshot', line: 2, target: { variable: 'i' }, value: 0 },
@@ -77,7 +80,7 @@ function runIndexedReadParity(): void {
 }
 
 function runMatrixWriteParity(): void {
-  const events: Array<Omit<RuntimeTraceEvent, 'runId'>> = [
+  const events: Array<DistributiveOmit<RuntimeTraceEvent, 'runId'>> = [
     { kind: 'line', line: 4, function: 'solve' },
     { kind: 'snapshot', line: 4, target: { variable: 'grid' }, value: [[0, 1]] },
     { kind: 'snapshot', line: 4, target: { variable: 'row' }, value: 0 },
@@ -99,14 +102,14 @@ function runListAppendParity(): void {
     { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [1] },
     { kind: 'mutate', line: 3, target: { variable: 'out' }, method: 'append' },
     { kind: 'write', line: 3, target: { variable: 'out', path: [0] }, value: 1 },
-  ] satisfies Array<Omit<RuntimeTraceEvent, 'runId'>>;
+  ] satisfies Array<DistributiveOmit<RuntimeTraceEvent, 'runId'>>;
   const javaEvents = [
     { kind: 'line', line: 3, function: 'solve' },
     { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [] },
     { kind: 'mutate', line: 3, target: { variable: 'out' }, method: 'append' },
     { kind: 'write', line: 3, target: { variable: 'out', path: [0] }, value: 1 },
     { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [1] },
-  ] satisfies Array<Omit<RuntimeTraceEvent, 'runId'>>;
+  ] satisfies Array<DistributiveOmit<RuntimeTraceEvent, 'runId'>>;
   assertParity('list-append', { python: trace('python', common), javascript: trace('javascript', common), typescript: trace('typescript', common), java: javaTrace(javaEvents) }, {
     lineSequence: [3],
     eventKindsByLine: { 3: ['line', 'mutate', 'snapshot', 'write'] },
@@ -120,7 +123,7 @@ function runListAppendParity(): void {
 }
 
 function runMapSetParity(): void {
-  const events: Array<Omit<RuntimeTraceEvent, 'runId'>> = [
+  const events: Array<DistributiveOmit<RuntimeTraceEvent, 'runId'>> = [
     { kind: 'line', line: 5, function: 'solve' },
     { kind: 'mutate', line: 5, target: { variable: 'seen' }, method: 'set' },
     { kind: 'snapshot', line: 5, target: { variable: 'seen' }, value: { __type__: 'map', entries: [[2, true]] } },
@@ -135,7 +138,7 @@ function runMapSetParity(): void {
 }
 
 function runEarlyReturnParity(): void {
-  const events: Array<Omit<RuntimeTraceEvent, 'runId'>> = [
+  const events: Array<DistributiveOmit<RuntimeTraceEvent, 'runId'>> = [
     { kind: 'call', line: 1, function: 'solve', args: { n: 0 } },
     { kind: 'snapshot', line: 1, target: { variable: 'n' }, value: 0 },
     { kind: 'line', line: 2, function: 'solve' },
@@ -160,4 +163,7 @@ function main(): void {
   console.log('PASS: Runtime trace parity gate');
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -91,12 +91,12 @@ async function main(): Promise<void> {
       });
       const execute = async (code) => {
         const startedAt = performance.now();
-        const response = await client.executeCode(code, 'add', { a: 2, b: 3 }, 'solution-method');
+        const response = await client.executeCode({ code: code, functionName: 'add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method' });
         return {
           durationMs: Math.round(performance.now() - startedAt),
-          success: response.success,
-          output: response.output,
-          error: response.error,
+          success: response.kind === 'completed',
+          output: response.kind === 'completed' ? response.output : undefined,
+          error: response.kind === 'completed' ? undefined : response.error,
           timings: response.timings,
           compilerFrames: document.querySelectorAll('iframe').length,
         };
@@ -184,6 +184,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(error);
   process.exitCode = 1;
 });

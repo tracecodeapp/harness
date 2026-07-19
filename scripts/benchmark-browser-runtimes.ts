@@ -21,14 +21,13 @@ import { chromium, firefox, webkit, type Browser, type BrowserContext, type Page
 
 type Language = 'python' | 'javascript' | 'typescript' | 'java' | 'csharp' | 'cpp';
 type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
-type Mode = 'execute' | 'trace' | 'interview';
+type Mode = 'execute' | 'trace';
 type Phase =
   | 'cold-first-execute'
   | 'warm-exact-repeat'
   | 'warm-edited-source'
   | 'multiple-inputs'
-  | 'trace'
-  | 'interview';
+  | 'trace';
 
 interface BenchmarkArgs {
   engine: BrowserEngine;
@@ -221,7 +220,7 @@ interface SummaryRecord {
 
 const ALL_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
 const ALL_ENGINES: BrowserEngine[] = ['chromium', 'firefox', 'webkit'];
-const ALL_MODES: Mode[] = ['execute', 'trace', 'interview'];
+const ALL_MODES: Mode[] = ['execute', 'trace'];
 const DEFAULT_SEED = 17_729;
 
 const addCases: TestCase[] = [
@@ -500,7 +499,7 @@ function usage(): string {
     '  --languages=python,javascript,typescript,java,csharp,cpp',
     '                                  Browser runtimes to benchmark. Default: all.',
     '  --workloads=add,two-sum         Workloads to run. Default: all.',
-    '  --modes=execute,trace,interview Public request modes. Default: all.',
+    '  --modes=execute,trace          Public request modes. Default: all.',
     '  --iterations=5                  Fresh-context samples per language/workload. Default: 5 (smoke: 1).',
     '  --case-limit=2                  Limit cases used by the multi-input phase.',
     `  --seed=${DEFAULT_SEED}                 Deterministic run-order shuffle seed.`,
@@ -1314,7 +1313,6 @@ async function runBrowserPlanItem(
               expected: testCase.expected,
             })),
             trace: mode === 'trace',
-            interview: mode === 'interview',
             traceOptions: mode === 'trace'
               ? {
                   maxTraceSteps: 50_000,
@@ -1338,7 +1336,9 @@ async function runBrowserPlanItem(
           }
           const wallMs = performance.now() - startedAt;
           await settleInstrumentation();
-          const resultCases = Array.isArray(response?.cases) ? response.cases : [];
+          // Flatten the outcome union onto each case record so metric extraction below reads one shape.
+          const resultCases = (Array.isArray(response?.cases) ? response.cases : [])
+            .map((testCase: any) => ({ ...testCase, ...(testCase.outcome ?? {}) }));
           const outputs = resultCases.map((testCase: any) => testCase.output);
           const expected = cases.map((testCase) => testCase.expected);
           const errors = [
@@ -1439,9 +1439,6 @@ async function runBrowserPlanItem(
             }
             if (runtimeHealthy && modes.includes('trace')) {
               runtimeHealthy = await runPhase('trace', 'trace', changedSource, 'edited', [firstCase]);
-            }
-            if (runtimeHealthy && modes.includes('interview')) {
-              await runPhase('interview', 'interview', changedSource, 'edited', [firstCase]);
             }
           }
         } finally {
@@ -1805,7 +1802,6 @@ async function main(): Promise<void> {
           'warm-edited-source': 'same behavior with a comment appended to force a new source cache key',
           'multiple-inputs': 'edited source repeated with all selected cases in one public execute request',
           trace: 'one selected case through the public trace request and canonical trace response',
-          interview: 'one selected case through the public interview request',
         },
       },
       options: {

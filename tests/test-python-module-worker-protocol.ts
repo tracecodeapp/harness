@@ -113,10 +113,10 @@ try {
         },
       },
     },
-  } as MessageEvent<WorkerMessage>);
+  } as unknown as MessageEvent<WorkerMessage>);
   scope.onmessage({
     data: { id: 'warmup-1', type: 'warmup', protocolToken: 'token-warmup' },
-  } as MessageEvent<WorkerMessage>);
+  } as unknown as MessageEvent<WorkerMessage>);
 
   await waitFor(() => posted.some((message) => message.id === 'warmup-1'));
   const initIndex = posted.findIndex((message) => message.id === 'init-1');
@@ -140,7 +140,7 @@ try {
       protocolToken: 'token-execute',
       payload: { code: 'poison-policy', functionName: null, inputs: {}, executionStyle: 'function' },
     },
-  } as MessageEvent<WorkerMessage>);
+  } as unknown as MessageEvent<WorkerMessage>);
   await waitFor(() => posted.some((message) => message.id === 'execute-1'));
   const executeResult = posted.find((message) => message.id === 'execute-1');
   const output = (executeResult?.payload as {
@@ -169,7 +169,7 @@ try {
       protocolToken: 'token-execute-failure',
       payload: { code: 'throw-after-probe', functionName: null, inputs: {}, executionStyle: 'function' },
     },
-  } as MessageEvent<WorkerMessage>);
+  } as unknown as MessageEvent<WorkerMessage>);
   await waitFor(() => posted.some((message) => message.id === 'execute-2'));
   const failedResult = posted.find((message) => message.id === 'execute-2');
   assertCondition(
@@ -186,7 +186,7 @@ try {
       protocolToken: 'token-execute-after-poison',
       payload: { code: 'probe', functionName: null, inputs: {}, executionStyle: 'function' },
     },
-  } as MessageEvent<WorkerMessage>);
+  } as unknown as MessageEvent<WorkerMessage>);
   await waitFor(() => posted.some((message) => message.id === 'execute-3'));
   const postPoisonResult = posted.find((message) => message.id === 'execute-3');
   const postPoisonOutput = (postPoisonResult?.payload as { output?: { fetchResult?: string } } | undefined)?.output;

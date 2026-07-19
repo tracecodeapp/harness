@@ -16,7 +16,7 @@ import {
   createBrowserTypeScriptProjectRunner,
 } from '../packages/harness-javascript/src/project-browser';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -30,7 +30,7 @@ async function waitForListener(workspace: Awaited<ReturnType<typeof createRuntim
   throw new Error(`TraceKernel HTTP listener did not start on ${port}:\n${listeners}`);
 }
 
-type RuntimeWorkspaceWithPrivateDispatch = Awaited<ReturnType<typeof createRuntimeWorkspace>> & {
+type RuntimeWorkspaceWithPrivateDispatch = {
   dispatchHttpRequest(
     request: RuntimeKernelHttpRequest,
     options?: {
@@ -62,7 +62,7 @@ async function testExternalFetchRoutesThroughDelegate(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     externalHttp: {
       hosts: ['allowed.example'],
-      fetch: async (request) => {
+      fetch: async (request): Promise<import('../packages/harness-core/src/runtime-external-http').RuntimeExternalHttpResponse> => {
         calls.push({
           method: request.method,
           url: request.url,
@@ -206,7 +206,7 @@ async function testExternalFetchBudgets(): Promise<void> {
         const commandContext = commandContextForFs(ctx.fs);
         const statuses: number[] = [];
         for (let index = 0; index < 65; index += 1) {
-          const response = await (workspace as RuntimeWorkspaceWithPrivateDispatch).dispatchHttpRequest({
+          const response = await (workspace as unknown as RuntimeWorkspaceWithPrivateDispatch).dispatchHttpRequest({
             method: 'GET',
             url: `https://allowed.example/${index}`,
             path: `/${index}`,
@@ -403,7 +403,7 @@ async function testExternalFetchActorOptOut(): Promise<void> {
         const commandContext = commandContextForFs(ctx.fs);
         const actor = commandContext?.actor;
         if (actor?.capabilities?.http) actor.capabilities.http.externalFetch = false;
-        const response = await (workspace as RuntimeWorkspaceWithPrivateDispatch).dispatchHttpRequest({
+        const response = await (workspace as unknown as RuntimeWorkspaceWithPrivateDispatch).dispatchHttpRequest({
           method: 'GET',
           url: 'https://allowed.example/denied',
           path: '/denied',

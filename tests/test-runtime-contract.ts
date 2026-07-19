@@ -16,12 +16,23 @@ import {
   isLanguageSupported,
 } from '../packages/harness-browser/src';
 import { assertRuntimeRequestSupported } from '../packages/harness-browser/src/runtime-capability-guards';
+import { executeRuntimeRequest } from '../packages/harness-browser/src/runtime-execute';
+import { ExecutionTimeoutError } from '../packages/harness-browser/src/worker-errors';
+import {
+  WORKER_REQUEST_MESSAGES,
+  type BrowserWorkerProtocolLanguage,
+} from '../packages/harness-browser/src/worker-protocol-messages';
 import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
 import type { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
 import type { RuntimeKernelInfo } from '../packages/harness-core/src/runtime-project';
-import type { Language, LanguageRuntimeProfile, RuntimeCapabilities } from '../packages/harness-core/src/runtime-types';
+import type {
+  Language,
+  LanguageRuntimeProfile,
+  RuntimeCapabilities,
+  RuntimeExecutionLimits,
+} from '../packages/harness-core/src/runtime-types';
 import {
   javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
@@ -82,7 +93,7 @@ import {
   runtimeKernelVirtualPathTarget as workerRuntimeKernelVirtualPathTarget,
 } from '../workers/shared/runtime-kernel-policy.js';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -670,7 +681,7 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
   assertCondition(
     controllerEvents
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
-      .map((event) => event.data)
+      .map((event) => (event as { data?: string }).data)
       .join('') === 'controller-one\ncontroller-two\ncontroller-three\n' &&
       !controllerEvents.some((event) => event.type === 'file-change' && event.change.path === 'controller-hidden.txt'),
     `runtime live I/O controller should preserve queued event ordering and reconcile final output suffixes: ${stableStringify(controllerEvents)}`
@@ -851,7 +862,7 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
     events[0]?.type === 'status' &&
       events[0].phase === 'process-start' &&
       events[events.length - 1]?.type === 'status' &&
-      events[events.length - 1].phase === 'process-exit',
+      (events[events.length - 1] as { phase?: string } | undefined)?.phase === 'process-exit',
     `runtime worker bridge should wrap worker events in start/finish status events: ${stableStringify(events)}`
   );
   assertCondition(
@@ -916,11 +927,11 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
   assertCondition(
     partialOutputEvents
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
-      .map((event) => event.data)
+      .map((event) => (event as { data?: string }).data)
       .join('') === 'line-one\nline-two\n' &&
       partialOutputEvents
         .filter((event) => event.type === 'output' && event.stream === 'stderr')
-        .map((event) => event.data)
+        .map((event) => (event as { data?: string }).data)
         .join('') === 'err-one\nerr-two\n',
     `runtime worker bridge should stream missing final stdout/stderr suffixes: ${stableStringify(partialOutputEvents)}`
   );
@@ -1018,7 +1029,7 @@ const COMMON_STABLE_COVERAGE = [
   'execution.styles.solutionMethod',
   'execution.styles.opsClass',
   'execution.styles.script',
-  'execution.styles.interviewMode',
+  'execution.limits.wallClock',
   'execution.timeouts.clientTimeouts',
   'tracing.supported',
   'tracing.events.line',
@@ -1061,6 +1072,10 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
   python: [
     ...COMMON_STABLE_COVERAGE,
     ...PROJECT_IO_COVERAGE,
+    'execution.limits.lineEvents',
+    'execution.limits.singleLineHits',
+    'execution.limits.callDepth',
+    'execution.limits.memory',
     'execution.timeouts.runtimeTimeouts',
     'project.filesystem.providerLiveInterception',
     'tracing.events.stdout',
@@ -1090,7 +1105,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
     'execution.styles.script',
-    'execution.styles.interviewMode',
+    'execution.limits.wallClock',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
     'project.workspace.supported',
@@ -1130,7 +1145,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
     'execution.styles.script',
-    'execution.styles.interviewMode',
+    'execution.limits.wallClock',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
     'project.workspace.supported',
@@ -1175,7 +1190,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
     'execution.styles.script',
-    'execution.styles.interviewMode',
+    'execution.limits.wallClock',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
     'project.workspace.supported',
@@ -1228,6 +1243,123 @@ function assertProfileCoverageAlignment(profile: LanguageRuntimeProfile): void {
   }
 }
 
+function assertWorkerProtocolDeclarations(): void {
+  const sources: Record<BrowserWorkerProtocolLanguage, { client: string; worker: string }> = {
+    python: { client: 'pyodide-worker-client.ts', worker: 'workers/python/pyodide-worker.js' },
+    javascript: { client: 'javascript-worker-client.ts', worker: 'workers/javascript/javascript-worker.js' },
+    java: { client: 'java-worker-client.ts', worker: 'workers/java/java-worker.js' },
+    csharp: { client: 'csharp-worker-client.ts', worker: 'workers/csharp/csharp-worker.js' },
+    cpp: { client: 'cpp-worker-client.ts', worker: 'workers/cpp/cpp-worker.js' },
+  };
+
+  for (const [language, { client, worker }] of Object.entries(sources) as Array<
+    [BrowserWorkerProtocolLanguage, { client: string; worker: string }]
+  >) {
+    const declared = new Set(WORKER_REQUEST_MESSAGES[language]);
+    const clientSource = readFileSync(`packages/harness-browser/src/${client}`, 'utf8');
+    const workerSource = readFileSync(worker, 'utf8');
+
+    const sent = new Set<string>();
+    for (const pattern of [
+      /sendMessage(?:Effect)?[^(\n]*\(\s*'([a-z-]+)'/g,
+      /dispatchExecution[^(\n]*\(\s*worker,\s*'([a-z-]+)'/gs,
+    ]) {
+      for (const match of clientSource.matchAll(pattern)) {
+        sent.add(match[1]!);
+      }
+    }
+
+    for (const type of sent) {
+      assertCondition(
+        declared.has(type),
+        `${language} client sends undeclared worker request "${type}"; add it to WORKER_REQUEST_MESSAGES`
+      );
+    }
+    for (const type of declared) {
+      assertCondition(
+        workerSource.includes(`'${type}'`),
+        `${language} worker script has no handler evidence for declared request "${type}"`
+      );
+    }
+  }
+}
+
+async function assertExecutionLimitsDispatchContract(): Promise<void> {
+  const receivedLimits: Array<RuntimeExecutionLimits | undefined> = [];
+  const baseHandlers = {
+    defaultExecutionStyle: 'function' as const,
+    executeCode: async (call: { limits?: RuntimeExecutionLimits }) => {
+      receivedLimits.push(call.limits);
+      return { kind: 'completed' as const, output: 42, consoleOutput: [] };
+    },
+    executeWithTracing: async (): Promise<never> => {
+      throw new Error('unexpected executeWithTracing call');
+    },
+  };
+  const limits = { wallClockMs: 5000, maxLineEvents: 20000 };
+
+  const forwarded = (await executeRuntimeRequest(
+    { code: 'x', functionName: 'solve', cases: [{ inputs: {} }], limits },
+    baseHandlers
+  )) as { success: boolean; cases: Array<{ outcome: { kind: string } }> };
+  assertCondition(
+    forwarded.success === true &&
+      receivedLimits.length === 1 &&
+      receivedLimits[0]?.maxLineEvents === 20000 &&
+      receivedLimits[0]?.wallClockMs === 5000,
+    `execute dispatch should forward limits to executeCode, received ${JSON.stringify(receivedLimits)}`
+  );
+
+  const trippingHandlers = {
+    ...baseHandlers,
+    executeCode: async (): Promise<never> => {
+      throw new ExecutionTimeoutError({ timeoutMs: 5000 });
+    },
+  };
+  const tripped = (await executeRuntimeRequest(
+    { code: 'x', functionName: 'solve', cases: [{ inputs: {} }], limits },
+    trippingHandlers
+  )) as { success: boolean; cases: Array<{ outcome: { kind: string; reason?: string } }> };
+  assertCondition(
+    tripped.success === false &&
+      tripped.cases[0]?.outcome.kind === 'limit' &&
+      tripped.cases[0]?.outcome.reason === 'client-timeout',
+    `caller-configured wall-clock trips should surface as structured client-timeout cases, received ${JSON.stringify(tripped)}`
+  );
+
+  let rejectedWithoutWallClock = false;
+  try {
+    await executeRuntimeRequest(
+      { code: 'x', functionName: 'solve', cases: [{ inputs: {} }], limits: { maxLineEvents: 20000 } },
+      trippingHandlers
+    );
+  } catch {
+    rejectedWithoutWallClock = true;
+  }
+  assertCondition(
+    rejectedWithoutWallClock,
+    'execution timeouts without a caller-configured wall clock should stay rejected as transport errors'
+  );
+
+  for (const invalid of [
+    { trace: true, limits },
+  ]) {
+    let rejectedCombination = false;
+    try {
+      await executeRuntimeRequest(
+        { code: 'x', functionName: 'solve', cases: [{ inputs: {} }], ...invalid },
+        baseHandlers
+      );
+    } catch {
+      rejectedCombination = true;
+    }
+    assertCondition(
+      rejectedCombination,
+      `limits combined with ${Object.keys(invalid)[0]} should be rejected`
+    );
+  }
+}
+
 function createUnsupportedProfile(
   overrides: Partial<LanguageRuntimeProfile['capabilities']> = {}
 ): LanguageRuntimeProfile {
@@ -1246,7 +1378,13 @@ function createUnsupportedProfile(
           solutionMethod: false,
           opsClass: false,
           script: false,
-          interviewMode: false,
+        },
+        limits: {
+          wallClock: false,
+          lineEvents: false,
+          singleLineHits: false,
+          callDepth: false,
+          memory: false,
         },
         timeouts: {
           clientTimeouts: true,
@@ -1378,46 +1516,46 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
       consoleOutput: [],
     }),
     executeCode: async () => ({
-      success: true,
+      kind: 'completed' as const,
       output: nextOutput,
       consoleOutput: [],
     }),
     executeCodeBatch: async () => ({
-      success: true,
       results: [
-        { success: true, output: [0, 1], consoleOutput: [], timings: { compileCacheHit: false } },
-        { success: true, output: [1, 2], consoleOutput: [], timings: { compileCacheHit: false } },
+        { kind: 'completed' as const, output: [0, 1], consoleOutput: [], timings: { compileCacheHit: false } },
+        { kind: 'completed' as const, output: [1, 2], consoleOutput: [], timings: { compileCacheHit: false } },
       ],
       consoleOutput: [],
       timings: { compileCacheHit: false, totalMs: 10 },
     }),
-    executeCodeInterviewMode: async () => ({
-      success: true,
-      output: nextOutput,
-      consoleOutput: [],
-    }),
   };
   const javaClient = createJavaRuntimeClient(workerClient as unknown as JavaWorkerClient);
 
-  const tracedNumber = await javaClient.executeWithTracing('class Solution {}', 'solve', {});
-  assertCondition(tracedNumber.output === 7, 'Java runtime tracing should preserve worker-normalized numeric output');
+  const tracedNumber = await javaClient.executeWithTracing({ code: 'class Solution {}', functionName: 'solve', inputs: {} });
+  assertCondition(
+    tracedNumber.kind === 'completed' && tracedNumber.output === 7,
+    'Java runtime tracing should preserve worker-normalized numeric output'
+  );
 
   nextOutput = false;
-  const executedBoolean = await javaClient.executeCode('class Solution {}', 'solve', {});
-  assertCondition(executedBoolean.output === false, 'Java runtime executeCode should preserve worker-normalized boolean output');
+  const executedBoolean = await javaClient.executeCode({ code: 'class Solution {}', functionName: 'solve', inputs: {} });
+  assertCondition(
+    executedBoolean.kind === 'completed' && executedBoolean.output === false,
+    'Java runtime executeCode should preserve worker-normalized boolean output'
+  );
 
   nextOutput = 'false';
-  const executedString = await javaClient.executeCode('class Solution {}', 'solve', {});
+  const executedString = await javaClient.executeCode({ code: 'class Solution {}', functionName: 'solve', inputs: {} });
   assertCondition(
-    executedString.output === 'false',
+    executedString.kind === 'completed' && executedString.output === 'false',
     'Java runtime executeCode should preserve already-normalized string output'
   );
 
   nextOutput = [2, 3];
-  const interviewArray = await javaClient.executeCodeInterviewMode('class Solution {}', 'solve', {});
+  const executedArray = await javaClient.executeCode({ code: 'class Solution {}', functionName: 'solve', inputs: {} });
   assertCondition(
-    stableStringify(interviewArray.output) === stableStringify([2, 3]),
-    'Java runtime interview execution should preserve worker-normalized array output'
+    executedArray.kind === 'completed' && stableStringify(executedArray.output) === stableStringify([2, 3]),
+    'Java runtime executeCode should preserve worker-normalized array output'
   );
 
   const batched = await javaClient.execute({
@@ -1430,7 +1568,7 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
   });
   assertCondition(batched.success === true, 'Java runtime unified execute should succeed for batched code execution');
   assertCondition(
-    stableStringify(batched.cases.map((testCase) => testCase.output)) === stableStringify([[0, 1], [1, 2]]),
+    stableStringify(batched.cases.map((testCase) => (testCase.outcome.kind === 'completed' ? testCase.outcome.output : undefined))) === stableStringify([[0, 1], [1, 2]]),
     'Java runtime unified execute should preserve batched worker outputs'
   );
   assertCondition(
@@ -1454,6 +1592,13 @@ async function main(): Promise<void> {
   console.log('PASS: runtime project worker bridge live I/O contract');
 
   await testJavaSerializedResultNormalization();
+
+  await assertExecutionLimitsDispatchContract();
+  console.log('PASS: execution limits dispatch contract');
+
+  assertWorkerProtocolDeclarations();
+  console.log('PASS: worker protocol declarations match client sends and worker handlers');
+
   const profiles = getSupportedLanguageProfiles();
 
   assertCondition(SUPPORTED_LANGUAGES.includes('python'), 'SUPPORTED_LANGUAGES should include python');
@@ -1580,10 +1725,6 @@ async function main(): Promise<void> {
       typeof client.executeWithTracing === 'function',
       `${name} client should implement executeWithTracing`
     );
-    assertCondition(
-      typeof client.executeCodeInterviewMode === 'function',
-      `${name} client should implement executeCodeInterviewMode`
-    );
   }
   console.log('PASS: runtime adapter surface contract');
 
@@ -1672,7 +1813,7 @@ async function main(): Promise<void> {
     'Java should advertise a high-cost compiled execution pipeline'
   );
   assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should support script execution');
-  assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should support interview mode');
+  assertCondition(javaProfile.capabilities.execution.limits.wallClock, 'Java should honor wall-clock execution limits');
   assertCondition(
     javaProfile.capabilities.project.filesystem.liveMutationEvents &&
       javaProfile.capabilities.project.filesystem.finalDiff &&
@@ -1691,7 +1832,7 @@ async function main(): Promise<void> {
     'C# should advertise a high-cost compiled execution pipeline'
   );
   assertCondition(csharpProfile.capabilities.execution.styles.opsClass, 'C# should support ops-class execution');
-  assertCondition(csharpProfile.capabilities.execution.styles.interviewMode, 'C# should support interview mode');
+  assertCondition(csharpProfile.capabilities.execution.limits.wallClock, 'C# should honor wall-clock execution limits');
   assertCondition(csharpProfile.capabilities.tracing.supported, 'C# should support basic tracing');
   assertCondition(csharpProfile.capabilities.tracing.fidelity.callStack, 'C# should attach call-stack frames');
   assertCondition(csharpProfile.capabilities.diagnostics.compileErrors, 'C# should support compile diagnostics');
@@ -1720,7 +1861,7 @@ async function main(): Promise<void> {
   assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ should support solution-method execution');
   assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ should support ops-class execution');
   assertCondition(cppProfile.capabilities.execution.styles.script, 'C++ should support script execution');
-  assertCondition(cppProfile.capabilities.execution.styles.interviewMode, 'C++ should support interview mode');
+  assertCondition(cppProfile.capabilities.execution.limits.wallClock, 'C++ should honor wall-clock execution limits');
   assertCondition(cppProfile.capabilities.tracing.supported, 'C++ should support generated-driver v4 trace events');
   assertCondition(cppProfile.capabilities.tracing.events.exception, 'C++ should support lowered exception trace events');
   assertCondition(
@@ -1800,12 +1941,25 @@ async function main(): Promise<void> {
   expectThrows(
     () =>
       assertRuntimeRequestSupported(unsupportedProfile, {
-        request: 'interview',
+        request: 'execute',
         executionStyle: 'function',
         functionName: 'solve',
+        limits: { maxLineEvents: 20000 },
       }),
-    'does not support interview execution'
+    'does not support the "maxLineEvents" execution limit'
   );
+  assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+    request: 'execute',
+    executionStyle: 'function',
+    functionName: 'solve',
+    limits: {
+      wallClockMs: 5000,
+      maxLineEvents: 20000,
+      maxSingleLineHits: 2000,
+      maxCallDepth: 200,
+      maxMemoryBytes: 32 * 1024 * 1024,
+    },
+  });
   console.log('PASS: unsupported capability guards');
 
   const functionCase = {
@@ -2020,6 +2174,6 @@ function hasAliasedChildren(root) {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

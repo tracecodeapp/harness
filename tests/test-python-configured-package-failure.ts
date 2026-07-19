@@ -76,14 +76,14 @@ try {
         },
       },
     },
-  } as MessageEvent<WorkerMessage>);
+  } as unknown as MessageEvent<WorkerMessage>);
   await waitFor(() => posted.some((message) => message.id === 'init'));
   assertCondition(posted.find((message) => message.id === 'init')?.type === 'init-result', 'Python init failed');
 
   for (const attempt of ['warmup-1', 'warmup-2']) {
     scope.onmessage({
       data: { id: attempt, type: 'warmup', protocolToken: `${attempt}-token` },
-    } as MessageEvent<WorkerMessage>);
+    } as unknown as MessageEvent<WorkerMessage>);
     await waitFor(() => posted.some((message) => message.id === attempt));
     const response = posted.find((message) => message.id === attempt);
     assertCondition(

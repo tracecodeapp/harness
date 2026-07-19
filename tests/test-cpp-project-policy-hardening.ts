@@ -11,7 +11,7 @@ import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -67,7 +67,7 @@ async function loadCppWorkerPolicyContext(): Promise<vm.Context> {
       'const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;\n' +
       'const isRuntimeProcPath = isRuntimeKernelProcPath;\n' +
       workerSource +
-      '\nglobalThis.__tracecodeCppPolicy = { toCppLiteral, traceBudgetHardStopForOptions };',
+      '\nglobalThis.__tracecodeCppPolicy = { toCppLiteral, traceBudgetHardStopForOptions, traceLineBudgetHardStopForOptions };',
     context,
     { filename: 'cpp-worker.js' }
   );
@@ -111,10 +111,10 @@ async function testCppSoftTraceBudgetKeepsLoopHardStops(): Promise<void> {
   const context = await loadCppWorkerPolicyContext();
   const result = vm.runInContext(
     `(() => ({
-      line: __tracecodeCppPolicy.traceBudgetHardStopForOptions({
+      line: __tracecodeCppPolicy.traceLineBudgetHardStopForOptions({
         traceOptions: { softTraceBudget: true, maxLineEvents: 4, maxTraceSteps: 1000, maxStoredEvents: 1000 },
       }),
-      singleLine: __tracecodeCppPolicy.traceBudgetHardStopForOptions({
+      singleLine: __tracecodeCppPolicy.traceLineBudgetHardStopForOptions({
         traceOptions: { softTraceBudget: true, maxSingleLineHits: 4, maxTraceSteps: 1000, maxStoredEvents: 1000 },
       }),
       storedOnly: __tracecodeCppPolicy.traceBudgetHardStopForOptions({
@@ -137,7 +137,7 @@ interface WorkerMessage {
 }
 
 async function testCppClientTerminatesCompileStageTimeouts(): Promise<void> {
-  const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+  const previousWorker = (globalThis as { Worker?: unknown }).Worker;
   const workers: CompileStageHangingWorker[] = [];
 
   class CompileStageHangingWorker {
@@ -186,7 +186,7 @@ async function testCppClientTerminatesCompileStageTimeouts(): Promise<void> {
     }
   }
 
-  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = CompileStageHangingWorker as unknown as typeof Worker;
+  (globalThis as { Worker?: unknown }).Worker = CompileStageHangingWorker as unknown as typeof Worker;
   const client = new CppWorkerClient({
     workerUrl: '/workers/cpp-worker.js',
     clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
@@ -197,20 +197,15 @@ async function testCppClientTerminatesCompileStageTimeouts(): Promise<void> {
     executionTimeoutMs: 5,
   });
   try {
-    const result = await client.executeCode(
-      'class Solution { public: int add(int a, int b) { return a + b; } };',
-      'add',
-      { a: 1, b: 2 },
-      'solution-method'
-    );
-    assertCondition(result.success === false, `C++ compile-stage timeout should fail closed: ${JSON.stringify(result)}`);
+    const result = await client.executeCode({ code: 'class Solution { public: int add(int a, int b) { return a + b; } };', functionName: 'add', inputs: { a: 1, b: 2 }, executionStyle: 'solution-method' });
+    assertCondition(result.kind === 'limit' && result.reason === 'client-timeout', `C++ compile-stage timeout should fail closed: ${JSON.stringify(result)}`);
     assertCondition(workers[0]?.terminated === true, 'C++ compile-stage timeout should terminate the worker');
   } finally {
     client.terminate();
     if (previousWorker === undefined) {
-      delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+      delete (globalThis as { Worker?: unknown }).Worker;
     } else {
-      (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
+      (globalThis as { Worker?: unknown }).Worker = previousWorker;
     }
   }
 }
@@ -301,5 +296,5 @@ async function main(): Promise<void> {
 
 main().catch((error) => {
   console.error(error);
-  process.exit(1);
+  process.exitCode = 1;
 });

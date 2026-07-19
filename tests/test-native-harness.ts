@@ -2,7 +2,7 @@
 
 import { createNativeHarness } from '../src/native';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -28,13 +28,8 @@ async function main(): Promise<void> {
 
   const typescript = harness.getClient('typescript');
   await typescript.init();
-  const tsResult = await typescript.executeCode(
-    'function solve(nums: number[]): number { return nums.length; }',
-    'solve',
-    { nums: [4, 5, 6] },
-    'function'
-  );
-  assertCondition(tsResult.success === true && tsResult.output === 3, `native TypeScript should execute: ${JSON.stringify(tsResult)}`);
+  const tsResult = await typescript.executeCode({ code: 'function solve(nums: number[]): number { return nums.length; }', functionName: 'solve', inputs: { nums: [4, 5, 6] }, executionStyle: 'function' });
+  assertCondition(tsResult.kind === 'completed' && tsResult.output === 3, `native TypeScript should execute: ${JSON.stringify(tsResult)}`);
 
   const python = harness.getClient('python');
   await python.init();
@@ -53,23 +48,17 @@ async function main(): Promise<void> {
     `native Python batch cases should pass: ${JSON.stringify(pyBatch)}`
   );
 
-  const pyTrace = await python.executeWithTracing(
-    [
+  const pyTrace = await python.executeWithTracing({ code: [
       'def solve(nums):',
       '    total = 0',
       '    for value in nums:',
       '        total += value',
       '    return total',
       '',
-    ].join('\n'),
-    'solve',
-    { nums: [2, 3, 5] },
-    { maxTraceSteps: 200 },
-    'function'
-  );
+    ].join('\n'), functionName: 'solve', inputs: { nums: [2, 3, 5] }, traceOptions: { maxTraceSteps: 200 }, executionStyle: 'function' });
   assertCondition(
-    pyTrace.success === true && pyTrace.output === 10 && pyTrace.trace.events.length > 0,
-    `native Python tracing should execute: ${JSON.stringify({ success: pyTrace.success, output: pyTrace.output, error: pyTrace.error, events: pyTrace.trace.events.length })}`
+    pyTrace.kind === 'completed' && pyTrace.output === 10 && pyTrace.trace.events.length > 0,
+    `native Python tracing should execute: ${JSON.stringify({ ...pyTrace, trace: { events: pyTrace.trace.events.length } })}`
   );
 
   const supports = harness.getNativeLanguageSupport();
@@ -110,24 +99,19 @@ async function main(): Promise<void> {
   assertCondition(csharpBatch.success === true, `native C# batch should succeed: ${JSON.stringify(csharpBatch)}`);
   assertCondition(csharpBatch.cases.every((testCase) => testCase.passed === true), `native C# cases should pass: ${JSON.stringify(csharpBatch)}`);
 
-  const csharpDictionaryInput = await csharp.executeCode(
-    [
+  const csharpDictionaryInput = await csharp.executeCode({ code: [
       'using System.Collections.Generic;',
       'public class Solution {',
       '  public string ReadDictionaries(Dictionary<string, string> labels, IDictionary<string, int> scores) {',
       '    return labels["chosen"] + ":" + scores["alice"];',
       '  }',
       '}',
-    ].join('\n'),
-    'ReadDictionaries',
-    {
+    ].join('\n'), functionName: 'ReadDictionaries', inputs: {
       labels: { chosen: 'variant_b' },
       scores: { alice: 2 },
-    },
-    'solution-method'
-  );
+    }, executionStyle: 'solution-method' });
   assertCondition(
-    csharpDictionaryInput.success === true && csharpDictionaryInput.output === 'variant_b:2',
+    csharpDictionaryInput.kind === 'completed' && csharpDictionaryInput.output === 'variant_b:2',
     `native C# dictionary inputs should hydrate as dictionary types: ${JSON.stringify(csharpDictionaryInput)}`
   );
 
@@ -172,16 +156,10 @@ async function main(): Promise<void> {
   });
   assertCondition(cppOpsBatch.success === true, `native C++ ops-class batch should succeed: ${JSON.stringify(cppOpsBatch)}`);
   assertCondition(cppOpsBatch.cases.every((testCase) => testCase.passed === true), `native C++ ops-class cases should pass: ${JSON.stringify(cppOpsBatch)}`);
-  const cppTrace = await cpp.executeWithTracing(
-    'class Solution { public: int add(int a, int b) { int total = a + b; return total; } };',
-    'add',
-    { a: 8, b: 13 },
-    { maxTraceSteps: 200 },
-    'solution-method'
-  );
+  const cppTrace = await cpp.executeWithTracing({ code: 'class Solution { public: int add(int a, int b) { int total = a + b; return total; } };', functionName: 'add', inputs: { a: 8, b: 13 }, traceOptions: { maxTraceSteps: 200 }, executionStyle: 'solution-method' });
   assertCondition(
-    cppTrace.success === true && cppTrace.output === 21 && cppTrace.trace.events.length > 0,
-    `native C++ tracing should execute: ${JSON.stringify({ success: cppTrace.success, output: cppTrace.output, error: cppTrace.error, events: cppTrace.trace.events.length })}`
+    cppTrace.kind === 'completed' && cppTrace.output === 21 && cppTrace.trace.events.length > 0,
+    `native C++ tracing should execute: ${JSON.stringify({ ...cppTrace, trace: { events: cppTrace.trace.events.length } })}`
   );
 
   const queued = await harness.runJobs(

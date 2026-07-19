@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 import { getLanguageRuntimeProfile } from '../packages/harness-browser/src/runtime-profiles';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -72,7 +72,6 @@ async function main(): Promise<void> {
     "message.type === 'warmup'",
     "message.type === 'execute-with-tracing'",
     "message.type === 'execute-code'",
-    "message.type === 'execute-code-interview'",
     "message.type === 'execute-project-java'",
     'compileAndRunProjectSources',
     'compileAndRunProjectSourcesWithWorkspace',
@@ -196,12 +195,12 @@ async function main(): Promise<void> {
   assertCondition(javaProfile.capabilities.execution.styles.opsClass, 'Java should support ops-class style');
   assertCondition(javaProfile.capabilities.execution.styles.function, 'Java should support function style');
   assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should expose script style');
-  assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should expose interview mode');
+  assertCondition(javaProfile.capabilities.execution.limits.wallClock, 'Java should honor wall-clock execution limits');
   assertCondition(javaProfile.capabilities.tracing.supported, 'Java runtime should expose tracing support');
   console.log('PASS: java runtime profile matches first-slice contract');
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

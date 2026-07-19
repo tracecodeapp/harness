@@ -293,14 +293,8 @@ async function testClientsRestorePublicResults(): Promise<void> {
 
   try {
     const python = new PythonWorkerClient({ workerUrl: '/workers/pyodide-worker.js', debug: false });
-    const pythonResult = await python.executeWithTracing(
-      'def solve():\n    return 42',
-      'solve',
-      {},
-      undefined,
-      'function'
-    );
-    assertCondition(pythonResult.trace.events.length === 900, 'Python client lost transferred trace events');
+    const pythonResult = await python.executeWithTracing({ code: 'def solve():\n    return 42', functionName: 'solve', inputs: {}, executionStyle: 'function' });
+    assertCondition((pythonResult.trace as { events: unknown[] }).events.length === 900, 'Python client lost transferred trace events');
     assertCondition(!('__traceEventTransport' in pythonResult), 'Python leaked its transport envelope publicly');
     assertNegotiatedRequest('python');
     python.terminate();
@@ -309,27 +303,14 @@ async function testClientsRestorePublicResults(): Promise<void> {
       workerUrl: '/workers/javascript-worker.js',
       debug: false,
     });
-    const javascriptResult = await javascript.executeWithTracing(
-      'function solve() { return 42; }',
-      'solve',
-      {},
-      undefined,
-      'function',
-      'javascript'
-    );
+    const javascriptResult = await javascript.executeWithTracing({ code: 'function solve() { return 42; }', functionName: 'solve', inputs: {}, executionStyle: 'function', language: 'javascript' });
     assertCondition(javascriptResult.trace.events.length === 900, 'JavaScript client lost transferred trace events');
     assertCondition(!('__traceEventTransport' in javascriptResult), 'JavaScript leaked its transport envelope publicly');
     assertNegotiatedRequest('javascript');
     javascript.terminate();
 
     const java = new JavaWorkerClient({ workerUrl: '/workers/java-worker.js', debug: false });
-    const javaResult = await java.executeWithTracing(
-      'class Solution { int solve() { return 42; } }',
-      'solve',
-      {},
-      undefined,
-      'solution-method'
-    );
+    const javaResult = await java.executeWithTracing({ code: 'class Solution { int solve() { return 42; } }', functionName: 'solve', inputs: {}, executionStyle: 'solution-method' });
     assertCondition(javaResult.events.length === 900, 'Java client lost transferred raw trace events');
     assertCondition(javaResult.trace.events.length === 900, 'Java adapter lost transferred runtime trace events');
     assertCondition(!('__traceEventTransport' in javaResult), 'Java leaked its transport envelope publicly');
@@ -341,13 +322,7 @@ async function testClientsRestorePublicResults(): Promise<void> {
       assetBaseUrl: '/workers/vendor/csharp',
       debug: false,
     });
-    const csharpResult = await csharp.executeWithTracing(
-      'public class Solution { public int Solve() => 42; }',
-      'Solve',
-      {},
-      undefined,
-      'solution-method'
-    );
+    const csharpResult = await csharp.executeWithTracing({ code: 'public class Solution { public int Solve() => 42; }', functionName: 'Solve', inputs: {}, executionStyle: 'solution-method' });
     assertCondition(csharpResult.trace.events.length === 900, 'C# client lost transferred trace events');
     assertCondition(!('__traceEventTransport' in csharpResult), 'C# leaked its transport envelope publicly');
     assertNegotiatedRequest('csharp');
@@ -362,24 +337,12 @@ async function testClientsRestorePublicResults(): Promise<void> {
       compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
       debug: false,
     });
-    const cppResult = await cpp.executeWithTracing(
-      'class Solution { public: int solve() { return 42; } };',
-      'solve',
-      {},
-      undefined,
-      'solution-method'
-    );
+    const cppResult = await cpp.executeWithTracing({ code: 'class Solution { public: int solve() { return 42; } };', functionName: 'solve', inputs: {}, executionStyle: 'solution-method' });
     assertCondition(cppResult.trace.events.length === 500, 'C++ client lost transferred trace events');
     assertCondition(!('__traceEventTransport' in cppResult), 'C++ leaked its transport envelope publicly');
     assertNegotiatedRequest('cpp');
 
-    const cppBatch = await cpp.executeTraceBatch(
-      'class Solution { public: int solve(int value) { return value; } };',
-      'solve',
-      [{ value: 1 }, { value: 2 }],
-      undefined,
-      'solution-method'
-    );
+    const cppBatch = await cpp.executeTraceBatch({ code: 'class Solution { public: int solve(int value) { return value; } };', functionName: 'solve', inputBatch: [{ value: 1 }, { value: 2 }], executionStyle: 'solution-method' });
     assertCondition(
       cppBatch.results.length === 2 && cppBatch.results.every((entry) => entry.trace.events.length === 500),
       'C++ client lost transferred per-case trace event batches'

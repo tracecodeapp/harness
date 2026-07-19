@@ -26,7 +26,7 @@ import type {
 
 const EXTERNAL_COMPILER_URL = 'http://tracecode-cpp-test.invalid/compile';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -200,7 +200,6 @@ async function createCompileHost(): Promise<CompileHost> {
   const script = new vm.Script(
     `${compilerSource}\nglobalThis.__tracecodeCompileProject = compileProjectWithYowasp;`,
     {
-      // @ts-expect-error importModuleDynamically is supported at runtime
       importModuleDynamically(specifier: string) {
         return import(specifier);
       },
@@ -407,8 +406,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
-  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = WorkerShim;
+  const previousWorker = (globalThis as { Worker?: unknown }).Worker;
+  (globalThis as { Worker?: unknown }).Worker = WorkerShim;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (url === EXTERNAL_COMPILER_URL) {
@@ -505,7 +504,7 @@ async function main(): Promise<void> {
       args: [],
       cwd: '/workspace',
       env: {},
-      project: { files: [...projectFiles, ...compiledFiles] },
+      project: { files: [...projectFiles, ...compiledFiles] as import('../packages/harness-core/src/runtime-project').RuntimeFile[] },
       kernelHttp,
     }, 120_000);
 
@@ -599,9 +598,9 @@ async function main(): Promise<void> {
     client.terminate();
     globalThis.fetch = originalFetch;
     if (previousWorker === undefined) {
-      delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+      delete (globalThis as { Worker?: unknown }).Worker;
     } else {
-      (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
+      (globalThis as { Worker?: unknown }).Worker = previousWorker;
     }
     await Promise.all(nodeWorkers.map((worker) => worker.terminate().catch(() => {})));
     await rm(tempRoot, { recursive: true, force: true });

@@ -9,6 +9,7 @@ import { runCommand, waitForHttp } from './example-app-smoke';
 import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
 interface PythonProjectWorkerFile {
+  directory?: boolean;
   path: string;
   contents?: string;
   encoding?: 'utf8' | 'base64';
@@ -31,7 +32,7 @@ interface PythonProjectWorkerResponse {
   }>;
 }
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -2105,5 +2106,5 @@ async function main(): Promise<void> {
 
 main().catch((error) => {
   console.error(error);
-  process.exit(1);
+  process.exitCode = 1;
 });

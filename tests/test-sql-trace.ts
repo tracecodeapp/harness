@@ -16,7 +16,7 @@ import {
   type SqlTrace,
 } from '../packages/harness-sql/src/index';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -54,7 +54,7 @@ function testPgliteTraceDefaults(): void {
       async query() {
         return { rows: [{ ok: true }], affectedRows: 0, fields: [{ name: 'ok', dataTypeID: 16 }] };
       },
-    },
+    } as unknown as SqlClientLike,
     {
       runId: 'sql:test:pglite-defaults',
       dataDir: 'idb://tracecode-sql',
@@ -106,7 +106,7 @@ function testSqlRedactionCoversPostgresLiteralForms(): void {
 }
 
 async function testTracedQueryCapture(): Promise<void> {
-  const mockClient: SqlClientLike = {
+  const mockClient = {
     async query() {
       return {
         rows: [
@@ -123,7 +123,7 @@ async function testTracedQueryCapture(): Promise<void> {
     },
   };
 
-  const traced = createSqlTraceClient(mockClient, {
+  const traced = createSqlTraceClient(mockClient as unknown as SqlClientLike, {
     runId: 'sql:test:query',
     capture: {
       sqlText: 'redacted',
@@ -169,7 +169,7 @@ async function testTracedQueryCapture(): Promise<void> {
 }
 
 async function testBinaryScalarAndClonePrivacy(): Promise<void> {
-  const mockClient: SqlClientLike = {
+  const mockClient = {
     async query() {
       return {
         rows: [{ blob: new Uint8Array([1, 2, 3, 4]) }],
@@ -179,7 +179,7 @@ async function testBinaryScalarAndClonePrivacy(): Promise<void> {
     },
   };
 
-  const traced = createSqlTraceClient(mockClient, {
+  const traced = createSqlTraceClient(mockClient as unknown as SqlClientLike, {
     runId: 'sql:test:binary-privacy',
     capture: { resultRows: 'sampled', hashes: { sql: 'none', params: 'none', plans: 'none' } },
   });
@@ -201,8 +201,8 @@ async function testBinaryScalarAndClonePrivacy(): Promise<void> {
 }
 
 async function testExplainEstimatePlanCapture(): Promise<void> {
-  const mockClient: SqlClientLike = {
-    async query(sql) {
+  const mockClient = {
+    async query(sql: string) {
       if (sql.startsWith('EXPLAIN')) {
         return {
           rows: [
@@ -231,7 +231,7 @@ async function testExplainEstimatePlanCapture(): Promise<void> {
     },
   };
 
-  const traced = createSqlTraceClient(mockClient, {
+  const traced = createSqlTraceClient(mockClient as unknown as SqlClientLike, {
     runId: 'sql:test:plan',
     engine: { dialect: 'postgres' },
     capture: { plans: 'estimate' },
@@ -254,19 +254,19 @@ async function testExplainEstimatePlanCapture(): Promise<void> {
 }
 
 async function testMultipleInstancesAndConcurrentQueries(): Promise<void> {
-  const usersClient: SqlClientLike = {
+  const usersClient = {
     async query() {
       return { rows: [{ id: 1 }], affectedRows: 0, fields: [{ name: 'id', dataTypeID: 23 }] };
     },
   };
-  const analyticsClient: SqlClientLike = {
+  const analyticsClient = {
     async query() {
       return { rows: [{ event: 'opened' }], affectedRows: 0, fields: [{ name: 'event', dataTypeID: 25 }] };
     },
   };
 
-  const usersDb = createSqlTraceClient(usersClient, { runId: 'sql:test:users-db' });
-  const analyticsDb = createSqlTraceClient(analyticsClient, { runId: 'sql:test:analytics-db' });
+  const usersDb = createSqlTraceClient(usersClient as unknown as SqlClientLike, { runId: 'sql:test:users-db' });
+  const analyticsDb = createSqlTraceClient(analyticsClient as unknown as SqlClientLike, { runId: 'sql:test:analytics-db' });
   await usersDb.query('SELECT id FROM users');
   await analyticsDb.query('SELECT event FROM events');
   const usersTrace = usersDb.getTrace();
@@ -279,12 +279,12 @@ async function testMultipleInstancesAndConcurrentQueries(): Promise<void> {
 
   const slow = deferred<SqlClientResult>();
   const fast = deferred<SqlClientResult>();
-  const concurrentClient: SqlClientLike = {
-    async query(sql) {
+  const concurrentClient = {
+    async query(sql: string) {
       return sql.includes('slow') ? slow.promise : fast.promise;
     },
   };
-  const concurrent = createSqlTraceClient(concurrentClient, {
+  const concurrent = createSqlTraceClient(concurrentClient as unknown as SqlClientLike, {
     runId: 'sql:test:concurrent',
     now: (() => {
       let value = 0;
@@ -316,7 +316,7 @@ type MockSqlSnapshot = {
   tables: Record<string, Array<Record<string, unknown>>>;
 };
 
-class IsolatedMockSqlClient implements SqlClientLike {
+class IsolatedMockSqlClient {
   closed = false;
   private tables: Record<string, Array<Record<string, unknown>>>;
 
@@ -391,7 +391,7 @@ function cloneMockSqlTables(
 async function testIsolatedSqlCasesUseFreshDatabaseState(): Promise<void> {
   const factoryCalls: string[] = [];
   const closedClients: IsolatedMockSqlClient[] = [];
-  const result = await runIsolatedSqlCases<IsolatedMockSqlClient>({
+  const result = await runIsolatedSqlCases({
     problemId: 'problem:isolated-users',
     runId: 'sql:test:isolated-cases',
     setupSql: 'CREATE TABLE users (email text);',
@@ -424,10 +424,10 @@ async function testIsolatedSqlCasesUseFreshDatabaseState(): Promise<void> {
       factoryCalls.push(`${context.phase}:${context.caseId ?? 'baseline'}`);
       const client = new IsolatedMockSqlClient(context.baselineSnapshot as MockSqlSnapshot | undefined);
       closedClients.push(client);
-      return { client, close: () => client.close() };
+      return { client: client as unknown as SqlClientLike, close: () => client.close() };
     },
     snapshotDatabase(client) {
-      return client.dumpSnapshot();
+      return (client as unknown as IsolatedMockSqlClient).dumpSnapshot();
     },
     async submission({ sql, testCase }) {
       if (testCase.input?.action === 'drop') {
@@ -456,7 +456,7 @@ async function testIsolatedSqlCasesUseFreshDatabaseState(): Promise<void> {
 }
 
 async function testExecAndTransactionCapture(): Promise<void> {
-  const mockClient: SqlClientLike = {
+  const mockClient = {
     async query() {
       return { rows: [{ ok: true }], affectedRows: 0, fields: [{ name: 'ok', dataTypeID: 16 }] };
     },
@@ -466,16 +466,16 @@ async function testExecAndTransactionCapture(): Promise<void> {
         { rows: [], affectedRows: 1, fields: [] },
       ];
     },
-    async transaction(callback) {
+    async transaction(callback: (tx: SqlClientLike) => Promise<unknown>) {
       return callback({
         async query() {
           return { rows: [{ id: 1 }], affectedRows: 0, fields: [{ name: 'id', dataTypeID: 23 }] };
         },
-      });
+      } as unknown as SqlClientLike);
     },
   };
 
-  const traced = createSqlTraceClient(mockClient, {
+  const traced = createSqlTraceClient(mockClient as unknown as SqlClientLike, {
     runId: 'sql:test:exec-tx',
     capture: { sqlText: 'full', params: 'full' },
   });
@@ -502,7 +502,7 @@ async function testExecAndTransactionCapture(): Promise<void> {
   assertCondition(batch?.kind === 'batch' && batch.statementCountKnown === 2, 'exec batch should know split statement count');
   const execStatements = trace.events.filter((event) => event.kind === 'statement' && event.api === 'exec');
   assertCondition(
-    execStatements.every((event, index) => event.batchId === batch?.batchId && event.statementIndex === index && event.timingSource === 'posthoc'),
+    execStatements.every((event, index) => event.batchId === batch?.batchId && (event as { statementIndex?: number }).statementIndex === index && (event as { timingSource?: string }).timingSource === 'posthoc'),
     'exec statements should link to the batch and mark posthoc timing'
   );
   const operations = trace.events
@@ -515,20 +515,20 @@ async function testExecAndTransactionCapture(): Promise<void> {
 }
 
 async function testApiRollbackReasonCapture(): Promise<void> {
-  const mockClient: SqlClientLike = {
+  const mockClient = {
     async query() {
       return { rows: [], affectedRows: 0, fields: [] };
     },
-    async transaction(callback) {
+    async transaction(callback: (tx: SqlClientLike) => Promise<unknown>) {
       return callback({
         async query() {
           return { rows: [], affectedRows: 0, fields: [] };
         },
-      });
+      } as unknown as SqlClientLike);
     },
   };
 
-  const traced = createSqlTraceClient(mockClient, { runId: 'sql:test:api-rollback-reason' });
+  const traced = createSqlTraceClient(mockClient as unknown as SqlClientLike, { runId: 'sql:test:api-rollback-reason' });
   try {
     await traced.transaction(async () => {
       throw new Error('callback broke after app logic');
@@ -548,7 +548,7 @@ async function testApiRollbackReasonCapture(): Promise<void> {
 }
 
 async function testExecFailureCapturesBatchOnly(): Promise<void> {
-  const mockClient: SqlClientLike = {
+  const mockClient = {
     async query() {
       return { rows: [], affectedRows: 0, fields: [] };
     },
@@ -557,7 +557,7 @@ async function testExecFailureCapturesBatchOnly(): Promise<void> {
     },
   };
 
-  const traced = createSqlTraceClient(mockClient, {
+  const traced = createSqlTraceClient(mockClient as unknown as SqlClientLike, {
     runId: 'sql:test:exec-failure',
     capture: { diagnostics: 'redacted' },
   });
@@ -580,7 +580,7 @@ async function testExecFailureCapturesBatchOnly(): Promise<void> {
 }
 
 async function testExplicitSqlTransactionCapture(): Promise<void> {
-  const mockClient: SqlClientLike = {
+  const mockClient = {
     async query() {
       return { rows: [], affectedRows: 0, fields: [] };
     },
@@ -595,16 +595,16 @@ async function testExplicitSqlTransactionCapture(): Promise<void> {
     },
   };
 
-  const traced = createSqlTraceClient(mockClient, { runId: 'sql:test:explicit-tx' });
+  const traced = createSqlTraceClient(mockClient as unknown as SqlClientLike, { runId: 'sql:test:explicit-tx' });
   await traced.exec('BEGIN; SAVEPOINT s1; ROLLBACK TO s1; RELEASE s1; COMMIT;');
   const trace = traced.getTrace();
   assertValidSqlTrace(trace, 'explicit SQL transaction trace');
   const actions = trace.events
     .filter((event) => event.kind === 'transaction' && event.source === 'sql')
-    .map((event) => event.action);
+    .map((event) => (event as { action?: string }).action);
   const names = trace.events
     .filter((event) => event.kind === 'transaction' && event.source === 'sql')
-    .map((event) => event.name ?? '');
+    .map((event) => (event as { name?: string }).name ?? '');
   assertCondition(
     actions.join(',') === 'begin,savepoint,rollback-to,release,commit',
     `explicit SQL transaction events should preserve boundary actions: ${actions.join(',')}`
@@ -619,7 +619,7 @@ async function testExplicitSqlTransactionCapture(): Promise<void> {
 }
 
 async function testErrorCapture(): Promise<void> {
-  const mockClient: SqlClientLike = {
+  const mockClient = {
     async query() {
       throw Object.assign(new Error('duplicate key value "tenant_secret" violates unique constraint (email)=(\'secret@example.com\')'), {
         code: '23505',
@@ -628,7 +628,7 @@ async function testErrorCapture(): Promise<void> {
       });
     },
   };
-  const traced = createSqlTraceClient(mockClient, {
+  const traced = createSqlTraceClient(mockClient as unknown as SqlClientLike, {
     runId: 'sql:test:error',
     capture: { params: 'redacted' },
   });
@@ -1027,6 +1027,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

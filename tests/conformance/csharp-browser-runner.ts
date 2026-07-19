@@ -160,7 +160,7 @@ export async function createCSharpConformanceBridge(): Promise<CSharpBridge> {
               reject(error);
             }
             pending.clear();
-            globalThis[harnessKey] = undefined;
+            (globalThis as Record<string, unknown>)[harnessKey] = undefined;
           }
 
           worker.addEventListener('message', (event) => {
@@ -181,7 +181,7 @@ export async function createCSharpConformanceBridge(): Promise<CSharpBridge> {
             terminate(new Error(event.message || 'C# worker failed'));
           });
 
-          function send(type, payload) {
+          function send(type: string, payload?: unknown) {
             const id = String(++nextId);
             const protocolToken = `csharp-conformance-token-${id}`;
             return new Promise((resolve, reject) => {
@@ -199,10 +199,10 @@ export async function createCSharpConformanceBridge(): Promise<CSharpBridge> {
           return harness;
         }
 
-        let harness = globalThis[harnessKey];
+        let harness = (globalThis as Record<string, unknown>)[harnessKey] as Awaited<ReturnType<typeof createHarness>> | undefined;
         if (!harness || harness.assetBaseUrl !== assetBaseUrl) {
           harness = await createHarness();
-          globalThis[harnessKey] = harness;
+          (globalThis as Record<string, unknown>)[harnessKey] = harness;
         }
 
         return harness.send(trace ? 'execute-with-tracing' : 'execute-code', {

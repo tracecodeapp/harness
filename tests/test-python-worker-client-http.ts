@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { PythonWorkerClient } from '../packages/harness-browser/src/pyodide-worker-client';
+import { PythonWorkerClient, type PythonProjectCommandRequest } from '../packages/harness-browser/src/pyodide-worker-client';
 import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpHandler,
@@ -9,7 +9,7 @@ import type {
   RuntimeKernelHttpRequest,
 } from '../packages/harness-core/src/runtime-project';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -93,7 +93,7 @@ class PythonProtocolWorker {
       this.inboundRequestId = envelope.payload?.requestId;
       this.capturedKernelHttpRequest = envelope.payload?.request;
       assertCondition(
-        !('signal' in (this.capturedKernelHttpRequest as Record<string, unknown>)),
+        !('signal' in (this.capturedKernelHttpRequest as unknown as Record<string, unknown>)),
         `Python worker-bound HTTP request should omit AbortSignal: ${JSON.stringify(this.capturedKernelHttpRequest)}`
       );
       queueMicrotask(() => {
@@ -155,9 +155,9 @@ class PythonProtocolWorker {
 }
 
 async function testPythonWorkerHttpRequestsAreSerializableAndReentrant(): Promise<void> {
-  const previousWorker = (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+  const previousWorker = (globalThis as { Worker?: unknown }).Worker;
   const workerInstances: PythonProtocolWorker[] = [];
-  (globalThis as typeof globalThis & { Worker?: unknown }).Worker = class extends PythonProtocolWorker {
+  (globalThis as { Worker?: unknown }).Worker = class extends PythonProtocolWorker {
     constructor(url: string) {
       super(url);
       workerInstances.push(this);
@@ -170,6 +170,7 @@ async function testPythonWorkerHttpRequestsAreSerializableAndReentrant(): Promis
     listen(options: RuntimeKernelHttpListenOptions, handler: RuntimeKernelHttpHandler): RuntimeKernelHttpListenerHandle {
       listenerHandler = handler;
       return {
+        id: 'host-listener-1',
         info: {
           id: 'host-listener-1',
           pid: 1,
@@ -197,7 +198,7 @@ async function testPythonWorkerHttpRequestsAreSerializableAndReentrant(): Promis
   try {
     const client = new PythonWorkerClient({ workerUrl: '/workers/pyodide-worker.js', debug: false });
     const executePromise = client.executeProjectPython(
-      {
+      ({
         source: 'file',
         scriptPath: 'server.py',
         args: [],
@@ -205,7 +206,7 @@ async function testPythonWorkerHttpRequestsAreSerializableAndReentrant(): Promis
         env: {},
         project: { cwd: '/workspace', files: [{ path: 'server.py', contents: '' }] },
         kernelHttp,
-      },
+      } as unknown as PythonProjectCommandRequest),
       1000
     );
 
@@ -238,9 +239,9 @@ async function testPythonWorkerHttpRequestsAreSerializableAndReentrant(): Promis
     console.log('PASS: PythonWorkerClient strips listener AbortSignal and supports nested HTTP dispatch');
   } finally {
     if (previousWorker === undefined) {
-      delete (globalThis as typeof globalThis & { Worker?: unknown }).Worker;
+      delete (globalThis as { Worker?: unknown }).Worker;
     } else {
-      (globalThis as typeof globalThis & { Worker?: unknown }).Worker = previousWorker;
+      (globalThis as { Worker?: unknown }).Worker = previousWorker;
     }
   }
 }

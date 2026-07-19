@@ -45,7 +45,7 @@ type TraceRunSummary = {
   traceStepCount?: number;
 };
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -266,21 +266,21 @@ async function testPythonRuntimeClientNormalizesTraceResponse(): Promise<void> {
     }),
     executeCode: async () => ({ success: true, output: null, consoleOutput: [] }),
     executeCodeBatch: async () => ({ success: true, results: [] }),
-    executeCodeInterviewMode: async () => ({ success: true, output: null, consoleOutput: [] }),
     executeProjectPython: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
   } as unknown as PythonWorkerClient;
   const client = createPythonRuntimeClient(fakeWorker);
-  const result = await client.executeWithTracing('def solve(): return 1', 'solve', {});
+  const result = await client.executeWithTracing({ code: 'def solve(): return 1', functionName: 'solve', inputs: {} });
 
+  assertCondition(result.kind === 'completed', `Python normalized trace response should lift to a completed outcome: ${JSON.stringify(result)}`);
   assertCondition(result.executionTimeMs === 0, `Python trace execution time should be normalized: ${JSON.stringify(result.executionTimeMs)}`);
   assertCondition(Array.isArray(result.consoleOutput) && result.consoleOutput.length === 0, 'Python console output should normalize to string[]');
   assertCondition(result.trace.schemaVersion === RUNTIME_TRACE_SCHEMA_VERSION, 'Python trace schema version should be normalized');
   assertCondition(result.trace.events.length === 4, `Python trace should drop malformed events: ${JSON.stringify(result.trace.events)}`);
-  assertCondition(result.trace.events.every((event) => event.kind !== 'control'), 'Python trace should reject unsupported event kinds');
+  assertCondition(result.trace.events.every((event) => (event.kind as string) !== 'control'), 'Python trace should reject unsupported event kinds');
   const snapshot = result.trace.events.find((event) => event.kind === 'snapshot');
-  assertCondition(snapshot?.kind === 'snapshot' && snapshot.target.variable === 'x', 'Python snapshot target should be preserved');
+  assertCondition(snapshot?.kind === 'snapshot' && (snapshot.target as { variable?: string }).variable === 'x', 'Python snapshot target should be preserved');
   assertCondition(
-    snapshot?.kind === 'snapshot' && JSON.stringify(snapshot.target.path) === '["safe",1]',
+    snapshot?.kind === 'snapshot' && JSON.stringify((snapshot.target as { path?: unknown }).path) === '["safe",1]',
     `Python snapshot path should drop malformed components: ${JSON.stringify(snapshot)}`
   );
   const normalizedOutput = result.output as Record<string, unknown>;

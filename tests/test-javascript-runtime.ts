@@ -34,7 +34,7 @@ type RuntimeAccessEvent = {
   pathDepth?: number;
 };
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -2174,7 +2174,7 @@ function smallest(nums: number[]): number {
   const executeTypeScriptTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;
-    trace: Array<{ event?: string; line?: number; function?: string }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function typedSquare(x: number): number {
   const value = x * x;
@@ -2198,12 +2198,7 @@ function smallest(nums: number[]): number {
 
   const executeTypeScriptOpsClassReceiverTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-      event?: string;
-      function?: string;
-      line?: number;
-      variables?: Record<string, unknown>;
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `class MedianFinder {
   constructor() {
@@ -2361,10 +2356,7 @@ function smallest(nums: number[]): number {
 
   const executeTypeScriptBfsLineMapping = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-      line?: number;
-      accesses?: RuntimeAccessEvent[];
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `class Solution {
   canSplitTeams(n: number, conflicts: number[][]): boolean {
@@ -2853,10 +2845,7 @@ function smallest(nums: number[]): number {
 
   const executeTypeScriptTopoLineMapping = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-      line?: number;
-      accesses?: RuntimeAccessEvent[];
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `class Solution {
   findOrder(numCourses: number, prerequisites: number[][]): number[] {
@@ -2928,7 +2917,7 @@ function smallest(nums: number[]): number {
   const executeTypeScriptArgOrderTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;
-    trace: Array<{ event?: string; function?: string; returnValue?: unknown }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `class Solution {
   canSplitTeams(n: number, conflicts: number[][]): boolean {
@@ -2959,10 +2948,7 @@ function smallest(nums: number[]): number {
   const executeTypeScriptTreeInputTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;
-    trace: Array<{
-      line?: number;
-      variables?: Record<string, unknown>;
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `class Solution {
   levelOrder(root: TreeNode | null): number[][] {
@@ -3170,7 +3156,7 @@ function smallest(nums: number[]): number {
       .filter((event) => event.kind === 'call' && event.function === 'dfs')
       .map((event) => event.args);
     assertCondition(
-      recursiveCallArgs.some((args) => args?.node === '<undefined>'),
+      recursiveCallArgs.some((args) => (args as Record<string, unknown> | undefined)?.node === '<undefined>'),
       `${language} recursive call events should preserve explicit undefined child arguments, received ${JSON.stringify(
         recursiveCallArgs
       )}`
@@ -3305,10 +3291,7 @@ function smallest(nums: number[]): number {
 
   const executeTypeScriptReverseListTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-      line?: number;
-      variables?: Record<string, unknown>;
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `class Solution {
   reverseList(head: ListNode | null): ListNode | null {
@@ -3353,7 +3336,7 @@ function smallest(nums: number[]): number {
 
   const executeTypeScriptAccessTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{ accesses?: RuntimeAccessEvent[] }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function inspect(arr: number[], matrix: number[][]): number {
   const value = arr[0];
@@ -3427,7 +3410,7 @@ function smallest(nums: number[]): number {
 
   const tracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{ event?: string; function?: string; returnValue?: unknown }>;
+    trace: { events?: RuntimeTraceEvent[]; traceStepCount?: number };
     executionTimeMs: number;
     lineEventCount?: number;
     traceStepCount?: number;
@@ -3482,7 +3465,7 @@ function smallest(nums: number[]): number {
   const loopTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;
-    trace: Array<{ event?: string; line?: number }>;
+    trace: { events?: RuntimeTraceEvent[] };
     lineEventCount?: number;
   }>('execute-with-tracing', {
     code: `function twoSum(nums, target) {
@@ -3685,7 +3668,7 @@ function smallest(nums: number[]): number {
 
   const tracingAccesses = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{ accesses?: RuntimeAccessEvent[] }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function inspect(arr, matrix) {
   const x = arr[1];
@@ -4357,13 +4340,7 @@ function smallest(nums: number[]): number {
 
   const scriptTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-      event?: string;
-      line?: number;
-      function?: string;
-      variables?: Record<string, unknown>;
-      callStack?: Array<{ function?: string; args?: Record<string, unknown> }>;
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function twoSum(nums, target) {
   const seen = new Map();
@@ -4492,11 +4469,7 @@ const untouched = 1;`,
     success: boolean;
     output?: unknown;
     error?: string;
-    trace: Array<{
-      event?: string;
-      function?: string;
-      variables?: Record<string, unknown>;
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function sum(nums) {
   let total = 0;
@@ -4543,11 +4516,7 @@ console.log(nums.reduce((sum, value) => sum + value, 0));`,
 
   const recursiveTreeTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-      event?: string;
-      function?: string;
-      callStack?: Array<{ function?: string; args?: Record<string, unknown> }>;
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function sumLeftBranch(root) {
   function dfs(node) {
@@ -4590,8 +4559,7 @@ console.log(nums.reduce((sum, value) => sum + value, 0));`,
 
   const collectionTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function capture() {
   const seen = new Map([[2, 0], [7, 1]]);
@@ -4615,8 +4583,7 @@ console.log(nums.reduce((sum, value) => sum + value, 0));`,
 
   const objectHashTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function captureObjectHash(nums, target) {
   const seen = {};
@@ -4647,9 +4614,7 @@ console.log(nums.reduce((sum, value) => sum + value, 0));`,
 
   const typeScriptTrieObjectTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-      variables?: Record<string, unknown>;
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `class TrieNode {
   children: Map<string, TrieNode>;
@@ -4936,7 +4901,7 @@ let result = [trie.search("car"), trie.search("cap"), trie.startsWith("ca")];`,
 
   const helperFunctionTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{ variables?: Record<string, unknown>; line?: number; event?: string }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `class Solution {
   countRangeSum(nums: number[], lower: number, upper: number): number {
@@ -5029,8 +4994,7 @@ let result = [trie.search("car"), trie.search("cap"), trie.startsWith("ca")];`,
 
   const graphKindTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function captureGraph() {
   const graph = { 0: [1], 1: [2], 2: [] };
@@ -5053,8 +5017,7 @@ let result = [trie.search("car"), trie.search("cap"), trie.startsWith("ca")];`,
 
   const indexedGraphKindTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function captureIndexedGraph() {
   const graph = [[1], [2], [0]];
@@ -5077,8 +5040,7 @@ let result = [trie.search("car"), trie.search("cap"), trie.startsWith("ca")];`,
 
   const listKindTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function captureList() {
   const head = { val: 1, next: { val: 2, next: null } };
@@ -5108,8 +5070,7 @@ let result = [trie.search("car"), trie.search("cap"), trie.startsWith("ca")];`,
 
   const customObjectTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{
-    }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function captureCustomObject() {
   class Box {
@@ -5134,7 +5095,7 @@ let result = [trie.search("car"), trie.search("cap"), trie.startsWith("ca")];`,
 
   const topLevelOrderingTracing = await harness.sendMessage<{
     success: boolean;
-    trace: Array<{ event?: string; line?: number; function?: string }>;
+    trace: { events?: RuntimeTraceEvent[] };
   }>('execute-with-tracing', {
     code: `function identity(x) {
   return x;
@@ -5322,42 +5283,10 @@ if (input === 'first') {
   );
   console.log('PASS: execute-code-batch isolates JS/TS globals and mutable inputs');
 
-  const interviewResult = await harness.sendMessage<{
-    success: boolean;
-    error?: string;
-  }>('execute-code-interview', {
-    code: 'function boom() { throw new Error("kaboom"); }',
-    functionName: 'boom',
-    inputs: {},
-    executionStyle: 'function',
-  });
-  assertCondition(interviewResult.success === false, 'Interview execution should surface errors');
-  assertCondition(
-    String(interviewResult.error ?? '').toLowerCase().includes('kaboom'),
-    'Interview execution should preserve non-timeout errors'
-  );
-  console.log('PASS: interview execution contract');
-
-  const interviewTimeout = await harness.sendMessage<{
-    success: boolean;
-    error?: string;
-  }>('execute-code-interview', {
-    code: `function spin() { let x = 0; while (true) { x += 1; } }`,
-    functionName: 'spin',
-    inputs: {},
-    executionStyle: 'function',
-  });
-  assertCondition(interviewTimeout.success === false, 'Interview timeout case should fail');
-  assertCondition(
-    String(interviewTimeout.error ?? '') === 'Time Limit Exceeded',
-    'Interview timeout should normalize to Time Limit Exceeded'
-  );
-  console.log('PASS: interview timeout normalization contract');
-
   console.log('\nJavaScript runtime worker tests passed.');
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

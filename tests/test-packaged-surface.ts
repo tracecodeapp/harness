@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -398,12 +398,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
       const packedNativeHarness = native.createNativeHarness();
       const packedNativeJs = packedNativeHarness.getClient('javascript');
-      const packedNativeJsResult = await packedNativeJs.executeCode(
-        'function solve(value) { return value + 1; }',
-        'solve',
-        { value: 41 }
-      );
-      if (!packedNativeJsResult.success || packedNativeJsResult.output !== 42) {
+      const packedNativeJsResult = await packedNativeJs.executeCode({ code: 'function solve(value) { return value + 1; }', functionName: 'solve', inputs: { value: 41 } });
+      if (packedNativeJsResult.kind !== 'completed' || packedNativeJsResult.output !== 42) {
         throw new Error('Packed native harness JavaScript smoke failed: ' + JSON.stringify(packedNativeJsResult));
       }
       packedNativeHarness.dispose();
@@ -892,6 +888,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

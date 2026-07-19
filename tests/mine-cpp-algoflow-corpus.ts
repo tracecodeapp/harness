@@ -440,14 +440,14 @@ async function runConcurrentMine(root: string, discovered: string[], reportPath:
       const timeoutId = setTimeout(() => {
         timedOut = true;
         try {
-          process.kill(-child.pid, 'SIGTERM');
+          process.kill(-child.pid!, 'SIGTERM');
         } catch {
           child.kill('SIGTERM');
         }
         setTimeout(() => {
           if (child.exitCode !== null || child.signalCode !== null) return;
           try {
-            process.kill(-child.pid, 'SIGKILL');
+            process.kill(-child.pid!, 'SIGKILL');
           } catch {
             child.kill('SIGKILL');
           }

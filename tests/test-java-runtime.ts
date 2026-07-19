@@ -31,7 +31,10 @@ const JAVA_HTTP_SYNC_STATE_INDEX = 0;
 const JAVA_HTTP_SYNC_LENGTH_INDEX = 1;
 const JAVA_HTTP_SYNC_RESPONSE = 2;
 
-function assertCondition(condition: boolean, message: string): void {
+type LooseFileChange = { path: string; contents?: string; encoding?: 'utf8' | 'base64'; deleted?: true; directory?: true };
+const looseChanges = (files: unknown): LooseFileChange[] => (files ?? []) as LooseFileChange[];
+
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -251,7 +254,7 @@ function loadSourceAugmentationsForTest(): {
   };
 }
 
-function augmentRewrittenJavaForTest(source: string, entryName: string): string {
+function augmentRewrittenJavaForTest(source: string, entryName?: string): string {
   const augmentations = loadSourceAugmentationsForTest();
   let rewritten = rewriteWithNativeJavaRewriter(source, entryName);
   rewritten = augmentations.augmentTraceCallArgumentSnapshots?.(rewritten) ?? rewritten;
@@ -1136,7 +1139,7 @@ function testJavaEnhancedForHeaderExpansionDropsStaleBindingSnapshots(): void {
   );
   assertCondition(
     headerRateSnapshots.length === 1 &&
-      JSON.stringify(headerRateSnapshots[0]?.value) === JSON.stringify(['EUR', 'USD', 1.1]),
+      JSON.stringify((headerRateSnapshots[0] as { value?: unknown })?.value) === JSON.stringify(['EUR', 'USD', 1.1]),
     `Java enhanced-for header expansion should keep only the current binding snapshot, received ${JSON.stringify(headerRateSnapshots)}`
   );
   console.log('PASS: Java enhanced-for header expansion drops stale binding snapshots');
@@ -1295,9 +1298,9 @@ public class Main {
         event.line === 6 &&
         'variable' in event.target &&
         event.target.variable === 'freq' &&
-        Array.isArray(event.target.path) &&
-        event.target.path[0] === 1 &&
-        JSON.stringify(event.target.indexSources) === JSON.stringify(['key'])
+        Array.isArray((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path) &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path?.[0] === 1 &&
+        JSON.stringify((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).indexSources) === JSON.stringify(['key'])
       ),
       'Java keyed mutation hooks should preserve simple index source provenance'
     );
@@ -1307,9 +1310,9 @@ public class Main {
         event.line === 6 &&
         'variable' in event.target &&
         event.target.variable === 'freq' &&
-        Array.isArray(event.target.path) &&
-        event.target.path[0] === 1 &&
-        JSON.stringify(event.target.indexSources) === JSON.stringify(['key']) &&
+        Array.isArray((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path) &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path?.[0] === 1 &&
+        JSON.stringify((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).indexSources) === JSON.stringify(['key']) &&
         event.method === 'put' &&
         JSON.stringify(event.args) === JSON.stringify([1, 1])
       ),
@@ -1321,8 +1324,8 @@ public class Main {
         event.line === 7 &&
         'variable' in event.target &&
         event.target.variable === 'words' &&
-        Array.isArray(event.target.path) &&
-        event.target.path[0] === 0 &&
+        Array.isArray((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path) &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path?.[0] === 0 &&
         event.binding?.kind === 'iteration' &&
         event.binding.variable === 'word' &&
         event.value === 'za'
@@ -1346,10 +1349,10 @@ public class Main {
         event.line === 9 &&
         'variable' in event.target &&
         event.target.variable === 'graph' &&
-        Array.isArray(event.target.path) &&
-        event.target.path[0] === 0 &&
-        event.target.path[1] === 0 &&
-        JSON.stringify(event.target.indexSources) === JSON.stringify(['course', null]) &&
+        Array.isArray((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path) &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path?.[0] === 0 &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path?.[1] === 0 &&
+        JSON.stringify((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).indexSources) === JSON.stringify(['course', null]) &&
         event.binding?.kind === 'iteration' &&
         event.binding.variable === 'next' &&
         event.value === 7
@@ -1362,10 +1365,10 @@ public class Main {
         event.line === 12 &&
         'variable' in event.target &&
         event.target.variable === 'node' &&
-        Array.isArray(event.target.path) &&
-        event.target.path.length === 2 &&
-        event.target.path[0] === 'children' &&
-        event.target.path[1] === 'a'
+        Array.isArray((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path) &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path?.length === 2 &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path?.[0] === 'children' &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path?.[1] === 'a'
       ),
       'Java object field map mutation hooks should emit a native field/key write without a synthetic field snapshot'
     );
@@ -4324,7 +4327,7 @@ async function main(): Promise<void> {
     const warmup = await harness.sendMessage<{ success: boolean; loadTimeMs: number; timings?: Record<string, unknown> }>('warmup');
     assertCondition(warmup.success === true, 'Java worker warmup should succeed');
     assertCondition(
-      harness.runLibraryClasspaths.length === 1,
+      (harness.runLibraryClasspaths.length as number) === 1,
       'Java worker warmup should load the CheerpJ Java library bridge once'
     );
     assertCondition(
@@ -5298,25 +5301,25 @@ async function main(): Promise<void> {
       );
     }
     assertCondition(
-      projectExecute.files?.some((file) =>
+      looseChanges(projectExecute.files).some((file) =>
         file.path === 'generated.txt' &&
           file.encoding === 'base64' &&
-          Buffer.from(file.contents, 'base64').toString('utf8') === 'created\n'
+          Buffer.from(file.contents ?? '', 'base64').toString('utf8') === 'created\n'
       ) &&
-        projectExecute.files?.some((file) =>
+        looseChanges(projectExecute.files).some((file) =>
           file.path === 'writer.txt' &&
             file.encoding === 'base64' &&
-            Buffer.from(file.contents, 'base64').toString('utf8') === 'writer\n'
+            Buffer.from(file.contents ?? '', 'base64').toString('utf8') === 'writer\n'
         ) &&
-        projectExecute.files?.some((file) =>
+        looseChanges(projectExecute.files).some((file) =>
           file.path === 'printed.txt' &&
             file.encoding === 'base64' &&
-            Buffer.from(file.contents, 'base64').toString('utf8') === 'printed\n'
+            Buffer.from(file.contents ?? '', 'base64').toString('utf8') === 'printed\n'
         ) &&
-        projectExecute.files?.some((file) =>
+        looseChanges(projectExecute.files).some((file) =>
           file.path === 'ps-file.txt' &&
             file.encoding === 'base64' &&
-            Buffer.from(file.contents, 'base64').toString('utf8') === 'ps-file\n'
+            Buffer.from(file.contents ?? '', 'base64').toString('utf8') === 'ps-file\n'
         ) &&
         projectExecute.files?.some((file) =>
           file.path === 'stream.bin' &&
@@ -5338,10 +5341,10 @@ async function main(): Promise<void> {
             file.encoding === 'base64' &&
             file.contents === Buffer.from([0, 252]).toString('base64')
         ) &&
-        projectExecute.files?.some((file) =>
+        looseChanges(projectExecute.files).some((file) =>
           file.path === 'nio-writer.txt' &&
             file.encoding === 'base64' &&
-            Buffer.from(file.contents, 'base64').toString('utf8') === 'nio-writer\n'
+            Buffer.from(file.contents ?? '', 'base64').toString('utf8') === 'nio-writer\n'
         ) &&
         projectExecute.files?.some((file) =>
           file.path === 'byte-channel.bin' &&
@@ -5353,20 +5356,20 @@ async function main(): Promise<void> {
             file.encoding === 'base64' &&
             file.contents === 'AAkI'
         ) &&
-        projectExecute.files?.some((file) =>
+        looseChanges(projectExecute.files).some((file) =>
           file.path === 'stdin-copy.txt' &&
             file.encoding === 'base64' &&
-            Buffer.from(file.contents, 'base64').toString('utf8') === 'from-stdin\n'
+            Buffer.from(file.contents ?? '', 'base64').toString('utf8') === 'from-stdin\n'
         ) &&
-        projectExecute.files?.some((file) =>
+        looseChanges(projectExecute.files).some((file) =>
           file.path === 'copy-existing.txt' &&
             file.encoding === 'base64' &&
-            Buffer.from(file.contents, 'base64').toString('utf8') === 'tracekernel test\n'
+            Buffer.from(file.contents ?? '', 'base64').toString('utf8') === 'tracekernel test\n'
         ) &&
-        projectExecute.files?.some((file) =>
+        looseChanges(projectExecute.files).some((file) =>
           file.path === 'writer-before-output.txt' &&
             file.encoding === 'base64' &&
-            Buffer.from(file.contents, 'base64').toString('utf8') === 'before-output\n'
+            Buffer.from(file.contents ?? '', 'base64').toString('utf8') === 'before-output\n'
         ) &&
         projectExecute.files?.some((file) =>
           file.path === 'bytes.bin' &&
@@ -7617,8 +7620,8 @@ public class Main {
         event.method === 'set'
     );
     assertCondition(
-      heapSetMutations.some((event) => JSON.stringify(event.args) === JSON.stringify([0, 9])) &&
-        heapSetMutations.some((event) => JSON.stringify(event.args) === JSON.stringify([1, 4])),
+      heapSetMutations.some((event) => JSON.stringify((event as { args?: unknown }).args) === JSON.stringify([0, 9])) &&
+        heapSetMutations.some((event) => JSON.stringify((event as { args?: unknown }).args) === JSON.stringify([1, 4])),
       `Java List.set hooks should emit mutate events with evaluated [index,value] args, received ${JSON.stringify(heapSetMutations)}`
     );
     console.log('PASS: java worker emits List.set mutate events with evaluated args');
@@ -7663,14 +7666,14 @@ public class Main {
     assertCondition(
       priorityQueueTrace.events.some((event) =>
         event.kind === 'write' &&
-        event.target?.variable === 'heap' &&
-        JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> })?.variable === 'heap' &&
+        JSON.stringify((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path) === JSON.stringify([0]) &&
         event.value === 2
       ) &&
         priorityQueueTrace.events.some((event) =>
           event.kind === 'write' &&
-          event.target?.variable === 'heap' &&
-          JSON.stringify(event.target.path) === JSON.stringify([1]) &&
+          (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> })?.variable === 'heap' &&
+          JSON.stringify((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path) === JSON.stringify([1]) &&
           event.value === 4
         ),
       `Java PriorityQueue offer should emit concrete indexed writes for heap cells, received ${JSON.stringify(priorityQueueTrace.events)}`
@@ -7678,8 +7681,8 @@ public class Main {
     assertCondition(
       priorityQueueTrace.events.some((event) =>
         event.kind === 'write' &&
-        event.target?.variable === 'heap' &&
-        JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+        (event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> })?.variable === 'heap' &&
+        JSON.stringify((event.target as { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null> }).path) === JSON.stringify([0]) &&
         event.value === 4
       ),
       `Java PriorityQueue poll should emit concrete indexed writes for shifted heap cells, received ${JSON.stringify(priorityQueueTrace.events)}`
@@ -8019,6 +8022,6 @@ class Solution {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

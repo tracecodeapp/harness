@@ -11,7 +11,7 @@ import { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-cl
 import { PythonWorkerClient } from '../packages/harness-browser/src/pyodide-worker-client';
 import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -126,7 +126,7 @@ class MockWorker {
         return;
       }
 
-      if (type === 'execute-code' || type === 'execute-code-interview') {
+      if (type === 'execute-code') {
         this.onmessage?.({
           data: {
             id,
@@ -854,12 +854,12 @@ async function main(): Promise<void> {
     } catch (error) {
       invalidRuntimeInfoError = error instanceof Error ? error.message : String(error);
     }
-    assertCondition(csharpProfile.capabilities.execution.styles.interviewMode, 'C# profile should support interview-mode execution');
+    assertCondition(csharpProfile.capabilities.execution.limits.wallClock, 'C# profile should honor wall-clock execution limits');
     assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ profile should support function execution');
     assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ profile should support solution-method execution');
     assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ profile should support ops-class execution');
     assertCondition(cppProfile.capabilities.execution.styles.script, 'C++ profile should support script execution');
-    assertCondition(cppProfile.capabilities.execution.styles.interviewMode, 'C++ profile should support interview-mode execution');
+    assertCondition(cppProfile.capabilities.execution.limits.wallClock, 'C++ profile should honor wall-clock execution limits');
     assertCondition(
       typescriptInfo.compiler?.name === 'TypeScript' && Boolean(typescriptInfo.compiler.version),
       'Browser harness should expose TypeScript runtime info'
@@ -918,11 +918,11 @@ async function main(): Promise<void> {
     console.log('PASS: browser harness warms Python runtime on demand');
 
     const coldPythonHarness = createBrowserHarness({ assetBaseUrl: '/cold-python' });
-    const coldPythonResult = await coldPythonHarness.getClient('python').executeCode('result = 1', 'noop', {}, 'function');
+    const coldPythonResult = await coldPythonHarness.getClient('python').executeCode({ code: 'result = 1', functionName: 'noop', inputs: {}, executionStyle: 'function' });
     const coldPythonWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/cold-python/pyodide-worker.js'));
     const coldPythonMessageTypes = coldPythonWorker?.messages.map((message) => message.type).join(',');
     coldPythonHarness.dispose();
-    assertCondition(coldPythonResult.success, 'Cold Python harness should execute successfully');
+    assertCondition(coldPythonResult.kind === 'completed', 'Cold Python harness should execute successfully');
     assertCondition(
       coldPythonMessageTypes === 'init,warmup,execute-code',
       `Cold Python execution should warm the runtime before execute-code: ${coldPythonMessageTypes}`
@@ -942,7 +942,7 @@ async function main(): Promise<void> {
       return originalSetTimeout(handler, timeout, ...args);
     }) as typeof setTimeout;
     try {
-      await timeoutPythonClient.executeCode('result = 1', 'noop', {}, 'function');
+      await timeoutPythonClient.executeCode({ code: 'result = 1', functionName: 'noop', inputs: {}, executionStyle: 'function' });
     } catch (error) {
       coldWarmupTimeoutError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -1031,25 +1031,25 @@ async function main(): Promise<void> {
       kernelHttp: {
         listen(options, handler) {
           javaListenPort = options.port ?? 0;
-          void handler({
+          void Promise.resolve(handler({
             method: 'POST',
             url: 'http://127.0.0.1:3210/queue?id=7',
             path: '/queue?id=7',
             headers: { 'content-type': 'text/plain' },
             body: 'work',
-          }).then((response) => {
+          })).then((response) => {
             javaServerExternalResponse = response;
           });
-          void handler({
+          void Promise.resolve(handler({
             method: 'GET',
             url: 'http://127.0.0.1:3210/busy',
             path: '/busy',
-          }).then((response) => {
+          })).then((response) => {
             javaServerQueuedResponse = response;
           });
           return {
             id: 'java-http-test',
-            info: { id: 'java-http-test', host: options.host ?? '127.0.0.1', port: javaListenPort, url: `http://127.0.0.1:${javaListenPort}` },
+            info: { id: 'java-http-test', pid: 0, protocol: 'http' as const, startedAt: new Date(0).toISOString(), host: options.host ?? '127.0.0.1', port: javaListenPort, url: `http://127.0.0.1:${javaListenPort}` },
             close() {
               javaListenClosed = true;
             },
@@ -1110,6 +1110,9 @@ async function main(): Promise<void> {
             id: 'java-http-timeout-test',
             info: {
               id: 'java-http-timeout-test',
+              pid: 0,
+              protocol: 'http' as const,
+              startedAt: new Date(0).toISOString(),
               host: options.host ?? '127.0.0.1',
               port: options.port ?? 0,
               url: `http://127.0.0.1:${options.port ?? 0}`,
@@ -1223,25 +1226,25 @@ async function main(): Promise<void> {
       kernelHttp: {
         listen(options, handler) {
           cppListenPort = options.port ?? 0;
-          void handler({
+          void Promise.resolve(handler({
             method: 'POST',
             url: 'http://127.0.0.1:3210/queue?id=7',
             path: '/queue?id=7',
             headers: { 'content-type': 'text/plain' },
             body: 'work',
-          }).then((response) => {
+          })).then((response) => {
             cppServerExternalResponse = response;
           });
-          void handler({
+          void Promise.resolve(handler({
             method: 'GET',
             url: 'http://127.0.0.1:3210/busy',
             path: '/busy',
-          }).then((response) => {
+          })).then((response) => {
             cppServerQueuedResponse = response;
           });
           return {
             id: 'cpp-http-test',
-            info: { id: 'cpp-http-test', host: options.host ?? '127.0.0.1', port: cppListenPort, url: `http://127.0.0.1:${cppListenPort}` },
+            info: { id: 'cpp-http-test', pid: 0, protocol: 'http' as const, startedAt: new Date(0).toISOString(), host: options.host ?? '127.0.0.1', port: cppListenPort, url: `http://127.0.0.1:${cppListenPort}` },
             close() {
               cppListenClosed = true;
             },
@@ -1301,6 +1304,9 @@ async function main(): Promise<void> {
             id: 'cpp-http-timeout-test',
             info: {
               id: 'cpp-http-timeout-test',
+              pid: 0,
+              protocol: 'http' as const,
+              startedAt: new Date(0).toISOString(),
               host: options.host ?? '127.0.0.1',
               port: options.port ?? 0,
               url: `http://127.0.0.1:${options.port ?? 0}`,
@@ -1349,11 +1355,11 @@ async function main(): Promise<void> {
     const coldCSharpHarness = createBrowserHarness({ assetBaseUrl: '/cold-csharp' });
     const coldCSharpResult = await coldCSharpHarness
       .getClient('csharp')
-      .executeCode('public class Solution { public int Add(int a, int b) => a + b; }', 'Add', { a: 1, b: 2 }, 'solution-method');
+      .executeCode({ code: 'public class Solution { public int Add(int a, int b) => a + b; }', functionName: 'Add', inputs: { a: 1, b: 2 }, executionStyle: 'solution-method' });
     const coldCSharpWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/cold-csharp/csharp-worker.js'));
     const coldCSharpMessageTypes = coldCSharpWorker?.messages.map((message) => message.type).join(',');
     coldCSharpHarness.dispose();
-    assertCondition(coldCSharpResult.success, 'Cold C# harness should execute successfully');
+    assertCondition(coldCSharpResult.kind === 'completed', 'Cold C# harness should execute successfully');
     assertCondition(
       coldCSharpMessageTypes === 'init,warmup,execute-code',
       `Cold C# execution should warm the runtime before execute-code: ${coldCSharpMessageTypes}`
@@ -1381,8 +1387,8 @@ async function main(): Promise<void> {
       'Disposing one harness should not terminate another harness instance'
     );
 
-    const executeResult = await harnessB.getClient('python').executeCode('result = 1', 'noop', {}, 'function');
-    assertCondition(executeResult.success, 'Surviving harness instance should still execute after a peer is disposed');
+    const executeResult = await harnessB.getClient('python').executeCode({ code: 'result = 1', functionName: 'noop', inputs: {}, executionStyle: 'function' });
+    assertCondition(executeResult.kind === 'completed', 'Surviving harness instance should still execute after a peer is disposed');
     const pythonBatchResult = await harnessB.getClient('python').execute({
       code: 'def add(a, b):\n    return a + b',
       functionName: 'add',
@@ -1417,13 +1423,13 @@ async function main(): Promise<void> {
       'JavaScript unified execute should send execute-code-batch for multi-case run requests'
     );
     assertCondition(Boolean(javascriptBatchWorker?.terminated), 'JavaScript worker should terminate after a code execution');
-    const javascriptSingleResult = await harnessB.getClient('javascript').executeCode('function id(x) { return x; }', 'id', { x: 1 }, 'function');
+    const javascriptSingleResult = await harnessB.getClient('javascript').executeCode({ code: 'function id(x) { return x; }', functionName: 'id', inputs: { x: 1 }, executionStyle: 'function' });
     const javascriptSingleWorker = workerInstances.findLast(
       (worker) =>
         String(worker.url).startsWith('/instance-b/javascript-worker.js') &&
         worker.messages.some((message) => message.type === 'execute-code')
     );
-    assertCondition(javascriptSingleResult.success, 'JavaScript runtime should execute again after worker isolation reset');
+    assertCondition(javascriptSingleResult.kind === 'completed', 'JavaScript runtime should execute again after worker isolation reset');
     assertCondition(
       Boolean(javascriptSingleWorker && javascriptSingleWorker !== javascriptBatchWorker && javascriptSingleWorker.terminated),
       'JavaScript runtime should create and terminate a fresh worker for the next execution'
@@ -1432,8 +1438,8 @@ async function main(): Promise<void> {
 
     const javaExecuteResult = await harnessA
       .getClient('java')
-      .executeCode('int search(int[] nums, int target) { return 0; }', 'search', {}, 'function');
-    assertCondition(javaExecuteResult.success, 'Java runtime should route function-style executeCode through the browser harness client');
+      .executeCode({ code: 'int search(int[] nums, int target) { return 0; }', functionName: 'search', inputs: {}, executionStyle: 'function' });
+    assertCondition(javaExecuteResult.kind === 'completed', 'Java runtime should route function-style executeCode through the browser harness client');
     const javaWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
     assertCondition(
       javaWorker?.messages.at(-1)?.type === 'execute-code',
@@ -1441,18 +1447,20 @@ async function main(): Promise<void> {
     );
     console.log('PASS: browser harness routes Java runtime requests');
 
-    const javaInterviewResult = await harnessA
+    const javaLimitsResult = await harnessA
       .getClient('java')
-      .executeCodeInterviewMode('int search(int[] nums, int target) { return 0; }', 'search', {}, 'function');
+      .executeCode({ code: 'int search(int[] nums, int target) { return 0; }', functionName: 'search', inputs: {}, executionStyle: 'function', limits: {
+        wallClockMs: 5_000,
+      } });
     assertCondition(
-      javaInterviewResult.success,
-      'Java runtime should route interview-mode executeCode through the browser harness client'
+      javaLimitsResult.kind === 'completed',
+      'Java runtime should route wall-clock-limited executeCode through the browser harness client'
     );
     assertCondition(
-      javaWorker?.messages.at(-1)?.type === 'execute-code-interview',
-      'Java interview-mode executeCode should send execute-code-interview instead of execute-with-tracing'
+      javaWorker?.messages.at(-1)?.type === 'execute-code',
+      'Java wall-clock-limited executeCode should send execute-code'
     );
-    console.log('PASS: browser harness routes Java interview-mode requests');
+    console.log('PASS: browser harness routes Java wall-clock-limited requests');
 
     const javaUnifiedBatchResult = await harnessA
       .getClient('java')
@@ -1477,7 +1485,7 @@ async function main(): Promise<void> {
       .execute({
         kind: 'project',
         code: '',
-        source: 'run',
+        source: 'run' as unknown as import('../packages/harness-core/src/runtime-project').RuntimeProjectCommandSource,
         scriptPath: 'Main',
         args: [],
         cwd: '/home/user/project',
@@ -1498,44 +1506,28 @@ async function main(): Promise<void> {
 
     const csharpExecuteResult = await harnessA
       .getClient('csharp')
-      .executeCode('public class Solution { public int Add(int a, int b) => a + b; }', 'Add', { a: 2, b: 3 }, 'solution-method');
-    assertCondition(csharpExecuteResult.success, 'C# runtime should route solution-method executeCode through the browser harness client');
+      .executeCode({ code: 'public class Solution { public int Add(int a, int b) => a + b; }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method' });
+    assertCondition(csharpExecuteResult.kind === 'completed', 'C# runtime should route solution-method executeCode through the browser harness client');
     console.log('PASS: browser harness routes C# runtime requests');
 
     const csharpTraceResult = await harnessA
       .getClient('csharp')
-      .executeWithTracing(
-        'public class Solution { public int Add(int a, int b) { return a + b; } }',
-        'Add',
-        { a: 2, b: 3 },
-        { maxTraceSteps: 10 },
-        'solution-method'
-      );
-    assertCondition(csharpTraceResult.success, 'C# runtime should route executeWithTracing through the browser harness client');
+      .executeWithTracing({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, traceOptions: { maxTraceSteps: 10 }, executionStyle: 'solution-method' });
+    assertCondition(csharpTraceResult.kind === 'completed', 'C# runtime should route executeWithTracing through the browser harness client');
     assertCondition(csharpTraceResult.trace.language === 'csharp', 'C# runtime should adapt worker events into a C# runtime trace');
     console.log('PASS: browser harness routes C# tracing requests');
 
     const csharpOpsClassResult = await harnessA
       .getClient('csharp')
-      .executeCode(
-        'public class Counter { public Counter(int start) {} public int Inc(int delta) => delta; }',
-        'Counter',
-        { operations: ['Counter', 'Inc'], arguments: [[1], [2]] },
-        'ops-class'
-      );
-    assertCondition(csharpOpsClassResult.success, 'C# runtime should route ops-class executeCode through the browser harness client');
+      .executeCode({ code: 'public class Counter { public Counter(int start) {} public int Inc(int delta) => delta; }', functionName: 'Counter', inputs: { operations: ['Counter', 'Inc'], arguments: [[1], [2]] }, executionStyle: 'ops-class' });
+    assertCondition(csharpOpsClassResult.kind === 'completed', 'C# runtime should route ops-class executeCode through the browser harness client');
     console.log('PASS: browser harness routes C# ops-class requests');
 
-    const csharpInterviewResult = await harnessA
+    const csharpLimitsResult = await harnessA
       .getClient('csharp')
-      .executeCodeInterviewMode(
-        'public class Solution { public int Add(int a, int b) { return a + b; } }',
-        'Add',
-        { a: 2, b: 3 },
-        'solution-method'
-      );
-    assertCondition(csharpInterviewResult.success, 'C# runtime should route interview-mode requests');
-    console.log('PASS: browser harness routes C# interview-mode requests');
+      .executeCode({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method', limits: { wallClockMs: 5_000 } });
+    assertCondition(csharpLimitsResult.kind === 'completed', 'C# runtime should route wall-clock-limited requests');
+    console.log('PASS: browser harness routes C# wall-clock-limited requests');
 
     const csharpBatchResult = await harnessA
       .getClient('csharp')
@@ -1565,20 +1557,20 @@ async function main(): Promise<void> {
 
     const cppExecuteResult = await harnessA
       .getClient('cpp')
-      .executeCode('class Solution { public: int add(int a, int b) { return a + b; } };', 'add', {}, 'solution-method');
-    assertCondition(cppExecuteResult.success, 'C++ runtime should route solution-method executeCode through the browser harness client');
+      .executeCode({ code: 'class Solution { public: int add(int a, int b) { return a + b; } };', functionName: 'add', inputs: {}, executionStyle: 'solution-method' });
+    assertCondition(cppExecuteResult.kind === 'completed', 'C++ runtime should route solution-method executeCode through the browser harness client');
     const cppTraceResult = await harnessA
       .getClient('cpp')
-      .executeWithTracing('class Solution { public: int add(int a, int b) { return a + b; } };', 'add', {}, {}, 'solution-method');
-    assertCondition(cppTraceResult.success, 'C++ runtime should route solution-method executeWithTracing through the browser harness client');
+      .executeWithTracing({ code: 'class Solution { public: int add(int a, int b) { return a + b; } };', functionName: 'add', inputs: {}, traceOptions: {}, executionStyle: 'solution-method' });
+    assertCondition(cppTraceResult.kind === 'completed', 'C++ runtime should route solution-method executeWithTracing through the browser harness client');
     const cppScriptResult = await harnessA
       .getClient('cpp')
-      .executeCode('int result = 3;', '', {}, 'function');
-    assertCondition(cppScriptResult.success, 'C++ runtime should route script-style executeCode through the browser harness client');
-    const cppInterviewResult = await harnessA
+      .executeCode({ code: 'int result = 3;', functionName: '', inputs: {}, executionStyle: 'function' });
+    assertCondition(cppScriptResult.kind === 'completed', 'C++ runtime should route script-style executeCode through the browser harness client');
+    const cppLimitsResult = await harnessA
       .getClient('cpp')
-      .executeCodeInterviewMode('int result = 3;', '', {}, 'function');
-    assertCondition(cppInterviewResult.success, 'C++ runtime should route interview-mode requests');
+      .executeCode({ code: 'int result = 3;', functionName: '', inputs: {}, executionStyle: 'function', limits: { wallClockMs: 5_000 } });
+    assertCondition(cppLimitsResult.kind === 'completed', 'C++ runtime should route wall-clock-limited requests');
     const cppBatchResult = await harnessA
       .getClient('cpp')
       .execute({
@@ -1606,7 +1598,7 @@ async function main(): Promise<void> {
       postMessage(message: WorkerMessage): void {
         const payload = message.payload as { code?: string } | undefined;
         if (
-          (message.type === 'compile-run' || message.type === 'execute-with-tracing' || message.type === 'execute-code-interview') &&
+          (message.type === 'compile-run' || message.type === 'execute-with-tracing') &&
           payload?.code?.includes('while(true)')
         ) {
           return;
@@ -1627,27 +1619,19 @@ async function main(): Promise<void> {
       compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
       executionTimeoutMs: 5,
     });
-    const timeoutResult = await timeoutClient.executeCode(
-      'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };',
-      'add',
-      { a: 1, b: 2 },
-      'solution-method'
-    );
-    assertCondition(timeoutResult.success === false, 'C++ client timeout should return a failed execution result');
+    const timeoutResult = await timeoutClient.executeCode({ code: 'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };', functionName: 'add', inputs: { a: 1, b: 2 }, executionStyle: 'solution-method' });
+    assertCondition(timeoutResult.kind === 'limit', 'C++ client timeout should return a limit outcome');
     assertCondition(
-      String(timeoutResult.error).includes('timed out'),
-      `C++ client timeout should explain the timeout, received ${String(timeoutResult.error)}`
+      timeoutResult.kind === 'limit' && timeoutResult.error.includes('timed out'),
+      `C++ client timeout should explain the timeout, received ${JSON.stringify(timeoutResult)}`
     );
-    assertCondition(timeoutResult.timeoutReason === 'client-timeout', 'C++ client timeout should carry client-timeout reason');
-    assertCondition(timeoutResult.diagnosticStage === 'runtime', 'C++ execute timeout should be labeled as runtime stage');
+    assertCondition(
+      timeoutResult.kind === 'limit' && timeoutResult.reason === 'client-timeout',
+      'C++ client timeout should carry client-timeout reason'
+    );
     assertCondition(workerInstances[beforeTimeoutWorkerCount]?.terminated === true, 'C++ client timeout should terminate the stuck worker');
-    const recoveryResult = await timeoutClient.executeCode(
-      'class Solution { public: int add(int a, int b) { return a + b; } };',
-      'add',
-      { a: 1, b: 2 },
-      'solution-method'
-    );
-    assertCondition(recoveryResult.success, 'C++ client should recover by creating a fresh worker after timeout');
+    const recoveryResult = await timeoutClient.executeCode({ code: 'class Solution { public: int add(int a, int b) { return a + b; } };', functionName: 'add', inputs: { a: 1, b: 2 }, executionStyle: 'solution-method' });
+    assertCondition(recoveryResult.kind === 'completed', 'C++ client should recover by creating a fresh worker after timeout');
 
     const traceTimeoutClient = new CppWorkerClient({
       workerUrl: '/workers/cpp-worker.js',
@@ -1658,43 +1642,35 @@ async function main(): Promise<void> {
       compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
       tracingTimeoutMs: 5,
     });
-    const traceTimeoutResult = await traceTimeoutClient.executeWithTracing(
-      'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };',
-      'add',
-      { a: 1, b: 2 },
-      {},
-      'solution-method'
+    const traceTimeoutResult = await traceTimeoutClient.executeWithTracing({ code: 'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };', functionName: 'add', inputs: { a: 1, b: 2 }, traceOptions: {}, executionStyle: 'solution-method' });
+    assertCondition(
+      traceTimeoutResult.kind === 'limit' && traceTimeoutResult.reason === 'client-timeout',
+      'C++ tracing timeout should return a client-timeout limit outcome'
     );
-    assertCondition(traceTimeoutResult.success === false, 'C++ tracing timeout should return a failed execution result');
-    assertCondition(traceTimeoutResult.timeoutReason === 'client-timeout', 'C++ tracing timeout should carry client-timeout reason');
     assertCondition(
       traceTimeoutResult.trace.events.some((event) => event.kind === 'timeout'),
       'C++ tracing timeout should include a timeout runtime event'
     );
     traceTimeoutClient.terminate();
 
-    const interviewTimeoutClient = new CppWorkerClient({
+    const wallClockLimitClient = new CppWorkerClient({
       workerUrl: '/workers/cpp-worker.js',
       clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
       lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
       sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
       runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
       compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
-      interviewTimeoutMs: 5,
     });
-    const interviewClientTimeout = await interviewTimeoutClient.executeCodeInterviewMode(
-      'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };',
-      'add',
-      { a: 1, b: 2 },
-      'solution-method'
-    );
-    assertCondition(interviewClientTimeout.error === 'Time Limit Exceeded', 'C++ interview client timeout should be sanitized');
+    const wallClockLimitTimeout = await wallClockLimitClient.executeCode({ code: 'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };', functionName: 'add', inputs: { a: 1, b: 2 }, executionStyle: 'solution-method', limits: { wallClockMs: 5 } });
     assertCondition(
-      interviewClientTimeout.timeoutReason === 'client-timeout',
-      'C++ interview client timeout should preserve client-timeout reason'
+      wallClockLimitTimeout.kind === 'limit' && wallClockLimitTimeout.reason === 'client-timeout',
+      'C++ wall-clock limit trip should carry the structured client-timeout reason'
     );
-    assertCondition(interviewClientTimeout.diagnosticStage === 'interview', 'C++ interview timeout should be labeled as interview stage');
-    interviewTimeoutClient.terminate();
+    assertCondition(
+      wallClockLimitTimeout.kind === 'limit' && wallClockLimitTimeout.error.includes('timed out'),
+      'C++ wall-clock limit trip should report a descriptive timeout error'
+    );
+    wallClockLimitClient.terminate();
 
     timeoutClient.terminate();
     // @ts-expect-error test stub
@@ -1710,6 +1686,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

@@ -69,7 +69,7 @@ function pruneResources(value: unknown, removed: Set<string>): unknown {
 }
 
 async function removeMatchingFiles(directory: string, removed: Set<string>): Promise<void> {
-  let entries: Awaited<ReturnType<typeof readdir>>;
+  let entries: import('node:fs').Dirent[];
   try {
     entries = await readdir(directory, { withFileTypes: true });
   } catch {

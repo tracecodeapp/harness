@@ -9,7 +9,7 @@ import { chromium } from 'playwright';
 import { runCommand, waitForHttp } from './example-app-smoke';
 import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     await page.goto(origin);
     const integrityManifest = await cppToolchainIntegrity(workersRoot, origin);
 
-    const results = await page.evaluate(`(async () => {
+    const results = (await page.evaluate(`(async () => {
       const cppToolchainIntegrity = ${JSON.stringify(integrityManifest)};
       const worker = new Worker('/workers/cpp-worker.js', { type: 'module' });
       let nextId = 0;
@@ -1095,7 +1095,7 @@ async function main(): Promise<void> {
         executionStyle: 'function',
         options: {},
       });
-      const interview = await send('execute-code-interview', {
+      const plainRun = await send('compile-run', {
         code: 'class Solution { public: int add(int a, int b) { return a + b; } };',
         functionName: 'add',
         inputs: { a: 2, b: 3 },
@@ -1156,9 +1156,9 @@ async function main(): Promise<void> {
         cwdRelativeEnvLibraryProjectRun,
         traced,
         script,
-        interview,
+        plainRun,
       };
-    })()`);
+    })()`)) as Record<string, unknown>;
 
     const warmup = results.warmup as { success?: boolean; timings?: { toolchainLoadMs?: number; compilerWorkerMs?: number; externalCompileMs?: number } };
     const add = results.add as { success?: boolean; output?: unknown; error?: string; timings?: { compilerWorkerMs?: number } };
@@ -1387,7 +1387,7 @@ async function main(): Promise<void> {
     };
     const traced = results.traced as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; value?: unknown }> } };
     const script = results.script as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; function?: string }> } };
-    const interview = results.interview as { success?: boolean; output?: unknown; trace?: unknown };
+    const plainRun = results.plainRun as { success?: boolean; output?: unknown; trace?: unknown };
     assertCondition(warmup.success === true, `C++ browser warmup failed: ${JSON.stringify(warmup)}`);
     assertCondition(
       warmup.timings?.toolchainLoadMs === 0 && typeof warmup.timings?.compilerWorkerMs === 'number' && warmup.timings.compilerWorkerMs > 0,
@@ -1411,7 +1411,7 @@ async function main(): Promise<void> {
       `C++ browser project compile should emit a.out: ${JSON.stringify(projectCompile)}`
     );
     assertCondition(
-      projectCompile.stderr?.length > 0 &&
+      (projectCompile.stderr?.length ?? 0) > 0 &&
         projectCompile.events
           ?.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
           .map((event) => event.data)
@@ -2023,8 +2023,8 @@ async function main(): Promise<void> {
       `C++ browser script tracing should include a script call event: ${JSON.stringify(script)}`
     );
     assertCondition(
-      interview.success === true && interview.output === 5 && !('trace' in interview),
-      `C++ browser interview execution should return non-trace output: ${JSON.stringify(interview)}`
+      plainRun.success === true && plainRun.output === 5 && !('trace' in plainRun),
+      `C++ browser compile-run execution should return non-trace output: ${JSON.stringify(plainRun)}`
     );
   } finally {
     await browser.close();
@@ -2035,6 +2035,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

@@ -152,7 +152,7 @@ function normalizeCandidate(value: Record<string, unknown>): JavaScriptConforman
 }
 
 async function readJsonInput(inputPath: string): Promise<unknown> {
-  const text = inputPath === '-' ? await readFile(0, 'utf8') : await readFile(inputPath, 'utf8');
+  const text = inputPath === '-' ? await readFile(0 as unknown as Parameters<typeof readFile>[0], 'utf8') : await readFile(inputPath, 'utf8');
   return JSON.parse(text);
 }
 

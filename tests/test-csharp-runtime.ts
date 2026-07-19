@@ -13,9 +13,9 @@ import {
   type RuntimeTraceEvent,
 } from '../packages/harness-core/src/runtime-trace';
 import type { RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
-import type { ExecutionResult } from '../packages/harness-core/src/types';
+import type { ExecutionLimitReason } from '../packages/harness-core/src/types';
 
-function assertCondition(condition: boolean, message: string): void {
+function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
@@ -55,7 +55,7 @@ interface MockCSharpWorkerRawResult {
   events?: RuntimeTraceEvent[];
   executionTimeMs?: number;
   traceLimitExceeded?: boolean;
-  timeoutReason?: ExecutionResult['timeoutReason'];
+  timeoutReason?: ExecutionLimitReason;
 }
 
 class MockCSharpWorker {
@@ -140,7 +140,7 @@ async function testRuntimeAdapterContract(): Promise<void> {
       runId: 'csharp:run',
       file: 'solution.cs',
       line: 3,
-      callStack: [{ function: 'Add', line: 2, args: [2, 3] }],
+      callStack: [{ function: 'Add', line: 2, args: [2, 3] as unknown as Record<string, unknown> }],
     },
     {
       kind: 'return',
@@ -149,48 +149,25 @@ async function testRuntimeAdapterContract(): Promise<void> {
       function: 'Add',
       line: 4,
       value: 5,
-      callStack: [{ function: 'Add', line: 2, args: [2, 3] }],
+      callStack: [{ function: 'Add', line: 2, args: [2, 3] as unknown as Record<string, unknown> }],
     },
   ];
 
   const workerClient = {
     init: async () => ({ success: true, loadTimeMs: 1 }),
-    executeCode: async (
-      _code: string,
-      functionName: string,
-      _inputs: Record<string, unknown>,
-      executionStyle: CSharpExecutionStyle
-    ) => {
+    executeCode: async (call: { functionName: string; executionStyle?: CSharpExecutionStyle }) => {
+      const executionStyle = call.executionStyle ?? 'solution-method';
       calls.push({ method: 'executeCode', executionStyle });
       return {
-        success: true,
-        output: executionStyle === 'ops-class' ? [null, 3, 6] : `${functionName}:ok`,
+        kind: 'completed' as const,
+        output: executionStyle === 'ops-class' ? [null, 3, 6] : `${call.functionName}:ok`,
         consoleOutput: [],
       };
     },
-    executeCodeInterviewMode: async (
-      _code: string,
-      functionName: string,
-      _inputs: Record<string, unknown>,
-      executionStyle: CSharpExecutionStyle
-    ) => {
-      calls.push({ method: 'executeCodeInterviewMode', executionStyle });
+    executeWithTracing: async (call: { executionStyle?: CSharpExecutionStyle }) => {
+      calls.push({ method: 'executeWithTracing', executionStyle: call.executionStyle ?? 'solution-method' });
       return {
-        success: true,
-        output: `${functionName}:interview`,
-        consoleOutput: [],
-      };
-    },
-    executeWithTracing: async (
-      _code: string,
-      _functionName: string,
-      _inputs: Record<string, unknown>,
-      _options: unknown,
-      executionStyle: CSharpExecutionStyle
-    ) => {
-      calls.push({ method: 'executeWithTracing', executionStyle });
-      return {
-        success: true,
+        kind: 'completed' as const,
         output: 5,
         trace: {
           schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
@@ -202,8 +179,6 @@ async function testRuntimeAdapterContract(): Promise<void> {
         },
         executionTimeMs: 2,
         consoleOutput: [],
-        lineEventCount: 1,
-        traceStepCount: 2,
       };
     },
   };
@@ -214,93 +189,43 @@ async function testRuntimeAdapterContract(): Promise<void> {
   const profile = getLanguageRuntimeProfile('csharp');
   assertCondition(profile.capabilities.execution.styles.function, 'C# profile should expose named function-style execution');
   assertCondition(profile.capabilities.execution.styles.script, 'C# profile should expose script-style execution');
-  assertCondition(profile.capabilities.execution.styles.interviewMode, 'C# profile should expose interview-mode execution');
+  assertCondition(profile.capabilities.execution.limits.wallClock, 'C# profile should honor wall-clock execution limits');
 
-  const solutionResult = await client.executeCode(
-    'public class Solution { public int Add(int a, int b) => a + b; }',
-    'Add',
-    { a: 2, b: 3 },
-    'solution-method'
-  );
-  assertCondition(solutionResult.success, 'C# solution-method executeCode should succeed');
+  const solutionResult = await client.executeCode({ code: 'public class Solution { public int Add(int a, int b) => a + b; }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method' });
+  assertCondition(solutionResult.kind === 'completed', 'C# solution-method executeCode should succeed');
   assertCondition(solutionResult.output === 'Add:ok', 'C# solution-method executeCode should preserve output');
 
-  const functionResult = await client.executeCode(
-    'public class Solution { public int Add(int a, int b) => a + b; }',
-    'Add',
-    { a: 2, b: 3 },
-    'function'
-  );
-  assertCondition(functionResult.success, 'C# named function-style executeCode should succeed');
+  const functionResult = await client.executeCode({ code: 'public class Solution { public int Add(int a, int b) => a + b; }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'function' });
+  assertCondition(functionResult.kind === 'completed', 'C# named function-style executeCode should succeed');
   assertCondition(functionResult.output === 'Add:ok', 'C# named function-style executeCode should preserve output');
 
-  const traceResult = await client.executeWithTracing(
-    'public class Solution { public int Add(int a, int b) { return a + b; } }',
-    'Add',
-    { a: 2, b: 3 },
-    { maxTraceSteps: 20 },
-    'solution-method'
-  );
-  assertCondition(traceResult.success, 'C# executeWithTracing should succeed');
+  const traceResult = await client.executeWithTracing({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, traceOptions: { maxTraceSteps: 20 }, executionStyle: 'solution-method' });
+  assertCondition(traceResult.kind === 'completed', 'C# executeWithTracing should succeed');
   assertCondition(traceResult.trace.language === 'csharp', 'C# executeWithTracing should return a C# runtime trace');
-  assertCondition(traceResult.lineEventCount === 1, 'C# executeWithTracing should preserve line event counts');
-  assertCondition(traceResult.traceStepCount === 2, 'C# executeWithTracing should preserve trace step counts');
+  assertCondition(traceResult.trace.lineEventCount === 1, 'C# executeWithTracing should preserve line event counts');
+  assertCondition(traceResult.trace.traceStepCount === 2, 'C# executeWithTracing should preserve trace step counts');
   assertCondition(
     traceResult.trace.events.some((event) => event.kind === 'line' && event.callStack?.some((frame) => frame.function === 'Add')),
     'C# executeWithTracing should preserve call-stack frames'
   );
 
-  const functionTraceResult = await client.executeWithTracing(
-    'public class Solution { public int Add(int a, int b) { return a + b; } }',
-    'Add',
-    { a: 2, b: 3 },
-    { maxTraceSteps: 20 },
-    'function'
-  );
-  assertCondition(functionTraceResult.success, 'C# named function-style executeWithTracing should succeed');
+  const functionTraceResult = await client.executeWithTracing({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, traceOptions: { maxTraceSteps: 20 }, executionStyle: 'function' });
+  assertCondition(functionTraceResult.kind === 'completed', 'C# named function-style executeWithTracing should succeed');
   assertCondition(functionTraceResult.trace.language === 'csharp', 'C# named function-style tracing should return a C# trace');
 
-  const scriptResult = await client.executeCode(
-    'int result = 7;',
-    '',
-    {},
-    'function'
-  );
-  assertCondition(scriptResult.success, 'C# script-style executeCode should succeed');
+  const scriptResult = await client.executeCode({ code: 'int result = 7;', functionName: '', inputs: {}, executionStyle: 'function' });
+  assertCondition(scriptResult.kind === 'completed', 'C# script-style executeCode should succeed');
   assertCondition(scriptResult.output === ':ok', 'C# script-style executeCode should route empty function name to worker');
 
-  const scriptTraceResult = await client.executeWithTracing(
-    'int result = 7;',
-    null,
-    {},
-    { maxTraceSteps: 20 },
-    'function'
-  );
-  assertCondition(scriptTraceResult.success, 'C# script-style executeWithTracing should succeed');
+  const scriptTraceResult = await client.executeWithTracing({ code: 'int result = 7;', functionName: null, inputs: {}, traceOptions: { maxTraceSteps: 20 }, executionStyle: 'function' });
+  assertCondition(scriptTraceResult.kind === 'completed', 'C# script-style executeWithTracing should succeed');
   assertCondition(scriptTraceResult.trace.language === 'csharp', 'C# script-style tracing should return a C# trace');
 
-  const opsResult = await client.executeCode(
-    'public class Counter { public Counter(int start) {} public int Inc(int delta) => delta; }',
-    'Counter',
-    { operations: ['Counter', 'Inc', 'Inc'], arguments: [[1], [3], [6]] },
-    'ops-class'
-  );
-  assertCondition(opsResult.success, 'C# ops-class executeCode should succeed');
+  const opsResult = await client.executeCode({ code: 'public class Counter { public Counter(int start) {} public int Inc(int delta) => delta; }', functionName: 'Counter', inputs: { operations: ['Counter', 'Inc', 'Inc'], arguments: [[1], [3], [6]] }, executionStyle: 'ops-class' });
+  assertCondition(opsResult.kind === 'completed', 'C# ops-class executeCode should succeed');
   assertCondition(
     JSON.stringify(opsResult.output) === JSON.stringify([null, 3, 6]),
     `C# ops-class executeCode should preserve the operation-output array, received ${JSON.stringify(opsResult.output)}`
-  );
-
-  const interviewResult = await client.executeCodeInterviewMode(
-    'public class Solution { public int Add(int a, int b) => a + b; }',
-    'Add',
-    { a: 2, b: 3 },
-    'solution-method' as RuntimeExecutionStyle
-  );
-  assertCondition(interviewResult.success, 'C# interview-mode executeCode should succeed');
-  assertCondition(
-    interviewResult.output === 'Add:interview',
-    'C# interview-mode executeCode should preserve worker output'
   );
 
   assertCondition(
@@ -323,11 +248,6 @@ async function testRuntimeAdapterContract(): Promise<void> {
     calls.some((call) => call.method === 'executeCode' && call.executionStyle === 'ops-class'),
     'C# runtime client should route ops-class executeCode'
   );
-  assertCondition(
-    calls.some((call) => call.method === 'executeCodeInterviewMode' && call.executionStyle === 'solution-method'),
-    'C# runtime client should route interview-mode executeCode'
-  );
-
   console.log('PASS: C# runtime client API contract');
 }
 
@@ -381,14 +301,9 @@ async function testWorkerResultMapping(): Promise<void> {
       executionTimeMs: 7,
     });
 
-    const compileFailure = await workerClient.executeCode(
-      'public class Solution { public int Add(int a, int b) { return "nope"; } }',
-      'Add',
-      { a: 2, b: 3 },
-      'solution-method'
-    );
-    assertCondition(!compileFailure.success, 'C# executeCode compile failure should return a failed result');
-    assertCondition(compileFailure.errorLine === 4, 'C# executeCode should map solution.cs diagnostics to errorLine');
+    const compileFailure = await workerClient.executeCode({ code: 'public class Solution { public int Add(int a, int b) { return "nope"; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method' });
+    assertCondition(compileFailure.kind === 'failed', 'C# executeCode compile failure should return a failed result');
+    assertCondition(compileFailure.kind === 'failed' && compileFailure.errorLine === 4, 'C# executeCode should map solution.cs diagnostics to errorLine');
     assertCondition(
       compileFailure.consoleOutput?.[0] === 'before compile failure',
       'C# executeCode should preserve stdout on compile failure'
@@ -421,17 +336,11 @@ async function testWorkerResultMapping(): Promise<void> {
       executionTimeMs: 11,
     });
 
-    const tracedFailure = await workerClient.executeWithTracing(
-      'public class Solution { public int Crash() { throw new System.Exception(); } }',
-      'Crash',
-      {},
-      { maxTraceSteps: 20 },
-      'solution-method'
-    );
-    assertCondition(!tracedFailure.success, 'C# traced runtime failure should return a failed result');
-    assertCondition(tracedFailure.errorLine === 6, 'C# traced failures should map solution.cs diagnostics to errorLine');
+    const tracedFailure = await workerClient.executeWithTracing({ code: 'public class Solution { public int Crash() { throw new System.Exception(); } }', functionName: 'Crash', inputs: {}, traceOptions: { maxTraceSteps: 20 }, executionStyle: 'solution-method' });
+    assertCondition(tracedFailure.kind === 'failed', 'C# traced runtime failure should return a failed result');
+    assertCondition(tracedFailure.kind === 'failed' && tracedFailure.errorLine === 6, 'C# traced failures should map solution.cs diagnostics to errorLine');
     assertCondition(tracedFailure.trace.language === 'csharp', 'C# traced failures should return a C# runtime trace');
-    assertCondition(tracedFailure.lineEventCount === 1, 'C# traced failures should preserve line event count');
+    assertCondition(tracedFailure.trace.lineEventCount === 1, 'C# traced failures should preserve line event count');
     assertCondition(
       tracedFailure.trace.events.some((event) => event.kind === 'stdout' && event.text === 'before runtime failure'),
       'C# traced failures should append stdout events to the runtime trace'
@@ -446,24 +355,20 @@ async function testWorkerResultMapping(): Promise<void> {
         runId: 'csharp:run',
         file: 'solution.cs',
         line: 3,
-        callStack: [{ function: 'Add', line: 2, args: [2, 3] }],
+        callStack: [{ function: 'Add', line: 2, args: [2, 3] as unknown as Record<string, unknown> }],
       }],
       executionTimeMs: 13,
       traceLimitExceeded: true,
       timeoutReason: 'trace-limit',
     });
 
-    const traceLimited = await workerClient.executeWithTracing(
-      'public class Solution { public int Add(int a, int b) { return a + b; } }',
-      'Add',
-      { a: 2, b: 3 },
-      { maxTraceSteps: 1, maxLineEvents: 2, maxSingleLineHits: 1, maxStoredEvents: 4, minimalTrace: true },
-      'solution-method'
+    const traceLimited = await workerClient.executeWithTracing({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, traceOptions: { maxTraceSteps: 1, maxLineEvents: 2, maxSingleLineHits: 1, maxStoredEvents: 4, minimalTrace: true }, executionStyle: 'solution-method' });
+    assertCondition(traceLimited.kind === 'completed', 'C# trace-limited execution should stay a completed outcome');
+    assertCondition(traceLimited.kind === 'completed' && traceLimited.output === 5, 'C# trace-limited execution should preserve output');
+    assertCondition(
+      traceLimited.kind === 'completed' && traceLimited.traceTruncated === 'trace-limit',
+      'C# trace-limited execution should mark the trace as truncated by trace-limit'
     );
-    assertCondition(traceLimited.success, 'C# trace-limited execution should preserve success');
-    assertCondition(traceLimited.output === 5, 'C# trace-limited execution should preserve output');
-    assertCondition(traceLimited.traceLimitExceeded === true, 'C# trace-limited execution should set traceLimitExceeded');
-    assertCondition(traceLimited.timeoutReason === 'trace-limit', 'C# trace-limited execution should preserve timeoutReason');
     assertCondition(
       traceLimited.trace.events.some((event) => event.kind === 'line' && event.callStack?.some((frame) => frame.function === 'Add')),
       'C# worker client should preserve C# call-stack frames'
@@ -475,14 +380,9 @@ async function testWorkerResultMapping(): Promise<void> {
       consoleOutput: [],
       executionTimeMs: 5,
     });
-    const functionStyle = await workerClient.executeCode(
-      'public class Solution { public int Add(int a, int b) { return a + b; } }',
-      'Add',
-      { a: 2, b: 3 },
-      'function'
-    );
-    assertCondition(functionStyle.success, 'C# worker client should execute named function-style requests');
-    assertCondition(functionStyle.output === 5, 'C# worker client should preserve named function-style output');
+    const functionStyle = await workerClient.executeCode({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'function' });
+    assertCondition(functionStyle.kind === 'completed', 'C# worker client should execute named function-style requests');
+    assertCondition(functionStyle.kind === 'completed' && functionStyle.output === 5, 'C# worker client should preserve named function-style output');
 
     MockCSharpWorker.responses.push({
       success: true,
@@ -491,21 +391,15 @@ async function testWorkerResultMapping(): Promise<void> {
       events: [{ kind: 'return', runId: 'csharp:run', file: 'solution.cs', line: 6, function: 'Run', value: { sum: 10 } }],
       executionTimeMs: 6,
     });
-    const scriptTrace = await workerClient.executeWithTracing(
-      [
+    const scriptTrace = await workerClient.executeWithTracing({ code: [
         'int[] nums = new int[] { 1, 2, 3, 4 };',
         'int sum = 0;',
         'foreach (int value in nums) {',
         '  sum += value;',
         '}',
         'object result = new { sum = sum };',
-      ].join('\n'),
-      '',
-      {},
-      { maxTraceSteps: 200 },
-      'function'
-    );
-    assertCondition(scriptTrace.success, 'C# worker client should execute script-style tracing requests');
+      ].join('\n'), functionName: '', inputs: {}, traceOptions: { maxTraceSteps: 200 }, executionStyle: 'function' });
+    assertCondition(scriptTrace.kind === 'completed', 'C# worker client should execute script-style tracing requests');
     assertCondition(
       MockCSharpWorker.received.some((message) =>
         message.type === 'execute-with-tracing'
@@ -513,49 +407,6 @@ async function testWorkerResultMapping(): Promise<void> {
         && (message.payload as { functionName?: string } | undefined)?.functionName === ''
         && (message.payload as { timeoutMs?: number } | undefined)?.timeoutMs === 19_000),
       'C# script-style tracing should preserve the configured worker deadline'
-    );
-
-    MockCSharpWorker.responses.push({
-      success: true,
-      output: 5,
-      consoleOutput: ['interview'],
-      executionTimeMs: 4,
-    });
-    const interviewStyle = await workerClient.executeCodeInterviewMode(
-      'public class Solution { public int Add(int a, int b) { return a + b; } }',
-      'Add',
-      { a: 2, b: 3 },
-      'solution-method'
-    );
-    assertCondition(interviewStyle.success, 'C# worker client should execute interview-mode requests');
-    assertCondition(interviewStyle.output === 5, 'C# worker client should preserve interview-mode output');
-    assertCondition(!('trace' in interviewStyle), 'C# interview-mode execution should return a non-trace result');
-
-    MockCSharpWorker.responses.push({
-      success: false,
-      error: 'C# execution timed out.',
-      timeoutReason: 'client-timeout',
-      consoleOutput: ['before timeout'],
-      executionTimeMs: 5_000,
-    });
-    const interviewTimeout = await workerClient.executeCodeInterviewMode(
-      'public class Solution { public int Hang() { while (true) {} } }',
-      'Hang',
-      {},
-      'solution-method'
-    );
-    assertCondition(!interviewTimeout.success, 'C# interview-mode timeout-like worker result should fail');
-    assertCondition(
-      interviewTimeout.error === 'Time Limit Exceeded',
-      `C# interview-mode timeout-like worker result should be sanitized, received ${interviewTimeout.error}`
-    );
-    assertCondition(
-      interviewTimeout.timeoutReason === 'client-timeout',
-      'C# interview-mode timeout-like worker result should preserve timeout metadata'
-    );
-    assertCondition(
-      interviewTimeout.diagnosticStage === 'interview',
-      'C# interview-mode timeout-like worker result should be labeled as interview stage'
     );
 
     assertCondition(
@@ -580,13 +431,6 @@ async function testWorkerResultMapping(): Promise<void> {
         && (message.payload as { executionStyle?: string } | undefined)?.executionStyle === 'function'),
       'C# worker client should pass function executionStyle to the worker'
     );
-    assertCondition(
-      MockCSharpWorker.received.some((message) =>
-        message.type === 'execute-code-interview'
-        && (message.payload as { executionStyle?: string } | undefined)?.executionStyle === 'solution-method'),
-      'C# worker client should send interview-mode requests through the interview worker route'
-    );
-
     workerClient.terminate();
   } finally {
     globalThis.Worker = originalWorker;
@@ -631,15 +475,11 @@ async function testClientTimeoutReset(): Promise<void> {
       return originalSetTimeout(handler, timeout, ...args);
     }) as typeof setTimeout;
 
-    const timeoutResult = await workerClient.executeWithTracing(
-      'public class Solution { public int Hang() { while (true) {} } }',
-      'Hang',
-      {},
-      { maxTraceSteps: 20 },
-      'solution-method'
+    const timeoutResult = await workerClient.executeWithTracing({ code: 'public class Solution { public int Hang() { while (true) {} } }', functionName: 'Hang', inputs: {}, traceOptions: { maxTraceSteps: 20 }, executionStyle: 'solution-method' });
+    assertCondition(
+      timeoutResult.kind === 'limit' && timeoutResult.reason === 'client-timeout',
+      'C# client timeout should return a client-timeout limit outcome'
     );
-    assertCondition(!timeoutResult.success, 'C# client timeout should return a failed tracing result');
-    assertCondition(timeoutResult.timeoutReason === 'client-timeout', 'C# client timeout should set client-timeout');
     assertCondition(timeoutResult.trace.events.some((event) => event.kind === 'timeout'), 'C# client timeout should emit a timeout trace event');
     assertCondition(firstWorker.terminated, 'C# client timeout should terminate the stuck worker');
 
@@ -654,14 +494,8 @@ async function testClientTimeoutReset(): Promise<void> {
       executionTimeMs: 3,
     });
 
-    const recovered = await workerClient.executeWithTracing(
-      'public class Solution { public int Add(int a, int b) { return a + b; } }',
-      'Add',
-      { a: 2, b: 3 },
-      { maxTraceSteps: 20 },
-      'solution-method'
-    );
-    assertCondition(recovered.success, 'C# worker client should recover after timeout by creating a new worker');
+    const recovered = await workerClient.executeWithTracing({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, traceOptions: { maxTraceSteps: 20 }, executionStyle: 'solution-method' });
+    assertCondition(recovered.kind === 'completed', 'C# worker client should recover after timeout by creating a new worker');
     assertCondition(MockCSharpWorker.instances.length >= 2, 'C# worker client should create a replacement worker after timeout');
   } finally {
     globalThis.setTimeout = originalSetTimeout;
@@ -698,12 +532,7 @@ async function testWarmupTimeoutReset(): Promise<void> {
 
     await expectRejects(
       () =>
-        workerClient.executeCode(
-          'public class Solution { public int Add(int a, int b) { return a + b; } }',
-          'Add',
-          { a: 2, b: 3 },
-          'solution-method'
-        ),
+        workerClient.executeCode({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method' }),
       'Worker request timed out: warmup'
     );
     assertCondition(
@@ -720,13 +549,8 @@ async function testWarmupTimeoutReset(): Promise<void> {
       executionTimeMs: 2,
     });
 
-    const recovered = await workerClient.executeCode(
-      'public class Solution { public int Add(int a, int b) { return a + b; } }',
-      'Add',
-      { a: 2, b: 3 },
-      'solution-method'
-    );
-    assertCondition(recovered.success, 'C# worker client should recover after warmup timeout');
+    const recovered = await workerClient.executeCode({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method' });
+    assertCondition(recovered.kind === 'completed', 'C# worker client should recover after warmup timeout');
     assertCondition(MockCSharpWorker.instances.length >= 2, 'C# worker client should replace a warmup-timeout worker');
   } finally {
     MockCSharpWorker.hangingMessageTypes = new Set<string>();
@@ -738,13 +562,13 @@ async function testWarmupTimeoutReset(): Promise<void> {
   console.log('PASS: C# worker client warmup timeout reset contract');
 }
 
-async function testInterviewClientTimeout(): Promise<void> {
+async function testWallClockLimitClientTimeout(): Promise<void> {
   const originalWorker = globalThis.Worker;
   const originalSetTimeout = globalThis.setTimeout;
   MockCSharpWorker.responses = [];
   MockCSharpWorker.received = [];
   MockCSharpWorker.instances = [];
-  MockCSharpWorker.hangingMessageTypes = new Set<string>(['execute-code-interview']);
+  MockCSharpWorker.hangingMessageTypes = new Set<string>(['execute-code']);
   MockCSharpWorker.erroringMessageTypes = new Set<string>();
   // @ts-expect-error test stub
   globalThis.Worker = MockCSharpWorker;
@@ -757,7 +581,7 @@ async function testInterviewClientTimeout(): Promise<void> {
   try {
     await workerClient.init();
     const firstWorker = MockCSharpWorker.instances[0];
-    assertCondition(Boolean(firstWorker), 'C# interview timeout test should create an initial worker');
+    assertCondition(Boolean(firstWorker), 'C# wall-clock timeout test should create an initial worker');
 
     globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
       if (timeout === 5_000) {
@@ -774,23 +598,17 @@ async function testInterviewClientTimeout(): Promise<void> {
       return originalSetTimeout(handler, timeout, ...args);
     }) as typeof setTimeout;
 
-    const timeoutResult = await workerClient.executeCodeInterviewMode(
-      'public class Solution { public int Hang() { while (true) {} } }',
-      'Hang',
-      {},
-      'solution-method'
-    );
-    assertCondition(!timeoutResult.success, 'C# interview client timeout should return a failed result');
-    assertCondition(timeoutResult.error === 'Time Limit Exceeded', 'C# interview client timeout should be sanitized');
+    let wallClockError: unknown;
+    try {
+      await workerClient.executeCode({ code: 'public class Solution { public int Hang() { while (true) {} } }', functionName: 'Hang', inputs: {}, executionStyle: 'solution-method', limits: { wallClockMs: 5_000 } });
+    } catch (error) {
+      wallClockError = error;
+    }
     assertCondition(
-      timeoutResult.timeoutReason === 'client-timeout',
-      'C# interview client timeout should set client-timeout'
+      wallClockError instanceof Error && wallClockError.message.includes('C# execution timed out'),
+      `C# wall-clock limit trip should reject with the tagged timeout error, received ${String(wallClockError)}`
     );
-    assertCondition(
-      timeoutResult.diagnosticStage === 'interview',
-      'C# interview client timeout should be labeled as interview stage'
-    );
-    assertCondition(firstWorker.terminated, 'C# interview client timeout should terminate the stuck worker');
+    assertCondition(firstWorker.terminated, 'C# wall-clock limit trip should terminate the stuck worker');
   } finally {
     globalThis.setTimeout = originalSetTimeout;
     MockCSharpWorker.hangingMessageTypes = new Set<string>();
@@ -799,7 +617,7 @@ async function testInterviewClientTimeout(): Promise<void> {
     globalThis.Worker = originalWorker;
   }
 
-  console.log('PASS: C# worker client interview timeout contract');
+  console.log('PASS: C# worker client wall-clock limit timeout contract');
 }
 
 async function testWorkerErrorReset(): Promise<void> {
@@ -824,12 +642,7 @@ async function testWorkerErrorReset(): Promise<void> {
 
     await expectRejects(
       () =>
-        workerClient.executeCode(
-          'public class Solution { public int Add(int a, int b) { return a + b; } }',
-          'Add',
-          { a: 2, b: 3 },
-          'solution-method'
-        ),
+        workerClient.executeCode({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method' }),
       'mock execute-code worker error'
     );
     assertCondition(firstWorker.terminated, 'C# worker error should terminate the failed worker');
@@ -842,14 +655,9 @@ async function testWorkerErrorReset(): Promise<void> {
       executionTimeMs: 2,
     });
 
-    const recovered = await workerClient.executeCode(
-      'public class Solution { public int Add(int a, int b) { return a + b; } }',
-      'Add',
-      { a: 2, b: 3 },
-      'solution-method'
-    );
-    assertCondition(recovered.success, 'C# worker client should recover after worker error');
-    assertCondition(recovered.output === 5, 'C# worker client should preserve output after worker-error recovery');
+    const recovered = await workerClient.executeCode({ code: 'public class Solution { public int Add(int a, int b) { return a + b; } }', functionName: 'Add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method' });
+    assertCondition(recovered.kind === 'completed', 'C# worker client should recover after worker error');
+    assertCondition(recovered.kind === 'completed' && recovered.output === 5, 'C# worker client should preserve output after worker-error recovery');
     assertCondition(MockCSharpWorker.instances.length >= 2, 'C# worker client should create a replacement worker after worker error');
   } finally {
     MockCSharpWorker.erroringMessageTypes = new Set<string>();
@@ -896,13 +704,13 @@ async function main(): Promise<void> {
   await testWorkerResultMapping();
   await testClientTimeoutReset();
   await testWarmupTimeoutReset();
-  await testInterviewClientTimeout();
+  await testWallClockLimitClientTimeout();
   await testWorkerErrorReset();
   testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers();
   testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  console.error(error);
+  process.exitCode = 1;
 });

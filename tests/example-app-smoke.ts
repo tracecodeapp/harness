@@ -261,7 +261,7 @@ async function runLanguageExampleSmoke(
   options: {
     executionTimeoutMs: number;
     traceTimeoutMs: number;
-    assertTrace?: (traceResult: { success?: boolean; trace?: unknown }) => void;
+    assertTrace?: (traceResult: { kind?: string; trace?: unknown }) => void;
   }
 ): Promise<void> {
   await page.selectOption('#language', language);
@@ -275,9 +275,9 @@ async function runLanguageExampleSmoke(
         if (!text) return false;
 
         try {
-          const parsed = JSON.parse(text) as { success?: boolean; output?: unknown };
+          const parsed = JSON.parse(text) as { kind?: string; output?: unknown };
           return (
-            parsed.success === true &&
+            parsed.kind === 'completed' &&
             Array.isArray(parsed.output) &&
             parsed.output.length === 2 &&
             parsed.output[0] === 0 &&
@@ -305,14 +305,14 @@ async function runLanguageExampleSmoke(
         if (!text) return false;
 
         try {
-          const parsed = JSON.parse(text) as { success?: boolean; trace?: unknown };
+          const parsed = JSON.parse(text) as { kind?: string; trace?: unknown };
           const trace = parsed.trace;
           const events = Array.isArray(trace)
             ? trace
             : trace && typeof trace === 'object' && Array.isArray((trace as { events?: unknown }).events)
               ? (trace as { events: unknown[] }).events
               : [];
-          return parsed.success === true && events.length > 0;
+          return parsed.kind === 'completed' && events.length > 0;
         } catch {
           return false;
         }
@@ -328,9 +328,9 @@ async function runLanguageExampleSmoke(
 
   const traceText = await page.textContent('#trace-output');
   assertCondition(typeof traceText === 'string', `Expected trace output for ${language}`);
-  const traceResult = JSON.parse(traceText) as { success?: boolean; trace?: unknown };
+  const traceResult = JSON.parse(traceText) as { kind?: string; trace?: unknown };
   const traceEvents = runtimeTraceEvents(traceResult.trace);
-  assertCondition(traceResult.success === true, `Expected successful trace result for ${language}`);
+  assertCondition(traceResult.kind === 'completed', `Expected successful trace result for ${language}`);
   assertCondition(
     traceEvents.length > 0,
     `Expected non-empty runtime trace events for ${language}`
@@ -349,8 +349,8 @@ async function runCSharpExampleSmoke(page: import('playwright').Page): Promise<v
         if (!text) return false;
 
         try {
-          const parsed = JSON.parse(text) as { success?: boolean; output?: unknown };
-          return parsed.success === true && parsed.output === 5;
+          const parsed = JSON.parse(text) as { kind?: string; output?: unknown };
+          return parsed.kind === 'completed' && parsed.output === 5;
         } catch {
           return false;
         }

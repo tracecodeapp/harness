@@ -16,7 +16,6 @@ import type {
   JavaWorkerRawTraceResult,
   JavaWorkerTraceResult,
 } from '../packages/harness-browser/src/java-worker-client';
-import type { ExecutionResult } from '../packages/harness-core/src/types';
 import {
   createEmptyRuntimeTrace,
   withRuntimeTraceOptions,
@@ -31,6 +30,7 @@ import {
   toPythonLiteral,
 } from '../packages/harness-python/src/python-harness';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
+import { liftCodeOutcome } from '../packages/harness-core/src/execution-outcome';
 
 const DEFAULT_CORPUS_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json';
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
@@ -960,7 +960,7 @@ function createJavaScriptWorkerHarness(workerSource: string) {
       }, 60_000);
       pending.set(id, { protocolToken, resolve: resolvePromise as (value: unknown) => void, reject, timeoutId });
     });
-    onmessage({ data: { id, type, payload, protocolToken } });
+    onmessage!({ data: { id, type, payload, protocolToken } });
     return responsePromise;
   }
 
@@ -978,7 +978,7 @@ async function executeJavaScriptTrace(
   const harness = createJavaScriptWorkerHarness(workerSource);
   const init = await harness.sendMessage<{ success: boolean }>('init');
   if (init.success !== true) throw new Error(`${entry.language} worker init failed`);
-  const result = await harness.sendMessage<ExecutionResult>('execute-with-tracing', {
+  const result = await harness.sendMessage<{ success: boolean; output?: unknown; error?: string; trace: RuntimeTrace }>('execute-with-tracing', {
     code,
     functionName: entry.functionName,
     inputs: entry.inputs,
@@ -1033,7 +1033,7 @@ async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
     const runtime = await dotnet.withApplicationArguments('runtime-trace-corpus-mine').create();
     const config = runtime.getConfig();
     const exports = await runtime.getAssemblyExports(config.mainAssemblyName);
-    const compilerHost = exports.TraceCode?.CSharpHost?.CompilerHost as { Execute?: unknown } | undefined;
+    const compilerHost = (exports as { TraceCode?: { CSharpHost?: { CompilerHost?: unknown } } }).TraceCode?.CSharpHost?.CompilerHost as { Execute?: unknown } | undefined;
     if (typeof compilerHost?.Execute !== 'function') {
       throw new Error('Unable to locate TraceCode.CSharpHost.CompilerHost.Execute export.');
     }
@@ -1641,13 +1641,15 @@ public final class TracecodeCompileRunInvoker {
 
   const workerClient = {
     init: async () => ({ success: true, loadTimeMs: 0 }),
-    executeWithTracing: async (
-      code: string,
-      functionName: string,
-      inputs: Record<string, unknown>,
-      options: Record<string, unknown> | undefined,
-      executionStyle: string
-    ): Promise<JavaWorkerTraceResult> => {
+    executeWithTracing: async (call: {
+      code: string;
+      functionName: string | null;
+      inputs: Record<string, unknown>;
+      traceOptions?: Record<string, unknown>;
+      executionStyle?: string;
+    }): Promise<JavaWorkerTraceResult> => {
+      const { code, inputs, traceOptions: options, executionStyle = 'function' } = call;
+      const functionName = call.functionName ?? '';
       const workerSource = await readFile(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
       const augmentationSource = await readFile(JAVA_SOURCE_AUGMENTATIONS_PATH, 'utf8');
       let response: JavaWorkerRawTraceResult | null = null;
@@ -1664,7 +1666,7 @@ public final class TracecodeCompileRunInvoker {
         }, timeout);
         activeWorkerTimers.add(timer);
         return timer;
-      }) as typeof setTimeout;
+      }) as unknown as typeof setTimeout;
       const workerClearTimeout: typeof clearTimeout = ((timer?: string | number | NodeJS.Timeout) => {
         if (timer && typeof timer !== 'string' && typeof timer !== 'number') activeWorkerTimers.delete(timer);
         clearTimeout(timer);
@@ -1740,11 +1742,12 @@ public final class TracecodeCompileRunInvoker {
           await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
         }
         if (errorResponse) throw errorResponse;
-        if (!response) throw new Error('Timed out waiting for local Java worker response');
+        const settledResponse = response as unknown as JavaWorkerRawTraceResult | null;
+        if (!settledResponse) throw new Error('Timed out waiting for local Java worker response');
         return {
-          ...response,
-          trace: response.success
-            ? javaTraceHooksEventsToRuntimeTrace(response.events, response.sourceText, {
+          ...settledResponse,
+          trace: settledResponse.success
+            ? javaTraceHooksEventsToRuntimeTrace(settledResponse.events, settledResponse.sourceText, {
                 runId: 'java:run',
                 file: 'solution.java',
               })
@@ -1754,13 +1757,14 @@ public final class TracecodeCompileRunInvoker {
         closeWorker();
       }
     },
-    executeCode: async (
-      code: string,
-      functionName: string,
-      inputs: Record<string, unknown>,
-      options: Record<string, unknown> | undefined,
-      executionStyle: string
-    ) => {
+    executeCode: async (call: {
+      code: string;
+      functionName: string;
+      inputs: Record<string, unknown>;
+      traceOptions?: Record<string, unknown>;
+      executionStyle?: string;
+    }) => {
+      const { code, functionName, inputs, traceOptions: options, executionStyle = 'function' } = call;
       const workerSource = await readFile(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
       const augmentationSource = await readFile(JAVA_SOURCE_AUGMENTATIONS_PATH, 'utf8');
       let response: { success: boolean; output?: unknown; error?: string; errorLine?: number; consoleOutput?: string[] } | null = null;
@@ -1830,16 +1834,19 @@ public final class TracecodeCompileRunInvoker {
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
       }
       if (errorResponse) throw errorResponse;
-      if (!response) throw new Error('Timed out waiting for local Java worker response');
-      return {
-        success: response.success,
-        output: response.output,
-        error: response.error,
-        errorLine: response.errorLine,
-        consoleOutput: response.consoleOutput ?? [],
-      };
+      const settledResponse = response as unknown as { success: boolean; output?: unknown; error?: string; errorLine?: number; consoleOutput?: string[] } | null;
+      if (!settledResponse) throw new Error('Timed out waiting for local Java worker response');
+      return liftCodeOutcome(
+        {
+          success: settledResponse.success,
+          output: settledResponse.output,
+          error: settledResponse.error,
+          errorLine: settledResponse.errorLine,
+          consoleOutput: settledResponse.consoleOutput ?? [],
+        },
+        'Java execution failed'
+      );
     },
-    executeCodeInterviewMode: async () => { throw new Error('executeCodeInterviewMode is not used by runtime trace mining'); },
     terminate: () => {
       if (process.env.TRACECODE_KEEP_JAVA_MINE_TEMP === '1') return;
       void rootPromise.then((root) => rm(root, { recursive: true, force: true }));
@@ -1859,14 +1866,8 @@ async function executeJavaTrace(
   const workerClient = createLocalJavaWorkerClient();
   const client = createJavaRuntimeClient(workerClient);
   try {
-    const result = await client.executeWithTracing(
-      code,
-      entry.functionName,
-      entry.inputs,
-      { maxTraceSteps, maxLineEvents, maxSingleLineHits },
-      entry.runtimeExecutionStyle ?? 'function'
-    );
-    if (!result.success) throw new Error(`java tracing failed: ${result.error ?? 'unknown error'}`);
+    const result = await client.executeWithTracing({ code: code, functionName: entry.functionName, inputs: entry.inputs, traceOptions: { maxTraceSteps, maxLineEvents, maxSingleLineHits }, executionStyle: entry.runtimeExecutionStyle ?? 'function' });
+    if (result.kind !== 'completed') throw new Error(`java tracing failed: ${result.kind === 'failed' || result.kind === 'limit' ? result.error : 'unknown error'}`);
     const trace = withRuntimeTraceOptions(result.trace, {
       runId: `mine:${entry.slug}:java`,
       file: entry.source.path,
@@ -1886,13 +1887,8 @@ async function executeJavaCode(
   const workerClient = createLocalJavaWorkerClient();
   const client = createJavaRuntimeClient(workerClient);
   try {
-    const result = await client.executeCode(
-      code,
-      entry.functionName,
-      entry.inputs,
-      entry.runtimeExecutionStyle ?? 'function'
-    );
-    if (!result.success) throw new Error(`java execution failed: ${result.error ?? 'unknown error'}`);
+    const result = await client.executeCode({ code: code, functionName: entry.functionName, inputs: entry.inputs, executionStyle: entry.runtimeExecutionStyle ?? 'function' });
+    if (result.kind !== 'completed') throw new Error(`java execution failed: ${result.kind === 'failed' || result.kind === 'limit' ? result.error : 'unknown error'}`);
     return emptyTraceRun('java', entry, result.output);
   } finally {
     workerClient.terminate();
@@ -2037,7 +2033,7 @@ function missingAccessVariables(expected: MineSignature, received: MineSignature
       Object.keys(expected.accessFacts)
         .filter((token) => !(token in received.accessFacts))
         .map((token) => parseAccessToken(token)?.variable)
-        .filter((variable): variable is string => Boolean(variable) && !receivedVariables.has(variable))
+        .filter((variable): variable is string => variable !== undefined && variable !== '' && !receivedVariables.has(variable))
     ),
   ].sort((left, right) => left.localeCompare(right));
 }
@@ -2049,7 +2045,7 @@ function extraAccessVariables(expected: MineSignature, received: MineSignature):
       Object.keys(received.accessFacts)
         .filter((token) => !(token in expected.accessFacts))
         .map((token) => parseAccessToken(token)?.variable)
-        .filter((variable): variable is string => Boolean(variable) && !expectedVariables.has(variable))
+        .filter((variable): variable is string => variable !== undefined && variable !== '' && !expectedVariables.has(variable))
     ),
   ].sort((left, right) => left.localeCompare(right));
 }
@@ -2561,14 +2557,14 @@ async function runConcurrentMine(
       const timeoutId = setTimeout(() => {
         timedOut = true;
         try {
-          process.kill(-child.pid, 'SIGTERM');
+          process.kill(-child.pid!, 'SIGTERM');
         } catch {
           child.kill('SIGTERM');
         }
         setTimeout(() => {
           if (child.exitCode !== null || child.signalCode !== null) return;
           try {
-            process.kill(-child.pid, 'SIGKILL');
+            process.kill(-child.pid!, 'SIGKILL');
           } catch {
             child.kill('SIGKILL');
           }
@@ -2677,6 +2673,7 @@ async function runConcurrentMine(
     chunkCount: number;
     workerReportDir: string;
     runnerCrashCount: number;
+    workerTimeoutMs: number;
   } = {
     corpusPath,
     sourceRoot,
@@ -2959,5 +2956,5 @@ async function main(): Promise<void> {
 
 main().catch((error) => {
   console.error(error);
-  process.exit(1);
+  process.exitCode = 1;
 });

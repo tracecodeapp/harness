@@ -68,7 +68,7 @@ const script = new vm.Script(
     'const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;\n' +
     'const isRuntimeProcPath = isRuntimeKernelProcPath;\n' +
     workerSource +
-    '\nglobalThis.__tracecodeCppTest = { handleInit, handleWarmup, handleCompileRun, handleCompileRunBatch, handleExecuteWithTracing, handleExecuteCodeInterview, state: () => ({ hasToolchainPromise: Boolean(toolchainPromise), hasWarmupPromise: Boolean(warmupPromise), programCacheSize: programCache.size }) };',
+    '\nglobalThis.__tracecodeCppTest = { handleInit, handleWarmup, handleCompileRun, handleCompileRunBatch, handleExecuteWithTracing, state: () => ({ hasToolchainPromise: Boolean(toolchainPromise), hasWarmupPromise: Boolean(warmupPromise), programCacheSize: programCache.size }) };',
   {
     importModuleDynamically(specifier) {
       return import(specifier);
@@ -127,7 +127,7 @@ const wrapCppTestMethod = (method) => {
   };
 };
 
-for (const method of ['handleCompileRun', 'handleCompileRunBatch', 'handleExecuteWithTracing', 'handleExecuteCodeInterview']) {
+for (const method of ['handleCompileRun', 'handleCompileRunBatch', 'handleExecuteWithTracing']) {
   wrapCppTestMethod(method);
 }
 
@@ -1543,94 +1543,6 @@ if (!scriptTrace.trace.events.some((event) => event.kind === 'snapshot' && event
 }
 if (scriptTrace.trace.events.some((event) => typeof event.line === 'number' && event.line > 12)) {
   throw new Error('C++ script tracing should map wrapper lines back to user code, received ' + JSON.stringify(scriptTrace.trace.events));
-}
-
-const interviewResult = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
-  code: 'class Solution { public: int add(int a, int b) { return a + b; } };',
-  functionName: 'add',
-  inputs: { a: 2, b: 3 },
-  executionStyle: 'solution-method',
-});
-if (!interviewResult.success || interviewResult.output !== 5 || 'trace' in interviewResult) {
-  throw new Error('C++ interview execution should return a non-trace execution result, received ' + JSON.stringify(interviewResult));
-}
-
-const scriptInterviewResult = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
-  code: 'int result = 7;',
-  functionName: '',
-  inputs: {},
-  executionStyle: 'function',
-});
-if (!scriptInterviewResult.success || scriptInterviewResult.output !== 7) {
-  throw new Error('C++ script interview execution should return result, received ' + JSON.stringify(scriptInterviewResult));
-}
-
-const interviewSyntaxError = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
-  code: [
-    'class Solution {',
-    'public:',
-    '  int add(int a, int b) {',
-    '    return a + ;',
-    '  }',
-    '};',
-  ].join('\n'),
-  functionName: 'add',
-  inputs: { a: 2, b: 3 },
-  executionStyle: 'solution-method',
-});
-if (interviewSyntaxError.success || interviewSyntaxError.errorLine !== 4) {
-  throw new Error('C++ interview compile errors should map to user lines, received ' + JSON.stringify(interviewSyntaxError));
-}
-
-const interviewTimeout = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
-  code: [
-    'class Solution {',
-    'public:',
-    '  int spin() {',
-    '    int total = 0;',
-    '    for (int i = 0; i < 100; ++i) {',
-    '      total++;',
-    '    }',
-    '    return total;',
-    '  }',
-    '};',
-  ].join('\n'),
-  functionName: 'spin',
-  inputs: {},
-  executionStyle: 'solution-method',
-  options: { maxTraceSteps: 8 },
-});
-if (interviewTimeout.success || interviewTimeout.error !== 'Time Limit Exceeded') {
-  throw new Error('C++ interview trace-budget timeout should normalize to Time Limit Exceeded, received ' + JSON.stringify(interviewTimeout));
-}
-if (interviewTimeout.timeoutReason !== 'trace-limit' || interviewTimeout.diagnosticStage !== 'interview') {
-  throw new Error('C++ interview trace-budget timeout should preserve timeout metadata, received ' + JSON.stringify(interviewTimeout));
-}
-
-const interviewLineTimeout = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
-  code: [
-    'class Solution {',
-    'public:',
-    '  int spin() {',
-    '    int total = 0;',
-    '    for (int i = 0; i < 100; ++i) {',
-    '      total += i;',
-    '    }',
-    '    return total;',
-    '  }',
-    '};',
-  ].join('\n'),
-  functionName: 'spin',
-  inputs: {},
-  executionStyle: 'solution-method',
-  options: { maxLineEvents: 4, maxTraceSteps: 1000, maxStoredEvents: 1000 },
-});
-if (
-  interviewLineTimeout.success ||
-  interviewLineTimeout.error !== 'Time Limit Exceeded' ||
-  interviewLineTimeout.timeoutReason !== 'line-limit'
-) {
-  throw new Error('C++ interview maxLineEvents should normalize with line-limit metadata, received ' + JSON.stringify(interviewLineTimeout));
 }
 
 const cappedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

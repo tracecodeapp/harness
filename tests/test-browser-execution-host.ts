@@ -11,6 +11,9 @@ import { CSharpWorkerClient } from '../packages/harness-browser/src/csharp-worke
 import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 
+const asJsProjectRequest = (request: object) =>
+  request as import('../packages/harness-javascript/src/project-browser').JavaScriptProjectCommandRequest;
+
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -37,7 +40,7 @@ class FakeWindow {
   }
 
   emitMessage(data: unknown, origin: string, source: unknown, ports: MessagePort[]): void {
-    const event = { data, origin, source, ports } as MessageEvent;
+    const event = { data, origin, source, ports } as unknown as MessageEvent;
     for (const listener of this.listeners) listener(event);
   }
 }
@@ -305,14 +308,14 @@ async function main(): Promise<void> {
     workerUrl: '/workers/javascript-project-worker.js',
     workerFactory: host.workerFactory,
   });
-  const javascriptProjectResult = await javascriptProjectRunner({
+  const javascriptProjectResult = await javascriptProjectRunner(asJsProjectRequest({
     source: 'run',
     scriptPath: 'index.js',
     args: [],
     cwd: '/workspace',
     env: {},
     project: { files: [{ path: 'index.js', contents: 'console.log("remote")\n' }] },
-  });
+  }));
   assertCondition(
     javascriptProjectResult.stdout === 'remote-javascript\n',
     `Project JavaScript must execute through the provider-neutral host: ${JSON.stringify(javascriptProjectResult)}`

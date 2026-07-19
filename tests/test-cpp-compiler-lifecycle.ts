@@ -33,7 +33,7 @@ class CompilerBridgeWorker {
 
   constructor(readonly url: string | URL) {
     CompilerBridgeWorker.instances.push(this);
-    queueMicrotask(() => this.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent<WorkerMessage>));
+    queueMicrotask(() => this.onmessage?.({ data: { type: 'worker-ready' } } as unknown as MessageEvent<WorkerMessage>));
   }
 
   postMessage(message: WorkerMessage): void {
@@ -46,7 +46,7 @@ class CompilerBridgeWorker {
           protocolToken: message.protocolToken,
           payload: { success: true, loadTimeMs: 0 },
         },
-      } as MessageEvent<WorkerMessage>));
+      } as unknown as MessageEvent<WorkerMessage>));
       return;
     }
 
@@ -73,7 +73,7 @@ class CompilerBridgeWorker {
             stackSize: 8 * 1024 * 1024,
           },
         },
-      } as MessageEvent<WorkerMessage>));
+      } as unknown as MessageEvent<WorkerMessage>));
       return;
     }
 
@@ -81,7 +81,7 @@ class CompilerBridgeWorker {
       const execution = this.pendingExecution;
       this.pendingExecution = null;
       if (!execution) return;
-      const compilation = message.payload ?? {};
+      const compilation = (message.payload ?? {}) as { success?: boolean; error?: string; timings?: { artifactCacheHit?: boolean } };
       const success = compilation.success === true;
       queueMicrotask(() => this.onmessage?.({
         data: {
@@ -102,7 +102,7 @@ class CompilerBridgeWorker {
                 consoleOutput: [],
               },
         },
-      } as MessageEvent<WorkerMessage>));
+      } as unknown as MessageEvent<WorkerMessage>));
     }
   }
 
@@ -147,13 +147,13 @@ async function testContentAddressedArtifactsAndDisposableExecution(): Promise<vo
   const client = createClient();
   let standbyWorker: CompilerBridgeWorker | undefined;
   try {
-    const first = await client.executeCode('source-a', 'run', {}, 'function');
-    const exact = await client.executeCode('source-a', 'run', {}, 'function');
-    const edited = await client.executeCode('source-b', 'run', {}, 'function');
+    const first = await client.executeCode({ code: 'source-a', functionName: 'run', inputs: {}, executionStyle: 'function' });
+    const exact = await client.executeCode({ code: 'source-a', functionName: 'run', inputs: {}, executionStyle: 'function' });
+    const edited = await client.executeCode({ code: 'source-b', functionName: 'run', inputs: {}, executionStyle: 'function' });
 
-    assertCondition(first.success && first.output === 'compiled', `first source should compile: ${JSON.stringify(first)}`);
-    assertCondition(exact.success && exact.output === 'cached', `exact source should use the artifact cache: ${JSON.stringify(exact)}`);
-    assertCondition(edited.success && edited.output === 'compiled', `edited source should recompile: ${JSON.stringify(edited)}`);
+    assertCondition(first.kind === 'completed' && first.output === 'compiled', `first source should compile: ${JSON.stringify(first)}`);
+    assertCondition(exact.kind === 'completed' && exact.output === 'cached', `exact source should use the artifact cache: ${JSON.stringify(exact)}`);
+    assertCondition(edited.kind === 'completed' && edited.output === 'compiled', `edited source should recompile: ${JSON.stringify(edited)}`);
     assertCondition(fetchCount === 2, `exact cache should avoid one compiler invocation while edited source recompiles: ${fetchCount}`);
     const usedWorkers = CompilerBridgeWorker.instances.filter((worker) => worker.poisoned);
     const standbyWorkers = CompilerBridgeWorker.instances.filter((worker) => !worker.poisoned);
@@ -194,13 +194,13 @@ async function testInvalidArtifactsFailClosedAndAreNotCached(): Promise<void> {
   };
   const client = createClient();
   try {
-    const first = await client.executeCode('invalid-artifact', 'run', {}, 'function');
-    const second = await client.executeCode('invalid-artifact', 'run', {}, 'function');
+    const first = await client.executeCode({ code: 'invalid-artifact', functionName: 'run', inputs: {}, executionStyle: 'function' });
+    const second = await client.executeCode({ code: 'invalid-artifact', functionName: 'run', inputs: {}, executionStyle: 'function' });
     assertCondition(
-      first.success === false && String(first.error).includes('invalid WebAssembly'),
+      first.kind === 'failed' && first.error.includes('invalid WebAssembly'),
       `invalid compiler artifacts should fail closed: ${JSON.stringify(first)}`
     );
-    assertCondition(second.success === false, 'invalid compiler artifacts should remain rejected');
+    assertCondition(second.kind === 'failed', 'invalid compiler artifacts should remain rejected');
     assertCondition(fetchCount === 2, 'invalid compiler artifacts must never enter the content-addressed cache');
   } finally {
     client.terminate();
@@ -231,19 +231,19 @@ async function testTimeoutAbortsCompilerAndRetiresExecution(): Promise<void> {
   };
   const client = createClient({ executionTimeoutMs: 10 });
   try {
-    const result = await client.executeCode('hang-compiler', 'run', {}, 'function');
-    assertCondition(result.success === false && result.timeoutReason === 'client-timeout', `timeout should be explicit: ${JSON.stringify(result)}`);
+    const result = await client.executeCode({ code: 'hang-compiler', functionName: 'run', inputs: {}, executionStyle: 'function' });
+    assertCondition(result.kind === 'limit' && result.reason === 'client-timeout', `timeout should be explicit: ${JSON.stringify(result)}`);
     assertCondition(compilerAbortObserved, 'execution timeout should abort the in-flight compiler request');
     assertCondition(
       CompilerBridgeWorker.instances.length === 1 && CompilerBridgeWorker.instances[0].terminated,
       'execution timeout should terminate the user execution worker'
     );
     assertCondition(resolveIgnoredAbort, 'timeout test should retain the ignored compiler response');
-    resolveIgnoredAbort(new Response(MINIMAL_WASM.slice(), { status: 200 }));
+    (resolveIgnoredAbort as unknown as (response: Response) => void)(new Response(MINIMAL_WASM.slice(), { status: 200 }));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const recovery = await client.executeCode('hang-compiler', 'run', {}, 'function');
+    const recovery = await client.executeCode({ code: 'hang-compiler', functionName: 'run', inputs: {}, executionStyle: 'function' });
     assertCondition(
-      recovery.success === true && recovery.output === 'compiled' && fetchCount === 2,
+      recovery.kind === 'completed' && recovery.output === 'compiled' && fetchCount === 2,
       `a late timed-out compiler response must not repopulate the artifact cache: ${JSON.stringify(recovery)}`
     );
   } finally {
@@ -274,7 +274,7 @@ async function testCallerAbortResetsCompilerAndExecution(): Promise<void> {
     const started = new Promise<void>((resolve) => {
       fetchStarted = resolve;
     });
-    const execution = client.executeCode('caller-abort', 'run', {}, 'function', controller.signal);
+    const execution = client.executeCode({ code: 'caller-abort', functionName: 'run', inputs: {}, executionStyle: 'function', signal: controller.signal });
     await started;
     controller.abort();
     let error: unknown;
@@ -389,7 +389,7 @@ async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
     });
   }
   assertCondition(
-    compilerWorkers.length === 1,
+    (compilerWorkers.length as number) === 1,
     `edited source should reuse one trusted compiler/toolchain worker: ${compilerWorkers.length}; responses=${JSON.stringify(responses)}`
   );
   assertCondition(
@@ -413,6 +413,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(error);
   process.exitCode = 1;
 });
