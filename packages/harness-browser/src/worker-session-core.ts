@@ -371,11 +371,20 @@ export class WorkerSessionCore {
     /** Per-message deadline; `null` when an enclosing execution deadline governs instead. */
     timeoutMs: number | null = this.config.defaultMessageTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
-    kernelHttp?: RuntimeKernelHttpBridge
+    kernelHttp?: RuntimeKernelHttpBridge,
+    validateLifecycle?: () => void
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
+      yield* Effect.try({
+        try: () => validateLifecycle?.(),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      });
       yield* Effect.tryPromise({
         try: () => this.config.preflight?.(type) ?? Promise.resolve(),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      });
+      yield* Effect.try({
+        try: () => validateLifecycle?.(),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
 
@@ -385,6 +394,10 @@ export class WorkerSessionCore {
       });
 
       yield* this.awaitSessionReady(session);
+      yield* Effect.try({
+        try: () => validateLifecycle?.(),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      });
 
       const reply = this.postAndAwaitReply<T>(session.worker, type, payload, onEvent, kernelHttp);
       if (timeoutMs === null) {
@@ -470,9 +483,12 @@ export class WorkerSessionCore {
     payload?: unknown,
     timeoutMs: number | null = this.config.defaultMessageTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
-    kernelHttp?: RuntimeKernelHttpBridge
+    kernelHttp?: RuntimeKernelHttpBridge,
+    validateLifecycle?: () => void
   ): Promise<T> {
-    return this.runClientEffect(this.sendMessageEffect<T>(type, payload, timeoutMs, onEvent, kernelHttp));
+    return this.runClientEffect(
+      this.sendMessageEffect<T>(type, payload, timeoutMs, onEvent, kernelHttp, validateLifecycle)
+    );
   }
 
   /**

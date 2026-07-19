@@ -14,6 +14,7 @@ import type {
 import {
   runBrowserJavaScriptProjectRequest,
   type BrowserJavaScriptProjectRunnerOptions,
+  type BrowserJavaScriptProjectExecutionState,
   type JavaScriptProjectCommandRequest,
 } from './project-browser';
 
@@ -205,6 +206,7 @@ class WorkerKernelHttpBridge implements RuntimeKernelHttpBridge {
 interface ActiveWorkerCommand {
   bridge: WorkerKernelHttpBridge;
   protocolToken: string;
+  executionState: BrowserJavaScriptProjectExecutionState;
 }
 
 const activeHttpBridges = new Map<string, ActiveWorkerCommand>();
@@ -225,6 +227,19 @@ function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
   const command = activeHttpBridges.get(id);
   if (!command) return false;
   if (protocolToken !== command.protocolToken) return true;
+
+  if (type === 'runtime-signal') {
+    const signal = typeof (payload as { signal?: unknown } | undefined)?.signal === 'string'
+      ? (payload as { signal: string }).signal
+      : 'SIGTERM';
+    const handled = command.executionState.dispatchSignal?.(signal) === true;
+    if (!handled) {
+      command.executionState.cancelled = true;
+      command.executionState.abortController.abort({ signal });
+      command.executionState.cleanupHostGlobals?.();
+    }
+    return true;
+  }
 
   if (type === 'kernel-http-request') {
     const message = payload as RuntimeKernelHttpProtocolMessage;
@@ -301,11 +316,14 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     allowDynamicEval: runnerOptions?.allowDynamicEval,
     projectUserAuthorityMode: runnerOptions?.projectUserAuthorityMode,
   };
-  const executionState = { cancelled: false, abortController: new AbortController() };
+  const executionState: BrowserJavaScriptProjectExecutionState = {
+    cancelled: false,
+    abortController: new AbortController(),
+  };
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
     postCommandMessage(postToHost, id, protocolToken, message.type, message);
   });
-  activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken });
+  activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken, executionState });
   const clearActiveCommand = (): void => {
     activeHttpBridges.delete(id);
   };

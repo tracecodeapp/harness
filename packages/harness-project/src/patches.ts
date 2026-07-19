@@ -69,6 +69,8 @@ import type {
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileDeletion,
+  RuntimeSymlink,
+  RuntimeDirectory,
   RuntimeDirectoryChange,
   RuntimeFileEncoding,
   RuntimeKernelInfo,
@@ -83,6 +85,8 @@ import type {
   RuntimeProjectPatchBase,
   RuntimeProjectPatchChange,
   RuntimeProjectPatchFileWrite,
+  RuntimeProjectPatchSymlinkWrite,
+  RuntimeProjectPatchDirectoryWrite,
   RuntimeProjectSnapshot,
   RuntimeWorkspaceActor,
 } from '@tracecode/harness-core';
@@ -118,8 +122,17 @@ export interface RuntimeProjectPatchSnapshotFile {
 export interface RuntimeProjectPatchSnapshotView {
   manifestHash: string;
   files: Map<string, RuntimeProjectPatchSnapshotFile>;
-  directories: Set<string>;
+  symlinks: Map<string, RuntimeProjectPatchSnapshotSymlink>;
+  directories: Map<string, RuntimeProjectPatchSnapshotDirectory>;
   entrypoint?: string;
+}
+
+export interface RuntimeProjectPatchSnapshotDirectory extends RuntimeDirectory {
+  hash: string;
+}
+
+export interface RuntimeProjectPatchSnapshotSymlink extends RuntimeSymlink {
+  hash: string;
 }
 
 
@@ -142,6 +155,9 @@ export async function createRuntimeProjectPatchSnapshotView(
       path,
       contents: file.contents,
       ...(encoding === 'base64' ? { encoding } : {}),
+      ...(file.mode !== undefined ? { mode: file.mode } : {}),
+      ...(file.atimeMs !== undefined ? { atimeMs: file.atimeMs } : {}),
+      ...(file.mtimeMs !== undefined ? { mtimeMs: file.mtimeMs } : {}),
     };
     files.set(path, {
       ...normalizedFile,
@@ -149,12 +165,48 @@ export async function createRuntimeProjectPatchSnapshotView(
     });
   }
 
-  const directories = new Set<string>();
+  const symlinks = new Map<string, RuntimeProjectPatchSnapshotSymlink>();
+  for (const [index, symlink] of (snapshot.symlinks ?? []).entries()) {
+    const path = normalizeRuntimeProjectPath(symlink.path);
+    if (files.has(path) || symlinks.has(path)) throw new Error(`${label}.symlinks[${index}] duplicates project path: ${path}`);
+    if (symlink.symlink !== true || typeof symlink.target !== 'string' || symlink.target.length === 0 || symlink.target.includes('\0')) {
+      throw new Error(`${label}.symlinks[${index}] must declare a valid symbolic-link target.`);
+    }
+    const normalizedSymlink: RuntimeSymlink = { path, symlink: true, target: symlink.target };
+    symlinks.set(path, {
+      ...normalizedSymlink,
+      hash: await runtimeProjectPatchSymlinkHash(normalizedSymlink),
+    });
+  }
+
+  const directoryMetadata = new Map(
+    (snapshot.directoryMetadata ?? []).map((directory, index) => {
+      const path = normalizeRuntimeProjectPath(directory.path);
+      return [path, {
+        path,
+        ...normalizeRuntimeProjectPatchDirectoryMetadata(directory, `${label}.directoryMetadata[${index}]`),
+      }] as const;
+    })
+  );
+  const directories = new Map<string, RuntimeProjectPatchSnapshotDirectory>();
   for (const [index, directory] of (snapshot.directories ?? []).entries()) {
     if (typeof directory !== 'string') throw new Error(`${label}.directories[${index}] must be a string.`);
     const path = normalizeRuntimeProjectPath(directory);
-    if (files.has(path)) throw new Error(`${label}.directories[${index}] conflicts with file path: ${path}`);
-    directories.add(path);
+    if (files.has(path) || symlinks.has(path)) throw new Error(`${label}.directories[${index}] conflicts with non-directory path: ${path}`);
+    const metadata = directoryMetadata.get(path);
+    const normalizedDirectory: RuntimeDirectory = {
+      path,
+      ...(metadata?.mode !== undefined ? { mode: metadata.mode } : {}),
+      ...(metadata?.atimeMs !== undefined ? { atimeMs: metadata.atimeMs } : {}),
+      ...(metadata?.mtimeMs !== undefined ? { mtimeMs: metadata.mtimeMs } : {}),
+    };
+    directories.set(path, {
+      ...normalizedDirectory,
+      hash: await runtimeProjectPatchDirectoryHash(normalizedDirectory),
+    });
+  }
+  for (const path of directoryMetadata.keys()) {
+    if (!directories.has(path)) throw new Error(`${label}.directoryMetadata references missing directory path: ${path}`);
   }
 
   const entrypoint = snapshot.entrypoint === undefined ? undefined : normalizeRuntimeProjectPath(snapshot.entrypoint);
@@ -164,20 +216,45 @@ export async function createRuntimeProjectPatchSnapshotView(
     files: [...files.values()]
       .map((file) => ({ path: file.path, hash: file.hash }))
       .sort((left, right) => left.path.localeCompare(right.path)),
-    directories: [...directories].sort((left, right) => left.localeCompare(right)),
+    symlinks: [...symlinks.values()]
+      .map((symlink) => ({ path: symlink.path, hash: symlink.hash }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
+    directories: [...directories.values()]
+      .map((directory) => ({ path: directory.path, hash: directory.hash }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
   });
 
   return {
     manifestHash,
     files,
+    symlinks,
     directories,
     ...(entrypoint ? { entrypoint } : {}),
   };
 }
 
+export function runtimeProjectPatchSymlinkHash(symlink: RuntimeSymlink): Promise<string> {
+  return runtimeProjectPatchHashJson({ target: symlink.target });
+}
+
+export function runtimeProjectPatchDirectoryHash(directory: RuntimeDirectory): Promise<string> {
+  return runtimeProjectPatchHashJson({
+    mode: directory.mode ?? null,
+    atimeMs: directory.atimeMs ?? null,
+    mtimeMs: directory.mtimeMs ?? null,
+  });
+}
+
 
 export async function runtimeProjectPatchFileHash(file: RuntimeFile): Promise<string> {
-  return runtimeProjectPatchHashBytes(contentToBytesForRuntimeFile(file));
+  const contents = contentToBytesForRuntimeFile(file);
+  const metadata = new TextEncoder().encode(JSON.stringify({
+    mode: file.mode ?? null,
+  }) + '\0');
+  const payload = new Uint8Array(metadata.byteLength + contents.byteLength);
+  payload.set(metadata);
+  payload.set(contents, metadata.byteLength);
+  return runtimeProjectPatchHashBytes(payload);
 }
 
 
@@ -217,6 +294,26 @@ export function staleRuntimeProjectPatchError(message: string, path?: string): E
     syscall: 'patch',
     ...(path ? { path } : {}),
   });
+}
+
+function normalizeRuntimeProjectPatchDirectoryMetadata(
+  change: { mode?: unknown; atimeMs?: unknown; mtimeMs?: unknown },
+  label: string
+): Omit<RuntimeDirectory, 'path'> {
+  if (change.mode !== undefined && (!Number.isInteger(change.mode) || Number(change.mode) < 0 || Number(change.mode) > 0o7777)) {
+    throw new Error(`${label}.mode must be permission bits.`);
+  }
+  for (const field of ['atimeMs', 'mtimeMs'] as const) {
+    const value = change[field];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+      throw new Error(`${label}.${field} must be a non-negative finite timestamp.`);
+    }
+  }
+  return {
+    ...(change.mode !== undefined ? { mode: Number(change.mode) } : {}),
+    ...(change.atimeMs !== undefined ? { atimeMs: Number(change.atimeMs) } : {}),
+    ...(change.mtimeMs !== undefined ? { mtimeMs: Number(change.mtimeMs) } : {}),
+  };
 }
 
 
@@ -274,7 +371,34 @@ export function normalizeRuntimeProjectPatch(patch: RuntimeProjectPatch): Runtim
       };
     }
 
-    if (kind === 'mkdir' || kind === 'rmdir') return { kind, path };
+    if (kind === 'symlink') {
+      const symlink = change as RuntimeProjectPatchSymlinkWrite;
+      if (typeof symlink.target !== 'string' || symlink.target.length === 0 || symlink.target.includes('\0')) {
+        throw new Error(`Runtime project patch changes[${index}].target must be a non-empty string without NUL bytes.`);
+      }
+      return {
+        kind,
+        path,
+        target: symlink.target,
+        baseHash: symlink.baseHash === null
+          ? null
+          : assertRuntimeProjectPatchHash(symlink.baseHash, `Runtime project patch changes[${index}].baseHash`),
+      };
+    }
+
+    if (kind === 'mkdir') {
+      return { kind, path, ...normalizeRuntimeProjectPatchDirectoryMetadata(change as RuntimeProjectPatchDirectoryWrite, `Runtime project patch changes[${index}]`) };
+    }
+    if (kind === 'directory') {
+      const directory = change as RuntimeProjectPatchDirectoryWrite;
+      return {
+        kind,
+        path,
+        ...normalizeRuntimeProjectPatchDirectoryMetadata(directory, `Runtime project patch changes[${index}]`),
+        baseHash: assertRuntimeProjectPatchHash(directory.baseHash, `Runtime project patch changes[${index}].baseHash`),
+      };
+    }
+    if (kind === 'rmdir') return { kind, path };
     throw new Error(`Runtime project patch changes[${index}].kind is unsupported: ${String(kind)}`);
   });
 
@@ -291,7 +415,7 @@ export function sortRuntimeProjectPatchChanges(changes: readonly RuntimeProjectP
     if (change.kind === 'delete') return 0;
     if (change.kind === 'rmdir') return 1;
     if (change.kind === 'mkdir') return 2;
-    return 3;
+    return change.kind === 'write' || change.kind === 'symlink' || change.kind === 'directory' ? 3 : 4;
   };
   return [...changes].sort((left, right) => {
     const rankDelta = rank(left) - rank(right);
@@ -313,29 +437,37 @@ export function validateRuntimeProjectPatchAgainstBase(
   }
 
   for (const change of patch.changes) {
-    if (change.kind === 'write') {
-      const baseFile = base.files.get(change.path);
+    if (change.kind === 'write' || change.kind === 'symlink') {
+      const baseEntry = base.files.get(change.path) ?? base.symlinks.get(change.path);
       if (change.baseHash === null) {
-        if (baseFile || base.directories.has(change.path)) {
+        if (baseEntry || base.directories.has(change.path)) {
           throw staleRuntimeProjectPatchError(`patch expected '${change.path}' to be absent in the base`, change.path);
         }
-      } else if (!baseFile || baseFile.hash !== change.baseHash) {
-        throw staleRuntimeProjectPatchError(`patch write precondition failed for '${change.path}'`, change.path);
+      } else if (!baseEntry || baseEntry.hash !== change.baseHash) {
+        throw staleRuntimeProjectPatchError(`patch ${change.kind} precondition failed for '${change.path}'`, change.path);
       }
       continue;
     }
 
     if (change.kind === 'delete') {
-      const baseFile = base.files.get(change.path);
-      if (!baseFile || baseFile.hash !== change.baseHash) {
+      const baseEntry = base.files.get(change.path) ?? base.symlinks.get(change.path);
+      if (!baseEntry || baseEntry.hash !== change.baseHash) {
         throw staleRuntimeProjectPatchError(`patch delete precondition failed for '${change.path}'`, change.path);
       }
       continue;
     }
 
     if (change.kind === 'mkdir') {
-      if (base.files.has(change.path) || base.directories.has(change.path)) {
+      if (base.files.has(change.path) || base.symlinks.has(change.path) || base.directories.has(change.path)) {
         throw staleRuntimeProjectPatchError(`patch expected directory '${change.path}' to be absent in the base`, change.path);
+      }
+      continue;
+    }
+
+    if (change.kind === 'directory') {
+      const baseDirectory = base.directories.get(change.path);
+      if (!baseDirectory || baseDirectory.hash !== change.baseHash) {
+        throw staleRuntimeProjectPatchError(`patch directory precondition failed for '${change.path}'`, change.path);
       }
       continue;
     }
@@ -356,8 +488,17 @@ export function runtimeProjectPatchChangesToFileChanges(changes: readonly Runtim
         ...(change.encoding === 'base64' ? { encoding: change.encoding } : {}),
       };
     }
+    if (change.kind === 'symlink') return { path: change.path, symlink: true, target: change.target };
     if (change.kind === 'delete') return { path: change.path, deleted: true };
-    if (change.kind === 'mkdir') return { path: change.path, directory: true };
+    if (change.kind === 'mkdir' || change.kind === 'directory') {
+      return {
+        path: change.path,
+        directory: true,
+        ...(change.mode !== undefined ? { mode: change.mode } : {}),
+        ...(change.atimeMs !== undefined ? { atimeMs: change.atimeMs } : {}),
+        ...(change.mtimeMs !== undefined ? { mtimeMs: change.mtimeMs } : {}),
+      };
+    }
     return { path: change.path, directory: true, deleted: true };
   });
 }

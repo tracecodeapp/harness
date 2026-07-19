@@ -142,6 +142,7 @@ export type RuntimeKernelTruncateTarget =
 export type RuntimeKernelErrorCode = 'EBADF' | 'EISDIR' | 'ENOENT' | 'ENOTDIR' | 'EROFS';
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
+  | { kind: 'identity'; path: string }
   | { kind: 'device'; path: RuntimeKernelDevicePath }
   | { kind: 'device-directory'; path: '/dev' }
   | { kind: 'device-namespace'; path: string };
@@ -154,7 +155,7 @@ export interface RuntimeKernelDeviceInputRoute {
   inputDevice: RuntimeKernelDevicePath;
   sourceDevice?: RuntimeKernelDevicePath;
 }
-export const RUNTIME_KERNEL_DEVICE_ENTRIES = ['null', 'stderr', 'stdin', 'stdout', 'tty'] as const;
+export const RUNTIME_KERNEL_DEVICE_ENTRIES = ['fd/0', 'fd/1', 'fd/2', 'null', 'stderr', 'stdin', 'stdout', 'tty'] as const;
 
 export function runtimeKernelReadonlyFileErrorMessage(path: string, operation: string): string {
   return `EROFS: readonly project file, ${operation} '${path}'`;
@@ -194,6 +195,9 @@ export function normalizeRuntimeDevicePath(path: string): '/dev' | RuntimeKernel
     normalized === '/dev/stdin' ||
     normalized === '/dev/stdout' ||
     normalized === '/dev/stderr' ||
+    normalized === '/dev/fd/0' ||
+    normalized === '/dev/fd/1' ||
+    normalized === '/dev/fd/2' ||
     normalized === '/dev/null' ||
     normalized === '/dev/tty'
   ) {
@@ -220,13 +224,93 @@ export function isRuntimeDeviceNamespacePath(path: string): boolean {
   return normalized === '/dev' || normalized?.startsWith('/dev/') === true;
 }
 
+const RUNTIME_KERNEL_IDENTITY_FILE_NAMES = [
+  'group',
+  'hostname',
+  'hosts',
+  'nsswitch.conf',
+  'os-release',
+  'passwd',
+  'shells',
+] as const;
+
+export function isRuntimeKernelIdentityNamespacePath(path: string): boolean {
+  const normalized = normalizeRuntimeAbsolutePath(path);
+  return normalized === '/etc' || normalized?.startsWith('/etc/') === true;
+}
+
+export function runtimeKernelIdentityDirEntries(path: string): string[] | null {
+  return normalizeRuntimeAbsolutePath(path) === '/etc'
+    ? [...RUNTIME_KERNEL_IDENTITY_FILE_NAMES]
+    : null;
+}
+
+export function runtimeKernelIdentityEntryKind(path: string): RuntimeKernelProcEntryKind | null {
+  const normalized = normalizeRuntimeAbsolutePath(path);
+  if (normalized === '/etc') return 'directory';
+  return normalized && RUNTIME_KERNEL_IDENTITY_FILE_NAMES.some((name) => normalized === '/etc/' + name)
+    ? 'file'
+    : null;
+}
+
+function quoteOsReleaseValue(value: string): string {
+  return '"' + value.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"') + '"';
+}
+
+export function readRuntimeKernelIdentityFile(path: string, info: RuntimeKernelInfo): string {
+  const normalized = normalizeRuntimeAbsolutePath(path);
+  const username = info.user.username;
+  const hostname = info.host.hostname;
+  if (normalized === '/etc/os-release') {
+    return [
+      'NAME="TraceKernel"',
+      'ID=tracekernel',
+      'VERSION_ID=' + quoteOsReleaseValue(info.version),
+      'PRETTY_NAME=' + quoteOsReleaseValue('TraceKernel ' + info.version),
+      '',
+    ].join('\n');
+  }
+  if (normalized === '/etc/passwd') {
+    return [
+      'root:x:0:0:root:/root:/bin/sh',
+      username + ':x:1000:1000:TraceKernel ' + username + ':' + info.home + ':/bin/bash',
+      '',
+    ].join('\n');
+  }
+  if (normalized === '/etc/group') {
+    return [
+      'root:x:0:',
+      username + ':x:1000:' + username,
+      '',
+    ].join('\n');
+  }
+  if (normalized === '/etc/hostname') return hostname + '\n';
+  if (normalized === '/etc/hosts') {
+    return '127.0.0.1 localhost ' + hostname + '\n::1 localhost ' + hostname + '\n';
+  }
+  if (normalized === '/etc/nsswitch.conf') {
+    return 'passwd: files\ngroup: files\nhosts: files dns\n';
+  }
+  if (normalized === '/etc/shells') return '/bin/sh\n/bin/bash\n';
+  if (normalized === '/etc') {
+    throw Object.assign(new Error("EISDIR: illegal operation on a directory, read '" + path + "'"), { code: 'EISDIR' });
+  }
+  throw Object.assign(new Error("ENOENT: no such file or directory, open '" + path + "'"), { code: 'ENOENT' });
+}
+
 export function isRuntimeKernelVirtualNamespacePath(path: string): boolean {
-  return isRuntimeProcNamespacePath(path) || isRuntimeDeviceNamespacePath(path);
+  return isRuntimeProcNamespacePath(path) ||
+    isRuntimeDeviceNamespacePath(path) ||
+    isRuntimeKernelIdentityNamespacePath(path);
 }
 
 export function classifyRuntimeKernelVirtualPath(path: string): RuntimeKernelVirtualPath | null {
   const procPath = normalizeRuntimeProcPath(path);
   if (procPath !== null) return { kind: 'proc', path: procPath };
+  const identityPath = normalizeRuntimeAbsolutePath(path);
+  if (identityPath && isRuntimeKernelIdentityNamespacePath(identityPath)) {
+    return { kind: 'identity', path: identityPath };
+  }
   const devicePath = normalizeRuntimeDevicePath(path);
   if (devicePath === '/dev') return { kind: 'device-directory', path: devicePath };
   if (devicePath !== null) return { kind: 'device', path: devicePath };
@@ -240,11 +324,11 @@ export function runtimeProcCanMutate(path: string): boolean {
 }
 
 export function runtimeDeviceCanRead(device: RuntimeKernelDevicePath): boolean {
-  return device === '/dev/stdin' || device === '/dev/tty' || device === '/dev/null';
+  return device === '/dev/stdin' || device === '/dev/fd/0' || device === '/dev/tty' || device === '/dev/null';
 }
 
 export function runtimeDeviceCanWrite(device: RuntimeKernelDevicePath): boolean {
-  return device === '/dev/stdout' || device === '/dev/stderr' || device === '/dev/tty' || device === '/dev/null';
+  return device === '/dev/stdout' || device === '/dev/fd/1' || device === '/dev/stderr' || device === '/dev/fd/2' || device === '/dev/tty' || device === '/dev/null';
 }
 
 export function runtimeDeviceInputSource(device: RuntimeKernelDevicePath): RuntimeKernelDevicePath | null {
@@ -255,6 +339,8 @@ export function runtimeDeviceInputSource(device: RuntimeKernelDevicePath): Runti
 export function runtimeDeviceOutputTarget(device: RuntimeKernelDevicePath): RuntimeKernelDevicePath | null {
   if (!runtimeDeviceCanWrite(device)) return null;
   if (device === '/dev/null') return '/dev/null';
+  if (device === '/dev/fd/1') return '/dev/stdout';
+  if (device === '/dev/fd/2') return '/dev/stderr';
   return device === '/dev/tty' ? '/dev/stdout' : device;
 }
 
@@ -374,7 +460,7 @@ export function runtimeKernelWriteTarget(
 ): RuntimeKernelWriteTarget {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
-  if (virtualPath.kind === 'proc') {
+  if (virtualPath.kind === 'proc' || virtualPath.kind === 'identity') {
     return { kind: 'error', reason: 'proc-read-only', path: virtualPath.path };
   }
   if (virtualPath.kind === 'device-directory') {
@@ -440,7 +526,7 @@ export function runtimeKernelMutationTarget(
 ): RuntimeKernelMutationTarget {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
-  if (virtualPath.kind === 'proc') {
+  if (virtualPath.kind === 'proc' || virtualPath.kind === 'identity') {
     return { kind: 'error', reason: 'proc-read-only', path: virtualPath.path };
   }
   if (virtualPath.kind === 'device-namespace') {
@@ -493,7 +579,7 @@ export function runtimeKernelMetadataTarget(
 ): RuntimeKernelMetadataTarget {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
-  if (virtualPath.kind === 'proc') {
+  if (virtualPath.kind === 'proc' || virtualPath.kind === 'identity') {
     return { kind: 'error', reason: 'proc-read-only', path: virtualPath.path };
   }
   if (virtualPath.kind === 'device-namespace') {
@@ -560,7 +646,10 @@ export function runtimeKernelAccessTarget(
       ? { kind: 'denied', reason: 'permission-denied', path: virtualPath.path }
       : { kind: 'allowed', path: virtualPath.path };
   }
-  if (!runtimeProcEntryKind(virtualPath.path)) {
+  const readonlyEntryKind = virtualPath.kind === 'identity'
+    ? runtimeKernelIdentityEntryKind(virtualPath.path)
+    : runtimeProcEntryKind(virtualPath.path);
+  if (!readonlyEntryKind) {
     return { kind: 'denied', reason: 'not-found', path: virtualPath.path };
   }
   return request.write || request.execute
@@ -603,7 +692,9 @@ export function runtimeKernelOpenTarget(
     };
   }
 
-  const entryKind = runtimeProcEntryKind(virtualPath.path);
+  const entryKind = virtualPath.kind === 'identity'
+    ? runtimeKernelIdentityEntryKind(virtualPath.path)
+    : runtimeProcEntryKind(virtualPath.path);
   if (!entryKind) {
     return { kind: 'error', reason: 'not-found', path: virtualPath.path };
   }
@@ -661,7 +752,9 @@ export function runtimeKernelReadTarget(
       ? { kind: 'device-file', path: virtualPath.path }
       : { kind: 'error', reason: 'permission-denied', path: virtualPath.path };
   }
-  const kind = runtimeProcEntryKind(virtualPath.path);
+  const kind = virtualPath.kind === 'identity'
+    ? runtimeKernelIdentityEntryKind(virtualPath.path)
+    : runtimeProcEntryKind(virtualPath.path);
   if (kind === 'file') return { kind: 'proc-file', path: virtualPath.path };
   if (kind === 'directory') return { kind: 'proc-directory', path: virtualPath.path };
   return { kind: 'error', reason: 'not-found', path: virtualPath.path };
@@ -742,7 +835,9 @@ export function runtimeKernelStatTarget(
     }
     return { kind: 'stat', path: virtualPath.path, stat: runtimeDeviceStat(virtualPath.path, devices) };
   }
-  const stat = runtimeProcStat(virtualPath.path, info);
+  const stat = virtualPath.kind === 'identity'
+    ? runtimeKernelIdentityStat(virtualPath.path, info)
+    : runtimeProcStat(virtualPath.path, info);
   return stat
     ? { kind: 'stat', path: virtualPath.path, stat }
     : { kind: 'error', reason: 'not-found', path: virtualPath.path };
@@ -771,12 +866,15 @@ export function runtimeKernelDirectoryTarget(
     };
   }
   if (readTarget.kind === 'proc-directory') {
+    const identityEntries = runtimeKernelIdentityDirEntries(readTarget.path);
     return {
       kind: 'directory',
       path: readTarget.path,
-      entries: (runtimeProcDirEntries(readTarget.path) ?? []).map((name) => ({
+      entries: (identityEntries ?? runtimeProcDirEntries(readTarget.path) ?? []).map((name) => ({
         name,
-        kind: runtimeProcEntryKind(`${readTarget.path}/${name}`) ?? 'file',
+        kind: identityEntries
+          ? runtimeKernelIdentityEntryKind(readTarget.path + '/' + name) ?? 'file'
+          : runtimeProcEntryKind(readTarget.path + '/' + name) ?? 'file',
       })),
     };
   }
@@ -1032,18 +1130,153 @@ export function runtimeMountInfoField(value: string): string {
   return value.replace(/\\/g, '\\134').replace(/ /g, '\\040').replace(/\t/g, '\\011').replace(/\n/g, '\\012');
 }
 
+export interface RuntimeKernelMount {
+  id: number;
+  parentId: number;
+  device: string;
+  root: string;
+  target: string;
+  type: string;
+  source: string;
+  options: readonly string[];
+  superOptions: readonly string[];
+  optionalFields?: readonly string[];
+}
+
+export function runtimeKernelMounts(info: RuntimeKernelInfo): RuntimeKernelMount[] {
+  const workspaceName = `name=${info.workspace.name}`;
+  const mounts: RuntimeKernelMount[] = [
+    {
+      id: 20,
+      parentId: 0,
+      device: '0:0',
+      root: '/',
+      target: '/',
+      type: 'tracefs',
+      source: 'tracekernel:system',
+      options: ['ro', 'relatime'],
+      superOptions: ['ro'],
+    },
+    {
+      id: 21,
+      parentId: 20,
+      device: '0:6',
+      root: '/',
+      target: '/tmp',
+      type: 'tracefs',
+      source: 'tracekernel:tmp',
+      options: ['rw', 'nosuid', 'nodev'],
+      superOptions: ['rw', 'mode=1777'],
+    },
+    {
+      id: 22,
+      parentId: 20,
+      device: '0:7',
+      root: '/',
+      target: '/var/tmp',
+      type: 'tracefs',
+      source: 'tracekernel:var-tmp',
+      options: ['rw', 'nosuid', 'nodev'],
+      superOptions: ['rw', 'mode=1777'],
+    },
+    {
+      id: 24,
+      parentId: 20,
+      device: '0:1',
+      root: '/',
+      target: info.workspaceRoot,
+      type: 'tracefs',
+      source: 'tracekernel:workspace',
+      options: ['rw', 'relatime'],
+      superOptions: ['rw', workspaceName],
+    },
+    {
+      id: 25,
+      parentId: 20,
+      device: '0:2',
+      root: '/',
+      target: '/dev',
+      type: 'tracefs',
+      source: 'tracekernel:dev',
+      options: ['rw', 'nosuid'],
+      superOptions: ['rw', 'mode=755'],
+    },
+    {
+      id: 26,
+      parentId: 20,
+      device: '0:3',
+      root: '/',
+      target: '/proc',
+      type: 'traceproc',
+      source: 'tracekernel:proc',
+      options: ['ro', 'nosuid', 'nodev', 'noexec'],
+      superOptions: ['ro'],
+    },
+    {
+      id: 28,
+      parentId: 20,
+      device: '0:4',
+      root: '/',
+      target: '/tracekernel',
+      type: 'tracefs',
+      source: 'tracekernel:control',
+      options: ['ro', 'nosuid', 'nodev', 'noexec'],
+      superOptions: ['ro'],
+    },
+    {
+      id: 29,
+      parentId: 20,
+      device: '0:5',
+      root: '/',
+      target: '/skills',
+      type: 'tracefs',
+      source: 'tracekernel:skills',
+      options: ['ro', 'nosuid', 'nodev', 'noexec'],
+      superOptions: ['ro'],
+    },
+  ];
+  if (info.workspaceAlias && info.workspaceAlias !== info.workspaceRoot) {
+    mounts.splice(1, 0, {
+      id: 27,
+      parentId: 20,
+      device: '0:1',
+      root: '/',
+      target: info.workspaceAlias,
+      type: 'tracefs',
+      source: 'tracekernel:workspace',
+      options: ['rw', 'relatime'],
+      superOptions: ['rw', workspaceName],
+      optionalFields: [`alias=${info.workspaceRoot}`],
+    });
+  }
+  return mounts;
+}
+
 export function runtimeProcMountInfo(info: RuntimeKernelInfo): string {
-  const workspaceRoot = runtimeMountInfoField(info.workspaceRoot);
-  const workspaceName = runtimeMountInfoField(info.workspace.name);
-  const aliasLine = info.workspaceAlias
-    ? `27 24 0:1 / ${runtimeMountInfoField(info.workspaceAlias)} rw,relatime alias=${workspaceRoot} - tracefs tracekernel:workspace rw,name=${workspaceName}`
-    : null;
-  return [
-    `24 0 0:1 / ${workspaceRoot} rw,relatime - tracefs tracekernel:workspace rw,name=${workspaceName}`,
-    aliasLine,
-    '25 0 0:2 / /dev rw,nosuid - tracefs tracekernel:dev rw,mode=755',
-    '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw',
-  ].filter((line): line is string => Boolean(line)).join('\n') + '\n';
+  return runtimeKernelMounts(info).map((mount) => [
+    mount.id,
+    mount.parentId,
+    mount.device,
+    runtimeMountInfoField(mount.root),
+    runtimeMountInfoField(mount.target),
+    mount.options.join(','),
+    ...(mount.optionalFields ?? []).map(runtimeMountInfoField),
+    '-',
+    mount.type,
+    runtimeMountInfoField(mount.source),
+    mount.superOptions.map(runtimeMountInfoField).join(','),
+  ].join(' ')).join('\n') + '\n';
+}
+
+export function runtimeProcMounts(info: RuntimeKernelInfo): string {
+  return runtimeKernelMounts(info).map((mount) => [
+    runtimeMountInfoField(mount.source),
+    runtimeMountInfoField(mount.target),
+    mount.type,
+    mount.options.map(runtimeMountInfoField).join(','),
+    '0',
+    '0',
+  ].join(' ')).join('\n') + '\n';
 }
 
 export function runtimeProcKernelVersion(info: RuntimeKernelInfo): string {
@@ -1051,7 +1284,7 @@ export function runtimeProcKernelVersion(info: RuntimeKernelInfo): string {
 }
 
 export function runtimeProcDirEntries(path: string): string[] | null {
-  if (path === '/proc') return ['kernel', 'self'];
+  if (path === '/proc') return ['kernel', 'mounts', 'self'];
   if (path === '/proc/kernel') return ['info', 'version'];
   if (path === '/proc/self') return ['mountinfo'];
   return null;
@@ -1059,14 +1292,15 @@ export function runtimeProcDirEntries(path: string): string[] | null {
 
 export function runtimeProcEntryKind(path: string): RuntimeKernelProcEntryKind | null {
   if (runtimeProcDirEntries(path)) return 'directory';
-  if (path === '/proc/kernel/info' || path === '/proc/kernel/version' || path === '/proc/self/mountinfo') return 'file';
+  if (path === '/proc/kernel/info' || path === '/proc/kernel/version' || path === '/proc/mounts' || path === '/proc/self/mountinfo') return 'file';
   return null;
 }
 
 export function runtimeKernelVirtualPaths(): string[] {
-  const devicePaths = ['/dev', ...RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => `/dev/${name}`)];
-  const procPaths = ['/proc', '/proc/kernel', '/proc/kernel/info', '/proc/kernel/version', '/proc/self', '/proc/self/mountinfo'];
-  return [...devicePaths, ...procPaths];
+  const devicePaths = ['/dev', '/dev/fd', ...RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => `/dev/${name}`)];
+  const procPaths = ['/proc', '/proc/kernel', '/proc/kernel/info', '/proc/kernel/version', '/proc/mounts', '/proc/self', '/proc/self/mountinfo'];
+  const identityPaths = ['/etc', ...RUNTIME_KERNEL_IDENTITY_FILE_NAMES.map((name) => '/etc/' + name)];
+  return [...devicePaths, ...identityPaths, ...procPaths];
 }
 
 export function runtimeKernelVirtualDevices(): RuntimeKernelDeviceInfo[] {
@@ -1086,10 +1320,33 @@ export function runtimeKernelVirtualDevices(): RuntimeKernelDeviceInfo[] {
 
 export function runtimeKernelVirtualFiles(info: RuntimeKernelInfo): RuntimeFile[] {
   return [
+    ...RUNTIME_KERNEL_IDENTITY_FILE_NAMES.map((name) => ({
+      path: '/etc/' + name,
+      contents: readRuntimeKernelIdentityFile('/etc/' + name, info),
+    })),
     { path: '/proc/kernel/info', contents: readRuntimeProcFile('/proc/kernel/info', info) },
     { path: '/proc/kernel/version', contents: readRuntimeProcFile('/proc/kernel/version', info) },
+    { path: '/proc/mounts', contents: readRuntimeProcFile('/proc/mounts', info) },
     { path: '/proc/self/mountinfo', contents: readRuntimeProcFile('/proc/self/mountinfo', info) },
   ];
+}
+
+export function runtimeKernelIdentityStat(path: string, info: RuntimeKernelInfo): RuntimeKernelVirtualStat | null {
+  const kind = runtimeKernelIdentityEntryKind(path);
+  if (!kind) return null;
+  const isDirectory = kind === 'directory';
+  const content = isDirectory ? '' : readRuntimeKernelIdentityFile(path, info);
+  return {
+    isFile: !isDirectory,
+    isDirectory,
+    isCharacterDevice: false,
+    mode: isDirectory ? 0o755 : 0o644,
+    size: new TextEncoder().encode(content).byteLength,
+    uid: 0,
+    gid: 0,
+    owner: 'root',
+    group: 'root',
+  };
 }
 
 export function publicRuntimeKernelVirtualFiles(info: RuntimeKernelInfo): RuntimeFile[] {
@@ -1099,6 +1356,7 @@ export function publicRuntimeKernelVirtualFiles(info: RuntimeKernelInfo): Runtim
 export function readRuntimeProcFile(path: string, info: RuntimeKernelInfo): string {
   if (path === '/proc/kernel/info') return runtimeProcInfoJson(info);
   if (path === '/proc/kernel/version') return runtimeProcKernelVersion(info);
+  if (path === '/proc/mounts') return runtimeProcMounts(info);
   if (path === '/proc/self/mountinfo') return runtimeProcMountInfo(info);
   if (runtimeProcDirEntries(path)) {
     throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), { code: 'EISDIR' });

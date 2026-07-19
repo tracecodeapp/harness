@@ -50,6 +50,7 @@ const EINVAL = 28;
 const EIO = 29;
 const EISDIR = 31;
 const EISCONN = 30;
+const ELOOP = 32;
 const ENOENT = 44;
 const ENOTCONN = 53;
 const ENOTDIR = 54;
@@ -62,6 +63,12 @@ const FILETYPE_CHARACTER_DEVICE = 2;
 const FILETYPE_DIRECTORY = 3;
 const FILETYPE_REGULAR_FILE = 4;
 const FILETYPE_SOCKET_STREAM = 6;
+const FILETYPE_SYMBOLIC_LINK = 7;
+const LOOKUPFLAGS_SYMLINK_FOLLOW = 1;
+const FSTFLAGS_ATIM = 1;
+const FSTFLAGS_ATIM_NOW = 2;
+const FSTFLAGS_MTIM = 4;
+const FSTFLAGS_MTIM_NOW = 8;
 const OFLAGS_CREAT = 1;
 const OFLAGS_DIRECTORY = 2;
 const OFLAGS_EXCL = 4;
@@ -322,6 +329,9 @@ function projectTruncateUtf8(value, maxBytes) {
 function projectFileChangeByteSize(change) {
   if (!change || typeof change !== 'object') return 0;
   let size = projectUtf8Bytes(change.path ?? '');
+  if (change.symlink === true && typeof change.target === 'string') {
+    size += projectUtf8Bytes(change.target);
+  }
   if (typeof change.contents === 'string') {
     size += change.encoding === 'base64'
       ? Math.ceil(change.contents.length * 3 / 4)
@@ -819,11 +829,16 @@ function parseTarEntries(buffer) {
 }
 
 class InMemoryFileSystem {
-  constructor() {
+  constructor(options = {}) {
     this.files = new Map();
     this.dirs = new Set(['/']);
+    this.symlinks = new Map();
+    this.metadata = new Map();
     this.readOnlyFiles = new Set();
     this.fileChangeObserver = null;
+    this.workspaceRoots = Array.isArray(options.workspaceRoots)
+      ? options.workspaceRoots.map(normalizeProjectRoot).filter(Boolean)
+      : [];
   }
 
   setFileChangeObserver(observer) {
@@ -831,15 +846,113 @@ class InMemoryFileSystem {
   }
 
   clone() {
-    const next = new InMemoryFileSystem();
+    const next = new InMemoryFileSystem({ workspaceRoots: this.workspaceRoots });
     next.dirs = new Set(this.dirs);
     next.files = new Map([...this.files.entries()].map(([key, value]) => [key, cloneBytes(value)]));
+    next.symlinks = new Map(this.symlinks);
+    next.metadata = new Map([...this.metadata.entries()].map(([key, value]) => [key, { ...value }]));
     next.readOnlyFiles = new Set(this.readOnlyFiles);
     return next;
   }
 
-  addDirectory(pathname) {
-    const normalized = normalizePath(pathname);
+  mapAbsoluteWorkspaceTarget(target) {
+    for (const root of this.workspaceRoots) {
+      if (target === root) return '/';
+      if (root !== '/' && target.startsWith(`${root}/`)) {
+        return normalizePath(target.slice(root.length));
+      }
+    }
+    return null;
+  }
+
+  isKnownVirtualTarget(target) {
+    const normalized = normalizePath(target);
+    if (normalized === '/proc' || normalized.startsWith('/proc/')) return true;
+    if (normalized === '/dev' || normalized.startsWith('/dev/')) return true;
+    for (const path of this.readOnlyFiles) {
+      if (normalized === path || path.startsWith(`${normalized}/`)) return true;
+    }
+    return false;
+  }
+
+  isProtectedNamespaceTarget(target) {
+    const normalized = normalizePath(target);
+    if (['/dev', '/proc', '/etc'].some((root) => normalized === root || normalized.startsWith(`${root}/`))) return true;
+    for (const path of this.readOnlyFiles) {
+      const slash = path.indexOf('/', 1);
+      const root = slash < 0 ? path : path.slice(0, slash);
+      if (normalized === root || normalized.startsWith(`${root}/`)) return true;
+    }
+    return false;
+  }
+
+  validatedSymlinkTarget(linkPath, targetValue) {
+    const target = String(targetValue).replace(/\\/g, '/');
+    if (!target || target.includes('\0')) {
+      throw Object.assign(new Error('Symbolic-link target must not be empty or contain NUL bytes.'), { code: 'ENOENT' });
+    }
+    if (target.startsWith('/')) {
+      const workspaceTarget = this.mapAbsoluteWorkspaceTarget(target);
+      if (workspaceTarget !== null) {
+        if (this.isProtectedNamespaceTarget(workspaceTarget)) {
+          throw Object.assign(new Error(`Symbolic-link target collides with a protected namespace: ${target}`), { code: 'EACCES' });
+        }
+        return workspaceTarget;
+      }
+      if (this.isKnownVirtualTarget(target)) return normalizePath(target);
+      throw Object.assign(new Error(`Symbolic-link target escapes the workspace: ${target}`), { code: 'EACCES' });
+    }
+
+    const parts = dirname(linkPath).split('/').filter(Boolean);
+    for (const part of target.replace(/\\/g, '/').split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..') {
+        if (parts.length === 0) {
+          throw Object.assign(new Error(`Symbolic-link target escapes the workspace: ${target}`), { code: 'EACCES' });
+        }
+        parts.pop();
+        continue;
+      }
+      parts.push(part);
+    }
+    const resolved = `/${parts.join('/')}`;
+    if (this.isProtectedNamespaceTarget(resolved)) {
+      throw Object.assign(new Error(`Relative symbolic-link target collides with a protected namespace: ${target}`), { code: 'EACCES' });
+    }
+    return resolved;
+  }
+
+  resolvePath(pathname, followFinal = true) {
+    let normalized = normalizePath(pathname);
+    let followed = 0;
+    while (true) {
+      const parts = normalized.split('/').filter(Boolean);
+      let changed = false;
+      for (let index = 0; index < parts.length; index += 1) {
+        const candidate = `/${parts.slice(0, index + 1).join('/')}`;
+        if (!this.symlinks.has(candidate) || (!followFinal && index === parts.length - 1)) continue;
+        followed += 1;
+        if (followed > 40) {
+          throw Object.assign(new Error(`Too many levels of symbolic links: ${pathname}`), { code: 'ELOOP' });
+        }
+        const target = this.symlinks.get(candidate);
+        const targetPath = this.validatedSymlinkTarget(candidate, target);
+        const suffix = parts.slice(index + 1).join('/');
+        normalized = suffix ? resolveAt(targetPath, suffix) : normalizePath(targetPath);
+        changed = true;
+        break;
+      }
+      if (!changed) return normalized;
+    }
+  }
+
+  lpath(pathname) {
+    return this.resolvePath(pathname, false);
+  }
+
+  addDirectory(pathname, metadata) {
+    const raw = normalizePath(pathname);
+    const normalized = raw === '/' ? '/' : resolveAt(this.resolvePath(dirname(raw)), basename(raw));
     if (normalized === '/') {
       this.dirs.add('/');
       return;
@@ -847,62 +960,142 @@ class InMemoryFileSystem {
     this.addDirectory(dirname(normalized));
     const existed = this.dirs.has(normalized);
     this.dirs.add(normalized);
-    if (!existed) this.fileChangeObserver?.({ path: normalized, directory: true });
+    if (!existed) {
+      const nowMs = Date.now();
+      this.metadata.set(normalized, { mode: 0o755, atimeMs: nowMs, mtimeMs: nowMs });
+      this.touchParentDirectory(normalized);
+    }
+    if (metadata && typeof metadata === 'object') this.setMetadata(normalized, metadata, false);
+    if (!existed) this.fileChangeObserver?.({ path: normalized, directory: true, metadata: { ...this.getMetadata(normalized) } });
   }
 
-  addFile(pathname, contents) {
-    const normalized = normalizePath(pathname);
+  addFile(pathname, contents, metadata) {
+    const normalized = this.resolvePath(pathname);
     this.addDirectory(dirname(normalized));
+    const existed = this.files.has(normalized);
+    this.symlinks.delete(normalized);
     this.files.set(normalized, contents instanceof Uint8Array ? cloneBytes(contents) : encodeUtf8(String(contents)));
+    if (!existed) {
+      const nowMs = Date.now();
+      this.metadata.set(normalized, { mode: 0o644, atimeMs: nowMs, mtimeMs: nowMs });
+      this.touchParentDirectory(normalized);
+    }
+    if (metadata && typeof metadata === 'object') this.setMetadata(normalized, metadata);
+  }
+
+  addSymlink(pathname, target) {
+    const raw = normalizePath(pathname);
+    const normalized = resolveAt(this.resolvePath(dirname(raw)), basename(raw));
+    const normalizedTarget = String(target).replace(/\\/g, '/');
+    this.validatedSymlinkTarget(normalized, normalizedTarget);
+    this.addDirectory(dirname(normalized));
+    this.files.delete(normalized);
+    this.dirs.delete(normalized);
+    this.metadata.delete(normalized);
+    this.symlinks.set(normalized, normalizedTarget);
+    this.touchParentDirectory(normalized);
+    this.fileChangeObserver?.({ path: normalized, symlink: true, target: normalizedTarget });
   }
 
   addReadOnlyFile(pathname, contents) {
-    const normalized = normalizePath(pathname);
+    const normalized = this.resolvePath(pathname);
     this.addFile(normalized, contents);
     this.readOnlyFiles.add(normalized);
   }
 
   isReadOnly(pathname) {
-    const normalized = normalizePath(pathname);
+    const normalized = this.resolvePath(pathname);
     return this.readOnlyFiles.has(normalized) || isRuntimeProcPath(normalized);
   }
 
+  isEntryReadOnly(pathname) {
+    const normalized = this.lpath(pathname);
+    return this.readOnlyFiles.has(normalized) || isRuntimeProcPath(normalized);
+  }
+
+  lexists(pathname) {
+    const normalized = this.lpath(pathname);
+    return this.files.has(normalized) || this.dirs.has(normalized) || this.symlinks.has(normalized);
+  }
+
   exists(pathname) {
-    const normalized = normalizePath(pathname);
+    const normalized = this.resolvePath(pathname);
     return this.files.has(normalized) || this.dirs.has(normalized);
   }
 
+  isSymlink(pathname) {
+    return this.symlinks.has(this.lpath(pathname));
+  }
+
   isDirectory(pathname) {
-    return this.dirs.has(normalizePath(pathname));
+    return this.dirs.has(this.resolvePath(pathname));
   }
 
   isFile(pathname) {
-    return this.files.has(normalizePath(pathname));
+    return this.files.has(this.resolvePath(pathname));
+  }
+
+  readlink(pathname) {
+    const normalized = this.lpath(pathname);
+    if (!this.symlinks.has(normalized)) {
+      const code = this.files.has(normalized) || this.dirs.has(normalized) ? 'EINVAL' : 'ENOENT';
+      throw Object.assign(new Error(`Invalid argument: ${normalized}`), { code });
+    }
+    return this.symlinks.get(normalized);
+  }
+
+  setMetadata(pathname, values, followFinal = true) {
+    const normalized = followFinal ? this.resolvePath(pathname) : this.lpath(pathname);
+    const current = this.metadata.get(normalized) || {};
+    const next = { ...current };
+    if (values.mode !== undefined) next.mode = Number(values.mode) & 0o7777;
+    if (values.atimeMs !== undefined) next.atimeMs = Number(values.atimeMs);
+    if (values.mtimeMs !== undefined) next.mtimeMs = Number(values.mtimeMs);
+    if (Object.keys(next).length > 0) this.metadata.set(normalized, next);
+    else this.metadata.delete(normalized);
+  }
+
+  touchParentDirectory(pathname) {
+    const parent = dirname(pathname);
+    if (!this.dirs.has(parent)) return;
+    const current = this.metadata.get(parent) || { mode: 0o755, atimeMs: 0, mtimeMs: 0 };
+    this.metadata.set(parent, { ...current, mtimeMs: Date.now() });
+  }
+
+  getMetadata(pathname, followFinal = true) {
+    const normalized = followFinal ? this.resolvePath(pathname) : this.lpath(pathname);
+    return this.metadata.get(normalized) || {};
   }
 
   readFile(pathname) {
-    const normalized = normalizePath(pathname);
+    const normalized = this.resolvePath(pathname);
     const file = this.files.get(normalized);
     if (!file) throw new Error(`File not found: ${normalized}`);
     return file;
   }
 
   writeFile(pathname, contents) {
-    const normalized = normalizePath(pathname);
+    const normalized = this.resolvePath(pathname);
     if (this.isReadOnly(normalized)) throw Object.assign(new Error(`Read-only file system: ${normalized}`), { code: 'EROFS' });
     const bytes = contents instanceof Uint8Array ? cloneBytes(contents) : encodeUtf8(String(contents));
     this.addDirectory(dirname(normalized));
+    const existed = this.files.has(normalized);
     this.files.set(normalized, bytes);
-    this.fileChangeObserver?.({ path: normalized, bytes });
+    const nowMs = Date.now();
+    const current = this.metadata.get(normalized) || { mode: 0o644, atimeMs: nowMs };
+    this.metadata.set(normalized, { ...current, mtimeMs: nowMs });
+    if (!existed) this.touchParentDirectory(normalized);
+    this.fileChangeObserver?.({ path: normalized, bytes, metadata: { ...this.getMetadata(normalized) } });
   }
 
   link(oldPathname, newPathname) {
-    const oldPath = normalizePath(oldPathname);
-    const newPath = normalizePath(newPathname);
-    if (this.isReadOnly(newPath)) return EROFS;
+    if (this.isSymlink(oldPathname)) return ENOTSUP;
+    const oldPath = this.resolvePath(oldPathname);
+    const newPath = this.lpath(newPathname);
+    if (this.isEntryReadOnly(newPath)) return EROFS;
     if (this.dirs.has(oldPath)) return EISDIR;
     if (!this.files.has(oldPath)) return ENOENT;
-    if (this.files.has(newPath) || this.dirs.has(newPath)) return EEXIST;
+    if (this.lexists(newPath)) return EEXIST;
     this.writeFile(newPath, this.readFile(oldPath));
     return ESUCCESS;
   }
@@ -915,29 +1108,44 @@ class InMemoryFileSystem {
   }
 
   emitPathSnapshot(pathname) {
-    const normalized = normalizePath(pathname);
+    const raw = this.lpath(pathname);
+    if (this.symlinks.has(raw)) {
+      this.fileChangeObserver?.({ path: raw, symlink: true, target: this.symlinks.get(raw) });
+      return;
+    }
+    const normalized = this.resolvePath(pathname);
     if (this.files.has(normalized)) {
-      this.fileChangeObserver?.({ path: normalized, bytes: this.readFile(normalized) });
+      this.fileChangeObserver?.({ path: normalized, bytes: this.readFile(normalized), metadata: { ...this.getMetadata(normalized) } });
       return;
     }
     if (this.dirs.has(normalized)) {
-      this.fileChangeObserver?.({ path: normalized, directory: true });
+      this.fileChangeObserver?.({ path: normalized, directory: true, metadata: { ...this.getMetadata(normalized) } });
     }
   }
 
   unlink(pathname) {
-    const normalized = normalizePath(pathname);
-    if (this.isReadOnly(normalized)) throw Object.assign(new Error(`Read-only file system: ${normalized}`), { code: 'EROFS' });
+    const normalized = this.lpath(pathname);
+    if (this.isEntryReadOnly(normalized)) throw Object.assign(new Error(`Read-only file system: ${normalized}`), { code: 'EROFS' });
     if (this.dirs.has(normalized)) return EISDIR;
+    if (this.symlinks.delete(normalized)) {
+      this.metadata.delete(normalized);
+      this.touchParentDirectory(normalized);
+      this.fileChangeObserver?.({ path: normalized, deleted: true });
+      return ESUCCESS;
+    }
     if (!this.files.has(normalized)) return ENOENT;
     this.files.delete(normalized);
+    this.metadata.delete(normalized);
     this.readOnlyFiles.delete(normalized);
+    this.touchParentDirectory(normalized);
     this.fileChangeObserver?.({ path: normalized, deleted: true });
     return ESUCCESS;
   }
 
   removeDirectory(pathname) {
-    const normalized = normalizePath(pathname);
+    const raw = this.lpath(pathname);
+    if (this.symlinks.has(raw)) return ENOTDIR;
+    const normalized = this.resolvePath(pathname);
     if (normalized === '/' || !this.dirs.has(normalized)) return ENOENT;
     const prefix = `${normalized}/`;
     for (const dir of this.dirs) {
@@ -946,28 +1154,45 @@ class InMemoryFileSystem {
     for (const file of this.files.keys()) {
       if (file.startsWith(prefix)) return ENOTEMPTY;
     }
+    for (const link of this.symlinks.keys()) {
+      if (link.startsWith(prefix)) return ENOTEMPTY;
+    }
     this.dirs.delete(normalized);
+    this.metadata.delete(normalized);
+    this.touchParentDirectory(normalized);
     this.fileChangeObserver?.({ path: normalized, directory: true, deleted: true });
     return ESUCCESS;
   }
 
   rename(oldPathname, newPathname) {
-    const oldPath = normalizePath(oldPathname);
-    const newPath = normalizePath(newPathname);
-    if (oldPath === newPath) return this.exists(oldPath) ? ESUCCESS : ENOENT;
-    if (this.isReadOnly(oldPath) || this.isReadOnly(newPath)) {
+    const oldPath = this.lpath(oldPathname);
+    const newPath = this.lpath(newPathname);
+    if (oldPath === newPath) return this.lexists(oldPath) ? ESUCCESS : ENOENT;
+    if (this.isEntryReadOnly(oldPath) || this.isEntryReadOnly(newPath)) {
       throw Object.assign(new Error(`Read-only file system: ${oldPath}`), { code: 'EROFS' });
+    }
+    if (this.symlinks.has(oldPath)) {
+      if (this.dirs.has(newPath)) return EISDIR;
+      const target = this.symlinks.get(oldPath);
+      if (this.files.has(newPath)) this.unlink(newPath);
+      else if (this.symlinks.has(newPath)) this.unlink(newPath);
+      this.addSymlink(newPath, target);
+      this.unlink(oldPath);
+      return ESUCCESS;
     }
     if (this.files.has(oldPath)) {
       if (this.dirs.has(newPath)) return EISDIR;
+      if (this.symlinks.has(newPath)) this.unlink(newPath);
+      const metadata = this.getMetadata(oldPath);
       this.writeFile(newPath, this.readFile(oldPath));
+      this.setMetadata(newPath, metadata);
       this.unlink(oldPath);
       return ESUCCESS;
     }
     if (!this.dirs.has(oldPath)) return ENOENT;
     if (oldPath === '/') return EINVAL;
     if (newPath.startsWith(`${oldPath}/`)) return EINVAL;
-    if (this.files.has(newPath)) return ENOTDIR;
+    if (this.files.has(newPath) || this.symlinks.has(newPath)) return ENOTDIR;
     if (this.dirs.has(newPath)) return EEXIST;
     const oldPrefix = `${oldPath}/`;
     const newPrefix = `${newPath}/`;
@@ -975,6 +1200,8 @@ class InMemoryFileSystem {
       .filter((path) => path === oldPath || path.startsWith(oldPrefix))
       .sort((left, right) => left.length - right.length);
     const files = [...this.files.entries()].filter(([path]) => path.startsWith(oldPrefix));
+    const links = [...this.symlinks.entries()].filter(([path]) => path.startsWith(oldPrefix));
+    const metadata = [...this.metadata.entries()].filter(([path]) => path === oldPath || path.startsWith(oldPrefix));
     for (const directory of directories) {
       const target = directory === oldPath ? newPath : `${newPrefix}${directory.slice(oldPrefix.length)}`;
       this.addDirectory(target);
@@ -983,18 +1210,26 @@ class InMemoryFileSystem {
       const target = `${newPrefix}${file.slice(oldPrefix.length)}`;
       this.writeFile(target, bytes);
     }
-    for (const [file] of files) {
-      this.unlink(file);
+    for (const [link, targetValue] of links) {
+      const target = `${newPrefix}${link.slice(oldPrefix.length)}`;
+      this.addSymlink(target, targetValue);
     }
+    for (const [source, values] of metadata) {
+      const target = source === oldPath ? newPath : `${newPrefix}${source.slice(oldPrefix.length)}`;
+      this.setMetadata(target, values);
+    }
+    for (const [file] of files) this.unlink(file);
+    for (const [link] of links) this.unlink(link);
     for (const directory of directories.sort((left, right) => right.length - left.length)) {
       this.dirs.delete(directory);
+      this.metadata.delete(directory);
       this.fileChangeObserver?.({ path: directory, directory: true, deleted: true });
     }
     return ESUCCESS;
   }
 
   listDirectory(pathname) {
-    const normalized = normalizePath(pathname);
+    const normalized = this.resolvePath(pathname);
     const prefix = normalized === '/' ? '/' : `${normalized}/`;
     const names = new Set();
     for (const dir of this.dirs) {
@@ -1005,6 +1240,11 @@ class InMemoryFileSystem {
     for (const file of this.files.keys()) {
       if (!file.startsWith(prefix)) continue;
       const rest = file.slice(prefix.length);
+      if (rest && !rest.includes('/')) names.add(rest);
+    }
+    for (const link of this.symlinks.keys()) {
+      if (!link.startsWith(prefix)) continue;
+      const rest = link.slice(prefix.length);
       if (rest && !rest.includes('/')) names.add(rest);
     }
     return [...names].sort();
@@ -1529,24 +1769,37 @@ class WasiProcess {
   }
 
   parentDirectoryErrno(pathname) {
-    const parent = dirname(pathname);
-    if (parent === '/') return null;
-    if (this.fs.isFile(parent)) return ENOTDIR;
-    if (!this.fs.isDirectory(parent)) return ENOENT;
-    return null;
+    try {
+      const parent = dirname(pathname);
+      if (parent === '/') return null;
+      if (this.fs.isFile(parent)) return ENOTDIR;
+      if (!this.fs.isDirectory(parent)) return ENOENT;
+      return null;
+    } catch (error) {
+      return error?.code === 'ELOOP' ? ELOOP : EIO;
+    }
   }
 
-  filetypeForPath(pathname) {
+  filetypeForPath(pathname, followFinal = true) {
     const normalized = normalizePath(pathname);
     const target = this.kernelVirtualPathTarget(normalized);
     if (target.kind === 'device-directory') return FILETYPE_DIRECTORY;
     if (target.kind === 'device-file') return FILETYPE_CHARACTER_DEVICE;
+    if (!followFinal && this.fs.isSymlink(normalized)) return FILETYPE_SYMBOLIC_LINK;
     if (this.fs.isDirectory(normalized)) return FILETYPE_DIRECTORY;
     return FILETYPE_REGULAR_FILE;
   }
 
   openFile(pathname, options = {}) {
-    const normalized = normalizePath(pathname);
+    const requestedPath = normalizePath(pathname);
+    const pathWasSymlink = this.fs.isSymlink(requestedPath);
+    if (options.create && options.exclusive && this.fs.lexists(requestedPath)) return -EEXIST;
+    let normalized;
+    try {
+      normalized = this.fs.resolvePath(requestedPath);
+    } catch (error) {
+      return error?.code === 'ELOOP' ? -ELOOP : -EIO;
+    }
     const target = this.kernelVirtualPathTarget(normalized);
     if (target.kind === 'device-directory') {
       return options.directory ? this.allocateFd({ kind: 'dir', path: normalized, offset: 0, readable: true, writable: false }) : -EISDIR;
@@ -1574,7 +1827,7 @@ class WasiProcess {
       const parentErrno = this.parentDirectoryErrno(normalized);
       if (parentErrno !== null) return -parentErrno;
       this.fs.writeFile(normalized, new Uint8Array());
-    } else if (options.exclusive) {
+    } else if (options.exclusive && !pathWasSymlink) {
       return -EEXIST;
     }
 
@@ -1597,8 +1850,26 @@ class WasiProcess {
     return fd;
   }
 
-  writeFilestat(pathname, outPtr) {
-    const normalized = normalizePath(pathname);
+  writeFilestat(pathname, outPtr, followFinal = true) {
+    const requestedPath = normalizePath(pathname);
+    if (!followFinal && this.fs.isSymlink(requestedPath)) {
+      const normalized = this.fs.lpath(requestedPath);
+      this.mem.writeU64(outPtr, 1);
+      this.mem.writeU64(outPtr + 8, inodeForPath(normalized));
+      this.mem.writeU8(outPtr + 16, FILETYPE_SYMBOLIC_LINK);
+      this.mem.writeU64(outPtr + 24, this.filestatSizeOffset === 24 ? BigInt(encodeUtf8(this.fs.readlink(normalized)).length) : 1);
+      this.mem.writeU64(outPtr + 32, BigInt(encodeUtf8(this.fs.readlink(normalized)).length));
+      this.mem.writeU64(outPtr + 40, 0);
+      this.mem.writeU64(outPtr + 48, 0);
+      this.mem.writeU64(outPtr + 56, 0);
+      return ESUCCESS;
+    }
+    let normalized;
+    try {
+      normalized = this.fs.resolvePath(requestedPath);
+    } catch (error) {
+      return error?.code === 'ELOOP' ? ELOOP : EIO;
+    }
     const target = this.kernelVirtualPathTarget(normalized);
     if (target.kind === 'device-directory' || target.kind === 'device-file') {
       this.mem.writeU64(outPtr, 1);
@@ -1616,14 +1887,42 @@ class WasiProcess {
     const isFile = this.fs.isFile(normalized);
     if (!isDir && !isFile) return ENOENT;
     const size = isFile ? this.fs.readFile(normalized).length : 0;
+    const metadata = this.fs.getMetadata(normalized);
+    const atimeNs = BigInt(Math.max(0, Math.trunc(Number(metadata.atimeMs || 0) * 1_000_000)));
+    const mtimeNs = BigInt(Math.max(0, Math.trunc(Number(metadata.mtimeMs || 0) * 1_000_000)));
     this.mem.writeU64(outPtr, 1);
     this.mem.writeU64(outPtr + 8, inodeForPath(normalized));
     this.mem.writeU8(outPtr + 16, isDir ? FILETYPE_DIRECTORY : FILETYPE_REGULAR_FILE);
     this.mem.writeU64(outPtr + 24, this.filestatSizeOffset === 24 ? BigInt(size) : 1);
     this.mem.writeU64(outPtr + 32, BigInt(size));
-    this.mem.writeU64(outPtr + 40, 0);
-    this.mem.writeU64(outPtr + 48, 0);
-    this.mem.writeU64(outPtr + 56, 0);
+    this.mem.writeU64(outPtr + 40, atimeNs);
+    this.mem.writeU64(outPtr + 48, mtimeNs);
+    this.mem.writeU64(outPtr + 56, mtimeNs);
+    return ESUCCESS;
+  }
+
+  applyFilestatTimes(pathname, atime, mtime, flags, followFinal = true) {
+    if ((flags & FSTFLAGS_ATIM) && (flags & FSTFLAGS_ATIM_NOW)) return EINVAL;
+    if ((flags & FSTFLAGS_MTIM) && (flags & FSTFLAGS_MTIM_NOW)) return EINVAL;
+    let normalized;
+    try {
+      normalized = followFinal ? this.fs.resolvePath(pathname) : this.fs.lpath(pathname);
+    } catch (error) {
+      return error?.code === 'ELOOP' ? ELOOP : EIO;
+    }
+    if (!followFinal && this.fs.isSymlink(normalized)) return ENOTSUP;
+    if (!this.fs.exists(normalized)) return ENOENT;
+    const current = this.fs.getMetadata(normalized);
+    const nowMs = Date.now();
+    const next = {};
+    if (flags & FSTFLAGS_ATIM) next.atimeMs = Number(atime) / 1_000_000;
+    else if (flags & FSTFLAGS_ATIM_NOW) next.atimeMs = nowMs;
+    else if (current.atimeMs !== undefined) next.atimeMs = current.atimeMs;
+    if (flags & FSTFLAGS_MTIM) next.mtimeMs = Number(mtime) / 1_000_000;
+    else if (flags & FSTFLAGS_MTIM_NOW) next.mtimeMs = nowMs;
+    else if (current.mtimeMs !== undefined) next.mtimeMs = current.mtimeMs;
+    this.fs.setMetadata(normalized, next);
+    this.fs.emitPathSnapshot(normalized);
     return ESUCCESS;
   }
 
@@ -1914,15 +2213,13 @@ class WasiProcess {
     return ESUCCESS;
   }
 
-  fd_filestat_set_times(fd) {
+  fd_filestat_set_times(fd, atime, mtime, flags) {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
     if (entry.kind === 'stdio') return EROFS;
     const virtualErrno = this.kernelVirtualMutationErrno(entry.path);
     if (virtualErrno !== null) return virtualErrno;
-    if (!this.fs.exists(entry.path)) return ENOENT;
-    this.fs.emitPathSnapshot(entry.path);
-    return ESUCCESS;
+    return this.applyFilestatTimes(entry.path, atime, mtime, Number(flags));
   }
 
   fd_allocate(fd, offset, length) {
@@ -1978,7 +2275,7 @@ class WasiProcess {
       this.mem.writeU64(bufPtr + offset, BigInt(index + 1));
       this.mem.writeU64(bufPtr + offset + 8, BigInt(index + 1));
       this.mem.writeU32(bufPtr + offset + 16, nameBytes.length);
-      this.mem.writeU8(bufPtr + offset + 20, this.filetypeForPath(childPath));
+      this.mem.writeU8(bufPtr + offset + 20, this.filetypeForPath(childPath, false));
       this.mem.writeBytes(bufPtr + offset + 24, nameBytes);
       offset += entrySize;
     }
@@ -2003,20 +2300,18 @@ class WasiProcess {
     return ESUCCESS;
   }
 
-  path_filestat_get(dirfd, _flags, pathPtr, pathLen, outPtr) {
+  path_filestat_get(dirfd, flags, pathPtr, pathLen, outPtr) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    return this.writeFilestat(pathname, outPtr);
+    return this.writeFilestat(pathname, outPtr, Boolean(flags & LOOKUPFLAGS_SYMLINK_FOLLOW));
   }
 
-  path_filestat_set_times(dirfd, _flags, pathPtr, pathLen) {
+  path_filestat_set_times(dirfd, lookupFlags, pathPtr, pathLen, atime, mtime, flags) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
     const virtualErrno = this.kernelVirtualMutationErrno(pathname);
     if (virtualErrno !== null) return virtualErrno;
-    if (!this.fs.exists(pathname)) return ENOENT;
-    this.fs.emitPathSnapshot(pathname);
-    return ESUCCESS;
+    return this.applyFilestatTimes(pathname, atime, mtime, Number(flags), Boolean(lookupFlags & LOOKUPFLAGS_SYMLINK_FOLLOW));
   }
 
   path_create_directory(dirfd, pathPtr, pathLen) {
@@ -2024,7 +2319,7 @@ class WasiProcess {
     if (!pathname) return EBADF;
     const virtualErrno = this.kernelVirtualMutationErrno(pathname);
     if (virtualErrno !== null) return virtualErrno;
-    if (this.fs.exists(pathname)) return EEXIST;
+    if (this.fs.lexists(pathname)) return EEXIST;
     const parentErrno = this.parentDirectoryErrno(pathname);
     if (parentErrno !== null) return parentErrno;
     this.fs.addDirectory(pathname);
@@ -2036,7 +2331,11 @@ class WasiProcess {
     if (!pathname) return EBADF;
     const virtualErrno = this.kernelVirtualMutationErrno(pathname);
     if (virtualErrno !== null) return virtualErrno;
-    return this.fs.unlink(pathname);
+    try {
+      return this.fs.unlink(pathname);
+    } catch (error) {
+      return error?.code === 'ELOOP' ? ELOOP : error?.code === 'EROFS' ? EROFS : EIO;
+    }
   }
 
   path_remove_directory(dirfd, pathPtr, pathLen) {
@@ -2044,8 +2343,12 @@ class WasiProcess {
     if (!pathname) return EBADF;
     const virtualErrno = this.kernelVirtualMutationErrno(pathname, ENOTDIR);
     if (virtualErrno !== null) return virtualErrno;
-    if (this.fs.isFile(pathname)) return ENOTDIR;
-    return this.fs.removeDirectory(pathname);
+    try {
+      if (this.fs.isFile(pathname)) return ENOTDIR;
+      return this.fs.removeDirectory(pathname);
+    } catch (error) {
+      return error?.code === 'ELOOP' ? ELOOP : error?.code === 'EROFS' ? EROFS : EIO;
+    }
   }
 
   path_rename(oldFd, oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
@@ -2056,24 +2359,51 @@ class WasiProcess {
     if (oldVirtualErrno !== null) return oldVirtualErrno;
     const newVirtualErrno = this.kernelVirtualMutationErrno(newPath);
     if (newVirtualErrno !== null) return newVirtualErrno;
-    const parentErrno = this.parentDirectoryErrno(newPath);
-    if (parentErrno !== null) return parentErrno;
-    return this.fs.rename(oldPath, newPath);
+    try {
+      const parentErrno = this.parentDirectoryErrno(newPath);
+      if (parentErrno !== null) return parentErrno;
+      return this.fs.rename(oldPath, newPath);
+    } catch (error) {
+      return error?.code === 'ELOOP' ? ELOOP : error?.code === 'EROFS' ? EROFS : EIO;
+    }
   }
 
-  path_readlink(dirfd, pathPtr, pathLen, _bufPtr, _bufLen, bufUsedOut) {
+  path_readlink(dirfd, pathPtr, pathLen, bufPtr, bufLen, bufUsedOut) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    if (bufUsedOut) this.mem.writeU32(bufUsedOut, 0);
-    return EINVAL;
+    try {
+      const targetBytes = encodeUtf8(this.fs.readlink(pathname));
+      const written = Math.min(bufLen, targetBytes.length);
+      if (written > 0) this.mem.writeBytes(bufPtr, targetBytes.subarray(0, written));
+      if (bufUsedOut) this.mem.writeU32(bufUsedOut, written);
+      return ESUCCESS;
+    } catch (error) {
+      if (bufUsedOut) this.mem.writeU32(bufUsedOut, 0);
+      return error?.code === 'ELOOP' ? ELOOP : error?.code === 'ENOENT' ? ENOENT : EINVAL;
+    }
   }
 
-  path_symlink(_oldPathPtr, _oldPathLen, dirfd, newPathPtr, newPathLen) {
+  path_symlink(oldPathPtr, oldPathLen, dirfd, newPathPtr, newPathLen) {
     const newPath = this.resolveFdPath(dirfd, newPathPtr, newPathLen);
     if (!newPath) return EBADF;
     const virtualErrno = this.kernelVirtualMutationErrno(newPath);
     if (virtualErrno !== null) return virtualErrno;
-    return ENOTSUP;
+    const parentErrno = this.parentDirectoryErrno(newPath);
+    if (parentErrno !== null) return parentErrno;
+    if (this.fs.lexists(newPath)) return EEXIST;
+    const target = this.mem.readString(oldPathPtr, oldPathLen);
+    try {
+      this.fs.addSymlink(newPath, target);
+      return ESUCCESS;
+    } catch (error) {
+      return error?.code === 'ELOOP'
+        ? ELOOP
+        : error?.code === 'EACCES'
+          ? EACCES
+          : error?.code === 'ENOENT'
+            ? ENOENT
+            : EIO;
+    }
   }
 
   path_link(oldFd, _oldFlags, oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
@@ -9494,6 +9824,19 @@ function relativeProjectPath(pathname, context) {
   return parts.join('/');
 }
 
+function assertCppProjectWorkspaceNamespace(fs, pathname) {
+  const path = String(pathname || '').replace(/^\/+/, '');
+  const absolutePath = `/${path}`;
+  if (fs.isProtectedNamespaceTarget(absolutePath)) {
+    const root = path.split('/')[0];
+    throw Object.assign(
+      new Error(`C++ browser project path collides with the TraceKernel /${root} namespace: ${pathname}`),
+      { code: 'EACCES' }
+    );
+  }
+  return path;
+}
+
 function relativeProjectOperandPath(pathname, context) {
   const raw = String(pathname || '').replace(/\\/g, '/');
   const stripped = stripProjectWorkspaceRoot(context, raw);
@@ -9747,17 +10090,25 @@ function projectCompileArgs(request) {
 }
 
 function createProjectRuntimeFs(project) {
-  const fs = new InMemoryFileSystem();
+  const fs = new InMemoryFileSystem({ workspaceRoots: projectWorkspaceRoots(project) });
+  for (const file of projectKernelVirtualFiles(project)) {
+    fs.addReadOnlyFile(file.path, file.contents);
+  }
   for (const directory of project?.directories || []) {
-    const path = relativeProjectPath(directory, project);
+    const path = assertCppProjectWorkspaceNamespace(fs, relativeProjectPath(directory, project));
     if (path) fs.addDirectory(`/${path}`);
   }
   for (const file of project?.files || []) {
-    const path = relativeProjectPath(file.path, project);
-    if (path) fs.addFile(`/${path}`, projectPathBytes(file));
+    const path = assertCppProjectWorkspaceNamespace(fs, relativeProjectPath(file.path, project));
+    if (path) fs.addFile(`/${path}`, projectPathBytes(file), file);
   }
-  for (const file of projectKernelVirtualFiles(project)) {
-    fs.addReadOnlyFile(file.path, file.contents);
+  for (const symlink of project?.symlinks || []) {
+    const path = assertCppProjectWorkspaceNamespace(fs, relativeProjectPath(symlink?.path, project));
+    if (path && typeof symlink?.target === 'string') fs.addSymlink(`/${path}`, symlink.target);
+  }
+  for (const directory of project?.directoryMetadata || []) {
+    const path = assertCppProjectWorkspaceNamespace(fs, relativeProjectPath(directory?.path, project));
+    if (path && fs.isDirectory(`/${path}`)) fs.setMetadata(`/${path}`, directory);
   }
   return fs;
 }
@@ -9767,7 +10118,7 @@ function snapshotProjectFs(fs) {
   for (const [path, bytes] of fs.files.entries()) {
     if (isRuntimeProcPath(path)) continue;
     const relativePath = relativeProjectPath(path);
-    if (relativePath) files.set(relativePath, cloneBytes(bytes));
+    if (relativePath) files.set(relativePath, { bytes: cloneBytes(bytes), metadata: { ...fs.getMetadata(path) } });
   }
   const directories = new Set();
   for (const path of fs.dirs) {
@@ -9775,15 +10126,28 @@ function snapshotProjectFs(fs) {
     const relativePath = relativeProjectPath(path);
     if (relativePath) directories.add(relativePath);
   }
-  return { files, directories };
+  const symlinks = new Map();
+  for (const [path, target] of fs.symlinks.entries()) {
+    if (isRuntimeProcPath(path)) continue;
+    const relativePath = relativeProjectPath(path);
+    if (relativePath) symlinks.set(relativePath, target);
+  }
+  const directoryMetadata = new Map();
+  for (const path of fs.dirs) {
+    if (path === '/' || isRuntimeProcPath(path)) continue;
+    const relativePath = relativeProjectPath(path);
+    const metadata = fs.getMetadata(path);
+    if (relativePath && Object.keys(metadata).length > 0) directoryMetadata.set(relativePath, { ...metadata });
+  }
+  return { files, directories, symlinks, directoryMetadata };
 }
 
-function encodeProjectFileChange(path, bytes) {
+function encodeProjectFileChange(path, bytes, metadata = {}) {
   const text = decodeUtf8(bytes);
   if (arraysEqual(encodeUtf8(text), bytes)) {
-    return { path, contents: text };
+    return { path, contents: text, ...metadata };
   }
-  return { path, contents: encodeBase64(bytes), encoding: 'base64' };
+  return { path, contents: encodeBase64(bytes), encoding: 'base64', ...metadata };
 }
 
 function arraysEqual(left, right) {
@@ -9794,6 +10158,10 @@ function arraysEqual(left, right) {
   return true;
 }
 
+function projectMetadataEqual(left = {}, right = {}) {
+  return left.mode === right.mode && left.atimeMs === right.atimeMs && left.mtimeMs === right.mtimeMs;
+}
+
 function diffProjectFs(before, fs) {
   const after = snapshotProjectFs(fs);
   const changes = [];
@@ -9802,15 +10170,41 @@ function diffProjectFs(before, fs) {
       before.directories.delete(path);
       continue;
     }
-    changes.push({ path, directory: true });
-  }
-  for (const [path, bytes] of [...after.files.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-    const oldBytes = before.files.get(path);
     before.files.delete(path);
-    if (oldBytes && arraysEqual(oldBytes, bytes)) continue;
-    changes.push(encodeProjectFileChange(path, bytes));
+    before.symlinks.delete(path);
+    const metadata = after.directoryMetadata.get(path) || {};
+    after.directoryMetadata.delete(path);
+    before.directoryMetadata.delete(path);
+    changes.push({ path, directory: true, ...metadata });
+  }
+  for (const path of [...after.directoryMetadata.keys()].sort()) {
+    if (!after.directories.has(path)) continue;
+    const metadata = after.directoryMetadata.get(path) || {};
+    const oldMetadata = before.directoryMetadata.get(path) || {};
+    after.directoryMetadata.delete(path);
+    before.directoryMetadata.delete(path);
+    if (!projectMetadataEqual(oldMetadata, metadata)) changes.push({ path, directory: true, ...metadata });
+  }
+  for (const [path, target] of [...after.symlinks.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const oldTarget = before.symlinks.get(path);
+    before.symlinks.delete(path);
+    before.files.delete(path);
+    before.directories.delete(path);
+    if (oldTarget === target) continue;
+    changes.push({ path, symlink: true, target });
+  }
+  for (const [path, entry] of [...after.files.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const oldEntry = before.files.get(path);
+    before.files.delete(path);
+    before.symlinks.delete(path);
+    before.directories.delete(path);
+    if (oldEntry && arraysEqual(oldEntry.bytes, entry.bytes) && projectMetadataEqual(oldEntry.metadata, entry.metadata)) continue;
+    changes.push(encodeProjectFileChange(path, entry.bytes, entry.metadata));
   }
   for (const path of [...before.files.keys()].sort()) {
+    changes.push({ path, deleted: true });
+  }
+  for (const path of [...before.symlinks.keys()].sort()) {
     changes.push({ path, deleted: true });
   }
   for (const path of [...before.directories].sort((left, right) => right.length - left.length || left.localeCompare(right))) {
@@ -9882,9 +10276,9 @@ function createProjectEventBridge(messageId, sanitizeOutput) {
     fileChange(change) {
       postBudgetedEvent({ type: 'file-change', phase: 'live', change });
     },
-    fileBytesChange(path, bytes) {
+    fileBytesChange(path, bytes, metadata = {}) {
       if (!budget.reserveLiveFileChangeSize(path, bytes?.byteLength ?? 0)) return;
-      postProjectEvent(messageId, { type: 'file-change', phase: 'live', change: encodeProjectFileChange(path, bytes) });
+      postProjectEvent(messageId, { type: 'file-change', phase: 'live', change: encodeProjectFileChange(path, bytes, metadata) });
     },
     applyResultOutputBudget(result) {
       if (!result) return;
@@ -9950,15 +10344,24 @@ async function handleProjectCpp(request, messageId) {
   fs.setFileChangeObserver((change) => {
     const relativePath = relativeProjectPath(change.path, request?.project);
     if (!relativePath) return;
+    if (change.symlink) {
+      events.fileChange({ path: relativePath, symlink: true, target: change.target });
+      return;
+    }
     if (change.directory) {
-      events.fileChange({ path: relativePath, directory: true, ...(change.deleted ? { deleted: true } : {}) });
+      events.fileChange({
+        path: relativePath,
+        directory: true,
+        ...(change.metadata || {}),
+        ...(change.deleted ? { deleted: true } : {}),
+      });
       return;
     }
     if (change.deleted) {
       events.fileChange({ path: relativePath, deleted: true });
       return;
     }
-    events.fileBytesChange(relativePath, change.bytes);
+    events.fileBytesChange(relativePath, change.bytes, change.metadata);
   });
   const executablePath = `/${resolveProjectRequestPath(request, request?.scriptPath || './a.out', 'a.out')}`;
   if (!fs.isFile(executablePath)) {

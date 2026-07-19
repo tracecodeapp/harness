@@ -12,6 +12,8 @@ export const CPP_COMPILER_COMMANDS = new Set(['clang++', 'clang', 'gcc', 'cc', '
 
 export const TRACEKERNEL_EXEC_COMMAND = 'tracekernel-exec';
 
+export const TRACEKERNEL_COMMAND_DISPATCH_PREFIX = 'tracekernel-dispatch-';
+
 export const TRACEKERNEL_SHELL_COMMAND_PREFIX = 'tracekernel-shell-';
 
 export const TRACEKERNEL_SHELL_COMMAND_REWRITES = new Map([

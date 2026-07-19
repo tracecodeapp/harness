@@ -505,14 +505,21 @@ export class CppWorkerClient {
     this.resetExecutionWorker(new WorkerTerminatedError('C++ execution worker completed and was retired'), true);
   }
 
-  private runInDisposableExecutionWorker<T>(operation: () => Promise<T>): Promise<T> {
+  private assertLifecycleGeneration(expectedLifecycleGeneration?: number): void {
+    if (
+      expectedLifecycleGeneration !== undefined &&
+      expectedLifecycleGeneration !== this.executionLifecycleGeneration
+    ) {
+      throw this.executionResetReason;
+    }
+  }
+
+  private runInDisposableExecutionWorker<T>(operation: (lifecycleGeneration: number) => Promise<T>): Promise<T> {
     const lifecycleGeneration = this.executionLifecycleGeneration;
     const run = this.executionQueue.then(async () => {
       try {
-        if (lifecycleGeneration !== this.executionLifecycleGeneration) {
-          throw this.executionResetReason;
-        }
-        return await operation();
+        this.assertLifecycleGeneration(lifecycleGeneration);
+        return await operation(lifecycleGeneration);
       } finally {
         this.retireExecutionWorker();
         if (lifecycleGeneration === this.executionLifecycleGeneration) {
@@ -572,7 +579,10 @@ export class CppWorkerClient {
           },
           ...this.workerOptionsPayload(),
         },
-        this.initTimeoutMs
+        this.initTimeoutMs,
+        undefined,
+        undefined,
+        () => this.assertLifecycleGeneration(expectedLifecycleGeneration)
       );
     });
   }
@@ -630,10 +640,17 @@ export class CppWorkerClient {
 
   async warmup(): Promise<WarmupResult> {
     if (this.warmupPromise) return this.warmupPromise;
-    this.warmupPromise = this.runInDisposableExecutionWorker(async () => {
+    this.warmupPromise = this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
-        await this.init();
-        return await this.core.sendMessage<WarmupResult>('warmup', this.workerOptionsPayload(), this.initTimeoutMs);
+        await this.init(lifecycleGeneration);
+        return await this.core.sendMessage<WarmupResult>(
+          'warmup',
+          this.workerOptionsPayload(),
+          this.initTimeoutMs,
+          undefined,
+          undefined,
+          () => this.assertLifecycleGeneration(lifecycleGeneration)
+        );
       } catch (error) {
         this.warmupPromise = null;
         throw error;
@@ -771,6 +788,16 @@ export class CppWorkerClient {
     const coordinatorGeneration = this.compilerCoordinatorGeneration;
 
     const cacheKey = await this.compilerArtifactCacheKey(message.payload);
+    // Hashing is asynchronous. The caller may cancel and retire this client
+    // while Web Crypto is still producing the cache key. Never let that stale
+    // continuation create a new compiler iframe after terminate() has already
+    // removed the client's owned resources.
+    if (
+      coordinatorGeneration !== this.compilerCoordinatorGeneration ||
+      worker !== this.core.currentSession?.worker
+    ) {
+      return;
+    }
     const cached = cacheKey ? this.cachedCompilerArtifact(cacheKey) : null;
     const compiled = cached ?? (this.externalCompilerUrl
       ? await this.compileWithExternalUrl(message.payload)
@@ -994,9 +1021,11 @@ export class CppWorkerClient {
   }
 
   /** Runtime load ahead of an execution. Memoization stays Promise-based on the client. */
-  private initGateEffect(): Effect.Effect<void, Error> {
+  private initGateEffect(expectedLifecycleGeneration: number): Effect.Effect<void, Error> {
     return Effect.tryPromise({
-      try: () => this.init().then(() => undefined),
+      try: () => this.init(expectedLifecycleGeneration).then(() => {
+        this.assertLifecycleGeneration(expectedLifecycleGeneration);
+      }),
       catch: (error) => (error instanceof Error ? error : new Error(String(error))),
     });
   }
@@ -1005,9 +1034,10 @@ export class CppWorkerClient {
     sendEffect: Effect.Effect<T, Error>,
     timeoutMs: number,
     stage: CppClientTimeoutStage,
-    signal?: AbortSignal
+    signal: AbortSignal | undefined,
+    expectedLifecycleGeneration: number
   ): Promise<T> {
-    const program = this.initGateEffect().pipe(
+    const program = this.initGateEffect(expectedLifecycleGeneration).pipe(
       Effect.andThen(this.withCppExecutionDeadline(sendEffect, timeoutMs, stage))
     );
     return this.core.runClientEffect(program, signal);
@@ -1016,17 +1046,21 @@ export class CppWorkerClient {
   async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
     const { code, functionName, inputs, executionStyle = 'solution-method', signal, limits } = call;
     const wallClockMs = limits?.wallClockMs ?? this.executionTimeoutMs;
-    return this.runInDisposableExecutionWorker(async () => {
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
         const result = await this.runExecution(
           this.core.sendMessageEffect<RawExecutionPayload>(
             'compile-run',
             { code, functionName, inputs, executionStyle },
-            null // the enclosing execution deadline is the only clock
+            null, // the enclosing execution deadline is the only clock
+            undefined,
+            undefined,
+            () => this.assertLifecycleGeneration(lifecycleGeneration)
           ),
           wallClockMs,
           'compile-run',
-          signal
+          signal,
+          lifecycleGeneration
         );
         return liftCodeOutcome(result, 'C++ execution failed');
       } catch (error) {
@@ -1038,17 +1072,21 @@ export class CppWorkerClient {
 
   async executeCodeBatch(call: RuntimeBatchCall): Promise<CodeExecutionBatchResult> {
     const { code, functionName, inputBatch, executionStyle = 'solution-method', signal } = call;
-    return this.runInDisposableExecutionWorker(async () => {
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
         const result = await this.runExecution(
           this.core.sendMessageEffect<RawExecutionBatchPayload>(
             'compile-run-batch',
             { code, functionName, inputBatch, executionStyle },
-            null
+            null,
+            undefined,
+            undefined,
+            () => this.assertLifecycleGeneration(lifecycleGeneration)
           ),
           this.executionTimeoutMs,
           'compile-run',
-          signal
+          signal,
+          lifecycleGeneration
         );
         return liftCodeBatchOutcome(result, 'C++ execution failed');
       } catch (error) {
@@ -1066,7 +1104,7 @@ export class CppWorkerClient {
 
   async executeTraceBatch(call: RuntimeBatchCall & { traceOptions?: TraceExecutionOptions }): Promise<{ results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
     const { code, functionName, inputBatch, traceOptions, executionStyle = 'solution-method', signal } = call;
-    return this.runInDisposableExecutionWorker(async () => {
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
         const result = await this.runExecution(
           this.core.sendMessageEffect<{ results?: CppRawTraceResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }>(
@@ -1079,11 +1117,15 @@ export class CppWorkerClient {
               executionStyle,
               traceEventTransport: traceEventTransferRequest(),
             },
-            null
+            null,
+            undefined,
+            undefined,
+            () => this.assertLifecycleGeneration(lifecycleGeneration)
           ),
           this.tracingTimeoutMs,
           'trace',
-          signal
+          signal,
+          lifecycleGeneration
         );
         return {
           results: (result.results ?? []).map((entry) =>
@@ -1113,7 +1155,7 @@ export class CppWorkerClient {
   async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
     const { code, inputs, traceOptions, executionStyle = 'solution-method', signal } = call;
     const functionName = call.functionName ?? '';
-    return this.runInDisposableExecutionWorker(async () => {
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
         const result = await this.runExecution(
           this.core.sendMessageEffect<CppRawTraceResult>(
@@ -1126,11 +1168,15 @@ export class CppWorkerClient {
               executionStyle,
               traceEventTransport: traceEventTransferRequest(),
             },
-            null
+            null,
+            undefined,
+            undefined,
+            () => this.assertLifecycleGeneration(lifecycleGeneration)
           ),
           this.tracingTimeoutMs,
           'trace',
-          signal
+          signal,
+          lifecycleGeneration
         );
         return liftTraceOutcome(
           result,
@@ -1150,10 +1196,11 @@ export class CppWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     signal: AbortSignal | undefined = request.signal
   ): Promise<CppProjectCommandResult> {
-    return this.runInDisposableExecutionWorker(async () => {
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
       if (!this.externalCompilerUrl && workerRequest.source === 'compile') {
         await this.options.runtimeAssetPreflight?.();
+        this.assertLifecycleGeneration(lifecycleGeneration);
       }
       return this.runExecution(
         this.core.sendMessageEffect<CppProjectCommandResult>(
@@ -1165,11 +1212,13 @@ export class CppWorkerClient {
           },
           null,
           onEvent,
-          kernelHttp
+          kernelHttp,
+          () => this.assertLifecycleGeneration(lifecycleGeneration)
         ),
         timeoutMs,
         'compile-run',
-        signal
+        signal,
+        lifecycleGeneration
       );
     });
   }

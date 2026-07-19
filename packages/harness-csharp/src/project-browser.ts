@@ -32,6 +32,7 @@ export interface BrowserCSharpProjectRunnerOptions {
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const NO_BUILD_UNSUPPORTED_STDERR = 'dotnet: --no-build is not supported by this runtime\n';
+const SYMLINKS_UNSUPPORTED_STDERR = 'ENOTSUP: symbolic links are not supported by this runtime\n';
 
 function unsupportedBrowserCSharpRunResult(request: CSharpProjectCommandRequest): CSharpProjectCommandResult {
   const result: CSharpProjectCommandResult = {
@@ -51,6 +52,29 @@ function unsupportedBrowserCSharpRunResult(request: CSharpProjectCommandRequest)
   return result;
 }
 
+function unsupportedBrowserCSharpSymlinkResult(request: CSharpProjectCommandRequest): CSharpProjectCommandResult {
+  const result: CSharpProjectCommandResult = {
+    stdout: '',
+    stderr: SYMLINKS_UNSUPPORTED_STDERR,
+    exitCode: 1,
+    error: {
+      code: 'ENOTSUP',
+      message: 'Symbolic links are not supported by this runtime.',
+      syscall: 'materialize',
+    },
+  };
+  const io = createRuntimeProjectIoBridge(request.onEvent);
+  io.status('process-start', 'Starting C# browser command', {
+    source: request.source,
+    scriptPath: request.scriptPath,
+    args: request.args,
+    cwd: request.cwd,
+  });
+  io.output('stderr', result.stderr);
+  io.status('process-exit', 'Finished C# browser command', { exitCode: result.exitCode, code: 'ENOTSUP' });
+  return result;
+}
+
 export function createBrowserCSharpProjectRunner(
   workerClient: Pick<CSharpWorkerClient, 'executeProjectCSharp'> & {
     executeProjectCSharp(
@@ -64,6 +88,9 @@ export function createBrowserCSharpProjectRunner(
 ): CSharpProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
+    if ((request.project.symlinks?.length ?? 0) > 0) {
+      return Promise.resolve(unsupportedBrowserCSharpSymlinkResult(request));
+    }
     if (request.source === 'run' && request.options?.noBuild === true) {
       return Promise.resolve(unsupportedBrowserCSharpRunResult(request));
     }

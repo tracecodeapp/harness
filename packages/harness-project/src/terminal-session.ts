@@ -91,6 +91,7 @@ import type {
   RuntimeProjectTerminalInputState,
   RuntimeProjectTerminalInputStateReason,
   RuntimeProjectTerminalPrompt,
+  RuntimeProjectTerminalCapabilities,
   RuntimeProjectTerminalRunOptions,
   RuntimeProjectTerminalSession,
   RuntimeProjectTerminalSessionOptions,
@@ -155,6 +156,11 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   private activeCommand = '';
   private activeRun = false;
   private sessionClosed = false;
+  private terminalColumns: number;
+  private terminalRows: number;
+  private readonly terminalTerm: string;
+  private currentUmask: number;
+  private readonly commandHistory: string[] = [];
   private activeCommandAbortController: AbortController | null = null;
   private readonly onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 
@@ -171,6 +177,10 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   ) {
     this.currentCwd = sessionOptions.cwd ?? options.workspaceRoot;
     this.env = { ...(sessionOptions.env ?? {}) };
+    this.terminalColumns = this.normalizeTerminalDimension(sessionOptions.columns, 80, 'columns');
+    this.terminalRows = this.normalizeTerminalDimension(sessionOptions.rows, 24, 'rows');
+    this.terminalTerm = sessionOptions.term?.trim() || 'dumb';
+    this.currentUmask = this.normalizeUmask(sessionOptions.umask);
     this.onTerminalEvent = sessionOptions.onTerminalEvent;
     this.currentInputState = this.createInputState('command');
   }
@@ -196,8 +206,35 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     return this.currentInputState;
   }
 
+  get terminal(): RuntimeProjectTerminalCapabilities {
+    return {
+      isTTY: true,
+      columns: this.terminalColumns,
+      rows: this.terminalRows,
+      term: this.terminalTerm,
+      colorLevel: 0,
+    };
+  }
+
+  get history(): readonly string[] {
+    return [...this.commandHistory];
+  }
+
   get closed(): boolean {
     return this.sessionClosed;
+  }
+
+  resize(columns: number, rows: number): void {
+    this.terminalColumns = this.normalizeTerminalDimension(columns, this.terminalColumns, 'columns');
+    this.terminalRows = this.normalizeTerminalDimension(rows, this.terminalRows, 'rows');
+  }
+
+  private normalizeTerminalDimension(value: number | undefined, fallback: number, name: string): number {
+    if (value === undefined) return fallback;
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new RangeError(`terminal ${name} must be a positive integer`);
+    }
+    return value;
   }
 
   interrupt(): boolean {
@@ -298,6 +335,9 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         },
       };
     }
+
+    this.commandHistory.push(trimmed);
+    if (this.commandHistory.length > 1000) this.commandHistory.shift();
 
     const commandList = parseTerminalCommandList(trimmed);
     if (commandList.some((segment) => segment.background)) {
@@ -489,6 +529,23 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       return { stdout: `${this.currentCwd}\n`, stderr: '', exitCode: 0 };
     }
 
+    if (words?.[0] === 'history') {
+      if (words.length === 2 && words[1] === '-c') {
+        this.commandHistory.length = 0;
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }
+      if (words.length > 2 || (words[1] !== undefined && !/^\d+$/.test(words[1]))) {
+        return { stdout: '', stderr: 'history: usage: history [-c] [n]\n', exitCode: 2 };
+      }
+      const requested = words[1] === undefined ? this.commandHistory.length : Number(words[1]);
+      const start = Math.max(0, this.commandHistory.length - requested);
+      return {
+        stdout: this.commandHistory.slice(start).map((entry, index) => `${String(start + index + 1).padStart(5)}  ${entry}\n`).join(''),
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+
     let nextCwd: string | null = null;
     const leadingCdTarget = leadingPersistentCdTarget(trimmed);
     if (leadingCdTarget !== null) {
@@ -526,9 +583,18 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         ...this.env,
         ...(options.env ?? {}),
         PWD: this.currentCwd,
+        TERM: this.terminalTerm,
+        NO_COLOR: '1',
+        COLUMNS: String(this.terminalColumns),
+        LINES: String(this.terminalRows),
       },
+      terminal: this.terminal,
+      umask: this.currentUmask,
       onEvent: handleCommandEvent,
       onEnvChanges: (changes) => this.applySessionEnvChanges(changes),
+      onUmaskChange: (umask) => {
+        this.currentUmask = this.normalizeUmask(umask);
+      },
     });
     const completeOutput = outputTracker.completeFinalOutput(result);
     const completeResult = { ...result, ...completeOutput };
@@ -585,7 +651,13 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         ...this.env,
         ...(options.env ?? {}),
         PWD: cwd,
+        TERM: this.terminalTerm,
+        NO_COLOR: '1',
+        COLUMNS: String(this.terminalColumns),
+        LINES: String(this.terminalRows),
       },
+      terminal: this.terminal,
+      umask: this.currentUmask,
       onEvent: handleBackgroundEvent,
     });
     void backgroundRun.catch((error) => {
@@ -599,6 +671,12 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     const line = `[${job.index}] ${job.pid}\n`;
     options.onEvent?.({ type: 'output', stream: 'stdout', data: line });
     return line;
+  }
+
+  private normalizeUmask(value: number | undefined): number {
+    return Number.isInteger(value) && value !== undefined && value >= 0 && value <= 0o777
+      ? value
+      : 0o022;
   }
 }
 

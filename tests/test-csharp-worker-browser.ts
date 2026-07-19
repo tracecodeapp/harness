@@ -70,6 +70,11 @@ interface CSharpProjectWorkerResponse {
   files?: Array<{
     path: string;
     directory?: true;
+    symlink?: true;
+    target?: string;
+    mode?: number;
+    atimeMs?: number;
+    mtimeMs?: number;
     contents?: string;
     encoding?: 'utf8' | 'base64';
     deleted?: true;
@@ -84,6 +89,11 @@ interface CSharpProjectWorkerResponse {
     change?: {
       path: string;
       directory?: true;
+      symlink?: true;
+      target?: string;
+      mode?: number;
+      atimeMs?: number;
+      mtimeMs?: number;
       contents?: string;
       encoding?: 'utf8' | 'base64';
       deleted?: true;
@@ -112,6 +122,8 @@ type CSharpProjectWorkerRequest = {
       outputDevice?: string;
     }>;
     directories?: string[];
+    directoryMetadata?: Array<{ path: string; mode?: number; atimeMs?: number; mtimeMs?: number }>;
+    symlinks?: Array<{ path: string; symlink: true; target: string }>;
   };
 };
 
@@ -326,6 +338,47 @@ async function testBrowserCSharpProjectBridgeUnsupportedNoBuildEvents(): Promise
   assertCondition(
     stderrIndex >= 0 && exitIndex > stderrIndex,
     `C# browser no-build rejection should stream stderr before process-exit, received ${JSON.stringify(observed)}`
+  );
+}
+
+async function testBrowserCSharpProjectBridgeRejectsUnrepresentableSymlinks(): Promise<void> {
+  let invokedWorker = false;
+  const observed: RuntimeCommandEvent[] = [];
+  const runner = createBrowserCSharpProjectRunner({
+    async executeProjectCSharp() {
+      invokedWorker = true;
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  });
+
+  const result = await runner({
+    code: '',
+    source: 'run',
+    scriptPath: '<project>',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      files: [{ path: 'target.txt', contents: 'target\n' }],
+      symlinks: [{ path: 'link.txt', symlink: true, target: 'target.txt' }],
+    },
+    onEvent: (event) => observed.push(event),
+  });
+
+  assertCondition(!invokedWorker, 'C# browser symlink rejection should happen before worker execution');
+  assertCondition(
+    result.exitCode === 1 && result.stderr === 'ENOTSUP: symbolic links are not supported by this runtime\n',
+    `C# browser symlink rejection should be deterministic and structured, received ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.error?.code === 'ENOTSUP' && result.error.syscall === 'materialize',
+    `C# browser symlink rejection should identify the unsupported materialization syscall, received ${JSON.stringify(result.error)}`
+  );
+  assertCondition(
+    observed.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+      observed.some((event) => event.type === 'output' && event.stream === 'stderr' && event.data === result.stderr) &&
+      observed.some((event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.code === 'ENOTSUP'),
+    `C# browser symlink rejection should stream a complete process lifecycle, received ${JSON.stringify(observed)}`
   );
 }
 
@@ -793,6 +846,81 @@ function fixture(name: string): string {
   return readFileSync(join(FIXTURE_ROOT, name), 'utf8');
 }
 
+async function testBrowserCSharpProjectDirectoryMetadata(
+  page: Page,
+  assetBaseUrl: string
+): Promise<void> {
+  const initialMtimeMs = Date.UTC(2001, 0, 2, 3, 4, 5);
+  const changedMtimeMs = Date.UTC(2002, 1, 3, 4, 5, 6);
+  const stableAtimeMs = Date.UTC(2003, 2, 4, 5, 6, 7);
+  const result = await runProjectWorkerCase(
+    page,
+    {
+      source: 'run',
+      scriptPath: '<project>',
+      args: [],
+      cwd: '/workspace/fs-parity',
+      env: {},
+      project: {
+        files: [
+          {
+            path: 'fs-parity/Program.cs',
+            contents: [
+              'using System.IO;',
+              'Console.WriteLine(((int)File.GetUnixFileMode("metadata-dir") & 0x1ff));',
+              'Console.WriteLine(new DateTimeOffset(Directory.GetLastWriteTimeUtc("metadata-dir")).ToUnixTimeMilliseconds());',
+              'Console.WriteLine(((int)File.GetUnixFileMode("metadata-file.txt") & 0x1ff));',
+              'Console.WriteLine(new DateTimeOffset(File.GetLastWriteTimeUtc("metadata-file.txt")).ToUnixTimeMilliseconds());',
+              'File.SetUnixFileMode("metadata-dir", (UnixFileMode)0x1c0);',
+              `Directory.SetLastWriteTimeUtc("metadata-dir", DateTimeOffset.FromUnixTimeMilliseconds(${changedMtimeMs}).UtcDateTime);`,
+              'File.SetUnixFileMode("metadata-file.txt", (UnixFileMode)0x180);',
+              `File.SetLastWriteTimeUtc("metadata-file.txt", DateTimeOffset.FromUnixTimeMilliseconds(${changedMtimeMs}).UtcDateTime);`,
+              '',
+            ].join('\n'),
+          },
+          { path: 'fs-parity/metadata-file.txt', contents: 'metadata\n', mode: 0x1a0, mtimeMs: initialMtimeMs },
+          { path: 'fs-parity/stable-file.txt', contents: 'stable\n', mode: 0x180, atimeMs: stableAtimeMs, mtimeMs: initialMtimeMs },
+        ],
+        directories: ['fs-parity/metadata-dir', 'fs-parity/stable-dir'],
+        directoryMetadata: [
+          { path: 'fs-parity/metadata-dir', mode: 0x1e8, mtimeMs: initialMtimeMs },
+          { path: 'fs-parity/stable-dir', mode: 0x1c0, atimeMs: stableAtimeMs, mtimeMs: initialMtimeMs },
+        ],
+      },
+    },
+    assetBaseUrl
+  );
+
+  assertCondition(result.exitCode === 0, `C# browser project filesystem parity should run: ${result.stderr}`);
+  const lines = result.stdout.trim().split('\n');
+  assertCondition(
+    lines.slice(-4).join('\n') === [
+      String(0x1e8),
+      String(initialMtimeMs),
+      String(0x1a0),
+      String(initialMtimeMs),
+    ].join('\n'),
+    `C# should apply file and directory metadata before user code runs, received ${result.stdout}`
+  );
+  assertCondition(
+    result.files?.some((change) => (
+      change.path === 'fs-parity/metadata-dir' && change.directory === true && change.mode === 0x1c0 && change.mtimeMs === changedMtimeMs
+    )) === true,
+    `C# final diff should preserve directory metadata changes, received ${JSON.stringify(result.files)}`
+  );
+  assertCondition(
+    result.files?.some((change) => (
+      change.path === 'fs-parity/metadata-file.txt' && 'contents' in change && change.contents === 'metadata\n' &&
+      change.mode === 0x180 && change.mtimeMs === changedMtimeMs
+    )) === true,
+    `C# final diff should preserve metadata-only regular-file changes, received ${JSON.stringify(result.files)}`
+  );
+  assertCondition(
+    result.files?.every((change) => change.path !== 'fs-parity/stable-file.txt' && change.path !== 'fs-parity/stable-dir') === true,
+    `C# snapshots should not manufacture file or directory metadata changes, received ${JSON.stringify(result.files)}`
+  );
+}
+
 function testCSharpScriptTracingRespectsConfiguredTimeout(): void {
   const client = new CSharpWorkerClient({
     workerUrl: '/csharp-worker.js',
@@ -809,6 +937,7 @@ async function main(): Promise<void> {
   testCSharpScriptTracingRespectsConfiguredTimeout();
   await testBrowserCSharpProjectBridgeFinalDiffApplication();
   await testBrowserCSharpProjectBridgeUnsupportedNoBuildEvents();
+  await testBrowserCSharpProjectBridgeRejectsUnrepresentableSymlinks();
 
   const csharpDotnetJs = join(ROOT, 'workers', 'vendor', 'csharp', '_framework', 'dotnet.js');
   assertCondition(existsSync(csharpDotnetJs), 'Expected vendored C# AppBundle at workers/vendor/csharp');
@@ -833,6 +962,7 @@ async function main(): Promise<void> {
     await page.evaluate('globalThis.__name = (fn) => fn');
 
     const assetBaseUrl = `${server.origin}/workers/vendor/csharp`;
+    await testBrowserCSharpProjectDirectoryMetadata(page, assetBaseUrl);
     const externalCSharpDllBase64 = createExternalCSharpDllBase64();
     const add = await runWorkerCase(page, fixture('add.cs'), 'Add', { a: 2, b: 3 }, assetBaseUrl);
     assertCondition(add.success, `C# worker Add should succeed: ${add.error ?? 'unknown error'}`);
@@ -6026,7 +6156,7 @@ async function main(): Promise<void> {
       projectRun.stdout.includes('symlink:') && !projectRun.stdout.includes('symlink:ok') &&
         projectRun.stdout.includes('symlink-dev:') && !projectRun.stdout.includes('symlink-dev:ok') &&
         projectRun.stdout.includes('readlink:') && !projectRun.stdout.includes('readlink:ok'),
-      `C# project worker should reject unmodeled symlink/readlink project operations, received ${projectRun.stdout}`
+      `C# project worker should reject unrepresentable symlink/readlink project operations, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stderr === 'dev-stderr\ndev-log\nstderr-line\n',

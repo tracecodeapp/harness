@@ -210,6 +210,77 @@ async function testInvalidArtifactsFailClosedAndAreNotCached(): Promise<void> {
   }
 }
 
+async function testTerminationDuringAssetPreflightCannotRecreateWorkerAndClientRecovers(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  const originalFetch = globalThis.fetch;
+  CompilerBridgeWorker.instances = [];
+  let releaseFirstPreflight!: () => void;
+  const firstPreflightReleased = new Promise<void>((resolve) => {
+    releaseFirstPreflight = resolve;
+  });
+  let markFirstPreflightStarted!: () => void;
+  const firstPreflightStarted = new Promise<void>((resolve) => {
+    markFirstPreflightStarted = resolve;
+  });
+  let preflightCalls = 0;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = CompilerBridgeWorker;
+  globalThis.fetch = async () => new Response(MINIMAL_WASM.slice(), { status: 200 });
+  const client = createClient({
+    async assetPreflight() {
+      preflightCalls += 1;
+      if (preflightCalls !== 1) return;
+      markFirstPreflightStarted();
+      await firstPreflightReleased;
+    },
+  });
+
+  try {
+    const interrupted = client.executeCode({
+      code: 'interrupted-preflight',
+      functionName: 'run',
+      inputs: {},
+      executionStyle: 'function',
+    });
+    await firstPreflightStarted;
+    client.terminate();
+    releaseFirstPreflight();
+
+    let interruptionError = '';
+    try {
+      await interrupted;
+    } catch (error) {
+      interruptionError = error instanceof Error ? error.message : String(error);
+    }
+    await Promise.resolve();
+
+    assertCondition(
+      interruptionError.includes('Worker was terminated'),
+      `termination during asset preflight should reject the stale command: ${interruptionError}`
+    );
+    assertCondition(
+      CompilerBridgeWorker.instances.length === 0,
+      'a stale asset-preflight continuation must not create a C++ execution worker after termination'
+    );
+
+    const recovered = await client.executeCode({
+      code: 'recovered-after-terminate',
+      functionName: 'run',
+      inputs: {},
+      executionStyle: 'function',
+    });
+    assertCondition(
+      recovered.kind === 'completed',
+      `C++ terminate should release current resources without permanently disabling later commands: ${JSON.stringify(recovered)}`
+    );
+  } finally {
+    releaseFirstPreflight();
+    client.terminate();
+    globalThis.fetch = originalFetch;
+    globalThis.Worker = originalWorker;
+  }
+}
+
 async function testTimeoutAbortsCompilerAndRetiresExecution(): Promise<void> {
   const originalWorker = globalThis.Worker;
   const originalFetch = globalThis.fetch;
@@ -294,6 +365,94 @@ async function testCallerAbortResetsCompilerAndExecution(): Promise<void> {
     client.terminate();
     globalThis.fetch = originalFetch;
     globalThis.Worker = originalWorker;
+  }
+}
+
+async function testCallerAbortCannotRecreateCompilerFrameAfterAsyncCacheKey(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  const originalCryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  const originalDocumentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const originalLocationDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  CompilerBridgeWorker.instances = [];
+  let digestStarted: (() => void) | null = null;
+  let resolveDigest: ((digest: ArrayBuffer) => void) | null = null;
+  let compilerFrameCreations = 0;
+  const digestPending = new Promise<ArrayBuffer>((resolve) => {
+    resolveDigest = resolve;
+  });
+  const digestDidStart = new Promise<void>((resolve) => {
+    digestStarted = resolve;
+  });
+
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = CompilerBridgeWorker;
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      subtle: {
+        digest: async () => {
+          digestStarted?.();
+          return digestPending;
+        },
+      },
+    },
+  });
+  Object.defineProperty(globalThis, 'location', {
+    configurable: true,
+    value: { href: 'https://app.example/project' },
+  });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      createElement() {
+        compilerFrameCreations += 1;
+        throw new Error('stale compiler continuation created an iframe');
+      },
+      body: { appendChild() {} },
+    },
+  });
+
+  const client = createClient({
+    externalCompilerUrl: undefined,
+    compilerFrameUrl: 'https://app.example/workers/cpp-compiler-frame.html',
+    compilerWorkerUrl: 'https://app.example/workers/cpp-compiler-worker.js',
+  });
+  const controller = new AbortController();
+  try {
+    const execution = client.executeCode({
+      code: 'cache-key-race',
+      functionName: 'run',
+      inputs: {},
+      executionStyle: 'function',
+      signal: controller.signal,
+    });
+    await digestDidStart;
+    controller.abort();
+    // Per-command worker pools permanently retire the leased client when the
+    // command signal fires, in addition to the client's own abort reset.
+    client.terminate();
+    resolveDigest?.(new Uint8Array(32).buffer);
+    let error: unknown;
+    try {
+      await execution;
+    } catch (caught) {
+      error = caught;
+    }
+    await Promise.resolve();
+    assertCondition(error instanceof Error && error.name === 'AbortError', `caller abort should reject with AbortError: ${String(error)}`);
+    assertCondition(
+      compilerFrameCreations === 0,
+      'a compile request retired during asynchronous cache-key hashing must not recreate its compiler iframe'
+    );
+  } finally {
+    client.terminate();
+    globalThis.Worker = originalWorker;
+    if (originalCryptoDescriptor) Object.defineProperty(globalThis, 'crypto', originalCryptoDescriptor);
+    else delete (globalThis as { crypto?: Crypto }).crypto;
+    if (originalDocumentDescriptor) Object.defineProperty(globalThis, 'document', originalDocumentDescriptor);
+    else delete (globalThis as { document?: Document }).document;
+    if (originalLocationDescriptor) Object.defineProperty(globalThis, 'location', originalLocationDescriptor);
+    else delete (globalThis as { location?: Location }).location;
   }
 }
 
@@ -407,8 +566,10 @@ async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
 async function main(): Promise<void> {
   await testContentAddressedArtifactsAndDisposableExecution();
   await testInvalidArtifactsFailClosedAndAreNotCached();
+  await testTerminationDuringAssetPreflightCannotRecreateWorkerAndClientRecovers();
   await testTimeoutAbortsCompilerAndRetiresExecution();
   await testCallerAbortResetsCompilerAndExecution();
+  await testCallerAbortCannotRecreateCompilerFrameAfterAsyncCacheKey();
   await testCompilerFrameKeepsOnlyTrustedCompilerWarm();
   console.log('C++ compiler lifecycle tests passed');
 }

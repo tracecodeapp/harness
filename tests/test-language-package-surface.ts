@@ -321,7 +321,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const declarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
       assertCondition(
         declarations.includes('interface RuntimeDirectoryChange') &&
-          declarations.includes('type RuntimeFileChange = RuntimeFile | RuntimeFileDeletion | RuntimeDirectoryChange'),
+          declarations.includes('type RuntimeFileChange = RuntimeFile | RuntimeSymlink | RuntimeFileDeletion | RuntimeDirectoryChange'),
         '@tracecode/harness-core declarations should ship directory file-change events'
       );
       assertCondition(
@@ -554,9 +554,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-javascript browser project runner should share process.stdin and device stdin cursor through live stdin pipes'
       );
       assertCondition(
-        projectBrowser.includes('io.fileChange({ path, directory: true }, "live")') &&
+        projectBrowser.includes('const emitDirectoryCreate = (path) =>') &&
+          projectBrowser.includes('directory: true') &&
+          projectBrowser.includes('atimeMs: metadata.atimeMs, mtimeMs: metadata.mtimeMs') &&
           projectBrowser.includes('io.fileChange({ path, directory: true, deleted: true }, "live")'),
-        '@tracecode/harness-javascript browser project runner should ship live directory mutation events'
+        '@tracecode/harness-javascript browser project runner should ship metadata-bearing live directory mutation events'
       );
       assertCondition(
         projectBrowser.includes('readvSync') &&
@@ -593,7 +595,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         projectWorker.includes('class TraceKernelHeaders') &&
           projectWorker.includes('class TraceKernelRequest') &&
           projectWorker.includes('class TraceKernelResponse') &&
-          projectWorker.includes('activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken })') &&
+          projectWorker.includes('activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken, executionState })') &&
           projectWorker.includes('protocolToken !== command.protocolToken') &&
           projectWorker.includes('["node:http", httpApi.module]'),
         '@tracecode/harness-javascript packaged project worker should include TraceKernel HTTP globals and node:http bridge'
@@ -836,9 +838,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         worker.includes('directory: true') &&
-          worker.includes('this.fileChangeObserver?.({ path: normalized, directory: true })') &&
+          worker.includes('this.fileChangeObserver?.({ path: normalized, directory: true, metadata: { ...this.getMetadata(normalized) } })') &&
           worker.includes('this.fileChangeObserver?.({ path: normalized, directory: true, deleted: true })'),
-        '@tracecode/harness-cpp worker should ship live directory mutation events'
+        '@tracecode/harness-cpp worker should ship metadata-bearing live directory mutation events'
       );
       assertCondition(
         worker.includes('function emitProjectResultOutputEvents(events, result)') &&
@@ -854,7 +856,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         worker.includes('emitPathSnapshot(pathname)') &&
-          worker.includes('this.fs.emitPathSnapshot(pathname)'),
+          worker.includes('this.fs.emitPathSnapshot(normalized)') &&
+          worker.includes('bytes: this.readFile(normalized), metadata: { ...this.getMetadata(normalized) }'),
         '@tracecode/harness-cpp worker should ship metadata-only live file snapshots'
       );
     }

@@ -11,7 +11,7 @@ overrides:
 
 patchedDependencies:
   just-bash@3.1.0:
-    hash: be77e8e25f1248bffa4dfedfb17d4d2e4e81141cae8a424718f89b326fe4aa01
+    hash: 85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85
     path: patches/just-bash@3.1.0.patch
 
 importers:
@@ -300,7 +300,7 @@ importers:
         version: link:../harness-core
       just-bash:
         specifier: 3.1.0
-        version: 3.1.0(patch_hash=be77e8e25f1248bffa4dfedfb17d4d2e4e81141cae8a424718f89b326fe4aa01)
+        version: 3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85)
 
   packages/harness-python:
     dependencies:
@@ -1683,7 +1683,7 @@ snapshots:
 
   joycon@3.1.1: {}
 
-  just-bash@3.1.0(patch_hash=be77e8e25f1248bffa4dfedfb17d4d2e4e81141cae8a424718f89b326fe4aa01):
+  just-bash@3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85):
     dependencies:
       diff: 8.0.4
       fast-xml-parser: 5.8.0

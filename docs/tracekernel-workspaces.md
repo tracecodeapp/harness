@@ -200,6 +200,32 @@ Kernel namespaces are read-only to normal workspace and shell writes. Runtime
 file changes are routed back through TraceKernel so live mutation events and
 final-diff reconciliation can enforce readonly and hidden-file policy.
 
+### Browser filesystem concurrency and visibility
+
+TraceKernel is the authoritative browser workspace. Each worker-backed language
+command receives a point-in-time project snapshot when that command starts.
+File mutations made by the command are streamed back through TraceKernel and
+committed before the corresponding public `file-change` event is emitted.
+
+This gives browser providers the following explicit concurrency contract:
+
+- A command started after another provider's committed live write sees the new
+  contents in its launch snapshot.
+- Two active providers can commit independent files in parallel.
+- Two active providers that write the same path do not silently overwrite or
+  merge one another. One complete mutation wins and the stale command fails
+  with `ESTALE`.
+- A worker-backed command that was already running does not receive another
+  provider's later mutations. Its local runtime filesystem remains the snapshot
+  it started with.
+
+The last point means browser live I/O is not a shared POSIX mount between active
+workers. Workloads that coordinate two long-lived processes through files while
+both remain alive are not currently supported. TraceKernel HTTP is different:
+its request bridge is host-owned and explicitly connects active processes in
+one workspace. Cross-provider filesystem conformance is covered in real
+Chromium, Firefox, and WebKit by `test:project-live-fs-browser-matrix`.
+
 ## Actors And HTTP
 
 Workspace operations can run as actors:
@@ -237,6 +263,41 @@ metadata-only quota ledger; hidden and readonly session entries count too.
 Multi-file final diffs are preflighted as a transaction so a rejected mutation
 does not leave a partially applied workspace. Apps can lower or raise the three
 limits with `maxWorkspaceBytes`, `maxFileBytes`, and `maxEntryCount`.
+
+## Filesystem Entry Fidelity
+
+Project snapshots distinguish regular files, directories, and symbolic links.
+Symbolic links retain their link text and identity through live changes, final
+diffs, patches, and persistence; snapshotting never replaces a link with the
+contents of its target. Regular files and directories likewise carry their
+permission bits and access/modify timestamps across command boundaries.
+Malformed persisted trees are rejected when an entry path is duplicated across
+kinds, directory entries repeat, or directory metadata names a directory that
+does not exist.
+
+Language providers must either preserve those observable semantics or reject
+the unsupported snapshot before user code starts. They must not flatten links,
+rewrite link text into a different meaning, or report metadata changes caused
+only by the provider's own snapshot scan. Browser Node and browser Python use
+their runtime filesystems directly. Native Java and native C# can materialize
+safe relative links, but reject absolute link targets because their temporary
+host roots cannot preserve virtual absolute `readlink` and rename behavior.
+Browser Java and browser C# reject snapshots containing links with `ENOTSUP`
+until their upstream virtual filesystems can expose genuine link semantics.
+Browser C# preserves regular-file and directory metadata through its managed
+host. Browser Java preserves that metadata in the TraceKernel workspace, but
+CheerpJ does not currently expose the POSIX metadata surface to Java code, so
+Java code cannot inspect or mutate those bits in a browser command.
+
+Browser C++ preserves symbolic-link identity and file/directory timestamps at
+runtime. It reserves `/dev`, `/proc`, `/etc`, and the top-level roots of
+manifest-provided virtual files so workspace entries cannot alias kernel-owned
+namespaces. Its current WASI preview1 ABI does not expose Unix permission bits
+or a permission-mutation syscall: supplied modes are retained through snapshot
+and diff reconciliation, but C/C++ code cannot observe or change those bits.
+The runtime VFS supports links after compilation; the compiler's flat input VFS
+cannot represent link inodes, so a source or include path that depends on a
+symbolic link is not supported during the compile step.
 
 ## Persistence
 

@@ -1485,15 +1485,25 @@ async function runBrowserPlanItem(
               const command = commands[language]!;
               const controller = new AbortController();
               const startedAt = performance.now();
-              const timer = setTimeout(() => controller.abort(), 50);
+              let abortFiredAt: number | undefined;
+              const timer = setTimeout(() => {
+                abortFiredAt = performance.now();
+                controller.abort();
+              }, 50);
               try {
                 const result = await (workspace.runCommand(command, { signal: controller.signal }) as Promise<CommandResult>);
-                return { command, result, wallMs: performance.now() - startedAt };
+                return {
+                  command,
+                  result,
+                  wallMs: performance.now() - startedAt,
+                  abortTimerDelayMs: abortFiredAt === undefined ? undefined : abortFiredAt - startedAt,
+                };
               } catch (error) {
                 return {
                   command,
                   error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
                   wallMs: performance.now() - startedAt,
+                  abortTimerDelayMs: abortFiredAt === undefined ? undefined : abortFiredAt - startedAt,
                 };
               } finally {
                 clearTimeout(timer);
@@ -1516,6 +1526,7 @@ async function runBrowserPlanItem(
                 cancellationError: value.error,
                 resultError: value.result && 'error' in value.result ? value.result.error : undefined,
                 cancellationWallMs: value.wallMs,
+                abortTimerDelayMs: value.abortTimerDelayMs,
                 target: 'active browser runtime compile/run',
               },
               serializedResultBytes: serializedBytes(value),
