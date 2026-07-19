@@ -1,11 +1,7 @@
 import type {
   Language,
-  RuntimeDirectoryChange,
-  RuntimeFileChange,
-  RuntimeFileDeletion,
   RuntimeWorkspace,
 } from '@tracecode/harness-core';
-import { normalizeRuntimeProjectPath } from '@tracecode/harness-core';
 import type { CreateRuntimeWorkspaceOptions } from '../../harness-project/src/index';
 import type {
   BrowserJavaScriptProjectRunnerOptions,
@@ -75,32 +71,21 @@ export interface BrowserProjectExecutionHostOptions extends BrowserExecutionWork
 export interface BrowserProjectWorkerPrewarmOptions {
   /** Ready/idle clean Python workers (0-2); active leases may coexist with their replacements. */
   python?: number;
+  /** One clean JavaScript project worker prepared for the next command (0-1). */
+  javascript?: number;
+  /** Trusted TypeScript compiler loaded in the background (0-1). */
+  typescript?: number;
   /** Ready/idle clean Java workers (0-2); active leases may coexist with their replacements. */
   java?: number;
   /** Ready/idle clean C# workers (0-2); active leases may coexist with their replacements. */
   csharp?: number;
-}
-
-function readonlySessionFiles(options: CreateRuntimeWorkspaceOptions): string[] {
-  return [...new Set((options.projectSession?.files ?? [])
-    .filter((file) => file.readonly === true || file.hidden === true)
-    .map((file) => normalizeRuntimeProjectPath(file.path)))];
+  /** Ready/idle clean C++ workers (0-2); active leases may coexist with their replacements. */
+  cpp?: number;
 }
 
 function policySessionFiles(options: CreateRuntimeWorkspaceOptions): NonNullable<CreateRuntimeWorkspaceOptions['projectSession']>['files'] {
   return (options.projectSession?.files ?? [])
     .filter((file) => file.hidden === true || file.readonly === true);
-}
-
-function isReadonlyDeletion(change: RuntimeFileChange, readonlyFiles: readonly string[]): boolean {
-  if ((change as RuntimeFileDeletion | RuntimeDirectoryChange).deleted !== true) return false;
-  const path = normalizeRuntimeProjectPath(change.path);
-  const omittedReadonlyFiles = readonlyFiles.filter((readonlyPath) => readonlyPath.includes('/'));
-  if (omittedReadonlyFiles.length === 0) return false;
-  if ((change as RuntimeDirectoryChange).directory === true) {
-    return omittedReadonlyFiles.some((readonlyPath) => readonlyPath === path || readonlyPath.startsWith(`${path}/`));
-  }
-  return omittedReadonlyFiles.includes(path);
 }
 
 function browserAssetUrlsEqual(left: string, right: string): boolean {
@@ -151,7 +136,7 @@ interface OneShotWarmOutcome {
 }
 
 const MAX_PROJECT_PREWARM_DEPTH_PER_LANGUAGE = 2;
-const MAX_PROJECT_PREWARM_DEPTH_TOTAL = 4;
+const MAX_PROJECT_PREWARM_DEPTH_TOTAL = 6;
 const PROJECT_PREWARM_RETRY_LIMIT = 2;
 const BROWSER_PROJECT_PROVIDERS: readonly BrowserProjectProvider[] = Object.freeze([
   'python',
@@ -183,17 +168,23 @@ function normalizeProjectWorkerPrewarm(
   }
   const normalized = {
     python: value?.python ?? 0,
+    javascript: value?.javascript ?? 0,
+    typescript: value?.typescript ?? 0,
     java: value?.java ?? 0,
     csharp: value?.csharp ?? 0,
+    cpp: value?.cpp ?? 0,
   };
   for (const [language, depth] of Object.entries(normalized)) {
-    if (!Number.isInteger(depth) || depth < 0 || depth > MAX_PROJECT_PREWARM_DEPTH_PER_LANGUAGE) {
+    const maxDepth = language === 'javascript' || language === 'typescript'
+      ? 1
+      : MAX_PROJECT_PREWARM_DEPTH_PER_LANGUAGE;
+    if (!Number.isInteger(depth) || depth < 0 || depth > maxDepth) {
       throw new TypeError(
-        `projectWorkerPrewarm.${language} must be an integer from 0 to ${MAX_PROJECT_PREWARM_DEPTH_PER_LANGUAGE}.`
+        `projectWorkerPrewarm.${language} must be an integer from 0 to ${maxDepth}.`
       );
     }
   }
-  const total = normalized.python + normalized.java + normalized.csharp;
+  const total = Object.values(normalized).reduce((sum, depth) => sum + depth, 0);
   if (total > MAX_PROJECT_PREWARM_DEPTH_TOTAL) {
     throw new TypeError(
       `projectWorkerPrewarm total depth must not exceed ${MAX_PROJECT_PREWARM_DEPTH_TOTAL}; received ${total}.`
@@ -231,7 +222,7 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
     }
   };
 
-  const warmNewClient = (): Promise<OneShotWarmOutcome> => {
+  const warmNewClient = (signal?: AbortSignal): Promise<OneShotWarmOutcome> => {
     const entry: OneShotPoolEntry<Client> = {
       client: createClient(),
       generation,
@@ -240,7 +231,13 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
     };
     entries.set(entry.token, entry);
     const promise = (async (): Promise<OneShotWarmOutcome> => {
+      const onAbort = () => retire(entry);
       try {
+        if (signal?.aborted) {
+          retire(entry);
+          return { success: false, error: projectPoolAbortError() };
+        }
+        signal?.addEventListener('abort', onAbort, { once: true });
         await entry.client.warmup();
         if (!refillEnabled || entry.generation !== generation || entry.state !== 'warming') {
           retire(entry);
@@ -254,6 +251,7 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
         retire(entry);
         return { success: false, error: warmError };
       } finally {
+        signal?.removeEventListener('abort', onAbort);
         warming.delete(entry.token);
       }
     })();
@@ -331,7 +329,7 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
         );
       }
       directWarmAttempts += 1;
-      const outcome = await warmNewClient();
+      const outcome = await warmNewClient(signal);
       if (!outcome.success) lastWarmError = outcome.error;
     }
   };
@@ -409,6 +407,73 @@ function createPerCommandJavaWorkerClient(
   };
 }
 
+function waitForProjectWarmup(
+  warmup: Promise<unknown>,
+  signal?: AbortSignal
+): Promise<void> {
+  if (!signal) return warmup.then(() => undefined);
+  if (signal.aborted) return Promise.reject(projectPoolAbortError());
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(projectPoolAbortError());
+    };
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    warmup.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      }
+    );
+  });
+}
+
+/**
+ * Starts the expensive hosted Java runtime in the background while preserving one
+ * readiness promise for commands that arrive before it is ready. A failed warmup is
+ * evicted so the next command can make one fresh attempt through JavaWorkerClient's
+ * existing reset/retry path.
+ */
+function createBackgroundPrewarmedJavaWorkerClient(
+  client: JavaWorkerClient,
+  beforeWarmup: () => Promise<void>
+): Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'> {
+  let disposed = false;
+  let warmupPromise: Promise<unknown> | null = null;
+  const warm = (): Promise<unknown> => {
+    if (disposed) return Promise.reject(new Error('Java project worker was terminated.'));
+    if (warmupPromise) return warmupPromise;
+    const attempt = beforeWarmup().then(() => client.warmup());
+    const observedAttempt = attempt.catch((error) => {
+      if (warmupPromise === observedAttempt) warmupPromise = null;
+      throw error;
+    });
+    warmupPromise = observedAttempt;
+    // Background rejection is intentionally observed here. A command awaiting the
+    // same promise still receives the failure, and a later command may retry.
+    void warmupPromise.catch(() => undefined);
+    return warmupPromise;
+  };
+
+  warm();
+
+  return {
+    async executeProjectJava(request, timeoutMs, onEvent, signal) {
+      await waitForProjectWarmup(warm(), signal);
+      return client.executeProjectJava(request, timeoutMs, onEvent, signal);
+    },
+    terminate() {
+      disposed = true;
+      client.terminate();
+    },
+  };
+}
+
 function createPerCommandCSharpWorkerClient(
   prewarmDepth: number,
   createClient: () => CSharpWorkerClient
@@ -425,23 +490,16 @@ function createPerCommandCSharpWorkerClient(
 }
 
 function createPerCommandCppWorkerClient(
+  prewarmDepth: number,
   createClient: () => CppWorkerClient
 ): Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'> {
-  const active = new Set<CppWorkerClient>();
+  const pool = createOneShotPrewarmedWorkerPool('C++', prewarmDepth, createClient);
   return {
     async executeProjectCpp(request, timeoutMs, onEvent, signal) {
-      const client = createClient();
-      active.add(client);
-      try {
-        return await client.executeProjectCpp(request, timeoutMs, onEvent, signal);
-      } finally {
-        active.delete(client);
-        client.terminate();
-      }
+      return pool.run(signal, (client) => client.executeProjectCpp(request, timeoutMs, onEvent, signal));
     },
     terminate() {
-      for (const client of active) client.terminate();
-      active.clear();
+      pool.terminate();
     },
   };
 }
@@ -658,14 +716,14 @@ export async function createBrowserProjectWorkspace(
     );
   }
   const projectPrewarm = normalizeProjectWorkerPrewarm(projectWorkerPrewarm);
-  for (const provider of ['python', 'java', 'csharp'] as const) {
+  for (const provider of BROWSER_PROJECT_PROVIDERS) {
     if (projectPrewarm[provider] > 0 && !hasProvider(provider)) {
       throw new Error(`projectWorkerPrewarm.${provider} requires providers to include ${JSON.stringify(provider)}.`);
     }
   }
   if (
     projectWorkerIsolation !== 'per-command' &&
-    (projectPrewarm.python > 0 || projectPrewarm.java > 0 || projectPrewarm.csharp > 0)
+    Object.values(projectPrewarm).some((depth) => depth > 0)
   ) {
     throw new Error('projectWorkerPrewarm is only supported with per-command project worker isolation.');
   }
@@ -680,6 +738,17 @@ export async function createBrowserProjectWorkspace(
   }
   if (providedCSharpWorkerClient && projectPrewarm.csharp > 0) {
     throw new Error('projectWorkerPrewarm.csharp cannot be used with a provided csharpWorkerClient.');
+  }
+  if (providedCppWorkerClient && projectPrewarm.cpp > 0) {
+    throw new Error('projectWorkerPrewarm.cpp cannot be used with a provided cppWorkerClient.');
+  }
+  if (
+    executionHostOptions &&
+    isExecutionHosted('java') &&
+    javaExecutionLifecycle === 'workspace-session' &&
+    projectPrewarm.java > 1
+  ) {
+    throw new Error('executionHost workspace-session Java prewarm depth must be 0 or 1.');
   }
   if (hasProvider('javascript')) {
     assertManifestBoundProjectAsset(
@@ -700,10 +769,10 @@ export async function createBrowserProjectWorkspace(
     );
   }
   let executionHost: BrowserExecutionWorkerHost | undefined;
+  let executionHostReady: Promise<void> | undefined;
   if (executionHostOptions) {
     executionHost = createBrowserExecutionWorkerHost(executionHostOptions);
     try {
-      await executionHost.ready();
       if (isExecutionHosted('java')) {
         const javaWorkerAsset = javaManifest?.assets.worker;
         if (!javaWorkerAsset) {
@@ -731,6 +800,8 @@ export async function createBrowserProjectWorkspace(
           );
         }
       }
+      executionHostReady = executionHost.ready();
+      void executionHostReady.catch(() => undefined);
     } catch (error) {
       executionHost.dispose();
       throw error;
@@ -879,7 +950,7 @@ export async function createBrowserProjectWorkspace(
       : undefined;
     if (pythonWorkerClient && !providedPythonWorkerClient) ownedWorkers.push(pythonWorkerClient);
     const JavaWorkerClientConstructor = javaProvider?.[1].JavaWorkerClient;
-    const javaWorkerClient = hasProvider('java')
+    const createdJavaWorkerClient = hasProvider('java')
       ? providedJavaWorkerClient ?? (
           projectWorkerIsolation === 'per-command' && (!isExecutionHosted('java') || javaExecutionLifecycle === 'per-command')
             ? createPerCommandJavaWorkerClient(
@@ -890,14 +961,20 @@ export async function createBrowserProjectWorkspace(
             : new JavaWorkerClientConstructor!(javaWorkerOptions)
         )
       : undefined;
+    const javaWorkerClient =
+      createdJavaWorkerClient &&
+      !providedJavaWorkerClient &&
+      executionHost &&
+      executionHostReady &&
+      isExecutionHosted('java') &&
+      javaExecutionLifecycle === 'workspace-session' &&
+      projectPrewarm.java > 0
+        ? createBackgroundPrewarmedJavaWorkerClient(
+            createdJavaWorkerClient as JavaWorkerClient,
+            () => executionHostReady!
+          )
+        : createdJavaWorkerClient;
     if (javaWorkerClient && !providedJavaWorkerClient) ownedWorkers.push(javaWorkerClient);
-    if (executionHost && isExecutionHosted('java') && javaExecutionLifecycle === 'workspace-session' && projectPrewarm.java > 0) {
-      if (projectPrewarm.java !== 1) {
-        executionHost.dispose();
-        throw new Error('executionHost workspace-session Java prewarm depth must be 0 or 1.');
-      }
-      await (javaWorkerClient as JavaWorkerClient).warmup();
-    }
     const CSharpWorkerClientConstructor = csharpProvider?.[1].CSharpWorkerClient;
     const csharpWorkerClient = hasProvider('csharp')
       ? providedCSharpWorkerClient ?? (
@@ -914,7 +991,10 @@ export async function createBrowserProjectWorkspace(
     const cppWorkerClient = hasProvider('cpp')
       ? providedCppWorkerClient ?? (
           projectWorkerIsolation === 'per-command'
-            ? createPerCommandCppWorkerClient(() => new CppWorkerClientConstructor!(cppWorkerOptions))
+            ? createPerCommandCppWorkerClient(
+                projectPrewarm.cpp,
+                () => new CppWorkerClientConstructor!(cppWorkerOptions)
+              )
             : new CppWorkerClientConstructor!(cppWorkerOptions)
         )
       : undefined;
@@ -924,23 +1004,6 @@ export async function createBrowserProjectWorkspace(
 
     let workspace: BrowserProjectWorkspace;
     let storageBinding: BrowserKernelStorageBinding | undefined;
-    const sessionReadonlyFiles = readonlySessionFiles(workspaceOptions);
-    const applyWorkerFileChange: NonNullable<BrowserJavaScriptProjectRunnerOptions['applyFileChange']> =
-      async (change, phase, options) => {
-        if (options?.signal?.aborted) return false;
-        await workspace.kernel.applyFileChange(change, undefined, phase);
-        if (options?.signal?.aborted) return false;
-        return false;
-      };
-    const applyCSharpWorkerFileChange: NonNullable<BrowserJavaScriptProjectRunnerOptions['applyFileChange']> =
-      async (change, phase, options) => {
-        if (options?.signal?.aborted) return false;
-        if (isReadonlyDeletion(change, sessionReadonlyFiles)) return false;
-        await workspace.kernel.applyFileChange(change, undefined, phase);
-        if (options?.signal?.aborted) return false;
-        return false;
-    };
-
     const storedSnapshot = await hydrateBrowserKernelStorage(kernelStorage);
     // An intentionally empty persisted workspace is still authoritative. Treating
     // it as "no snapshot" resurrects deleted seed/session files on the next load.
@@ -968,7 +1031,6 @@ export async function createBrowserProjectWorkspace(
         ? {
             pythonRunner: pythonProvider[0].createBrowserPythonProjectRunner(pythonWorkerClient, {
               timeoutMs: pythonProjectTimeoutMs,
-              applyFileChange: applyWorkerFileChange,
             }),
           }
         : {}),
@@ -986,7 +1048,8 @@ export async function createBrowserProjectWorkspace(
                 : {}),
               assetPreflight: () => runtimeAssetPreflight.preflight('javascript', ['projectWorker']),
               ...(projectWorkerIsolation === 'shared' ? { trustedReusableWorker: true } : {}),
-              applyFileChange: applyWorkerFileChange,
+              prewarm: projectPrewarm.javascript > 0,
+              registerPrewarmCleanup: (cleanup) => ownedWorkers.push({ terminate: cleanup }),
             }),
           }
         : {}),
@@ -1006,6 +1069,7 @@ export async function createBrowserProjectWorkspace(
                 ? assets.typescriptCompiler
                 : typescriptProject?.compilerUrl ?? assets.typescriptCompiler,
               compilerPreflight: () => runtimeAssetPreflight.preflight('typescript', ['compiler']),
+              prewarmCompiler: projectPrewarm.typescript > 0,
             }),
           }
         : {}),
@@ -1013,7 +1077,6 @@ export async function createBrowserProjectWorkspace(
         ? {
             javaRunner: javaProvider[0].createBrowserJavaProjectRunner(javaWorkerClient, {
               timeoutMs: javaProjectTimeoutMs,
-              applyFileChange: applyWorkerFileChange,
             }),
           }
         : {}),
@@ -1021,7 +1084,6 @@ export async function createBrowserProjectWorkspace(
         ? {
             csharpRunner: csharpProvider[0].createBrowserCSharpProjectRunner(csharpWorkerClient, {
               timeoutMs: csharpProjectTimeoutMs,
-              applyFileChange: applyCSharpWorkerFileChange,
             }),
           }
         : {}),
@@ -1029,7 +1091,6 @@ export async function createBrowserProjectWorkspace(
         ? {
             cppRunner: cppProvider[0].createBrowserCppProjectRunner(cppWorkerClient, {
               timeoutMs: cppProjectTimeoutMs,
-              applyFileChange: applyWorkerFileChange,
             }),
           }
         : {}),

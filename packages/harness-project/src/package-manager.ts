@@ -52,7 +52,7 @@ import {
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
 } from '@tracecode/harness-core';
-import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
+import { BROWSER_PROJECT_NODE_COMPAT_VERSION } from '@tracecode/harness-core';
 import type { Language } from '@tracecode/harness-core';
 import type {
   CommandContext,
@@ -119,7 +119,11 @@ export interface NormalizedRuntimePackageManagerConfig {
 
 export type PackageManagerCommandName = RuntimePackageManagerName | 'npx';
 
-export type PackageManagerOutputEmitter = (stream: RuntimeCommandEventStream, data: string) => void;
+export type PackageManagerOutputEmitter = (
+  stream: RuntimeCommandEventStream,
+  data: string,
+  context?: CommandContext
+) => void;
 
 
 export interface ParsedPackageManagerInvocation {
@@ -136,6 +140,17 @@ export interface ParsedPackageManagerInvocation {
   ifPresent: boolean;
   silent: boolean;
   ignoreScripts: boolean;
+}
+
+class PackageManifestResolutionError extends Error {
+  constructor(
+    readonly code: 'ENOENT' | 'EJSONPARSE' | 'EWORKSPACE',
+    readonly path: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'PackageManifestResolutionError';
+  }
 }
 
 
@@ -371,7 +386,11 @@ export async function readPackageManifestAt(
       json: JSON.parse(await ctx.fs.readFile(manifestPath)) as Record<string, unknown>,
     };
   } catch (error) {
-    throw new Error(`Invalid package.json at ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new PackageManifestResolutionError(
+      'EJSONPARSE',
+      manifestPath,
+      error instanceof Error ? error.message : String(error)
+    );
   }
 }
 
@@ -491,7 +510,11 @@ export async function resolvePackageManifestForInvocation(
   if (invocation.workspace) {
     const workspaceManifest = await resolveWorkspacePackageManifest(ctx, workspaceRoot, invocation.workspace, workspaceAlias);
     if (!workspaceManifest) {
-      throw new Error(`Package workspace not found: ${invocation.workspace}`);
+      throw new PackageManifestResolutionError(
+        'EWORKSPACE',
+        workspaceRoot,
+        `No workspaces found matching ${JSON.stringify(invocation.workspace)}`
+      );
     }
     return workspaceManifest;
   }
@@ -506,7 +529,11 @@ export async function resolvePackageManifestForInvocation(
     stat?.isFile ? dirname(startDirectory) : startDirectory
   );
   if (!manifest) {
-    throw new Error(`package.json not found from ${startDirectory}`);
+    throw new PackageManifestResolutionError(
+      'ENOENT',
+      `${startDirectory.replace(/\/$/, '')}/package.json`,
+      'Could not read package.json'
+    );
   }
   return manifest;
 }
@@ -651,6 +678,7 @@ export async function ensurePackageBinShims(
 
 export function packageScriptEnv(
   manager: RuntimePackageManagerName,
+  managerVersion: string,
   manifest: RuntimePackageManifest,
   workspaceRoot: string,
   originalCwd: string,
@@ -658,6 +686,7 @@ export function packageScriptEnv(
   eventName: string,
   script: string
 ): Record<string, string> {
+  const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
   return {
     ...baseEnv,
     INIT_CWD: originalCwd,
@@ -667,9 +696,9 @@ export function packageScriptEnv(
     npm_lifecycle_script: script,
     npm_package_name: typeof manifest.json.name === 'string' ? manifest.json.name : '',
     npm_package_version: typeof manifest.json.version === 'string' ? manifest.json.version : '',
-    npm_config_user_agent: `${manager}/tracekernel`,
-    npm_execpath: `/tracekernel/${manager}`,
-    npm_node_execpath: 'node',
+    npm_config_user_agent: `${manager}/${managerVersion} node/v${nodeVersion} tracekernel x64 workspaces/false`,
+    npm_execpath: `/usr/local/lib/node_modules/${manager}/bin/${manager}-cli.js`,
+    npm_node_execpath: '/usr/local/bin/node',
   };
 }
 
@@ -688,6 +717,13 @@ export async function runPackageScript(
   emitOutput?: PackageManagerOutputEmitter
 ): Promise<RuntimeCommandResult> {
   const scripts = packageScripts(manifest);
+  if (
+    scriptName === 'start' &&
+    scripts.start === undefined &&
+    await ctx.fs.exists(`${manifest.directory}/server.js`)
+  ) {
+    scripts.start = 'node server.js';
+  }
   const events = ignoreScripts
     ? (scripts[scriptName] === undefined ? [] : [scriptName])
     : lifecycleScriptNames(scriptName, scripts);
@@ -711,11 +747,11 @@ export async function runPackageScript(
     if (!silent) {
       const banner = npmScriptBanner(manifest, eventName, command);
       stdout += banner;
-      emitOutput?.('stdout', banner);
+      emitOutput?.('stdout', banner, ctx);
     }
     const result = await ctx.exec(command, {
       cwd: manifest.directory,
-      env: packageScriptEnv(manager, manifest, workspaceRoot, ctx.cwd, commandEnv(ctx), eventName, script),
+      env: packageScriptEnv(manager, options.npmVersion, manifest, workspaceRoot, ctx.cwd, commandEnv(ctx), eventName, script),
       stdin: decodeCommandStdin(ctx.stdin),
       signal: ctx.signal,
     });
@@ -744,6 +780,7 @@ export async function runPackageExec(
     await ensurePackageBinShims(ctx, workspaceRoot, manifest.directory);
   }
   const baseEnv = commandEnv(ctx);
+  const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
   const shellCommand = appendScriptArgs(command, args);
   return ctx.exec(shellCommand, {
     cwd: manifest.directory,
@@ -756,9 +793,9 @@ export async function runPackageExec(
       npm_lifecycle_script: npmExecLifecycleScript(command),
       npm_package_name: typeof manifest.json.name === 'string' ? manifest.json.name : '',
       npm_package_version: typeof manifest.json.version === 'string' ? manifest.json.version : '',
-      npm_config_user_agent: `${manager}/tracekernel`,
-      npm_execpath: `/tracekernel/${manager}`,
-      npm_node_execpath: 'node',
+      npm_config_user_agent: `${manager}/${options.npmVersion} node/v${nodeVersion} tracekernel x64 workspaces/false`,
+      npm_execpath: `/usr/local/lib/node_modules/${manager}/bin/${manager}-cli.js`,
+      npm_node_execpath: '/usr/local/bin/node',
     },
     stdin: decodeCommandStdin(ctx.stdin),
     signal: ctx.signal,
@@ -822,8 +859,9 @@ export async function runPackageInstall(
     return {
       stdout: '',
       stderr: [
-        'npm ERR! code ENOTSUP',
-        `npm ERR! ${manager} ${invocation.installCommand ?? 'install'} is disabled in tracekernel; provide a package dependency provider or preloaded node_modules.`,
+        'npm error code ENETUNREACH',
+        `npm error network ${manager} ${invocation.installCommand ?? 'install'} could not reach the package registry`,
+        'npm error network This environment is offline. Use the dependencies already provided by the project.',
         '',
       ].join('\n'),
       exitCode: 1,
@@ -871,6 +909,42 @@ export async function runPackageManagerCommand(
   try {
     manifest = await resolvePackageManifestForInvocation(ctx, workspaceRoot, invocation, workspaceAlias);
   } catch (error) {
+    if (error instanceof PackageManifestResolutionError) {
+      if (error.code === 'ENOENT') {
+        return {
+          stdout: '',
+          stderr: [
+            'npm error code ENOENT',
+            'npm error syscall open',
+            `npm error path ${error.path}`,
+            'npm error errno -2',
+            `npm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '${error.path}'`,
+            'npm error enoent This is related to npm not being able to find a file.',
+            'npm error enoent',
+            '',
+          ].join('\n'),
+          exitCode: 254,
+        };
+      }
+      if (error.code === 'EJSONPARSE') {
+        return {
+          stdout: '',
+          stderr: [
+            'npm error code EJSONPARSE',
+            `npm error JSON.parse Invalid package.json: ${error.message}`,
+            'npm error JSON.parse Failed to parse JSON data.',
+            'npm error JSON.parse Note: package.json must be actual JSON, not just JavaScript.',
+            '',
+          ].join('\n'),
+          exitCode: 1,
+        };
+      }
+      return {
+        stdout: '',
+        stderr: `npm error code EWORKSPACES\nnpm error ${error.message}\n`,
+        exitCode: 1,
+      };
+    }
     return { stdout: '', stderr: `${manager}: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
   }
 

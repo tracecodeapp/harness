@@ -10,6 +10,7 @@ import {
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES,
   RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES,
+  RuntimeProjectOutputTracker,
   runtimeCommandStdinPipeClosed,
   runtimeFileChangePath,
   runtimeProjectTruncateUtf8,
@@ -129,15 +130,31 @@ const TERMINAL_SESSION_TRANSIENT_ENV_KEYS = new Set([
   '_',
 ]);
 
+const TERMINAL_EXIT_MIN = -(2n ** 63n);
+const TERMINAL_EXIT_MAX = (2n ** 63n) - 1n;
+
+function parseTerminalExitCode(value: string): number | null {
+  if (!/^[+-]?\d+$/.test(value)) return null;
+  try {
+    const parsed = BigInt(value.startsWith('+') ? value.slice(1) : value);
+    if (parsed < TERMINAL_EXIT_MIN || parsed > TERMINAL_EXIT_MAX) return null;
+    return Number(((parsed % 256n) + 256n) % 256n);
+  } catch {
+    return null;
+  }
+}
+
 export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTerminalSession {
   private currentCwd: string;
   private readonly env: Record<string, string>;
   private currentInputState: RuntimeProjectTerminalInputState;
   private activeStdinPipe: RuntimeCommandOptions['stdinPipe'] | null = null;
+  private activeStdinEnded = false;
   private activeTerminalEventHandler?: RuntimeProjectTerminalEventHandler;
   private activeStdinPrompt = '';
   private activeCommand = '';
   private activeRun = false;
+  private sessionClosed = false;
   private activeCommandAbortController: AbortController | null = null;
   private readonly onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 
@@ -171,12 +188,16 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       host,
       cwd: this.currentCwd,
       label,
-      text: `${user}@${host} ${label} %`,
+      text: `${user}@${host} ${label} $`,
     };
   }
 
   get inputState(): RuntimeProjectTerminalInputState {
     return this.currentInputState;
+  }
+
+  get closed(): boolean {
+    return this.sessionClosed;
   }
 
   interrupt(): boolean {
@@ -187,10 +208,21 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   }
 
   writeStdin(data: string): boolean {
-    if (!this.activeStdinPipe || this.currentInputState.mode !== 'stdin') return false;
+    if (!this.activeStdinPipe || !this.activeRun || this.activeStdinEnded) return false;
     this.activeStdinPipe.write(data);
+    if (this.currentInputState.mode === 'stdin') {
+      this.activeStdinPrompt = '';
+      this.setInputState('busy', 'stdin-submit');
+    }
+    return true;
+  }
+
+  endStdin(): boolean {
+    if (!this.activeStdinPipe || !this.activeRun || this.activeStdinEnded) return false;
+    this.activeStdinEnded = true;
+    this.activeStdinPipe.close();
     this.activeStdinPrompt = '';
-    this.setInputState('busy', 'stdin-submit');
+    this.setInputState('busy', 'stdin-eof');
     return true;
   }
 
@@ -215,6 +247,16 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.activeTerminalEventHandler?.(event);
   }
 
+  private emitControlEvent(action: 'clear' | 'exit', exitCode?: number): void {
+    const event = {
+      type: 'control' as const,
+      action,
+      ...(exitCode !== undefined ? { exitCode } : {}),
+    };
+    this.onTerminalEvent?.(event);
+    this.activeTerminalEventHandler?.(event);
+  }
+
   private setInputState(
     mode: RuntimeProjectTerminalInputState['mode'],
     reason: RuntimeProjectTerminalInputStateReason,
@@ -228,6 +270,20 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   async run(command: string, options: RuntimeProjectTerminalRunOptions = {}): Promise<RuntimeCommandResult> {
     const trimmed = command.trim();
     if (!trimmed) return { stdout: '', stderr: '', exitCode: 0 };
+    if (this.sessionClosed) {
+      return {
+        stdout: '',
+        stderr: 'terminal: session is closed\n',
+        exitCode: 1,
+        error: {
+          code: 'EBADF',
+          errno: 9,
+          syscall: 'run',
+          path: this.currentCwd,
+          message: `EBADF: terminal session is closed, ${this.currentCwd}`,
+        },
+      };
+    }
     if (this.activeRun) {
       return {
         stdout: '',
@@ -259,6 +315,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.activeRun = true;
 
     const previousStdinPipe = this.activeStdinPipe;
+    const previousStdinEnded = this.activeStdinEnded;
     const previousTerminalEventHandler = this.activeTerminalEventHandler;
     const previousStdinPrompt = this.activeStdinPrompt;
     const previousCommand = this.activeCommand;
@@ -269,6 +326,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         : undefined;
     const commandStdinPipe = options.stdinPipe ?? ownedStdinPipe;
     this.activeStdinPipe = commandStdinPipe ?? null;
+    this.activeStdinEnded = false;
     this.activeTerminalEventHandler = options.onTerminalEvent;
     this.activeStdinPrompt = '';
     this.activeCommand = submittedCommand;
@@ -289,6 +347,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         stderr += result.stderr;
         exitCode = result.exitCode;
         error = result.error;
+        if (this.sessionClosed) break;
       }
       return {
         stdout,
@@ -299,6 +358,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     } finally {
       ownedStdinPipe?.close();
       this.activeStdinPipe = previousStdinPipe;
+      this.activeStdinEnded = previousStdinEnded;
       this.activeTerminalEventHandler = previousTerminalEventHandler;
       this.activeStdinPrompt = previousStdinPrompt;
       this.activeCommand = previousCommand;
@@ -314,6 +374,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.activeRun = true;
 
     const previousStdinPipe = this.activeStdinPipe;
+    const previousStdinEnded = this.activeStdinEnded;
     const previousTerminalEventHandler = this.activeTerminalEventHandler;
     const previousStdinPrompt = this.activeStdinPrompt;
     const previousCommand = this.activeCommand;
@@ -335,6 +396,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         : undefined;
     const commandStdinPipe = options.stdinPipe ?? ownedStdinPipe;
     this.activeStdinPipe = commandStdinPipe ?? null;
+    this.activeStdinEnded = false;
     this.activeTerminalEventHandler = options.onTerminalEvent;
     this.activeStdinPrompt = '';
     this.activeCommand = trimmed;
@@ -342,15 +404,18 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.setInputState('busy', 'command-start');
 
     try {
-      return await this.runForegroundTerminalCommand(
+      const result = await this.runForegroundTerminalCommand(
         trimmed,
         { ...options, signal: commandAbortController.signal },
         commandStdinPipe
       );
+      this.closeFromCompletedCommandList(trimmed);
+      return result;
     } finally {
       options.signal?.removeEventListener('abort', forwardExternalAbort);
       ownedStdinPipe?.close();
       this.activeStdinPipe = previousStdinPipe;
+      this.activeStdinEnded = previousStdinEnded;
       this.activeTerminalEventHandler = previousTerminalEventHandler;
       this.activeStdinPrompt = previousStdinPrompt;
       this.activeCommand = previousCommand;
@@ -362,12 +427,52 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     }
   }
 
+  private closeFromCompletedCommandList(command: string): void {
+    if (this.sessionClosed) return;
+    const segments = parseTerminalCommandList(command);
+    if (segments.length <= 1) return;
+    for (const segment of segments) {
+      if (segment.background) continue;
+      const words = parseSimpleCommandWords(segment.command);
+      if (words?.[0] !== 'exit' || words.length > 2) continue;
+      const exitCode = words[1] === undefined ? 0 : parseTerminalExitCode(words[1]) ?? 2;
+      this.sessionClosed = true;
+      this.emitControlEvent('exit', exitCode);
+      return;
+    }
+  }
+
   private async runForegroundTerminalCommand(
     trimmed: string,
     options: RuntimeProjectTerminalRunOptions,
     commandStdinPipe: RuntimeCommandOptions['stdinPipe']
   ): Promise<RuntimeCommandResult> {
+    const outputTracker = new RuntimeProjectOutputTracker();
     const words = parseSimpleCommandWords(trimmed);
+    if (words?.[0] === 'clear' && words.length === 1) {
+      this.emitControlEvent('clear');
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
+
+    if (words?.[0] === 'exit') {
+      if (words.length > 2) {
+        return { stdout: '', stderr: 'exit: too many arguments\n', exitCode: 1 };
+      }
+      const requestedExitCode = words[1] === undefined ? 0 : parseTerminalExitCode(words[1]);
+      if (requestedExitCode === null) {
+        this.sessionClosed = true;
+        this.emitControlEvent('exit', 2);
+        return {
+          stdout: '',
+          stderr: `exit: ${words[1]}: numeric argument required\n`,
+          exitCode: 2,
+        };
+      }
+      const exitCode = requestedExitCode;
+      this.sessionClosed = true;
+      this.emitControlEvent('exit', exitCode);
+      return { stdout: '', stderr: '', exitCode };
+    }
     if (words?.[0] === 'cd') {
       if (words.length > 2) {
         return { stdout: '', stderr: 'cd: too many arguments\n', exitCode: 1 };
@@ -395,6 +500,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     }
 
     const handleCommandEvent = (event: RuntimeCommandEvent): void => {
+      outputTracker.observe(event);
       if (event.type === 'status' && !this.options.isVerbose()) return;
       if (
         event.type === 'output' &&
@@ -424,10 +530,24 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       onEvent: handleCommandEvent,
       onEnvChanges: (changes) => this.applySessionEnvChanges(changes),
     });
+    const completeOutput = outputTracker.completeFinalOutput(result);
+    const completeResult = { ...result, ...completeOutput };
+    if (completeResult.error?.code === 'EINTR' && typeof completeResult.error.detail?.signal === 'string') {
+      const signalCode = typeof completeResult.error.detail.signalCode === 'number'
+        ? completeResult.error.detail.signalCode
+        : 2;
+      return {
+        ...completeResult,
+        exitCode: 128 + signalCode,
+        // Preserve the structured signal for the terminal renderer, but do
+        // not expose the kernel's parent-side syscall bookkeeping as stderr.
+        stderr: completeResult.stderr,
+      };
+    }
     if (nextCwd) {
       this.currentCwd = nextCwd;
     }
-    return result;
+    return completeResult;
   }
 
   // Persist shell variable changes (export FOO=…, FOO=…, unset FOO) onto the

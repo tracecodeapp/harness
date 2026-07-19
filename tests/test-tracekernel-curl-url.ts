@@ -22,7 +22,7 @@ function testResolveCurlUrlMatrix(): void {
     { input: 'larkfield.com:443', scheme: 'http', url: 'http://larkfield.com:443' },
     { input: 'localhost:3000', scheme: 'http', url: 'http://localhost:3000' },
     { input: 'http://127.0.0.1:3000', scheme: 'http', url: 'http://127.0.0.1:3000' },
-    { input: 'http:80', scheme: 'http', url: 'http://80' },
+    { input: 'http:80', scheme: 'http', url: 'http://http:80' },
     { input: 'gopher://x', scheme: 'gopher', url: 'gopher://x' },
   ];
   for (const entry of cases) {
@@ -41,6 +41,9 @@ async function testCurlUrlResolutionAndTypedErrors(): Promise<void> {
       allowHttp: true,
       hosts: () => true,
       fetch: async (request) => {
+        if (new URL(request.url).hostname === 'http') {
+          throw Object.assign(new Error('getaddrinfo ENOTFOUND http'), { code: 'ENOTFOUND' });
+        }
         externalRequests.push({
           method: request.method,
           url: request.url,
@@ -71,10 +74,12 @@ async function testCurlUrlResolutionAndTypedErrors(): Promise<void> {
     }
 
     const authorityRule = await workspace.runCommand('curl -s http:80');
-    assertCondition(authorityRule.exitCode === 7, `http:80 should resolve as a URL and fail gracefully: ${JSON.stringify(authorityRule)}`);
+    assertCondition(authorityRule.exitCode === 6, `http:80 should follow native curl authority parsing: ${JSON.stringify(authorityRule)}`);
     assertCondition(authorityRule.stdout === '', `http:80 should not print a raw kernel body: ${JSON.stringify(authorityRule)}`);
     assertCondition(
-      authorityRule.stderr.startsWith('curl: (7) external fetch blocked:') && !authorityRule.stderr.includes('EINVAL'),
+      authorityRule.stderr === 'curl: (6) Could not resolve host: http\n' &&
+        !authorityRule.stderr.includes('EINVAL') &&
+        !authorityRule.stderr.toLowerCase().includes('tracekernel'),
       `http:80 should not leak EINVAL: ${JSON.stringify(authorityRule)}`
     );
 

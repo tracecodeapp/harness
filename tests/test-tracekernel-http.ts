@@ -43,15 +43,15 @@ type RuntimeWorkspaceWithPrivateDispatch = {
   ): Promise<RuntimeKernelHttpResponse>;
 };
 
-async function testExternalFetchUnconfiguredReturnsHostUnreachable(): Promise<void> {
+async function testExternalFetchUnconfiguredReturnsNameResolutionFailure(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
   try {
     const response = await workspace.http.request({ url: 'https://api.example.com/path' });
     assertCondition(response.status === 0, `unconfigured external fetch should keep failed-connect status: ${JSON.stringify(response)}`);
-    assertCondition(response.error?.code === 'EHOSTUNREACH', `unconfigured external fetch should be typed EHOSTUNREACH: ${JSON.stringify(response)}`);
+    assertCondition(response.error?.code === 'ENOTFOUND', `unconfigured external fetch should be typed ENOTFOUND: ${JSON.stringify(response)}`);
     assertCondition(
-      response.body === 'curl: (7) Failed to connect to api.example.com port 443: Host unreachable\n',
-      `unconfigured external fetch should return host-unreachable body byte-identical: ${JSON.stringify(response)}`
+      response.body === 'getaddrinfo ENOTFOUND api.example.com\n',
+      `unconfigured external fetch should return a native-like name-resolution error: ${JSON.stringify(response)}`
     );
   } finally {
     workspace.dispose();
@@ -133,8 +133,9 @@ async function testExternalFetchBlocklistWinsOverAllowlist(): Promise<void> {
       'https://[::1]/',
     ]) {
       const response = await workspace.http.request({ url });
-      assertCondition(response.status === 403, `blocked URL should return 403 for ${url}: ${JSON.stringify(response)}`);
-      assertCondition(response.body?.startsWith('tracekernel: external fetch blocked:'), `blocked body mismatch for ${url}: ${JSON.stringify(response)}`);
+      assertCondition(response.status === 0, `blocked URL should fail at the transport boundary for ${url}: ${JSON.stringify(response)}`);
+      assertCondition(response.error?.code === 'EHOSTUNREACH', `blocked URL should report an unreachable host for ${url}: ${JSON.stringify(response)}`);
+      assertCondition(!response.body?.toLowerCase().includes('tracekernel'), `blocked body should not expose the kernel implementation for ${url}: ${JSON.stringify(response)}`);
       assertCondition(calls === 0, `delegate should not be called for blocked URL ${url}`);
     }
   } finally {
@@ -157,11 +158,11 @@ async function testExternalFetchAllowlistSemantics(): Promise<void> {
     assertCondition((await workspace.http.request({ url: 'https://api.example.com/' })).status === 200, 'exact allowlist host should pass');
     assertCondition((await workspace.http.request({ url: 'https://API.EXAMPLE.COM/' })).status === 200, 'allowlist matching should be case-insensitive');
     assertCondition((await workspace.http.request({ url: 'https://child.example.org/' })).status === 200, 'wildcard subdomain should pass');
-    assertCondition((await workspace.http.request({ url: 'https://example.org/' })).status === 403, 'wildcard should not match apex');
+    assertCondition((await workspace.http.request({ url: 'https://example.org/' })).status === 0, 'wildcard should not match apex');
     assertCondition((await workspace.http.request({ url: 'https://service.example.net:8443/' })).status === 200, 'pinned port should pass');
-    assertCondition((await workspace.http.request({ url: 'https://service.example.net/' })).status === 403, 'pinned host should reject default port');
-    assertCondition((await workspace.http.request({ url: 'https://api.example.com:8443/' })).status === 403, 'unpinned host should only allow scheme-default port');
-    assertCondition((await workspace.http.request({ url: 'http://api.example.com/' })).status === 403, 'http should be denied by default');
+    assertCondition((await workspace.http.request({ url: 'https://service.example.net/' })).status === 0, 'pinned host should reject default port');
+    assertCondition((await workspace.http.request({ url: 'https://api.example.com:8443/' })).status === 0, 'unpinned host should only allow scheme-default port');
+    assertCondition((await workspace.http.request({ url: 'http://api.example.com/' })).status === 0, 'http should be denied by default');
     assertCondition(calls === 4, `only allowed URLs should call delegate: ${calls}`);
   } finally {
     workspace.dispose();
@@ -225,7 +226,7 @@ async function testExternalFetchBudgets(): Promise<void> {
   try {
     const budget = await workspace.runCommand('budget-probe');
     assertCondition(budget.exitCode === 0, `budget command should finish: ${JSON.stringify(budget)}`);
-    assertCondition(budget.stdout === 'true:429\n', `65th external request in one command should be budgeted: ${budget.stdout}`);
+    assertCondition(budget.stdout === 'true:0\n', `65th external request in one command should fail at the transport boundary: ${budget.stdout}`);
   } finally {
     workspace.dispose();
   }
@@ -253,7 +254,7 @@ async function testExternalFetchBudgets(): Promise<void> {
     const first = concurrencyWorkspace.http.request({ url: 'https://allowed.example/hang' });
     await firstStartedPromise;
     const second = await concurrencyWorkspace.http.request({ url: 'https://allowed.example/second' });
-    assertCondition(second.status === 429, `concurrency cap should return 429: ${JSON.stringify(second)}`);
+    assertCondition(second.status === 0 && second.error?.code === 'EAGAIN', `concurrency cap should look like temporary transport unavailability: ${JSON.stringify(second)}`);
     releaseFirst();
     assertCondition((await first).status === 200, 'first hanging request should complete after release');
   } finally {
@@ -274,7 +275,7 @@ async function testExternalFetchBudgets(): Promise<void> {
   try {
     const response = await timeoutWorkspace.http.request({ url: 'https://allowed.example/timeout' });
     assertCondition(response.status === 0, `external timeout should use timeout response: ${JSON.stringify(response)}`);
-    assertCondition(response.body === 'TraceKernel HTTP request timed out after 5 milliseconds\n', `external timeout body mismatch: ${JSON.stringify(response)}`);
+    assertCondition(response.body === 'Network request timed out after 5 milliseconds\n', `external timeout body mismatch: ${JSON.stringify(response)}`);
     assertCondition(aborted, 'external timeout should abort delegate signal');
   } finally {
     timeoutWorkspace.dispose();
@@ -315,7 +316,7 @@ async function testExternalFetchTimeoutCapAndLingeringDelegateAccounting(): Prom
     await started;
     const first = await firstPromise;
     assertCondition(
-      first.status === 0 && first.body === 'TraceKernel HTTP request timed out after 5 milliseconds\n',
+      first.status === 0 && first.body === 'Network request timed out after 5 milliseconds\n',
       `request timeout overrides must not widen the configured cap: ${JSON.stringify(first)}`
     );
     assertCondition(delegateAborted, 'configured timeout should abort the delegate signal');
@@ -332,7 +333,7 @@ async function testExternalFetchTimeoutCapAndLingeringDelegateAccounting(): Prom
 
     const whileLingering = await workspace.http.request({ url: 'https://allowed.example/second' });
     assertCondition(
-      whileLingering.status === 429 && whileLingering.error?.code === 'EAGAIN',
+      whileLingering.status === 0 && whileLingering.error?.code === 'EAGAIN',
       `an abort-ignoring delegate must retain its concurrency slot until it settles: ${JSON.stringify(whileLingering)}`
     );
     releaseDelegate();
@@ -374,7 +375,7 @@ async function testWorkspaceDisposeAbortsExternalFetchLifecycle(): Promise<void>
   workspace.dispose();
   const disposed = await pending;
   assertCondition(
-    disposed.status === 0 && disposed.error?.code === 'EINTR' && disposed.body?.includes('disposed'),
+    disposed.status === 0 && disposed.error?.code === 'EINTR' && disposed.body === 'Network request interrupted\n',
     `workspace disposal should settle active external requests: ${JSON.stringify(disposed)}`
   );
   assertCondition(delegateAborted, 'workspace disposal should abort the active delegate signal');
@@ -420,7 +421,7 @@ async function testExternalFetchActorOptOut(): Promise<void> {
   try {
     const result = await workspace.runCommand('actor-opt-out');
     assertCondition(result.exitCode === 0, `actor opt-out command should finish: ${JSON.stringify(result)}`);
-    assertCondition(result.stdout.startsWith('403:tracekernel: external fetch blocked:'), `actor opt-out should return 403: ${result.stdout}`);
+    assertCondition(result.stdout.startsWith('0:Failed to connect to allowed.example port 443: Host unreachable'), `actor opt-out should fail as an unreachable host: ${result.stdout}`);
     assertCondition(!delegateCalled, 'actor opt-out should not invoke delegate');
   } finally {
     workspace.dispose();
@@ -480,7 +481,7 @@ async function testIsBlockedExternalHttpHost(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await testExternalFetchUnconfiguredReturnsHostUnreachable();
+  await testExternalFetchUnconfiguredReturnsNameResolutionFailure();
   await testExternalFetchRoutesThroughDelegate();
   await testExternalFetchBlocklistWinsOverAllowlist();
   await testExternalFetchAllowlistSemantics();
@@ -884,7 +885,7 @@ async function main(): Promise<void> {
     const failingProjectResponse = await workspace.runCommand('curl -s http://localhost:3502/fail');
     assertCondition(failingProjectResponse.exitCode === 0, `project curl should receive redacted host listener failure body: ${JSON.stringify(failingProjectResponse)}`);
     assertCondition(
-      failingProjectResponse.stdout === 'TraceKernel HTTP listener failed\n',
+      failingProjectResponse.stdout === 'Internal Server Error\n',
       `project-visible host listener failures should be redacted: ${failingProjectResponse.stdout}`
     );
     failingMock.close();
@@ -893,7 +894,7 @@ async function main(): Promise<void> {
     const stalledResponse = await workspace.http.request({ url: 'http://localhost:3504/stall', timeoutMs: 5 });
     assertCondition(stalledResponse.status === 0, `workspace HTTP request timeout should return a transport failure: ${JSON.stringify(stalledResponse)}`);
     assertCondition(
-      stalledResponse.body === 'TraceKernel HTTP request timed out after 5 milliseconds\n',
+      stalledResponse.body === 'Network request timed out after 5 milliseconds\n',
       `workspace HTTP request timeout should explain the timeout: ${JSON.stringify(stalledResponse)}`
     );
     const abortController = new AbortController();
@@ -902,7 +903,7 @@ async function main(): Promise<void> {
     const abortedResponse = await abortedPromise;
     assertCondition(abortedResponse.status === 0, `workspace HTTP request abort should return a transport failure: ${JSON.stringify(abortedResponse)}`);
     assertCondition(
-      abortedResponse.body === 'TraceKernel HTTP request aborted\n',
+      abortedResponse.body === 'Network request aborted\n',
       `workspace HTTP request abort should explain the abort: ${JSON.stringify(abortedResponse)}`
     );
     stalledMock.close();

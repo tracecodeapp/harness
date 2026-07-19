@@ -67,7 +67,7 @@ export function handleAsyncKernelHttpProtocolMessage(
     if (!pending.kernelHttp) {
       postAsyncKernelHttpError(host, commandId, {
         listenerId: message.listenerId,
-        error: 'TraceKernel HTTP is not available.',
+        error: 'Network subsystem is unavailable.',
       });
       return;
     }
@@ -117,7 +117,7 @@ export function handleAsyncKernelHttpProtocolMessage(
     if (!pending.kernelHttp) {
       postAsyncKernelHttpError(host, commandId, {
         requestId: message.requestId,
-        error: 'TraceKernel HTTP is not available.',
+        error: 'Network subsystem is unavailable.',
       });
       return;
     }

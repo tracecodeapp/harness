@@ -1114,6 +1114,67 @@ function isRuntimeAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
+function isRuntimeTimeoutError(error: unknown): boolean {
+  const message = runtimeErrorMessage(error).toLowerCase();
+  return message.includes('timed out') || message.includes('timeout');
+}
+
+export function runtimeProjectInfrastructureFailure(
+  error: unknown,
+  signal: AbortSignal | undefined
+): RuntimeCommandResult {
+  const diagnostic = runtimeErrorMessage(error);
+  const aborted = isRuntimeAbortError(error) || signal?.aborted;
+  if (aborted) {
+    const signalName = runtimeAbortSignalName(signal);
+    const signalCode = RUNTIME_SIGNAL_EXIT_CODES.get(signalName) ?? RUNTIME_SIGNAL_EXIT_CODES.get('SIGTERM')!;
+    return {
+      stdout: '',
+      stderr: '',
+      exitCode: 128 + signalCode,
+      error: {
+        code: 'EINTR',
+        errno: 4,
+        syscall: 'wait4',
+        message: 'Process interrupted by signal',
+        detail: {
+          signal: signalName,
+          signalCode,
+          diagnostic,
+        },
+      },
+    };
+  }
+  if (isRuntimeTimeoutError(error)) {
+    return {
+      stdout: '',
+      stderr: '',
+      exitCode: 124,
+      error: {
+        code: 'ETIMEDOUT',
+        errno: 110,
+        message: 'Process timed out',
+        detail: { diagnostic },
+      },
+    };
+  }
+  return {
+    stdout: '',
+    stderr: '',
+    exitCode: runtimeSignalExitCode('SIGKILL'),
+    error: {
+      code: 'EIO',
+      errno: 5,
+      message: 'Runtime process terminated unexpectedly',
+      detail: {
+        signal: 'SIGKILL',
+        signalCode: RUNTIME_SIGNAL_EXIT_CODES.get('SIGKILL')!,
+        diagnostic,
+      },
+    },
+  };
+}
+
 export class RuntimeProjectOutputTracker {
   private stdoutStreamed = '';
   private stderrStreamed = '';
@@ -1130,6 +1191,39 @@ export class RuntimeProjectOutputTracker {
   ): void {
     this.emitMissingStreamOutput('stdout', result.stdout, this.stdoutStreamed, output);
     this.emitMissingStreamOutput('stderr', result.stderr, this.stderrStreamed, output);
+  }
+
+  /**
+   * Return a complete final transcript when a command also emitted live output events.
+   *
+   * Nested commands can be interrupted after streaming output but before their parent has copied
+   * that output into its returned result. In that case the returned value is a shorter prefix of
+   * the transcript already shown in the terminal. Treating it as new output replays that prefix.
+   */
+  completeFinalOutput(
+    result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>
+  ): Pick<RuntimeCommandResult, 'stdout' | 'stderr'> {
+    return {
+      stdout: this.completeStreamOutput(result.stdout, this.stdoutStreamed),
+      stderr: this.completeStreamOutput(result.stderr, this.stderrStreamed),
+    };
+  }
+
+  private completeStreamOutput(finalOutput: string, streamedOutput: string): string {
+    if (!streamedOutput) return finalOutput;
+    if (!finalOutput) return streamedOutput;
+    if (finalOutput.includes(streamedOutput)) return finalOutput;
+    if (streamedOutput.includes(finalOutput)) return streamedOutput;
+
+    // Some adapters return only the unstreamed tail. Preserve the live transcript and append only
+    // the portion that does not overlap its suffix.
+    const maximumOverlap = Math.min(streamedOutput.length, finalOutput.length);
+    for (let overlap = maximumOverlap; overlap > 0; overlap -= 1) {
+      if (streamedOutput.endsWith(finalOutput.slice(0, overlap))) {
+        return `${streamedOutput}${finalOutput.slice(overlap)}`;
+      }
+    }
+    return `${streamedOutput}${finalOutput}`;
   }
 
   private emitMissingStreamOutput(
@@ -1161,6 +1255,28 @@ export interface RuntimeProjectEventQueueOptions {
   emit(event: RuntimeCommandEvent): void;
 }
 
+async function awaitRuntimeAbortable<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal
+): Promise<{ aborted: true } | { aborted: false; value: T }> {
+  if (!signal) return { aborted: false, value: await promise };
+  if (signal.aborted) return { aborted: true };
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve({ aborted: true });
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve({ aborted: false, value });
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
 export class RuntimeProjectEventQueue {
   private queue: Promise<void> = Promise.resolve();
 
@@ -1175,7 +1291,12 @@ export class RuntimeProjectEventQueue {
       const change = normalizeRuntimeFileChange(event.change);
       const phase = event.phase ?? 'live';
       if (options.signal?.aborted) return;
-      const shouldEmit = await options.applyFileChange(change, phase, { signal: options.signal });
+      const applied = await awaitRuntimeAbortable(
+        options.applyFileChange(change, phase, { signal: options.signal }),
+        options.signal
+      );
+      if (!('value' in applied)) return;
+      const shouldEmit = applied.value;
       if (options.signal?.aborted) return;
       if (shouldEmit === false) return;
       options.emit({
@@ -1215,7 +1336,7 @@ export class RuntimeProjectLiveIoController {
   private readonly abortController = new AbortController();
   private readonly abortInputSignal?: AbortSignal;
   private readonly abortInputListener?: () => void;
-  private readonly appliedFileChangePaths = new Set<string>();
+  private readonly appliedFileChanges = new Map<string, string>();
   private readonly outputBytes: Record<RuntimeCommandEventStream, number> = { stdout: 0, stderr: 0 };
   private readonly truncatedOutputStreams = new Set<RuntimeCommandEventStream>();
   private liveFileChangeCount = 0;
@@ -1266,7 +1387,7 @@ export class RuntimeProjectLiveIoController {
           if (this.abortController.signal.aborted) return false;
           const shouldEmit = await this.options.applyFileChange?.(change, phase, applyOptions);
           if (this.abortController.signal.aborted) return false;
-          this.appliedFileChangePaths.add(runtimeFileChangePath(change));
+          this.appliedFileChanges.set(runtimeFileChangePath(change), JSON.stringify(change));
           return shouldEmit;
         } finally {
           this.pendingFileChanges = Math.max(0, this.pendingFileChanges - 1);
@@ -1294,7 +1415,7 @@ export class RuntimeProjectLiveIoController {
       return event;
     }
     this.truncatedOutputStreams.add(event.stream);
-    const marker = `\n[tracekernel: ${event.stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+    const marker = `\n[${event.stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
     const truncated = `${runtimeProjectTruncateUtf8(event.data, Math.max(0, remaining))}${marker}`;
     this.outputBytes[event.stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
     return truncated ? { ...event, data: truncated } : null;
@@ -1320,12 +1441,13 @@ export class RuntimeProjectLiveIoController {
   }
 
   filterAppliedResultFiles<Result extends RuntimeCommandResult>(result: Result): Result {
-    if (this.appliedFileChangePaths.size === 0) return result;
-    const appliedFileChangePaths = new Set(this.appliedFileChangePaths);
-    this.appliedFileChangePaths.clear();
-    return filterRuntimeCommandResultFiles(result, (change) =>
-      appliedFileChangePaths.has(runtimeFileChangePath(change))
-    ) as Result;
+    if (this.appliedFileChanges.size === 0) return result;
+    const appliedFileChanges = new Map(this.appliedFileChanges);
+    this.appliedFileChanges.clear();
+    return filterRuntimeCommandResultFiles(result, (change) => {
+      const normalized = normalizeRuntimeFileChange(change);
+      return appliedFileChanges.get(runtimeFileChangePath(normalized)) === JSON.stringify(normalized);
+    }) as Result;
   }
 
   emitMissingFinalOutput(
@@ -1388,19 +1510,12 @@ export async function runRuntimeProjectWorkerBridge<
     await liveIo.flush();
   } catch (error) {
     liveIo.close();
-    const message = runtimeErrorMessage(error);
-    const aborted = isRuntimeAbortError(error) || options.request.signal?.aborted;
-    const signalName = aborted ? runtimeAbortSignalName(options.request.signal) : undefined;
-    const failedResult = {
-      stdout: '',
-      stderr: message ? `${message}\n` : aborted ? 'Execution aborted\n' : 'Runtime project worker failed.\n',
-      exitCode: signalName ? runtimeSignalExitCode(signalName) : 1,
-    } as Result;
+    const failedResult = runtimeProjectInfrastructureFailure(error, options.request.signal) as Result;
     liveIo.emitMissingFinalOutput(failedResult, (stream, data) => io.output(stream, data));
     io.status(options.finishPhase, options.finishMessage, {
       exitCode: failedResult.exitCode,
-      error: message,
-      ...(signalName ? { signal: signalName } : {}),
+      error: failedResult.error?.message,
+      ...(failedResult.error?.detail ?? {}),
     });
     return failedResult;
   }
@@ -1425,6 +1540,7 @@ export type RuntimeWorkspaceMutationHandler = (revision: number) => void;
 export interface RuntimeWorkspaceKernel {
   readonly info: RuntimeKernelInfo;
   readonly mutationVersion: number;
+  createProcess(options: RuntimeWorkspaceProcessOptions): RuntimeWorkspaceProcess;
   readFile(path: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<string>;
   writeFile(path: string, contents: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<void>;
   writeSkillFiles(files: readonly RuntimeFile[], actor?: RuntimeWorkspaceActor): Promise<void>;
@@ -1433,6 +1549,39 @@ export interface RuntimeWorkspaceKernel {
   snapshot(options?: { entrypoint?: string; includeHidden?: boolean }): Promise<RuntimeProjectSnapshot>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
   watchMutations(listener: RuntimeWorkspaceMutationHandler): RuntimeWorkspaceUnsubscribe;
+}
+
+export type RuntimeWorkspaceProcessSignalPolicy = 'standard' | 'system-only';
+
+export interface RuntimeWorkspaceProcessOptions {
+  /** Process name shown by ps and /proc. The kernel does not interpret this value. */
+  name: string;
+  actor: RuntimeWorkspaceActor;
+  cwd?: string;
+  env?: Record<string, string>;
+  /** `system-only` processes cannot be signaled from workspace commands. */
+  signalPolicy?: RuntimeWorkspaceProcessSignalPolicy;
+}
+
+/**
+ * A persistent, kernel-owned process context for a host application surface.
+ * Operations performed through the handle are journaled with this process's
+ * actor and PID, and commands are created as its children.
+ */
+export interface RuntimeWorkspaceProcess {
+  readonly pid: number;
+  readonly name: string;
+  readonly actor: RuntimeWorkspaceActor;
+  readonly signalPolicy: RuntimeWorkspaceProcessSignalPolicy;
+  readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string>;
+  writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void>;
+  deleteFile(path: string): Promise<void>;
+  applyFileChange(change: RuntimeFileChange, phase?: RuntimeFileMutationPhase): Promise<void>;
+  runCommand(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
+  runProjectCommand(name: string, options?: RuntimeProjectCommandOptions): Promise<RuntimeCommandResult>;
+  createTerminalSession(options?: RuntimeProjectTerminalSessionOptions): RuntimeProjectTerminalSession;
+  /** System/control-plane teardown. This is not reachable through workspace signals. */
+  dispose(): void;
 }
 
 export interface RuntimeWorkspaceStat {
@@ -1469,6 +1618,7 @@ export type RuntimeProjectTerminalInputStateReason =
   | 'command-start'
   | 'stdin-prompt'
   | 'stdin-submit'
+  | 'stdin-eof'
   | 'command-finish';
 
 export interface RuntimeProjectTerminalInputState {
@@ -1486,7 +1636,15 @@ export interface RuntimeProjectTerminalInputStateEvent {
   state: RuntimeProjectTerminalInputState;
 }
 
-export type RuntimeProjectTerminalEvent = RuntimeProjectTerminalInputStateEvent;
+export interface RuntimeProjectTerminalControlEvent {
+  type: 'control';
+  action: 'clear' | 'exit';
+  exitCode?: number;
+}
+
+export type RuntimeProjectTerminalEvent =
+  | RuntimeProjectTerminalInputStateEvent
+  | RuntimeProjectTerminalControlEvent;
 
 export type RuntimeProjectTerminalEventHandler = (event: RuntimeProjectTerminalEvent) => void;
 
@@ -1494,11 +1652,14 @@ export interface RuntimeProjectTerminalSession {
   readonly cwd: string;
   readonly prompt: RuntimeProjectTerminalPrompt;
   readonly inputState: RuntimeProjectTerminalInputState;
+  readonly closed: boolean;
   /**
    * Interrupt the active foreground command as if the user pressed Ctrl+C.
    * Returns false when the terminal has no interruptible foreground command.
    */
   interrupt(): boolean;
+  /** Close the active process stdin as if the user pressed Ctrl+D. */
+  endStdin(): boolean;
   writeStdin(data: string): boolean;
   run(command: string, options?: RuntimeProjectTerminalRunOptions): Promise<RuntimeCommandResult>;
 }
@@ -1546,6 +1707,13 @@ export interface RuntimeProjectCommandOptions extends RuntimeCommandOptions {
 
 export type RuntimeProjectCommandSource = 'argument' | 'file' | 'stdin';
 
+export interface RuntimeProjectProcessInfo {
+  pid: number;
+  ppid: number;
+  pgid: number;
+  sid: number;
+}
+
 export interface RuntimeProjectCommandRequest<
   Source extends string = RuntimeProjectCommandSource
 > {
@@ -1555,6 +1723,7 @@ export interface RuntimeProjectCommandRequest<
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  process?: RuntimeProjectProcessInfo;
   stdinPipe?: RuntimeCommandStdinSharedBuffer;
   project: RuntimeProjectSnapshot;
   kernelHttp?: RuntimeKernelHttpBridge;

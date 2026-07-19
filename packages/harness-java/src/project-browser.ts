@@ -75,12 +75,12 @@ export function createBrowserJavaProjectRunner(
   return (request) => {
     if (request.options?.enablePreview === true) {
       return Promise.resolve(
-        unsupportedBrowserJavaResult(request, 'java: --enable-preview is not supported in the browser project environment\n')
+        unsupportedBrowserJavaResult(request, 'java: --enable-preview is not supported by this runtime\n')
       );
     }
     if (request.options?.enableAssertions === true) {
       return Promise.resolve(
-        unsupportedBrowserJavaResult(request, 'java: -ea is not supported in the browser project environment\n')
+        unsupportedBrowserJavaResult(request, 'java: -ea is not supported by this runtime\n')
       );
     }
     return runRuntimeProjectWorkerBridge({

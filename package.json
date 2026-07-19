@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness",
-  "version": "0.11.1",
+  "version": "0.11.3",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
@@ -163,7 +163,7 @@
     "test:cpp-rewriter": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-rewriter.ts",
     "test:cpp-browser-worker": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-browser-worker.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-compiler-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-compiler-lifecycle-browser.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-runtime-asset-plumbing.ts",
     "test:js-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-worker-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-authority-browser.ts",
-    "test:project": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-project-workspace.ts && pnpm run test:tracekernel-hardening && pnpm run test:external-http",
+    "test:project": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-project-workspace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-journal.ts && pnpm run test:tracekernel-hardening && pnpm run test:external-http",
     "test:tracekernel-hardening": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-hardening.ts",
     "test:external-http": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-external-http.ts",
     "test:python-harness-sync": "pnpm run test:python-sync",
@@ -172,7 +172,10 @@
     "test:python-browser-worker": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-browser-worker.ts",
     "test:python-module-worker": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-module-worker.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-module-worker-protocol.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-configured-package-failure.ts",
     "test:python-module-worker-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-module-worker-browser.ts",
-    "test:project-browser": "pnpm run test:tracekernel-hardening && pnpm run test:external-http && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-authority-browser.ts",
+    "test:browser-terminal-fidelity": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-terminal-fidelity.ts",
+    "test:project-browser": "pnpm run test:tracekernel-hardening && pnpm run test:external-http && pnpm run test:browser-terminal-fidelity && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-authority-browser.ts",
+    "test:kernel-storage-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-kernel-storage-browser.ts",
+    "test:kernel-storage-browser-matrix": "TRACECODE_KERNEL_STORAGE_ENGINES=chromium,firefox,webkit pnpm run test:kernel-storage-browser",
     "test:project-browser-matrix": "node scripts/test-browser-project-provider-matrix.mjs",
     "test:classic-browser-matrix": "node scripts/test-browser-classic-provider-matrix.mjs",
     "test:python-worker-client-http": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-worker-client-http.ts",
@@ -219,6 +222,9 @@
       "dompurify": "3.4.1",
       "picomatch": "4.0.4",
       "postcss": "8.5.10"
+    },
+    "patchedDependencies": {
+      "just-bash@3.1.0": "patches/just-bash@3.1.0.patch"
     }
   },
   "dependencies": {

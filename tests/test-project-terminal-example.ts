@@ -41,7 +41,7 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
       output: document.querySelector('#dev-terminal-output')?.textContent ?? '',
     }));
     assertCondition(!initial.hasHeader, 'project terminal should not render a header or menubar');
-    assertCondition(initial.prompt === 'user@tracevm demo %', `project terminal prompt should use demo workspace: ${initial.prompt}`);
+    assertCondition(initial.prompt === 'user@tracevm demo $', `project terminal prompt should use demo workspace: ${initial.prompt}`);
     assertCondition(
       initial.output.includes('C++: cd cpp && clang++ -std=c++17 report.cpp -o ../report') &&
         initial.output.includes('     ../report') &&
@@ -102,7 +102,7 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
       `terminal input row should return after compile exits: ${JSON.stringify(compileVisibility)}`
     );
     assertCondition(
-      await page.locator('#dev-terminal-prompt').textContent() === 'user@tracevm cpp %',
+      await page.locator('#dev-terminal-prompt').textContent() === 'user@tracevm cpp $',
       'compound cd should persist in the terminal prompt after the compile command completes'
     );
 
@@ -155,19 +155,15 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
     await page.fill('#dev-terminal-input', 'cd .. && javac java/TicketTriage.java && java -cp java TicketTriage');
     await page.press('#dev-terminal-input', 'Enter');
     await page.waitForFunction(
-      () => document.querySelector('#dev-terminal-output')?.textContent?.includes(
-        'Browser project Java is unavailable because CheerpJ is not vendored'
-      ) === true,
+      () => document.querySelector('#dev-terminal-output')?.textContent?.includes('javac: command not found') === true,
       undefined,
       { timeout: 15_000 }
     );
 
     const javaRunOutput = await page.locator('#dev-terminal-output').textContent();
     assertCondition(
-      javaRunOutput?.includes('assets.runtimeManifests.java') === true &&
-        javaRunOutput.includes('javaWorkerClient') &&
-        javaRunOutput.includes('exit 1'),
-      `project terminal should explain the consumer-owned Java runtime requirement: ${JSON.stringify(javaRunOutput)}`
+      javaRunOutput?.includes('javac: command not found') === true && javaRunOutput.includes('exit 127'),
+      `project terminal should expose no Java command when the consumer runtime is unavailable: ${JSON.stringify(javaRunOutput)}`
     );
     assertCondition(
       !requestedUrls.some((url) => url.includes('cheerpj-loader.js')),

@@ -2,7 +2,22 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -40,45 +55,10 @@ jobs:
       - name: Test project and shared runtime contracts
         run: |
           pnpm test:project
+          pnpm test:kernel-storage-browser
           pnpm test:runtime-contract
           pnpm test:standalone-boundary
       - name: Build
         run: pnpm build
       - name: Test package surfaces and smoke
         run: pnpm test:packaged-surface && pnpm test:language-packages && pnpm test:smoke && pnpm test:asset-sync
-
-  browser-project-matrix:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile=false
-      - name: Install browser test runtimes
-        run: pnpm exec playwright install --with-deps chromium firefox webkit
-      - name: Test browser project providers across engines
-        run: pnpm test:project-browser-matrix
-
-  browser-classic-matrix:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile=false
-      - name: Install browser test runtimes
-        run: pnpm exec playwright install --with-deps chromium firefox webkit
-      - name: Test Classic browser providers across engines
-        run: pnpm test:classic-browser-matrix

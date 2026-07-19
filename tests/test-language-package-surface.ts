@@ -885,7 +885,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         browserProjectDist.includes('enqueueKernelHttpSyncServerRequest(bridge, request, runtimeLabel)') &&
           browserProjectDist.includes('drainKernelHttpSyncServerQueue(bridge, runtimeLabel)') &&
           browserProjectDist.includes('dispatchKernelHttpSyncServerRequest(bridge, entry.request, runtimeLabel)') &&
-          browserProjectDist.includes('TraceKernel HTTP server queue is full'),
+          browserProjectDist.includes('Service Unavailable\\n'),
         '@tracecode/harness-browser project bundle should ship the shared queued sync HTTP server bridge'
       );
       const browserOnlyAppDir = join(tempRoot, 'browser-only-app');
@@ -1030,7 +1030,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     }
     if (packageCheck.name === '@tracecode/harness-project') {
       assertCondition(
-        packedPackageJson.dependencies?.['just-bash'] === '3.0.1',
+        packedPackageJson.dependencies?.['just-bash'] === '3.1.0',
         '@tracecode/harness-project should declare the just-bash-backed project workspace dependency'
       );
     }
@@ -1111,7 +1111,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       type: 'module',
       private: true,
       dependencies: {
-        'just-bash': '3.0.1',
+        'just-bash': '3.1.0',
       },
     }),
     'utf8'
@@ -1234,7 +1234,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         url: 'http://localhost:' + stalledHttp.info.port + '/stall',
         timeoutMs: 1,
       });
-      if (timedOutHttp.status !== 0 || timedOutHttp.body !== 'TraceKernel HTTP request timed out after 1 milliseconds\\n') {
+      if (timedOutHttp.status !== 0 || timedOutHttp.body !== 'Network request timed out after 1 milliseconds\\n') {
         throw new Error('@tracecode/harness-project workspace HTTP timeout smoke failed: ' + JSON.stringify(timedOutHttp));
       }
       stalledHttp.close();

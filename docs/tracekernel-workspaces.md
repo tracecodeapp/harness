@@ -43,6 +43,10 @@ runner payloads:
 - `kernel.workspaceAlias`
 - `kernel.scheduler`
 
+The default OS name is `tracekernel`. Browser language adapters must not claim
+to run on Linux or invent a Linux release; Linux-like shell behavior is a
+compatibility surface, not the runtime's identity.
+
 If `kernel.workspace.root` is omitted, TraceKernel derives a root from the user
 home and workspace name, such as `/home/ada/weather-api`. If no kernel config is
 provided, the default root is `/workspace`.
@@ -108,10 +112,46 @@ Useful command knobs:
 Terminal UIs should use `workspace.createTerminalSession(...)`. The terminal
 session owns prompt state, foreground command lifecycle, and live stdin state.
 
+The public process boundary deliberately separates program diagnostics from
+runtime infrastructure diagnostics. Program failures preserve native-looking
+stdout, stderr, workspace paths, and exit codes. Browser worker crashes,
+execution-host failures, bridge timeouts, and kernel synchronization failures
+are returned as structured command errors and status metadata without leaking
+host paths or worker implementation details into the terminal. See
+[Project Terminal Sessions](./project-terminal-session.md#error-presentation) for
+the rendering contract.
+
+### Host application processes
+
+Embedding applications can represent long-lived host surfaces as real kernel
+processes without teaching TraceKernel what those surfaces mean:
+
+```ts
+const process = workspace.kernel.createProcess({
+  name: 'host-agent',
+  actor: { id: 'agent', kind: 'principal' },
+  signalPolicy: 'system-only',
+});
+
+await process.writeFile('src/change.ts', source);
+await process.runCommand('npm test');
+const terminal = process.createTerminalSession();
+```
+
+The name is opaque application metadata. Direct mutations are journaled with
+the process PID and actor, while commands and terminal submissions receive a
+new child PID whose `ppid` is the host process. `signalPolicy: 'system-only'`
+keeps a control-plane process visible in `ps` and `/proc` but prevents workspace
+commands, including process-group signals and `tracekernelctl reset`, from
+terminating it or bypassing its lifecycle policy. The returned
+handle's `dispose()` method is the system/control-plane lifecycle path and also
+interrupts active children. The default `standard` policy preserves ordinary
+workspace process behavior.
+
 ### Browser worker isolation and optional prewarming
 
 Browser project workspaces default to `projectWorkerIsolation: 'per-command'`.
-Python, Java, C#, and C++ commands therefore execute in workers that are retired
+Python, JavaScript, Java, C#, and C++ commands therefore execute in workers that are retired
 after one command; a worker that has run user code is never returned to an idle
 pool. Shared workers are trusted-only and require both
 `projectWorkerIsolation: 'shared'` and `trustedSharedWorkerReuse: true`.
@@ -122,21 +162,29 @@ Heavy runtime startup can be hidden with an opt-in one-shot prewarm depth:
 const workspace = await createBrowserProjectWorkspace({
   projectWorkerPrewarm: {
     python: 1,
+    javascript: 1,
+    typescript: 1,
+    java: 1,
     csharp: 1,
+    cpp: 1,
   },
 });
 ```
 
-No heavy language is prewarmed by default. Each configured Python, Java, or C#
+No language is prewarmed by default. Each configured Python, JavaScript, Java, C#, or C++
 worker finishes trusted runtime warmup before it becomes leasable, receives at
 most one user command, and is then terminated. Failed warmups are evicted and a
 fresh worker is tried; aborting or disposing the workspace retires affected
-leases. Depth is capped at 2 per language and 4 across a workspace to bound
+leases. TypeScript prewarming loads its trusted compiler and shares that in-flight
+load with the first compile. JavaScript and TypeScript are capped at 1; worker-backed
+providers are capped at 2 per language and total depth is capped at 6 to bound
 idle memory and concurrent warmups. The configured depth is the ready/idle
 target: while a command holds its one-shot lease, a replacement warmup can
 temporarily add one worker beyond that language's idle depth. Prewarming is
 incompatible with trusted shared-worker mode and with consumer-provided
-language clients.
+language clients. Workspace creation never awaits these warmups: the filesystem
+and terminal are available immediately, while a command for a still-loading
+provider waits on that provider's existing background initialization.
 
 ## Virtual Namespaces
 

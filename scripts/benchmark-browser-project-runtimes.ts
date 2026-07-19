@@ -26,6 +26,7 @@ type Phase =
   | 'workspace-construction'
   | 'first-command'
   | 'second-fresh-command'
+  | 'failure-fidelity'
   | 'filesystem'
   | 'policy-denials'
   | 'http-bridge'
@@ -61,6 +62,12 @@ interface ProjectFixture {
   command: string;
   expectedStdout: string;
   files: Array<{ path: string; contents: string }>;
+}
+
+interface FailureFixture {
+  path: string;
+  command: string;
+  contents: string;
 }
 
 interface BrowserMemorySnapshot {
@@ -179,6 +186,7 @@ const ALL_PHASES: Phase[] = [
   'workspace-construction',
   'first-command',
   'second-fresh-command',
+  'failure-fidelity',
   'filesystem',
   'policy-denials',
   'http-bridge',
@@ -186,6 +194,49 @@ const ALL_PHASES: Phase[] = [
   'cancellation',
   'runtime-cancellation',
   'disposal',
+];
+
+const FAILURE_FIXTURES: Record<Language, FailureFixture> = {
+  python: {
+    path: 'failure_fidelity.py',
+    command: 'python3 failure_fidelity.py',
+    contents: 'raise RuntimeError("fidelity failure")\n',
+  },
+  javascript: {
+    path: 'failure-fidelity.js',
+    command: 'node failure-fidelity.js',
+    contents: 'throw new Error("fidelity failure")\n',
+  },
+  typescript: {
+    path: 'failure-fidelity.ts',
+    command: 'tsc failure-fidelity.ts',
+    contents: 'const value: number = ;\n',
+  },
+  java: {
+    path: 'FailureFidelity.java',
+    command: 'javac FailureFidelity.java',
+    contents: 'public class FailureFidelity { public static void main(String[] args) { int value = ; } }\n',
+  },
+  csharp: {
+    path: 'FailureFidelity.cs',
+    command: 'dotnet run --project App.csproj',
+    contents: 'var value = ;\n',
+  },
+  cpp: {
+    path: 'failure-fidelity.cpp',
+    command: 'clang++ -std=c++17 failure-fidelity.cpp -o failure-fidelity',
+    contents: 'int main() { return ; }\n',
+  },
+};
+
+const FORBIDDEN_PUBLIC_ERROR_FRAGMENTS = [
+  'tracekernel',
+  'worker emitted',
+  'worker request',
+  'execution host',
+  'blob:',
+  '/users/',
+  '/packages/harness-',
 ];
 const DEFAULT_SEED = 20_260_711;
 const EMPTY_RESOURCE_TIMING: ResourceTimingSummary = {
@@ -929,14 +980,16 @@ async function runBrowserPlanItem(
     }
 
     const fixture = FIXTURES[item.language];
+    const failureFixture = FAILURE_FIXTURES[item.language];
     const evaluation = page.evaluate(
-      async ({ language, iteration, runOrdinal, fixture, requestTimeoutMs, runtimeManifests, prewarm, executionHostUrl }) => {
+      async ({ language, iteration, runOrdinal, fixture, failureFixture, forbiddenPublicErrorFragments, requestTimeoutMs, runtimeManifests, prewarm, executionHostUrl }) => {
         const benchmarkPhase = (globalThis as typeof globalThis & {
           __tracecodeProjectBenchPhase?: (phase: string) => Promise<void>;
         }).__tracecodeProjectBenchPhase;
         const dependentPhases: Phase[] = [
           'first-command',
           'second-fresh-command',
+          'failure-fidelity',
           'filesystem',
           'policy-denials',
           'http-bridge',
@@ -1191,6 +1244,42 @@ async function runBrowserPlanItem(
             () => runProjectCommand('second project command', fixture.command),
             validateCommand,
             commandShape
+          );
+
+          await measurePhase(
+            'failure-fidelity',
+            async () => {
+              await withTimeout('failure fixture write', workspace.writeFile(failureFixture.path, failureFixture.contents));
+              try {
+                const result = await runProjectCommand('language failure fidelity', failureFixture.command);
+                return { failure: failureFixture, result };
+              } finally {
+                await withTimeout('failure fixture cleanup', workspace.deleteFile(failureFixture.path));
+              }
+            },
+            (value) => {
+              const errors: string[] = [];
+              const output = `${value.result.stdout}\n${value.result.stderr}`;
+              const normalizedOutput = output.toLowerCase();
+              if (value.result.exitCode === 0) errors.push('invalid user program unexpectedly exited 0');
+              if (!normalizedOutput.includes(value.failure.path.toLowerCase())) {
+                errors.push(`diagnostic did not identify ${JSON.stringify(value.failure.path)}: ${JSON.stringify(output)}`);
+              }
+              for (const fragment of forbiddenPublicErrorFragments) {
+                if (normalizedOutput.includes(fragment)) {
+                  errors.push(`diagnostic leaked implementation detail ${JSON.stringify(fragment)}: ${JSON.stringify(output)}`);
+                }
+              }
+              return errors;
+            },
+            (value) => ({
+              command: value.failure.command,
+              exitCode: value.result.exitCode,
+              stdout: value.result.stdout,
+              stderr: value.result.stderr,
+              serializedResultBytes: serializedBytes(value.result),
+              details: { fixturePath: value.failure.path },
+            })
           );
 
           await measurePhase(
@@ -1480,6 +1569,8 @@ async function runBrowserPlanItem(
         iteration: item.iteration,
         runOrdinal: item.runOrdinal,
         fixture,
+        failureFixture,
+        forbiddenPublicErrorFragments: FORBIDDEN_PUBLIC_ERROR_FRAGMENTS,
         requestTimeoutMs: args.requestTimeoutMs,
         runtimeManifests,
         prewarm: samplePrewarm,

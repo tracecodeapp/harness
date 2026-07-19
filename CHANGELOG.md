@@ -21,6 +21,45 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 - Python resource-guard trips now report a human-readable error (`Execution stopped: resource limit exceeded (line-limit).`) alongside the structured `timeoutReason` instead of encoding the reason in the error string.
 - Tests and scripts are now typechecked (`pnpm typecheck` includes `typecheck:tests` over `tests/**` and `scripts/**`), and test entry points run under `node:test`, so suite failures report through the standard runner instead of ad-hoc `main().catch` exits.
 
+## [0.11.3] - 2026-07-17
+
+### Fixed
+
+- Made encrypted Project workspace persistence safe on WebKit by completing revision allocation and AES-GCM encryption before opening the IndexedDB write transaction. The harness now queues the first object-store request synchronously with transaction creation instead of allowing Safari to auto-commit an idle transaction.
+- Bundled Turndown's Domino fallback into the published package so clean Node consumers can import Project and native workspace entry points without relying on an undeclared ancestor dependency.
+
+### Added
+
+- Added a real-browser encrypted Project persistence gate. Regular CI covers Chromium, while the scheduled compatibility matrix covers Chromium, Firefox, and WebKit through save, load, revision, flush, and clear behavior.
+
+## [0.11.2] - 2026-07-15
+
+### Fixed
+
+- Patched the published `just-bash` 3.1.0 browser bundle used by TraceKernel instead of maintaining a private source fork. Browser project shells now preserve Bash behavior for malformed POSIX character classes, assignment-only exit status, function-local loop control, `return --`, `exec`, `unset`, escaped tildes, `-nt`/`-ot` missing-file checks, `wc -L` display width, decimal sleep values without a leading zero, standard-input and final-newline behavior in `head`/`tail`, common `grep` filename, byte-offset, multi-pattern, pattern-file, and quiet-error flows, and common `xargs` argument-file, attached-batch, logical-EOF, empty-input, and exit-status behavior. Invalid `xargs -n` values now fail immediately instead of entering an unbounded loop. The patch also accepts practical `cp` compatibility flags and `find` path aliases, and adds browser-safe `base32`, `cksum`, `cmp`, `factor`, `fmt`, `getopt`, `hexdump -C`, `id`, `install`, `link`, `mktemp`, `realpath`, `truncate`, `sha384sum`, and `sha512sum` commands, with a harness-browser regression gate covering the installed package artifact.
+- Made browser-project terminal failures follow native CLI boundaries: learner process errors retain language-native diagnostics and workspace paths, while worker crashes, request timeouts, execution-host failures, and live-file bridge failures stay out of stderr and remain available as structured kernel diagnostics.
+- Replaced synthetic network and package-manager failures with native-shaped behavior. Blocked or unreachable fetches now fail as transport errors, `node:http` and `node:https` share the same error contract, `curl` distinguishes DNS and connection failures with native exit codes, and offline `npm install` reports an npm-style network failure.
+- Made project CLI discovery and version commands report the embedded Python, Node.js compatibility level, TypeScript, OpenJDK, Clang, and .NET toolchains instead of exposing harness adapters. Browser Node projects now identify the operating system honestly as TraceKernel through `process`, `node:os`, package-manager metadata, and `/proc`; `npm start` honors npm's implicit `node server.js` fallback, and missing or malformed manifests use npm-shaped `ENOENT` and `EJSONPARSE` failures.
+- Removed host filesystem paths, browser worker URLs, synthetic `exit N` lines, and TraceKernel-branded bridge messages from user-visible terminal output. Terminal prompts now use the conventional unprivileged `$` suffix and Ctrl+C returns signal status without leaking an internal `wait4` error.
+- Made interactive terminal control shell-shaped: Ctrl+D closes a foreground process's stdin exactly once, `clear` uses a structured terminal event, and `exit` closes only its terminal session without disposing the workspace or sibling terminals, including top-level compound command lists and numeric error cases.
+- Added native-shaped process and listener inspection with `ps aux`, `pgrep`, `pkill`, `ss -ltnp`, and `lsof -i :PORT`; split and combined flags compose normally. Expanded common `curl` flag composition, silent/show-error behavior, bounded redirects, cross-origin credential stripping, output-file failures, and write-out formatting for service debugging.
+- Fixed `tsc file.ts` so explicit source files are compiled even when a nearby `tsconfig.json` excludes them, matching the native TypeScript command-line root-selection rule.
+- Made cancellation interrupt a cold, directly warming browser provider immediately instead of waiting for Python, Java, C#, or C++ runtime initialization to finish before the command settles.
+- Preserved the owning runtime actor and process ID when browser project workers write or delete files. Worker mutations now flow through the outer TraceKernel command context exactly once instead of being journaled as unattributed system changes.
+- Routed package-script banners through the active command's live output context so terminal consumers receive one ordered stream whose bytes exactly match the returned stdout, including after Ctrl+C interrupts a nested script, without duplicating script output when the final result is reconciled or restored.
+- Made live filesystem application abortable, restored same-realm browser globals before timed-out commands return, preserved final diffs that differ from an earlier live write to the same path, and converted readonly shell mutations into normal command failures.
+- Hardened the project-workspace release gate so Node cannot exit while its asynchronous assertions are pending. The completed gate now covers foreground SIGINT exit status, expiration after hydration, executable path/glob normalization, transactional rollback, and cancellation while waiting on filesystem work.
+
+### Changed
+
+- Project workspaces now return as soon as the filesystem and terminal are ready while configured Python, JavaScript, TypeScript, Java, C#, and C++ providers warm in the background. A command issued during startup waits on that provider's existing initialization instead of starting a duplicate, including hosted Java execution-host readiness.
+- Upgraded the project shell to just-bash 3.1.0. Redirects now preserve Bash-like create/truncate-before-write ordering, bundled `set -euo pipefail` works, and upstream fixes cover redirected file-descriptor routing, command substitutions containing heredocs, multiline quoted strings, and mixed text/byte output.
+
+### Added
+
+- Added a dedicated browser terminal-fidelity gate covering npm script banners, Node filesystem/module/syntax diagnostics, fetch and HTTPS transport errors, curl DNS behavior, interactive stdin/EOF, pipes, redirects, status expansion, background jobs, per-terminal shell state, listener/process inspection, terminal-local exit, and crash/timeout boundaries for Python, Java, C#, and C++ runners. The cross-engine provider matrix now also runs an invalid learner program for all six project languages and rejects any worker, host-path, Blob URL, harness-package, or TraceKernel branding in public diagnostics.
+- Added generic kernel-owned process contexts for embedding applications. A host can assign a process name, actor, and `system-only` signal policy; direct file mutations retain that PID and actor, commands and terminal submissions retain parent lineage, and workspace `kill`, process-group signals, or `tracekernelctl reset` return `Operation not permitted` for protected processes while system control-plane disposal remains available.
+
 ## [0.11.1] - 2026-07-13
 
 ### Fixed

@@ -666,9 +666,18 @@ async function main(): Promise<void> {
           },
         },
       },
-      projectWorkerPrewarm: { python: 1, java: 1, csharp: 1 },
+      projectWorkerPrewarm: {
+        python: 1,
+        javascript: 1,
+        typescript: 1,
+        java: 1,
+        csharp: 1,
+        cpp: 1,
+      },
       files: [
         { path: 'main.py', contents: 'print("python")\n' },
+        { path: 'main.js', contents: 'console.log("javascript")\n' },
+        { path: 'main.ts', contents: 'console.log("typescript")\n' },
         { path: 'Main.java', contents: 'class Main { public static void main(String[] args) {} }\n' },
         { path: 'main.cpp', contents: 'int main() { return 0; }\n' },
         {
@@ -679,7 +688,17 @@ async function main(): Promise<void> {
       ],
     });
     try {
+      const prewarmedWorkerUrls = workerInstances
+        .slice(beforeAuthorityWorkerCount)
+        .map((worker) => String(worker.url));
+      for (const workerName of ['pyodide-worker.js', 'javascript-project-worker.js', 'java-worker.js', 'csharp-worker.js', 'cpp-worker.js']) {
+        assertCondition(
+          prewarmedWorkerUrls.some((url) => url.includes(workerName)),
+          `Project workspace should begin ${workerName} warmup without waiting for a command: ${JSON.stringify(prewarmedWorkerUrls)}`
+        );
+      }
       await authorityProjectWorkspace.runCommand('python3 main.py');
+      await authorityProjectWorkspace.runCommand('node main.js');
       await authorityProjectWorkspace.runCommand('java Main');
       await authorityProjectWorkspace.runCommand('dotnet run --project App.csproj');
       await authorityProjectWorkspace.runCommand('clang++ main.cpp -o app');
@@ -706,6 +725,16 @@ async function main(): Promise<void> {
               (worker?.messages.findIndex((message) => message.type === 'warmup') ?? -1) <
                 (worker?.messages.findIndex((message) => message.type === messageType) ?? -1),
             `${runtime} prewarmed worker must finish warmup before its one user lease`
+          );
+        } else {
+          const cppWarmupWorkerIndex = authorityWorkers.findIndex((candidate) =>
+            String(candidate.url).includes('cpp-worker.js') &&
+            candidate.messages.some((message) => message.type === 'warmup')
+          );
+          const cppCommandWorkerIndex = authorityWorkers.indexOf(worker!);
+          assertCondition(
+            cppWarmupWorkerIndex >= 0 && cppCommandWorkerIndex > cppWarmupWorkerIndex,
+            'C++ toolchain warmup must start before the disposable user execution worker'
           );
         }
         assertCondition(worker?.terminated === true, `${runtime} one-shot project worker must be retired after the command`);
@@ -785,6 +814,39 @@ async function main(): Promise<void> {
         .filter((worker) => String(worker.url).startsWith('/project-prewarm/pyodide-worker.js'))
         .every((worker) => worker.terminated),
       'Disposing a prewarmed workspace must retire idle, warming, and leased workers'
+    );
+
+    const abortWarmupPrefix = '/project-cold-warmup-abort/pyodide-worker.js';
+    holdPythonWarmupForUrlPrefix = abortWarmupPrefix;
+    const abortWarmupWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-cold-warmup-abort',
+      projectWorkerPrewarm: { python: 0 },
+      files: [{ path: 'abort.py', contents: 'while True: pass\n' }],
+    });
+    const abortWarmupController = new AbortController();
+    const abortWarmupStartedAt = Date.now();
+    const abortWarmupCommand = abortWarmupWorkspace.runCommand('python3 abort.py', {
+      signal: abortWarmupController.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    abortWarmupController.abort();
+    const abortWarmupResult = await abortWarmupCommand;
+    const abortWarmupWallMs = Date.now() - abortWarmupStartedAt;
+    const abortedWarmupWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith(abortWarmupPrefix)
+    );
+    holdPythonWarmupForUrlPrefix = undefined;
+    abortWarmupWorkspace.dispose();
+    assertCondition(
+      abortWarmupResult.exitCode === 143 &&
+        abortWarmupResult.error?.detail?.signal === 'SIGTERM' &&
+        abortWarmupWallMs < 1_000,
+      `Aborting a command during a cold provider warmup should settle immediately: ${JSON.stringify({ abortWarmupResult, abortWarmupWallMs })}`
+    );
+    assertCondition(
+      abortedWarmupWorker?.terminated === true &&
+        !abortedWarmupWorker.messages.some((message) => message.type === 'execute-project-python'),
+      'Aborting a cold provider warmup must retire the worker before user code executes'
     );
 
     failedWarmupUrlPrefix = '/project-prewarm-failure/pyodide-worker.js';

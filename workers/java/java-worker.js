@@ -311,7 +311,7 @@ function applyJavaProjectEventBudget(context, payload) {
     }
 
     context.truncatedOutputStreams.add(payload.stream);
-    const marker = `\n[tracekernel: ${payload.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
+    const marker = `\n[${payload.stream} output truncated after ${PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
     const data = `${projectTruncateUtf8(payload.data, Math.max(0, remaining))}${marker}`;
     context.outputBytes[payload.stream] = PROJECT_MAX_OUTPUT_STREAM_BYTES + projectUtf8Bytes(marker);
     return data ? { ...payload, data } : null;
@@ -430,22 +430,22 @@ function javaHttpBase64FromString(value) {
 }
 
 function javaHttpErrorManifest(message) {
-  return `ERROR\n${javaHttpBase64FromString(message || 'TraceKernel HTTP request failed')}`;
+  return `ERROR\n${javaHttpBase64FromString(message || 'Network request failed')}`;
 }
 
 function dispatchJavaProjectHttpSync(requestJson) {
   const context = activeJavaProjectIo;
   if (!context?.messageId) {
-    return javaHttpErrorManifest('TraceKernel HTTP is only available during project execution');
+    return javaHttpErrorManifest('Network subsystem is unavailable');
   }
   if (typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined' || typeof Atomics.wait !== 'function') {
-    return javaHttpErrorManifest('SharedArrayBuffer support is required for Java TraceKernel HTTP');
+    return javaHttpErrorManifest('Network subsystem is unavailable');
   }
   let request;
   try {
     request = JSON.parse(String(requestJson ?? ''));
   } catch (error) {
-    return javaHttpErrorManifest('Invalid Java TraceKernel HTTP request');
+    return javaHttpErrorManifest('Invalid network request');
   }
   const timeoutMs = Number(request?._tracekernelTimeoutMs);
   if (request && typeof request === 'object') {
@@ -465,26 +465,26 @@ function dispatchJavaProjectHttpSync(requestJson) {
     });
     const waitResult = Atomics.wait(header, 0, 0, JAVA_HTTP_SYNC_TIMEOUT_MS);
     if (waitResult === 'timed-out') {
-      return javaHttpErrorManifest('TraceKernel HTTP request timed out');
+      return javaHttpErrorManifest('Network request timed out');
     }
     const length = Atomics.load(header, 1);
     if (!Number.isFinite(length) || length < 0 || length > JAVA_HTTP_SYNC_BUFFER_BYTES) {
-      return javaHttpErrorManifest('TraceKernel HTTP returned an invalid response');
+      return javaHttpErrorManifest('Invalid network response');
     }
     return javaHttpDecodeUtf8(new Uint8Array(buffer, JAVA_HTTP_SYNC_HEADER_BYTES, length));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return javaHttpErrorManifest(message || 'TraceKernel HTTP request failed');
+    return javaHttpErrorManifest(message || 'Network request failed');
   }
 }
 
 function registerJavaProjectHttpServerSync(host, port) {
   const context = activeJavaProjectIo;
   if (!context?.messageId) {
-    return javaHttpErrorManifest('TraceKernel HTTP listeners are only available during project execution');
+    return javaHttpErrorManifest('Network subsystem is unavailable');
   }
   if (typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined' || typeof Atomics.wait !== 'function') {
-    return javaHttpErrorManifest('SharedArrayBuffer support is required for Java TraceKernel HTTP listeners');
+    return javaHttpErrorManifest('Network subsystem is unavailable');
   }
   const serverId = `java-http-${nextJavaHttpServerId++}`;
   const requestBuffer = new SharedArrayBuffer(JAVA_HTTP_SYNC_HEADER_BYTES + JAVA_HTTP_SYNC_BUFFER_BYTES);
@@ -508,25 +508,25 @@ function registerJavaProjectHttpServerSync(host, port) {
     const waitResult = Atomics.wait(controlHeader, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_IDLE, JAVA_HTTP_SYNC_TIMEOUT_MS);
     if (waitResult === 'timed-out') {
       javaHttpServers.delete(serverId);
-      return javaHttpErrorManifest('TraceKernel HTTP listener registration timed out');
+      return javaHttpErrorManifest('Network listener registration timed out');
     }
     const length = Atomics.load(controlHeader, JAVA_HTTP_SYNC_LENGTH_INDEX);
     const manifest = javaHttpDecodeUtf8(new Uint8Array(controlBuffer, JAVA_HTTP_SYNC_HEADER_BYTES, Math.max(0, Math.min(length, 16 * 1024))));
     if (!manifest.startsWith('OK\n')) {
       javaHttpServers.delete(serverId);
-      return manifest || javaHttpErrorManifest('TraceKernel HTTP listener registration failed');
+      return manifest || javaHttpErrorManifest('Network listener registration failed');
     }
     return `OK\n${serverId}`;
   } catch (error) {
     javaHttpServers.delete(serverId);
     const message = error instanceof Error ? error.message : String(error);
-    return javaHttpErrorManifest(message || 'TraceKernel HTTP listener registration failed');
+    return javaHttpErrorManifest(message || 'Network listener registration failed');
   }
 }
 
 function pollJavaProjectHttpServerRequest(serverId) {
   const server = javaHttpServers.get(String(serverId || ''));
-  if (!server) return javaHttpErrorManifest('TraceKernel HTTP listener is closed');
+  if (!server) return javaHttpErrorManifest('Network listener is closed');
   const header = new Int32Array(server.requestBuffer, 0, 2);
   while (true) {
     const state = Atomics.load(header, JAVA_HTTP_SYNC_STATE_INDEX);
@@ -535,7 +535,7 @@ function pollJavaProjectHttpServerRequest(serverId) {
       return javaHttpDecodeUtf8(new Uint8Array(server.requestBuffer, JAVA_HTTP_SYNC_HEADER_BYTES, Math.max(0, Math.min(length, JAVA_HTTP_SYNC_BUFFER_BYTES))));
     }
     if (state === JAVA_HTTP_SYNC_CLOSED) {
-      return javaHttpErrorManifest('TraceKernel HTTP listener is closed');
+      return javaHttpErrorManifest('Network listener is closed');
     }
     Atomics.wait(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_IDLE, JAVA_HTTP_SYNC_TIMEOUT_MS);
   }
@@ -546,7 +546,7 @@ function completeJavaProjectHttpServerRequest(serverId, responseManifest) {
   if (!server) return;
   const header = new Int32Array(server.requestBuffer, 0, 2);
   const bytes = new Uint8Array(server.requestBuffer, JAVA_HTTP_SYNC_HEADER_BYTES);
-  const encoded = javaHttpEncodeUtf8(String(responseManifest ?? javaHttpErrorManifest('TraceKernel HTTP server returned an empty response')));
+  const encoded = javaHttpEncodeUtf8(String(responseManifest ?? javaHttpErrorManifest('Network listener returned an empty response')));
   bytes.set(encoded.subarray(0, bytes.byteLength));
   Atomics.store(header, JAVA_HTTP_SYNC_LENGTH_INDEX, Math.min(encoded.byteLength, bytes.byteLength));
   Atomics.store(header, JAVA_HTTP_SYNC_STATE_INDEX, JAVA_HTTP_SYNC_RESPONSE);
@@ -5403,7 +5403,7 @@ function javaExpandedCompilerArgs(args, project, relativeCwd = '', projectCwd = 
 function assertBrowserProjectJavacOptionsSupported(args, project, relativeCwd = '', projectCwd = '/workspace') {
   const expandedArgs = javaExpandedCompilerArgs(args, project, relativeCwd, projectCwd);
   if (expandedArgs.includes('--enable-preview')) {
-    throw new Error('javac: --enable-preview is not supported in the browser project environment');
+    throw new Error('javac: --enable-preview is not supported by this runtime');
   }
 }
 
@@ -6194,7 +6194,7 @@ async function runJavaProjectRequest(payload, requestId) {
   if (payload?.options?.enablePreview === true) {
     return {
       stdout: '',
-      stderr: 'java: --enable-preview is not supported in the browser project environment\n',
+      stderr: 'java: --enable-preview is not supported by this runtime\n',
       exitCode: 2,
     };
   }

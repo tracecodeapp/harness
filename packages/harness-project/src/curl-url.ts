@@ -25,12 +25,9 @@ export function resolveCurlUrl(
   const m = /^([a-z][a-z0-9+.\-]*):(\/\/)?/i.exec(arg);
   if (m) {
     const scheme = m[1]!.toLowerCase();
-    const proto = reg[scheme];
     if (m[2]) return { scheme, url: arg };
-    if (proto) {
-      const rest = arg.slice(m[0].length);
-      return { scheme, url: proto.authority ? `${scheme}://${rest}` : arg };
-    }
+    // curl treats `name:port` as an authority when there is no `//`.
+    // In particular, `http:80` means host `http` on port 80, not host `80`.
   }
   return { scheme: fallback, url: `${fallback}://${arg}` };
 }

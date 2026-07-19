@@ -2739,7 +2739,7 @@ public final class ProjectEvents {
     try {
       manifest = dispatchHttp(httpRequestJson(method, url, path, headers, body, timeoutMs));
     } catch (UnsatisfiedLinkError | SecurityException error) {
-      throw new IOException("TraceKernel HTTP bridge is not available", error);
+      throw new IOException("Network transport is not available", error);
     }
     return httpResponseFromManifest(manifest);
   }
@@ -2830,7 +2830,7 @@ public final class ProjectEvents {
     try {
       return SSLContext.getDefault();
     } catch (Exception error) {
-      throw new IllegalStateException("Unable to initialize TraceKernel HTTP SSL context", error);
+      throw new IllegalStateException("Unable to initialize the default SSL context", error);
     }
   }
 
@@ -3059,15 +3059,15 @@ public final class ProjectEvents {
 
   private static TraceKernelHttpResponse httpResponseFromManifest(String manifest) throws IOException {
     if (manifest == null || manifest.isEmpty()) {
-      throw new IOException("TraceKernel HTTP returned an empty response");
+      throw new IOException("Network transport returned an empty response");
     }
     String[] lines = manifest.split("\\n", -1);
     if ("ERROR".equals(lines[0])) {
-      String message = lines.length > 1 ? decodeBase64Text(lines[1]) : "TraceKernel HTTP request failed";
+      String message = lines.length > 1 ? decodeBase64Text(lines[1]) : "Network request failed";
       throw new IOException(message);
     }
     if (!"OK".equals(lines[0]) || lines.length < 4) {
-      throw new IOException("TraceKernel HTTP returned an invalid response");
+      throw new IOException("Network transport returned an invalid response");
     }
     int status;
     int headerCount;
@@ -3075,50 +3075,50 @@ public final class ProjectEvents {
       status = Integer.parseInt(lines[1]);
       headerCount = Integer.parseInt(lines[2]);
     } catch (NumberFormatException error) {
-      throw new IOException("TraceKernel HTTP returned an invalid status", error);
+      throw new IOException("Network transport returned an invalid status", error);
     }
     if (status < 100 || status > 999 || headerCount < 0 || lines.length < 4 + headerCount) {
-      throw new IOException("TraceKernel HTTP returned an invalid response");
+      throw new IOException("Network transport returned an invalid response");
     }
     List<String[]> headers = new ArrayList<>();
     for (int index = 0; index < headerCount; index += 1) {
       String[] pair = lines[3 + index].split("\\t", -1);
-      if (pair.length != 2) throw new IOException("TraceKernel HTTP returned an invalid header");
+      if (pair.length != 2) throw new IOException("Network transport returned an invalid header");
       headers.add(new String[] {decodeBase64Text(pair[0]), decodeBase64Text(pair[1])});
     }
     byte[] body;
     try {
       body = Base64.getDecoder().decode(lines[3 + headerCount]);
     } catch (IllegalArgumentException error) {
-      throw new IOException("TraceKernel HTTP returned an invalid body", error);
+      throw new IOException("Network transport returned an invalid body", error);
     }
     return new TraceKernelHttpResponse(status, headers, body);
   }
 
   private static ProjectHttpServerRequest httpRequestFromManifest(String manifest) throws IOException {
-    if (manifest == null || manifest.isEmpty()) throw new IOException("TraceKernel HTTP returned an empty request");
+    if (manifest == null || manifest.isEmpty()) throw new IOException("HTTP server received an empty request");
     String[] lines = manifest.split("\\n", -1);
-    if (!"REQUEST".equals(lines[0]) || lines.length < 6) throw new IOException("TraceKernel HTTP returned an invalid request");
+    if (!"REQUEST".equals(lines[0]) || lines.length < 6) throw new IOException("HTTP server received an invalid request");
     String method = decodeBase64Text(lines[1]);
     URI uri = URI.create(decodeBase64Text(lines[2]));
     int headerCount;
     try {
       headerCount = Integer.parseInt(lines[4]);
     } catch (NumberFormatException error) {
-      throw new IOException("TraceKernel HTTP returned invalid request headers", error);
+      throw new IOException("HTTP server received invalid request headers", error);
     }
-    if (headerCount < 0 || lines.length < 6 + headerCount) throw new IOException("TraceKernel HTTP returned an invalid request");
+    if (headerCount < 0 || lines.length < 6 + headerCount) throw new IOException("HTTP server received an invalid request");
     Map<String, List<String>> headers = new HashMap<>();
     for (int index = 0; index < headerCount; index += 1) {
       String[] pair = lines[5 + index].split("\\t", -1);
-      if (pair.length != 2) throw new IOException("TraceKernel HTTP returned an invalid request header");
+      if (pair.length != 2) throw new IOException("HTTP server received an invalid request header");
       headers.computeIfAbsent(decodeBase64Text(pair[0]), ignored -> new ArrayList<>()).add(decodeBase64Text(pair[1]));
     }
     byte[] body;
     try {
       body = Base64.getDecoder().decode(lines[5 + headerCount]);
     } catch (IllegalArgumentException error) {
-      throw new IOException("TraceKernel HTTP returned an invalid request body", error);
+      throw new IOException("HTTP server received an invalid request body", error);
     }
     return new ProjectHttpServerRequest(method, uri, headers, body);
   }
@@ -3148,7 +3148,7 @@ public final class ProjectEvents {
     try {
       return new String(Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8);
     } catch (IllegalArgumentException error) {
-      throw new IOException("TraceKernel HTTP returned invalid text", error);
+      throw new IOException("Network transport returned invalid text", error);
     }
   }
 

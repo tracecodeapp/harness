@@ -151,7 +151,7 @@ async function main(): Promise<void> {
 }`, functionName: 'escape', inputs: {}, executionStyle: 'function', language: 'javascript' });
     assertCondition(
       computedConstructorEscape.kind === 'failed' &&
-        computedConstructorEscape.error.includes('EACCES'),
+        computedConstructorEscape.error === 'fetch is not defined',
       `Computed Function-constructor escape should fail at the executor boundary: ${JSON.stringify(computedConstructorEscape)}`
     );
     assertCondition(

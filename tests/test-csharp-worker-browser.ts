@@ -300,7 +300,7 @@ async function testBrowserCSharpProjectBridgeUnsupportedNoBuildEvents(): Promise
 
   assertCondition(!invokedWorker, 'C# browser no-build rejection should not invoke the worker');
   assertCondition(
-    result.exitCode === 2 && result.stderr.includes('--no-build is not supported in the browser project environment'),
+    result.exitCode === 2 && result.stderr.includes('--no-build is not supported by this runtime'),
     `C# browser no-build rejection should preserve stderr result, received ${JSON.stringify(result)}`
   );
   assertCondition(

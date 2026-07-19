@@ -151,7 +151,7 @@ async function bootDevTerminal(): Promise<void> {
         <section class="dev-terminal">
           <div class="dev-terminal-output" id="dev-terminal-output" aria-live="polite">
             <form class="dev-terminal-form" id="dev-terminal-form">
-              <span class="dev-terminal-prompt" id="dev-terminal-prompt">user@tracevm weather-api %</span>
+              <span class="dev-terminal-prompt" id="dev-terminal-prompt">user@tracevm weather-api $</span>
               <input
                 id="dev-terminal-input"
                 class="dev-terminal-input"

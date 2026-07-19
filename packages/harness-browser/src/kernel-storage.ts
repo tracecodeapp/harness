@@ -155,15 +155,26 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
     return dbPromise;
   };
 
-  const transaction = async (mode: IDBTransactionMode): Promise<IDBObjectStore> => {
+  const request = async <Result>(
+    mode: IDBTransactionMode,
+    createRequest: (store: IDBObjectStore) => IDBRequest<Result>
+  ): Promise<Result> => {
     const db = await openDb();
-    return db.transaction(storeName, mode).objectStore(storeName);
+    // Queue the first request in the same synchronous continuation that opens
+    // the transaction. WebKit aggressively auto-commits an IndexedDB
+    // transaction when control returns to the event loop without a pending
+    // request, so callers must finish encryption and revision allocation
+    // before reaching this boundary.
+    const store = db.transaction(storeName, mode).objectStore(storeName);
+    return idbRequest(createRequest(store));
   };
 
   return {
     async load(): Promise<BrowserKernelStorageSnapshot | null> {
-      const store = await transaction('readonly');
-      const value = await idbRequest<BrowserKernelStorageIndexedDbRecord | undefined>(store.get(key));
+      const value = await request<BrowserKernelStorageIndexedDbRecord | undefined>(
+        'readonly',
+        (store) => store.get(key)
+      );
       if (!value) return null;
       if (isEncryptedStorageRecord(value)) {
         const snapshot = await decryptStorageSnapshot(value, encryptionKey, encryptionContext);
@@ -191,14 +202,14 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
     },
     async save(snapshot: RuntimeProjectSnapshot): Promise<void> {
       pendingWrite = pendingWrite.catch(() => undefined).then(async () => {
-        const store = await transaction('readwrite');
         const savedAt = new Date().toISOString();
         const revision = await nextStorageRevision(options.revisionAuthority, lastRevision);
-        await idbRequest(store.put(await encryptStorageSnapshot({
+        const record = await encryptStorageSnapshot({
           version: STORAGE_VERSION,
           savedAt,
           snapshot,
-        }, encryptionKey, encryptionContext, revision), key));
+        }, encryptionKey, encryptionContext, revision);
+        await request('readwrite', (store) => store.put(record, key));
         lastRevision = revision;
       });
       await pendingWrite;
@@ -209,8 +220,7 @@ export function createIndexedDbKernelStorage(options: IndexedDbKernelStorageOpti
         // an external authority this makes a subsequently restored ciphertext
         // stale instead of allowing a cleared workspace to be replayed.
         const revision = await nextStorageRevision(options.revisionAuthority, lastRevision);
-        const store = await transaction('readwrite');
-        await idbRequest(store.delete(key));
+        await request('readwrite', (store) => store.delete(key));
         lastRevision = revision;
       });
       await pendingWrite;
