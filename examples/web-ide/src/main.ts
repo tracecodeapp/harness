@@ -345,7 +345,7 @@ async function runCode(): Promise<void> {
     await client.init();
 
     setStatus(`Executing...`, 'active');
-    const result = await client.executeCode(code, fnName, inputs, executionStyle);
+    const result = await client.executeCode({ code: code, functionName: fnName, inputs: inputs, executionStyle: executionStyle });
     
     renderOutput(executionOutput, consoleEmpty, result);
     setStatus(`Execution complete`, 'success');
@@ -370,17 +370,11 @@ async function traceCode(): Promise<void> {
     await client.init();
     
     setStatus(`Tracing...`, 'active');
-    const result = await client.executeWithTracing(
-      code,
-      fnName,
-      inputs,
-      {
+    const result = await client.executeWithTracing({ code: code, functionName: fnName, inputs: inputs, traceOptions: {
         maxTraceSteps: 200,
         maxLineEvents: 200,
         maxSingleLineHits: 50,
-      },
-      executionStyle
-    );
+      }, executionStyle: executionStyle });
 
     renderOutput(traceOutput, traceEmpty, result);
     setStatus(`Trace complete`, 'success');

@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.12.0] - Unreleased
+
+### Added
+
+- Added caller-tunable execution limits to classic code requests. `limits.wallClockMs` sets the per-case deadline on every browser language; Python additionally honors guest-enforced `maxLineEvents`, `maxSingleLineHits`, `maxCallDepth`, and `maxMemoryBytes`. Limit trips are reported structurally through `timeoutReason` (`client-timeout`, `line-limit`, `single-line-limit`, `recursion-limit`, `memory-limit`) on case results instead of sentinel error strings. Languages declare which knobs they honor via `capabilities.execution.limits`, and capability guards reject unsupported limits explicitly per field.
+- Added tagged worker-client error classes (`WorkerRequestTimeoutError`, `WorkerReadyTimeoutError`, `WorkerTerminatedError`, `WorkerCrashedError`, `ExecutionTimeoutError`, `ExecutionAbortedError`, `WorkerReportedError`). Transport and lifecycle failures now carry structured fields and stable `name`s in stack traces; recovery policies classify by type instead of matching message prose.
+
+### Changed
+
+- **BREAKING** Execution results are now discriminated outcome unions instead of `success` booleans with optional fields. `CodeExecutionResult` and `ExecutionResult` are `completed | failed | limit` on `kind`: `completed` carries `output`, `failed` carries `error`/`errorLine`/`diagnosticStage`, and `limit` means execution was stopped by a configured or built-in limit with a required `reason` (`timeoutReason` is removed). Tracing outcomes always carry `trace` and `executionTimeMs`; a run that finished while its trace recording hit a budget is `completed` with `traceTruncated` set to the tripped reason (`traceLimitExceeded` is removed), and the former top-level `lineEventCount`/`traceStepCount` live on the trace itself. Case results in `RuntimeExecuteResult` nest the full outcome under `outcome` (with `id`/`expected`/`passed` alongside), aggregate `success` on execute responses means every case completed, and batch results drop their redundant top-level `success`. The worker wire protocol keeps the legacy loose shape; clients lift it exactly once at the API boundary via the new exported `liftCodeOutcome`/`liftTraceOutcome`/`liftCodeBatchOutcome` helpers over `RawExecutionPayload`.
+- **BREAKING** `executeCode`, `executeWithTracing`, and the batch execution methods now take a single call object (`RuntimeCodeCall`, `RuntimeTraceCall`, `RuntimeBatchCall`) instead of positional arguments, across `RuntimeClient`, every browser worker client, and the native harness. Trace budgets are consistently named `traceOptions` at every API surface.
+- **BREAKING** Removed interview mode end to end: `executeCodeInterviewMode` on `RuntimeClient` and every worker client, the `interview` request flag, `capabilities.execution.styles.interviewMode`, the `execute-code-interview` worker protocol messages, the `interview` `diagnosticStage`, the C++ `interviewTimeoutMs` options, and every built-in `Time Limit Exceeded` redaction. Interview behavior is now a client-side policy: pass a `limits` preset and render verdicts from the structured `timeoutReason` on results.
+- Rebuilt the Python worker client and the browser harness composition root on Effect. Worker sessions are scoped resources whose entire teardown checklist runs as a release finalizer; request/response, deadlines, and abort run on fiber interruption instead of hand-rolled timers, settled flags, and abort listeners; harness construction is a resource layer graph that disposes partially-acquired resources automatically on construction failure. Public Promise-facing APIs, abort semantics (`AbortError`), and error identities are preserved across the boundary, and execution requests now run under a single deadline instead of overlapping message and execution timers.
+- Unified client-side execution timeouts across JavaScript, Java, and C# on the shared tagged `ExecutionTimeoutError` (with per-runtime message labels preserved), so caller-configured wall-clock trips surface as structured `client-timeout` case results uniformly across languages.
+- Python resource-guard trips now report a human-readable error (`Execution stopped: resource limit exceeded (line-limit).`) alongside the structured `timeoutReason` instead of encoding the reason in the error string.
+- Tests and scripts are now typechecked (`pnpm typecheck` includes `typecheck:tests` over `tests/**` and `scripts/**`), and test entry points run under `node:test`, so suite failures report through the standard runner instead of ad-hoc `main().catch` exits.
+
 ## [0.11.1] - 2026-07-13
 
 ### Fixed
