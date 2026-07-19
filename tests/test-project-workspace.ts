@@ -12184,7 +12184,7 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   const stdinSession = workspace.createTerminalSession({
     onTerminalEvent: (event) => {
       terminalEvents.push(event);
-      if (event.reason === 'stdin-prompt') {
+      if ((event as { reason?: string }).reason === 'stdin-prompt') {
         stdinSession.writeStdin('Ada\n');
       }
     },
@@ -12194,7 +12194,7 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   });
   assertCondition(stdinNode.exitCode === 0 && stdinNode.stdout === 'Name: answer=Ada\n', `terminal stdin run should complete: ${JSON.stringify(stdinNode)}`);
   assertCondition(
-    terminalEvents.map((event) => event.reason).join(',') === 'command-start,stdin-prompt,stdin-submit,command-finish',
+    terminalEvents.map((event) => (event as { reason?: string }).reason).join(',') === 'command-start,stdin-prompt,stdin-submit,command-finish',
     `terminal sessions should publish formal input-state transitions: ${JSON.stringify(terminalEvents)}`
   );
   assertCondition(

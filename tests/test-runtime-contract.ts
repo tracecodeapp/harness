@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import type { CommandContext } from 'just-bash/browser';
+// just-bash is not a root-workspace dependency, so borrow its CommandContext
+// type through the package-manager signature that consumes it.
+type CommandContext = Parameters<typeof runPackageScript>[1];
 import {
   createBrowserHarness,
   SUPPORTED_LANGUAGES,
@@ -988,8 +990,8 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
     failedResult.exitCode === 137 &&
       failedResult.stderr === '' &&
       failedResult.stdout === '' &&
-      failedResult.error?.code === 'EIO' &&
-      failedResult.error.detail?.diagnostic === 'apply-failed:bad-live.txt',
+      (failedResult as { error?: { code?: string; detail?: { diagnostic?: string } } }).error?.code === 'EIO' &&
+      (failedResult as { error?: { code?: string; detail?: { diagnostic?: string } } }).error?.detail?.diagnostic === 'apply-failed:bad-live.txt',
     `runtime worker bridge should keep host live-apply failures out of terminal stderr: ${stableStringify(failedResult)}`
   );
   assertCondition(

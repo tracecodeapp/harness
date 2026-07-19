@@ -209,15 +209,17 @@ async function main(): Promise<void> {
     );
 
     const projectJournal = await page.evaluate(async () => {
-      const { createBrowserProjectWorkspace } = await import('/browser-project.js');
+      const browserProjectModulePath = '/browser-project.js';
+      const { createBrowserProjectWorkspace } = await import(browserProjectModulePath);
       const workspace = await createBrowserProjectWorkspace({
         assetBaseUrl: '/workers',
         files: [{ path: 'seed.txt', contents: 'seed\n' }],
         nodeProjectTimeoutMs: 20_000,
       });
-      const records = [];
-      const unsubscribe = workspace.watch((event) => {
-        if (event.type === 'kernel-journal') records.push(event.record);
+      type JournalRecordView = { kind?: string; op?: string; path?: string; actor?: string; pid?: unknown };
+      const records: JournalRecordView[] = [];
+      const unsubscribe = workspace.watch((event: { type?: string; record?: JournalRecordView }) => {
+        if (event.type === 'kernel-journal' && event.record) records.push(event.record);
       });
       const client = workspace.kernel.createProcess({
         name: 'client',

@@ -503,7 +503,7 @@ async function main(): Promise<void> {
   let typeScriptCommandSettled = false;
   const typeScriptCommand = typeScriptRunner({
     code: '',
-    source: 'file',
+    source: 'file' as unknown as 'compile',
     scriptPath: 'index.ts',
     args: [],
     cwd: '/workspace',
