@@ -35,6 +35,12 @@ Run the local gate before submitting changes:
 pnpm test
 ```
 
+The gate is resource-aware rather than fully serial. If local memory or CPU is
+constrained, set `TRACECODE_TEST_JOBS=1` to force one task at a time. Do not
+remove task weights, exclusivity, or named resource locks merely to increase
+parallelism; those boundaries protect real browser and workspace tests from
+host contention and shared-output races.
+
 If you change the Python harness template or generated snippet content, also run:
 
 ```bash

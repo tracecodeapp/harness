@@ -176,6 +176,12 @@ pnpm install
 pnpm test
 ```
 
+The full gate schedules independent runtime families concurrently while keeping
+build-dependent and timing-sensitive work behind explicit boundaries. It uses
+a conservative capacity derived from the host by default. Set
+`TRACECODE_TEST_JOBS=<n>` to lower the capacity on a constrained machine or to
+opt into more local parallelism; `pnpm test:ci` uses the smaller CI profile.
+
 Useful focused commands:
 
 ```bash

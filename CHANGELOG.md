@@ -21,6 +21,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 - Unified client-side execution timeouts across JavaScript, Java, and C# on the shared tagged `ExecutionTimeoutError` (with per-runtime message labels preserved), so caller-configured wall-clock trips surface as structured `client-timeout` case results uniformly across languages.
 - Python resource-guard trips now report a human-readable error (`Execution stopped: resource limit exceeded (line-limit).`) alongside the structured `timeoutReason` instead of encoding the reason in the error string.
 - Tests and scripts are now typechecked (`pnpm typecheck` includes `typecheck:tests` over `tests/**` and `scripts/**`), and test entry points run under `node:test`, so suite failures report through the standard runner instead of ad-hoc `main().catch` exits.
+- The full and CI gates now use a bounded, weighted test scheduler instead of one serial shell chain. Independent checks and runtime families overlap without allowing heavyweight compiler/VM work to saturate smaller CI machines, build-dependent tests remain behind the build boundary, and `TRACECODE_TEST_JOBS` can override the default capacity. Runtime trace fixtures now run once in strict mode instead of executing the same multi-runtime corpus twice.
 
 ## [0.11.4] - 2026-07-19
 
