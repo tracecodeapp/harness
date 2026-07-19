@@ -196,7 +196,6 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 export class CppWorkerClient {
-  private disposed = false;
   private worker: BrowserWorkerLike | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
@@ -245,12 +244,7 @@ export class CppWorkerClient {
     return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
-  private assertNotDisposed(): void {
-    if (this.disposed) throw new Error('C++ worker client has been terminated.');
-  }
-
   private getWorker(): BrowserWorkerLike {
-    this.assertNotDisposed();
     if (this.worker) return this.worker;
 
     if (!this.isSupported()) {
@@ -423,27 +417,15 @@ export class CppWorkerClient {
     kernelHttp?: RuntimeKernelHttpBridge,
     expectedLifecycleGeneration?: number
   ): Promise<T> {
-    this.assertNotDisposed();
     await this.options.assetPreflight?.();
-    this.assertNotDisposed();
-    if (
-      expectedLifecycleGeneration !== undefined &&
-      expectedLifecycleGeneration !== this.executionLifecycleGeneration
-    ) {
-      throw this.executionResetReason;
-    }
+    this.assertLifecycleGeneration(expectedLifecycleGeneration);
     if (this.messageRequiresCompilerAssets(type, payload)) {
       await this.options.runtimeAssetPreflight?.();
-      this.assertNotDisposed();
+      this.assertLifecycleGeneration(expectedLifecycleGeneration);
     }
     const worker = this.getWorker();
     await this.waitForWorkerReady();
-    if (
-      expectedLifecycleGeneration !== undefined &&
-      expectedLifecycleGeneration !== this.executionLifecycleGeneration
-    ) {
-      throw this.executionResetReason;
-    }
+    this.assertLifecycleGeneration(expectedLifecycleGeneration);
     const id = String(++this.messageId);
     const protocolToken = createWorkerProtocolToken();
 
@@ -698,14 +680,21 @@ export class CppWorkerClient {
     this.resetExecutionWorker(new Error('C++ execution worker completed and was retired'), true);
   }
 
-  private runInDisposableExecutionWorker<T>(operation: () => Promise<T>): Promise<T> {
+  private assertLifecycleGeneration(expectedLifecycleGeneration?: number): void {
+    if (
+      expectedLifecycleGeneration !== undefined &&
+      expectedLifecycleGeneration !== this.executionLifecycleGeneration
+    ) {
+      throw this.executionResetReason;
+    }
+  }
+
+  private runInDisposableExecutionWorker<T>(operation: (lifecycleGeneration: number) => Promise<T>): Promise<T> {
     const lifecycleGeneration = this.executionLifecycleGeneration;
     const run = this.executionQueue.then(async () => {
       try {
-        if (lifecycleGeneration !== this.executionLifecycleGeneration) {
-          throw this.executionResetReason;
-        }
-        return await operation();
+        this.assertLifecycleGeneration(lifecycleGeneration);
+        return await operation(lifecycleGeneration);
       } finally {
         this.retireExecutionWorker();
         if (lifecycleGeneration === this.executionLifecycleGeneration) {
@@ -724,7 +713,7 @@ export class CppWorkerClient {
     return run;
   }
 
-  private async initForExecution(signal?: AbortSignal): Promise<void> {
+  private async initForExecution(signal?: AbortSignal, expectedLifecycleGeneration?: number): Promise<void> {
     if (signal?.aborted) {
       const abortError = createExecutionAbortError();
       this.terminateAndReset(abortError);
@@ -733,7 +722,8 @@ export class CppWorkerClient {
     const onAbort = () => this.terminateAndReset(createExecutionAbortError());
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      await this.init();
+      await this.init(expectedLifecycleGeneration);
+      this.assertLifecycleGeneration(expectedLifecycleGeneration);
     } finally {
       signal?.removeEventListener('abort', onAbort);
     }
@@ -810,10 +800,17 @@ export class CppWorkerClient {
 
   async warmup(): Promise<WarmupResult> {
     if (this.warmupPromise) return this.warmupPromise;
-    this.warmupPromise = this.runInDisposableExecutionWorker(async () => {
+    this.warmupPromise = this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
-        await this.init();
-        return await this.sendMessage<WarmupResult>('warmup', this.workerOptionsPayload(), this.initTimeoutMs);
+        await this.init(lifecycleGeneration);
+        return await this.sendMessage<WarmupResult>(
+          'warmup',
+          this.workerOptionsPayload(),
+          this.initTimeoutMs,
+          undefined,
+          undefined,
+          lifecycleGeneration
+        );
       } catch (error) {
         this.warmupPromise = null;
         throw error;
@@ -1065,11 +1062,6 @@ export class CppWorkerClient {
   }
 
   private ensureCompilerFrame(): Promise<void> {
-    try {
-      this.assertNotDisposed();
-    } catch (error) {
-      return Promise.reject(error);
-    }
     if (!this.compilerFrameUrl || typeof document === 'undefined') {
       return Promise.reject(new Error('C++ compiler frame is not available.'));
     }
@@ -1187,15 +1179,18 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
+      await this.initForExecution(signal, lifecycleGeneration);
       try {
         return await this.executeWithTimeout(
           () =>
             this.sendMessage<CodeExecutionResult>(
               'compile-run',
               { code, functionName, inputs, executionStyle },
-              this.executionTimeoutMs + 5_000
+              this.executionTimeoutMs + 5_000,
+              undefined,
+              undefined,
+              lifecycleGeneration
             ),
           this.executionTimeoutMs,
           'compile-run',
@@ -1215,15 +1210,18 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionBatchResult> {
-    return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
+      await this.initForExecution(signal, lifecycleGeneration);
       try {
         return await this.executeWithTimeout(
           () =>
             this.sendMessage<CodeExecutionBatchResult>(
               'compile-run-batch',
               { code, functionName, inputBatch, executionStyle },
-              this.executionTimeoutMs + 5_000
+              this.executionTimeoutMs + 5_000,
+              undefined,
+              undefined,
+              lifecycleGeneration
             ),
           this.executionTimeoutMs,
           'compile-run',
@@ -1251,8 +1249,8 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<{ success: boolean; results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
-    return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
+      await this.initForExecution(signal, lifecycleGeneration);
       try {
         return await this.executeWithTimeout(
           () =>
@@ -1266,7 +1264,10 @@ export class CppWorkerClient {
                 executionStyle,
                 traceEventTransport: traceEventTransferRequest(),
               },
-              this.tracingTimeoutMs + 5_000
+              this.tracingTimeoutMs + 5_000,
+              undefined,
+              undefined,
+              lifecycleGeneration
             ),
           this.tracingTimeoutMs,
           'trace',
@@ -1294,8 +1295,8 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<ExecutionResult> {
-    return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
+      await this.initForExecution(signal, lifecycleGeneration);
       try {
         return await this.executeWithTimeout(
           () =>
@@ -1309,7 +1310,10 @@ export class CppWorkerClient {
                 executionStyle,
                 traceEventTransport: traceEventTransferRequest(),
               },
-              this.tracingTimeoutMs + 5_000
+              this.tracingTimeoutMs + 5_000,
+              undefined,
+              undefined,
+              lifecycleGeneration
             ),
           this.tracingTimeoutMs,
           'trace',
@@ -1329,15 +1333,18 @@ export class CppWorkerClient {
     executionStyle: CppExecutionStyle,
     signal?: AbortSignal
   ): Promise<CodeExecutionResult> {
-    return this.runInDisposableExecutionWorker(async () => {
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
-        await this.initForExecution(signal);
+        await this.initForExecution(signal, lifecycleGeneration);
         return await this.executeWithTimeout(
           () =>
             this.sendMessage<CodeExecutionResult>(
               'execute-code-interview',
               { code, functionName, inputs, executionStyle },
-              this.interviewTimeoutMs + 5_000
+              this.interviewTimeoutMs + 5_000,
+              undefined,
+              undefined,
+              lifecycleGeneration
             ),
           this.interviewTimeoutMs,
           'interview',
@@ -1363,8 +1370,8 @@ export class CppWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     signal: AbortSignal | undefined = request.signal
   ): Promise<CppProjectCommandResult> {
-    return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
+    return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
+      await this.initForExecution(signal, lifecycleGeneration);
       const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
       return this.executeWithTimeout(
         () =>
@@ -1377,7 +1384,8 @@ export class CppWorkerClient {
             },
             timeoutMs + 5_000,
             onEvent,
-            kernelHttp
+            kernelHttp,
+            lifecycleGeneration
           ),
         timeoutMs,
         'compile-run',
@@ -1387,8 +1395,6 @@ export class CppWorkerClient {
   }
 
   terminate(): void {
-    if (this.disposed) return;
-    this.disposed = true;
     this.terminateAndReset();
   }
 }

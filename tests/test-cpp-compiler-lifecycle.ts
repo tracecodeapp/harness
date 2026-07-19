@@ -209,6 +209,67 @@ async function testInvalidArtifactsFailClosedAndAreNotCached(): Promise<void> {
   }
 }
 
+async function testTerminationDuringAssetPreflightCannotRecreateWorkerAndClientRecovers(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  const originalFetch = globalThis.fetch;
+  CompilerBridgeWorker.instances = [];
+  let releaseFirstPreflight!: () => void;
+  const firstPreflightReleased = new Promise<void>((resolve) => {
+    releaseFirstPreflight = resolve;
+  });
+  let markFirstPreflightStarted!: () => void;
+  const firstPreflightStarted = new Promise<void>((resolve) => {
+    markFirstPreflightStarted = resolve;
+  });
+  let preflightCalls = 0;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = CompilerBridgeWorker;
+  globalThis.fetch = async () => new Response(MINIMAL_WASM.slice(), { status: 200 });
+  const client = createClient({
+    async assetPreflight() {
+      preflightCalls += 1;
+      if (preflightCalls !== 1) return;
+      markFirstPreflightStarted();
+      await firstPreflightReleased;
+    },
+  });
+
+  try {
+    const interrupted = client.executeCode('interrupted-preflight', 'run', {}, 'function');
+    await firstPreflightStarted;
+    client.terminate();
+    releaseFirstPreflight();
+
+    let interruptionError = '';
+    try {
+      await interrupted;
+    } catch (error) {
+      interruptionError = error instanceof Error ? error.message : String(error);
+    }
+    await Promise.resolve();
+
+    assertCondition(
+      interruptionError.includes('Worker was terminated'),
+      `termination during asset preflight should reject the stale command: ${interruptionError}`
+    );
+    assertCondition(
+      CompilerBridgeWorker.instances.length === 0,
+      'a stale asset-preflight continuation must not create a C++ execution worker after termination'
+    );
+
+    const recovered = await client.executeCode('recovered-after-terminate', 'run', {}, 'function');
+    assertCondition(
+      recovered.success,
+      `C++ terminate should release current resources without permanently disabling later commands: ${JSON.stringify(recovered)}`
+    );
+  } finally {
+    releaseFirstPreflight();
+    client.terminate();
+    globalThis.fetch = originalFetch;
+    globalThis.Worker = originalWorker;
+  }
+}
+
 async function testTimeoutAbortsCompilerAndRetiresExecution(): Promise<void> {
   const originalWorker = globalThis.Worker;
   const originalFetch = globalThis.fetch;
@@ -488,6 +549,7 @@ async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
 async function main(): Promise<void> {
   await testContentAddressedArtifactsAndDisposableExecution();
   await testInvalidArtifactsFailClosedAndAreNotCached();
+  await testTerminationDuringAssetPreflightCannotRecreateWorkerAndClientRecovers();
   await testTimeoutAbortsCompilerAndRetiresExecution();
   await testCallerAbortResetsCompilerAndExecution();
   await testCallerAbortCannotRecreateCompilerFrameAfterAsyncCacheKey();
