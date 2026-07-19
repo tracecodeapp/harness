@@ -24,6 +24,10 @@ pnpm --dir examples/web-ide dev
 ```
 
 The app syncs harness worker assets into `public/workers` before `dev`, `build`, and `preview`.
+The Java example also publishes an explicit consumer-owned runtime manifest
+that selects the official CheerpJ 4.2 loader. CheerpJ itself is not copied by
+`sync-assets`; production consumers should replace that manifest with the
+versioned loader and origin policy approved for their deployment.
 
 ## What It Demonstrates
 

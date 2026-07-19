@@ -75,7 +75,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   packageJson.dependencies['@tracecode/harness'] = `file:${tarballPath}`;
   await writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n', 'utf8');
 
-  await runCommand('pnpm', ['install'], appDir);
+  await runCommand('pnpm', ['install', '--ignore-scripts'], appDir);
   await runCommand('pnpm', ['build'], appDir);
 
   const previewPort = 4500 + Math.floor(Math.random() * 200);

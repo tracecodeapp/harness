@@ -8,6 +8,7 @@ import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 import {
   createBrowserHarness,
   SUPPORTED_LANGUAGES,
+  type BrowserRuntimeAssetManifest,
 } from '@tracecode/harness/browser';
 import type { Language } from '@tracecode/harness/core';
 
@@ -191,8 +192,39 @@ function bootIde(): void {
 // ----------------------------------------------------------------------
 // Harness Setup
 // ----------------------------------------------------------------------
+const javaRuntimeManifest: BrowserRuntimeAssetManifest<'java'> = {
+  runtime: 'java',
+  runtimeVersion: 'java-17-cheerpj-4.2',
+  protocolVersion: 'browser-runtime-assets-v1',
+  assetBaseUrl: '/workers',
+  originPolicy: { mode: 'any' },
+  workerFormat: 'classic',
+  loaderFormat: 'classic-script',
+  assets: {
+    worker: { url: 'java-worker.js' },
+    loader: { url: 'https://cjrtnc.leaningtech.com/4.2/loader.js' },
+    helperJar: {
+      url: 'vendor/java-browser-helper.jar',
+      runtimePath: '/app/workers/vendor/java-browser-helper.jar',
+    },
+    compilerJar: {
+      url: 'vendor/jdk.compiler-17.jar',
+      runtimePath: '/app/workers/vendor/jdk.compiler-17.jar',
+    },
+    rewriterJar: {
+      url: 'vendor/java-rewriter.jar',
+      runtimePath: '/app/workers/vendor/java-rewriter.jar',
+    },
+    parserJar: {
+      url: 'vendor/javaparser-core-3.25.10.jar',
+      runtimePath: '/app/workers/vendor/javaparser-core-3.25.10.jar',
+    },
+  },
+};
+
 const harness = createBrowserHarness({
   assetBaseUrl: '/workers',
+  assets: { runtimeManifests: { java: javaRuntimeManifest } },
 });
 
 const disposeHarness = (): void => {

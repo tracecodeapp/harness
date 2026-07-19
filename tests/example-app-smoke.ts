@@ -1446,7 +1446,6 @@ export async function runExampleBrowserSmoke(previewUrl: string): Promise<void> 
       });
     }
     await runCSharpExampleSmoke(page);
-    await runDevTerminalSmoke(page, previewUrl);
   } finally {
     await browser.close();
   }

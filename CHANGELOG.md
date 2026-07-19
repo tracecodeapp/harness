@@ -8,6 +8,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Added
 
+- Added a real-browser cross-provider filesystem concurrency gate for Chromium, Firefox, and WebKit. It verifies authoritative live-write persistence, later-command visibility, point-in-time isolation for already-running workers, independent parallel writes, and deterministic `ESTALE` protection for same-path conflicts.
 - Added a first-class terminal capability contract with TTY state, dimensions, resize support, session-owned history, and browser Node stdio geometry. Terminal commands now receive consistent `TERM`, `NO_COLOR`, `COLUMNS`, and `LINES` values.
 - Added coherent TraceKernel user and host discovery through `whoami`, `id`, `hostname`, and `uname`, standard home and temporary directories, `mktemp`, command manuals, terminal capability inspection, `wget`, and `/dev/fd/{0,1,2}` descriptor aliases.
 - Added terminal and environment discovery through `tty`, `locale`, `getconf`, `getent`, and `groups`. `kill -l` now lists the signals the kernel actually supports, and `kill -0` performs a process or process-group existence check without sending a signal.
@@ -21,6 +22,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- C++ worker termination once again releases the current execution generation without permanently disabling the reusable client. Async preflight and initialization continuations now carry their lifecycle generation so a terminated command cannot recreate a stale worker.
+- The reference Web IDE now supplies Java through an explicit consumer-owned runtime manifest, and its release smoke no longer targets the project terminal route that moved to the dedicated project examples.
+- Parallel browser runtimes can now create different files in the same directory without one command incorrectly failing `ESTALE` merely because the other command advanced the directory generation. File creates retain structural locking and generation recording while freshness checks remain scoped to the target path.
 - Browser Node signal listeners can now handle `SIGINT` and `SIGTERM`, close active resources, and exit naturally before the kernel forces termination. Worker-backed execution uses host-owned timers for the grace boundary so guest timer globals cannot delay or capture it.
 - Closed stdin is snapshotted non-destructively when entering the project shell, preserving input for compiled executables in commands such as `compile && run`, while shell utilities still receive normal standard input.
 - Patched the installed browser shell so `/dev/stdin` and `/dev/fd/0` resolve to the active command input rather than synthetic filesystem entries.
