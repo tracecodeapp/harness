@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -159,7 +160,4 @@ async function main(): Promise<void> {
   console.log('PASS: SQL browser example runs PGlite and exports a valid SQL trace');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('sql browser example', main);

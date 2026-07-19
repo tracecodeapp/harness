@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import {
   createRuntimeWorkspace,
   type RuntimeKernelHttpRequest,
@@ -122,4 +123,4 @@ async function main(): Promise<void> {
   await testCurlUrlResolutionAndTypedErrors();
 }
 
-await main();
+await test('tracekernel curl url', main);

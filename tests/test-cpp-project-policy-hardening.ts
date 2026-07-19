@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -294,7 +295,4 @@ async function main(): Promise<void> {
   console.log('PASS: C++ and project policy hardening checks');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('cpp project policy hardening', main);

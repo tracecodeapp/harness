@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -412,7 +413,4 @@ async function main(): Promise<void> {
   console.log('C++ compiler lifecycle tests passed');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('cpp compiler lifecycle', main);

@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -147,7 +148,4 @@ async function main(): Promise<void> {
   console.log('PASS: asset sync CLI copies canonical and language-filtered worker assets');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('asset sync', main);

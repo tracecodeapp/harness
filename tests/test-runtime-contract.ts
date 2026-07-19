@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -2173,7 +2174,4 @@ function hasAliasedChildren(root) {
   console.log('\nRuntime contract tests passed.');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('runtime contract', main);

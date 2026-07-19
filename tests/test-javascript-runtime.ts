@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -5286,7 +5287,4 @@ if (input === 'first') {
   console.log('\nJavaScript runtime worker tests passed.');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('javascript runtime', main);

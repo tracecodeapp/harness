@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createCSharpRuntimeClient } from '../packages/harness-browser/src/csharp-runtime-client';
 import {
@@ -710,7 +711,4 @@ async function main(): Promise<void> {
   testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('csharp runtime', main);

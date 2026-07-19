@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -204,7 +205,4 @@ async function main(): Promise<void> {
   console.log('PASS: project terminal example renders as a fullscreen terminal and hides input while compiling');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('project terminal example', main);

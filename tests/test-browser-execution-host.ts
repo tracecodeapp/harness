@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import {
   BROWSER_EXECUTION_HOST_PROTOCOL,
   createBrowserExecutionWorkerHost,
@@ -368,7 +369,4 @@ async function main(): Promise<void> {
   console.log('PASS: cross-origin execution worker host protocol, origin policy, and lifecycle');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('browser execution host', main);

@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -504,7 +505,4 @@ async function main(): Promise<void> {
   console.log('\nPython harness sync checks passed.');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('python harness sync', main);

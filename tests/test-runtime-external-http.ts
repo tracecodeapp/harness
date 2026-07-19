@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import {
   createDefaultExternalHttpFetch,
   isBlockedExternalHttpHost,
@@ -239,7 +240,4 @@ async function main(): Promise<void> {
   console.log('PASS: external HTTP host, redirect, and streaming response policies are enforced');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('runtime external http', main);

@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -116,7 +117,4 @@ async function main(): Promise<void> {
   console.log('PASS: standalone boundary guard rejects app coupling and keeps project code out of the Classic entry');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('standalone boundary', main);

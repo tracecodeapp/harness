@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -887,7 +888,4 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('packaged surface', main);

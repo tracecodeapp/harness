@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -37,7 +38,4 @@ function main(): void {
   console.log('\nTrace boundary tests passed.');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('trace adapters', main);

@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { execFile } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14215,7 +14216,4 @@ async function main(): Promise<void> {
   console.log('PASS: project workspace primitives are backed by just-bash');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('project workspace', main);

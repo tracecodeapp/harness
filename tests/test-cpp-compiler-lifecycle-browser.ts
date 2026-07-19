@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -183,7 +184,4 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('cpp compiler lifecycle browser', main);

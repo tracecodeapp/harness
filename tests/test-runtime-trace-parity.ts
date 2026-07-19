@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
@@ -163,7 +164,4 @@ function main(): void {
   console.log('PASS: Runtime trace parity gate');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('runtime trace parity', main);

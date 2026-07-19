@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import {
   createRuntimeWorkspace,
   type KernelJournalRecord,
@@ -193,4 +194,4 @@ async function main(): Promise<void> {
   await testLiveAndSnapshotAgree();
 }
 
-await main();
+await test('tracekernel journal', main);

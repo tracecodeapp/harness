@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -200,7 +201,4 @@ async function main(): Promise<void> {
   console.log('PASS: java runtime profile matches first-slice contract');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('java harness sync', main);

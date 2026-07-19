@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import {
   SQL_TRACE_SCHEMA_VERSION,
   assertValidSqlTrace,
@@ -1026,7 +1027,4 @@ async function main(): Promise<void> {
   console.log('\nSQL trace contract tests passed.');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('sql trace', main);

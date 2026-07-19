@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -647,7 +648,4 @@ async function main(): Promise<void> {
   await testPythonOptionalPackagesAreManifestDriven();
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('browser trace event transport', main);

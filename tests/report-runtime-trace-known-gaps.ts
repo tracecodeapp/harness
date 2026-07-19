@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Language } from '../packages/harness-core/src/runtime-types';
@@ -126,7 +127,4 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('report runtime trace known gaps', main);

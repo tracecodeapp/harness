@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -37,7 +38,4 @@ async function main(): Promise<void> {
   console.log('PASS: example web IDE runs dedicated Java browser smoke');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('java example app', main);

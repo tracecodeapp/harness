@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -652,4 +653,4 @@ async function main() {
   }
 }
 
-await main();
+await test('mine cpp algoflow corpus', main);

@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -41,7 +42,4 @@ async function main(): Promise<void> {
   console.log(`PASS: ${files.length} SQL trace fixtures validate against the public contract`);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('sql trace fixtures', main);

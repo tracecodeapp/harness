@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import {
   createBrowserHarness,
   createBrowserRuntimeEnvironment,
@@ -85,7 +86,4 @@ async function main(): Promise<void> {
   console.log('PASS: browser runtime environment reports configured, engine-aware provider readiness');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('browser runtime environment', main);

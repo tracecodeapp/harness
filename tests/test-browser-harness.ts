@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   createBrowserHarness,
@@ -1685,7 +1686,4 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('browser harness', main);

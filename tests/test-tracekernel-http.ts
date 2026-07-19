@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import {
   createRuntimeWorkspace,
   isBlockedExternalHttpHost,
@@ -945,4 +946,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+await test('tracekernel http', main);

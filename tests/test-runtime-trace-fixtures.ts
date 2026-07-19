@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1827,7 +1828,4 @@ async function main(): Promise<void> {
   console.log(`PASS: runtime trace fixture parity (${executedFixtureCount} fixtures)`);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+test('runtime trace fixtures', main);

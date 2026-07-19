@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { test } from 'node:test';
 import { createNativeHarness } from '../src/native';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -256,4 +257,4 @@ async function main(): Promise<void> {
   console.log('Native harness smoke tests passed.');
 }
 
-await main();
+await test('native harness', main);
