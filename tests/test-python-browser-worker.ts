@@ -10,14 +10,13 @@ import { runCommand, waitForHttp } from './example-app-smoke';
 import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
 interface PythonProjectWorkerFile {
-  directory?: boolean;
+  directory?: true;
   path: string;
   contents?: string;
   encoding?: 'utf8' | 'base64';
   deleted?: true;
   symlink?: true;
   target?: string;
-  directory?: true;
   mode?: number;
   atimeMs?: number;
   mtimeMs?: number;

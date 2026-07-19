@@ -529,14 +529,17 @@ export class WorkerSessionCore {
    *   working across the boundary; defects surface unwrapped.
    */
   runClientEffect<A>(effect: Effect.Effect<A, Error>, signal?: AbortSignal): Promise<A> {
+    const interruptionError = (): Error => signal?.aborted
+      ? new ExecutionAbortedError()
+      : new WorkerTerminatedError('Worker execution was interrupted internally');
     const program = effect.pipe(
-      Effect.onInterrupt(() => Effect.sync(() => this.closeSession(new ExecutionAbortedError())))
+      Effect.onInterrupt(() => Effect.sync(() => this.closeSession(interruptionError())))
     );
     return Effect.runPromiseExit(program, signal ? { signal } : undefined).then((exit) => {
       if (Exit.isSuccess(exit)) return exit.value;
       const failure = Cause.failureOption(exit.cause);
       if (Option.isSome(failure)) throw failure.value;
-      if (Cause.isInterruptedOnly(exit.cause)) throw new ExecutionAbortedError();
+      if (Cause.isInterruptedOnly(exit.cause)) throw interruptionError();
       throw Cause.squash(exit.cause);
     });
   }

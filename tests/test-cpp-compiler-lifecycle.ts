@@ -375,7 +375,7 @@ async function testCallerAbortCannotRecreateCompilerFrameAfterAsyncCacheKey(): P
   const originalLocationDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'location');
   CompilerBridgeWorker.instances = [];
   let digestStarted: (() => void) | null = null;
-  let resolveDigest: ((digest: ArrayBuffer) => void) | null = null;
+  let resolveDigest!: (digest: ArrayBuffer) => void;
   let compilerFrameCreations = 0;
   const digestPending = new Promise<ArrayBuffer>((resolve) => {
     resolveDigest = resolve;
@@ -431,7 +431,7 @@ async function testCallerAbortCannotRecreateCompilerFrameAfterAsyncCacheKey(): P
     // Per-command worker pools permanently retire the leased client when the
     // command signal fires, in addition to the client's own abort reset.
     client.terminate();
-    resolveDigest?.(new Uint8Array(32).buffer);
+    resolveDigest(new Uint8Array(32).buffer);
     let error: unknown;
     try {
       await execution;

@@ -11,20 +11,23 @@ import { chromium, firefox, webkit, type BrowserType } from 'playwright';
 
 type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
 
+function isBrowserEngine(value: string): value is BrowserEngine {
+  return value === 'chromium' || value === 'firefox' || value === 'webkit';
+}
+
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
 function selectedEngines(): BrowserEngine[] {
-  const supported: BrowserEngine[] = ['chromium', 'firefox', 'webkit'];
   const configured = process.env.TRACECODE_PROJECT_LIVE_FS_ENGINES?.trim();
-  const engines = configured
-    ? configured.split(',').map((engine) => engine.trim()).filter(Boolean) as BrowserEngine[]
+  const configuredEngines = configured
+    ? configured.split(',').map((engine) => engine.trim()).filter(Boolean)
     : ['chromium'];
-  for (const engine of engines) {
-    if (!supported.includes(engine)) throw new Error(`Unsupported browser engine: ${engine}`);
+  for (const engine of configuredEngines) {
+    if (!isBrowserEngine(engine)) throw new Error(`Unsupported browser engine: ${engine}`);
   }
-  return [...new Set(engines)];
+  return [...new Set(configuredEngines.filter(isBrowserEngine))];
 }
 
 function contentType(pathname: string): string {
@@ -139,7 +142,8 @@ async function main(): Promise<void> {
         await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
         await page.evaluate('globalThis.__name = (fn) => fn');
         const result = await page.evaluate(async () => {
-          const { createBrowserProjectWorkspace } = await import('/project-harness.mjs');
+          const harnessModuleUrl: string = '/project-harness.mjs';
+          const { createBrowserProjectWorkspace } = await import(harnessModuleUrl);
           const workspace = await createBrowserProjectWorkspace({
             assetBaseUrl: '/workers',
             providers: ['python', 'javascript'],

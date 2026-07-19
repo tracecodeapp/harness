@@ -112,7 +112,14 @@ type CSharpProjectWorkerRequest = {
   project: {
     cwd?: string;
     workspaceAlias?: string;
-    files: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
+    files: Array<{
+      path: string;
+      contents: string;
+      encoding?: 'utf8' | 'base64';
+      mode?: number;
+      atimeMs?: number;
+      mtimeMs?: number;
+    }>;
     kernelFiles?: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
     kernelDevices?: Array<{
       path: string;
