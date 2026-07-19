@@ -14,11 +14,20 @@ import type {
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
+  RuntimeCodeCall,
   RuntimeExecutionStyle,
+  RuntimeTraceCall,
   TraceExecutionOptions,
 } from '@tracecode/harness-core';
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
-import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionLimitReason, ExecutionResult } from '@tracecode/harness-core';
+import {
+  liftCodeBatchOutcome,
+  liftCodeOutcome,
+  liftTraceOutcome,
+  type RawExecutionBatchPayload,
+  type RawExecutionPayload,
+} from '@tracecode/harness-core';
 import {
   createEmptyRuntimeTrace,
   type RuntimeTrace,
@@ -97,7 +106,7 @@ interface NativePythonRuntimeCore {
     inputs: Record<string, unknown>,
     executionStyle?: string,
     options?: Record<string, unknown>
-  ) => Promise<CodeExecutionResult>;
+  ) => Promise<RawExecutionPayload>;
 }
 
 export interface NativeHarnessOptions {
@@ -190,25 +199,8 @@ export interface NativeHarness {
 
 interface NativeRuntimeClientHandlers {
   defaultExecutionStyle: RuntimeExecutionStyle;
-  executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle?: RuntimeExecutionStyle
-  ): Promise<CodeExecutionResult>;
-  executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options?: TraceExecutionOptions,
-    executionStyle?: RuntimeExecutionStyle
-  ): Promise<ExecutionResult>;
-  executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle?: RuntimeExecutionStyle
-  ): Promise<CodeExecutionResult>;
+  executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult>;
+  executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult>;
   executeBatch?(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult>;
 }
 
@@ -251,44 +243,31 @@ function runtimeDeepEqual(left: unknown, right: unknown): boolean {
 
 function codeResultToExecuteCase(
   testCase: RuntimeExecuteCase,
-  result: CodeExecutionResult
+  outcome: CodeExecutionResult
 ): RuntimeExecuteResult['cases'][number] {
   const hasExpected = Object.prototype.hasOwnProperty.call(testCase, 'expected');
   return {
     id: testCase.id,
-    success: result.success,
-    output: result.output,
     expected: testCase.expected,
-    passed: hasExpected ? result.success && runtimeDeepEqual(result.output, testCase.expected) : undefined,
-    error: result.error,
-    errorLine: result.errorLine,
-    consoleOutput: result.consoleOutput,
-    timeoutReason: result.timeoutReason,
-    diagnosticStage: result.diagnosticStage,
-    diagnostic: result.diagnostic,
-    timings: result.timings,
+    passed: hasExpected
+      ? outcome.kind === 'completed' && runtimeDeepEqual(outcome.output, testCase.expected)
+      : undefined,
+    outcome,
   };
 }
 
 function traceResultToExecuteCase(
   testCase: RuntimeExecuteCase,
-  result: ExecutionResult
+  outcome: ExecutionResult
 ): RuntimeExecuteResult['cases'][number] {
   const hasExpected = Object.prototype.hasOwnProperty.call(testCase, 'expected');
   return {
     id: testCase.id,
-    success: result.success,
-    output: result.output,
     expected: testCase.expected,
-    passed: hasExpected ? result.success && runtimeDeepEqual(result.output, testCase.expected) : undefined,
-    error: result.error,
-    errorLine: result.errorLine,
-    consoleOutput: result.consoleOutput,
-    trace: result.trace,
-    traceLimitExceeded: result.traceLimitExceeded,
-    timeoutReason: result.timeoutReason,
-    diagnostic: result.diagnostic,
-    timings: result.timings,
+    passed: hasExpected
+      ? outcome.kind === 'completed' && runtimeDeepEqual(outcome.output, testCase.expected)
+      : undefined,
+    outcome,
   };
 }
 
@@ -300,15 +279,14 @@ function batchCodeResultToExecuteResult(
     codeResultToExecuteCase(
       testCase,
       result.results[index] ?? {
-        success: false,
-        output: null,
+        kind: 'failed',
         error: result.error ?? 'Batch execution did not return a result for this case',
-        consoleOutput: result.consoleOutput,
+        consoleOutput: result.consoleOutput ?? [],
       }
     )
   );
   return {
-    success: result.success && cases.every((testCase) => testCase.success),
+    success: cases.every((testCase) => testCase.outcome.kind === 'completed'),
     cases,
     timings: result.timings,
   };
@@ -322,13 +300,10 @@ async function executeNativeRuntimeRequest(
     throw new Error('Native harness code clients do not execute project requests. Use createNativeProjectWorkspace for shell/project mode.');
   }
 
-  if (request.trace && request.interview) {
-    throw new Error('Runtime execute request cannot enable both trace and interview modes.');
-  }
   if (!Array.isArray(request.cases) || request.cases.length === 0) {
     throw new Error('Runtime execute request requires at least one case.');
   }
-  if (!request.trace && !request.interview && handlers.executeBatch && request.cases.length > 1) {
+  if (!request.trace && handlers.executeBatch && request.cases.length > 1) {
     return handlers.executeBatch(request);
   }
 
@@ -339,29 +314,24 @@ async function executeNativeRuntimeRequest(
     if (request.trace) {
       cases.push(traceResultToExecuteCase(
         testCase,
-        await handlers.executeWithTracing(
-          request.code,
-          request.functionName ?? null,
-          testCase.inputs,
-          request.traceOptions,
-          executionStyle
-        )
-      ));
-    } else if (request.interview) {
-      cases.push(codeResultToExecuteCase(
-        testCase,
-        await handlers.executeCodeInterviewMode(request.code, functionName, testCase.inputs, executionStyle)
+        await handlers.executeWithTracing({
+          code: request.code,
+          functionName: request.functionName ?? null,
+          inputs: testCase.inputs,
+          traceOptions: request.traceOptions,
+          executionStyle,
+        })
       ));
     } else {
       cases.push(codeResultToExecuteCase(
         testCase,
-        await handlers.executeCode(request.code, functionName, testCase.inputs, executionStyle)
+        await handlers.executeCode({ code: request.code, functionName, inputs: testCase.inputs, executionStyle })
       ));
     }
   }
 
   return {
-    success: cases.every((testCase) => testCase.success),
+    success: cases.every((testCase) => testCase.outcome.kind === 'completed'),
     cases,
   };
 }
@@ -505,17 +475,12 @@ class NativePythonRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'function',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       executeBatch: this.executeBatch.bind(this),
     });
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
-  ): Promise<CodeExecutionResult> {
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
+    const { code, functionName, inputs, executionStyle = 'function' } = call;
     const runtime = await this.loadRuntime();
     try {
       return await runtime.executeCode(
@@ -551,24 +516,14 @@ class NativePythonRuntimeClient implements RuntimeClient {
         functionName,
         inputs,
         executionStyle
-      );
+      ).then((result) => liftCodeOutcome(result, 'Python execution failed'));
     } catch (error) {
       return {
-        success: false,
-        output: null,
+        kind: 'failed',
         error: error instanceof Error ? error.message : String(error),
         consoleOutput: [],
       };
     }
-  }
-
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
-  ): Promise<CodeExecutionResult> {
-    return this.executeCode(code, functionName, inputs, executionStyle);
   }
 
   async executeBatch(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult> {
@@ -584,21 +539,19 @@ class NativePythonRuntimeClient implements RuntimeClient {
         ),
         this.options.timeoutMs
       );
-      const parsed = parseLastJsonLine<CodeExecutionBatchResult>(stdout);
-      return batchCodeResultToExecuteResult(request, {
+      const parsed = parseLastJsonLine<RawExecutionBatchPayload>(stdout);
+      return batchCodeResultToExecuteResult(request, liftCodeBatchOutcome({
         ...parsed,
         timings: {
           ...(parsed.timings ?? {}),
           totalMs: Date.now() - startedAt,
         },
-      });
+      }, 'Python execution failed'));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return batchCodeResultToExecuteResult(request, {
-        success: false,
         results: request.cases.map(() => ({
-          success: false,
-          output: null,
+          kind: 'failed' as const,
           error: message,
           consoleOutput: [],
         })),
@@ -764,13 +717,8 @@ print(json.dumps({
 `;
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options: TraceExecutionOptions = {},
-    executionStyle: RuntimeExecutionStyle = 'function'
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
+    const { code, functionName, inputs, traceOptions: options = {}, executionStyle = 'function' } = call;
     const startedAt = Date.now();
     const runtime = await this.loadRuntime();
     const traceFunctionName = functionName ?? '';
@@ -818,24 +766,24 @@ print(json.dumps({
         lineEventCount?: number;
         traceStepCount?: number;
         traceLimitExceeded?: boolean;
-        timeoutReason?: ExecutionResult['timeoutReason'] | null;
+        timeoutReason?: ExecutionLimitReason | null;
       }>(stdout);
       const trace = parsed.runtimeTrace ?? createEmptyRuntimeTrace('python');
-      return {
-        success: !parsed.traceLimitExceeded || parsed.timeoutReason === 'trace-limit',
-        output: parsed.result,
+      return liftTraceOutcome(
+        {
+          success: !parsed.traceLimitExceeded || parsed.timeoutReason === 'trace-limit',
+          output: parsed.result,
+          executionTimeMs: Date.now() - startedAt,
+          consoleOutput: parsed.consoleOutput ?? [],
+          ...(parsed.traceLimitExceeded ? { traceLimitExceeded: true } : {}),
+          ...(parsed.timeoutReason ? { timeoutReason: parsed.timeoutReason } : {}),
+        },
         trace,
-        executionTimeMs: Date.now() - startedAt,
-        consoleOutput: parsed.consoleOutput ?? [],
-        traceLimitExceeded: parsed.traceLimitExceeded,
-        timeoutReason: parsed.timeoutReason ?? undefined,
-        lineEventCount: parsed.lineEventCount,
-        traceStepCount: parsed.traceStepCount,
-      };
+        'Python tracing failed'
+      );
     } catch (error) {
       return {
-        success: false,
-        output: null,
+        kind: 'failed',
         error: error instanceof Error ? error.message : String(error),
         trace: createEmptyRuntimeTrace('python'),
         executionTimeMs: Date.now() - startedAt,
@@ -989,58 +937,34 @@ class NativeJavaScriptRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'function',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       executeBatch: async (codeRequest) => {
-        const result = await this.worker.sendMessage<CodeExecutionBatchResult>('execute-code-batch', {
+        const result = await this.worker.sendMessage<RawExecutionBatchPayload>('execute-code-batch', {
           code: codeRequest.code,
           functionName: codeRequest.functionName ?? '',
           inputBatch: codeRequest.cases.map((testCase) => testCase.inputs),
           executionStyle: codeRequest.executionStyle ?? 'function',
           language: this.language,
         });
-        return batchCodeResultToExecuteResult(codeRequest, result);
+        return batchCodeResultToExecuteResult(codeRequest, liftCodeBatchOutcome(result, 'JavaScript execution failed'));
       },
     });
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
-  ): Promise<CodeExecutionResult> {
-    return this.worker.sendMessage<CodeExecutionResult>('execute-code', {
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
+    const { code, functionName, inputs, executionStyle = 'function' } = call;
+    const result = await this.worker.sendMessage<RawExecutionPayload>('execute-code', {
       code,
       functionName,
       inputs,
       executionStyle,
       language: this.language,
     });
+    return liftCodeOutcome(result, 'JavaScript execution failed');
   }
 
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
-  ): Promise<CodeExecutionResult> {
-    return this.worker.sendMessage<CodeExecutionResult>('execute-code-interview', {
-      code,
-      functionName,
-      inputs,
-      executionStyle,
-      language: this.language,
-    });
-  }
-
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options: TraceExecutionOptions = {},
-    executionStyle: RuntimeExecutionStyle = 'function'
-  ): Promise<ExecutionResult> {
-    return this.worker.sendMessage<ExecutionResult>('execute-with-tracing', {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
+    const { code, functionName, inputs, traceOptions: options = {}, executionStyle = 'function' } = call;
+    const result = await this.worker.sendMessage<RawExecutionPayload & { trace?: RuntimeTrace }>('execute-with-tracing', {
       code,
       functionName,
       inputs,
@@ -1048,6 +972,11 @@ class NativeJavaScriptRuntimeClient implements RuntimeClient {
       language: this.language,
       options,
     });
+    return liftTraceOutcome(
+      result,
+      result.trace ?? createEmptyRuntimeTrace(this.language),
+      'JavaScript tracing failed'
+    );
   }
 
   dispose(): void {
@@ -1485,17 +1414,12 @@ class NativeJavaRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'function',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       executeBatch: this.executeBatch.bind(this),
     });
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
-  ): Promise<CodeExecutionResult> {
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
+    const { code, functionName, inputs, executionStyle = 'function' } = call;
     const request: RuntimeExecuteCodeRequest = {
       kind: 'code',
       code,
@@ -1506,27 +1430,8 @@ class NativeJavaRuntimeClient implements RuntimeClient {
     const result = await this.executeBatch(request);
     const first = result.cases[0];
     return first
-      ? {
-          success: first.success,
-          output: first.output ?? null,
-          error: first.error,
-          errorLine: first.errorLine,
-          consoleOutput: first.consoleOutput,
-          timeoutReason: first.timeoutReason,
-          diagnosticStage: first.diagnosticStage,
-          diagnostic: first.diagnostic,
-          timings: first.timings,
-        }
-      : { success: false, output: null, error: 'Java execution did not return a result.', consoleOutput: [] };
-  }
-
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function'
-  ): Promise<CodeExecutionResult> {
-    return this.executeCode(code, functionName, inputs, executionStyle);
+      ? first.outcome
+      : { kind: 'failed', error: 'Java execution did not return a result.', consoleOutput: [] };
   }
 
   async executeBatch(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult> {
@@ -1579,7 +1484,7 @@ class NativeJavaRuntimeClient implements RuntimeClient {
       const cases = request.cases.map((testCase, index) => {
         const entry = rawResults[index] ?? {};
         const success = entry.success === true;
-        return codeResultToExecuteCase(testCase, {
+        return codeResultToExecuteCase(testCase, liftCodeOutcome({
           success,
           output: success ? api.parseJavaReportOutput(entry.output as string | undefined) : null,
           consoleOutput: api.javaReportConsoleOutput(report),
@@ -1591,10 +1496,10 @@ class NativeJavaRuntimeClient implements RuntimeClient {
             totalMs: index === 0 ? Date.now() - startedAt : Number(entry.runTimeMs ?? 0),
             compileCacheHit: Boolean(report.compileCacheHit),
           },
-        });
+        }, 'Java batch item failed'));
       });
       return {
-        success: report.success === true && cases.every((testCase) => testCase.success),
+        success: report.success === true && cases.every((testCase) => testCase.outcome.kind === 'completed'),
         cases,
         timings: {
           compileMs: Number(report.compileTimeMs ?? 0),
@@ -1606,8 +1511,7 @@ class NativeJavaRuntimeClient implements RuntimeClient {
       return {
         success: false,
         cases: request.cases.map((testCase) => codeResultToExecuteCase(testCase, {
-          success: false,
-          output: null,
+          kind: 'failed',
           error: error instanceof Error ? error.message : String(error),
           consoleOutput: [],
         })),
@@ -1617,13 +1521,8 @@ class NativeJavaRuntimeClient implements RuntimeClient {
     }
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options: TraceExecutionOptions = {},
-    executionStyle: RuntimeExecutionStyle = 'function'
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
+    const { code, functionName, inputs, traceOptions: options = {}, executionStyle = 'function' } = call;
     const startedAt = Date.now();
     const api = await loadNativeJavaWorkerApi(this.options.workerSourcePath);
     const normalizedPayload = api.normalizeJavaExecutionPayload({
@@ -1677,29 +1576,28 @@ class NativeJavaRuntimeClient implements RuntimeClient {
         maxPathDepth: options.maxPathDepth,
       });
       const success = report.success === true;
-      return {
-        success,
-        output: success ? api.parseJavaReportOutput(report.output as string | undefined) : null,
-        ...(success ? {} : { error: api.javaReportFailureMessage(report, 'Java trace failed without compiler/runtime diagnostics') }),
-        trace,
-        executionTimeMs: Date.now() - startedAt,
-        consoleOutput: api.javaReportConsoleOutput(report),
-        traceLimitExceeded: Boolean(report.traceLimitExceeded),
-        timeoutReason: report.traceLimitExceeded ? 'trace-limit' : undefined,
-        lineEventCount: trace.lineEventCount,
-        traceStepCount: trace.traceStepCount,
-        timings: {
-          compileMs: Number(report.compileTimeMs ?? 0),
-          classLoadMs: Number(report.classLoadTimeMs ?? 0),
-          runMs: Number(report.runTimeMs ?? 0),
-          totalMs: Date.now() - startedAt,
-          compileCacheHit: Boolean(report.compileCacheHit),
+      return liftTraceOutcome(
+        {
+          success,
+          output: success ? api.parseJavaReportOutput(report.output as string | undefined) : null,
+          ...(success ? {} : { error: api.javaReportFailureMessage(report, 'Java trace failed without compiler/runtime diagnostics') }),
+          executionTimeMs: Date.now() - startedAt,
+          consoleOutput: api.javaReportConsoleOutput(report),
+          ...(report.traceLimitExceeded ? { traceLimitExceeded: true, timeoutReason: 'trace-limit' as const } : {}),
+          timings: {
+            compileMs: Number(report.compileTimeMs ?? 0),
+            classLoadMs: Number(report.classLoadTimeMs ?? 0),
+            runMs: Number(report.runTimeMs ?? 0),
+            totalMs: Date.now() - startedAt,
+            compileCacheHit: Boolean(report.compileCacheHit),
+          },
         },
-      };
+        trace,
+        'Java tracing failed'
+      );
     } catch (error) {
       return {
-        success: false,
-        output: null,
+        kind: 'failed',
         error: error instanceof Error ? error.message : String(error),
         trace: createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'solution.java' }),
         executionTimeMs: Date.now() - startedAt,
@@ -1754,52 +1652,14 @@ class NativeCppRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'solution-method',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       executeBatch: this.executeBatch.bind(this),
     });
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
-  ): Promise<CodeExecutionResult> {
-    return this.compileAndRun(code, functionName, inputs, { executionStyle, tracing: false }) as Promise<CodeExecutionResult>;
-  }
-
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
-  ): Promise<CodeExecutionResult> {
-    const result = await this.compileAndRun(code, functionName, inputs, {
-      executionStyle,
-      tracing: true,
-      traceOptions: {
-        maxTraceSteps: 20_000,
-        maxLineEvents: 20_000,
-        maxSingleLineHits: 10_000,
-      },
-    });
-    if (!result.success || result.traceLimitExceeded) {
-      return {
-        success: false,
-        output: null,
-        error: result.error ?? 'Time Limit Exceeded',
-        consoleOutput: result.consoleOutput,
-        timeoutReason: result.timeoutReason,
-        diagnosticStage: 'interview',
-        timings: result.timings,
-      };
-    }
-    return {
-      success: true,
-      output: result.output,
-      consoleOutput: result.consoleOutput,
-      timings: result.timings,
-    };
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
+    const { code, functionName, inputs, executionStyle = 'solution-method' } = call;
+    const result = await this.compileAndRun(code, functionName, inputs, { executionStyle, tracing: false });
+    return liftCodeOutcome(result, 'C++ execution failed');
   }
 
   async executeBatch(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult> {
@@ -1839,20 +1699,18 @@ class NativeCppRuntimeClient implements RuntimeClient {
       );
       const compileMs = Date.now() - compileStartedAt;
       if (compile.exitCode !== 0 || compile.timedOut) {
-        return batchCodeResultToExecuteResult(request, {
-          success: false,
+        return batchCodeResultToExecuteResult(request, liftCodeBatchOutcome({
           results: request.cases.map(() => ({
             success: false,
-            output: null,
             error: compile.stderr || compile.stdout || 'C++ batch compilation failed.',
             consoleOutput: [],
-            diagnosticStage: 'driver-compile',
+            diagnosticStage: 'driver-compile' as const,
             timings: { compileMs, totalMs: Date.now() - startedAt },
           })),
           consoleOutput: [],
           error: compile.stderr || compile.stdout || 'C++ batch compilation failed.',
           timings: { compileMs, totalMs: Date.now() - startedAt },
-        });
+        }, 'C++ batch compilation failed.'));
       }
 
       const runStartedAt = Date.now();
@@ -1875,20 +1733,18 @@ class NativeCppRuntimeClient implements RuntimeClient {
           defaultLine: signature.line ?? 1,
         });
       } catch (error) {
-        return batchCodeResultToExecuteResult(request, {
-          success: false,
+        return batchCodeResultToExecuteResult(request, liftCodeBatchOutcome({
           results: request.cases.map(() => ({
             success: false,
-            output: null,
             error: error instanceof Error ? error.message : String(error),
             consoleOutput: run.stderr ? [run.stderr] : [],
-            diagnosticStage: 'runtime',
+            diagnosticStage: 'runtime' as const,
             timings: { compileMs, runMs, totalMs: Date.now() - startedAt },
           })),
           consoleOutput: run.stderr ? [run.stderr] : [],
           error: error instanceof Error ? error.message : String(error),
           timings: { compileMs, runMs, totalMs: Date.now() - startedAt },
-        });
+        }, 'C++ batch parsing failed.'));
       }
 
       const outputs = Array.isArray(parsed.output) ? parsed.output : [];
@@ -1898,8 +1754,7 @@ class NativeCppRuntimeClient implements RuntimeClient {
         : outputs.length !== request.cases.length
           ? `C++ batch returned ${outputs.length} result(s) for ${request.cases.length} case(s).`
           : `C++ program exited with code ${run.exitCode ?? 'signal'}`);
-      return batchCodeResultToExecuteResult(request, {
-        success,
+      return batchCodeResultToExecuteResult(request, liftCodeBatchOutcome({
         results: request.cases.map((_, index) => ({
           success,
           output: outputs[index] ?? null,
@@ -1911,20 +1766,18 @@ class NativeCppRuntimeClient implements RuntimeClient {
         consoleOutput: [...parsed.consoleOutput, ...run.stderr.split(/\r?\n/).filter(Boolean)],
         ...(success ? {} : { error: runtimeError }),
         timings: { compileMs, runMs, totalMs: Date.now() - startedAt },
-      });
+      }, 'C++ batch execution failed.'));
     } catch (error) {
-      return batchCodeResultToExecuteResult(request, {
-        success: false,
+      return batchCodeResultToExecuteResult(request, liftCodeBatchOutcome({
         results: request.cases.map(() => ({
           success: false,
-          output: null,
           error: error instanceof Error ? error.message : String(error),
           consoleOutput: [],
         })),
         error: error instanceof Error ? error.message : String(error),
         consoleOutput: [],
         timings: { totalMs: Date.now() - startedAt },
-      });
+      }, 'C++ batch execution failed.'));
     } finally {
       await removeTempDir(tempDir, this.options.keepTempDirs);
     }
@@ -1937,36 +1790,23 @@ class NativeCppRuntimeClient implements RuntimeClient {
   ): Promise<RuntimeExecuteResult> {
     const results: CodeExecutionResult[] = [];
     for (const testCase of request.cases) {
-      results.push(await this.executeCode(request.code, request.functionName ?? '', testCase.inputs, executionStyle));
+      results.push(await this.executeCode({ code: request.code, functionName: request.functionName ?? '', inputs: testCase.inputs, executionStyle }));
     }
     return batchCodeResultToExecuteResult(request, {
-      success: results.every((result) => result.success),
       results,
       consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
       timings: { totalMs: Date.now() - startedAt },
     });
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options: TraceExecutionOptions = {},
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
+    const { code, functionName, inputs, traceOptions: options = {}, executionStyle = 'solution-method' } = call;
     const result = await this.compileAndRun(code, functionName ?? '', inputs, {
       executionStyle,
       tracing: true,
       traceOptions: options,
     });
-    return {
-      ...result,
-      trace: result.trace ?? createEmptyRuntimeTrace('cpp', { runId: 'cpp:run', file: 'solution.cpp' }),
-      executionTimeMs: result.executionTimeMs ?? 0,
-      consoleOutput: result.consoleOutput ?? [],
-      lineEventCount: result.trace?.lineEventCount ?? 0,
-      traceStepCount: result.trace?.traceStepCount ?? 0,
-    };
+    return liftTraceOutcome(result, result.trace, 'C++ tracing failed');
   }
 
   private async compileAndRun(
@@ -1974,7 +1814,7 @@ class NativeCppRuntimeClient implements RuntimeClient {
     functionName: string,
     inputs: Record<string, unknown>,
     options: { executionStyle: RuntimeExecutionStyle; tracing: boolean; traceOptions?: TraceExecutionOptions }
-  ): Promise<ExecutionResult & CodeExecutionResult> {
+  ): Promise<RawExecutionPayload & { trace: RuntimeTrace }> {
     const startedAt = Date.now();
     const api = await loadNativeCppWorkerApi(this.options.workerSourcePath);
     const tempDir = await mkdtemp(join(tmpdir(), 'tracecode-native-cpp-'));
@@ -2065,9 +1905,7 @@ class NativeCppRuntimeClient implements RuntimeClient {
         ...base,
         trace: finalized.trace,
         traceLimitExceeded: finalized.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded),
-        timeoutReason: parsed.traceStatus?.timeoutReason as ExecutionResult['timeoutReason'] | undefined,
-        lineEventCount: finalized.trace.lineEventCount,
-        traceStepCount: finalized.trace.traceStepCount,
+        timeoutReason: parsed.traceStatus?.timeoutReason as ExecutionLimitReason | undefined,
       };
     } catch (error) {
       return {
@@ -2444,17 +2282,12 @@ class NativeCSharpRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'solution-method',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       executeBatch: this.executeBatch.bind(this),
     });
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
-  ): Promise<CodeExecutionResult> {
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
+    const { code, functionName, inputs, executionStyle = 'solution-method' } = call;
     const result = await this.executeBatch({
       kind: 'code',
       code,
@@ -2464,54 +2297,30 @@ class NativeCSharpRuntimeClient implements RuntimeClient {
     });
     const first = result.cases[0];
     return first
-      ? {
-          success: first.success,
-          output: first.output ?? null,
-          error: first.error,
-          errorLine: first.errorLine,
-          consoleOutput: first.consoleOutput,
-          timeoutReason: first.timeoutReason,
-          diagnosticStage: first.diagnosticStage,
-          diagnostic: first.diagnostic,
-          timings: first.timings,
-        }
-      : { success: false, output: null, error: 'C# execution did not return a result.', consoleOutput: [] };
-  }
-
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
-  ): Promise<CodeExecutionResult> {
-    return this.executeCode(code, functionName, inputs, executionStyle);
+      ? first.outcome
+      : { kind: 'failed', error: 'C# execution did not return a result.', consoleOutput: [] };
   }
 
   async executeBatch(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult> {
     const startedAt = Date.now();
     const raw = await this.compileAndRun(request, false);
     const rawResults = Array.isArray(raw.results) ? raw.results as Record<string, unknown>[] : [];
-    const cases = request.cases.map((testCase, index) => codeResultToExecuteCase(testCase, {
+    const cases = request.cases.map((testCase, index) => codeResultToExecuteCase(testCase, liftCodeOutcome({
       success: rawResults[index]?.success === true,
       output: rawResults[index]?.output,
       error: rawResults[index]?.error as string | undefined,
       consoleOutput: Array.isArray(rawResults[index]?.consoleOutput) ? rawResults[index].consoleOutput as string[] : [],
       timings: { totalMs: Date.now() - startedAt },
-    }));
+    }, 'C# execution failed')));
     return {
-      success: raw.success === true && cases.every((testCase) => testCase.success),
+      success: raw.success === true && cases.every((testCase) => testCase.outcome.kind === 'completed'),
       cases,
       timings: { totalMs: Date.now() - startedAt },
     };
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    _options: TraceExecutionOptions = {},
-    executionStyle: RuntimeExecutionStyle = 'solution-method'
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
+    const { code, functionName, inputs, executionStyle = 'solution-method' } = call;
     const startedAt = Date.now();
     const raw = await this.compileAndRun({
       kind: 'code',
@@ -2524,17 +2333,18 @@ class NativeCSharpRuntimeClient implements RuntimeClient {
     const trace = entry?.trace && typeof entry.trace === 'object'
       ? entry.trace as RuntimeTrace
       : createEmptyRuntimeTrace('csharp', { runId: 'csharp:run', file: 'solution.cs' });
-    return {
-      success: entry?.success === true,
-      output: entry?.output,
-      error: entry?.error as string | undefined,
+    return liftTraceOutcome(
+      {
+        success: entry?.success === true,
+        output: entry?.output,
+        error: entry?.error as string | undefined,
+        executionTimeMs: Date.now() - startedAt,
+        consoleOutput: Array.isArray(entry?.consoleOutput) ? entry.consoleOutput as string[] : [],
+        timings: { totalMs: Date.now() - startedAt },
+      },
       trace,
-      executionTimeMs: Date.now() - startedAt,
-      consoleOutput: Array.isArray(entry?.consoleOutput) ? entry.consoleOutput as string[] : [],
-      lineEventCount: trace.lineEventCount,
-      traceStepCount: trace.traceStepCount,
-      timings: { totalMs: Date.now() - startedAt },
-    };
+      'C# tracing failed'
+    );
   }
 
   private async compileAndRun(request: RuntimeExecuteCodeRequest, trace: boolean): Promise<Record<string, unknown>> {
@@ -2609,10 +2419,6 @@ class UnsupportedNativeRuntimeClient implements RuntimeClient {
   }
 
   async executeCode(): Promise<CodeExecutionResult> {
-    throw this.unsupported();
-  }
-
-  async executeCodeInterviewMode(): Promise<CodeExecutionResult> {
     throw this.unsupported();
   }
 
