@@ -11160,107 +11160,6 @@ async function handleExecuteWithTracing(payload) {
   }
 }
 
-function isInterviewTimeoutResult(result) {
-  const normalized = String(result?.error ?? '').toLowerCase();
-  const timeoutReason = result?.timeoutReason ?? '';
-  return (
-    timeoutReason === 'trace-limit' ||
-    timeoutReason === 'line-limit' ||
-    timeoutReason === 'single-line-limit' ||
-    timeoutReason === 'client-timeout' ||
-    normalized.includes('timed out') ||
-    normalized.includes('trace budget') ||
-    normalized.includes('trace-limit') ||
-    normalized.includes('line-limit') ||
-    normalized.includes('infinite loop')
-  );
-}
-
-async function handleExecuteCodeInterview(payload) {
-  const source = payload && typeof payload.code === 'string' ? payload.code : '';
-  const functionName = payload && typeof payload.functionName === 'string' ? payload.functionName : '';
-
-  if (!source.trim()) {
-    return {
-      success: false,
-      output: null,
-      error: 'C++ source is empty.',
-      consoleOutput: [],
-    };
-  }
-
-  if (!functionName.trim() && payload?.executionStyle !== 'function') {
-    return {
-      success: false,
-      output: null,
-      error: 'C++ named interview execution requires a function name.',
-      consoleOutput: [],
-    };
-  }
-
-  try {
-    const result = await compileAndRun(source, functionName, payload?.inputs || {}, {
-      tracing: true,
-      traceOptions: {
-        maxTraceSteps: DEFAULT_INTERVIEW_MAX_TRACE_STEPS,
-        maxLineEvents: DEFAULT_INTERVIEW_MAX_LINE_EVENTS,
-        maxSingleLineHits: DEFAULT_INTERVIEW_MAX_SINGLE_LINE_HITS,
-        ...(payload?.options && typeof payload.options === 'object' ? payload.options : {}),
-      },
-      executionStyle: payload?.executionStyle || 'solution-method',
-    });
-
-    if (result.traceLimitExceeded && isInterviewTimeoutResult(result)) {
-      return {
-        success: false,
-        output: null,
-        error: 'Time Limit Exceeded',
-        ...(isTraceTimeoutReason(result.timeoutReason) ? { timeoutReason: result.timeoutReason } : {}),
-        diagnosticStage: 'interview',
-        consoleOutput: result.consoleOutput || [],
-        timings: result.timings,
-      };
-    }
-
-    if (!result.success) {
-      if (isInterviewTimeoutResult(result)) {
-        return {
-          success: false,
-          output: null,
-          error: 'Time Limit Exceeded',
-          ...(isTraceTimeoutReason(result.timeoutReason) ? { timeoutReason: result.timeoutReason } : {}),
-          diagnosticStage: 'interview',
-          consoleOutput: result.consoleOutput || [],
-          timings: result.timings,
-        };
-      }
-      return {
-        success: false,
-        output: null,
-        error: result.error || 'C++ interview execution failed.',
-        ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
-        consoleOutput: result.consoleOutput || [],
-        timings: result.timings,
-      };
-    }
-
-    return {
-      success: true,
-      output: result.output,
-      consoleOutput: result.consoleOutput || [],
-      timings: result.timings,
-    };
-  } catch {
-    return {
-      success: false,
-      output: null,
-      error: 'Time Limit Exceeded',
-      timeoutReason: 'client-timeout',
-      diagnosticStage: 'interview',
-      consoleOutput: [],
-    };
-  }
-}
 
 self.onmessage = (event) => {
   const { id, type, payload, requestId, protocolToken } = event.data || {};
@@ -11321,8 +11220,6 @@ self.onmessage = (event) => {
                 ? await handleExecuteWithTracing(payload)
                 : type === 'execute-trace-batch'
                   ? await handleExecuteTraceBatch(payload)
-                : type === 'execute-code-interview'
-                  ? await handleExecuteCodeInterview(payload)
                   : await Promise.reject(new Error(`Unknown C++ worker message: ${type}`));
       } finally {
         emitRequestProgress('request-complete', { type });

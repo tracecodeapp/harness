@@ -1236,6 +1236,24 @@ async function executeWithTracing(code, functionName, inputs, executionStyle = '
 }
 
 /**
+ * Translate caller-supplied guest execution limits into runtime-core guard
+ * options. Returns undefined when no guest limit is set, so unlimited
+ * execution stays on the guard-free path. Runtime core clamps each value
+ * to its safety floor.
+ */
+function guestGuardOptionsFromLimits(limits) {
+  if (!limits || typeof limits !== 'object') return undefined;
+  const guard = {};
+  if (Number.isFinite(limits.maxLineEvents)) guard.maxLineEvents = limits.maxLineEvents;
+  if (Number.isFinite(limits.maxSingleLineHits)) guard.maxSingleLineHits = limits.maxSingleLineHits;
+  if (Number.isFinite(limits.maxCallDepth)) guard.maxCallDepth = limits.maxCallDepth;
+  if (Number.isFinite(limits.maxMemoryBytes)) guard.maxMemoryBytes = limits.maxMemoryBytes;
+  if (Object.keys(guard).length === 0) return undefined;
+  guard.interviewGuard = true;
+  return guard;
+}
+
+/**
  * Execute Python code without tracing (for running tests).
  * Delegates to the runtime core module.
  */
@@ -4887,7 +4905,13 @@ async function processMessage(data) {
 
       case 'execute-code': {
         const { code, functionName, inputs, executionStyle } = payload;
-        const result = await executeCode(code, functionName, inputs, executionStyle ?? 'function');
+        const result = await executeCode(
+          code,
+          functionName,
+          inputs,
+          executionStyle ?? 'function',
+          guestGuardOptionsFromLimits(payload.limits)
+        );
         analyzerInitialized = false;
         trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
@@ -4896,16 +4920,6 @@ async function processMessage(data) {
       case 'execute-code-batch': {
         const { code, functionName, inputBatch, executionStyle } = payload;
         const result = await executeCodeBatch(code, functionName, inputBatch, executionStyle ?? 'function');
-        analyzerInitialized = false;
-        trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
-        break;
-      }
-
-      case 'execute-code-interview': {
-        const { code, functionName, inputs, executionStyle } = payload;
-        const result = await executeCode(code, functionName, inputs, executionStyle ?? 'function', {
-          interviewGuard: true,
-        });
         analyzerInitialized = false;
         trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;

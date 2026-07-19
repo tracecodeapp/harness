@@ -1,5 +1,5 @@
 import type { RuntimeExecutionStyle } from '@tracecode/harness-core';
-import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
+import type { RawExecutionPayload, RuntimeTrace } from '@tracecode/harness-core';
 import { createEmptyRuntimeTrace } from '@tracecode/harness-core';
 import { withTypeScriptRuntimeDeclarations } from './typescript-runtime-declarations';
 
@@ -1663,7 +1663,7 @@ export async function executeJavaScriptCode(
   language: 'javascript' | 'typescript' = 'javascript',
   resolvedMaterializers?: Record<string, InputMaterializerKind>,
   sandboxSourceCode = code
-): Promise<CodeExecutionResult> {
+): Promise<RawExecutionPayload> {
   const consoleOutput: string[] = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
   const normalizedInputs = normalizeInputs(inputs);
@@ -1724,7 +1724,7 @@ export async function executeJavaScriptWithTracing(
   inputs: Record<string, unknown>,
   executionStyle: RuntimeExecutionStyle = 'function',
   language: 'javascript' | 'typescript' = 'javascript'
-): Promise<ExecutionResult> {
+): Promise<RawExecutionPayload & { trace: RuntimeTrace; lineEventCount: number; traceStepCount: number }> {
   const startedAt = performanceNow();
   const codeResult = await executeJavaScriptCode(code, functionName ?? '', inputs, executionStyle, language);
   const executionTimeMs = performanceNow() - startedAt;
@@ -1758,7 +1758,7 @@ export async function executeTypeScriptCode(
   functionName: string,
   inputs: Record<string, unknown>,
   executionStyle: RuntimeExecutionStyle = 'function'
-): Promise<CodeExecutionResult> {
+): Promise<RawExecutionPayload> {
   const normalizedInputs = normalizeInputs(inputs);
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, 'typescript');
   const transpiledCode = await transpileTypeScript(code);

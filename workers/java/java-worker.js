@@ -6682,7 +6682,6 @@ self.onmessage = (event) => {
     message.type === 'execute-with-tracing' ||
     message.type === 'execute-code' ||
     message.type === 'execute-code-batch' ||
-    message.type === 'execute-code-interview' ||
     message.type === 'execute-project-java'
   ) {
     queue = queue.then(async () => {

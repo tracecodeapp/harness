@@ -4570,10 +4570,15 @@ _json_out
     const result = JSON.parse(resultJson);
 
     if (result.guardTriggered) {
+      const structuredReasons = ['line-limit', 'single-line-limit', 'recursion-limit', 'memory-limit'];
+      const reason = structuredReasons.includes(result.timeoutReason) ? result.timeoutReason : undefined;
       return {
         success: false,
         output: null,
-        error: result.timeoutReason || 'INTERVIEW_GUARD_TRIGGERED:resource-limit',
+        error: reason
+          ? `Execution stopped: resource limit exceeded (${reason}).`
+          : 'Execution stopped: resource limit exceeded.',
+        ...(reason ? { timeoutReason: reason } : {}),
         consoleOutput: Array.isArray(result.console) ? result.console : [],
         timings: { totalMs: deps.performanceNow() - startedAt },
       };

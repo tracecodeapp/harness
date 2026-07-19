@@ -389,7 +389,7 @@ def _serialize_output(obj, depth=0, node_refs=None):
 
 /**
  * Execute-mode Python serialization function.
- * Preserves current execute/interview output semantics.
+ * Preserves current execute output semantics.
  */
 export const TEMPLATE_PYTHON_EXECUTE_SERIALIZE_FUNCTION = `
 _MAX_SERIALIZE_DEPTH = 48

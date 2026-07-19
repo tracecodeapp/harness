@@ -2732,7 +2732,6 @@ async function handleMessage(message) {
 
   if (
     message.type === 'execute-code' ||
-    message.type === 'execute-code-interview' ||
     message.type === 'execute-with-tracing'
   ) {
     return executeCSharpCodePayload(message.payload, message.type);

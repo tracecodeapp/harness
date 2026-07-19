@@ -138,12 +138,6 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
 let isInitialized = false;
 let isLoading = false;
 let typeScriptLoadPromise = null;
-const INTERVIEW_GUARD_DEFAULTS = Object.freeze({
-  maxTraceSteps: 8000,
-  maxLineEvents: 4000,
-  maxSingleLineHits: 3000,
-  maxCallDepth: 2000,
-});
 const TYPESCRIPT_COMPILER_URLS = [
   './vendor/typescript.js',
   'https://cdn.jsdelivr.net/npm/typescript@5.9.2/lib/typescript.js',
@@ -6909,7 +6903,7 @@ function preparedExecutionFromPayload(payload) {
 async function prepareExecutionRequest(payload) {
   const operation = payload?.operation;
   const request = payload?.request;
-  if (!['execute-code', 'execute-code-batch', 'execute-with-tracing', 'execute-code-interview'].includes(operation)) {
+  if (!['execute-code', 'execute-code-batch', 'execute-with-tracing'].includes(operation)) {
     throw new Error(`Unsupported JavaScript preparation operation: ${String(operation)}`);
   }
   if (!request || typeof request !== 'object') {
@@ -6966,7 +6960,7 @@ async function prepareExecutionRequest(payload) {
 
   let instrumentedCode;
   let traceLineBounds;
-  if (operation === 'execute-with-tracing' || operation === 'execute-code-interview') {
+  if (operation === 'execute-with-tracing') {
     const traceFunctionName = hasNamedFunction ? targetName : '<module>';
     const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
     traceLineBounds = determineTraceLineBounds(code, targetName, executionStyle);
@@ -7474,58 +7468,6 @@ async function executeWithTracing(payload) {
   }
 }
 
-async function executeCodeInterview(payload) {
-  const guardedOptions = {
-    ...INTERVIEW_GUARD_DEFAULTS,
-    ...(payload?.options && typeof payload.options === 'object' ? payload.options : {}),
-  };
-
-  const tracedResult = await executeWithTracing({
-    ...payload,
-    options: guardedOptions,
-  });
-
-  if (!tracedResult.success) {
-    const normalized = String(tracedResult.error ?? '').toLowerCase();
-    const timeoutReason = tracedResult.timeoutReason ?? '';
-    const timeoutIndicators = [
-      'trace-limit',
-      'line-limit',
-      'single-line-limit',
-      'recursion-limit',
-    ];
-    const isGuardTimeout =
-      timeoutIndicators.includes(timeoutReason) ||
-      normalized.includes('timed out') ||
-      normalized.includes('infinite loop') ||
-      normalized.includes('line events') ||
-      normalized.includes('trace steps') ||
-      normalized.includes('call depth');
-
-    if (isGuardTimeout) {
-      return {
-        success: false,
-        output: null,
-        error: 'Time Limit Exceeded',
-        consoleOutput: tracedResult.consoleOutput ?? [],
-      };
-    }
-
-    return {
-      success: false,
-      output: null,
-      error: tracedResult.error,
-      errorLine: tracedResult.errorLine,
-      consoleOutput: tracedResult.consoleOutput ?? [],
-    };
-  }
-
-  return {
-    success: true,
-    output: tracedResult.output,
-    consoleOutput: tracedResult.consoleOutput ?? [],
-  };
-}
 
 async function initRuntime(payload = {}) {
   configureTypeScriptCompilerUrl(payload?.typescriptCompilerUrl);
@@ -7667,15 +7609,6 @@ async function processMessage(data) {
           throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
         }
         const result = await executeCodeBatch(payload);
-        postProtocolMessage(id, protocolToken, 'execute-result', result);
-        break;
-      }
-
-      case 'execute-code-interview': {
-        if (WORKER_ROLE === 'coordinator') {
-          throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
-        }
-        const result = await executeCodeInterview(payload);
         postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;
       }
