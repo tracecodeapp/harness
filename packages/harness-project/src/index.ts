@@ -7440,6 +7440,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return;
     }
     const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
+    // A create still takes structural parent locks and records the new directory
+    // membership. Freshness is path-scoped, though: a sibling created by a
+    // different live runtime must not make this independent target stale.
+    const freshnessKind: RuntimeFileSystemMutationKind = mutationKind === 'file-create' ? 'file-write' : mutationKind;
     await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
       this.assertWorkspacePathWritable(absolutePath, 'write');
       if (normalizedEncoding === 'base64') {
@@ -7457,7 +7461,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           new Date(changedFile.mtimeMs ?? currentMtime)
         );
       }
-    }, mutationKind);
+    }, mutationKind, freshnessKind);
     if (emit) {
       this.emitLocalRuntimeEvent({
         type: 'file-change',

@@ -200,6 +200,32 @@ Kernel namespaces are read-only to normal workspace and shell writes. Runtime
 file changes are routed back through TraceKernel so live mutation events and
 final-diff reconciliation can enforce readonly and hidden-file policy.
 
+### Browser filesystem concurrency and visibility
+
+TraceKernel is the authoritative browser workspace. Each worker-backed language
+command receives a point-in-time project snapshot when that command starts.
+File mutations made by the command are streamed back through TraceKernel and
+committed before the corresponding public `file-change` event is emitted.
+
+This gives browser providers the following explicit concurrency contract:
+
+- A command started after another provider's committed live write sees the new
+  contents in its launch snapshot.
+- Two active providers can commit independent files in parallel.
+- Two active providers that write the same path do not silently overwrite or
+  merge one another. One complete mutation wins and the stale command fails
+  with `ESTALE`.
+- A worker-backed command that was already running does not receive another
+  provider's later mutations. Its local runtime filesystem remains the snapshot
+  it started with.
+
+The last point means browser live I/O is not a shared POSIX mount between active
+workers. Workloads that coordinate two long-lived processes through files while
+both remain alive are not currently supported. TraceKernel HTTP is different:
+its request bridge is host-owned and explicitly connects active processes in
+one workspace. Cross-provider filesystem conformance is covered in real
+Chromium, Firefox, and WebKit by `test:project-live-fs-browser-matrix`.
+
 ## Actors And HTTP
 
 Workspace operations can run as actors:

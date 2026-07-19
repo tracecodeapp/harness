@@ -10449,6 +10449,239 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   }
 }
 
+async function testBrowserProjectWorkspaceCrossRunnerFilesystemVisibility(): Promise<void> {
+  let releaseHeldPython!: () => void;
+  const heldPythonReleased = new Promise<void>((resolve) => {
+    releaseHeldPython = resolve;
+  });
+  let heldPythonStarted!: () => void;
+  const heldPythonStartedPromise = new Promise<void>((resolve) => {
+    heldPythonStarted = resolve;
+  });
+  let heldPythonInitialContents: string | undefined;
+  let heldPythonContentsAfterJavaWrite: string | undefined;
+  let laterCSharpContents: string | undefined;
+
+  const workspace = await createBrowserProjectWorkspace({
+    files: [
+      { path: 'reader.py', contents: 'print("reader")\n' },
+      { path: 'Writer.java', contents: 'class Writer {}\n' },
+      { path: 'Program.cs', contents: 'Console.WriteLine("observer");\n' },
+    ],
+    ...throwingBrowserWorkerClients(),
+    pythonWorkerClient: {
+      async executeProjectPython(request) {
+        heldPythonInitialContents = request.project.files.find((file) => file.path === 'shared.txt')?.contents;
+        heldPythonStarted();
+        await heldPythonReleased;
+        heldPythonContentsAfterJavaWrite = request.project.files.find((file) => file.path === 'shared.txt')?.contents;
+        return {
+          stdout: `${heldPythonInitialContents ?? 'missing'}:${heldPythonContentsAfterJavaWrite ?? 'missing'}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+      terminate() {},
+    },
+    javaWorkerClient: {
+      async executeProjectJava(_request, _timeoutMs, onEvent) {
+        onEvent?.({
+          type: 'file-change',
+          phase: 'live',
+          change: { path: 'shared.txt', contents: 'written-by-java\n' },
+        });
+        return { stdout: 'writer:done\n', stderr: '', exitCode: 0 };
+      },
+      terminate() {},
+    },
+    csharpWorkerClient: {
+      async executeProjectCSharp(request) {
+        laterCSharpContents = request.project.files.find((file) => file.path === 'shared.txt')?.contents;
+        return { stdout: laterCSharpContents ?? 'missing', stderr: '', exitCode: 0 };
+      },
+      terminate() {},
+    },
+  });
+
+  try {
+    const heldPython = workspace.runCommand('python3 reader.py');
+    await heldPythonStartedPromise;
+
+    const javaWriter = await workspace.runCommand('java Writer');
+    assertCondition(
+      javaWriter.exitCode === 0 && await workspace.readFile('shared.txt') === 'written-by-java\n',
+      `a live write from Java should reach the authoritative workspace before the command completes: ${JSON.stringify(javaWriter)}`
+    );
+
+    releaseHeldPython();
+    const heldPythonResult = await heldPython;
+    assertCondition(
+      heldPythonResult.exitCode === 0 &&
+        heldPythonInitialContents === undefined &&
+        heldPythonContentsAfterJavaWrite === undefined,
+      `an already-running provider should retain its point-in-time command snapshot: ${JSON.stringify({
+        heldPythonResult,
+        heldPythonInitialContents,
+        heldPythonContentsAfterJavaWrite,
+      })}`
+    );
+
+    const laterCSharp = await workspace.runCommand('dotnet run');
+    assertCondition(
+      laterCSharp.exitCode === 0 && laterCSharpContents === 'written-by-java\n',
+      `a provider started after another provider's live write should receive the updated workspace snapshot: ${JSON.stringify({
+        laterCSharp,
+        laterCSharpContents,
+      })}`
+    );
+  } finally {
+    releaseHeldPython();
+    workspace.dispose();
+  }
+
+  let releaseConcurrentWriters!: () => void;
+  const concurrentWritersReleased = new Promise<void>((resolve) => {
+    releaseConcurrentWriters = resolve;
+  });
+  let bothConcurrentWritersStarted!: () => void;
+  const bothConcurrentWritersStartedPromise = new Promise<void>((resolve) => {
+    bothConcurrentWritersStarted = resolve;
+  });
+  const concurrentWritersStarted = new Set<string>();
+  const markConcurrentWriterStarted = (runtime: string): void => {
+    concurrentWritersStarted.add(runtime);
+    if (concurrentWritersStarted.size === 2) bothConcurrentWritersStarted();
+  };
+
+  const concurrentWorkspace = await createBrowserProjectWorkspace({
+    files: [
+      { path: 'writer.py', contents: 'print("python")\n' },
+      { path: 'Writer.java', contents: 'class Writer {}\n' },
+    ],
+    ...throwingBrowserWorkerClients(),
+    pythonWorkerClient: {
+      async executeProjectPython(_request, _timeoutMs, onEvent) {
+        markConcurrentWriterStarted('python');
+        await concurrentWritersReleased;
+        onEvent?.({
+          type: 'file-change',
+          phase: 'live',
+          change: { path: 'python-output.txt', contents: 'python\n' },
+        });
+        return { stdout: 'python:done\n', stderr: '', exitCode: 0 };
+      },
+      terminate() {},
+    },
+    javaWorkerClient: {
+      async executeProjectJava(_request, _timeoutMs, onEvent) {
+        markConcurrentWriterStarted('java');
+        await concurrentWritersReleased;
+        onEvent?.({
+          type: 'file-change',
+          phase: 'live',
+          change: { path: 'java-output.txt', contents: 'java\n' },
+        });
+        return { stdout: 'java:done\n', stderr: '', exitCode: 0 };
+      },
+      terminate() {},
+    },
+  });
+
+  try {
+    const pythonWriter = concurrentWorkspace.runCommand('python3 writer.py');
+    const javaWriter = concurrentWorkspace.runCommand('java Writer');
+    await bothConcurrentWritersStartedPromise;
+    releaseConcurrentWriters();
+    const [pythonResult, javaResult] = await Promise.all([pythonWriter, javaWriter]);
+
+    assertCondition(
+      pythonResult.exitCode === 0 &&
+        javaResult.exitCode === 0 &&
+        await concurrentWorkspace.readFile('python-output.txt') === 'python\n' &&
+        await concurrentWorkspace.readFile('java-output.txt') === 'java\n',
+      `parallel providers should commit independent live writes into one authoritative workspace: ${JSON.stringify({
+        pythonResult,
+        javaResult,
+      })}`
+    );
+  } finally {
+    releaseConcurrentWriters();
+    concurrentWorkspace.dispose();
+  }
+
+  let releaseConflictingWriters!: () => void;
+  const conflictingWritersReleased = new Promise<void>((resolve) => {
+    releaseConflictingWriters = resolve;
+  });
+  let bothConflictingWritersStarted!: () => void;
+  const bothConflictingWritersStartedPromise = new Promise<void>((resolve) => {
+    bothConflictingWritersStarted = resolve;
+  });
+  const conflictingWritersStarted = new Set<string>();
+  const markConflictingWriterStarted = (runtime: string): void => {
+    conflictingWritersStarted.add(runtime);
+    if (conflictingWritersStarted.size === 2) bothConflictingWritersStarted();
+  };
+
+  const conflictingWorkspace = await createBrowserProjectWorkspace({
+    files: [
+      { path: 'writer.py', contents: 'print("python")\n' },
+      { path: 'Writer.java', contents: 'class Writer {}\n' },
+    ],
+    ...throwingBrowserWorkerClients(),
+    pythonWorkerClient: {
+      async executeProjectPython(_request, _timeoutMs, onEvent) {
+        markConflictingWriterStarted('python');
+        await conflictingWritersReleased;
+        onEvent?.({
+          type: 'file-change',
+          phase: 'live',
+          change: { path: 'shared-output.txt', contents: 'python\n' },
+        });
+        return { stdout: 'python:done\n', stderr: '', exitCode: 0 };
+      },
+      terminate() {},
+    },
+    javaWorkerClient: {
+      async executeProjectJava(_request, _timeoutMs, onEvent) {
+        markConflictingWriterStarted('java');
+        await conflictingWritersReleased;
+        onEvent?.({
+          type: 'file-change',
+          phase: 'live',
+          change: { path: 'shared-output.txt', contents: 'java\n' },
+        });
+        return { stdout: 'java:done\n', stderr: '', exitCode: 0 };
+      },
+      terminate() {},
+    },
+  });
+
+  try {
+    const pythonWriter = conflictingWorkspace.runCommand('python3 writer.py');
+    const javaWriter = conflictingWorkspace.runCommand('java Writer');
+    await bothConflictingWritersStartedPromise;
+    releaseConflictingWriters();
+    const results = await Promise.all([pythonWriter, javaWriter]);
+    const successes = results.filter((result) => result.exitCode === 0);
+    const staleFailures = results.filter((result) => result.error?.code === 'ESTALE');
+    const finalContents = await conflictingWorkspace.readFile('shared-output.txt');
+
+    assertCondition(
+      successes.length === 1 &&
+        staleFailures.length === 1 &&
+        (finalContents === 'python\n' || finalContents === 'java\n'),
+      `parallel providers writing the same path should produce one complete winner and one ESTALE conflict: ${JSON.stringify({
+        results,
+        finalContents,
+      })}`
+    );
+  } finally {
+    releaseConflictingWriters();
+    conflictingWorkspace.dispose();
+  }
+}
+
 async function testBrowserKernelStorageRehydrationPreservesReadonlyPolicy(): Promise<void> {
   const workspace = await createBrowserProjectWorkspace({
     projectSession: {
@@ -14338,6 +14571,7 @@ async function main(): Promise<void> {
   await testBrowserCSharpProjectRunnerAdapter();
   await testBrowserCppProjectRunnerAdapter();
   await testBrowserProjectWorkspaceFactory();
+  await testBrowserProjectWorkspaceCrossRunnerFilesystemVisibility();
   await testBrowserKernelStorageRehydrationPreservesReadonlyPolicy();
   await testBrowserKernelStorageCoalescesPersistence();
   await testBrowserKernelStorageFlushPersistsDirtyState();

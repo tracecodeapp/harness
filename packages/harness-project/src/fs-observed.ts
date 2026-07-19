@@ -2145,7 +2145,8 @@ export class KernelObservedFileSystem implements IFileSystem {
     context: RuntimeCommandExecutionContext | undefined,
     paths: readonly string[],
     kind: RuntimeFileSystemMutationKind,
-    fn: () => Promise<T>
+    fn: () => Promise<T>,
+    freshnessKind: RuntimeFileSystemMutationKind = kind
   ): Promise<T> {
     const generationContext = this.commandGenerationContextFor(context);
     const normalizedPaths = paths.map((path) => normalizeFsLockPath(path));
@@ -2156,7 +2157,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     };
     this.onSyscallEvent({ type: 'fs-syscall-start', pid: generationContext?.pid, detail });
     return this.locks.withLocks(this.mutationLockRequests(paths, kind), async () => {
-      this.assertCommandMutationFresh(context, paths, kind);
+      this.assertCommandMutationFresh(context, paths, freshnessKind);
       return fn();
     }, generationContext?.signal).then((result) => {
       this.onSyscallEvent({ type: 'fs-syscall-commit', pid: generationContext?.pid, detail });
@@ -2190,13 +2191,14 @@ export class KernelObservedFileSystem implements IFileSystem {
     context: RuntimeCommandExecutionContext | undefined,
     paths: readonly string[],
     fn: (base: IFileSystem) => Promise<T>,
-    kind: RuntimeFileSystemMutationKind = 'file-write'
+    kind: RuntimeFileSystemMutationKind = 'file-write',
+    freshnessKind: RuntimeFileSystemMutationKind = kind
   ): Promise<T> {
     return this.withMutationLocks(context, paths, kind, async () => {
       const result = await fn(this.base);
       this.recordMutation(context, paths, kind);
       return result;
-    });
+    }, freshnessKind);
   }
 
   private currentGeneration(path: string): number {

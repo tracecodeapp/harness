@@ -177,6 +177,8 @@
     "test:kernel-storage-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-kernel-storage-browser.ts",
     "test:kernel-storage-browser-matrix": "TRACECODE_KERNEL_STORAGE_ENGINES=chromium,firefox,webkit pnpm run test:kernel-storage-browser",
     "test:project-browser-matrix": "node scripts/test-browser-project-provider-matrix.mjs",
+    "test:project-live-fs-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-project-live-fs-browser.ts",
+    "test:project-live-fs-browser-matrix": "TRACECODE_PROJECT_LIVE_FS_ENGINES=chromium,firefox,webkit pnpm run test:project-live-fs-browser",
     "test:classic-browser-matrix": "node scripts/test-browser-classic-provider-matrix.mjs",
     "test:python-worker-client-http": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-worker-client-http.ts",
     "test:runtime-contract": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-contract.ts",
