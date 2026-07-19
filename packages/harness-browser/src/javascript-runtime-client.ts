@@ -1,17 +1,16 @@
 import {
-  type JavaScriptExecutionStyle,
   type JavaScriptWorkerLanguage,
   type JavaScriptWorkerClient,
 } from './javascript-worker-client';
 import type {
   RuntimeClient,
+  RuntimeCodeCall,
   RuntimeExecuteCodeRequest,
   RuntimeExecuteProjectRequest,
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
-  RuntimeExecutionStyle,
-  TraceExecutionOptions,
+  RuntimeTraceCall,
 } from '@tracecode/harness-core';
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
@@ -48,26 +47,25 @@ class JavaScriptRuntimeClient implements RuntimeClient {
         },
         executeCode: this.executeCode.bind(this),
         executeWithTracing: this.executeWithTracing.bind(this),
-        executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       });
     }
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'function';
-    if (!codeRequest.trace && !codeRequest.interview && codeRequest.cases.length > 1) {
+    if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
       assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
         request: 'execute',
         executionStyle,
         functionName: codeRequest.functionName ?? '',
       });
-      const result = await this.workerClient.executeCodeBatch(
-        codeRequest.code,
-        codeRequest.functionName ?? '',
-        codeRequest.cases.map((testCase) => testCase.inputs),
-        executionStyle as JavaScriptExecutionStyle,
-        this.runtimeLanguage,
-        codeRequest.signal
-      );
+      const result = await this.workerClient.executeCodeBatch({
+        code: codeRequest.code,
+        functionName: codeRequest.functionName ?? '',
+        inputBatch: codeRequest.cases.map((testCase) => testCase.inputs),
+        executionStyle,
+        language: this.runtimeLanguage,
+        signal: codeRequest.signal,
+      });
       return batchCodeResultToExecuteResult(codeRequest, result);
     }
 
@@ -75,76 +73,26 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'function',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
     });
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'function',
-    signal?: AbortSignal
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
       request: 'trace',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'function',
+      functionName: call.functionName,
     });
-    return this.workerClient.executeWithTracing(
-      code,
-      functionName,
-      inputs,
-      options,
-      executionStyle as JavaScriptExecutionStyle,
-      this.runtimeLanguage,
-      signal
-    );
+    return this.workerClient.executeWithTracing({ ...call, language: this.runtimeLanguage });
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
       request: 'execute',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'function',
+      functionName: call.functionName,
+      limits: call.limits,
     });
-    return this.workerClient.executeCode(
-      code,
-      functionName,
-      inputs,
-      executionStyle as JavaScriptExecutionStyle,
-      this.runtimeLanguage,
-      signal
-    );
-  }
-
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
-      request: 'interview',
-      executionStyle,
-      functionName,
-    });
-    return this.workerClient.executeCodeInterviewMode(
-      code,
-      functionName,
-      inputs,
-      executionStyle as JavaScriptExecutionStyle,
-      this.runtimeLanguage,
-      signal
-    );
+    return this.workerClient.executeCode({ ...call, language: this.runtimeLanguage });
   }
 }
 

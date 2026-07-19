@@ -1,10 +1,36 @@
-import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
-import { logRuntimeDiagnostic } from './runtime-diagnostics';
+/**
+ * JavaScript/TypeScript Worker Client
+ *
+ * Two-role topology: a long-lived trusted `coordinator` worker (compiler,
+ * trusted preparation) plus disposable `executor` workers that each run one
+ * command and are retired, with a prewarmed standby so user commands do not
+ * pay worker bootstrap on the critical path.
+ *
+ * Each role wraps a shared WorkerSessionCore (session lifecycle,
+ * request/response, deadlines, Promise boundary). Connections are single-use:
+ * once terminated they never respawn — the client creates a fresh connection
+ * instead.
+ */
+
+import * as Effect from 'effect/Effect';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult, RuntimeBatchCall, RuntimeCodeCall, RuntimeTrace, RuntimeTraceCall } from '@tracecode/harness-core';
+import {
+  createEmptyRuntimeTrace,
+  liftCodeBatchOutcome,
+  liftCodeOutcome,
+  liftTraceOutcome,
+  type RawExecutionBatchPayload,
+  type RawExecutionPayload,
+} from '@tracecode/harness-core';
+
+/** Raw wire payload from the tracing command; lifted into the outcome union here. */
+type JavaScriptRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
+import { appendWorkerUrlQueryParameter, isDevEnvironment } from './browser-client-env';
 import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
-import { createWorkerProtocolToken } from './worker-protocol';
+import { WorkerTerminatedError } from './worker-errors';
+import { WorkerSessionCore } from './worker-session-core';
 
-type MessageId = string;
 export type JavaScriptExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 export type JavaScriptWorkerLanguage = 'javascript' | 'typescript';
 
@@ -19,20 +45,6 @@ export interface JavaScriptWorkerClientOptions {
   typescriptCompilerPreflight?: () => Promise<void>;
 }
 
-interface PendingMessage {
-  protocolToken: string;
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  timeoutId?: ReturnType<typeof setTimeout>;
-}
-
-interface WorkerMessage {
-  id?: MessageId;
-  type: string;
-  payload?: unknown;
-  protocolToken?: string;
-}
-
 interface InitResult {
   success: boolean;
   loadTimeMs: number;
@@ -44,7 +56,6 @@ interface WarmupResult {
 }
 
 const EXECUTION_TIMEOUT_MS = 20000;
-const INTERVIEW_MODE_TIMEOUT_MS = 5000;
 const TRACING_TIMEOUT_MS = 20000;
 const INIT_TIMEOUT_MS = 10000;
 const TYPESCRIPT_WARMUP_TIMEOUT_MS = 30000;
@@ -53,193 +64,71 @@ const WORKER_READY_TIMEOUT_MS = 10000;
 
 type JavaScriptWorkerRole = 'coordinator' | 'executor';
 
-function appendWorkerQueryParameter(workerUrl: string, name: string, value: string): string {
-  const hashIndex = workerUrl.indexOf('#');
-  const beforeHash = hashIndex >= 0 ? workerUrl.slice(0, hashIndex) : workerUrl;
-  const hash = hashIndex >= 0 ? workerUrl.slice(hashIndex) : '';
-  const encodedName = encodeURIComponent(name);
-  const encodedValue = encodeURIComponent(value);
-  const existing = new RegExp(`([?&])${encodedName}=[^&#]*`);
-  if (existing.test(beforeHash)) {
-    return `${beforeHash.replace(existing, `$1${encodedName}=${encodedValue}`)}${hash}`;
-  }
-  return `${beforeHash}${beforeHash.includes('?') ? '&' : '?'}${encodedName}=${encodedValue}${hash}`;
-}
-
 class JavaScriptWorkerConnection {
-  private worker: BrowserWorkerLike | null = null;
-  private pendingMessages = new Map<MessageId, PendingMessage>();
-  private messageId = 0;
-  private workerReadyPromise: Promise<void> | null = null;
-  private workerReadyResolve: (() => void) | null = null;
-  private workerReadyReject: ((error: Error) => void) | null = null;
   private disposed = false;
+  readonly core: WorkerSessionCore;
 
   constructor(
-    private readonly workerUrl: string,
+    workerUrl: string,
     private readonly role: JavaScriptWorkerRole,
-    private readonly debug: boolean,
-    private readonly assetPreflight?: () => Promise<void>,
-    private readonly workerFactory?: BrowserWorkerFactory
-  ) {}
+    debug: boolean,
+    assetPreflight?: () => Promise<void>,
+    workerFactory?: BrowserWorkerFactory
+  ) {
+    this.core = new WorkerSessionCore({
+      runtimeLabel: `JavaScript ${role}`,
+      component: 'JavaScriptWorkerClient',
+      runtime: 'javascript',
+      debug,
+      readyTimeoutMs: WORKER_READY_TIMEOUT_MS,
+      defaultMessageTimeoutMs: MESSAGE_TIMEOUT_MS,
+      isSupported: () => workerFactory !== undefined || typeof Worker !== 'undefined',
+      createWorker: () => {
+        if (this.disposed) {
+          throw new Error(`JavaScript ${role} worker was terminated`);
+        }
+        let resolvedWorkerUrl = appendWorkerUrlQueryParameter(workerUrl, 'tracecodeRole', role);
+        if (debug) {
+          resolvedWorkerUrl = appendWorkerUrlQueryParameter(resolvedWorkerUrl, 'dev', String(Date.now()));
+        }
+        return workerFactory ? workerFactory(resolvedWorkerUrl) : new Worker(resolvedWorkerUrl);
+      },
+      preflight: async () => {
+        await assetPreflight?.();
+        if (this.disposed) {
+          throw new Error(`JavaScript ${role} worker was terminated`);
+        }
+      },
+      decodeReply: (payload) => restoreTransferredTraceEvents(payload),
+      closeSessionOnWorkerError: true,
+    });
+    // Connections are single-use: any session close (crash, timeout, explicit
+    // terminate) permanently retires this connection.
+    this.core.onSessionClosed = () => {
+      this.disposed = true;
+    };
+  }
 
   get isDisposed(): boolean {
     return this.disposed;
   }
 
-  private getWorker(): BrowserWorkerLike {
-    if (this.disposed) {
-      throw new Error(`JavaScript ${this.role} worker was terminated`);
-    }
-    if (this.worker) return this.worker;
-    if (!this.workerFactory && typeof Worker === 'undefined') {
-      throw new Error('Web Workers are not supported in this environment');
-    }
-
-    this.workerReadyPromise = new Promise((resolve, reject) => {
-      this.workerReadyResolve = resolve;
-      this.workerReadyReject = reject;
-    });
-
-    let resolvedWorkerUrl = appendWorkerQueryParameter(this.workerUrl, 'tracecodeRole', this.role);
-    if (this.debug) {
-      resolvedWorkerUrl = appendWorkerQueryParameter(resolvedWorkerUrl, 'dev', String(Date.now()));
-    }
-    const worker = this.workerFactory
-      ? this.workerFactory(resolvedWorkerUrl)
-      : new Worker(resolvedWorkerUrl);
-    this.worker = worker;
-
-    worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-      const { id, type, payload, protocolToken } = event.data;
-      if (type === 'worker-ready') {
-        this.workerReadyResolve?.();
-        this.workerReadyResolve = null;
-        this.workerReadyReject = null;
-        logRuntimeDiagnostic('info', {
-          component: 'JavaScriptWorkerClient',
-          runtime: 'javascript',
-          phase: 'worker-ready',
-          message: `JavaScript ${this.role} worker is ready.`,
-        }, { enabled: this.debug });
-        return;
-      }
-
-      if (!id) return;
-      const pending = this.pendingMessages.get(id);
-      if (!pending || protocolToken !== pending.protocolToken) return;
-      this.pendingMessages.delete(id);
-      if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
-      if (type === 'error') {
-        pending.reject(new Error((payload as { error: string }).error));
-        return;
-      }
-      try {
-        pending.resolve(restoreTransferredTraceEvents(payload));
-      } catch (error) {
-        pending.reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    };
-
-    worker.onerror = (error) => {
-      logRuntimeDiagnostic('error', {
-        component: 'JavaScriptWorkerClient',
-        runtime: 'javascript',
-        phase: 'worker-error',
-        message: `JavaScript ${this.role} worker emitted an error event.`,
-        detail: {
-          message: error.message,
-          filename: error.filename,
-          lineno: error.lineno,
-          colno: error.colno,
-        },
-      });
-      this.terminate(new Error(`JavaScript ${this.role} worker error`));
-    };
-
-    return worker;
+  sendMessageEffect<T>(type: string, payload?: unknown, timeoutMs: number | null = MESSAGE_TIMEOUT_MS): Effect.Effect<T, Error> {
+    return this.core.sendMessageEffect<T>(type, payload, timeoutMs);
   }
 
-  private async waitForWorkerReady(): Promise<void> {
-    const readyPromise = this.workerReadyPromise;
-    if (!readyPromise) return;
-
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const timeoutId = globalThis.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        const timeoutError = new Error(
-          `JavaScript ${this.role} worker failed to initialize in time (${Math.round(WORKER_READY_TIMEOUT_MS / 1000)}s)`
-        );
-        this.terminate(timeoutError);
-        reject(timeoutError);
-      }, WORKER_READY_TIMEOUT_MS);
-
-      readyPromise.then(() => {
-        if (settled) return;
-        settled = true;
-        globalThis.clearTimeout(timeoutId);
-        resolve();
-      }).catch((error) => {
-        if (settled) return;
-        settled = true;
-        globalThis.clearTimeout(timeoutId);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      });
-    });
-  }
-
-  async sendMessage<T>(
-    type: string,
-    payload?: unknown,
-    timeoutMs: number = MESSAGE_TIMEOUT_MS
-  ): Promise<T> {
-    await this.assetPreflight?.();
-    const worker = this.getWorker();
-    await this.waitForWorkerReady();
-    if (this.disposed || worker !== this.worker) {
-      throw new Error(`JavaScript ${this.role} worker was terminated`);
-    }
-    const id = String(++this.messageId);
-    const protocolToken = createWorkerProtocolToken();
-
-    return new Promise<T>((resolve, reject) => {
-      this.pendingMessages.set(id, {
-        protocolToken,
-        resolve: resolve as (value: unknown) => void,
-        reject,
-      });
-      const timeoutId = globalThis.setTimeout(() => {
-        const pending = this.pendingMessages.get(id);
-        if (!pending) return;
-        this.pendingMessages.delete(id);
-        pending.reject(new Error(`Worker request timed out: ${type}`));
-      }, timeoutMs);
-      const pending = this.pendingMessages.get(id);
-      if (pending) pending.timeoutId = timeoutId;
-      worker.postMessage({ id, type, payload, protocolToken });
-    });
+  sendMessage<T>(type: string, payload?: unknown, timeoutMs: number = MESSAGE_TIMEOUT_MS): Promise<T> {
+    return this.core.sendMessage<T>(type, payload, timeoutMs);
   }
 
   async prewarm(payload?: unknown): Promise<void> {
     await this.sendMessage('prewarm-executor', payload, INIT_TIMEOUT_MS);
   }
 
-  terminate(reason: Error = new Error('Worker was terminated')): void {
+  terminate(reason: Error = new WorkerTerminatedError()): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.workerReadyReject?.(reason);
-    this.workerReadyResolve = null;
-    this.workerReadyReject = null;
-    this.worker?.terminate();
-    this.worker = null;
-    this.workerReadyPromise = null;
-    for (const pending of this.pendingMessages.values()) {
-      if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
-      pending.reject(reason);
-    }
-    this.pendingMessages.clear();
+    this.core.closeSession(reason);
   }
 }
 
@@ -248,14 +137,13 @@ export class JavaScriptWorkerClient {
   private activeExecutionWorker: JavaScriptWorkerConnection | null = null;
   private standbyExecutionWorker: JavaScriptWorkerConnection | null = null;
   private standbyExecutionPromise: Promise<void> | null = null;
-  private isInitializing = false;
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromises = new Map<JavaScriptWorkerLanguage, Promise<WarmupResult>>();
   private executionTail: Promise<void> = Promise.resolve();
   private readonly debug: boolean;
 
   constructor(private readonly options: JavaScriptWorkerClientOptions) {
-    this.debug = options.debug ?? process.env.NODE_ENV === 'development';
+    this.debug = options.debug ?? isDevEnvironment();
   }
 
   isSupported(): boolean {
@@ -339,102 +227,63 @@ export class JavaScriptWorkerClient {
     return worker;
   }
 
-  private terminateAll(reason: Error = new Error('Worker was terminated')): void {
+  private terminateAll(reason: Error = new WorkerTerminatedError()): void {
     this.terminateExecution(reason);
     this.terminateStandbyExecution(reason);
     this.coordinator?.terminate(reason);
     this.coordinator = null;
     this.initPromise = null;
     this.warmupPromises.clear();
-    this.isInitializing = false;
   }
 
-  private async dispatchExecution<T>(
+  /**
+   * One dispatched command as an Effect: trusted preparation on the
+   * coordinator when required, then the operation on the executor. Message
+   * deadlines are null throughout — the enclosing execution deadline is the
+   * only clock, and interruption reaches the preparation step too.
+   */
+  private dispatchExecutionEffect<T>(
     worker: JavaScriptWorkerConnection,
-    operation: 'execute-code' | 'execute-code-batch' | 'execute-with-tracing' | 'execute-code-interview',
+    operation: 'execute-code' | 'execute-code-batch' | 'execute-with-tracing',
     payload: Record<string, unknown>,
-    language: JavaScriptWorkerLanguage,
-    timeoutMs: number
-  ): Promise<T> {
-    await this.options.runtimeAssetPreflight?.();
-    const requiresTrustedPreparation =
-      language === 'typescript' ||
-      operation === 'execute-with-tracing' ||
-      operation === 'execute-code-interview';
-    let executionPayload = payload;
-    if (requiresTrustedPreparation) {
-      await this.options.typescriptCompilerPreflight?.();
-      await this.init();
-      const prepared = await this.getCoordinator().sendMessage<{ preparedExecution: unknown }>(
-        'prepare-execution',
-        { operation, request: payload },
-        timeoutMs
-      );
-      executionPayload = { ...payload, preparedExecution: prepared.preparedExecution };
-    }
-    return worker.sendMessage<T>(
-      operation,
-      this.options.javascriptLibrariesUrl
-        ? {
-            ...executionPayload,
-            runtimeAssets: { javascriptLibrariesUrl: this.options.javascriptLibrariesUrl },
-          }
-        : executionPayload,
-      timeoutMs
-    );
-  }
+    language: JavaScriptWorkerLanguage
+  ): Effect.Effect<T, Error> {
+    return Effect.gen(this, function* () {
+      yield* Effect.tryPromise({
+        try: () => this.options.runtimeAssetPreflight?.() ?? Promise.resolve(),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      });
 
-  private async executeWithTimeout<T>(
-    executor: () => Promise<T>,
-    timeoutMs: number,
-    signal?: AbortSignal
-  ): Promise<T> {
-    if (signal?.aborted) {
-      const abortError = new Error('Execution aborted');
-      this.terminateExecution(abortError);
-      throw abortError;
-    }
-    return new Promise<T>((resolve, reject) => {
-      let settled = false;
-      const cleanup = () => {
-        globalThis.clearTimeout(timeoutId);
-        signal?.removeEventListener('abort', onAbort);
-      };
-      const onAbort = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        const abortError = new Error('Execution aborted');
-        this.terminateExecution(abortError);
-        reject(abortError);
-      };
-
-      const timeoutId = globalThis.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        this.terminateExecution();
-        reject(
-          new Error(
-            `Execution timed out (possible infinite loop). Code execution was stopped after ${Math.round(timeoutMs / 1000)} seconds.`
-          )
-        );
-      }, timeoutMs);
-
-      executor()
-        .then((result) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve(result);
-        })
-        .catch((error) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          reject(error);
+      const requiresTrustedPreparation =
+        language === 'typescript' ||
+        operation === 'execute-with-tracing';
+      let executionPayload = payload;
+      if (requiresTrustedPreparation) {
+        yield* Effect.tryPromise({
+          try: async () => {
+            await this.options.typescriptCompilerPreflight?.();
+            await this.init();
+          },
+          catch: (error) => (error instanceof Error ? error : new Error(String(error))),
         });
-      signal?.addEventListener('abort', onAbort, { once: true });
+        const prepared = yield* this.getCoordinator().sendMessageEffect<{ preparedExecution: unknown }>(
+          'prepare-execution',
+          { operation, request: payload },
+          null
+        );
+        executionPayload = { ...payload, preparedExecution: prepared.preparedExecution };
+      }
+
+      return yield* worker.sendMessageEffect<T>(
+        operation,
+        this.options.javascriptLibrariesUrl
+          ? {
+              ...executionPayload,
+              runtimeAssets: { javascriptLibrariesUrl: this.options.javascriptLibrariesUrl },
+            }
+          : executionPayload,
+        null
+      );
     });
   }
 
@@ -463,6 +312,16 @@ export class JavaScriptWorkerClient {
     }
   }
 
+  /** Run one command on the executor under the wall-clock deadline, with abort mapped to interruption. */
+  private runExecution<T>(
+    worker: JavaScriptWorkerConnection,
+    program: Effect.Effect<T, Error>,
+    wallClockMs: number,
+    signal?: AbortSignal
+  ): Promise<T> {
+    return worker.core.runClientEffect(worker.core.withExecutionDeadline(program, wallClockMs), signal);
+  }
+
   async init(): Promise<InitResult> {
     if (this.coordinator?.isDisposed) {
       this.coordinator = null;
@@ -471,13 +330,7 @@ export class JavaScriptWorkerClient {
     }
     if (this.initPromise) return this.initPromise;
 
-    if (this.isInitializing) {
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
-      return this.init();
-    }
-
-    this.isInitializing = true;
-    this.initPromise = (async () => {
+    const promise = (async () => {
       const standbyPromise = this.ensureStandbyExecutionWorker();
       try {
         await this.options.runtimeAssetPreflight?.();
@@ -502,14 +355,13 @@ export class JavaScriptWorkerClient {
         throw error;
       }
     })();
+    this.initPromise = promise;
 
     try {
-      return await this.initPromise;
+      return await promise;
     } catch (error) {
-      this.initPromise = null;
+      if (this.initPromise === promise) this.initPromise = null;
       throw error;
-    } finally {
-      this.isInitializing = false;
     }
   }
 
@@ -537,162 +389,83 @@ export class JavaScriptWorkerClient {
     }
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options?: {
-      maxTraceSteps?: number;
-      maxLineEvents?: number;
-      maxSingleLineHits?: number;
-      maxStoredEvents?: number;
-      minimalTrace?: boolean;
-    },
-    executionStyle: JavaScriptExecutionStyle = 'function',
-    language: JavaScriptWorkerLanguage = 'javascript',
-    signal?: AbortSignal
-  ): Promise<ExecutionResult> {
-    return this.runIsolatedExecution((worker) =>
-      this.executeWithTimeout(
-        () =>
-          this.dispatchExecution<ExecutionResult>(
-            worker,
-            'execute-with-tracing',
-            {
-              code,
-              functionName,
-              inputs,
-              options,
-              executionStyle,
-              language,
-              traceEventTransport: traceEventTransferRequest(),
-            },
+  async executeWithTracing(call: RuntimeTraceCall & { language?: JavaScriptWorkerLanguage }): Promise<ExecutionResult> {
+    const { code, functionName, inputs, traceOptions, executionStyle = 'function', language = 'javascript', signal } = call;
+    const result = await this.runIsolatedExecution((worker) =>
+      this.runExecution(
+        worker,
+        this.dispatchExecutionEffect<JavaScriptRawTraceResult>(
+          worker,
+          'execute-with-tracing',
+          {
+            code,
+            functionName,
+            inputs,
+            options: traceOptions,
+            executionStyle,
             language,
-            TRACING_TIMEOUT_MS + 2000
-          ),
+            traceEventTransport: traceEventTransferRequest(),
+          },
+          language
+        ),
         TRACING_TIMEOUT_MS,
         signal
       )
     );
+    return liftTraceOutcome(
+      result,
+      result.trace ?? createEmptyRuntimeTrace(language, { runId: `${language}:run` }),
+      'JavaScript tracing failed'
+    );
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: JavaScriptExecutionStyle = 'function',
-    language: JavaScriptWorkerLanguage = 'javascript',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    return this.runIsolatedExecution((worker) =>
-      this.executeWithTimeout(
-        () =>
-          this.dispatchExecution<CodeExecutionResult>(
-            worker,
-            'execute-code',
-            {
-              code,
-              functionName,
-              inputs,
-              executionStyle,
-              language,
-            },
+  async executeCode(call: RuntimeCodeCall & { language?: JavaScriptWorkerLanguage }): Promise<CodeExecutionResult> {
+    const { code, functionName, inputs, executionStyle = 'function', language = 'javascript', signal, limits } = call;
+    const wallClockMs = limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
+    const result = await this.runIsolatedExecution((worker) =>
+      this.runExecution(
+        worker,
+        this.dispatchExecutionEffect<RawExecutionPayload>(
+          worker,
+          'execute-code',
+          {
+            code,
+            functionName,
+            inputs,
+            executionStyle,
             language,
-            EXECUTION_TIMEOUT_MS + 2000
-          ),
+          },
+          language
+        ),
+        wallClockMs,
+        signal
+      )
+    );
+    return liftCodeOutcome(result, 'JavaScript execution failed');
+  }
+
+  async executeCodeBatch(call: RuntimeBatchCall & { language?: JavaScriptWorkerLanguage }): Promise<CodeExecutionBatchResult> {
+    const { code, functionName, inputBatch, executionStyle = 'function', language = 'javascript', signal } = call;
+    const result = await this.runIsolatedExecution((worker) =>
+      this.runExecution(
+        worker,
+        this.dispatchExecutionEffect<RawExecutionBatchPayload>(
+          worker,
+          'execute-code-batch',
+          {
+            code,
+            functionName,
+            inputBatch,
+            executionStyle,
+            language,
+          },
+          language
+        ),
         EXECUTION_TIMEOUT_MS,
         signal
       )
     );
-  }
-
-  async executeCodeBatch(
-    code: string,
-    functionName: string,
-    inputBatch: Record<string, unknown>[],
-    executionStyle: JavaScriptExecutionStyle = 'function',
-    language: JavaScriptWorkerLanguage = 'javascript',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionBatchResult> {
-    return this.runIsolatedExecution((worker) =>
-      this.executeWithTimeout(
-        () =>
-          this.dispatchExecution<CodeExecutionBatchResult>(
-            worker,
-            'execute-code-batch',
-            {
-              code,
-              functionName,
-              inputBatch,
-              executionStyle,
-              language,
-            },
-            language,
-            EXECUTION_TIMEOUT_MS + 2000
-          ),
-        EXECUTION_TIMEOUT_MS,
-        signal
-      )
-    );
-  }
-
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: JavaScriptExecutionStyle = 'function',
-    language: JavaScriptWorkerLanguage = 'javascript',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    return this.runIsolatedExecution(async (worker) => {
-      const result = await this.executeWithTimeout(
-        () =>
-          this.dispatchExecution<CodeExecutionResult>(
-            worker,
-            'execute-code-interview',
-            {
-              code,
-              functionName,
-              inputs,
-              executionStyle,
-              language,
-            },
-            language,
-            INTERVIEW_MODE_TIMEOUT_MS + 2000
-          ),
-        INTERVIEW_MODE_TIMEOUT_MS,
-        signal
-      );
-
-      if (!result.success && result.error) {
-        const normalized = result.error.toLowerCase();
-        const isTimeoutOrResourceLimit =
-          normalized.includes('timed out') ||
-          normalized.includes('infinite loop') ||
-          normalized.includes('line-limit') ||
-          normalized.includes('single-line-limit') ||
-          normalized.includes('recursion-limit') ||
-          normalized.includes('trace-limit') ||
-          normalized.includes('line events') ||
-          normalized.includes('trace steps') ||
-          normalized.includes('call depth');
-        if (isTimeoutOrResourceLimit) {
-          return {
-            success: false,
-            output: null,
-            error: 'Time Limit Exceeded',
-            consoleOutput: result.consoleOutput ?? [],
-          };
-        }
-      }
-
-      return result;
-    }).catch(() => ({
-      success: false,
-      output: null,
-      error: 'Time Limit Exceeded',
-      consoleOutput: [],
-    }));
+    return liftCodeBatchOutcome(result, 'JavaScript execution failed');
   }
 
   terminate(): void {

@@ -1,9 +1,19 @@
-import type { CodeExecutionBatchResult, CodeExecutionResult, RuntimeExecutionTimings } from '@tracecode/harness-core';
+/**
+ * Java Worker Client
+ *
+ * Session lifecycle, request/response, deadlines, and the Promise boundary
+ * live in the shared WorkerSessionCore; this file owns Java-specific
+ * concerns: worker construction, asset preflights, idle-timeout handling,
+ * the external-compiler relay, sync kernel-HTTP wiring, runtime-load retry
+ * policy, and trace assembly.
+ */
+
+import * as Effect from 'effect/Effect';
+import type { CodeExecutionBatchResult, CodeExecutionResult, RuntimeBatchCall, RuntimeCodeCall, RuntimeExecutionTimings, RuntimeTraceCall } from '@tracecode/harness-core';
+import { liftCodeBatchOutcome, liftCodeOutcome, type RawExecutionBatchPayload } from '@tracecode/harness-core';
 import type {
-  RuntimeCommandEvent,
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
-  RuntimeKernelHttpBridge,
   RuntimeProjectCommandRequest,
 } from '@tracecode/harness-core';
 import { javaTraceHooksEventsToRuntimeTrace } from '@tracecode/harness-core';
@@ -13,14 +23,19 @@ import {
   handleKernelHttpCloseMessage,
   handleKernelHttpDispatchSyncMessage,
   handleKernelHttpListenSyncMessage,
-  type KernelHttpSyncServerBridge,
 } from './kernel-http-sync';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
-import { createWorkerProtocolToken } from './worker-protocol';
+import { isDevEnvironment } from './browser-client-env';
+import {
+  WorkerCrashedError,
+  WorkerReadyTimeoutError,
+  WorkerRequestTimeoutError,
+  WorkerTerminatedError,
+} from './worker-errors';
+import { WorkerSessionCore, type WorkerSessionMessage } from './worker-session-core';
 import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
 
-type MessageId = string;
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
 const JAVA_KERNEL_HTTP_RUNTIME_LABEL = 'Java';
@@ -47,28 +62,6 @@ export interface JavaWorkerClientOptions {
     rewriterJarUrl?: string;
     parserJarUrl?: string;
   };
-}
-
-interface PendingMessage {
-  protocolToken: string;
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  onEvent?: RuntimeCommandEventHandler;
-  kernelHttp?: RuntimeKernelHttpBridge;
-  httpServers?: Map<string, KernelHttpSyncServerBridge>;
-  timeoutId?: ReturnType<typeof setTimeout>;
-}
-
-function createExecutionAbortError(): Error {
-  return Object.assign(new Error('Execution aborted'), { name: 'AbortError' });
-}
-
-interface WorkerMessage {
-  id?: MessageId;
-  requestId?: string;
-  type: string;
-  payload?: unknown;
-  protocolToken?: string;
 }
 
 interface InitResult {
@@ -131,18 +124,19 @@ const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const JAVA_DEFAULT_FILE = 'solution.java';
 
+const KERNEL_HTTP_SYNC_MESSAGE_TYPES = new Set([
+  'kernel-http-dispatch-sync',
+  'kernel-http-listen-sync',
+  'kernel-http-close',
+]);
+
 export class JavaWorkerClient {
-  private worker: BrowserWorkerLike | null = null;
-  private pendingMessages = new Map<MessageId, PendingMessage>();
-  private messageId = 0;
-  private isInitializing = false;
+  /** Memoized runtime-load results for the current session; cleared by the session finalizer. */
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromise: Promise<WarmupResult> | null = null;
-  private workerReadyPromise: Promise<void> | null = null;
-  private workerReadyResolve: (() => void) | null = null;
-  private workerReadyReject: ((error: Error) => void) | null = null;
   private activeExternalCompileControllers = new Set<AbortController>();
   private readonly debug: boolean;
+  private readonly core: WorkerSessionCore;
 
   constructor(private readonly options: JavaWorkerClientOptions) {
     if (
@@ -151,265 +145,109 @@ export class JavaWorkerClient {
     ) {
       throw new TypeError('Java compileCacheLimit must be an integer from 0 to 64.');
     }
-    this.debug = options.debug ?? process.env.NODE_ENV === 'development';
+    this.debug = options.debug ?? isDevEnvironment();
+
+    this.core = new WorkerSessionCore({
+      runtimeLabel: 'Java',
+      component: 'JavaWorkerClient',
+      runtime: 'java',
+      debug: this.debug,
+      readyTimeoutMs: WORKER_READY_TIMEOUT_MS,
+      defaultMessageTimeoutMs: MESSAGE_TIMEOUT_MS,
+      isSupported: () => this.isSupported(),
+      createWorker: () => this.createWorker(),
+      preflight: async (type) => {
+        await this.options.assetPreflight?.();
+        if (type !== 'status') {
+          await this.options.runtimeAssetPreflight?.();
+        }
+      },
+      onCommandMessage: (commandId, type, payload, pending) => {
+        if (!KERNEL_HTTP_SYNC_MESSAGE_TYPES.has(type)) return false;
+        if (type === 'kernel-http-dispatch-sync') {
+          handleKernelHttpDispatchSyncMessage(pending, payload, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
+        } else if (type === 'kernel-http-listen-sync') {
+          handleKernelHttpListenSyncMessage(pending, payload, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
+        } else {
+          handleKernelHttpCloseMessage(pending, payload, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
+        }
+        return true;
+      },
+      onUnhandledMessage: (message, session) => {
+        if (message.type === 'idle-timeout') {
+          logRuntimeDiagnostic('info', {
+            component: 'JavaWorkerClient',
+            runtime: 'java',
+            phase: 'idle-timeout',
+            message: 'Java worker closed after idle timeout.',
+          }, { enabled: this.debug });
+          this.core.closeSession(new WorkerTerminatedError('Java worker closed after idle timeout'));
+          return true;
+        }
+        if (message.type === 'java-compile-request') {
+          this.handleJavaCompileRequest(message, session.worker);
+          return true;
+        }
+        return false;
+      },
+      decodeReply: (payload) => restoreTransferredTraceEvents(payload),
+      // The CheerpJ runtime does not survive script errors; a crashed worker is
+      // torn down and lazily respawned on the next request.
+      closeSessionOnWorkerError: true,
+    });
+    this.core.executionTimeoutLabel = 'Java';
+    this.core.cleanupPending = (pending) => closeKernelHttpSyncServers(pending, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
+    this.core.onSessionClosed = () => {
+      this.initPromise = null;
+      this.warmupPromise = null;
+      for (const controller of this.activeExternalCompileControllers) {
+        controller.abort();
+      }
+      this.activeExternalCompileControllers.clear();
+    };
   }
 
   isSupported(): boolean {
     return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
-  private getWorker(): BrowserWorkerLike {
-    if (this.worker) return this.worker;
-
-    if (!this.isSupported()) {
-      throw new Error('Web Workers are not supported in this environment');
-    }
-
-    this.workerReadyPromise = new Promise((resolve, reject) => {
-      this.workerReadyResolve = resolve;
-      this.workerReadyReject = (error: Error) => reject(error);
-    });
-
+  private createWorker(): BrowserWorkerLike {
     const workerUrl =
       this.debug && !this.options.workerUrl.includes('?')
         ? `${this.options.workerUrl}?dev=${Date.now()}`
         : this.options.workerUrl;
 
-    this.worker = this.options.workerFactory
+    return this.options.workerFactory
       ? this.options.workerFactory(workerUrl)
       : new Worker(workerUrl);
-    this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-      const { id, type, payload, protocolToken } = event.data;
-
-      if (type === 'worker-ready') {
-        this.workerReadyResolve?.();
-        this.workerReadyResolve = null;
-        this.workerReadyReject = null;
-        logRuntimeDiagnostic('info', {
-          component: 'JavaWorkerClient',
-          runtime: 'java',
-          phase: 'worker-ready',
-          message: 'Java worker is ready.',
-        }, { enabled: this.debug });
-        return;
-      }
-
-      if (type === 'idle-timeout') {
-        logRuntimeDiagnostic('info', {
-          component: 'JavaWorkerClient',
-          runtime: 'java',
-          phase: 'idle-timeout',
-          message: 'Java worker closed after idle timeout.',
-        }, { enabled: this.debug });
-        this.terminateAndReset(new Error('Java worker closed after idle timeout'));
-        return;
-      }
-
-      if (type === 'java-compile-request') {
-        if (!this.hasPendingProtocolToken(protocolToken)) return;
-        this.handleJavaCompileRequest(event.data).catch((error) => {
-          if (!event.data.requestId) return;
-          this.worker?.postMessage({
-            type: 'java-compile-response',
-            requestId: event.data.requestId,
-            protocolToken: event.data.protocolToken,
-            payload: { success: false, error: error instanceof Error ? error.message : String(error) },
-          });
-        });
-        return;
-      }
-
-      if (!id) return;
-      const pending = this.pendingMessages.get(id);
-      if (!pending) return;
-      if (protocolToken !== pending.protocolToken) return;
-      if (type === 'project-event') {
-        pending.onEvent?.(payload as RuntimeCommandEvent);
-        return;
-      }
-      if (type === 'kernel-http-dispatch-sync') {
-        this.handleKernelHttpDispatchSync(id, payload);
-        return;
-      }
-      if (type === 'kernel-http-listen-sync') {
-        this.handleKernelHttpListenSync(id, payload);
-        return;
-      }
-      if (type === 'kernel-http-close') {
-        this.handleKernelHttpClose(id, payload);
-        return;
-      }
-      this.pendingMessages.delete(id);
-      if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
-      this.closePendingHttpListeners(pending);
-
-      if (type === 'error') {
-        pending.reject(new Error((payload as { error: string }).error));
-        return;
-      }
-
-      try {
-        pending.resolve(restoreTransferredTraceEvents(payload));
-      } catch (error) {
-        pending.reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    };
-
-    this.worker.onerror = (error) => {
-      logRuntimeDiagnostic('error', {
-        component: 'JavaWorkerClient',
-        runtime: 'java',
-        phase: 'worker-error',
-        message: 'Java worker emitted an error event.',
-        detail: {
-          message: error.message,
-          filename: error.filename,
-          lineno: error.lineno,
-          colno: error.colno,
-        },
-      });
-      const workerError = new Error(error.message || 'Java worker error');
-      this.workerReadyReject?.(workerError);
-      this.workerReadyResolve = null;
-      this.workerReadyReject = null;
-      for (const [, pending] of this.pendingMessages) {
-        if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
-        this.closePendingHttpListeners(pending);
-        pending.reject(workerError);
-      }
-      this.pendingMessages.clear();
-      this.terminateAndReset(workerError);
-    };
-
-    return this.worker;
-  }
-
-  private async waitForWorkerReady(): Promise<void> {
-    const readyPromise = this.workerReadyPromise;
-    if (!readyPromise) return;
-
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const timeoutId = globalThis.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        const timeoutError = new Error(
-          `Java worker failed to initialize in time (${Math.round(WORKER_READY_TIMEOUT_MS / 1000)}s)`
-        );
-        logRuntimeDiagnostic('warn', {
-          component: 'JavaWorkerClient',
-          runtime: 'java',
-          phase: 'worker-ready-timeout',
-          message: 'Java worker did not send worker-ready before the timeout.',
-          detail: { timeoutMs: WORKER_READY_TIMEOUT_MS },
-        }, { enabled: this.debug });
-        this.terminateAndReset(timeoutError);
-        reject(timeoutError);
-      }, WORKER_READY_TIMEOUT_MS);
-
-      readyPromise
-        .then(() => {
-          if (settled) return;
-          settled = true;
-          globalThis.clearTimeout(timeoutId);
-          resolve();
-        })
-        .catch((error) => {
-          if (settled) return;
-          settled = true;
-          globalThis.clearTimeout(timeoutId);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
-  }
-
-  private async sendMessage<T>(
-    type: string,
-    payload?: unknown,
-    timeoutMs = MESSAGE_TIMEOUT_MS,
-    onEvent?: RuntimeCommandEventHandler,
-    kernelHttp?: RuntimeKernelHttpBridge
-  ): Promise<T> {
-    await this.options.assetPreflight?.();
-    if (type !== 'status') {
-      await this.options.runtimeAssetPreflight?.();
-    }
-    const worker = this.getWorker();
-    await this.waitForWorkerReady();
-    const id = String(++this.messageId);
-    const protocolToken = createWorkerProtocolToken();
-
-    return new Promise<T>((resolve, reject) => {
-      this.pendingMessages.set(id, {
-        protocolToken,
-        resolve: resolve as (value: unknown) => void,
-        reject,
-        ...(onEvent ? { onEvent } : {}),
-        ...(kernelHttp ? { kernelHttp } : {}),
-        httpServers: new Map(),
-      });
-
-      const timeoutId = globalThis.setTimeout(() => {
-        const pending = this.pendingMessages.get(id);
-        if (!pending) return;
-        this.pendingMessages.delete(id);
-        this.closePendingHttpListeners(pending);
-        logRuntimeDiagnostic('warn', {
-          component: 'JavaWorkerClient',
-          runtime: 'java',
-          phase: 'worker-request-timeout',
-          message: 'Java worker request timed out.',
-          detail: { id, type, timeoutMs },
-        }, { enabled: this.debug });
-        pending.reject(new Error(`Worker request timed out: ${type}`));
-      }, timeoutMs);
-
-      const pending = this.pendingMessages.get(id);
-      if (pending) pending.timeoutId = timeoutId;
-
-      worker.postMessage({ id, type, payload, protocolToken });
-    });
-  }
-
-  private closePendingHttpListeners(pending: PendingMessage): void {
-    closeKernelHttpSyncServers(pending, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
-  }
-
-  private handleKernelHttpDispatchSync(commandId: MessageId, payload: unknown): void {
-    const pending = this.pendingMessages.get(commandId);
-    if (!pending) return;
-    handleKernelHttpDispatchSyncMessage(pending, payload, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
-  }
-
-  private handleKernelHttpListenSync(commandId: MessageId, payload: unknown): void {
-    const pending = this.pendingMessages.get(commandId);
-    if (!pending) return;
-    handleKernelHttpListenSyncMessage(pending, payload, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
-  }
-
-  private handleKernelHttpClose(commandId: MessageId, payload: unknown): void {
-    const pending = this.pendingMessages.get(commandId);
-    if (!pending) return;
-    handleKernelHttpCloseMessage(pending, payload, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
   }
 
   private hasPendingProtocolToken(protocolToken: unknown): protocolToken is string {
     return typeof protocolToken === 'string' &&
-      Array.from(this.pendingMessages.values()).some((pending) => pending.protocolToken === protocolToken);
+      Array.from(this.core.pendingMessages.values()).some((pending) => pending.protocolToken === protocolToken);
   }
 
-  private async handleJavaCompileRequest(message: WorkerMessage): Promise<void> {
+  private handleJavaCompileRequest(message: WorkerSessionMessage, worker: BrowserWorkerLike): void {
+    if (!this.hasPendingProtocolToken(message.protocolToken)) return;
     if (!message.requestId) return;
-    const worker = this.worker;
-    if (!worker) return;
 
-    const result = await this.compileJavaWithExternalUrl(message.payload);
-    worker.postMessage({
-      type: 'java-compile-response',
-      requestId: message.requestId,
-      protocolToken: message.protocolToken,
-      payload: result,
-    });
+    this.compileJavaWithExternalUrl(message.payload)
+      .then((result) => {
+        worker.postMessage({
+          type: 'java-compile-response',
+          requestId: message.requestId,
+          protocolToken: message.protocolToken,
+          payload: result,
+        });
+      })
+      .catch((error) => {
+        worker.postMessage({
+          type: 'java-compile-response',
+          requestId: message.requestId,
+          protocolToken: message.protocolToken,
+          payload: { success: false, error: error instanceof Error ? error.message : String(error) },
+        });
+      });
   }
 
   private async compileJavaWithExternalUrl(payload: unknown): Promise<Record<string, unknown>> {
@@ -484,130 +322,54 @@ export class JavaWorkerClient {
     };
   }
 
-  private async executeWithTimeout<T>(executor: () => Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
-    if (signal?.aborted) {
-      const abortError = createExecutionAbortError();
-      this.terminateAndReset(abortError);
-      throw abortError;
+  /** Runtime-load failures that warrant a worker reset + one retry. Every error this can see is tagged. */
+  private shouldResetRuntimeLoadError(error: unknown): boolean {
+    if (error instanceof WorkerRequestTimeoutError) {
+      return error.messageType === 'init';
     }
-    return new Promise<T>((resolve, reject) => {
-      let settled = false;
-      const cleanup = () => {
-        globalThis.clearTimeout(timeoutId);
-        signal?.removeEventListener('abort', onAbort);
-      };
-      const settleReject = (error: Error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(error);
-      };
-      const onAbort = () => {
-        const abortError = createExecutionAbortError();
-        this.terminateAndReset(abortError);
-        settleReject(abortError);
-      };
-      const timeoutId = globalThis.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        signal?.removeEventListener('abort', onAbort);
-        logRuntimeDiagnostic('warn', {
-          component: 'JavaWorkerClient',
-          runtime: 'java',
-          phase: 'execution-timeout',
-          message: 'Java execution timed out; terminating worker.',
-          detail: { timeoutMs },
-        }, { enabled: this.debug });
-        this.terminateAndReset();
-        reject(
-          new Error(
-            `Java execution timed out after ${Math.round(timeoutMs / 1000)} seconds.`
-          )
-        );
-      }, timeoutMs);
-
-      signal?.addEventListener('abort', onAbort, { once: true });
-
-      executor()
-        .then((result) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve(result);
-        })
-        .catch((error) => {
-          settleReject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+    return (
+      error instanceof WorkerTerminatedError ||
+      error instanceof WorkerCrashedError ||
+      error instanceof WorkerReadyTimeoutError
+    );
   }
 
-  private terminateAndReset(reason: Error = new Error('Worker was terminated')): void {
-    this.workerReadyReject?.(reason);
-    if (this.worker) {
-      this.worker.terminate();
-      this.worker = null;
-    }
-    this.initPromise = null;
-    this.warmupPromise = null;
-    this.isInitializing = false;
-    this.workerReadyPromise = null;
-    this.workerReadyResolve = null;
-    this.workerReadyReject = null;
-
-    for (const [, pending] of this.pendingMessages) {
-      if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
-      this.closePendingHttpListeners(pending);
-      pending.reject(reason);
-    }
-    this.pendingMessages.clear();
-    for (const controller of this.activeExternalCompileControllers) {
-      controller.abort();
-    }
-    this.activeExternalCompileControllers.clear();
+  /**
+   * The init program: one attempt, and on a runtime-load failure, reset the
+   * session and run the same description once more.
+   */
+  private initEffect(): Effect.Effect<InitResult, Error> {
+    const attempt = this.core.sendMessageEffect<InitResult>('init', this.workerOptionsPayload(), INIT_TIMEOUT_MS);
+    return attempt.pipe(
+      Effect.catchIf(
+        (error): error is Error => this.shouldResetRuntimeLoadError(error),
+        (error) =>
+          Effect.suspend(() => {
+            logRuntimeDiagnostic('warn', {
+              component: 'JavaWorkerClient',
+              runtime: 'java',
+              phase: 'init-retry',
+              message: 'Java worker init failed; resetting worker and retrying once.',
+              detail: { message: error.message },
+            }, { enabled: this.debug });
+            this.core.closeSession();
+            return attempt;
+          })
+      )
+    );
   }
 
   async init(): Promise<InitResult> {
     if (this.initPromise) return this.initPromise;
-    if (this.isInitializing) {
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
-      return this.init();
-    }
 
-    this.isInitializing = true;
-    this.initPromise = (async () => {
-      try {
-        return await this.sendMessage<InitResult>('init', this.workerOptionsPayload(), INIT_TIMEOUT_MS);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const shouldRetry =
-          message.includes('Worker request timed out: init') ||
-          message.includes('Worker was terminated') ||
-          message.includes('Java worker error') ||
-          message.includes('failed to initialize in time');
+    const promise = this.core.runClientEffect(this.initEffect());
+    this.initPromise = promise;
 
-        if (!shouldRetry) {
-          throw error;
-        }
-
-        logRuntimeDiagnostic('warn', {
-          component: 'JavaWorkerClient',
-          runtime: 'java',
-          phase: 'init-retry',
-          message: 'Java worker init failed; resetting worker and retrying once.',
-          detail: { message },
-        }, { enabled: this.debug });
-
-        this.terminateAndReset(error instanceof Error ? error : new Error(message));
-        return this.sendMessage<InitResult>('init', this.workerOptionsPayload(), INIT_TIMEOUT_MS);
-      }
-    })();
     try {
-      return await this.initPromise;
+      return await promise;
     } catch (error) {
-      this.initPromise = null;
+      if (this.initPromise === promise) this.initPromise = null;
       throw error;
-    } finally {
-      this.isInitializing = false;
     }
   }
 
@@ -634,7 +396,7 @@ export class JavaWorkerClient {
     this.warmupPromise = (async () => {
       try {
         await this.init();
-        return await this.sendMessage<WarmupResult>(
+        return await this.core.sendMessage<WarmupResult>(
           'warmup',
           this.workerOptionsPayload(),
           INIT_TIMEOUT_MS
@@ -647,124 +409,90 @@ export class JavaWorkerClient {
     return this.warmupPromise;
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle,
-    signal?: AbortSignal
-  ): Promise<JavaWorkerTraceResult> {
-    await this.init();
-    const result = await this.executeWithTimeout(
-      () =>
-        this.sendMessage<JavaWorkerRawTraceResult>(
-          'execute-with-tracing',
-          {
+  /** Runtime load ahead of an execution. Memoization stays Promise-based on the client. */
+  private initGateEffect(): Effect.Effect<void, Error> {
+    return Effect.tryPromise({
+      try: () => this.init().then(() => undefined),
+      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+    });
+  }
+
+  async executeWithTracing(call: RuntimeTraceCall): Promise<JavaWorkerTraceResult> {
+    const { code, inputs, traceOptions, executionStyle = 'function', signal } = call;
+    const functionName = call.functionName ?? '';
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.core.sendMessageEffect<JavaWorkerRawTraceResult>('execute-with-tracing', {
             code,
             functionName,
             inputs,
-            options,
+            options: traceOptions,
             executionStyle,
             traceEventTransport: traceEventTransferRequest(),
             ...this.workerOptionsPayload(),
-          },
-          TRACING_TIMEOUT_MS + 5_000
-        ),
-      TRACING_TIMEOUT_MS,
-      signal
+          }, null), // the enclosing execution deadline is the only clock
+          TRACING_TIMEOUT_MS
+        )
+      )
     );
+
+    const result = await this.core.runClientEffect(program, signal);
     return {
       ...result,
       trace: result.success
         ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
             runId: 'java:run',
             file: JAVA_DEFAULT_FILE,
-            maxPathDepth: options?.maxPathDepth,
+            maxPathDepth: traceOptions?.maxPathDepth,
           })
         : createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
     };
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle,
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    return this.executeCodeMessage('execute-code', code, functionName, inputs, options, executionStyle, signal);
-  }
-
-  async executeCodeBatch(
-    code: string,
-    functionName: string,
-    inputBatch: Record<string, unknown>[],
-    options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle,
-    signal?: AbortSignal
-  ): Promise<CodeExecutionBatchResult> {
-    await this.init();
-    return this.executeWithTimeout(
-      () =>
-        this.sendMessage<CodeExecutionBatchResult>(
-          'execute-code-batch',
-          { code, functionName, inputBatch, options, executionStyle, ...this.workerOptionsPayload() },
-          EXECUTION_TIMEOUT_MS + 5_000
-        ),
-      EXECUTION_TIMEOUT_MS,
-      signal
+  async executeCode(call: RuntimeCodeCall & { traceOptions?: JavaTraceExecutionOptions }): Promise<CodeExecutionResult> {
+    const { code, functionName, inputs, traceOptions, executionStyle = 'function', signal, limits } = call;
+    const wallClockMs = limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.core.sendMessageEffect<JavaWorkerCodeResult>('execute-code', {
+            code,
+            functionName,
+            inputs,
+            options: traceOptions,
+            executionStyle,
+            ...this.workerOptionsPayload(),
+          }, null),
+          wallClockMs
+        )
+      )
     );
+
+    const result = await this.core.runClientEffect(program, signal);
+    return liftCodeOutcome(result, 'Java execution failed');
   }
 
-  private async executeCodeMessage(
-    type: 'execute-code' | 'execute-code-interview',
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle,
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    await this.init();
-    const result = await this.executeWithTimeout(
-      () =>
-        this.sendMessage<JavaWorkerCodeResult>(
-          type,
-          { code, functionName, inputs, options, executionStyle, ...this.workerOptionsPayload() },
-          EXECUTION_TIMEOUT_MS + 5_000
-        ),
-      EXECUTION_TIMEOUT_MS,
-      signal
+  async executeCodeBatch(call: RuntimeBatchCall & { traceOptions?: JavaTraceExecutionOptions }): Promise<CodeExecutionBatchResult> {
+    const { code, functionName, inputBatch, traceOptions, executionStyle = 'function', signal } = call;
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.core.sendMessageEffect<RawExecutionBatchPayload>('execute-code-batch', {
+            code,
+            functionName,
+            inputBatch,
+            options: traceOptions,
+            executionStyle,
+            ...this.workerOptionsPayload(),
+          }, null),
+          EXECUTION_TIMEOUT_MS
+        )
+      )
     );
-    if (!result.success) {
-      return {
-        success: false,
-        output: null,
-        error: result.error ?? 'Java execution failed',
-        ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
-        consoleOutput: result.consoleOutput ?? [],
-        timings: result.timings,
-      };
-    }
-    return {
-      success: true,
-      output: result.output,
-      consoleOutput: result.consoleOutput ?? [],
-      timings: result.timings,
-    };
-  }
 
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    options: JavaTraceExecutionOptions | undefined,
-    executionStyle: JavaExecutionStyle,
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    return this.executeCodeMessage('execute-code-interview', code, functionName, inputs, options, executionStyle, signal);
+    const result = await this.core.runClientEffect(program, signal);
+    return liftCodeBatchOutcome(result, 'Java execution failed');
   }
 
   async executeProjectJava(
@@ -773,39 +501,31 @@ export class JavaWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     signal: AbortSignal | undefined = request.signal
   ): Promise<JavaWorkerProjectResult> {
-    if (signal?.aborted) {
-      const abortError = createExecutionAbortError();
-      this.terminateAndReset(abortError);
-      throw abortError;
-    }
-    const abortInit = () => this.terminateAndReset(createExecutionAbortError());
-    signal?.addEventListener('abort', abortInit, { once: true });
-    try {
-      await this.init();
-    } finally {
-      signal?.removeEventListener('abort', abortInit);
-    }
     const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
-    return this.executeWithTimeout(
-      () =>
-        this.sendMessage<JavaWorkerProjectResult>(
-          'execute-project-java',
-          {
-            ...workerRequest,
-            ...(this.options.projectUserAuthorityMode
-              ? { projectUserAuthorityMode: this.options.projectUserAuthorityMode }
-              : {}),
-          },
-          timeoutMs + 5_000,
-          onEvent,
-          kernelHttp
-        ),
-      timeoutMs,
-      signal
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.core.sendMessageEffect<JavaWorkerProjectResult>(
+            'execute-project-java',
+            {
+              ...workerRequest,
+              ...(this.options.projectUserAuthorityMode
+                ? { projectUserAuthorityMode: this.options.projectUserAuthorityMode }
+                : {}),
+            },
+            null,
+            onEvent,
+            kernelHttp
+          ),
+          timeoutMs
+        )
+      )
     );
+
+    return this.core.runClientEffect(program, signal);
   }
 
   terminate(): void {
-    this.terminateAndReset();
+    this.core.closeSession();
   }
 }

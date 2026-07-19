@@ -96,7 +96,13 @@ const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         solutionMethod: true,
         opsClass: true,
         script: true,
-        interviewMode: true,
+      },
+      limits: {
+        wallClock: true,
+        lineEvents: true,
+        singleLineHits: true,
+        callDepth: true,
+        memory: true,
       },
       timeouts: {
         clientTimeouts: true,
@@ -159,7 +165,13 @@ const JAVASCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         solutionMethod: true,
         opsClass: true,
         script: true,
-        interviewMode: true,
+      },
+      limits: {
+        wallClock: true,
+        lineEvents: false,
+        singleLineHits: false,
+        callDepth: false,
+        memory: false,
       },
       timeouts: {
         clientTimeouts: true,
@@ -222,7 +234,13 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         solutionMethod: true,
         opsClass: true,
         script: true,
-        interviewMode: true,
+      },
+      limits: {
+        wallClock: true,
+        lineEvents: false,
+        singleLineHits: false,
+        callDepth: false,
+        memory: false,
       },
       timeouts: {
         clientTimeouts: true,
@@ -285,7 +303,13 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         solutionMethod: true,
         opsClass: true,
         script: true,
-        interviewMode: true,
+      },
+      limits: {
+        wallClock: true,
+        lineEvents: false,
+        singleLineHits: false,
+        callDepth: false,
+        memory: false,
       },
       timeouts: {
         clientTimeouts: true,
@@ -332,7 +356,7 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     },
   },
   notes: [
-    'Java supports the browser-local Java 17 lane for function, solution-method, ops-class, script-style, and interview-mode execution.',
+    'Java supports the browser-local Java 17 lane for function, solution-method, ops-class, and script-style execution.',
     'Interview-mode Java reuses the same browser-local execution path.',
     'Script-style Java uses an empty function name with executionStyle="function" and reads the top-level result variable.',
     'Project-mode Java uses shared TraceKernel /dev and /proc policy with bridged live file mutation and stdio events plus final-diff reconciliation.',
@@ -354,7 +378,13 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         solutionMethod: true,
         opsClass: true,
         script: true,
-        interviewMode: true,
+      },
+      limits: {
+        wallClock: true,
+        lineEvents: false,
+        singleLineHits: false,
+        callDepth: false,
+        memory: false,
       },
       timeouts: {
         clientTimeouts: true,
@@ -404,7 +434,7 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'C# support is browser-local and stable.',
     'C# supports named function-style requests where the browser-local host can bind the named method.',
     'Script-style C# uses an empty function name with executionStyle="function" and reads the top-level result variable.',
-    'Interview-mode C# uses the same browser-local worker execution path with interview timeout normalization.',
+    
     'C# supports public class Solution methods and generated drivers.',
     'ListNode and TreeNode inputs are hydrated from level-order arrays or object-shaped JSON.',
     'Dictionary, HashSet, List, and array return values serialize through the browser-local worker.',
@@ -428,7 +458,13 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         solutionMethod: true,
         opsClass: true,
         script: true,
-        interviewMode: true,
+      },
+      limits: {
+        wallClock: true,
+        lineEvents: false,
+        singleLineHits: false,
+        callDepth: false,
+        memory: false,
       },
       timeouts: {
         clientTimeouts: true,

@@ -1,16 +1,17 @@
-import type { ExecutionStyle, PythonProjectCommandRequest, PythonWorkerClient } from './pyodide-worker-client';
+import type { PythonProjectCommandRequest, PythonWorkerClient } from './pyodide-worker-client';
 import type {
   RuntimeClient,
+  RuntimeCodeCall,
   RuntimeExecuteCodeRequest,
   RuntimeExecuteProjectRequest,
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
-  RuntimeExecutionStyle,
-  TraceExecutionOptions,
+  RuntimeTraceCall,
 } from '@tracecode/harness-core';
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
-import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
+import type { CodeExecutionResult, ExecutionLimitReason, ExecutionResult } from '@tracecode/harness-core';
+import { liftTraceOutcome } from '@tracecode/harness-core';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   createEmptyRuntimeTrace,
@@ -37,7 +38,7 @@ const PYTHON_TRACE_EVENT_KINDS = new Set<RuntimeTraceEventKind>([
   'exception',
   'timeout',
 ]);
-const PYTHON_TIMEOUT_REASONS = new Set<NonNullable<ExecutionResult['timeoutReason']>>([
+const PYTHON_TIMEOUT_REASONS = new Set<ExecutionLimitReason>([
   'trace-limit',
   'line-limit',
   'single-line-limit',
@@ -303,23 +304,24 @@ function normalizePythonRuntimeTrace(value: unknown): RuntimeTrace {
 
 function normalizePythonExecutionResult(value: unknown): ExecutionResult {
   const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-  const timeoutReason = typeof record.timeoutReason === 'string' && PYTHON_TIMEOUT_REASONS.has(record.timeoutReason as NonNullable<ExecutionResult['timeoutReason']>)
-    ? record.timeoutReason as ExecutionResult['timeoutReason']
+  const timeoutReason = typeof record.timeoutReason === 'string' && PYTHON_TIMEOUT_REASONS.has(record.timeoutReason as ExecutionLimitReason)
+    ? record.timeoutReason as ExecutionLimitReason
     : undefined;
-  return {
-    success: record.success === true,
-    output: sanitizeJsonValue(record.output),
-    ...(normalizedString(record.error) ? { error: normalizedString(record.error) } : {}),
-    ...(normalizedLine(record.errorLine) !== undefined ? { errorLine: normalizedLine(record.errorLine) } : {}),
-    trace: normalizePythonRuntimeTrace(record.trace),
-    executionTimeMs: finiteNumber(record.executionTimeMs) ?? 0,
-    consoleOutput: normalizeStringArray(record.consoleOutput),
-    ...(record.traceLimitExceeded === true ? { traceLimitExceeded: true } : {}),
-    ...(timeoutReason ? { timeoutReason } : {}),
-    ...(finiteNumber(record.lineEventCount) !== undefined ? { lineEventCount: finiteNumber(record.lineEventCount) } : {}),
-    ...(finiteNumber(record.traceStepCount) !== undefined ? { traceStepCount: finiteNumber(record.traceStepCount) } : {}),
-    ...(record.diagnostic !== undefined ? { diagnostic: sanitizeJsonValue(record.diagnostic) } : {}),
-  };
+  return liftTraceOutcome(
+    {
+      success: record.success === true,
+      output: sanitizeJsonValue(record.output),
+      ...(normalizedString(record.error) ? { error: normalizedString(record.error) } : {}),
+      ...(normalizedLine(record.errorLine) !== undefined ? { errorLine: normalizedLine(record.errorLine) } : {}),
+      executionTimeMs: finiteNumber(record.executionTimeMs) ?? 0,
+      consoleOutput: normalizeStringArray(record.consoleOutput),
+      ...(record.traceLimitExceeded === true ? { traceLimitExceeded: true } : {}),
+      ...(timeoutReason ? { timeoutReason } : {}),
+      ...(record.diagnostic !== undefined ? { diagnostic: sanitizeJsonValue(record.diagnostic) } : {}),
+    },
+    normalizePythonRuntimeTrace(record.trace),
+    'Python tracing failed'
+  );
 }
 
 class PythonRuntimeClient implements RuntimeClient {
@@ -339,25 +341,24 @@ class PythonRuntimeClient implements RuntimeClient {
           this.workerClient.executeProjectPython(projectRequest as PythonProjectCommandRequest),
         executeCode: this.executeCode.bind(this),
         executeWithTracing: this.executeWithTracing.bind(this),
-        executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       });
     }
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'function';
-    if (!codeRequest.trace && !codeRequest.interview && codeRequest.cases.length > 1) {
+    if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
       assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
         request: 'execute',
         executionStyle,
         functionName: codeRequest.functionName ?? '',
       });
-      const result = await this.workerClient.executeCodeBatch(
-        codeRequest.code,
-        codeRequest.functionName ?? '',
-        codeRequest.cases.map((testCase) => testCase.inputs),
-        executionStyle as ExecutionStyle,
-        codeRequest.signal
-      );
+      const result = await this.workerClient.executeCodeBatch({
+        code: codeRequest.code,
+        functionName: codeRequest.functionName ?? '',
+        inputBatch: codeRequest.cases.map((testCase) => testCase.inputs),
+        executionStyle,
+        signal: codeRequest.signal,
+      });
       return batchCodeResultToExecuteResult(codeRequest, result);
     }
 
@@ -365,75 +366,29 @@ class PythonRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'function',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
     });
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'function',
-    signal?: AbortSignal
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
       request: 'trace',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'function',
+      functionName: call.functionName,
     });
-    const result = await this.workerClient.executeWithTracing(
-      code,
-      functionName,
-      inputs,
-      options,
-      executionStyle as ExecutionStyle,
-      signal
-    );
+    const result = await this.workerClient.executeWithTracing(call);
     return normalizePythonExecutionResult(result);
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
       request: 'execute',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'function',
+      functionName: call.functionName,
+      limits: call.limits,
     });
-    return this.workerClient.executeCode(
-      code,
-      functionName,
-      inputs,
-      executionStyle as ExecutionStyle,
-      signal
-    );
+    return this.workerClient.executeCode(call);
   }
 
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
-      request: 'interview',
-      executionStyle,
-      functionName,
-    });
-    return this.workerClient.executeCodeInterviewMode(
-      code,
-      functionName,
-      inputs,
-      executionStyle as ExecutionStyle,
-      signal
-    );
-  }
 }
 
 export function createPythonRuntimeClient(workerClient: PythonWorkerClient): RuntimeClient {

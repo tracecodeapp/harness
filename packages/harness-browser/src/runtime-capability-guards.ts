@@ -1,15 +1,28 @@
 import type {
   LanguageRuntimeProfile,
+  RuntimeExecutionLimits,
   RuntimeExecutionStyle,
 } from '@tracecode/harness-core';
 
-type RuntimeRequestKind = 'execute' | 'trace' | 'interview';
+type RuntimeRequestKind = 'execute' | 'trace';
 
 interface RuntimeRequestSupportOptions {
   request: RuntimeRequestKind;
   executionStyle: RuntimeExecutionStyle;
   functionName?: string | null;
+  limits?: RuntimeExecutionLimits;
 }
+
+const LIMIT_SUPPORT_FIELDS: ReadonlyArray<{
+  limit: keyof RuntimeExecutionLimits;
+  support: keyof LanguageRuntimeProfile['capabilities']['execution']['limits'];
+}> = [
+  { limit: 'wallClockMs', support: 'wallClock' },
+  { limit: 'maxLineEvents', support: 'lineEvents' },
+  { limit: 'maxSingleLineHits', support: 'singleLineHits' },
+  { limit: 'maxCallDepth', support: 'callDepth' },
+  { limit: 'maxMemoryBytes', support: 'memory' },
+];
 
 function isScriptRequest(functionName: string | null | undefined): boolean {
   if (functionName == null) return true;
@@ -34,7 +47,6 @@ function isExecutionStyleSupported(
 
 function describeRequest(request: RuntimeRequestKind): string {
   if (request === 'trace') return 'tracing';
-  if (request === 'interview') return 'interview execution';
   return 'execution';
 }
 
@@ -46,8 +58,12 @@ export function assertRuntimeRequestSupported(
     throw new Error(`Runtime "${profile.language}" does not support tracing.`);
   }
 
-  if (options.request === 'interview' && !profile.capabilities.execution.styles.interviewMode) {
-    throw new Error(`Runtime "${profile.language}" does not support interview execution.`);
+  if (options.limits) {
+    for (const { limit, support } of LIMIT_SUPPORT_FIELDS) {
+      if (options.limits[limit] !== undefined && !profile.capabilities.execution.limits[support]) {
+        throw new Error(`Runtime "${profile.language}" does not support the "${limit}" execution limit.`);
+      }
+    }
   }
 
   if (!isExecutionStyleSupported(profile, options.executionStyle)) {

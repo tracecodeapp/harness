@@ -1,19 +1,19 @@
 import type {
   RuntimeClient,
+  RuntimeCodeCall,
   RuntimeExecuteCodeRequest,
   RuntimeExecuteProjectRequest,
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
-  RuntimeExecutionStyle,
-  TraceExecutionOptions,
+  RuntimeTraceCall,
 } from '@tracecode/harness-core';
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
-import { createEmptyRuntimeTrace } from '@tracecode/harness-core';
+import { liftTraceOutcome } from '@tracecode/harness-core';
 import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
-import type { JavaExecutionStyle, JavaWorkerClient, JavaWorkerProjectRequest } from './java-worker-client';
+import type { JavaWorkerClient, JavaWorkerProjectRequest } from './java-worker-client';
 import { batchCodeResultToExecuteResult, executeRuntimeRequest, isRuntimeProjectExecuteRequest } from './runtime-execute';
 
 const JAVA_DEFAULT_FILE = 'solution.java';
@@ -35,26 +35,24 @@ class JavaRuntimeClient implements RuntimeClient {
           this.workerClient.executeProjectJava(projectRequest as unknown as JavaWorkerProjectRequest),
         executeCode: this.executeCode.bind(this),
         executeWithTracing: this.executeWithTracing.bind(this),
-        executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       });
     }
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'function';
-    if (!codeRequest.trace && !codeRequest.interview && codeRequest.cases.length > 1) {
+    if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
       assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
         request: 'execute',
         executionStyle,
         functionName: codeRequest.functionName ?? '',
       });
-      const batchResult = await this.workerClient.executeCodeBatch(
-        codeRequest.code,
-        codeRequest.functionName ?? '',
-        codeRequest.cases.map((testCase) => testCase.inputs),
-        undefined,
-        executionStyle as JavaExecutionStyle,
-        codeRequest.signal
-      );
+      const batchResult = await this.workerClient.executeCodeBatch({
+        code: codeRequest.code,
+        functionName: codeRequest.functionName ?? '',
+        inputBatch: codeRequest.cases.map((testCase) => testCase.inputs),
+        executionStyle,
+        signal: codeRequest.signal,
+      });
       return batchCodeResultToExecuteResult(codeRequest, batchResult);
     }
 
@@ -62,109 +60,28 @@ class JavaRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'function',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
     });
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'function',
-    signal?: AbortSignal
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
       request: 'trace',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'function',
+      functionName: call.functionName,
     });
 
-    const rawResult = await this.workerClient.executeWithTracing(
-      code,
-      functionName ?? '',
-      inputs,
-      options,
-      executionStyle as JavaExecutionStyle,
-      signal
-    );
-
-    if (!rawResult.success) {
-      return {
-        success: false,
-        error: rawResult.error ?? 'Java tracing failed',
-        ...(rawResult.errorLine !== undefined ? { errorLine: rawResult.errorLine } : {}),
-        trace: createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
-        executionTimeMs: rawResult.executionTimeMs,
-        consoleOutput: rawResult.consoleOutput,
-        ...(rawResult.traceLimitExceeded !== undefined
-          ? { traceLimitExceeded: rawResult.traceLimitExceeded }
-          : {}),
-        ...(rawResult.timeoutReason ? { timeoutReason: rawResult.timeoutReason } : {}),
-        lineEventCount: 0,
-        traceStepCount: 0,
-        timings: rawResult.timings,
-      };
-    }
-
-    return {
-      success: true,
-      output: rawResult.output,
-      trace: rawResult.trace,
-      consoleOutput: rawResult.consoleOutput,
-      executionTimeMs: rawResult.executionTimeMs,
-      ...(rawResult.traceLimitExceeded !== undefined
-        ? { traceLimitExceeded: rawResult.traceLimitExceeded }
-        : {}),
-      ...(rawResult.timeoutReason ? { timeoutReason: rawResult.timeoutReason } : {}),
-      lineEventCount: rawResult.trace.lineEventCount,
-      traceStepCount: rawResult.trace.traceStepCount,
-      timings: rawResult.timings,
-    };
+    const rawResult = await this.workerClient.executeWithTracing(call);
+    return liftTraceOutcome(rawResult, rawResult.trace, 'Java tracing failed');
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
       request: 'execute',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'function',
+      functionName: call.functionName,
+      limits: call.limits,
     });
-    return this.workerClient.executeCode(
-      code,
-      functionName,
-      inputs,
-      undefined,
-      executionStyle as JavaExecutionStyle,
-      signal
-    );
-  }
-
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'function',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
-      request: 'interview',
-      executionStyle,
-      functionName,
-    });
-    return this.workerClient.executeCodeInterviewMode(
-      code,
-      functionName,
-      inputs,
-      undefined,
-      executionStyle as JavaExecutionStyle,
-      signal
-    );
+    return this.workerClient.executeCode(call);
   }
 }
 

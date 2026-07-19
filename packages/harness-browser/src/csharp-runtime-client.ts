@@ -1,12 +1,12 @@
 import type {
   RuntimeClient,
+  RuntimeCodeCall,
   RuntimeExecuteCodeRequest,
   RuntimeExecuteProjectRequest,
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
-  RuntimeExecutionStyle,
-  TraceExecutionOptions,
+  RuntimeTraceCall,
 } from '@tracecode/harness-core';
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
@@ -32,25 +32,24 @@ class CSharpRuntimeClient implements RuntimeClient {
           this.workerClient.executeProjectCSharp(projectRequest as unknown as CSharpProjectCommandRequest),
         executeCode: this.executeCode.bind(this),
         executeWithTracing: this.executeWithTracing.bind(this),
-        executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       });
     }
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'solution-method';
-    if (!codeRequest.trace && !codeRequest.interview && codeRequest.cases.length > 1) {
+    if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
       assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
         request: 'execute',
         executionStyle,
         functionName: codeRequest.functionName ?? '',
       });
-      const result = await this.workerClient.executeCodeBatch(
-        codeRequest.code,
-        codeRequest.functionName ?? '',
-        codeRequest.cases.map((testCase) => testCase.inputs),
-        executionStyle as CSharpExecutionStyle,
-        codeRequest.signal
-      );
+      const result = await this.workerClient.executeCodeBatch({
+        code: codeRequest.code,
+        functionName: codeRequest.functionName ?? '',
+        inputBatch: codeRequest.cases.map((testCase) => testCase.inputs),
+        executionStyle,
+        signal: codeRequest.signal,
+      });
       return batchCodeResultToExecuteResult(codeRequest, result);
     }
 
@@ -58,75 +57,29 @@ class CSharpRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'solution-method',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
     });
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'solution-method',
-    signal?: AbortSignal
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
       request: 'trace',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'solution-method',
+      functionName: call.functionName,
     });
 
-    return this.workerClient.executeWithTracing(
-      code,
-      functionName ?? '',
-      inputs,
-      options,
-      executionStyle as CSharpExecutionStyle,
-      signal
-    );
+    return this.workerClient.executeWithTracing(call);
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
       request: 'execute',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'solution-method',
+      functionName: call.functionName,
+      limits: call.limits,
     });
-    return this.workerClient.executeCode(
-      code,
-      functionName,
-      inputs,
-      executionStyle as CSharpExecutionStyle,
-      signal
-    );
+    return this.workerClient.executeCode(call);
   }
 
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
-      request: 'interview',
-      executionStyle,
-      functionName,
-    });
-    return this.workerClient.executeCodeInterviewMode(
-      code,
-      functionName,
-      inputs,
-      executionStyle as CSharpExecutionStyle,
-      signal
-    );
-  }
 }
 
 export function createCSharpRuntimeClient(workerClient: CSharpWorkerClient): RuntimeClient {

@@ -1,3 +1,21 @@
+/**
+ * C++ Worker Client
+ *
+ * Session lifecycle, request/response, and the Promise boundary live in the
+ * shared WorkerSessionCore; this file owns C++-specific concerns: the
+ * one-command-per-worker retire/prewarm cycle with generation fencing, the
+ * compiler coordinator (hidden compiler iframe or external compiler URL) with
+ * its byte-bounded artifact cache, progress-aware execution deadlines, sync
+ * kernel-HTTP wiring, and structured timeout results.
+ *
+ * Lifecycle vocabulary: a *retire* closes the current session but preserves
+ * the compiler coordinator (frames, artifact cache, warmup memo); a *reset*
+ * tears everything down and bumps the generation counters that fence queued
+ * work from stale sessions.
+ */
+
+import * as Duration from 'effect/Duration';
+import * as Effect from 'effect/Effect';
 import type {
   CodeExecutionResult,
   CodeExecutionBatchResult,
@@ -5,27 +23,43 @@ import type {
   RuntimeExecutionTimings,
 } from '@tracecode/harness-core';
 import type {
-  RuntimeCommandEvent,
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeKernelHttpBridge,
   RuntimeProjectCommandRequest,
 } from '@tracecode/harness-core';
-import { createEmptyRuntimeTrace } from '@tracecode/harness-core';
-import type { TraceExecutionOptions } from '@tracecode/harness-core';
+import {
+  createEmptyRuntimeTrace,
+  liftCodeBatchOutcome,
+  liftCodeOutcome,
+  liftTraceOutcome,
+  type RawExecutionBatchPayload,
+  type RawExecutionPayload,
+} from '@tracecode/harness-core';
+import type { RuntimeTrace } from '@tracecode/harness-core';
+
+/** Raw wire payload from the tracing commands; lifted into the outcome union here. */
+type CppRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
+import type { RuntimeBatchCall, RuntimeCodeCall, RuntimeTraceCall, TraceExecutionOptions } from '@tracecode/harness-core';
 import {
   closeKernelHttpSyncServers,
   handleKernelHttpCloseMessage,
   handleKernelHttpDispatchSyncMessage,
   handleKernelHttpListenSyncMessage,
-  type KernelHttpSyncServerBridge,
 } from './kernel-http-sync';
+import { isDevEnvironment } from './browser-client-env';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
+import {
+  WorkerCrashedError,
+  WorkerReadyTimeoutError,
+  WorkerReportedError,
+  WorkerRequestTimeoutError,
+  WorkerTerminatedError,
+} from './worker-errors';
+import { WorkerSessionCore, type WorkerSessionMessage } from './worker-session-core';
 import { createWorkerProtocolToken } from './worker-protocol';
-
-type MessageId = string;
 
 const CPP_KERNEL_HTTP_RUNTIME_LABEL = 'C++';
 
@@ -55,7 +89,6 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   initTimeoutMs?: number;
   executionTimeoutMs?: number;
   tracingTimeoutMs?: number;
-  interviewTimeoutMs?: number;
   workerIdleTimeoutMs?: number;
   programCacheLimit?: number;
   usePrecompiledHeader?: boolean;
@@ -72,28 +105,13 @@ export interface CppToolchainIntegrityManifest {
   assets: readonly CppToolchainIntegrityEntry[];
 }
 
-interface PendingMessage {
-  protocolToken: string;
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  onEvent?: RuntimeCommandEventHandler;
-  kernelHttp?: RuntimeKernelHttpBridge;
-  httpServers?: Map<string, KernelHttpSyncServerBridge>;
-  timeoutId?: ReturnType<typeof setTimeout>;
-  lastProgress?: CppRuntimeProgress;
-}
-
-function createExecutionAbortError(): Error {
-  return Object.assign(new Error('Execution aborted'), { name: 'AbortError' });
-}
-
 interface PendingCompilerFrameRequest {
   protocolToken: string;
   resolve: (value: Record<string, unknown>) => void;
   timeoutId: ReturnType<typeof setTimeout>;
 }
 
-type CppClientTimeoutStage = 'compile-run' | 'trace' | 'interview';
+type CppClientTimeoutStage = 'compile-run' | 'trace';
 
 interface CppRuntimeProgress {
   stage?: string;
@@ -111,14 +129,6 @@ class CppClientTimeoutError extends Error {
     super(message);
     this.name = 'CppClientTimeoutError';
   }
-}
-
-interface WorkerMessage {
-  id?: MessageId;
-  type: string;
-  requestId?: string;
-  payload?: unknown;
-  protocolToken?: string;
 }
 
 interface InitResult {
@@ -140,7 +150,6 @@ const INIT_TIMEOUT_MS = 120_000;
 // phases report progress separately so timeout diagnostics show where we died.
 const EXECUTION_TIMEOUT_MS = 20_000;
 const TRACING_TIMEOUT_MS = 20_000;
-const INTERVIEW_MODE_TIMEOUT_MS = 30_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const CPP_DEFAULT_FILE = 'solution.cpp';
@@ -148,6 +157,12 @@ const DEFAULT_CPP_COMPILER_ARTIFACT_CACHE_LIMIT = 32;
 const MAX_CPP_COMPILER_ARTIFACT_CACHE_LIMIT = 512;
 const MAX_CPP_COMPILER_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const MAX_CPP_COMPILER_ARTIFACT_CACHE_BYTES = 64 * 1024 * 1024;
+
+const KERNEL_HTTP_SYNC_MESSAGE_TYPES = new Set([
+  'kernel-http-dispatch-sync',
+  'kernel-http-listen-sync',
+  'kernel-http-close',
+]);
 
 interface CppCompilerArtifactCacheEntry {
   bytes: Uint8Array;
@@ -196,19 +211,13 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 export class CppWorkerClient {
-  private worker: BrowserWorkerLike | null = null;
-  private pendingMessages = new Map<MessageId, PendingMessage>();
-  private messageId = 0;
+  /** Memoized runtime-load results for the current session; cleared on retire/reset. */
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromise: Promise<WarmupResult> | null = null;
-  private workerReadyPromise: Promise<void> | null = null;
-  private workerReadyResolve: (() => void) | null = null;
-  private workerReadyReject: ((error: Error) => void) | null = null;
   private readonly debug: boolean;
   private readonly initTimeoutMs: number;
   private readonly executionTimeoutMs: number;
   private readonly tracingTimeoutMs: number;
-  private readonly interviewTimeoutMs: number;
   private readonly compilerFrameUrl?: string;
   private readonly externalCompilerUrl?: string;
   private lastRuntimeProgress: CppRuntimeProgress | null = null;
@@ -228,344 +237,164 @@ export class CppWorkerClient {
   private compilerArtifactCacheBytes = 0;
   private compilerCoordinatorGeneration = 0;
   private executionLifecycleGeneration = 0;
-  private executionResetReason = new Error('C++ execution worker was reset');
+  private executionResetReason: Error = new Error('C++ execution worker was reset');
+  /** Distinguishes client-driven resets (which run their own cleanup) from core-initiated closes. */
+  private suppressSessionClosedHook = false;
+  private readonly core: WorkerSessionCore;
 
   constructor(private readonly options: CppWorkerClientOptions) {
-    this.debug = options.debug ?? process.env.NODE_ENV === 'development';
+    this.debug = options.debug ?? isDevEnvironment();
     this.initTimeoutMs = options.initTimeoutMs ?? INIT_TIMEOUT_MS;
     this.executionTimeoutMs = options.executionTimeoutMs ?? EXECUTION_TIMEOUT_MS;
     this.tracingTimeoutMs = options.tracingTimeoutMs ?? TRACING_TIMEOUT_MS;
-    this.interviewTimeoutMs = options.interviewTimeoutMs ?? INTERVIEW_MODE_TIMEOUT_MS;
     this.compilerFrameUrl = options.compilerFrameUrl;
     this.externalCompilerUrl = options.externalCompilerUrl;
+
+    this.core = new WorkerSessionCore({
+      runtimeLabel: 'C++',
+      component: 'CppWorkerClient',
+      runtime: 'cpp',
+      debug: this.debug,
+      readyTimeoutMs: WORKER_READY_TIMEOUT_MS,
+      defaultMessageTimeoutMs: MESSAGE_TIMEOUT_MS,
+      isSupported: () => this.isSupported(),
+      createWorker: () => this.createWorker(),
+      preflight: async (type) => {
+        await this.options.assetPreflight?.();
+        if (this.messageRequiresCompilerAssets(type)) {
+          await this.options.runtimeAssetPreflight?.();
+        }
+      },
+      onCommandMessage: (commandId, type, payload, pending) => {
+        if (type === 'runtime-progress') {
+          this.lastRuntimeProgress = payload && typeof payload === 'object' ? (payload as CppRuntimeProgress) : {};
+          return true;
+        }
+        if (!KERNEL_HTTP_SYNC_MESSAGE_TYPES.has(type)) return false;
+        if (type === 'kernel-http-dispatch-sync') {
+          handleKernelHttpDispatchSyncMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
+        } else if (type === 'kernel-http-listen-sync') {
+          handleKernelHttpListenSyncMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
+        } else {
+          handleKernelHttpCloseMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
+        }
+        return true;
+      },
+      onUnhandledMessage: (message, session) => {
+        if (message.type === 'idle-timeout') {
+          logRuntimeDiagnostic('info', {
+            component: 'CppWorkerClient',
+            runtime: 'cpp',
+            phase: 'idle-timeout',
+            message: 'C++ worker closed after idle timeout.',
+          }, { enabled: this.debug });
+          this.terminateAndReset(new WorkerTerminatedError('C++ worker closed after idle timeout'));
+          return true;
+        }
+        if (message.type === 'compile-request') {
+          if (!this.hasPendingProtocolToken(message.protocolToken)) return true;
+          this.handleCompileRequest(message, session.worker).catch((error) => {
+            if (!message.requestId) return;
+            session.worker.postMessage({
+              type: 'compile-response',
+              requestId: message.requestId,
+              protocolToken: message.protocolToken,
+              payload: { success: false, error: error instanceof Error ? error.message : String(error) },
+            });
+          });
+          return true;
+        }
+        return false;
+      },
+      decodeReply: (payload) => restoreTransferredTraceEvents(payload),
+      // The clang/wasm runtime does not survive script errors; a crashed
+      // worker is fully reset (generations bumped) and lazily respawned.
+      closeSessionOnWorkerError: true,
+    });
+    this.core.cleanupPending = (pending) => closeKernelHttpSyncServers(pending, CPP_KERNEL_HTTP_RUNTIME_LABEL);
+    // Core-initiated closes (crash, ready timeout, abort interruption) are
+    // full resets; client-driven retire/reset paths suppress this hook and
+    // run their own cleanup with the right preservation policy.
+    this.core.onSessionClosed = (reason) => {
+      if (this.suppressSessionClosedHook) return;
+      this.completeReset(reason, false);
+    };
   }
 
   isSupported(): boolean {
     return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
-  private getWorker(): BrowserWorkerLike {
-    if (this.worker) return this.worker;
-
-    if (!this.isSupported()) {
-      throw new Error('Web Workers are not supported in this environment');
-    }
-
-    this.workerReadyPromise = new Promise((resolve, reject) => {
-      this.workerReadyResolve = resolve;
-      this.workerReadyReject = (error: Error) => reject(error);
-    });
-
+  private createWorker(): BrowserWorkerLike {
     const workerUrl =
       this.debug && !this.options.workerUrl.includes('?')
         ? `${this.options.workerUrl}?dev=${Date.now()}`
         : this.options.workerUrl;
 
-    this.worker = this.options.workerFactory
+    return this.options.workerFactory
       ? this.options.workerFactory(workerUrl, { type: 'module' })
       : new Worker(workerUrl, { type: 'module' });
-    this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-      const { id, type, payload, protocolToken } = event.data;
-
-      if (type === 'worker-ready') {
-        this.workerReadyResolve?.();
-        this.workerReadyResolve = null;
-        this.workerReadyReject = null;
-        logRuntimeDiagnostic('info', {
-          component: 'CppWorkerClient',
-          runtime: 'cpp',
-          phase: 'worker-ready',
-          message: 'C++ worker is ready.',
-        }, { enabled: this.debug });
-        return;
-      }
-
-      if (type === 'idle-timeout') {
-        logRuntimeDiagnostic('info', {
-          component: 'CppWorkerClient',
-          runtime: 'cpp',
-          phase: 'idle-timeout',
-          message: 'C++ worker closed after idle timeout.',
-        }, { enabled: this.debug });
-        this.terminateAndReset(new Error('C++ worker closed after idle timeout'));
-        return;
-      }
-
-      if (type === 'compile-request') {
-        if (!this.hasPendingProtocolToken(protocolToken)) return;
-        this.handleCompileRequest(event.data).catch((error) => {
-          if (!event.data.requestId) return;
-          this.worker?.postMessage({
-            type: 'compile-response',
-            requestId: event.data.requestId,
-            protocolToken: event.data.protocolToken,
-            payload: { success: false, error: error instanceof Error ? error.message : String(error) },
-          });
-        });
-        return;
-      }
-
-      if (!id) return;
-      const pending = this.pendingMessages.get(id);
-      if (!pending) return;
-      if (protocolToken !== pending.protocolToken) return;
-      if (type === 'project-event') {
-        pending.onEvent?.(payload as RuntimeCommandEvent);
-        return;
-      }
-      if (type === 'runtime-progress') {
-        const progress = payload && typeof payload === 'object' ? (payload as CppRuntimeProgress) : {};
-        pending.lastProgress = progress;
-        this.lastRuntimeProgress = progress;
-        return;
-      }
-      if (type === 'kernel-http-dispatch-sync') {
-        handleKernelHttpDispatchSyncMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
-        return;
-      }
-      if (type === 'kernel-http-listen-sync') {
-        handleKernelHttpListenSyncMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
-        return;
-      }
-      if (type === 'kernel-http-close') {
-        handleKernelHttpCloseMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
-        return;
-      }
-      this.pendingMessages.delete(id);
-      if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
-      closeKernelHttpSyncServers(pending, CPP_KERNEL_HTTP_RUNTIME_LABEL);
-
-      if (type === 'error') {
-        pending.reject(new Error((payload as { error: string }).error));
-        return;
-      }
-
-      try {
-        pending.resolve(restoreTransferredTraceEvents(payload));
-      } catch (error) {
-        pending.reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    };
-
-    this.worker.onerror = (error) => {
-      logRuntimeDiagnostic('error', {
-        component: 'CppWorkerClient',
-        runtime: 'cpp',
-        phase: 'worker-error',
-        message: 'C++ worker emitted an error event.',
-        detail: {
-          message: error.message,
-          filename: error.filename,
-          lineno: error.lineno,
-          colno: error.colno,
-        },
-      });
-      const workerError = new Error(error.message || 'C++ worker error');
-      this.workerReadyReject?.(workerError);
-      this.workerReadyResolve = null;
-      this.workerReadyReject = null;
-      this.terminateAndReset(workerError);
-    };
-
-    return this.worker;
   }
 
-  private async waitForWorkerReady(): Promise<void> {
-    const readyPromise = this.workerReadyPromise;
-    if (!readyPromise) return;
-
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const timeoutId = globalThis.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        const timeoutError = new Error(
-          `C++ worker failed to initialize in time (${Math.round(WORKER_READY_TIMEOUT_MS / 1000)}s)`
-        );
-        logRuntimeDiagnostic('warn', {
-          component: 'CppWorkerClient',
-          runtime: 'cpp',
-          phase: 'worker-ready-timeout',
-          message: 'C++ worker did not send worker-ready before the timeout.',
-          detail: { timeoutMs: WORKER_READY_TIMEOUT_MS },
-        }, { enabled: this.debug });
-        this.terminateAndReset(timeoutError);
-        reject(timeoutError);
-      }, WORKER_READY_TIMEOUT_MS);
-
-      readyPromise
-        .then(() => {
-          if (settled) return;
-          settled = true;
-          globalThis.clearTimeout(timeoutId);
-          resolve();
-        })
-        .catch((error) => {
-          if (settled) return;
-          settled = true;
-          globalThis.clearTimeout(timeoutId);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
-  }
-
-  private async sendMessage<T>(
-    type: string,
-    payload?: unknown,
-    timeoutMs = MESSAGE_TIMEOUT_MS,
-    onEvent?: RuntimeCommandEventHandler,
-    kernelHttp?: RuntimeKernelHttpBridge,
-    expectedLifecycleGeneration?: number
-  ): Promise<T> {
-    await this.options.assetPreflight?.();
-    if (
-      expectedLifecycleGeneration !== undefined &&
-      expectedLifecycleGeneration !== this.executionLifecycleGeneration
-    ) {
-      throw this.executionResetReason;
-    }
-    if (this.messageRequiresCompilerAssets(type, payload)) {
-      await this.options.runtimeAssetPreflight?.();
-    }
-    const worker = this.getWorker();
-    await this.waitForWorkerReady();
-    if (
-      expectedLifecycleGeneration !== undefined &&
-      expectedLifecycleGeneration !== this.executionLifecycleGeneration
-    ) {
-      throw this.executionResetReason;
-    }
-    const id = String(++this.messageId);
-    const protocolToken = createWorkerProtocolToken();
-
-    return new Promise<T>((resolve, reject) => {
-      this.pendingMessages.set(id, {
-        protocolToken,
-        resolve: resolve as (value: unknown) => void,
-        reject,
-        ...(onEvent ? { onEvent } : {}),
-        ...(kernelHttp ? { kernelHttp } : {}),
-        httpServers: new Map(),
-      });
-
-      const timeoutId = globalThis.setTimeout(() => {
-        const pending = this.pendingMessages.get(id);
-        if (!pending) return;
-        this.pendingMessages.delete(id);
-        closeKernelHttpSyncServers(pending, CPP_KERNEL_HTTP_RUNTIME_LABEL);
-        logRuntimeDiagnostic('warn', {
-          component: 'CppWorkerClient',
-          runtime: 'cpp',
-          phase: 'worker-request-timeout',
-          message: 'C++ worker request timed out.',
-          detail: { id, type, timeoutMs },
-        }, { enabled: this.debug });
-        pending.reject(new Error(`Worker request timed out: ${type}`));
-      }, timeoutMs);
-
-      const pending = this.pendingMessages.get(id);
-      if (pending) pending.timeoutId = timeoutId;
-
-      worker.postMessage({ id, type, payload, protocolToken });
-    });
-  }
-
-  private messageRequiresCompilerAssets(type: string, payload: unknown): boolean {
+  private messageRequiresCompilerAssets(type: string): boolean {
     if (type === 'init' || type === 'status') return false;
     if (this.externalCompilerUrl) return false;
-    if (type !== 'execute-project-cpp') return true;
-    return Boolean(
-      payload &&
-        typeof payload === 'object' &&
-        (payload as { source?: unknown }).source === 'compile'
-    );
+    // Project runs decide per-payload; the run wrappers preflight explicitly.
+    return type !== 'execute-project-cpp';
   }
 
   private hasPendingProtocolToken(protocolToken: unknown): protocolToken is string {
     return typeof protocolToken === 'string' &&
-      Array.from(this.pendingMessages.values()).some((pending) => pending.protocolToken === protocolToken);
+      Array.from(this.core.pendingMessages.values()).some((pending) => pending.protocolToken === protocolToken);
   }
 
-  private async executeWithTimeout<T>(
-    executor: () => Promise<T>,
+  /**
+   * Progress-aware execution deadline. On a trip the error carries the stage
+   * and last runtime progress for diagnostics, and the worker is reset when
+   * the timeout policy says the worker is unrecoverable.
+   */
+  private withCppExecutionDeadline<A>(
+    effect: Effect.Effect<A, Error>,
     timeoutMs: number,
-    stage: CppClientTimeoutStage,
-    signal?: AbortSignal
-  ): Promise<T> {
-    this.lastRuntimeProgress = null;
-    if (signal?.aborted) {
-      const abortError = createExecutionAbortError();
-      this.terminateAndReset(abortError);
-      throw abortError;
-    }
-    return new Promise<T>((resolve, reject) => {
-      let settled = false;
-      const cleanup = () => {
-        globalThis.clearTimeout(timeoutId);
-        signal?.removeEventListener('abort', onAbort);
-      };
-      const settleReject = (error: Error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(error);
-      };
-      const onAbort = () => {
-        const abortError = createExecutionAbortError();
-        this.terminateAndReset(abortError);
-        settleReject(abortError);
-      };
-      const timeoutId = globalThis.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        signal?.removeEventListener('abort', onAbort);
-        const progress = this.lastRuntimeProgress;
-        const shouldTerminate = this.shouldTerminateWorkerForTimeout(progress);
-        const timeoutLabel =
-          stage === 'trace'
-            ? 'tracing'
-            : stage === 'interview'
-              ? 'interview execution'
-              : 'compile/run';
-        const timeoutError = new CppClientTimeoutError(
-          `C++ ${timeoutLabel} timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
-          stage,
-          timeoutMs,
-          this.lastRuntimeProgress ?? undefined
-        );
-        logRuntimeDiagnostic('warn', {
-          component: 'CppWorkerClient',
-          runtime: 'cpp',
-          phase: 'execution-timeout',
-          message: 'C++ execution timed out; terminating worker.',
-          detail: { timeoutMs, stage, terminateWorker: shouldTerminate, lastProgress: progress ?? undefined },
-        }, { enabled: this.debug });
-        if (shouldTerminate) {
-          this.terminateAndReset(timeoutError);
-        }
-        reject(timeoutError);
-      }, timeoutMs);
-
-      signal?.addEventListener('abort', onAbort, { once: true });
-
-      executor()
-        .then((result) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve(result);
+    stage: CppClientTimeoutStage
+  ): Effect.Effect<A, Error> {
+    return Effect.suspend(() => {
+      this.lastRuntimeProgress = null;
+      return effect;
+    }).pipe(
+      Effect.timeoutFail({
+        duration: Duration.millis(timeoutMs),
+        onTimeout: () => {
+          const timeoutLabel = stage === 'trace' ? 'tracing' : 'compile/run';
+          return new CppClientTimeoutError(
+            `C++ ${timeoutLabel} timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
+            stage,
+            timeoutMs,
+            this.lastRuntimeProgress ?? undefined
+          );
+        },
+      }),
+      Effect.tapError((error) =>
+        Effect.sync(() => {
+          if (!(error instanceof CppClientTimeoutError)) return;
+          const shouldTerminate = this.shouldTerminateWorkerForTimeout(error.progress ?? null);
+          logRuntimeDiagnostic('warn', {
+            component: 'CppWorkerClient',
+            runtime: 'cpp',
+            phase: 'execution-timeout',
+            message: 'C++ execution timed out; terminating worker.',
+            detail: { timeoutMs, stage, terminateWorker: shouldTerminate, lastProgress: error.progress ?? undefined },
+          }, { enabled: this.debug });
+          if (shouldTerminate) {
+            this.terminateAndReset(error);
+          }
         })
-        .catch((error) => {
-          settleReject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      )
+    );
   }
 
   private isClientTimeout(error: unknown): boolean {
-    return (
-      error instanceof CppClientTimeoutError ||
-      (error instanceof Error && error.message.includes('C++') && error.message.includes('timed out'))
-    );
+    return error instanceof CppClientTimeoutError;
   }
 
   private shouldTerminateWorkerForTimeout(progress: CppRuntimeProgress | null): boolean {
@@ -573,15 +402,13 @@ export class CppWorkerClient {
     return true;
   }
 
-  private timeoutCodeResult(error: unknown): CodeExecutionResult {
+  private timeoutCodeResult(error: unknown): Extract<CodeExecutionResult, { kind: 'limit' }> {
     const timeoutError = error instanceof CppClientTimeoutError ? error : null;
     return {
-      success: false,
-      output: null,
+      kind: 'limit',
+      reason: 'client-timeout',
       error: error instanceof Error ? error.message : String(error),
       consoleOutput: [],
-      timeoutReason: 'client-timeout',
-      diagnosticStage: timeoutError?.stage === 'interview' ? 'interview' : 'runtime',
       timings: { totalMs: timeoutError?.timeoutMs ?? this.executionTimeoutMs },
       diagnostic: timeoutError?.progress
         ? {
@@ -602,7 +429,7 @@ export class CppWorkerClient {
     };
   }
 
-  private timeoutTraceResult(error: unknown): ExecutionResult {
+  private timeoutTraceResult(error: unknown): Extract<ExecutionResult, { kind: 'limit' }> {
     const timeoutError = error instanceof CppClientTimeoutError ? error : null;
     const trace = createEmptyRuntimeTrace('cpp', { runId: 'cpp:run', file: CPP_DEFAULT_FILE });
     trace.events = [
@@ -615,16 +442,12 @@ export class CppWorkerClient {
     ];
     trace.traceStepCount = 1;
     return {
-      success: false,
-      output: null,
+      kind: 'limit',
+      reason: 'client-timeout',
       error: error instanceof Error ? error.message : String(error),
       trace,
       executionTimeMs: timeoutError?.timeoutMs ?? this.tracingTimeoutMs,
       consoleOutput: [],
-      traceLimitExceeded: true,
-      timeoutReason: 'client-timeout',
-      lineEventCount: 0,
-      traceStepCount: 1,
       timings: { totalMs: timeoutError?.timeoutMs ?? this.tracingTimeoutMs },
       diagnostic: timeoutError?.progress
         ? {
@@ -645,27 +468,10 @@ export class CppWorkerClient {
     };
   }
 
-  private resetExecutionWorker(
-    reason: Error,
-    preserveCompilerCoordinator: boolean
-  ): void {
-    this.workerReadyReject?.(reason);
-    if (this.worker) {
-      this.worker.terminate();
-      this.worker = null;
-    }
+  /** Non-worker cleanup shared by retires (preserve coordinator) and resets (full teardown). */
+  private completeReset(reason: Error, preserveCompilerCoordinator: boolean): void {
     this.initPromise = null;
     if (!preserveCompilerCoordinator) this.warmupPromise = null;
-    this.workerReadyPromise = null;
-    this.workerReadyResolve = null;
-    this.workerReadyReject = null;
-
-    for (const [, pending] of this.pendingMessages) {
-      if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
-      closeKernelHttpSyncServers(pending, CPP_KERNEL_HTTP_RUNTIME_LABEL);
-      pending.reject(reason);
-    }
-    this.pendingMessages.clear();
     for (const controller of this.activeExternalCompileControllers) {
       controller.abort();
     }
@@ -681,12 +487,22 @@ export class CppWorkerClient {
     }
   }
 
-  private terminateAndReset(reason: Error = new Error('Worker was terminated')): void {
+  private resetExecutionWorker(reason: Error, preserveCompilerCoordinator: boolean): void {
+    this.suppressSessionClosedHook = true;
+    try {
+      this.core.closeSession(reason);
+    } finally {
+      this.suppressSessionClosedHook = false;
+    }
+    this.completeReset(reason, preserveCompilerCoordinator);
+  }
+
+  private terminateAndReset(reason: Error = new WorkerTerminatedError()): void {
     this.resetExecutionWorker(reason, false);
   }
 
   private retireExecutionWorker(): void {
-    this.resetExecutionWorker(new Error('C++ execution worker completed and was retired'), true);
+    this.resetExecutionWorker(new WorkerTerminatedError('C++ execution worker completed and was retired'), true);
   }
 
   private runInDisposableExecutionWorker<T>(operation: () => Promise<T>): Promise<T> {
@@ -715,78 +531,91 @@ export class CppWorkerClient {
     return run;
   }
 
-  private async initForExecution(signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) {
-      const abortError = createExecutionAbortError();
-      this.terminateAndReset(abortError);
-      throw abortError;
+  /** Runtime-load failures that warrant a worker reset + one retry. */
+  private shouldResetRuntimeLoadError(error: unknown): boolean {
+    if (
+      error instanceof WorkerRequestTimeoutError ||
+      error instanceof WorkerTerminatedError ||
+      error instanceof WorkerCrashedError ||
+      error instanceof WorkerReadyTimeoutError
+    ) {
+      return true;
     }
-    const onAbort = () => this.terminateAndReset(createExecutionAbortError());
-    signal?.addEventListener('abort', onAbort, { once: true });
-    try {
-      await this.init();
-    } finally {
-      signal?.removeEventListener('abort', onAbort);
-    }
-  }
-
-  private shouldRetryInit(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    return (
-      message.includes('timed out') ||
-      message.includes('Worker request timed out') ||
-      message.includes('worker error') ||
-      message.includes('Failed to fetch') ||
-      message.includes('was terminated') ||
-      message.includes('closed after idle timeout')
+    // Worker-reported load failures arrive as prose from the toolchain loader;
+    // fetch failures are the one retryable class we recognize by text.
+    return error instanceof WorkerReportedError && (
+      error.message.includes('Failed to fetch') || error.message.includes('timed out')
     );
   }
 
-  private sendInitMessage(expectedLifecycleGeneration?: number): Promise<InitResult> {
-    return this.sendMessage<InitResult>(
-      'init',
-      {
-        assets: {
-          clangWasmUrl: this.options.clangWasmUrl,
-          lldWasmUrl: this.options.lldWasmUrl,
-          sysrootUrl: this.options.sysrootUrl,
-          runtimeHeaderUrl: this.options.runtimeHeaderUrl,
-          compilerBundleUrl: this.options.compilerBundleUrl,
-          compilerFrameEnabled: Boolean(this.externalCompilerUrl || (this.compilerFrameUrl && typeof document !== 'undefined')),
-          compilerFrameUrl: this.compilerFrameUrl,
-          compilerWorkerUrl: this.options.compilerWorkerUrl,
-          toolchainIntegrity: this.options.toolchainIntegrity,
+  private sendInitEffect(expectedLifecycleGeneration?: number): Effect.Effect<InitResult, Error> {
+    return Effect.suspend(() => {
+      if (
+        expectedLifecycleGeneration !== undefined &&
+        expectedLifecycleGeneration !== this.executionLifecycleGeneration
+      ) {
+        return Effect.fail(this.executionResetReason);
+      }
+      return this.core.sendMessageEffect<InitResult>(
+        'init',
+        {
+          assets: {
+            clangWasmUrl: this.options.clangWasmUrl,
+            lldWasmUrl: this.options.lldWasmUrl,
+            sysrootUrl: this.options.sysrootUrl,
+            runtimeHeaderUrl: this.options.runtimeHeaderUrl,
+            compilerBundleUrl: this.options.compilerBundleUrl,
+            compilerFrameEnabled: Boolean(this.externalCompilerUrl || (this.compilerFrameUrl && typeof document !== 'undefined')),
+            compilerFrameUrl: this.compilerFrameUrl,
+            compilerWorkerUrl: this.options.compilerWorkerUrl,
+            toolchainIntegrity: this.options.toolchainIntegrity,
+          },
+          ...this.workerOptionsPayload(),
         },
-        ...this.workerOptionsPayload(),
-      },
-      this.initTimeoutMs,
-      undefined,
-      undefined,
-      expectedLifecycleGeneration
+        this.initTimeoutMs
+      );
+    });
+  }
+
+  private initEffect(expectedLifecycleGeneration?: number): Effect.Effect<InitResult, Error> {
+    const attempt = this.sendInitEffect(expectedLifecycleGeneration);
+    return attempt.pipe(
+      Effect.catchIf(
+        (error): error is Error => {
+          if (
+            expectedLifecycleGeneration !== undefined &&
+            expectedLifecycleGeneration !== this.executionLifecycleGeneration
+          ) {
+            return false;
+          }
+          return this.shouldResetRuntimeLoadError(error);
+        },
+        (error) =>
+          Effect.suspend(() => {
+            logRuntimeDiagnostic('warn', {
+              component: 'CppWorkerClient',
+              runtime: 'cpp',
+              phase: 'init-retry',
+              message: 'C++ worker init failed; resetting worker and retrying once.',
+              detail: { message: error.message },
+            }, { enabled: this.debug });
+            this.terminateAndReset(error);
+            return attempt;
+          })
+      )
     );
   }
 
   async init(expectedLifecycleGeneration?: number): Promise<InitResult> {
     if (this.initPromise) return this.initPromise;
-    this.initPromise = (async () => {
-      try {
-        return await this.sendInitMessage(expectedLifecycleGeneration);
-      } catch (error) {
-        if (
-          expectedLifecycleGeneration !== undefined &&
-          expectedLifecycleGeneration !== this.executionLifecycleGeneration
-        ) {
-          throw error;
-        }
-        if (!this.shouldRetryInit(error)) throw error;
-        this.terminateAndReset(error instanceof Error ? error : new Error(String(error)));
-        return this.sendInitMessage(expectedLifecycleGeneration);
-      }
-    })();
+
+    const promise = this.core.runClientEffect(this.initEffect(expectedLifecycleGeneration));
+    this.initPromise = promise;
+
     try {
-      return await this.initPromise;
+      return await promise;
     } catch (error) {
-      this.initPromise = null;
+      if (this.initPromise === promise) this.initPromise = null;
       throw error;
     }
   }
@@ -804,7 +633,7 @@ export class CppWorkerClient {
     this.warmupPromise = this.runInDisposableExecutionWorker(async () => {
       try {
         await this.init();
-        return await this.sendMessage<WarmupResult>('warmup', this.workerOptionsPayload(), this.initTimeoutMs);
+        return await this.core.sendMessage<WarmupResult>('warmup', this.workerOptionsPayload(), this.initTimeoutMs);
       } catch (error) {
         this.warmupPromise = null;
         throw error;
@@ -937,10 +766,8 @@ export class CppWorkerClient {
     };
   }
 
-  private async handleCompileRequest(message: WorkerMessage): Promise<void> {
+  private async handleCompileRequest(message: WorkerSessionMessage, worker: BrowserWorkerLike): Promise<void> {
     if (!message.requestId) return;
-    const worker = this.worker;
-    if (!worker) return;
     const coordinatorGeneration = this.compilerCoordinatorGeneration;
 
     const cacheKey = await this.compilerArtifactCacheKey(message.payload);
@@ -948,7 +775,12 @@ export class CppWorkerClient {
     const compiled = cached ?? (this.externalCompilerUrl
       ? await this.compileWithExternalUrl(message.payload)
       : await this.compileInFrame(message.payload));
-    if (coordinatorGeneration !== this.compilerCoordinatorGeneration || worker !== this.worker) return;
+    if (
+      coordinatorGeneration !== this.compilerCoordinatorGeneration ||
+      worker !== this.core.currentSession?.worker
+    ) {
+      return;
+    }
     const result = !cached && cacheKey
       ? this.storeCompilerArtifact(cacheKey, message.payload, compiled)
       : compiled;
@@ -1161,27 +993,42 @@ export class CppWorkerClient {
     });
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: CppExecutionStyle,
+  /** Runtime load ahead of an execution. Memoization stays Promise-based on the client. */
+  private initGateEffect(): Effect.Effect<void, Error> {
+    return Effect.tryPromise({
+      try: () => this.init().then(() => undefined),
+      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+    });
+  }
+
+  private runExecution<T>(
+    sendEffect: Effect.Effect<T, Error>,
+    timeoutMs: number,
+    stage: CppClientTimeoutStage,
     signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
+  ): Promise<T> {
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(this.withCppExecutionDeadline(sendEffect, timeoutMs, stage))
+    );
+    return this.core.runClientEffect(program, signal);
+  }
+
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
+    const { code, functionName, inputs, executionStyle = 'solution-method', signal, limits } = call;
+    const wallClockMs = limits?.wallClockMs ?? this.executionTimeoutMs;
     return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
       try {
-        return await this.executeWithTimeout(
-          () =>
-            this.sendMessage<CodeExecutionResult>(
-              'compile-run',
-              { code, functionName, inputs, executionStyle },
-              this.executionTimeoutMs + 5_000
-            ),
-          this.executionTimeoutMs,
+        const result = await this.runExecution(
+          this.core.sendMessageEffect<RawExecutionPayload>(
+            'compile-run',
+            { code, functionName, inputs, executionStyle },
+            null // the enclosing execution deadline is the only clock
+          ),
+          wallClockMs,
           'compile-run',
           signal
         );
+        return liftCodeOutcome(result, 'C++ execution failed');
       } catch (error) {
         if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
         throw error;
@@ -1189,32 +1036,25 @@ export class CppWorkerClient {
     });
   }
 
-  async executeCodeBatch(
-    code: string,
-    functionName: string,
-    inputBatch: Record<string, unknown>[],
-    executionStyle: CppExecutionStyle,
-    signal?: AbortSignal
-  ): Promise<CodeExecutionBatchResult> {
+  async executeCodeBatch(call: RuntimeBatchCall): Promise<CodeExecutionBatchResult> {
+    const { code, functionName, inputBatch, executionStyle = 'solution-method', signal } = call;
     return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
       try {
-        return await this.executeWithTimeout(
-          () =>
-            this.sendMessage<CodeExecutionBatchResult>(
-              'compile-run-batch',
-              { code, functionName, inputBatch, executionStyle },
-              this.executionTimeoutMs + 5_000
-            ),
+        const result = await this.runExecution(
+          this.core.sendMessageEffect<RawExecutionBatchPayload>(
+            'compile-run-batch',
+            { code, functionName, inputBatch, executionStyle },
+            null
+          ),
           this.executionTimeoutMs,
           'compile-run',
           signal
         );
+        return liftCodeBatchOutcome(result, 'C++ execution failed');
       } catch (error) {
         if (!this.isClientTimeout(error)) throw error;
         const timeout = this.timeoutCodeResult(error);
         return {
-          success: false,
           results: inputBatch.map(() => timeout),
           error: timeout.error,
           consoleOutput: timeout.consoleOutput,
@@ -1224,40 +1064,43 @@ export class CppWorkerClient {
     });
   }
 
-  async executeTraceBatch(
-    code: string,
-    functionName: string,
-    inputBatch: Record<string, unknown>[],
-    options: TraceExecutionOptions | undefined,
-    executionStyle: CppExecutionStyle,
-    signal?: AbortSignal
-  ): Promise<{ success: boolean; results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
+  async executeTraceBatch(call: RuntimeBatchCall & { traceOptions?: TraceExecutionOptions }): Promise<{ results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
+    const { code, functionName, inputBatch, traceOptions, executionStyle = 'solution-method', signal } = call;
     return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
       try {
-        return await this.executeWithTimeout(
-          () =>
-            this.sendMessage<{ success: boolean; results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }>(
-              'execute-trace-batch',
-              {
-                code,
-                functionName,
-                inputBatch,
-                options,
-                executionStyle,
-                traceEventTransport: traceEventTransferRequest(),
-              },
-              this.tracingTimeoutMs + 5_000
-            ),
+        const result = await this.runExecution(
+          this.core.sendMessageEffect<{ results?: CppRawTraceResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }>(
+            'execute-trace-batch',
+            {
+              code,
+              functionName,
+              inputBatch,
+              options: traceOptions,
+              executionStyle,
+              traceEventTransport: traceEventTransferRequest(),
+            },
+            null
+          ),
           this.tracingTimeoutMs,
           'trace',
           signal
         );
+        return {
+          results: (result.results ?? []).map((entry) =>
+            liftTraceOutcome(
+              entry,
+              entry.trace ?? createEmptyRuntimeTrace('cpp', { runId: 'cpp:run', file: CPP_DEFAULT_FILE }),
+              'C++ tracing failed'
+            )
+          ),
+          ...(result.error !== undefined ? { error: result.error } : {}),
+          ...(result.consoleOutput ? { consoleOutput: result.consoleOutput } : {}),
+          ...(result.timings ? { timings: result.timings } : {}),
+        };
       } catch (error) {
         if (!this.isClientTimeout(error)) throw error;
         const timeout = this.timeoutTraceResult(error);
         return {
-          success: false,
           results: inputBatch.map(() => timeout),
           error: timeout.error,
           consoleOutput: timeout.consoleOutput,
@@ -1267,73 +1110,36 @@ export class CppWorkerClient {
     });
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    options: TraceExecutionOptions | undefined,
-    executionStyle: CppExecutionStyle,
-    signal?: AbortSignal
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
+    const { code, inputs, traceOptions, executionStyle = 'solution-method', signal } = call;
+    const functionName = call.functionName ?? '';
     return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
       try {
-        return await this.executeWithTimeout(
-          () =>
-            this.sendMessage<ExecutionResult>(
-              'execute-with-tracing',
-              {
-                code,
-                functionName,
-                inputs,
-                options,
-                executionStyle,
-                traceEventTransport: traceEventTransferRequest(),
-              },
-              this.tracingTimeoutMs + 5_000
-            ),
+        const result = await this.runExecution(
+          this.core.sendMessageEffect<CppRawTraceResult>(
+            'execute-with-tracing',
+            {
+              code,
+              functionName,
+              inputs,
+              options: traceOptions,
+              executionStyle,
+              traceEventTransport: traceEventTransferRequest(),
+            },
+            null
+          ),
           this.tracingTimeoutMs,
           'trace',
           signal
         );
+        return liftTraceOutcome(
+          result,
+          result.trace ?? createEmptyRuntimeTrace('cpp', { runId: 'cpp:run', file: CPP_DEFAULT_FILE }),
+          'C++ tracing failed'
+        );
       } catch (error) {
         if (this.isClientTimeout(error)) return this.timeoutTraceResult(error);
         throw error;
-      }
-    });
-  }
-
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: CppExecutionStyle,
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    return this.runInDisposableExecutionWorker(async () => {
-      try {
-        await this.initForExecution(signal);
-        return await this.executeWithTimeout(
-          () =>
-            this.sendMessage<CodeExecutionResult>(
-              'execute-code-interview',
-              { code, functionName, inputs, executionStyle },
-              this.interviewTimeoutMs + 5_000
-            ),
-          this.interviewTimeoutMs,
-          'interview',
-          signal
-        );
-      } catch {
-        return {
-          success: false,
-          output: null,
-          error: 'Time Limit Exceeded',
-          timeoutReason: 'client-timeout',
-          diagnosticStage: 'interview',
-          consoleOutput: [],
-          timings: { totalMs: this.interviewTimeoutMs },
-        };
       }
     });
   }
@@ -1345,21 +1151,22 @@ export class CppWorkerClient {
     signal: AbortSignal | undefined = request.signal
   ): Promise<CppProjectCommandResult> {
     return this.runInDisposableExecutionWorker(async () => {
-      await this.initForExecution(signal);
       const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
-      return this.executeWithTimeout(
-        () =>
-          this.sendMessage<CppProjectCommandResult>(
-            'execute-project-cpp',
-            {
-              ...workerRequest,
-              projectUserAuthorityMode: 'permanent',
-              ...this.workerOptionsPayload(),
-            },
-            timeoutMs + 5_000,
-            onEvent,
-            kernelHttp
-          ),
+      if (!this.externalCompilerUrl && workerRequest.source === 'compile') {
+        await this.options.runtimeAssetPreflight?.();
+      }
+      return this.runExecution(
+        this.core.sendMessageEffect<CppProjectCommandResult>(
+          'execute-project-cpp',
+          {
+            ...workerRequest,
+            projectUserAuthorityMode: 'permanent',
+            ...this.workerOptionsPayload(),
+          },
+          null,
+          onEvent,
+          kernelHttp
+        ),
         timeoutMs,
         'compile-run',
         signal

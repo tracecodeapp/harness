@@ -1,18 +1,19 @@
 import type {
   RuntimeClient,
+  RuntimeCodeCall,
   RuntimeExecuteCodeRequest,
   RuntimeExecuteProjectRequest,
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
-  RuntimeExecutionStyle,
-  TraceExecutionOptions,
+  RuntimeTraceCall,
 } from '@tracecode/harness-core';
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
+import { createEmptyRuntimeTrace } from '@tracecode/harness-core';
 import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
-import type { CppExecutionStyle, CppProjectCommandRequest, CppWorkerClient } from './cpp-worker-client';
+import type { CppProjectCommandRequest, CppWorkerClient } from './cpp-worker-client';
 import {
   batchCodeResultToExecuteResult,
   batchTraceResultToExecuteResult,
@@ -37,42 +38,47 @@ class CppRuntimeClient implements RuntimeClient {
           this.workerClient.executeProjectCpp(projectRequest as unknown as CppProjectCommandRequest),
         executeCode: this.executeCode.bind(this),
         executeWithTracing: this.executeWithTracing.bind(this),
-        executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
       });
     }
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'solution-method';
-    if (codeRequest.trace && !codeRequest.interview && codeRequest.cases.length > 1) {
+    if (codeRequest.trace && codeRequest.cases.length > 1) {
       assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
         request: 'trace',
         executionStyle,
         functionName: codeRequest.functionName ?? '',
       });
-      const result = await this.workerClient.executeTraceBatch(
-        codeRequest.code,
-        codeRequest.functionName ?? '',
-        codeRequest.cases.map((testCase) => testCase.inputs),
-        codeRequest.traceOptions,
-        executionStyle as CppExecutionStyle,
-        codeRequest.signal
-      );
-      return batchTraceResultToExecuteResult(codeRequest, result);
+      const result = await this.workerClient.executeTraceBatch({
+        code: codeRequest.code,
+        functionName: codeRequest.functionName ?? '',
+        inputBatch: codeRequest.cases.map((testCase) => testCase.inputs),
+        traceOptions: codeRequest.traceOptions,
+        executionStyle,
+        signal: codeRequest.signal,
+      });
+      return batchTraceResultToExecuteResult(codeRequest, result, (error) => ({
+        kind: 'failed',
+        error,
+        trace: createEmptyRuntimeTrace('cpp', { runId: 'cpp:run', file: 'solution.cpp' }),
+        executionTimeMs: 0,
+        consoleOutput: [],
+      }));
     }
 
-    if (!codeRequest.trace && !codeRequest.interview && codeRequest.cases.length > 1) {
+    if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
       assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
         request: 'execute',
         executionStyle,
         functionName: codeRequest.functionName ?? '',
       });
-      const result = await this.workerClient.executeCodeBatch(
-        codeRequest.code,
-        codeRequest.functionName ?? '',
-        codeRequest.cases.map((testCase) => testCase.inputs),
-        executionStyle as CppExecutionStyle,
-        codeRequest.signal
-      );
+      const result = await this.workerClient.executeCodeBatch({
+        code: codeRequest.code,
+        functionName: codeRequest.functionName ?? '',
+        inputBatch: codeRequest.cases.map((testCase) => testCase.inputs),
+        executionStyle,
+        signal: codeRequest.signal,
+      });
       return batchCodeResultToExecuteResult(codeRequest, result);
     }
 
@@ -80,74 +86,28 @@ class CppRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'solution-method',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
     });
   }
 
-  async executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options?: TraceExecutionOptions,
-    executionStyle: RuntimeExecutionStyle = 'solution-method',
-    signal?: AbortSignal
-  ): Promise<ExecutionResult> {
+  async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
       request: 'trace',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'solution-method',
+      functionName: call.functionName,
     });
-    return this.workerClient.executeWithTracing(
-      code,
-      functionName ?? '',
-      inputs,
-      options,
-      executionStyle as CppExecutionStyle,
-      signal
-    );
+    return this.workerClient.executeWithTracing(call);
   }
 
-  async executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
+  async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
       request: 'execute',
-      executionStyle,
-      functionName,
+      executionStyle: call.executionStyle ?? 'solution-method',
+      functionName: call.functionName,
+      limits: call.limits,
     });
-    return this.workerClient.executeCode(
-      code,
-      functionName,
-      inputs,
-      executionStyle as CppExecutionStyle,
-      signal
-    );
+    return this.workerClient.executeCode(call);
   }
 
-  async executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: RuntimeExecutionStyle = 'solution-method',
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
-    assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
-      request: 'interview',
-      executionStyle,
-      functionName,
-    });
-    return this.workerClient.executeCodeInterviewMode(
-      code,
-      functionName,
-      inputs,
-      executionStyle as CppExecutionStyle,
-      signal
-    );
-  }
 }
 
 export function createCppRuntimeClient(workerClient: CppWorkerClient): RuntimeClient {
