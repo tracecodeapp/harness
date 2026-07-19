@@ -6,6 +6,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## Unreleased
 
+## [0.11.4] - 2026-07-19
+
 ### Added
 
 - Added a real-browser cross-provider filesystem concurrency gate for Chromium, Firefox, and WebKit. It verifies authoritative live-write persistence, later-command visibility, point-in-time isolation for already-running workers, independent parallel writes, and deterministic `ESTALE` protection for same-path conflicts.
