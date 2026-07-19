@@ -50,8 +50,9 @@ export interface RuntimeCapabilities {
       solutionMethod: boolean;
       opsClass: boolean;
       script: boolean;
-      interviewMode: boolean;
     };
+    /** Which `RuntimeExecutionLimits` knobs this runtime honors. */
+    limits: RuntimeExecutionLimitSupport;
     timeouts: {
       clientTimeouts: boolean;
       runtimeTimeouts: boolean;
@@ -116,6 +117,35 @@ export interface RuntimeCapabilities {
   };
 }
 
+/**
+ * Caller-tunable execution limits. The harness enforces what it can and reports
+ * limit trips structurally as a `limit` outcome with a `reason`; interpreting
+ * a trip (e.g. rendering a verdict like "Time Limit Exceeded") is the client's job.
+ *
+ * Guest-enforced limits may be clamped to runtime-specific safety floors.
+ * Languages declare which limits they honor via `capabilities.execution.limits`.
+ */
+export interface RuntimeExecutionLimits {
+  /** Client-side wall-clock deadline per case, in milliseconds. A trip yields a `limit` outcome with reason `client-timeout` instead of a rejected execution. */
+  wallClockMs?: number;
+  /** Guest-enforced ceiling on executed line events (`line-limit`). */
+  maxLineEvents?: number;
+  /** Guest-enforced ceiling on hits of a single line (`single-line-limit`). */
+  maxSingleLineHits?: number;
+  /** Guest-enforced call-depth ceiling (`recursion-limit`). */
+  maxCallDepth?: number;
+  /** Guest-enforced memory ceiling in bytes (`memory-limit`). */
+  maxMemoryBytes?: number;
+}
+
+export interface RuntimeExecutionLimitSupport {
+  wallClock: boolean;
+  lineEvents: boolean;
+  singleLineHits: boolean;
+  callDepth: boolean;
+  memory: boolean;
+}
+
 export interface TraceBudget {
   maxTraceSteps?: number;
   maxLineEvents?: number;
@@ -141,6 +171,35 @@ export interface RuntimeExecuteCase {
   expected?: unknown;
 }
 
+/** A single non-tracing execution call (one case). */
+export interface RuntimeCodeCall {
+  code: string;
+  functionName: string;
+  inputs: Record<string, unknown>;
+  executionStyle?: RuntimeExecutionStyle;
+  signal?: AbortSignal;
+  limits?: RuntimeExecutionLimits;
+}
+
+/** A multi-case non-tracing execution call sharing one compiled program. */
+export interface RuntimeBatchCall {
+  code: string;
+  functionName: string;
+  inputBatch: Record<string, unknown>[];
+  executionStyle?: RuntimeExecutionStyle;
+  signal?: AbortSignal;
+}
+
+/** A single tracing execution call (one case). */
+export interface RuntimeTraceCall {
+  code: string;
+  functionName: string | null;
+  inputs: Record<string, unknown>;
+  traceOptions?: TraceExecutionOptions;
+  executionStyle?: RuntimeExecutionStyle;
+  signal?: AbortSignal;
+}
+
 export interface RuntimeExecuteCodeRequest {
   kind?: 'code';
   code: string;
@@ -148,29 +207,22 @@ export interface RuntimeExecuteCodeRequest {
   executionStyle?: RuntimeExecutionStyle;
   cases: RuntimeExecuteCase[];
   trace?: boolean;
-  interview?: boolean;
+  limits?: RuntimeExecutionLimits;
   traceOptions?: TraceExecutionOptions;
   signal?: AbortSignal;
 }
 
 export interface RuntimeExecuteCaseResult {
   id?: string;
-  success: boolean;
-  output?: unknown;
   expected?: unknown;
+  /** Present when `expected` was provided: true iff the case completed with a deep-equal output. */
   passed?: boolean;
-  error?: string;
-  errorLine?: number;
-  consoleOutput?: string[];
-  trace?: ExecutionResult['trace'];
-  traceLimitExceeded?: boolean;
-  timeoutReason?: CodeExecutionResult['timeoutReason'];
-  diagnosticStage?: CodeExecutionResult['diagnosticStage'];
-  diagnostic?: unknown;
-  timings?: RuntimeExecutionTimings;
+  /** Tracing requests produce `ExecutionResult` outcomes; plain runs produce `CodeExecutionResult`. */
+  outcome: CodeExecutionResult | ExecutionResult;
 }
 
 export interface RuntimeExecuteResult {
+  /** Aggregate summary: true iff every case outcome completed. */
   success: boolean;
   cases: RuntimeExecuteCaseResult[];
   timings?: RuntimeExecutionTimings;
@@ -189,23 +241,6 @@ export interface RuntimeClient {
   execute(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult>;
   execute(request: RuntimeExecuteProjectRequest): Promise<RuntimeCommandResult>;
   execute(request: RuntimeExecuteRequest): Promise<RuntimeExecuteResponse>;
-  executeWithTracing(
-    code: string,
-    functionName: string | null,
-    inputs: Record<string, unknown>,
-    options?: TraceExecutionOptions,
-    executionStyle?: RuntimeExecutionStyle
-  ): Promise<ExecutionResult>;
-  executeCode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle?: RuntimeExecutionStyle
-  ): Promise<CodeExecutionResult>;
-  executeCodeInterviewMode(
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle?: RuntimeExecutionStyle
-  ): Promise<CodeExecutionResult>;
+  executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult>;
+  executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult>;
 }

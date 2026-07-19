@@ -4,6 +4,7 @@ export * from './runtime-project';
 export * from './runtime-external-http';
 export * from './runtime-kernel';
 export * from './types';
+export * from './execution-outcome';
 export * from './runtime-trace';
 export * from './trace-adapters/java';
 export * from './runtime-raw-emission-contract';

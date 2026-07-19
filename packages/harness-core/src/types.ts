@@ -44,34 +44,58 @@ export interface RuntimeExecutionTimings {
   artifactCacheHit?: boolean;
 }
 
-// Non-tracing code execution result
-export interface CodeExecutionResult {
-  success: boolean;
-  output: unknown;
-  error?: string;
-  errorLine?: number;
-  consoleOutput?: string[];
-  timeoutReason?:
-    | 'trace-limit'
-    | 'line-limit'
-    | 'single-line-limit'
-    | 'recursion-limit'
-    | 'memory-limit'
-    | 'client-timeout';
-  diagnosticStage?:
-    | 'compile'
-    | 'runtime'
-    | 'trace'
-    | 'interview'
-    | 'driver-compile'
-    | 'trace-driver-compile'
-    | 'driver-link';
-  diagnostic?: unknown;
-  timings?: RuntimeExecutionTimings;
-}
+/** Why an execution (or its trace recording) was stopped by a limit. */
+export type ExecutionLimitReason =
+  | 'trace-limit'
+  | 'line-limit'
+  | 'single-line-limit'
+  | 'recursion-limit'
+  | 'memory-limit'
+  | 'client-timeout';
+
+/** Which pipeline stage produced a failure diagnostic. */
+export type ExecutionDiagnosticStage =
+  | 'compile'
+  | 'runtime'
+  | 'trace'
+  | 'driver-compile'
+  | 'trace-driver-compile'
+  | 'driver-link';
+
+/**
+ * Non-tracing code execution outcome.
+ *
+ * - `completed` — the user program ran to completion and produced output.
+ * - `failed` — the user program (or its compilation) failed.
+ * - `limit` — execution was stopped by a configured or built-in limit before
+ *   it could complete; `reason` says which one.
+ */
+export type CodeExecutionResult =
+  | {
+      kind: 'completed';
+      output: unknown;
+      consoleOutput: string[];
+      timings?: RuntimeExecutionTimings;
+    }
+  | {
+      kind: 'failed';
+      error: string;
+      errorLine?: number;
+      diagnosticStage?: ExecutionDiagnosticStage;
+      diagnostic?: unknown;
+      consoleOutput: string[];
+      timings?: RuntimeExecutionTimings;
+    }
+  | {
+      kind: 'limit';
+      reason: ExecutionLimitReason;
+      error: string;
+      diagnostic?: unknown;
+      consoleOutput: string[];
+      timings?: RuntimeExecutionTimings;
+    };
 
 export interface CodeExecutionBatchResult {
-  success: boolean;
   results: CodeExecutionResult[];
   error?: string;
   consoleOutput?: string[];
@@ -79,29 +103,45 @@ export interface CodeExecutionBatchResult {
   timings?: RuntimeExecutionTimings;
 }
 
-// Complete execution result
-export interface ExecutionResult {
-  success: boolean;
-  output?: unknown;
-  error?: string;
-  errorLine?: number;
-  trace: import('./runtime-trace').RuntimeTrace;
-  executionTimeMs: number;
-  consoleOutput: string[];
-  traceLimitExceeded?: boolean;
-  maxTraceSteps?: number;
-  timeoutReason?:
-    | 'trace-limit'
-    | 'line-limit'
-    | 'single-line-limit'
-    | 'recursion-limit'
-    | 'memory-limit'
-    | 'client-timeout';
-  lineEventCount?: number;
-  traceStepCount?: number;
-  diagnostic?: unknown;
-  timings?: RuntimeExecutionTimings;
-}
+/**
+ * Tracing execution outcome. Every variant carries the trace: a failed run
+ * keeps its compile/exception trace, and a limit-stopped run keeps the
+ * partial trace recorded before the limit tripped.
+ *
+ * `limit` means execution itself was stopped. A run that completed while its
+ * trace *recording* hit a budget is `completed` with `traceTruncated` set.
+ */
+export type ExecutionResult =
+  | {
+      kind: 'completed';
+      output: unknown;
+      trace: import('./runtime-trace').RuntimeTrace;
+      executionTimeMs: number;
+      consoleOutput: string[];
+      traceTruncated?: ExecutionLimitReason;
+      timings?: RuntimeExecutionTimings;
+    }
+  | {
+      kind: 'failed';
+      error: string;
+      errorLine?: number;
+      trace: import('./runtime-trace').RuntimeTrace;
+      executionTimeMs: number;
+      consoleOutput: string[];
+      diagnosticStage?: ExecutionDiagnosticStage;
+      diagnostic?: unknown;
+      timings?: RuntimeExecutionTimings;
+    }
+  | {
+      kind: 'limit';
+      reason: ExecutionLimitReason;
+      error: string;
+      trace: import('./runtime-trace').RuntimeTrace;
+      executionTimeMs: number;
+      consoleOutput: string[];
+      diagnostic?: unknown;
+      timings?: RuntimeExecutionTimings;
+    };
 
 // Pyodide loading state
 export interface PyodideState {
