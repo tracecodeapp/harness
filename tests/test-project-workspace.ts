@@ -33,6 +33,7 @@ import {
   readRuntimeCommandStdinPipeBytes,
 } from '../packages/harness-core/src/runtime-project';
 import { getLanguageRuntimeInfo } from '../packages/harness-core/src/runtime-language-info';
+import packageJson from '../package.json' with { type: 'json' };
 import {
   leadingPersistentCdTarget,
   parseSimpleCommandWords,
@@ -14067,6 +14068,10 @@ async function testTraceKernelInfoConfig(): Promise<void> {
 
   assertCondition(workspace.cwd === '/home/obi/weather-api', `workspace cwd should default to project under home: ${workspace.cwd}`);
   assertCondition(workspace.kernel.info.name === 'tracekernel', 'kernel info should report tracekernel');
+  assertCondition(
+    workspace.kernel.info.version === packageJson.version,
+    `kernel version should default to the published harness version: ${workspace.kernel.info.version}`
+  );
   assertCondition(workspace.kernel.info.user.id === 'auth-user-123', 'kernel info should preserve stable user id');
   assertCondition(workspace.kernel.info.user.username === 'obi', 'kernel info should preserve display username');
   assertCondition(workspace.kernel.info.home === '/home/obi', `kernel home should derive from username: ${workspace.kernel.info.home}`);
@@ -14143,6 +14148,19 @@ async function testTraceKernelInfoConfig(): Promise<void> {
     `runner snapshots must not export process-specific proc descriptors: ${JSON.stringify(snapshot.kernelFiles)}`
   );
   workspace.dispose();
+
+  const versionOverride = await createRuntimeWorkspace({
+    kernel: { version: 'test-kernel-version' },
+  });
+  assertCondition(
+    versionOverride.kernel.info.version === 'test-kernel-version',
+    'an explicit kernel version should override the harness release version'
+  );
+  assertCondition(
+    await versionOverride.kernel.readFile('/proc/kernel/version') === 'tracekernel test-kernel-version\n',
+    'the explicit kernel version should reach the public kernel identity files'
+  );
+  versionOverride.dispose();
 }
 
 async function testConfiguredKernelNativePythonAndNodeRunners(): Promise<void> {

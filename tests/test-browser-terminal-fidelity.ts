@@ -10,6 +10,7 @@ import { createBrowserPythonProjectRunner } from '../packages/harness-python/src
 import { createBrowserJavaProjectRunner } from '../packages/harness-java/src/project-browser';
 import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
 import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/project-browser';
+import packageJson from '../package.json' with { type: 'json' };
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -215,10 +216,12 @@ async function testNativeCommandIdentity(): Promise<void> {
     assertCondition(
       fastfetch.exitCode === 0 &&
         fastfetch.stderr === '' &&
+        workspace.kernel.info.version === packageJson.version &&
         neofetch.stdout === fastfetch.stdout &&
         neofetch.stderr === fastfetch.stderr &&
         fastfetch.stdout.includes('OS: TraceKernel') &&
         fastfetch.stdout.includes('Host: tracevm') &&
+        fastfetch.stdout.includes(`Kernel: ${packageJson.version}`) &&
         fastfetch.stdout.includes('Shell: /bin/bash') &&
         fastfetch.stdout.includes('Terminal: dumb (80x24)') &&
         fastfetch.stdout.includes('Architecture: wasm32') &&

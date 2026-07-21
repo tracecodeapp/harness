@@ -1,4 +1,5 @@
 export * from './runtime-types';
+export * from './harness-version';
 export * from './runtime-language-info';
 export * from './runtime-project';
 export * from './runtime-external-http';

@@ -84,7 +84,7 @@ import {
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
 } from '@tracecode/harness-core';
-import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
+import { getLanguageRuntimeInfo, TRACECODE_HARNESS_VERSION } from '@tracecode/harness-core';
 import type { Language } from '@tracecode/harness-core';
 import type {
   BashOptions,
@@ -94,7 +94,6 @@ import type {
   FileContent,
   IFileSystem,
 } from 'just-bash/browser';
-import packageJson from '../package.json' with { type: 'json' };
 import type {
   RuntimeCommandOptions,
   RuntimeCommandCompletion,
@@ -850,7 +849,7 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
 
   return {
     name: TRACE_KERNEL_NAME,
-    version: config?.version ?? packageJson.version,
+    version: config?.version ?? TRACECODE_HARNESS_VERSION,
     user: {
       id: config?.user?.id ?? username,
       username,

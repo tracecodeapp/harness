@@ -47,6 +47,11 @@ The default OS name is `tracekernel`. Browser language adapters must not claim
 to run on Linux or invent a Linux release; Linux-like shell behavior is a
 compatibility surface, not the runtime's identity.
 
+The default kernel version is the published `@tracecode/harness` version, so
+`uname`, `/proc`, runner payloads, and other identity surfaces advance with
+the release that provides them. Set `kernel.version` only when a test or
+specialized consumer deliberately needs a different public version.
+
 If `kernel.workspace.root` is omitted, TraceKernel derives a root from the user
 home and workspace name, such as `/home/ada/weather-api`. If no kernel config is
 provided, the default root is `/workspace`.

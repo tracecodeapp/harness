@@ -30,7 +30,11 @@ import {
   runtimeCommandStdinPipeRemainingBytes,
   runtimeSignalExitCode,
 } from '@tracecode/harness-core';
-import { BROWSER_PROJECT_NODE_COMPAT_VERSION, getLanguageRuntimeInfo } from '@tracecode/harness-core';
+import {
+  BROWSER_PROJECT_NODE_COMPAT_VERSION,
+  getLanguageRuntimeInfo,
+  TRACECODE_HARNESS_VERSION,
+} from '@tracecode/harness-core';
 import {
   createTypeScriptProjectRunner,
   type TypeScriptProjectCompiler,
@@ -96,7 +100,6 @@ import {
   type RuntimeKernelVirtualStat,
 } from '@tracecode/harness-core';
 import * as fflateModule from 'fflate/browser';
-import packageJson from '../package.json' with { type: 'json' };
 
 export type JavaScriptProjectFileEncoding = RuntimeFileEncoding;
 export type JavaScriptProjectFile = RuntimeFile;
@@ -757,7 +760,7 @@ function fallbackKernelInfo(project: RuntimeProjectSnapshot, workspace: Workspac
   const startedAt = new Date(0).toISOString();
   return {
     name: 'tracekernel',
-    version: packageJson.version,
+    version: TRACECODE_HARNESS_VERSION,
     user: {
       id: username,
       username,
