@@ -4,17 +4,25 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
-## [0.12.0] - Unreleased
+## [0.12.1] - 2026-07-21
 
 ### Added
 
 - Added a TraceKernel-native `fastfetch` easter egg with a `neofetch` compatibility alias and a Braille-cell rendering of the TraceCode mark. It reports the guest's `wasm32` architecture and only modeled kernel, terminal, workspace, and runtime details, without inventing a Linux distribution or host hardware.
+
+### Changed
+
+- The root harness, every internal workspace package, and TraceKernel's default public version now share the published `@tracecode/harness` release number. Explicit `kernel.version` overrides remain supported for tests and specialized consumers.
+
+## [0.12.0] - 2026-07-19
+
+### Added
+
 - Added caller-tunable execution limits to classic code requests. `limits.wallClockMs` sets the per-case deadline on every browser language; Python additionally honors guest-enforced `maxLineEvents`, `maxSingleLineHits`, `maxCallDepth`, and `maxMemoryBytes`. Limit trips are reported structurally through `timeoutReason` (`client-timeout`, `line-limit`, `single-line-limit`, `recursion-limit`, `memory-limit`) on case results instead of sentinel error strings. Languages declare which knobs they honor via `capabilities.execution.limits`, and capability guards reject unsupported limits explicitly per field.
 - Added tagged worker-client error classes (`WorkerRequestTimeoutError`, `WorkerReadyTimeoutError`, `WorkerTerminatedError`, `WorkerCrashedError`, `ExecutionTimeoutError`, `ExecutionAbortedError`, `WorkerReportedError`). Transport and lifecycle failures now carry structured fields and stable `name`s in stack traces; recovery policies classify by type instead of matching message prose.
 
 ### Changed
 
-- TraceKernel now derives its default public version from the published `@tracecode/harness` release instead of the stale internal `@tracecode/harness-project` package manifest. Explicit `kernel.version` overrides remain supported for tests and specialized consumers.
 - **BREAKING** Execution results are now discriminated outcome unions instead of `success` booleans with optional fields. `CodeExecutionResult` and `ExecutionResult` are `completed | failed | limit` on `kind`: `completed` carries `output`, `failed` carries `error`/`errorLine`/`diagnosticStage`, and `limit` means execution was stopped by a configured or built-in limit with a required `reason` (`timeoutReason` is removed). Tracing outcomes always carry `trace` and `executionTimeMs`; a run that finished while its trace recording hit a budget is `completed` with `traceTruncated` set to the tripped reason (`traceLimitExceeded` is removed), and the former top-level `lineEventCount`/`traceStepCount` live on the trace itself. Case results in `RuntimeExecuteResult` nest the full outcome under `outcome` (with `id`/`expected`/`passed` alongside), aggregate `success` on execute responses means every case completed, and batch results drop their redundant top-level `success`. The worker wire protocol keeps the legacy loose shape; clients lift it exactly once at the API boundary via the new exported `liftCodeOutcome`/`liftTraceOutcome`/`liftCodeBatchOutcome` helpers over `RawExecutionPayload`.
 - **BREAKING** `executeCode`, `executeWithTracing`, and the batch execution methods now take a single call object (`RuntimeCodeCall`, `RuntimeTraceCall`, `RuntimeBatchCall`) instead of positional arguments, across `RuntimeClient`, every browser worker client, and the native harness. Trace budgets are consistently named `traceOptions` at every API surface.
 - **BREAKING** Removed interview mode end to end: `executeCodeInterviewMode` on `RuntimeClient` and every worker client, the `interview` request flag, `capabilities.execution.styles.interviewMode`, the `execute-code-interview` worker protocol messages, the `interview` `diagnosticStage`, the C++ `interviewTimeoutMs` options, and every built-in `Time Limit Exceeded` redaction. Interview behavior is now a client-side policy: pass a `limits` preset and render verdicts from the structured `timeoutReason` on results.

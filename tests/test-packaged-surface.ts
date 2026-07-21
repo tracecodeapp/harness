@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,29 @@ import { pathToFileURL } from 'node:url';
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+async function testWorkspacePackageVersionsMatchRelease(): Promise<void> {
+  const rootPackage = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')) as {
+    version?: string;
+  };
+  assertCondition(rootPackage.version, 'Root harness package must declare a release version');
+
+  const packageDirectories = await readdir(join(process.cwd(), 'packages'));
+  for (const packageDirectory of packageDirectories) {
+    const manifestPath = join(process.cwd(), 'packages', packageDirectory, 'package.json');
+    let manifest: { name?: string; version?: string };
+    try {
+      manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as typeof manifest;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    assertCondition(
+      manifest.version === rootPackage.version,
+      `${manifest.name ?? packageDirectory} version ${manifest.version ?? '(missing)'} must match root release ${rootPackage.version}`
+    );
   }
 }
 
@@ -879,6 +902,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await testWorkspacePackageVersionsMatchRelease();
   await testHiddenCommandAccessTokenRoundTripsAcrossEntrypoints();
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-pack-'));
   try {

@@ -58,13 +58,12 @@ import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/proje
 import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
 import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
 import { createNativeProjectWorkspace } from '../src/project-node';
-import projectPackageJson from '../packages/harness-project/package.json' with { type: 'json' };
 
 const execFileAsync = promisify(execFile);
 const testTextDecoder = new TextDecoder();
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);
-const expectedTraceKernelVersion = projectPackageJson.version;
+const expectedTraceKernelVersion = packageJson.version;
 type TestRuntimeProjectSnapshot = Awaited<ReturnType<RuntimeWorkspace['snapshot']>>;
 
 // Loose views for asserting on discriminated-union payloads without per-site narrowing.

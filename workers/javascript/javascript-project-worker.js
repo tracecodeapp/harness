@@ -4,6 +4,262 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// package.json
+var package_default = {
+  name: "@tracecode/harness",
+  version: "0.12.1",
+  license: "AGPL-3.0-only",
+  homepage: "https://tracecode.app",
+  repository: {
+    type: "git",
+    url: "https://github.com/tracecodeapp/harness.git"
+  },
+  packageManager: "pnpm@10.4.1",
+  type: "module",
+  main: "./dist/index.cjs",
+  module: "./dist/index.js",
+  types: "./dist/index.d.ts",
+  files: [
+    "dist",
+    "workers",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  bin: {
+    "tracecode-harness": "./dist/cli.cjs"
+  },
+  browser: {
+    zlib: "./dist/zlib-browser-shim.js",
+    "node:zlib": "./dist/zlib-browser-shim.js"
+  },
+  exports: {
+    ".": {
+      types: "./dist/index.d.ts",
+      import: "./dist/index.js",
+      require: "./dist/index.cjs",
+      default: "./dist/index.js"
+    },
+    "./core": {
+      types: "./dist/core.d.ts",
+      import: "./dist/core.js",
+      require: "./dist/core.cjs",
+      default: "./dist/core.js"
+    },
+    "./browser": {
+      types: "./dist/browser.d.ts",
+      import: "./dist/browser.js",
+      require: "./dist/browser.cjs",
+      default: "./dist/browser.js"
+    },
+    "./browser/project": {
+      types: "./dist/browser/project.d.ts",
+      import: "./dist/browser/project.js",
+      require: "./dist/browser/project.cjs",
+      default: "./dist/browser/project.js"
+    },
+    "./project": {
+      types: "./dist/project.d.ts",
+      import: "./dist/project.js",
+      require: "./dist/project.cjs",
+      default: "./dist/project.js"
+    },
+    "./project-node": {
+      types: "./dist/project-node.d.ts",
+      import: "./dist/project-node.js",
+      require: "./dist/project-node.cjs",
+      default: "./dist/project-node.js"
+    },
+    "./native": {
+      types: "./dist/native.d.ts",
+      import: "./dist/native.js",
+      require: "./dist/native.cjs",
+      default: "./dist/native.js"
+    },
+    "./internal/browser": {
+      types: "./dist/internal/browser.d.ts",
+      import: "./dist/internal/browser.js",
+      require: "./dist/internal/browser.cjs",
+      default: "./dist/internal/browser.js"
+    },
+    "./python": {
+      types: "./dist/python.d.ts",
+      import: "./dist/python.js",
+      require: "./dist/python.cjs",
+      default: "./dist/python.js"
+    },
+    "./javascript": {
+      types: "./dist/javascript.d.ts",
+      import: "./dist/javascript.js",
+      require: "./dist/javascript.cjs",
+      default: "./dist/javascript.js"
+    },
+    "./java": {
+      types: "./dist/java.d.ts",
+      import: "./dist/java.js",
+      require: "./dist/java.cjs",
+      default: "./dist/java.js"
+    },
+    "./csharp": {
+      types: "./dist/csharp.d.ts",
+      import: "./dist/csharp.js",
+      require: "./dist/csharp.cjs",
+      default: "./dist/csharp.js"
+    },
+    "./cpp": {
+      types: "./dist/cpp.d.ts",
+      import: "./dist/cpp.js",
+      require: "./dist/cpp.cjs",
+      default: "./dist/cpp.js"
+    },
+    "./package.json": "./package.json",
+    "./sql": {
+      types: "./dist/sql.d.ts",
+      import: "./dist/sql.js",
+      require: "./dist/sql.cjs",
+      default: "./dist/sql.js"
+    }
+  },
+  scripts: {
+    prepublishOnly: "pnpm build",
+    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm exec tsup --config tsup.core.config.ts && pnpm exec tsup",
+    "generate:runtime-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts",
+    "generate:python-harness": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
+    "generate:typescript-project-libs": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts",
+    "generate:javascript-project-worker": "pnpm exec esbuild packages/harness-javascript/src/project-browser-worker.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/javascript/javascript-project-worker.js",
+    "generate:java-helper": "node scripts/build-java-browser-helper.mjs",
+    "generate:kernel-policy": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-kernel-policy-classic.ts",
+    "sync:package-assets": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/sync-language-package-assets.ts",
+    "import:cpp-conformance": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/import-cpp-conformance-fixtures.ts",
+    "import:java-conformance": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/import-java-conformance-fixtures.ts",
+    "import:python-conformance": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/import-python-conformance-fixtures.ts",
+    "import:csharp-conformance": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/import-csharp-conformance-fixtures.ts",
+    "import:javascript-conformance": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/import-javascript-conformance-fixtures.ts --language javascript",
+    "import:typescript-conformance": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/import-javascript-conformance-fixtures.ts --language typescript",
+    "update:csharp-runtime": "bash scripts/update-csharp-wasm-runtime.sh",
+    typecheck: "pnpm typecheck:root && pnpm typecheck:packages && pnpm typecheck:tests",
+    "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
+    "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
+    "typecheck:packages": "pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
+    "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
+    "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
+    "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
+    "test:browser-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-session-core.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-execution-host.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-assets.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-asset-plumbing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-environment.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-trace-event-transport.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-harness.ts",
+    "test:asset-sync": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-asset-sync.ts",
+    "test:language-packages": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-language-package-surface.ts",
+    "test:example-app": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-example-app.ts",
+    "test:java-example-app": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-example-app.ts",
+    "test:project-ide-example": "pnpm --dir examples/project-ide build",
+    "test:project-terminal-example": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-project-terminal-example.ts",
+    "test:example-app-packaged": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-example-app-packaged.ts",
+    "test:java-example-app-packaged": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-example-app-packaged.ts",
+    "test:standalone-boundary": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-standalone-boundary.ts",
+    "test:trace-adapters": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-trace-adapters.ts",
+    "test:python-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts --check && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-harness-sync.ts",
+    "test:kernel-policy-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-kernel-policy-classic.ts --check",
+    "test:typescript-project-libs-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts --check",
+    "test:java-sync": "pnpm generate:java-helper --check && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-harness-sync.ts",
+    "test:python-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime.ts",
+    "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts",
+    "test:csharp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-project-fs-parity.ts",
+    "test:csharp-worker-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-client-http.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-browser.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-lifecycle-browser.ts",
+    "test:cpp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-runtime.ts",
+    "test:cpp-conformance": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-conformance.ts",
+    "test:cpp-script-lambda-trace": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-script-lambda-trace.ts",
+    "test:cpp-rewriter": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-rewriter.ts",
+    "test:cpp-browser-worker": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-browser-worker.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-compiler-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-compiler-lifecycle-browser.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-runtime-asset-plumbing.ts",
+    "test:js-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-worker-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-authority-browser.ts",
+    "test:project": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-project-workspace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-journal.ts && pnpm run test:tracekernel-hardening && pnpm run test:process-resource-limits && pnpm run test:external-http",
+    "test:tracekernel-hardening": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-hardening.ts",
+    "test:process-resource-limits": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-process-resource-limits.ts",
+    "test:external-http": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-external-http.ts",
+    "test:python-harness-sync": "pnpm run test:python-sync",
+    "test:java-harness-sync": "pnpm run test:java-sync",
+    "test:javascript-runtime": "pnpm run test:js-runtime",
+    "test:python-browser-worker": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-browser-worker.ts",
+    "test:python-module-worker": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-module-worker.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-module-worker-protocol.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-configured-package-failure.ts",
+    "test:python-module-worker-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-module-worker-browser.ts",
+    "test:browser-terminal-fidelity": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-terminal-fidelity.ts",
+    "test:project-browser": "pnpm run test:tracekernel-hardening && pnpm run test:external-http && pnpm run test:browser-terminal-fidelity && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-authority-browser.ts",
+    "test:kernel-storage-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-kernel-storage-browser.ts",
+    "test:kernel-storage-browser-matrix": "TRACECODE_KERNEL_STORAGE_ENGINES=chromium,firefox,webkit pnpm run test:kernel-storage-browser",
+    "test:project-browser-matrix": "node scripts/test-browser-project-provider-matrix.mjs",
+    "test:project-live-fs-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-project-live-fs-browser.ts",
+    "test:project-live-fs-browser-matrix": "TRACECODE_PROJECT_LIVE_FS_ENGINES=chromium,firefox,webkit pnpm run test:project-live-fs-browser",
+    "test:classic-browser-matrix": "node scripts/test-browser-classic-provider-matrix.mjs",
+    "test:python-worker-client-http": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-worker-client-http.ts",
+    "test:runtime-contract": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-contract.ts",
+    "test:native-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-native-harness.ts",
+    "test:runtime-info-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts --check",
+    "test:runtime-trace-parity": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-trace-parity.ts",
+    "test:runtime-trace-fixtures": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-trace-fixtures.ts",
+    "report:runtime-trace-known-gaps": "pnpm exec tsx --tsconfig tsconfig.base.json tests/report-runtime-trace-known-gaps.ts",
+    "local:test:runtime-trace-final300-compile": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-runtime-trace-corpus.ts --limit=300 --fail-on-failure --report=reports/runtime-v4-final300-compile-gate.json",
+    "local:build:runtime-trace-tc83": "pnpm exec tsx --tsconfig tsconfig.base.json tests/build-runtime-trace-tc83-corpus.ts",
+    "local:test:runtime-trace-tc83-smoke": "pnpm local:build:runtime-trace-tc83 && pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-runtime-trace-corpus.ts --corpus=reports/runtime-trace-tc83-corpus.json --source-root=/Users/obinnanwachukwu/Code/algoflow --limit=83 --jobs=8 --worker-timeout-ms=180000 --max-trace-steps=10000 --loose-any-valid-output --fail-on-failure --report=reports/runtime-trace-tc83-smoke.json",
+    "local:mine:runtime-trace-tc83-parity": "pnpm local:build:runtime-trace-tc83 && pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-runtime-trace-corpus.ts --corpus=reports/runtime-trace-tc83-corpus.json --source-root=/Users/obinnanwachukwu/Code/algoflow --limit=83 --jobs=8 --worker-timeout-ms=180000 --max-trace-steps=10000 --loose-any-valid-output --reference-language=javascript --comparison-languages=typescript,java --compare-runtime-facts --include-signature-diffs --report=reports/runtime-trace-tc83-parity.json",
+    "local:test:cpp-algoflow-smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-cpp-algoflow-corpus.ts --sample=two-sum,map-sum-pairs,range-frequency-queries,binary-tree-tilt --loose-any-valid-output --fail-on-failure --report=reports/cpp-algoflow-smoke.json",
+    "local:mine:cpp-algoflow-corpus": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-cpp-algoflow-corpus.ts --limit=50 --max-stored-events=10000 --loose-any-valid-output --report=reports/cpp-algoflow-corpus.json",
+    "local:mine:cpp-algoflow-corpus:isolated": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-cpp-algoflow-corpus.ts --limit=0 --no-trace --jobs=4 --batch-size=16 --worker-timeout-ms=600000 --max-stored-events=10000 --loose-any-valid-output --compare-languages=javascript,typescript,python,java --report=reports/cpp-algoflow-corpus-isolated.json",
+    "test:test-suite-runner": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-test-suite-runner.ts",
+    "test:ci": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/run-test-suite.ts --ci",
+    test: "pnpm exec tsx --tsconfig tsconfig.base.json scripts/run-test-suite.ts --all",
+    "mine:runtime-trace-final300": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-runtime-trace-corpus.ts",
+    "mine:runtime-trace-final300:parallel": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-runtime-trace-corpus.ts --jobs=8",
+    "test:runtime-raw-emission-contract": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-raw-emission-contract.ts",
+    "test:sql-trace": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-sql-trace.ts",
+    "test:sql-trace-fixtures": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-sql-trace-fixtures.ts",
+    "test:sql-browser-example": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-sql-browser-example.ts",
+    "test:runtime-trace-fixtures:raw-strict": "TRACECODE_STRICT_RAW_EMISSION_PARITY=1 pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-trace-fixtures.ts",
+    "test:runtime-trace": "pnpm test:runtime-trace-fixtures:raw-strict && pnpm test:runtime-raw-emission-contract && pnpm report:runtime-trace-known-gaps",
+    "mine:runtime-trace-corpus": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-runtime-trace-corpus.ts",
+    "mine:runtime-trace-corpus:parallel": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-runtime-trace-corpus.ts --jobs=8",
+    "bench:browser-runtimes": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/benchmark-browser-runtimes.ts",
+    "bench:browser-project-runtimes": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/benchmark-browser-project-runtimes.ts",
+    "check:browser-project-performance": "node scripts/check-browser-project-performance.mjs"
+  },
+  devDependencies: {
+    "@types/node": "^20.0.0",
+    esbuild: "0.27.3",
+    playwright: "^1.53.2",
+    pyodide: "^0.29.0",
+    tsup: "^8.5.0",
+    tsx: "^4.21.0",
+    typescript: "^5.0.0"
+  },
+  pnpm: {
+    overrides: {
+      dompurify: "3.4.1",
+      picomatch: "4.0.4",
+      postcss: "8.5.10"
+    },
+    patchedDependencies: {
+      "just-bash@3.1.0": "patches/just-bash@3.1.0.patch"
+    }
+  },
+  dependencies: {
+    "@datastructures-js/binary-search-tree": "5.4.0",
+    "@datastructures-js/deque": "1.0.8",
+    "@datastructures-js/graph": "5.3.1",
+    "@datastructures-js/heap": "4.3.7",
+    "@datastructures-js/linked-list": "6.1.4",
+    "@datastructures-js/priority-queue": "6.3.5",
+    "@datastructures-js/queue": "4.3.0",
+    "@datastructures-js/set": "4.2.2",
+    "@datastructures-js/stack": "3.1.6",
+    "@datastructures-js/trie": "4.2.3",
+    "@yowasp/clang": "22.0.0-git20542-10",
+    effect: "3.22.0",
+    fflate: "^0.8.3",
+    lodash: "4.17.21",
+    typescript: "^5.0.0"
+  }
+};
+
+// packages/harness-core/src/harness-version.ts
+var TRACECODE_HARNESS_VERSION = package_default.version;
+
 // packages/harness-core/src/generated/runtime-language-info-data.ts
 var LANGUAGE_RUNTIME_INFOS = Object.freeze(
   Object.assign(/* @__PURE__ */ Object.create(null), {
@@ -4095,69 +4351,6 @@ function unzipSync(data, opts) {
   return files;
 }
 
-// packages/harness-javascript/package.json
-var package_default = {
-  name: "@tracecode/harness-javascript",
-  version: "0.9.9",
-  description: "JavaScript and TypeScript runtime helpers and browser worker assets for TraceCode harness.",
-  license: "AGPL-3.0-only",
-  homepage: "https://tracecode.app",
-  repository: {
-    type: "git",
-    url: "https://github.com/tracecodeapp/harness.git",
-    directory: "packages/harness-javascript"
-  },
-  type: "module",
-  main: "./dist/index.cjs",
-  module: "./dist/index.js",
-  types: "./dist/index.d.ts",
-  files: [
-    "dist",
-    "workers",
-    "README.md",
-    "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
-  ],
-  exports: {
-    ".": {
-      types: "./dist/index.d.ts",
-      import: "./dist/index.js",
-      require: "./dist/index.cjs",
-      default: "./dist/index.js"
-    },
-    "./project-node": {
-      types: "./dist/project-node.d.ts",
-      import: "./dist/project-node.js",
-      require: "./dist/project-node.cjs",
-      default: "./dist/project-node.js"
-    },
-    "./project-browser": {
-      types: "./dist/project-browser.d.ts",
-      import: "./dist/project-browser.js",
-      require: "./dist/project-browser.cjs",
-      default: "./dist/project-browser.js"
-    },
-    "./workers/*": "./workers/*",
-    "./package.json": "./package.json"
-  },
-  sideEffects: false,
-  dependencies: {
-    "@datastructures-js/binary-search-tree": "5.4.0",
-    "@datastructures-js/deque": "1.0.8",
-    "@datastructures-js/graph": "5.3.1",
-    "@datastructures-js/heap": "4.3.7",
-    "@datastructures-js/linked-list": "6.1.4",
-    "@datastructures-js/priority-queue": "6.3.5",
-    "@datastructures-js/queue": "4.3.0",
-    "@datastructures-js/set": "4.2.2",
-    "@datastructures-js/stack": "3.1.6",
-    "@datastructures-js/trie": "4.2.3",
-    "@tracecode/harness-core": "workspace:*",
-    lodash: "4.17.21",
-    typescript: "^5.0.0"
-  }
-};
-
 // packages/harness-javascript/src/project-browser.ts
 var AsyncFunction = Object.getPrototypeOf(async function noop() {
 }).constructor;
@@ -4433,7 +4626,7 @@ function fallbackKernelInfo(project, workspace) {
   const startedAt = (/* @__PURE__ */ new Date(0)).toISOString();
   return {
     name: "tracekernel",
-    version: package_default.version,
+    version: TRACECODE_HARNESS_VERSION,
     user: {
       id: username,
       username,
