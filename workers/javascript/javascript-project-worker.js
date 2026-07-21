@@ -1001,8 +1001,10 @@ async function awaitRuntimeAbortable(promise, signal) {
 }
 var RuntimeProjectEventQueue = class {
   queue = Promise.resolve();
+  failure = null;
   enqueue(event, options) {
-    this.queue = this.queue.then(async () => {
+    const execution = this.queue.then(async () => {
+      if (this.failure) return;
       if (options.signal?.aborted) return;
       if (event.type !== "file-change") {
         options.emit(event);
@@ -1026,11 +1028,16 @@ var RuntimeProjectEventQueue = class {
         actor: event.actor ?? options.actor
       });
     });
+    this.queue = execution.catch((error) => {
+      this.failure ??= { error };
+    });
   }
-  flush() {
+  async flush() {
     const pending = this.queue;
-    this.queue = pending.catch(() => void 0);
-    return pending;
+    await pending;
+    const failure = this.failure;
+    this.failure = null;
+    if (failure) throw failure.error;
   }
 };
 var RuntimeProjectLiveIoController = class {
@@ -6386,7 +6393,11 @@ function createHttpApi(kernelHttp, signal) {
     Headers: TraceKernelHeaders,
     Request: TraceKernelRequest,
     Response: TraceKernelResponse,
-    hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0,
+    // A completed asynchronous operation with an unhandled failure is still
+    // process work. Keep it visible until waitForClose reports the failure;
+    // otherwise the quiescence loop can observe zero handles and incorrectly
+    // return exit 0 before propagating an EADDRINUSE or client error.
+    hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0 || activeWorkError !== null,
     waitForClose: () => activeHandles.size === 0 && activeClientRequests === 0 ? activeWorkError ? Promise.reject(activeWorkError) : Promise.resolve() : new Promise((resolve, reject) => closeWaiters.push({ resolve, reject })),
     closeAll
   };

@@ -12428,7 +12428,7 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   const homeWrite = await session.run('mkdir outside-project');
   assertCondition(
     homeWrite.exitCode !== 0 &&
-      homeWrite.stderr.includes('EROFS: read-only file system'),
+      homeWrite.stderr.includes("mkdir: cannot create directory 'outside-project': Read-only file system"),
     `terminal writes outside the project should fail at kernel boundary: ${JSON.stringify(homeWrite)}`
   );
   const cdBackToWorkspace = await session.run('cd weather-api');

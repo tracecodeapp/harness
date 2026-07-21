@@ -2758,7 +2758,11 @@ function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: 
     Headers: TraceKernelHeaders,
     Request: TraceKernelRequest,
     Response: TraceKernelResponse,
-    hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0,
+    // A completed asynchronous operation with an unhandled failure is still
+    // process work. Keep it visible until waitForClose reports the failure;
+    // otherwise the quiescence loop can observe zero handles and incorrectly
+    // return exit 0 before propagating an EADDRINUSE or client error.
+    hasActiveWork: () => activeHandles.size > 0 || activeClientRequests > 0 || activeWorkError !== null,
     waitForClose: () => activeHandles.size === 0 && activeClientRequests === 0
       ? activeWorkError ? Promise.reject(activeWorkError) : Promise.resolve()
       : new Promise<void>((resolve, reject) => closeWaiters.push({ resolve, reject })),

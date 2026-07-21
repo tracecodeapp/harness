@@ -9,6 +9,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 ### Fixed
 
 - Interactive Project terminals now translate structured filesystem failures into native command-line prose. `cd`, shell redirections, and common file utilities retain POSIX error behavior without leaking TraceKernel's internal `ENOENT`, `ENOTDIR`, or `EROFS` error objects.
+- Runtime file-change event queues now own asynchronous application failures immediately and report the first failure deterministically at flush, instead of allowing a live worker rejection to surface as an unhandled promise rejection.
+- Worker-backed Browser Node now treats settled, unhandled HTTP failures as pending process work. Rejected asynchronous server binds such as `EADDRINUSE` can no longer be lost when the listener closes before the event-loop quiescence check.
 
 ## [0.12.2] - 2026-07-21
 
