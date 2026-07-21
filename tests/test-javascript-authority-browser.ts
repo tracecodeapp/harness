@@ -276,6 +276,7 @@ async function main(): Promise<void> {
     );
 
     const detachedPromise = await page.evaluate(async () => {
+      // @ts-expect-error This module is built and served by the browser test fixture.
       const { createBrowserProjectWorkspace } = await import('/browser-project.js');
       const code = [
         'let work = Promise.resolve();',
