@@ -362,6 +362,11 @@ export function createTraceKernelCommandRegistry(
     commandInfo('fg', 'control', 'shell job control', {
       help: commandHelp('move a job to the foreground', 'fg [PID|%JOB]'),
     }),
+    commandInfo('fastfetch', 'tool', 'system information', {
+      help: commandHelp('display TraceKernel system information', 'fastfetch [OPTION]', [
+        '--version           print the TraceKernel fastfetch version and exit',
+      ]),
+    }),
     commandInfo('getconf', 'tool', 'system configuration lookup', {
       help: commandHelp('query system configuration values', 'getconf NAME'),
     }),
@@ -433,6 +438,11 @@ export function createTraceKernelCommandRegistry(
     commandInfo('mount', 'tool', 'mounted filesystem inspection', {
       help: commandHelp('display the TraceKernel filesystem topology', 'mount [-l]', [
         '-l, --show-labels   include the virtual filesystem source label',
+      ]),
+    }),
+    commandInfo('neofetch', 'tool', 'fastfetch compatibility alias', {
+      help: commandHelp('display TraceKernel system information', 'neofetch [OPTION]', [
+        '--version           print the TraceKernel fastfetch version and exit',
       ]),
     }),
     commandInfo('pgrep', 'control', 'process lookup', {

@@ -147,6 +147,9 @@ match the configured kernel user and host. The standard home, `/tmp`, and
 `hostname`, and `uname` report that identity; `uname` reports TraceKernel and
 never invents a Linux host. `/tracekernel/bin` leads `PATH`, making shell
 discovery commands report the same virtual executable path used for dispatch.
+`fastfetch` renders an intentionally honest summary of that modeled system, and
+`neofetch` is a compatibility alias for users who know the older command name.
+It omits CPU, GPU, and memory fields because TraceKernel does not model them.
 
 Each terminal also owns a file-creation mask, defaulting to `0022`. `umask`
 prints it, `umask MODE` accepts octal or symbolic updates for later submissions

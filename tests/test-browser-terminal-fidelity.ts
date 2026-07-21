@@ -103,6 +103,7 @@ async function testNativeCommandIdentity(): Promise<void> {
     const helpCases = [
       ['bg --help', 'bg'],
       ['curl -h', 'curl'],
+      ['fastfetch --help', 'fastfetch'],
       ['fg --help', 'fg'],
       ['getconf --help', 'getconf'],
       ['getent --help', 'getent'],
@@ -114,6 +115,7 @@ async function testNativeCommandIdentity(): Promise<void> {
       ['ls --help', 'ls'],
       ['man --help', 'man'],
       ['mktemp --help', 'mktemp'],
+      ['neofetch --help', 'neofetch'],
       ['pgrep -h', 'pgrep'],
       ['ping --help', 'ping'],
       ['pkill --help', 'pkill'],
@@ -156,7 +158,12 @@ async function testNativeCommandIdentity(): Promise<void> {
           result.stdout.includes('display this help and exit'),
         `${command} should expose concise command help without loading its runtime: ${JSON.stringify(result)}`
       );
-      assertTerminalFidelity(result, command, { allowKernelIdentity: commandName.startsWith('tracekernel') });
+      assertTerminalFidelity(result, command, {
+        allowKernelIdentity:
+          commandName.startsWith('tracekernel') ||
+          commandName === 'fastfetch' ||
+          commandName === 'neofetch',
+      });
     }
 
     const inheritedHelpFailures: string[] = [];
@@ -201,6 +208,32 @@ async function testNativeCommandIdentity(): Promise<void> {
     assertCondition(
       shortLs.exitCode === 0 && !shortLs.stdout.includes('Usage:'),
       `ls -h should retain its human-readable-size meaning: ${JSON.stringify(shortLs)}`
+    );
+
+    const fastfetch = await workspace.runCommand('fastfetch');
+    const neofetch = await workspace.runCommand('neofetch');
+    assertCondition(
+      fastfetch.exitCode === 0 &&
+        fastfetch.stderr === '' &&
+        neofetch.stdout === fastfetch.stdout &&
+        neofetch.stderr === fastfetch.stderr &&
+        fastfetch.stdout.includes('OS: TraceKernel') &&
+        fastfetch.stdout.includes('Host: tracevm') &&
+        fastfetch.stdout.includes('Shell: /bin/bash') &&
+        fastfetch.stdout.includes('Terminal: dumb (80x24)') &&
+        fastfetch.stdout.includes('Architecture: x86_64') &&
+        fastfetch.stdout.includes('Workspace: workspace') &&
+        fastfetch.stdout.includes('Runtimes: 6 available') &&
+        !fastfetch.stdout.toLowerCase().includes('linux'),
+      `fastfetch and its neofetch alias should report only modeled TraceKernel identity: ${JSON.stringify({ fastfetch, neofetch })}`
+    );
+    assertTerminalFidelity(fastfetch, 'fastfetch', { allowKernelIdentity: true });
+
+    const fetchPaths = await workspace.runCommand('which fastfetch neofetch');
+    assertCondition(
+      fetchPaths.exitCode === 0 &&
+        fetchPaths.stdout === '/tracekernel/bin/fastfetch\n/tracekernel/bin/neofetch\n',
+      `fastfetch and neofetch should resolve through the TraceKernel executable directory: ${JSON.stringify(fetchPaths)}`
     );
 
     const scriptHelpArgument = await workspace.runCommand(

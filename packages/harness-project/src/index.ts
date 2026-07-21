@@ -1083,6 +1083,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       defineCommand('curl', async (args, ctx) => this.runKernelCurl(args, ctx)),
       defineCommand('df', async (args, ctx) => this.runKernelDf(args, ctx)),
       defineCommand('du', async (args, ctx) => this.runKernelDu(args, ctx)),
+      defineCommand('fastfetch', async (args, ctx) => this.runKernelFastfetch(args, ctx)),
       defineCommand('fg', async (args, ctx) => this.runKernelJobPlacement(args, 'fg', ctx)),
       defineCommand('getconf', async (args) => this.runKernelGetconf(args)),
       defineCommand('getent', async (args) => this.runKernelGetent(args)),
@@ -1097,6 +1098,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       defineCommand('man', async (args) => this.runKernelMan(args)),
       defineCommand('mktemp', async (args, ctx) => this.runKernelMktemp(args, ctx)),
       defineCommand('mount', async (args) => this.runKernelMount(args)),
+      defineCommand('neofetch', async (args, ctx) => this.runKernelFastfetch(args, ctx)),
       defineCommand('pgrep', async (args, ctx) => this.runKernelProcessMatch(args, 'pgrep', ctx)),
       defineCommand('ping', async (args, ctx) => this.runKernelPing(args, ctx)),
       defineCommand('pkill', async (args, ctx) => this.runKernelProcessMatch(args, 'pkill', ctx)),
@@ -4968,6 +4970,67 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const order: Array<keyof typeof fields> = ['s', 'n', 'r', 'v', 'm', 'p', 'i', 'o'];
     const selected = requested.includes('a') ? order : order.filter((flag) => requested.includes(flag));
     return { stdout: `${selected.map((flag) => fields[flag]).join(' ')}\n`, stderr: '', exitCode: 0 };
+  }
+
+  private runKernelFastfetch(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
+    if (args.length === 1 && args[0] === '--version') {
+      return {
+        stdout: `fastfetch ${this.kernelInfo.version} (TraceKernel)\n`,
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    if (args.length > 0) {
+      return {
+        stdout: '',
+        stderr: `fastfetch: unknown option: ${args[0]}\n`,
+        exitCode: 1,
+      };
+    }
+
+    const elapsedSeconds = Math.max(
+      0,
+      Math.floor((Date.now() - Date.parse(this.kernelInfo.workspace.startedAt)) / 1_000)
+    );
+    const uptimeParts: string[] = [];
+    const hours = Math.floor(elapsedSeconds / 3_600);
+    const minutes = Math.floor((elapsedSeconds % 3_600) / 60);
+    const seconds = elapsedSeconds % 60;
+    if (hours > 0) uptimeParts.push(`${hours} hour${hours === 1 ? '' : 's'}`);
+    if (minutes > 0) uptimeParts.push(`${minutes} min`);
+    if (hours === 0 && minutes === 0) uptimeParts.push(`${seconds} sec`);
+
+    const terminal = this.terminalForCommand(ctx);
+    const availableRuntimes = traceKernelRuntimeRegistry(this.traceKernelCommandRegistry)
+      .filter((runtime) => runtime.available).length;
+    const logo = [
+      '      .--------.',
+      "    .'          '.",
+      '   /     </>      \\',
+      '   \\              /',
+      "    '.          .'",
+      "      '--------'",
+    ];
+    const heading = `${this.kernelInfo.user.username}@${this.kernelInfo.host.hostname}`;
+    const details = [
+      heading,
+      '-'.repeat(heading.length),
+      `OS: ${this.kernelInfo.host.osName === 'tracekernel' ? 'TraceKernel' : this.kernelInfo.host.osName}`,
+      `Host: ${this.kernelInfo.host.hostname}`,
+      `Kernel: ${this.kernelInfo.version}`,
+      `Uptime: ${uptimeParts.join(', ')}`,
+      `Shell: /bin/bash`,
+      `Terminal: ${terminal?.term ?? 'dumb'} (${terminal?.columns ?? 80}x${terminal?.rows ?? 24})`,
+      'Architecture: x86_64',
+      `Workspace: ${this.kernelInfo.workspace.name}`,
+      `Runtimes: ${availableRuntimes} available`,
+      `Commands: ${this.traceKernelCommandRegistry.length}`,
+    ];
+    const rows = Array.from(
+      { length: Math.max(logo.length, details.length) },
+      (_, index) => `${(logo[index] ?? '').padEnd(24)}${details[index] ?? ''}`.trimEnd()
+    );
+    return { stdout: `${rows.join('\n')}\n`, stderr: '', exitCode: 0 };
   }
 
   private runKernelUmask(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
