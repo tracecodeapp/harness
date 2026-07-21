@@ -613,7 +613,7 @@ async function testInteractiveTerminalContract(): Promise<void> {
         identityFiles.stdout.includes('NAME=\"TraceKernel\"\nID=tracekernel\n') &&
         identityFiles.stdout.includes('\ntracevm\nroot:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:TraceKernel user:/home/user:/bin/bash\n') &&
         runtimeIdentityFiles.exitCode === 0 && runtimeIdentityFiles.stdout === 'tracevm\nEROFS\n' &&
-        refusedIdentityMutation.exitCode !== 0 && refusedIdentityMutation.stderr.includes('read-only file system') &&
+        refusedIdentityMutation.exitCode !== 0 && refusedIdentityMutation.stderr.includes('Read-only file system') &&
         identityDirectory.join(',') === 'group,hostname,hosts,nsswitch.conf,os-release,passwd,shells' &&
         passwdStat.isFile && passwdStat.mode === 0o644 && passwdStat.uid === 0 && passwdStat.gid === 0,
       `standard identity files should expose the same read-only TraceKernel identity in the shell, workspace, and browser runtimes: ${JSON.stringify({ identityFiles, runtimeIdentityFiles, refusedIdentityMutation, identityDirectory, passwdStat })}`
@@ -671,7 +671,7 @@ async function testInteractiveTerminalContract(): Promise<void> {
         mountTopology.stdout.includes('26 20 0:3 / /proc ro,nosuid,nodev,noexec - traceproc tracekernel:proc ro\n') &&
         temporaryMountModes.exitCode === 0 && temporaryMountModes.stdout === '1777\n1777\n' &&
         refusedMount.exitCode === 32 && refusedMount.stderr.includes('filesystem topology is fixed') &&
-        refusedSystemWrite.exitCode !== 0 && refusedSystemWrite.stderr.includes('read-only file system'),
+        refusedSystemWrite.exitCode !== 0 && refusedSystemWrite.stderr.includes('Read-only file system'),
       `mount, /proc/mounts, and mountinfo should expose and enforce one immutable TraceKernel topology: ${JSON.stringify({ mountTopology, temporaryMountModes, refusedMount, refusedSystemWrite })}`
     );
     const entryUsage = await terminal.run("mkdir -p usage/nested; printf abc > usage/a; printf 12345 > usage/nested/b; du -ba usage; du -sk usage");
@@ -739,6 +739,39 @@ async function testInteractiveTerminalContract(): Promise<void> {
     assertCondition(
       status.exitCode === 0 && status.stdout === 'status=1\n',
       `shell status expansion should preserve the prior exit code: ${JSON.stringify(status)}`
+    );
+
+    const missingDirectory = await terminal.run('cd missing-directory');
+    const fileAsDirectory = await terminal.run('cd read-stdin.js');
+    const readonlyMutations = await terminal.run('mkdir /root/nope; touch /root/nope; mv read-stdin.js /root/read-stdin.js');
+    const otherReadonlyMutations = [];
+    for (const command of [
+      'cp read-stdin.js /root/read-stdin.js',
+      'ln -s read-stdin.js /root/read-link',
+      'chmod 600 /etc/hostname',
+      'rm /etc/hostname',
+      'printf nope > /etc/hostname',
+    ]) {
+      otherReadonlyMutations.push(await terminal.run(command));
+    }
+    assertCondition(
+      missingDirectory.stderr === 'cd: missing-directory: No such file or directory\n' &&
+        fileAsDirectory.stderr === 'cd: read-stdin.js: Not a directory\n' &&
+        readonlyMutations.stderr === [
+          "mkdir: cannot create directory '/root/nope': Read-only file system",
+          "touch: cannot touch '/root/nope': Read-only file system",
+          "mv: cannot move 'read-stdin.js': Read-only file system",
+          '',
+        ].join('\n') &&
+        otherReadonlyMutations.every((result) =>
+          result.exitCode !== 0 &&
+          result.stderr.trim().endsWith('Read-only file system')
+        ) &&
+        !/\b(?:ENOENT|ENOTDIR|EROFS)\b/.test(
+          missingDirectory.stderr + fileAsDirectory.stderr + readonlyMutations.stderr +
+          otherReadonlyMutations.map((result) => result.stderr).join('')
+        ),
+      `interactive filesystem failures should use native CLI prose without leaking kernel error objects: ${JSON.stringify({ missingDirectory, fileAsDirectory, readonlyMutations, otherReadonlyMutations })}`
     );
 
     await terminal.run('export TRACE_PROJECT_TOKEN=terminal-one; mkdir -p nested');

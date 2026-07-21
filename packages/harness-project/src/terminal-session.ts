@@ -145,6 +145,43 @@ function parseTerminalExitCode(value: string): number | null {
   }
 }
 
+function terminalFilesystemErrorDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/\bENOENT\b|no such file or directory/i.test(message)) return 'No such file or directory';
+  if (/\bENOTDIR\b|not a directory/i.test(message)) return 'Not a directory';
+  if (/\bEACCES\b|\bEPERM\b|permission denied|operation not permitted/i.test(message)) return 'Permission denied';
+  if (/\bEROFS\b|read-only file system|readonly project/i.test(message)) return 'Read-only file system';
+  return message;
+}
+
+function normalizeTerminalFilesystemStderr(stderr: string): string {
+  return stderr
+    .split('\n')
+    .map((line) => {
+      const missingMetadata = line.match(/^(?:chmod|chown): cannot access '([^']+)': No such file or directory$/);
+      if (missingMetadata) {
+        const target = runtimeKernelMetadataTarget(missingMetadata[1] ?? '');
+        if (target.kind === 'error' && target.reason === 'proc-read-only') {
+          return line.replace(/No such file or directory$/, 'Read-only file system');
+        }
+      }
+      const rawReadonly = line.match(/^EROFS: read-only file system, [^']+ '([^']+)'$/);
+      if (rawReadonly) {
+        return `bash: ${rawReadonly[1]}: Read-only file system`;
+      }
+      if (!/^(?:bash|chmod|chown|cp|install|ln|mkdir|mv|rm|rmdir|touch|truncate): /.test(line)) {
+        return line;
+      }
+      return line
+        .replace(/Kernel (?:proc path|device namespace) is read-only:.*$/i, 'Read-only file system')
+        .replace(/(?:EROFS: )?(?:read-only file system|readonly project (?:file|subtree)),.*$/i, 'Read-only file system')
+        .replace(/ENOENT: no such file or directory,.*$/i, 'No such file or directory')
+        .replace(/ENOTDIR: not a directory,.*$/i, 'Not a directory')
+        .replace(/(?:EACCES|EPERM): (?:permission denied|operation not permitted),.*$/i, 'Permission denied');
+    })
+    .join('\n');
+}
+
 export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTerminalSession {
   private currentCwd: string;
   private readonly env: Record<string, string>;
@@ -521,7 +558,11 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         this.currentCwd = await this.options.resolveCwd(this.currentCwd, words[1] ?? this.options.workspaceRoot);
         return { stdout: '', stderr: '', exitCode: 0 };
       } catch (error) {
-        return { stdout: '', stderr: `cd: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+        return {
+          stdout: '',
+          stderr: `cd: ${words[1] ?? this.options.workspaceRoot}: ${terminalFilesystemErrorDetail(error)}\n`,
+          exitCode: 1,
+        };
       }
     }
 
@@ -597,7 +638,11 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       },
     });
     const completeOutput = outputTracker.completeFinalOutput(result);
-    const completeResult = { ...result, ...completeOutput };
+    const completeResult = {
+      ...result,
+      ...completeOutput,
+      stderr: normalizeTerminalFilesystemStderr(completeOutput.stderr),
+    };
     if (completeResult.error?.code === 'EINTR' && typeof completeResult.error.detail?.signal === 'string') {
       const signalCode = typeof completeResult.error.detail.signalCode === 'number'
         ? completeResult.error.detail.signalCode

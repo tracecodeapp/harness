@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## Unreleased
+
+### Fixed
+
+- Interactive Project terminals now translate structured filesystem failures into native command-line prose. `cd`, shell redirections, and common file utilities retain POSIX error behavior without leaking TraceKernel's internal `ENOENT`, `ENOTDIR`, or `EROFS` error objects.
+
 ## [0.12.2] - 2026-07-21
 
 ### Fixed
