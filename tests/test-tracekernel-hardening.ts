@@ -349,6 +349,42 @@ async function testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn(): P
   }
 }
 
+async function testBrowserJavaScriptDrainsDetachedPromiseChainsBeforeExit(): Promise<void> {
+  const runner = createBrowserJavaScriptProjectRunner({
+    allowMainThreadExecution: true,
+    trustedMainThreadExecution: true,
+    timeoutMs: 1000,
+  });
+  const code = [
+    'let work = Promise.resolve();',
+    'for (let index = 0; index < 12; index += 1) {',
+    '  work = work.then(() => Promise.resolve());',
+    '}',
+    'work.then(() => console.log("detached promise completed"));',
+    '',
+  ].join('\n');
+  const result = await runner({
+    code,
+    scriptPath: 'detached-promise.js',
+    source: 'file',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    project: {
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+      entrypoint: 'detached-promise.js',
+      files: [{ path: 'detached-promise.js', contents: code }],
+    },
+  } as JavaScriptProjectCommandRequest);
+
+  assertCondition(result.exitCode === 0, `detached promise program should exit successfully: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stdout === 'detached promise completed\n',
+    `browser Node should drain promise jobs before process exit: ${JSON.stringify(result)}`
+  );
+}
+
 async function testBrowserTypeScriptDomCompilerScriptPolicy(): Promise<void> {
   const appendedScripts: Array<{
     src: string;
@@ -4259,6 +4295,7 @@ async function main(): Promise<void> {
   await testConcurrentCommandsKeepChainLocalContext();
   await testBackgroundJobDoesNotBlockForegroundCommands();
   await testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn();
+  await testBrowserJavaScriptDrainsDetachedPromiseChainsBeforeExit();
   await testBrowserTypeScriptDomCompilerScriptPolicy();
   await testIndexedDbKernelStorageEncryptsSnapshots();
   await testBrowserJavaScriptWorkerRejectsUserSpoofedResults();

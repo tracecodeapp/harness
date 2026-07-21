@@ -5255,6 +5255,7 @@ function createBrowserEventLoopApi(executionState) {
   };
   const setTrackedImmediate = (callback, ...args) => setTrackedTimeout(callback, 0, ...args);
   const drain = async () => {
+    await new Promise((resolve) => hostSetTimeout(resolve, 0));
     while (!executionState.cancelled && timers.size > 0) {
       await new Promise((resolve) => hostSetTimeout(resolve, 0));
       await pendingTimerWork;
@@ -10739,8 +10740,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
       await Promise.resolve();
     }
-    await httpApi.waitForClose();
-    await eventLoopApi.drain();
+    while (!executionState.cancelled) {
+      await eventLoopApi.drain();
+      if (!httpApi.hasActiveWork()) break;
+      await httpApi.waitForClose();
+    }
     liveIo.close();
     try {
       await liveIo.flush();

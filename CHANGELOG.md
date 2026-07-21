@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## Unreleased
+
+### Fixed
+
+- Browser Node now drains detached Promise work before declaring a Project command complete, and alternates JavaScript and TraceKernel HTTP draining until both are quiet. Async CommonJS test programs can no longer exit successfully before their final assertions, output, or HTTP work finishes.
+
 ## [0.12.1] - 2026-07-21
 
 ### Added

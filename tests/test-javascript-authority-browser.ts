@@ -275,6 +275,32 @@ async function main(): Promise<void> {
       `Browser TraceBot write lost kernel journal process attribution: ${JSON.stringify(projectJournal.records)}`
     );
 
+    const detachedPromise = await page.evaluate(async () => {
+      const { createBrowserProjectWorkspace } = await import('/browser-project.js');
+      const code = [
+        'let work = Promise.resolve();',
+        'for (let index = 0; index < 12; index += 1) {',
+        '  work = work.then(() => Promise.resolve());',
+        '}',
+        'work.then(() => console.log("detached promise completed"));',
+        '',
+      ].join('\n');
+      const workspace = await createBrowserProjectWorkspace({
+        assetBaseUrl: '/workers',
+        files: [{ path: 'detached-promise.js', contents: code }],
+        nodeProjectTimeoutMs: 20_000,
+      });
+      try {
+        return await workspace.runCommand('node detached-promise.js');
+      } finally {
+        workspace.dispose();
+      }
+    });
+    assertCondition(
+      detachedPromise.exitCode === 0 && detachedPromise.stdout === 'detached promise completed\n',
+      `Browser Node should drain detached promise jobs before process exit: ${JSON.stringify(detachedPromise)}`
+    );
+
     const project = await page.evaluate(async ({ testOrigin, exposed }) => {
       const browserProjectUrl = '/browser-project.js';
       const { createBrowserProjectWorkspace } = await import(browserProjectUrl);

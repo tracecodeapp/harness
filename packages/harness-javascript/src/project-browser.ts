@@ -1497,6 +1497,13 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
   };
   const setTrackedImmediate = (callback: TimerCallback, ...args: unknown[]): number => setTrackedTimeout(callback, 0, ...args);
   const drain = async (): Promise<void> => {
+    // Node performs a microtask checkpoint before deciding that a process has no
+    // work left. A CommonJS entrypoint can start an async function without
+    // returning its promise, so awaiting module evaluation alone is not enough:
+    // a multi-step promise chain may still be producing output, timers, or HTTP
+    // handles. Yield through one host task so the browser drains that promise
+    // queue to quiescence before we inspect the tracked event-loop resources.
+    await new Promise((resolve) => hostSetTimeout(resolve, 0));
     while (!executionState.cancelled && timers.size > 0) {
       await new Promise((resolve) => hostSetTimeout(resolve, 0));
       await pendingTimerWork;
@@ -8334,8 +8341,14 @@ export async function runBrowserJavaScriptProjectRequest(
         await Promise.resolve();
       }
 
-      await httpApi.waitForClose();
-      await eventLoopApi.drain();
+      // Draining JavaScript work can create HTTP handles, and completing HTTP
+      // work can schedule more JavaScript work. Alternate until both sides are
+      // quiet so a detached async main cannot be truncated at process exit.
+      while (!executionState.cancelled) {
+        await eventLoopApi.drain();
+        if (!httpApi.hasActiveWork()) break;
+        await httpApi.waitForClose();
+      }
       liveIo.close();
       try {
         await liveIo.flush();
