@@ -7,7 +7,7 @@ var __export = (target, all) => {
 // package.json
 var package_default = {
   name: "@tracecode/harness",
-  version: "0.12.2",
+  version: "0.12.3",
   license: "AGPL-3.0-only",
   homepage: "https://tracecode.app",
   repository: {

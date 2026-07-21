@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
-## Unreleased
+## [0.12.3] - 2026-07-21
 
 ### Fixed
 
