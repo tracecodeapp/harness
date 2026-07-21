@@ -8,7 +8,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Added
 
-- Added a TraceKernel-native `fastfetch` easter egg with a `neofetch` compatibility alias. It reports only modeled kernel, terminal, workspace, and runtime details, without inventing a Linux distribution or host hardware.
+- Added a TraceKernel-native `fastfetch` easter egg with a `neofetch` compatibility alias and a Braille-cell rendering of the TraceCode mark. It reports the guest's `wasm32` architecture and only modeled kernel, terminal, workspace, and runtime details, without inventing a Linux distribution or host hardware.
 - Added caller-tunable execution limits to classic code requests. `limits.wallClockMs` sets the per-case deadline on every browser language; Python additionally honors guest-enforced `maxLineEvents`, `maxSingleLineHits`, `maxCallDepth`, and `maxMemoryBytes`. Limit trips are reported structurally through `timeoutReason` (`client-timeout`, `line-limit`, `single-line-limit`, `recursion-limit`, `memory-limit`) on case results instead of sentinel error strings. Languages declare which knobs they honor via `capabilities.execution.limits`, and capability guards reject unsupported limits explicitly per field.
 - Added tagged worker-client error classes (`WorkerRequestTimeoutError`, `WorkerReadyTimeoutError`, `WorkerTerminatedError`, `WorkerCrashedError`, `ExecutionTimeoutError`, `ExecutionAbortedError`, `WorkerReportedError`). Transport and lifecycle failures now carry structured fields and stable `name`s in stack traces; recovery policies classify by type instead of matching message prose.
 

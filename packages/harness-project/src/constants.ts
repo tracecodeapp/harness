@@ -4,6 +4,8 @@ export const DEFAULT_CWD = '/workspace';
 
 export const TRACE_KERNEL_NAME = 'tracekernel';
 
+export const TRACE_KERNEL_ARCHITECTURE = 'wasm32';
+
 export const TRACEKERNEL_BIN_PATH = '/tracekernel/bin';
 
 export const TRACEKERNEL_SKILLS_ROOT = '/skills';

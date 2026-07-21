@@ -193,6 +193,7 @@ import type {
 import {
   CPP_COMPILER_COMMANDS,
   DEFAULT_CWD,
+  TRACE_KERNEL_ARCHITECTURE,
   TRACE_KERNEL_NAME,
   TRACEKERNEL_BIN_PATH,
   TRACEKERNEL_COMMAND_DISPATCH_PREFIX,
@@ -883,8 +884,8 @@ function createTraceKernelEnvironment(info: RuntimeKernelInfo): Record<string, s
     TMPDIR: '/tmp',
     LANG: 'C.UTF-8',
     OSTYPE: 'tracekernel',
-    MACHTYPE: 'x86_64-tracekernel',
-    HOSTTYPE: 'x86_64',
+    MACHTYPE: `${TRACE_KERNEL_ARCHITECTURE}-tracekernel`,
+    HOSTTYPE: TRACE_KERNEL_ARCHITECTURE,
   };
 }
 
@@ -4942,9 +4943,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       n: this.kernelInfo.host.hostname,
       r: this.kernelInfo.version,
       v: `TraceKernel ${this.kernelInfo.version}`,
-      m: 'x86_64',
-      p: 'x86_64',
-      i: 'x86_64',
+      m: TRACE_KERNEL_ARCHITECTURE,
+      p: TRACE_KERNEL_ARCHITECTURE,
+      i: TRACE_KERNEL_ARCHITECTURE,
       o: 'TraceKernel',
     } as const;
     const requested = args.length === 0 ? ['s'] : args.flatMap((arg) => {
@@ -5003,13 +5004,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const terminal = this.terminalForCommand(ctx);
     const availableRuntimes = traceKernelRuntimeRegistry(this.traceKernelCommandRegistry)
       .filter((runtime) => runtime.available).length;
+    // Generated from the TraceCode app icon at 36x36 pixels, then packed into
+    // Unicode Braille cells. Ordinary spaces keep the mark aligned even when
+    // the terminal falls back from its primary monospace font.
     const logo = [
-      '      .--------.',
-      "    .'          '.",
-      '   /     </>      \\',
-      '   \\              /',
-      "    '.          .'",
-      "      '--------'",
+      '    ⣀            ⣀',
+      '   ⣾⠋⠱⢦⣄⣀      ⠈⠙⣷',
+      '  ⣸⡏      ⠈⠙⠛⢶⣤⡀  ⢹⣇',
+      '  ⣿     ⢀⣠⡴⠾⠛⠉     ⣿',
+      '  ⢹⣇    ⠛⠷⣤⣀⡀      ⣸⡏',
+      '   ⢿⣄⡀      ⠉⠙⠿⢆⣠⡿',
+      '    ⠉            ⠉',
     ];
     const heading = `${this.kernelInfo.user.username}@${this.kernelInfo.host.hostname}`;
     const details = [
@@ -5021,7 +5026,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       `Uptime: ${uptimeParts.join(', ')}`,
       `Shell: /bin/bash`,
       `Terminal: ${terminal?.term ?? 'dumb'} (${terminal?.columns ?? 80}x${terminal?.rows ?? 24})`,
-      'Architecture: x86_64',
+      `Architecture: ${TRACE_KERNEL_ARCHITECTURE}`,
       `Workspace: ${this.kernelInfo.workspace.name}`,
       `Runtimes: ${availableRuntimes} available`,
       `Commands: ${this.traceKernelCommandRegistry.length}`,

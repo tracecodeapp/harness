@@ -221,7 +221,9 @@ async function testNativeCommandIdentity(): Promise<void> {
         fastfetch.stdout.includes('Host: tracevm') &&
         fastfetch.stdout.includes('Shell: /bin/bash') &&
         fastfetch.stdout.includes('Terminal: dumb (80x24)') &&
-        fastfetch.stdout.includes('Architecture: x86_64') &&
+        fastfetch.stdout.includes('Architecture: wasm32') &&
+        fastfetch.stdout.includes('⣾⠋⠱⢦⣄⣀') &&
+        !fastfetch.stdout.includes('\uFFFD') &&
         fastfetch.stdout.includes('Workspace: workspace') &&
         fastfetch.stdout.includes('Runtimes: 6 available') &&
         !fastfetch.stdout.toLowerCase().includes('linux'),
@@ -560,8 +562,8 @@ async function testInteractiveTerminalContract(): Promise<void> {
     const identity = await terminal.run('printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$USER" "$LOGNAME" "$HOME" "$HOSTNAME" "$SHELL" "$TMPDIR" "$TERM" "$OSTYPE" "$MACHTYPE" "$HOSTTYPE"; whoami; id; hostname; uname -a');
     assertCondition(
       identity.exitCode === 0 &&
-        identity.stdout.startsWith('user|user|/home/user|tracevm|/bin/bash|/tmp|dumb|tracekernel|x86_64-tracekernel|x86_64\nuser\nuid=1000(user) gid=1000(user) groups=1000(user)\ntracevm\nTraceKernel tracevm ') &&
-        identity.stdout.includes(' x86_64 x86_64 x86_64 TraceKernel\n') &&
+        identity.stdout.startsWith('user|user|/home/user|tracevm|/bin/bash|/tmp|dumb|tracekernel|wasm32-tracekernel|wasm32\nuser\nuid=1000(user) gid=1000(user) groups=1000(user)\ntracevm\nTraceKernel tracevm ') &&
+        identity.stdout.includes(' wasm32 wasm32 wasm32 TraceKernel\n') &&
         !identity.stdout.includes('Linux'),
       `the prompt, environment, and discovery commands should describe one TraceKernel identity: ${JSON.stringify(identity)}`
     );
