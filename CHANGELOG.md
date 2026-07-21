@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.12.5] - 2026-07-21
+
+### Fixed
+
+- Rebuilt the published browser Project bundle with streamed filesystem-diagnostic normalization enabled. The packaged-surface gate now rejects a stale Project distribution before release.
+
 ## [0.12.4] - 2026-07-21
 
 ### Fixed
