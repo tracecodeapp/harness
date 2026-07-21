@@ -743,7 +743,12 @@ async function testInteractiveTerminalContract(): Promise<void> {
 
     const missingDirectory = await terminal.run('cd missing-directory');
     const fileAsDirectory = await terminal.run('cd read-stdin.js');
-    const readonlyMutations = await terminal.run('mkdir /root/nope; touch /root/nope; mv read-stdin.js /root/read-stdin.js');
+    let streamedReadonlyStderr = '';
+    const readonlyMutations = await terminal.run('mkdir /root/nope; touch /root/nope; mv read-stdin.js /root/read-stdin.js', {
+      onEvent: (event) => {
+        if (event.type === 'output' && event.stream === 'stderr') streamedReadonlyStderr += event.data;
+      },
+    });
     const otherReadonlyMutations = [];
     for (const command of [
       'cp read-stdin.js /root/read-stdin.js',
@@ -763,6 +768,7 @@ async function testInteractiveTerminalContract(): Promise<void> {
           "mv: cannot move 'read-stdin.js': Read-only file system",
           '',
         ].join('\n') &&
+        streamedReadonlyStderr === readonlyMutations.stderr &&
         otherReadonlyMutations.every((result) =>
           result.exitCode !== 0 &&
           result.stderr.trim().endsWith('Read-only file system')

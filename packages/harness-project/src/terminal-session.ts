@@ -611,6 +611,13 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         options.onEvent?.({ ...event, terminal: { role: 'stdin-prompt', inputState } });
         return;
       }
+      if (event.type === 'output' && event.stream === 'stderr') {
+        options.onEvent?.({
+          ...event,
+          data: normalizeTerminalFilesystemStderr(event.data),
+        });
+        return;
+      }
       options.onEvent?.(event);
     };
 
