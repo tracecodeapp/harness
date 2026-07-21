@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.12.4] - 2026-07-21
+
+### Fixed
+
+- Interactive Project terminals now normalize streamed filesystem diagnostics before they reach the host UI. Native-style `mkdir`, `touch`, and `mv` failures render exactly once instead of briefly exposing the internal `EROFS` error and then repeating the normalized message.
+
 ## [0.12.3] - 2026-07-21
 
 ### Fixed
