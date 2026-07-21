@@ -1424,9 +1424,11 @@ async function awaitRuntimeAbortable<T>(
 
 export class RuntimeProjectEventQueue {
   private queue: Promise<void> = Promise.resolve();
+  private failure: { error: unknown } | null = null;
 
   enqueue(event: RuntimeCommandEvent, options: RuntimeProjectEventQueueOptions): void {
-    this.queue = this.queue.then(async () => {
+    const execution = this.queue.then(async () => {
+      if (this.failure) return;
       if (options.signal?.aborted) return;
       if (event.type !== 'file-change') {
         options.emit(event);
@@ -1451,12 +1453,22 @@ export class RuntimeProjectEventQueue {
         actor: event.actor ?? options.actor,
       });
     });
+    // Own the rejection as soon as the work is created. A live runtime can
+    // continue emitting events before its caller reaches flush(), and leaving
+    // the rejection unattached until then makes Node report a false
+    // unhandled-rejection failure. Preserve the first failure for flush while
+    // keeping the serial queue usable for already-enqueued cleanup work.
+    this.queue = execution.catch((error) => {
+      this.failure ??= { error };
+    });
   }
 
-  flush(): Promise<void> {
+  async flush(): Promise<void> {
     const pending = this.queue;
-    this.queue = pending.catch(() => undefined);
-    return pending;
+    await pending;
+    const failure = this.failure;
+    this.failure = null;
+    if (failure) throw failure.error;
   }
 }
 
