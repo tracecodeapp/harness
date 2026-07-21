@@ -890,6 +890,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     );
   }
 
+  const packagedBrowserProject = await readFile(join(packageDir, 'dist/browser/project.cjs'), 'utf8');
+  assertCondition(
+    packagedBrowserProject.includes('data: normalizeTerminalFilesystemStderr(event.data)'),
+    'Packed browser project bundle must normalize streamed terminal filesystem errors before publishing'
+  );
+
   const bundledZlibShim = await readFile(join(packageDir, 'dist/zlib-browser-shim.js'), 'utf8');
   for (const forbidden of ['createRequire', 'worker_threads', 'from "module"']) {
     assertCondition(
