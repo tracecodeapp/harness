@@ -984,13 +984,44 @@ async function main(): Promise<void> {
     const coldPythonResult = await coldPythonHarness.getClient('python').executeCode({ code: 'result = 1', functionName: 'noop', inputs: {}, executionStyle: 'function' });
     const coldPythonWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/cold-python/pyodide-worker.js'));
     const coldPythonMessageTypes = coldPythonWorker?.messages.map((message) => message.type).join(',');
-    coldPythonHarness.dispose();
     assertCondition(coldPythonResult.kind === 'completed', 'Cold Python harness should execute successfully');
     assertCondition(
       coldPythonMessageTypes === 'init,warmup,execute-code',
       `Cold Python execution should warm the runtime before execute-code: ${coldPythonMessageTypes}`
     );
+    assertCondition(
+      coldPythonWorker?.terminated === true,
+      'Safe browser harness execution should retire the Python interpreter worker after user code'
+    );
+    await coldPythonHarness.getClient('python').executeCode({ code: 'result = 2', functionName: 'noop', inputs: {}, executionStyle: 'function' });
+    const secondColdPythonWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/cold-python/pyodide-worker.js')
+    );
+    assertCondition(
+      secondColdPythonWorker !== coldPythonWorker && secondColdPythonWorker?.terminated === true,
+      'Consecutive safe Python executions should use different retired workers'
+    );
+    coldPythonHarness.dispose();
     console.log('PASS: browser harness warms cold Python execution before user-code timing');
+
+    const unsafePythonHarness = createBrowserHarness({
+      assetBaseUrl: '/unsafe-python-reuse',
+      executionIsolation: 'unsafe-reuse',
+    });
+    await unsafePythonHarness.getClient('python').executeCode({ code: 'result = 1', functionName: 'noop', inputs: {}, executionStyle: 'function' });
+    const unsafePythonWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/unsafe-python-reuse/pyodide-worker.js')
+    );
+    await unsafePythonHarness.getClient('python').executeCode({ code: 'result = 2', functionName: 'noop', inputs: {}, executionStyle: 'function' });
+    const reusedUnsafePythonWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/unsafe-python-reuse/pyodide-worker.js')
+    );
+    assertCondition(
+      unsafePythonWorker === reusedUnsafePythonWorker && unsafePythonWorker?.terminated === false,
+      'Unsafe reuse should require an explicit harness option and retain the interpreter worker'
+    );
+    unsafePythonHarness.dispose();
+    console.log('PASS: browser harness defaults to fresh workers and requires explicit unsafe reuse');
 
     const timeoutPythonUrl = '/cold-python-timeout/pyodide-worker.js';
     const timeoutPythonClient = new PythonWorkerClient({ workerUrl: timeoutPythonUrl });
@@ -1505,7 +1536,7 @@ async function main(): Promise<void> {
     assertCondition(javaExecuteResult.kind === 'completed', 'Java runtime should route function-style executeCode through the browser harness client');
     const javaWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
     assertCondition(
-      javaWorker?.messages.at(-1)?.type === 'execute-code',
+      javaWorker?.messages.at(-1)?.type === 'execute-code' && javaWorker.terminated,
       'Java executeCode should send execute-code instead of execute-with-tracing'
     );
     console.log('PASS: browser harness routes Java runtime requests');
@@ -1519,8 +1550,13 @@ async function main(): Promise<void> {
       javaLimitsResult.kind === 'completed',
       'Java runtime should route wall-clock-limited executeCode through the browser harness client'
     );
+    const javaLimitsWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/instance-a/java-worker.js')
+    );
     assertCondition(
-      javaWorker?.messages.at(-1)?.type === 'execute-code',
+      javaLimitsWorker !== javaWorker &&
+        javaLimitsWorker?.messages.at(-1)?.type === 'execute-code' &&
+        javaLimitsWorker.terminated,
       'Java wall-clock-limited executeCode should send execute-code'
     );
     console.log('PASS: browser harness routes Java wall-clock-limited requests');
@@ -1537,8 +1573,13 @@ async function main(): Promise<void> {
         ],
       });
     assertCondition(javaUnifiedBatchResult.success, 'Java unified execute should route multi-case run requests');
+    const javaBatchWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/instance-a/java-worker.js')
+    );
     assertCondition(
-      javaWorker?.messages.at(-1)?.type === 'execute-code-batch',
+      javaBatchWorker !== javaLimitsWorker &&
+        javaBatchWorker?.messages.at(-1)?.type === 'execute-code-batch' &&
+        javaBatchWorker.terminated,
       'Java unified execute should send execute-code-batch for multi-case run requests'
     );
     console.log('PASS: browser harness routes Java unified batch execute');
@@ -1561,8 +1602,13 @@ async function main(): Promise<void> {
         },
       });
     assertCondition(javaProjectExecute.exitCode === 0, 'Java unified execute should route project requests');
+    const javaProjectWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/instance-a/java-worker.js')
+    );
     assertCondition(
-      javaWorker?.messages.at(-1)?.type === 'execute-project-java',
+      javaProjectWorker !== javaBatchWorker &&
+        javaProjectWorker?.messages.at(-1)?.type === 'execute-project-java' &&
+        javaProjectWorker.terminated,
       'Java unified execute should send execute-project-java for project requests'
     );
     console.log('PASS: browser harness routes Java unified project execute');

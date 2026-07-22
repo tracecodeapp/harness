@@ -8,7 +8,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Added
 
-- Runtime profiles now declare the concrete isolation boundary between executions and whether it is safe for sequential untrusted runs to reuse an initialized browser runtime. JavaScript and TypeScript use fresh execution workers, C++ uses a fresh program worker, while Python interpreter cleanup, Java class loaders, and C# assembly load contexts are conservatively marked as requiring a fresh containing runtime.
+- Browser harness execution is now safe by default across every language. Python, Java, and C# serialize untrusted requests and retire their runtime worker after each execution; JavaScript and TypeScript already use fresh execution workers, and C++ uses a fresh program worker. Trusted consumers may explicitly request `executionIsolation: "unsafe-reuse"` to retain Python interpreters, Java JVMs, and C# runtimes, and configured runtime profiles expose that weaker boundary instead of presenting it as isolation.
 
 ## [0.12.5] - 2026-07-21
 

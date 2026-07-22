@@ -22,6 +22,7 @@ import {
 } from '../packages/harness-browser/src';
 import { assertRuntimeRequestSupported } from '../packages/harness-browser/src/runtime-capability-guards';
 import { executeRuntimeRequest } from '../packages/harness-browser/src/runtime-execute';
+import { FreshWorkerRuntimeClient } from '../packages/harness-browser/src/runtime-client-isolation';
 import { ExecutionTimeoutError } from '../packages/harness-browser/src/worker-errors';
 import {
   WORKER_REQUEST_MESSAGES,
@@ -35,9 +36,18 @@ import type { RuntimeKernelInfo } from '../packages/harness-core/src/runtime-pro
 import type {
   Language,
   LanguageRuntimeProfile,
+  RuntimeClient,
   RuntimeCapabilities,
+  RuntimeCodeCall,
   RuntimeExecutionLimits,
+  RuntimeExecuteCodeRequest,
+  RuntimeExecuteProjectRequest,
+  RuntimeExecuteRequest,
+  RuntimeExecuteResponse,
+  RuntimeExecuteResult,
+  RuntimeTraceCall,
 } from '../packages/harness-core/src/runtime-types';
+import type { CodeExecutionResult, ExecutionResult } from '../packages/harness-core/src/types';
 import {
   javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
@@ -1121,6 +1131,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.limits.singleLineHits',
     'execution.limits.callDepth',
     'execution.limits.memory',
+    'execution.isolation.safeForUntrustedReuse',
     'execution.timeouts.runtimeTimeouts',
     'project.filesystem.providerLiveInterception',
     'tracing.events.stdout',
@@ -1157,6 +1168,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.styles.opsClass',
     'execution.styles.script',
     'execution.limits.wallClock',
+    'execution.isolation.safeForUntrustedReuse',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
     'project.workspace.supported',
@@ -1197,6 +1209,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.styles.opsClass',
     'execution.styles.script',
     'execution.limits.wallClock',
+    'execution.isolation.safeForUntrustedReuse',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
     'project.workspace.supported',
@@ -1334,6 +1347,64 @@ function assertWorkerProtocolDeclarations(): void {
       );
     }
   }
+}
+
+async function assertFreshWorkerRuntimeClientContract(): Promise<void> {
+  const events: string[] = [];
+  let releaseFirst: (() => void) | undefined;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let calls = 0;
+
+  class ProbeRuntimeClient implements RuntimeClient {
+    async init(): Promise<{ success: boolean; loadTimeMs: number }> {
+      events.push('init');
+      return { success: true, loadTimeMs: 0 };
+    }
+
+    async execute(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult>;
+    async execute(request: RuntimeExecuteProjectRequest): Promise<never>;
+    async execute(_request: RuntimeExecuteRequest): Promise<RuntimeExecuteResponse> {
+      throw new Error('execute probe is not used');
+    }
+
+    async executeWithTracing(_call: RuntimeTraceCall): Promise<ExecutionResult> {
+      throw new Error('trace probe is not used');
+    }
+
+    async executeCode(_call: RuntimeCodeCall): Promise<CodeExecutionResult> {
+      calls += 1;
+      const call = calls;
+      events.push(`start-${call}`);
+      if (call === 1) await firstGate;
+      if (call === 3) throw new Error('probe failure');
+      events.push(`finish-${call}`);
+      return { kind: 'completed', output: call, consoleOutput: [] };
+    }
+  }
+
+  const client = new FreshWorkerRuntimeClient(new ProbeRuntimeClient(), () => events.push('retire'));
+  const first = client.executeCode({ code: 'first', functionName: 'run', inputs: {} });
+  const second = client.executeCode({ code: 'second', functionName: 'run', inputs: {} });
+  await Promise.resolve();
+  assertCondition(
+    events.join(',') === 'start-1',
+    `safe runtime client should serialize executions before retiring workers: ${events.join(',')}`
+  );
+  releaseFirst?.();
+  await Promise.all([first, second]);
+  assertCondition(
+    events.join(',') === 'start-1,finish-1,retire,start-2,finish-2,retire',
+    `safe runtime client should retire between successful executions: ${events.join(',')}`
+  );
+
+  await client.executeCode({ code: 'failure', functionName: 'run', inputs: {} }).catch(() => undefined);
+  assertCondition(
+    events.at(-1) === 'retire' && events.filter((event) => event === 'retire').length === 3,
+    `safe runtime client should retire after failed executions: ${events.join(',')}`
+  );
+  console.log('PASS: fresh-worker runtime client serializes and retires every execution');
 }
 
 async function assertExecutionLimitsDispatchContract(): Promise<void> {
@@ -1652,6 +1723,7 @@ async function main(): Promise<void> {
   await testJavaSerializedResultNormalization();
 
   await assertExecutionLimitsDispatchContract();
+  await assertFreshWorkerRuntimeClientContract();
   console.log('PASS: execution limits dispatch contract');
 
   assertWorkerProtocolDeclarations();
@@ -1792,6 +1864,33 @@ async function main(): Promise<void> {
   const javaProfile = getLanguageRuntimeProfile('java');
   const csharpProfile = getLanguageRuntimeProfile('csharp');
   const cppProfile = getLanguageRuntimeProfile('cpp');
+  const safeHarness = createBrowserHarness({ providers: ['python', 'java', 'csharp'] });
+  const unsafeReuseHarness = createBrowserHarness({
+    providers: ['python', 'java', 'csharp'],
+    executionIsolation: 'unsafe-reuse',
+  });
+  try {
+    assertCondition(
+      safeHarness.executionIsolation === 'safe' &&
+        safeHarness.getSupportedLanguageProfiles().every((profile) =>
+          profile.capabilities.execution.isolation.safeForUntrustedReuse
+        ),
+      'browser harness should default every selected provider to safe execution isolation'
+    );
+    assertCondition(
+      unsafeReuseHarness.executionIsolation === 'unsafe-reuse' &&
+        unsafeReuseHarness.getSupportedLanguageProfiles().every((profile) =>
+          !profile.capabilities.execution.isolation.safeForUntrustedReuse
+        ) &&
+        unsafeReuseHarness.getProfile('python').capabilities.execution.isolation.boundary === 'interpreter-cleanup' &&
+        unsafeReuseHarness.getProfile('java').capabilities.execution.isolation.boundary === 'fresh-class-loader' &&
+        unsafeReuseHarness.getProfile('csharp').capabilities.execution.isolation.boundary === 'fresh-assembly-load-context',
+      'unsafe reuse should be explicit and visible through configured harness profiles'
+    );
+  } finally {
+    safeHarness.dispose();
+    unsafeReuseHarness.dispose();
+  }
   for (const profile of profiles) {
     assertCondition(
       profile.maturity === 'stable',
@@ -1805,9 +1904,10 @@ async function main(): Promise<void> {
     'Python should advertise runtime-side timeouts'
   );
   assertCondition(
-    !pythonProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
-      pythonProfile.capabilities.execution.isolation.boundary === 'interpreter-cleanup',
-    'Python interpreter cleanup must not be represented as an untrusted reuse boundary'
+    pythonProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
+      pythonProfile.capabilities.execution.isolation.boundary === 'fresh-worker' &&
+      pythonProfile.capabilities.execution.isolation.unsafeReuseBoundary === 'interpreter-cleanup',
+    'Python should default to a fresh worker and expose interpreter cleanup only as unsafe reuse'
   );
   assertCondition(
     !pythonProfile.capabilities.execution.compilation.required &&
@@ -1885,9 +1985,10 @@ async function main(): Promise<void> {
   assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should support script execution');
   assertCondition(javaProfile.capabilities.execution.limits.wallClock, 'Java should honor wall-clock execution limits');
   assertCondition(
-    !javaProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
-      javaProfile.capabilities.execution.isolation.boundary === 'fresh-class-loader',
-    'A fresh Java class loader must not be represented as fresh JVM isolation'
+    javaProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
+      javaProfile.capabilities.execution.isolation.boundary === 'fresh-worker' &&
+      javaProfile.capabilities.execution.isolation.unsafeReuseBoundary === 'fresh-class-loader',
+    'Java should default to a fresh worker and expose class-loader isolation only as unsafe reuse'
   );
   assertCondition(
     javaProfile.capabilities.project.filesystem.liveMutationEvents &&
@@ -1909,9 +2010,10 @@ async function main(): Promise<void> {
   assertCondition(csharpProfile.capabilities.execution.styles.opsClass, 'C# should support ops-class execution');
   assertCondition(csharpProfile.capabilities.execution.limits.wallClock, 'C# should honor wall-clock execution limits');
   assertCondition(
-    !csharpProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
-      csharpProfile.capabilities.execution.isolation.boundary === 'fresh-assembly-load-context',
-    'A fresh C# AssemblyLoadContext must not be represented as fresh runtime isolation'
+    csharpProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
+      csharpProfile.capabilities.execution.isolation.boundary === 'fresh-worker' &&
+      csharpProfile.capabilities.execution.isolation.unsafeReuseBoundary === 'fresh-assembly-load-context',
+    'C# should default to a fresh worker and expose AssemblyLoadContext isolation only as unsafe reuse'
   );
   assertCondition(csharpProfile.capabilities.tracing.supported, 'C# should support basic tracing');
   assertCondition(csharpProfile.capabilities.tracing.fidelity.callStack, 'C# should attach call-stack frames');
@@ -1951,9 +2053,9 @@ async function main(): Promise<void> {
     isRuntimeSafeForUntrustedReuse('javascript') &&
       isRuntimeSafeForUntrustedReuse(typescriptProfile) &&
       isRuntimeSafeForUntrustedReuse('cpp') &&
-      !isRuntimeSafeForUntrustedReuse('python') &&
-      !isRuntimeSafeForUntrustedReuse(javaProfile) &&
-      !isRuntimeSafeForUntrustedReuse('csharp'),
+      isRuntimeSafeForUntrustedReuse('python') &&
+      isRuntimeSafeForUntrustedReuse(javaProfile) &&
+      isRuntimeSafeForUntrustedReuse('csharp'),
     'runtime reuse helper should preserve the reviewed per-language isolation policy'
   );
   assertCondition(cppProfile.capabilities.tracing.supported, 'C++ should support generated-driver v4 trace events');

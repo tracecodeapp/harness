@@ -14,6 +14,8 @@ export type RuntimeExecutionPipeline = 'interpreted' | 'transpiled' | 'compiled'
 
 export type RuntimeCompileCost = 'none' | 'low' | 'high';
 
+export type RuntimeExecutionIsolationPolicy = 'safe' | 'unsafe-reuse';
+
 export type RuntimeExecutionIsolationBoundary =
   | 'fresh-worker'
   | 'fresh-program-instance'
@@ -30,6 +32,8 @@ export interface RuntimeExecutionIsolationSupport {
   safeForUntrustedReuse: boolean;
   /** The strongest isolation boundary created between executions. */
   boundary: RuntimeExecutionIsolationBoundary;
+  /** The weaker boundary exposed only through an explicit unsafe-reuse policy. */
+  unsafeReuseBoundary?: RuntimeExecutionIsolationBoundary;
 }
 
 export type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live';

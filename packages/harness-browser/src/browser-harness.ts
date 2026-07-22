@@ -8,6 +8,7 @@ import type {
   Language,
   LanguageRuntimeProfile,
   RuntimeClient,
+  RuntimeExecutionIsolationPolicy,
 } from '@tracecode/harness-core';
 import type { LanguageRuntimeInfo } from '@tracecode/harness-core';
 import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
@@ -47,6 +48,7 @@ import {
 import {
   getLanguageRuntimeProfile,
 } from './runtime-profiles';
+import { FreshWorkerRuntimeClient } from './runtime-client-isolation';
 
 export interface CreateBrowserHarnessOptions {
   assetBaseUrl?: string;
@@ -60,6 +62,11 @@ export interface CreateBrowserHarnessOptions {
   /** Runs selected provider workers on a dedicated, credential-free origin. */
   executionHost?: BrowserHarnessExecutionHostOptions;
   debug?: boolean;
+  /**
+   * Safe by default. `unsafe-reuse` keeps mutable Python, Java, and C# runtime
+   * workers alive across executions and must only be used for trusted code.
+   */
+  executionIsolation?: RuntimeExecutionIsolationPolicy;
   python?: {
     compileCacheLimit?: number;
   };
@@ -92,6 +99,7 @@ export interface BrowserHarness {
   readonly assets: BrowserHarnessAssets;
   readonly environment: BrowserRuntimeEnvironment;
   readonly supportedLanguages: readonly Language[];
+  readonly executionIsolation: RuntimeExecutionIsolationPolicy;
   getClient(language: Language): RuntimeClient;
   getProfile(language: Language): LanguageRuntimeProfile;
   getSupportedLanguageProfiles(): readonly LanguageRuntimeProfile[];
@@ -131,6 +139,13 @@ interface ResolvedHarnessContext {
 }
 
 function resolveHarnessContext(options: CreateBrowserHarnessOptions): ResolvedHarnessContext {
+  if (
+    options.executionIsolation !== undefined &&
+    options.executionIsolation !== 'safe' &&
+    options.executionIsolation !== 'unsafe-reuse'
+  ) {
+    throw new TypeError('executionIsolation must be "safe" or "unsafe-reuse".');
+  }
   if (
     options.environment &&
     (options.assetBaseUrl !== undefined || options.assets !== undefined || options.providers !== undefined ||
@@ -495,18 +510,26 @@ class RuntimeClientsService extends Context.Tag('BrowserHarness/RuntimeClients')
 const runtimeClientsLayer = Layer.effect(
   RuntimeClientsService,
   Effect.gen(function* () {
+    const ctx = yield* HarnessContext;
     const python = yield* PythonWorkerClientService;
     const javascript = yield* JavaScriptWorkerClientService;
     const java = yield* JavaWorkerClientService;
     const csharp = yield* CSharpWorkerClientService;
     const cpp = yield* CppWorkerClientService;
-    return {
+    const clients: Record<Language, RuntimeClient> = {
       python: createPythonRuntimeClient(python),
       javascript: createJavaScriptRuntimeClient('javascript', javascript),
       typescript: createJavaScriptRuntimeClient('typescript', javascript),
       java: createJavaRuntimeClient(java),
       csharp: createCSharpRuntimeClient(csharp),
       cpp: createCppRuntimeClient(cpp),
+    };
+    if ((ctx.options.executionIsolation ?? 'safe') === 'unsafe-reuse') return clients;
+    return {
+      ...clients,
+      python: new FreshWorkerRuntimeClient(clients.python, () => python.terminate()),
+      java: new FreshWorkerRuntimeClient(clients.java, () => java.terminate()),
+      csharp: new FreshWorkerRuntimeClient(clients.csharp, () => csharp.terminate()),
     };
   })
 );
@@ -533,6 +556,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
   readonly assets: BrowserHarnessAssets;
   readonly environment: BrowserRuntimeEnvironment;
   readonly supportedLanguages: readonly Language[];
+  readonly executionIsolation: RuntimeExecutionIsolationPolicy;
 
   private readonly managed: ManagedRuntime.ManagedRuntime<HarnessServices, Error>;
   private readonly clients: Readonly<Record<Language, RuntimeClient>>;
@@ -547,6 +571,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
     this.environment = context.environment;
     this.assets = context.assets;
     this.supportedLanguages = context.supportedLanguages;
+    this.executionIsolation = options.executionIsolation ?? 'safe';
     this.executionHostProviders = context.executionHostProviders;
 
     const workerClientLayers = Layer.mergeAll(
@@ -598,11 +623,31 @@ class BrowserHarnessRuntime implements BrowserHarness {
   }
 
   getProfile(language: Language): LanguageRuntimeProfile {
-    return getLanguageRuntimeProfile(language);
+    return this.profileForConfiguredIsolation(language);
   }
 
   getSupportedLanguageProfiles(): readonly LanguageRuntimeProfile[] {
-    return this.supportedLanguages.map((language) => getLanguageRuntimeProfile(language));
+    return this.supportedLanguages.map((language) => this.profileForConfiguredIsolation(language));
+  }
+
+  private profileForConfiguredIsolation(language: Language): LanguageRuntimeProfile {
+    const profile = getLanguageRuntimeProfile(language);
+    const isolation = profile.capabilities.execution.isolation;
+    if (this.executionIsolation !== 'unsafe-reuse' || !isolation.unsafeReuseBoundary) return profile;
+    return {
+      ...profile,
+      capabilities: {
+        ...profile.capabilities,
+        execution: {
+          ...profile.capabilities.execution,
+          isolation: {
+            safeForUntrustedReuse: false,
+            boundary: isolation.unsafeReuseBoundary,
+            unsafeReuseBoundary: isolation.unsafeReuseBoundary,
+          },
+        },
+      },
+    };
   }
 
   getLanguageInfo(language: Language): LanguageRuntimeInfo {
