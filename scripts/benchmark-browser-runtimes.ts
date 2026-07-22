@@ -22,11 +22,13 @@ import { chromium, firefox, webkit, type Browser, type BrowserContext, type Page
 type Language = 'python' | 'javascript' | 'typescript' | 'java' | 'csharp' | 'cpp';
 type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
 type Mode = 'execute' | 'trace';
+type ExecutionIsolation = 'safe' | 'unsafe-reuse';
 type Phase =
   | 'cold-first-execute'
   | 'warm-exact-repeat'
   | 'warm-edited-source'
   | 'multiple-inputs'
+  | 'concurrent-executes'
   | 'trace';
 
 interface BenchmarkArgs {
@@ -43,6 +45,8 @@ interface BenchmarkArgs {
   cacheAssets: boolean;
   phaseDelayMs: number;
   prewarmRuntime: boolean;
+  executionIsolation: ExecutionIsolation;
+  concurrency: number;
   runtimeManifestsPath: string | null;
   reportPath: string | null;
 }
@@ -113,6 +117,7 @@ interface PhaseRecord {
   mode: Mode;
   sourceVariant: 'base' | 'edited';
   caseCount: number;
+  concurrency: number;
   wallMs: number;
   success: boolean;
   outputs: unknown[];
@@ -511,6 +516,9 @@ function usage(): string {
     '  --cache-assets                  Serve immutable cache headers so warm phases exclude downloads.',
     '  --phase-delay-ms=25             Delay between phases to model interactive think time. Default: 0.',
     '  --prewarm-runtime               Call harness.warmLanguage() before the first measured execute.',
+    '  --execution-isolation=safe|unsafe-reuse',
+    '                                  Runtime worker lifecycle. Default: safe.',
+    '  --concurrency=4                 Add a phase with this many simultaneous executes. Default: 1 (disabled).',
     '  --headful                       Run the selected browser with a visible window.',
   ].join('\n');
 }
@@ -562,6 +570,8 @@ function parseArgs(argv: string[]): BenchmarkArgs {
     cacheAssets: false,
     phaseDelayMs: 0,
     prewarmRuntime: false,
+    executionIsolation: 'safe',
+    concurrency: 1,
     runtimeManifestsPath: process.env.TRACECODE_BENCH_RUNTIME_MANIFESTS?.trim() || null,
     reportPath: join('reports', 'browser-runtime-benchmark.json'),
   };
@@ -598,6 +608,18 @@ function parseArgs(argv: string[]): BenchmarkArgs {
     }
     if (arg === '--prewarm-runtime') {
       args.prewarmRuntime = true;
+      continue;
+    }
+    if (arg.startsWith('--execution-isolation=')) {
+      const isolation = arg.slice('--execution-isolation='.length);
+      if (isolation !== 'safe' && isolation !== 'unsafe-reuse') {
+        throw new Error(`Unsupported execution isolation "${isolation}". Expected safe or unsafe-reuse.`);
+      }
+      args.executionIsolation = isolation;
+      continue;
+    }
+    if (arg.startsWith('--concurrency=')) {
+      args.concurrency = positiveInteger(arg.slice('--concurrency='.length), 'concurrency');
       continue;
     }
     if (arg.startsWith('--languages=')) {
@@ -1062,7 +1084,7 @@ async function runBrowserPlanItem(
     }
 
     const evaluation = page.evaluate(
-      async ({ language, workload, iteration, runOrdinal, modes, requestTimeoutMs, phaseDelayMs, prewarmRuntime, runtimeManifests }) => {
+      async ({ language, workload, iteration, runOrdinal, modes, requestTimeoutMs, phaseDelayMs, prewarmRuntime, executionIsolation, concurrency, runtimeManifests }) => {
         const benchmarkPhase = (globalThis as typeof globalThis & {
           __tracecodeBenchPhase?: (phase: string) => Promise<void>;
         }).__tracecodeBenchPhase;
@@ -1223,6 +1245,7 @@ async function runBrowserPlanItem(
           createBrowserHarness(options: {
             assetBaseUrl: string;
             debug?: boolean;
+            executionIsolation?: ExecutionIsolation;
             assets?: { runtimeManifests: Record<string, unknown> };
           }): any;
         };
@@ -1234,6 +1257,7 @@ async function runBrowserPlanItem(
         const harness = publicHarnessModule.createBrowserHarness({
           assetBaseUrl: '/workers',
           debug: false,
+          executionIsolation,
           ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
         });
         const harnessConstructionMs = performance.now() - constructionStartedAt;
@@ -1296,7 +1320,8 @@ async function runBrowserPlanItem(
           mode: Mode,
           source: string,
           sourceVariant: 'base' | 'edited',
-          cases: TestCase[]
+          cases: TestCase[],
+          copies = 1
         ): Promise<boolean> {
           if (records.length > 0 && phaseDelayMs > 0) {
             await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, phaseDelayMs));
@@ -1325,22 +1350,28 @@ async function runBrowserPlanItem(
           const resourceIndex = performance.getEntriesByType('resource').length;
           const longTaskIndex = longTaskEntries.length;
           const memoryBefore = memorySnapshot();
-          let response: any;
+          let responses: any[] = [];
           let operationError: string | undefined;
           await benchmarkPhase?.(phase);
           const startedAt = performance.now();
           try {
-            response = await withTimeout(phase, client.execute(request), controller);
+            responses = await withTimeout(
+              phase,
+              Promise.all(Array.from({ length: copies }, () => client.execute(request))),
+              controller
+            );
           } catch (error) {
             operationError = errorMessage(error);
           }
           const wallMs = performance.now() - startedAt;
           await settleInstrumentation();
           // Flatten the outcome union onto each case record so metric extraction below reads one shape.
-          const resultCases = (Array.isArray(response?.cases) ? response.cases : [])
+          const resultCases = responses.flatMap((response) =>
+            Array.isArray(response?.cases) ? response.cases : []
+          )
             .map((testCase: any) => ({ ...testCase, ...(testCase.outcome ?? {}) }));
           const outputs = resultCases.map((testCase: any) => testCase.output);
-          const expected = cases.map((testCase) => testCase.expected);
+          const expected = Array.from({ length: copies }, () => cases.map((testCase) => testCase.expected)).flat();
           const errors = [
             ...(operationError ? [operationError] : []),
             ...resultCases
@@ -1348,11 +1379,12 @@ async function runBrowserPlanItem(
               .filter((error: string | undefined): error is string => error !== undefined),
           ];
           const successful = operationError === undefined
-            && response?.success === true
-            && resultCases.length === cases.length
+            && responses.length === copies
+            && responses.every((response) => response?.success === true)
+            && resultCases.length === cases.length * copies
             && outputs.every((output: unknown, index: number) => deepEqual(output, expected[index]));
           const traces = mode === 'trace' ? traceMetrics(resultCases) : undefined;
-          const timings = sanitizeTimings(response?.timings);
+          const timings = copies === 1 ? sanitizeTimings(responses[0]?.timings) : undefined;
           const caseTimings = resultCases
             .map((testCase: any) => sanitizeTimings(testCase.timings))
             .filter((value: RuntimeTimingRecord | undefined): value is RuntimeTimingRecord => value !== undefined);
@@ -1372,6 +1404,7 @@ async function runBrowserPlanItem(
             mode,
             sourceVariant,
             caseCount: cases.length,
+            concurrency: copies,
             wallMs,
             success: successful,
             outputs,
@@ -1382,7 +1415,10 @@ async function runBrowserPlanItem(
             artifactCacheHits: resultCases
               .map((testCase: any) => testCase.timings?.artifactCacheHit)
               .filter((value: unknown): value is boolean => typeof value === 'boolean'),
-            responseSerializedBytes: response === undefined ? 0 : safeSerializedBytes(response),
+            responseSerializedBytes: responses.reduce(
+              (sum, response) => sum + safeSerializedBytes(response),
+              0
+            ),
             traceSerializedBytes: traces?.traceSerializedBytes,
             traceEventCount: traces?.traceEventCount,
             lineEventCount: traces?.lineEventCount,
@@ -1436,6 +1472,16 @@ async function runBrowserPlanItem(
                   workload.cases
                 );
               }
+              if (runtimeHealthy && concurrency > 1) {
+                runtimeHealthy = await runPhase(
+                  'concurrent-executes',
+                  'execute',
+                  changedSource,
+                  'edited',
+                  [firstCase],
+                  concurrency
+                );
+              }
             }
             if (runtimeHealthy && modes.includes('trace')) {
               runtimeHealthy = await runPhase('trace', 'trace', changedSource, 'edited', [firstCase]);
@@ -1469,6 +1515,8 @@ async function runBrowserPlanItem(
         requestTimeoutMs: args.requestTimeoutMs,
         phaseDelayMs: args.phaseDelayMs,
         prewarmRuntime: args.prewarmRuntime,
+        executionIsolation: args.executionIsolation,
+        concurrency: args.concurrency,
         runtimeManifests,
       }
     );
@@ -1792,6 +1840,8 @@ async function main(): Promise<void> {
       methodology: {
         apiBoundary: 'createBrowserHarness -> getClient -> init/execute/dispose',
         isolation: 'fresh Playwright BrowserContext and fresh harness for every language/workload/iteration',
+        executionIsolation: args.executionIsolation,
+        concurrency: args.concurrency,
         order: 'deterministic Fisher-Yates shuffle independently per iteration',
         assetCaching: args.cacheAssets
           ? 'immutable browser caching; warm phases run after the cold phase populated the same BrowserContext cache'
@@ -1801,6 +1851,7 @@ async function main(): Promise<void> {
           'warm-exact-repeat': 'byte-identical source and input repeated on the same client',
           'warm-edited-source': 'same behavior with a comment appended to force a new source cache key',
           'multiple-inputs': 'edited source repeated with all selected cases in one public execute request',
+          'concurrent-executes': `${args.concurrency} simultaneous public execute requests against one harness`,
           trace: 'one selected case through the public trace request and canonical trace response',
         },
       },
@@ -1814,6 +1865,8 @@ async function main(): Promise<void> {
         requestTimeoutMs: args.requestTimeoutMs,
         phaseDelayMs: args.phaseDelayMs,
         prewarmRuntime: args.prewarmRuntime,
+        executionIsolation: args.executionIsolation,
+        concurrency: args.concurrency,
         seed: args.seed,
         cacheAssets: args.cacheAssets,
         smoke: args.smoke,
