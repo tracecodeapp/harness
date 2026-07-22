@@ -123,6 +123,17 @@ public static partial class CompilerHost
 
     [JSExport]
     [SupportedOSPlatform("browser")]
+    public static string GetCompiledArtifactKey(string requestJson)
+    {
+        CSharpExecuteRequest? request = JsonSerializer.Deserialize<CSharpExecuteRequest>(requestJson, JsonOptions);
+        if (request is null) throw new ArgumentException("Invalid C# execution request.");
+        request.Inputs ??= new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        ValidateExecutionInputs(request.Inputs);
+        return CompiledArtifactKey(request);
+    }
+
+    [JSExport]
+    [SupportedOSPlatform("browser")]
     public static string Execute(string requestJson)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -145,7 +156,32 @@ public static partial class CompilerHost
 
             string artifactKey = CompiledArtifactKey(request);
             byte[]? peBytes = TryGetCompiledArtifact(artifactKey);
+            bool hostArtifactCacheHit = false;
+            bool compiledArtifactForHost = false;
+            if (peBytes is null
+                && string.Equals(request.CompiledArtifactKey, artifactKey, StringComparison.Ordinal)
+                && !string.IsNullOrEmpty(request.CompiledArtifactBase64))
+            {
+                try
+                {
+                    byte[] candidate = Convert.FromBase64String(request.CompiledArtifactBase64);
+                    if (candidate.LongLength <= CompiledArtifactCacheMaxBytes
+                        && candidate.Length >= 2
+                        && candidate[0] == (byte)'M'
+                        && candidate[1] == (byte)'Z')
+                    {
+                        peBytes = candidate;
+                        StoreCompiledArtifact(artifactKey, peBytes);
+                        hostArtifactCacheHit = true;
+                    }
+                }
+                catch (FormatException)
+                {
+                    // Treat malformed host cache data as a miss and compile normally.
+                }
+            }
             timings["compileCacheHit"] = peBytes is not null;
+            timings["hostArtifactCacheHit"] = hostArtifactCacheHit;
             timings["compileArtifactKey"] = artifactKey;
             double compileStartedAt = stopwatch.Elapsed.TotalMilliseconds;
             if (peBytes is null)
@@ -175,6 +211,7 @@ public static partial class CompilerHost
 
                 peBytes = peStream.ToArray();
                 StoreCompiledArtifact(artifactKey, peBytes);
+                compiledArtifactForHost = true;
             }
             else
             {
@@ -215,6 +252,7 @@ public static partial class CompilerHost
                     TimeoutReason = RuntimeTraceSink.TraceLimitExceeded ? RuntimeTraceSink.TimeoutReason : null,
                     ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
                     Timings = WithTotalTiming(timings, stopwatch),
+                    CompiledArtifactBase64 = compiledArtifactForHost ? Convert.ToBase64String(peBytes) : null,
                 });
             }
             finally

@@ -170,6 +170,7 @@ let javaCompileCacheLimit = DEFAULT_JAVA_COMPILE_CACHE_LIMIT;
 const javaCompileCache = new Map();
 const activeProtocolTokens = new Map();
 const pendingExternalJavaCompiles = new Map();
+const pendingCompilerArtifactCacheRequests = new Map();
 const STDIN_PIPE_HEADER_INTS = 3;
 const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
 const STDIN_PIPE_READ_INDEX = 0;
@@ -3839,6 +3840,22 @@ async function restoreClassicJavaCompileCache(compileLibraryClass, cacheKey, cla
   return restored;
 }
 
+async function restoreHostJavaCompileArtifact(cacheKey, commandId) {
+  if (javaCompileCacheLimit <= 0) return null;
+  const response = await requestCompilerArtifactCache('get', cacheKey, commandId);
+  return response?.hit === true && typeof response.value === 'string' && response.value.length > 0
+    ? response.value
+    : null;
+}
+
+async function storeHostJavaCompileArtifact(compileLibraryClass, cacheKey, classesDir, commandId) {
+  if (javaCompileCacheLimit <= 0 || typeof compileLibraryClass?.exportCompiledClassManifest !== 'function') return;
+  const manifest = await compileLibraryClass.exportCompiledClassManifest(classesDir);
+  if (typeof manifest === 'string' && manifest.length > 0) {
+    await requestCompilerArtifactCache('put', cacheKey, commandId, manifest);
+  }
+}
+
 async function finalizeClassicJavaCompileCache(compileLibraryClass, cacheKey, classesDir, compileId, artifactCacheHit) {
   try {
     if (
@@ -4595,6 +4612,25 @@ async function compileJavaOutsideBrowser(payload, commandId) {
     normalized.compileMs = Math.max(0, Math.round(performance.now() - startedAt));
   }
   return normalized;
+}
+
+async function requestCompilerArtifactCache(operation, key, commandId, value) {
+  const protocolToken = activeProtocolTokens.get(commandId);
+  if (!protocolToken) return { hit: false, stored: false };
+  const requestId = `java-artifact-${stableHash({ operation, key, commandId, nonce: javaWorkerRandomHex(1) })}`;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingCompilerArtifactCacheRequests.delete(requestId);
+      resolve({ hit: false, stored: false });
+    }, 250);
+    pendingCompilerArtifactCacheRequests.set(requestId, { resolve, reject, protocolToken, timeout });
+    trustedJavaWorkerPostMessage({
+      type: 'compiler-artifact-cache-request',
+      requestId,
+      protocolToken,
+      payload: { operation, key, ...(value === undefined ? {} : { value }) },
+    });
+  });
 }
 
 function truncateJavaWorkerDiagnostic(value, maxLength = 6000) {
@@ -5923,16 +5959,33 @@ async function runJavaTraceRequest(payload, requestId) {
   } catch (error) {
     throw makeWorkerStageError('compiler bridge load', error);
   }
-  const artifactCacheHit = await restoreClassicJavaCompileCache(compileLibraryClass, compileCacheKey, classesDir);
+  const localArtifactCacheHit = await restoreClassicJavaCompileCache(compileLibraryClass, compileCacheKey, classesDir);
+  const hostArtifactManifest = localArtifactCacheHit
+    ? null
+    : await restoreHostJavaCompileArtifact(compileCacheKey, requestId);
+  const artifactCacheHit = localArtifactCacheHit || hostArtifactManifest !== null;
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    if (artifactCacheHit && typeof compileLibraryClass?.traceCachedClasses === 'function') {
+    if (localArtifactCacheHit && typeof compileLibraryClass?.traceCachedClasses === 'function') {
       reportText = await compileLibraryClass.traceCachedClasses(
         classesDir,
         `${packageName}.${exportsClassName}`,
         HELPER_JAR_PATH,
         DEFAULT_COMPILER_DEBUG_PROFILE,
+        String(resolveMaxStoredEvents(payload.options))
+      );
+    } else if (hostArtifactManifest !== null && typeof compileLibraryClass?.traceCompiledClassManifest === 'function') {
+      reportText = await compileLibraryClass.traceCompiledClassManifest(
+        hostArtifactManifest,
+        classesDir,
+        `${packageName}.${exportsClassName}`,
+        HELPER_JAR_PATH,
+        DEFAULT_COMPILER_DEBUG_PROFILE,
+        '0',
+        '',
+        '',
+        'true',
         String(resolveMaxStoredEvents(payload.options))
       );
     } else if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'traceCompiledClassManifest')) {
@@ -5989,6 +6042,9 @@ async function runJavaTraceRequest(payload, requestId) {
   } catch (error) {
     await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId).catch(() => undefined);
     throw makeWorkerStageError('trace report parse', error);
+  }
+  if (report.success === true && !artifactCacheHit) {
+    await storeHostJavaCompileArtifact(compileLibraryClass, compileCacheKey, classesDir, requestId);
   }
   await finalizeClassicJavaCompileCache(
     compileLibraryClass,
@@ -6087,17 +6143,33 @@ async function runJavaCodeRequest(payload, requestId) {
   } catch (error) {
     throw makeWorkerStageError('compiler bridge load', error);
   }
-  const artifactCacheHit = await restoreClassicJavaCompileCache(compileLibraryClass, compileCacheKey, classesDir);
+  const localArtifactCacheHit = await restoreClassicJavaCompileCache(compileLibraryClass, compileCacheKey, classesDir);
+  const hostArtifactManifest = localArtifactCacheHit
+    ? null
+    : await restoreHostJavaCompileArtifact(compileCacheKey, requestId);
+  const artifactCacheHit = localArtifactCacheHit || hostArtifactManifest !== null;
 
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    if (artifactCacheHit && typeof compileLibraryClass?.runCachedClasses === 'function') {
+    if (localArtifactCacheHit && typeof compileLibraryClass?.runCachedClasses === 'function') {
       reportText = await compileLibraryClass.runCachedClasses(
         classesDir,
         `${packageName}.${exportsClassName}`,
         HELPER_JAR_PATH,
         DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+      );
+    } else if (hostArtifactManifest !== null && typeof compileLibraryClass?.runCompiledClassManifest === 'function') {
+      reportText = await compileLibraryClass.runCompiledClassManifest(
+        hostArtifactManifest,
+        classesDir,
+        `${packageName}.${exportsClassName}`,
+        HELPER_JAR_PATH,
+        DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE,
+        '0',
+        '',
+        '',
+        'true'
       );
     } else if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifest')) {
       const externalCompile = await compileJavaOutsideBrowser({
@@ -6148,6 +6220,9 @@ async function runJavaCodeRequest(payload, requestId) {
   } catch (error) {
     await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId).catch(() => undefined);
     throw makeWorkerStageError('execution report parse', error);
+  }
+  if (report.success === true && !artifactCacheHit) {
+    await storeHostJavaCompileArtifact(compileLibraryClass, compileCacheKey, classesDir, requestId);
   }
   await finalizeClassicJavaCompileCache(
     compileLibraryClass,
@@ -6441,17 +6516,33 @@ async function runJavaCodeBatchRequest(payload, requestId) {
   } catch (error) {
     throw makeWorkerStageError('compiler bridge load', error);
   }
-  const artifactCacheHit = await restoreClassicJavaCompileCache(compileLibraryClass, compileCacheKey, classesDir);
+  const localArtifactCacheHit = await restoreClassicJavaCompileCache(compileLibraryClass, compileCacheKey, classesDir);
+  const hostArtifactManifest = localArtifactCacheHit
+    ? null
+    : await restoreHostJavaCompileArtifact(compileCacheKey, requestId);
+  const artifactCacheHit = localArtifactCacheHit || hostArtifactManifest !== null;
 
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    if (artifactCacheHit && typeof compileLibraryClass?.runCachedClassesBatch === 'function') {
+    if (localArtifactCacheHit && typeof compileLibraryClass?.runCachedClassesBatch === 'function') {
       reportText = await compileLibraryClass.runCachedClassesBatch(
         classesDir,
         entryClasses.join('\n'),
         HELPER_JAR_PATH,
         DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+      );
+    } else if (hostArtifactManifest !== null && typeof compileLibraryClass?.runCompiledClassManifestBatch === 'function') {
+      reportText = await compileLibraryClass.runCompiledClassManifestBatch(
+        hostArtifactManifest,
+        classesDir,
+        entryClasses.join('\n'),
+        HELPER_JAR_PATH,
+        DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE,
+        '0',
+        '',
+        '',
+        'true'
       );
     } else if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifestBatch')) {
       const externalCompile = await compileJavaOutsideBrowser({
@@ -6503,6 +6594,9 @@ async function runJavaCodeBatchRequest(payload, requestId) {
   } catch (error) {
     await deleteJavaRuntimeRequestTree(compileLibraryClass, compileId).catch(() => undefined);
     throw makeWorkerStageError('batch execution report parse', error);
+  }
+  if (report.success === true && !artifactCacheHit) {
+    await storeHostJavaCompileArtifact(compileLibraryClass, compileCacheKey, classesDir, requestId);
   }
   await finalizeClassicJavaCompileCache(
     compileLibraryClass,
@@ -6582,6 +6676,11 @@ self.onmessage = (event) => {
       pending.reject(new Error('Java worker terminated during external compile.'));
     }
     pendingExternalJavaCompiles.clear();
+    for (const [, pending] of pendingCompilerArtifactCacheRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error('Java worker terminated during compiler artifact cache request.'));
+    }
+    pendingCompilerArtifactCacheRequests.clear();
     self.close();
     return;
   }
@@ -6596,6 +6695,15 @@ self.onmessage = (event) => {
       return;
     }
     pending.resolve(message.payload);
+    return;
+  }
+
+  if (message.type === 'compiler-artifact-cache-response') {
+    const pending = pendingCompilerArtifactCacheRequests.get(message.requestId);
+    if (!pending || message.protocolToken !== pending.protocolToken) return;
+    pendingCompilerArtifactCacheRequests.delete(message.requestId);
+    clearTimeout(pending.timeout);
+    pending.resolve(message.payload ?? {});
     return;
   }
 

@@ -14,6 +14,7 @@ interface ExecuteResult {
   error?: string;
   timings?: {
     compileCacheHit?: boolean;
+    hostArtifactCacheHit?: boolean;
     compileMs?: number;
     compileCacheEntries?: number;
     compileCacheBytes?: number;
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
     await page.evaluate('globalThis.__name = (fn) => fn');
     const metrics = await page.evaluate(async ({ origin }) => {
       const assetBaseUrl = `${origin}/workers/vendor/csharp`;
+      const compilerArtifacts = new Map<string, string>();
 
       async function createWorkerHarness() {
         const worker = new Worker('/workers/csharp/csharp-worker.js', { type: 'module' });
@@ -101,6 +103,26 @@ async function main(): Promise<void> {
           protocolToken: string;
         }>();
         worker.addEventListener('message', (event) => {
+          if (event.data?.type === 'compiler-artifact-cache-request') {
+            const request = event.data?.payload ?? {};
+            if (request.operation === 'put' && typeof request.key === 'string' && typeof request.value === 'string') {
+              compilerArtifacts.set(request.key, request.value);
+            }
+            const value = request.operation === 'get' && typeof request.key === 'string'
+              ? compilerArtifacts.get(request.key)
+              : undefined;
+            worker.postMessage({
+              type: 'compiler-artifact-cache-response',
+              requestId: event.data.requestId,
+              protocolToken: event.data.protocolToken,
+              payload: {
+                hit: value !== undefined,
+                ...(value === undefined ? {} : { value }),
+                stored: request.operation === 'put' && compilerArtifacts.has(request.key),
+              },
+            });
+            return;
+          }
           const id = event.data?.id;
           if (!id) return;
           const request = pending.get(id);
@@ -235,8 +257,9 @@ async function main(): Promise<void> {
       `Replacement C# worker should execute in a clean realm: ${JSON.stringify(metrics.afterTimeout)}`
     );
     assertCondition(
-      metrics.afterTimeout.timings?.compileCacheHit === false,
-      'Terminating a timed-out C# worker must discard its in-memory compiled artifact cache.'
+      metrics.afterTimeout.timings?.compileCacheHit === true &&
+        metrics.afterTimeout.timings?.hostArtifactCacheHit === true,
+      'Replacement C# worker should restore immutable compiler output from the host cache.'
     );
 
     console.log(JSON.stringify({

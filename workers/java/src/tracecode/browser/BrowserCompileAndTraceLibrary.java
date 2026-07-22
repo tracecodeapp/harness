@@ -86,6 +86,26 @@ public final class BrowserCompileAndTraceLibrary {
     return true;
   }
 
+  /** Exports only immutable compiler output for a host-owned cross-worker cache. */
+  public static String exportCompiledClassManifest(String classesDir) throws IOException {
+    Path classesPath = safeRequestClassesDir(classesDir);
+    if (!Files.exists(classesPath)) return "";
+    List<Path> files;
+    try (Stream<Path> stream = Files.walk(classesPath)) {
+      files = stream
+          .filter(Files::isRegularFile)
+          .filter(path -> path.getFileName().toString().endsWith(".class"))
+          .sorted()
+          .collect(Collectors.toList());
+    }
+    List<String> lines = new ArrayList<>();
+    for (Path file : files) {
+      String relativePath = classesPath.relativize(file).toString().replace('\\', '/');
+      lines.add(relativePath + "\t" + Base64.getEncoder().encodeToString(Files.readAllBytes(file)));
+    }
+    return String.join("\n", lines);
+  }
+
   private static Path safeCompileCacheRoot(String value) throws IOException {
     Path runtimeRoot = Paths.get("/files/java-worker").toAbsolutePath().normalize();
     Path target = Paths.get(value).toAbsolutePath().normalize();

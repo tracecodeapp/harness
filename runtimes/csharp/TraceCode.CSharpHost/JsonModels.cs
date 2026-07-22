@@ -39,6 +39,12 @@ public sealed class CSharpExecuteRequest
 
     [JsonPropertyName("minimalTrace")]
     public bool MinimalTrace { get; set; }
+
+    [JsonPropertyName("compiledArtifactKey")]
+    public string? CompiledArtifactKey { get; set; }
+
+    [JsonPropertyName("compiledArtifactBase64")]
+    public string? CompiledArtifactBase64 { get; set; }
 }
 
 public sealed class CSharpProjectCommandRequest
@@ -197,6 +203,10 @@ public sealed class CSharpExecuteResponse
 
     [JsonPropertyName("timings")]
     public Dictionary<string, object> Timings { get; set; } = new();
+
+    [JsonPropertyName("compiledArtifactBase64")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CompiledArtifactBase64 { get; set; }
 }
 
 public sealed class RuntimeTraceEvent

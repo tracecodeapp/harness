@@ -47,6 +47,8 @@ import {
   WorkerTerminatedError,
 } from './worker-errors';
 import { WorkerSessionCore } from './worker-session-core';
+import type { WorkerSessionMessage } from './worker-session-core';
+import { handleHostArtifactCacheRequest, HostArtifactCache } from './host-artifact-cache';
 
 export type CSharpExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
@@ -87,6 +89,8 @@ const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const CSHARP_DEFAULT_FILE = 'solution.cs';
 const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
+const CSHARP_HOST_ARTIFACT_CACHE_MAX_ENTRIES = 24;
+const CSHARP_HOST_ARTIFACT_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 
 const KERNEL_HTTP_MESSAGE_TYPES = new Set([
   'kernel-http-listen',
@@ -151,6 +155,10 @@ export class CSharpWorkerClient {
   private readonly executionTimeoutMs: number;
   private readonly tracingTimeoutMs: number;
   private readonly core: WorkerSessionCore;
+  private readonly artifactCache = new HostArtifactCache(
+    CSHARP_HOST_ARTIFACT_CACHE_MAX_ENTRIES,
+    CSHARP_HOST_ARTIFACT_CACHE_MAX_BYTES
+  );
 
   constructor(private readonly options: CSharpWorkerClientOptions) {
     this.debug = options.debug ?? isDevEnvironment();
@@ -178,7 +186,11 @@ export class CSharpWorkerClient {
         handleAsyncKernelHttpProtocolMessage(this.kernelHttpHost, commandId, type, payload);
         return true;
       },
-      onUnhandledMessage: (message) => {
+      onUnhandledMessage: (message, session) => {
+        if (message.type === 'compiler-artifact-cache-request') {
+          this.handleArtifactCacheRequest(message, session.worker);
+          return true;
+        }
         if (message.type !== 'idle-timeout') return false;
         logRuntimeDiagnostic('info', {
           component: 'CSharpWorkerClient',
@@ -215,6 +227,20 @@ export class CSharpWorkerClient {
     return this.options.workerFactory
       ? this.options.workerFactory(workerUrl, { type: 'module' })
       : new Worker(workerUrl, { type: 'module' });
+  }
+
+  private hasPendingProtocolToken(protocolToken: unknown): protocolToken is string {
+    return typeof protocolToken === 'string' &&
+      Array.from(this.core.pendingMessages.values()).some((pending) => pending.protocolToken === protocolToken);
+  }
+
+  private handleArtifactCacheRequest(message: WorkerSessionMessage, worker: BrowserWorkerLike): void {
+    handleHostArtifactCacheRequest({
+      cache: this.artifactCache,
+      message,
+      worker,
+      validateProtocolToken: (protocolToken) => this.hasPendingProtocolToken(protocolToken),
+    });
   }
 
   /**

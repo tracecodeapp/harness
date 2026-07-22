@@ -3,6 +3,7 @@ const trustedCSharpWorkerPostMessage = self.postMessage.bind(self);
 let warmupPromise = null;
 let executeExport = null;
 let executeProjectExport = null;
+let getCompiledArtifactKeyExport = null;
 let configuredAssetBaseUrl = null;
 let configuredRuntimeDependenciesSignature = null;
 let trustedRuntimeUserAuthorityLockdown = null;
@@ -10,6 +11,7 @@ let runtimeModule = null;
 let runtimeFsHooksInstalled = false;
 let activeProjectIo = null;
 const activeProtocolTokens = new Map();
+const pendingCompilerArtifactCacheRequests = new Map();
 let materializedKernelVirtualFilePaths = new Set();
 let materializedKernelVirtualDirectoryPaths = new Set();
 let hiddenKernelVirtualFilePaths = new Set();
@@ -1698,7 +1700,7 @@ function resolveAssetUrl(assetBaseUrl, pathname) {
 
 function configureAssetBaseUrl(assetBaseUrl) {
   if (typeof assetBaseUrl === 'string' && assetBaseUrl.trim()) {
-    if (!configuredAssetBaseUrl || (!executeExport && !executeProjectExport && !runtimePromise)) {
+    if (!configuredAssetBaseUrl || (!executeExport && !executeProjectExport && !getCompiledArtifactKeyExport && !runtimePromise)) {
       configuredAssetBaseUrl = assetBaseUrl;
     }
   }
@@ -1716,7 +1718,7 @@ function runWarmup() {
 
 async function loadRuntime(assetBaseUrl) {
   const resolvedAssetBaseUrl = configureAssetBaseUrl(assetBaseUrl);
-  if (executeExport && executeProjectExport) {
+  if (executeExport && executeProjectExport && getCompiledArtifactKeyExport) {
     return {
       success: true,
       loadTimeMs: 0,
@@ -1745,11 +1747,15 @@ async function loadRuntime(assetBaseUrl) {
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;
       executeProjectExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecuteProject;
+      getCompiledArtifactKeyExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.GetCompiledArtifactKey;
       if (typeof executeExport !== 'function') {
         throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.Execute JS export');
       }
       if (typeof executeProjectExport !== 'function') {
         throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.ExecuteProject JS export');
+      }
+      if (typeof getCompiledArtifactKeyExport !== 'function') {
+        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.GetCompiledArtifactKey JS export');
       }
       const initMs = elapsedMs(startedAt);
       const totalMs = elapsedMs(startedAt);
@@ -1763,6 +1769,7 @@ async function loadRuntime(assetBaseUrl) {
       runtimePromise = null;
       executeExport = null;
       executeProjectExport = null;
+      getCompiledArtifactKeyExport = null;
     });
   }
 
@@ -2608,7 +2615,26 @@ function csharpBatchIsolationReason(payload) {
   return '';
 }
 
-async function executeCSharpCodePayload(payload, messageType = 'execute-code') {
+function requestCompilerArtifactCache(operation, key, commandId, value) {
+  const protocolToken = activeProtocolTokens.get(commandId);
+  if (!protocolToken) return Promise.resolve({ hit: false, stored: false });
+  const requestId = `csharp-artifact-${commandId}-${operation}-${Math.random().toString(16).slice(2)}`;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingCompilerArtifactCacheRequests.delete(requestId);
+      resolve({ hit: false, stored: false });
+    }, 250);
+    pendingCompilerArtifactCacheRequests.set(requestId, { resolve, reject, protocolToken, timeout });
+    trustedCSharpWorkerPostMessage({
+      type: 'compiler-artifact-cache-request',
+      requestId,
+      protocolToken,
+      payload: { operation, key, ...(value === undefined ? {} : { value }) },
+    });
+  });
+}
+
+async function executeCSharpCodePayload(payload, messageType = 'execute-code', commandId) {
   const startedAt = now();
   const request = {
     source: payload?.code ?? '',
@@ -2637,10 +2663,20 @@ async function executeCSharpCodePayload(payload, messageType = 'execute-code') {
   const runtimeStartedAt = now();
   const runtimeResult = await loadRuntime(payload?.assetBaseUrl);
   const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
+  const artifactKey = getCompiledArtifactKeyExport(JSON.stringify(request));
+  const cachedArtifact = await requestCompilerArtifactCache('get', artifactKey, commandId);
+  if (cachedArtifact?.hit === true && typeof cachedArtifact.value === 'string') {
+    request.compiledArtifactKey = artifactKey;
+    request.compiledArtifactBase64 = cachedArtifact.value;
+  }
   const hostCallStartedAt = now();
   const result = await withCSharpUserAuthorityLockdown(() =>
     normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request)
   );
+  if (typeof result?.compiledArtifactBase64 === 'string' && result.compiledArtifactBase64.length > 0) {
+    await requestCompilerArtifactCache('put', artifactKey, commandId, result.compiledArtifactBase64);
+    delete result.compiledArtifactBase64;
+  }
   const hostCallMs = elapsedMs(hostCallStartedAt);
   return {
     ...result,
@@ -2686,7 +2722,7 @@ async function executeCSharpCodeBatch(message) {
   if (isolationReason) {
     const results = [];
     for (const inputs of inputBatch) {
-      const result = await executeCSharpCodePayload({ ...message.payload, inputs }, 'execute-code');
+      const result = await executeCSharpCodePayload({ ...message.payload, inputs }, 'execute-code', message.id);
       results.push(normalizeCSharpBatchEntry(result, result.timings));
     }
     const consoleOutput = results.flatMap((entry) => entry.consoleOutput ?? []);
@@ -2725,7 +2761,7 @@ async function executeCSharpCodeBatch(message) {
     functionName: '',
     executionStyle: 'function',
     inputs: { __tracecodeBatchInputs: inputBatch },
-  }, 'execute-code');
+  }, 'execute-code', message.id);
   const batchEntries = Array.isArray(result?.output) ? result.output : [];
   const results = batchEntries.map((entry) => normalizeCSharpBatchEntry(entry));
   const consoleOutput = results.flatMap((entry) => entry.consoleOutput ?? []);
@@ -2762,7 +2798,7 @@ async function handleMessage(message) {
     message.type === 'execute-code' ||
     message.type === 'execute-with-tracing'
   ) {
-    return executeCSharpCodePayload(message.payload, message.type);
+    return executeCSharpCodePayload(message.payload, message.type, message.id);
   }
 
   if (message.type === 'execute-project-csharp') {
@@ -2853,6 +2889,14 @@ async function handleMessage(message) {
 // use that signal to enable sidecar mode.
 self.addEventListener('message', (event) => {
   const { id, type, payload, protocolToken } = event.data || {};
+  if (type === 'compiler-artifact-cache-response') {
+    const pending = pendingCompilerArtifactCacheRequests.get(event.data?.requestId);
+    if (!pending || protocolToken !== pending.protocolToken) return;
+    pendingCompilerArtifactCacheRequests.delete(event.data.requestId);
+    clearTimeout(pending.timeout);
+    pending.resolve(payload ?? {});
+    return;
+  }
   if (!id) return;
   if (typeof protocolToken !== 'string') {
     trustedCSharpWorkerPostMessage({

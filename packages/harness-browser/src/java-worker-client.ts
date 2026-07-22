@@ -35,6 +35,7 @@ import {
 } from './worker-errors';
 import { WorkerSessionCore, type WorkerSessionMessage } from './worker-session-core';
 import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
+import { handleHostArtifactCacheRequest, HostArtifactCache } from './host-artifact-cache';
 
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
@@ -123,6 +124,7 @@ const INIT_TIMEOUT_MS = 120_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const JAVA_DEFAULT_FILE = 'solution.java';
+const JAVA_HOST_ARTIFACT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
 const KERNEL_HTTP_SYNC_MESSAGE_TYPES = new Set([
   'kernel-http-dispatch-sync',
@@ -137,6 +139,7 @@ export class JavaWorkerClient {
   private activeExternalCompileControllers = new Set<AbortController>();
   private readonly debug: boolean;
   private readonly core: WorkerSessionCore;
+  private readonly artifactCache: HostArtifactCache;
 
   constructor(private readonly options: JavaWorkerClientOptions) {
     if (
@@ -146,6 +149,10 @@ export class JavaWorkerClient {
       throw new TypeError('Java compileCacheLimit must be an integer from 0 to 64.');
     }
     this.debug = options.debug ?? isDevEnvironment();
+    this.artifactCache = new HostArtifactCache(
+      options.compileCacheLimit ?? 16,
+      JAVA_HOST_ARTIFACT_CACHE_MAX_BYTES
+    );
 
     this.core = new WorkerSessionCore({
       runtimeLabel: 'Java',
@@ -186,6 +193,10 @@ export class JavaWorkerClient {
         }
         if (message.type === 'java-compile-request') {
           this.handleJavaCompileRequest(message, session.worker);
+          return true;
+        }
+        if (message.type === 'compiler-artifact-cache-request') {
+          this.handleArtifactCacheRequest(message, session.worker);
           return true;
         }
         return false;
@@ -248,6 +259,15 @@ export class JavaWorkerClient {
           payload: { success: false, error: error instanceof Error ? error.message : String(error) },
         });
       });
+  }
+
+  private handleArtifactCacheRequest(message: WorkerSessionMessage, worker: BrowserWorkerLike): void {
+    handleHostArtifactCacheRequest({
+      cache: this.artifactCache,
+      message,
+      worker,
+      validateProtocolToken: (protocolToken) => this.hasPendingProtocolToken(protocolToken),
+    });
   }
 
   private async compileJavaWithExternalUrl(payload: unknown): Promise<Record<string, unknown>> {
