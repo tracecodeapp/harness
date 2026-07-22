@@ -6,6 +6,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-07-22
+
 ### Added
 
 - Browser harness execution is now safe by default across every language. Python, Java, and C# serialize untrusted requests and retire their runtime worker after each execution; JavaScript and TypeScript already use fresh execution workers, and C++ uses a fresh program worker. Safe mode stays lazy, then replenishes one clean, fully warmed Python, Java, or C# standby after first use so later executions avoid cold startup without reusing learner-observable state. Java safe execution and per-command Project workers also clear CheerpJ's origin-persistent writable mount under a cross-context lock before learner code runs, closing the filesystem boundary that a fresh JVM alone cannot reset. Memory-constrained consumers can disable clean standby replenishment with `safeExecution.prewarmAfterUse: false`. Trusted consumers may explicitly request `executionIsolation: "unsafe-reuse"` to retain mutable runtimes, and configured runtime profiles expose that weaker boundary instead of presenting it as isolation.

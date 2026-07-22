@@ -7,7 +7,7 @@ var __export = (target, all) => {
 // package.json
 var package_default = {
   name: "@tracecode/harness",
-  version: "0.12.5",
+  version: "0.12.6",
   license: "AGPL-3.0-only",
   homepage: "https://tracecode.app",
   repository: {
@@ -145,7 +145,7 @@ var package_default = {
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
-    "test:browser-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-session-core.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-execution-host.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-assets.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-asset-plumbing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-environment.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-trace-event-transport.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-harness.ts",
+    "test:browser-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-host-artifact-cache.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-session-core.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-execution-host.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-assets.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-asset-plumbing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-environment.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-trace-event-transport.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-harness.ts",
     "test:asset-sync": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-asset-sync.ts",
     "test:language-packages": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-language-package-surface.ts",
     "test:example-app": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-example-app.ts",
@@ -464,11 +464,11 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
     "csharp": {
       "language": "csharp",
       "displayName": "C#",
-      "versionLabel": "C# 14 (.NET 10.0.9)",
-      "description": "C# 14 with .NET 10.0.9 runtime.\n\nCode is compiled with Microsoft.CodeAnalysis.CSharp 5.3.0 and executed by a browser-local .NET WebAssembly runtime.\n\nCommon namespaces are imported automatically: System, System.Collections, System.Collections.Generic, System.IO, System.Linq, System.Numerics, System.Text, System.Text.RegularExpressions.",
+      "versionLabel": "C# 14 (.NET 10.0.10)",
+      "description": "C# 14 with .NET 10.0.10 runtime.\n\nCode is compiled with Microsoft.CodeAnalysis.CSharp 5.3.0 and executed by a browser-local .NET WebAssembly runtime.\n\nCommon namespaces are imported automatically: System, System.Collections, System.Collections.Generic, System.IO, System.Linq, System.Numerics, System.Text, System.Text.RegularExpressions.",
       "runtime": {
         "name": ".NET WebAssembly runtime",
-        "version": "10.0.9",
+        "version": "10.0.10",
         "detail": "Browser-local .NET runtime targeting net10.0."
       },
       "compiler": {
