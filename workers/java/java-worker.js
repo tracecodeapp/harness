@@ -6678,6 +6678,37 @@ self.onmessage = (event) => {
     return;
   }
 
+  if (message.type === 'reset-persistent-storage') {
+    queue = queue.then(async () => {
+      try {
+        await ensureReady();
+        const compileLibraryClass = await getCompileLibraryClass();
+        await compileLibraryClass.resetPersistentRuntimeStorage();
+        javaCompileCache.clear();
+        postMessageResponse({
+          id: message.id,
+          type: 'reset-persistent-storage',
+          payload: { success: true },
+        });
+      } catch (error) {
+        const errorMessage = await formatWorkerErrorMessageAsync(error);
+        emitRuntimeDiagnostic('error', 'worker-request-failed', 'Java storage reset failed.', {
+          type: message.type,
+          message: errorMessage,
+        });
+        postMessageResponse({
+          id: message.id,
+          type: 'error',
+          payload: { error: errorMessage },
+        });
+      } finally {
+        activeProtocolTokens.delete(message.id);
+        resetIdleTimer();
+      }
+    });
+    return;
+  }
+
   if (
     message.type === 'execute-with-tracing' ||
     message.type === 'execute-code' ||

@@ -49,6 +49,7 @@ import {
   getLanguageRuntimeProfile,
 } from './runtime-profiles';
 import { FreshWorkerRuntimeClient } from './runtime-client-isolation';
+import { runJavaSafeStorageExclusive } from './java-storage-isolation';
 
 export interface CreateBrowserHarnessOptions {
   assetBaseUrl?: string;
@@ -67,6 +68,10 @@ export interface CreateBrowserHarnessOptions {
    * workers alive across executions and must only be used for trusted code.
    */
   executionIsolation?: RuntimeExecutionIsolationPolicy;
+  /** Safe-mode latency/memory policy. A clean standby is replenished after use by default. */
+  safeExecution?: {
+    prewarmAfterUse?: boolean;
+  };
   python?: {
     compileCacheLimit?: number;
   };
@@ -145,6 +150,12 @@ function resolveHarnessContext(options: CreateBrowserHarnessOptions): ResolvedHa
     options.executionIsolation !== 'unsafe-reuse'
   ) {
     throw new TypeError('executionIsolation must be "safe" or "unsafe-reuse".');
+  }
+  if (
+    options.safeExecution?.prewarmAfterUse !== undefined &&
+    typeof options.safeExecution.prewarmAfterUse !== 'boolean'
+  ) {
+    throw new TypeError('safeExecution.prewarmAfterUse must be a boolean.');
   }
   if (
     options.environment &&
@@ -527,9 +538,32 @@ const runtimeClientsLayer = Layer.effect(
     if ((ctx.options.executionIsolation ?? 'safe') === 'unsafe-reuse') return clients;
     return {
       ...clients,
-      python: new FreshWorkerRuntimeClient(clients.python, () => python.terminate()),
-      java: new FreshWorkerRuntimeClient(clients.java, () => java.terminate()),
-      csharp: new FreshWorkerRuntimeClient(clients.csharp, () => csharp.terminate()),
+      python: new FreshWorkerRuntimeClient(
+        clients.python,
+        {
+          retireWorker: () => python.terminate(),
+          prepareWorker: () => python.warmup(),
+          prewarmAfterUse: ctx.options.safeExecution?.prewarmAfterUse ?? true,
+        }
+      ),
+      java: new FreshWorkerRuntimeClient(
+        clients.java,
+        {
+          retireWorker: () => java.terminate(),
+          prepareWorker: () => java.warmup(),
+          prewarmAfterUse: ctx.options.safeExecution?.prewarmAfterUse ?? true,
+          beforeExecution: () => java.resetPersistentStorage(),
+          runExclusive: runJavaSafeStorageExclusive,
+        }
+      ),
+      csharp: new FreshWorkerRuntimeClient(
+        clients.csharp,
+        {
+          retireWorker: () => csharp.terminate(),
+          prepareWorker: () => csharp.warmup(),
+          prewarmAfterUse: ctx.options.safeExecution?.prewarmAfterUse ?? true,
+        }
+      ),
     };
   })
 );
@@ -683,16 +717,22 @@ class BrowserHarnessRuntime implements BrowserHarness {
       return Promise.reject(new Error(`Runtime for language "${language}" is not selected in this browser environment.`));
     }
     if (language === 'python') {
-      return this.workerClients.python.warmup();
+      return this.executionIsolation === 'safe'
+        ? (this.getClient(language) as FreshWorkerRuntimeClient).prepare()
+        : this.workerClients.python.warmup();
     }
     if (language === 'java') {
-      return this.workerClients.java.warmup();
+      return this.executionIsolation === 'safe'
+        ? (this.getClient(language) as FreshWorkerRuntimeClient).prepare()
+        : this.workerClients.java.warmup();
     }
     if (language === 'cpp') {
       return this.workerClients.cpp.warmup();
     }
     if (language === 'csharp') {
-      return this.workerClients.csharp.warmup();
+      return this.executionIsolation === 'safe'
+        ? (this.getClient(language) as FreshWorkerRuntimeClient).prepare()
+        : this.workerClients.csharp.warmup();
     }
     if (language === 'typescript') {
       return this.workerClients.javascript.warmup('typescript');
@@ -702,6 +742,11 @@ class BrowserHarnessRuntime implements BrowserHarness {
 
   disposeLanguage(language: Language): void {
     if (!this.supportedLanguages.includes(language)) return;
+    const client = this.clients[language];
+    if (client instanceof FreshWorkerRuntimeClient) {
+      client.reset();
+      return;
+    }
     if (language === 'python') {
       this.workerClients.python.terminate();
       return;
@@ -722,6 +767,9 @@ class BrowserHarnessRuntime implements BrowserHarness {
   }
 
   dispose(): void {
+    for (const client of Object.values(this.clients)) {
+      if (client instanceof FreshWorkerRuntimeClient) client.reset();
+    }
     // Close the runtime's scope: every worker client finalizer runs first,
     // then the execution host's — reverse acquisition order, by construction.
     const exit = Effect.runSyncExit(this.managed.disposeEffect);

@@ -409,6 +409,16 @@ export class JavaWorkerClient {
     return this.warmupPromise;
   }
 
+  /** Clears CheerpJ's persistent learner-addressable filesystem before a safe execution. */
+  async resetPersistentStorage(): Promise<void> {
+    await this.init();
+    await this.core.sendMessage<{ success: boolean }>(
+      'reset-persistent-storage',
+      undefined,
+      INIT_TIMEOUT_MS
+    );
+  }
+
   /** Runtime load ahead of an execution. Memoization stays Promise-based on the client. */
   private initGateEffect(): Effect.Effect<void, Error> {
     return Effect.tryPromise({

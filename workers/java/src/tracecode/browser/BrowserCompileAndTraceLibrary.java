@@ -30,6 +30,15 @@ public final class BrowserCompileAndTraceLibrary {
   private BrowserCompileAndTraceLibrary() {}
 
   /**
+   * Clears CheerpJ's persistent read-write mount before an isolated learner
+   * execution. This is host lifecycle work; it must run while no learner code
+   * from another execution is active on the same browser origin.
+   */
+  public static void resetPersistentRuntimeStorage() throws IOException {
+    resetDirectory(Paths.get("/files"));
+  }
+
+  /**
    * Removes one request-scoped browser compilation tree without touching the
    * session VM warmup or any CheerpJ runtime files outside TraceCode's root.
    */

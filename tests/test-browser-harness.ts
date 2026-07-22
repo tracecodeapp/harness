@@ -127,6 +127,18 @@ class MockWorker {
         return;
       }
 
+      if (type === 'reset-persistent-storage') {
+        this.onmessage?.({
+          data: {
+            id,
+            type,
+            protocolToken,
+            payload: { success: true },
+          },
+        } as MessageEvent<WorkerMessage>);
+        return;
+      }
+
       if (type === 'execute-code') {
         this.onmessage?.({
           data: {
@@ -737,6 +749,18 @@ async function main(): Promise<void> {
             'C++ toolchain warmup must start before the disposable user execution worker'
           );
         }
+        if (runtime === 'Java') {
+          const resetIndex = worker?.messages.findIndex(
+            (message) => message.type === 'reset-persistent-storage'
+          ) ?? -1;
+          const executeIndex = worker?.messages.findIndex(
+            (message) => message.type === 'execute-project-java'
+          ) ?? -1;
+          assertCondition(
+            resetIndex >= 0 && resetIndex + 1 === executeIndex,
+            'A clean Java project worker must reset CheerpJ persistent storage immediately before its one user lease'
+          );
+        }
         assertCondition(worker?.terminated === true, `${runtime} one-shot project worker must be retired after the command`);
       }
     } finally {
@@ -993,16 +1017,42 @@ async function main(): Promise<void> {
       coldPythonWorker?.terminated === true,
       'Safe browser harness execution should retire the Python interpreter worker after user code'
     );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const cleanPythonStandby = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/cold-python/pyodide-worker.js') && !worker.terminated
+    );
+    assertCondition(
+      cleanPythonStandby !== coldPythonWorker &&
+        cleanPythonStandby?.messages.map((message) => message.type).join(',') === 'init,warmup',
+      'Safe browser harness should replenish a warm worker that has not observed learner code'
+    );
     await coldPythonHarness.getClient('python').executeCode({ code: 'result = 2', functionName: 'noop', inputs: {}, executionStyle: 'function' });
     const secondColdPythonWorker = workerInstances.findLast((worker) =>
       String(worker.url).startsWith('/cold-python/pyodide-worker.js')
     );
     assertCondition(
-      secondColdPythonWorker !== coldPythonWorker && secondColdPythonWorker?.terminated === true,
-      'Consecutive safe Python executions should use different retired workers'
+      secondColdPythonWorker === cleanPythonStandby &&
+        secondColdPythonWorker?.terminated === true &&
+        secondColdPythonWorker.messages.map((message) => message.type).join(',') === 'init,warmup,execute-code',
+      'The next safe Python execution should lease and retire the clean warmed standby'
     );
     coldPythonHarness.dispose();
-    console.log('PASS: browser harness warms cold Python execution before user-code timing');
+    console.log('PASS: browser harness replenishes and leases clean safe-mode standbys');
+
+    const noPrewarmPythonHarness = createBrowserHarness({
+      assetBaseUrl: '/safe-python-no-prewarm',
+      safeExecution: { prewarmAfterUse: false },
+    });
+    await noPrewarmPythonHarness.getClient('python').executeCode({ code: 'result = 1', functionName: 'noop', inputs: {}, executionStyle: 'function' });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const noPrewarmWorkers = workerInstances.filter((worker) =>
+      String(worker.url).startsWith('/safe-python-no-prewarm/pyodide-worker.js')
+    );
+    assertCondition(
+      noPrewarmWorkers.length === 1 && noPrewarmWorkers[0]?.terminated === true,
+      'Memory-constrained safe mode should allow clean standby replenishment to be disabled'
+    );
+    noPrewarmPythonHarness.dispose();
 
     const unsafePythonHarness = createBrowserHarness({
       assetBaseUrl: '/unsafe-python-reuse',
@@ -1535,9 +1585,12 @@ async function main(): Promise<void> {
       .executeCode({ code: 'int search(int[] nums, int target) { return 0; }', functionName: 'search', inputs: {}, executionStyle: 'function' });
     assertCondition(javaExecuteResult.kind === 'completed', 'Java runtime should route function-style executeCode through the browser harness client');
     const javaWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
+    const javaMessageTypes = javaWorker?.messages.map((message) => message.type) ?? [];
     assertCondition(
-      javaWorker?.messages.at(-1)?.type === 'execute-code' && javaWorker.terminated,
-      'Java executeCode should send execute-code instead of execute-with-tracing'
+      javaWorker?.messages.at(-1)?.type === 'execute-code' &&
+        javaMessageTypes.at(-2) === 'reset-persistent-storage' &&
+        javaWorker.terminated,
+      'Safe Java executeCode should clear persistent storage immediately before learner code and retire the JVM'
     );
     console.log('PASS: browser harness routes Java runtime requests');
 

@@ -10,6 +10,7 @@ import type {
 import type { CSharpWorkerClient, CSharpWorkerClientOptions } from './csharp-worker-client';
 import type { CppWorkerClient, CppWorkerClientOptions } from './cpp-worker-client';
 import type { JavaWorkerClient, JavaWorkerClientOptions } from './java-worker-client';
+import { runJavaSafeStorageExclusive } from './java-storage-isolation';
 import type { PythonWorkerClient, PythonWorkerClientOptions } from './pyodide-worker-client';
 import {
   resolveBrowserHarnessAssets,
@@ -399,7 +400,12 @@ function createPerCommandJavaWorkerClient(
   return {
     async executeProjectJava(request, timeoutMs, onEvent, signal) {
       validateRuntimeAssets?.();
-      return pool.run(signal, (client) => client.executeProjectJava(request, timeoutMs, onEvent, signal));
+      return runJavaSafeStorageExclusive(() =>
+        pool.run(signal, async (client) => {
+          await client.resetPersistentStorage();
+          return client.executeProjectJava(request, timeoutMs, onEvent, signal);
+        })
+      );
     },
     terminate() {
       pool.terminate();

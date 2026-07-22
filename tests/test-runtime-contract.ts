@@ -23,6 +23,7 @@ import {
 import { assertRuntimeRequestSupported } from '../packages/harness-browser/src/runtime-capability-guards';
 import { executeRuntimeRequest } from '../packages/harness-browser/src/runtime-execute';
 import { FreshWorkerRuntimeClient } from '../packages/harness-browser/src/runtime-client-isolation';
+import { runJavaSafeStorageExclusive } from '../packages/harness-browser/src/java-storage-isolation';
 import { ExecutionTimeoutError } from '../packages/harness-browser/src/worker-errors';
 import {
   WORKER_REQUEST_MESSAGES,
@@ -1384,7 +1385,16 @@ async function assertFreshWorkerRuntimeClientContract(): Promise<void> {
     }
   }
 
-  const client = new FreshWorkerRuntimeClient(new ProbeRuntimeClient(), () => events.push('retire'));
+  const client = new FreshWorkerRuntimeClient(
+    new ProbeRuntimeClient(),
+    {
+      retireWorker: () => events.push('retire'),
+      prepareWorker: async () => {
+        events.push('prepare');
+        return { success: true, loadTimeMs: 0 };
+      },
+    }
+  );
   const first = client.executeCode({ code: 'first', functionName: 'run', inputs: {} });
   const second = client.executeCode({ code: 'second', functionName: 'run', inputs: {} });
   await Promise.resolve();
@@ -1395,16 +1405,50 @@ async function assertFreshWorkerRuntimeClientContract(): Promise<void> {
   releaseFirst?.();
   await Promise.all([first, second]);
   assertCondition(
-    events.join(',') === 'start-1,finish-1,retire,start-2,finish-2,retire',
-    `safe runtime client should retire between successful executions: ${events.join(',')}`
+    events.join(',') === 'start-1,finish-1,retire,prepare,start-2,finish-2,retire,prepare',
+    `safe runtime client should retire and prepare a clean standby between executions: ${events.join(',')}`
   );
 
   await client.executeCode({ code: 'failure', functionName: 'run', inputs: {} }).catch(() => undefined);
   assertCondition(
-    events.at(-1) === 'retire' && events.filter((event) => event === 'retire').length === 3,
-    `safe runtime client should retire after failed executions: ${events.join(',')}`
+    events.at(-1) === 'prepare' && events.filter((event) => event === 'retire').length === 3,
+    `safe runtime client should retire and replenish after failed executions: ${events.join(',')}`
   );
-  console.log('PASS: fresh-worker runtime client serializes and retires every execution');
+  client.reset();
+  assertCondition(
+    events.at(-1) === 'retire',
+    `reset should retire an unused clean standby: ${events.join(',')}`
+  );
+  console.log('PASS: fresh-worker runtime client serializes, retires, and replenishes clean workers');
+}
+
+async function assertJavaStorageIsolationContract(): Promise<void> {
+  const events: string[] = [];
+  let releaseFirst: (() => void) | undefined;
+  const first = runJavaSafeStorageExclusive(async () => {
+    events.push('first-start');
+    await new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    events.push('first-finish');
+  });
+  const second = runJavaSafeStorageExclusive(async () => {
+    events.push('second-start');
+    events.push('second-finish');
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assertCondition(
+    events.join(',') === 'first-start',
+    `Java persistent storage operations must be exclusive: ${events.join(',')}`
+  );
+  releaseFirst?.();
+  await Promise.all([first, second]);
+  assertCondition(
+    events.join(',') === 'first-start,first-finish,second-start,second-finish',
+    `Java persistent storage lock must release in request order: ${events.join(',')}`
+  );
+  console.log('PASS: Java persistent storage safe-execution lock');
 }
 
 async function assertExecutionLimitsDispatchContract(): Promise<void> {
@@ -1724,6 +1768,7 @@ async function main(): Promise<void> {
 
   await assertExecutionLimitsDispatchContract();
   await assertFreshWorkerRuntimeClientContract();
+  await assertJavaStorageIsolationContract();
   console.log('PASS: execution limits dispatch contract');
 
   assertWorkerProtocolDeclarations();
