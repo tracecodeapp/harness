@@ -108,6 +108,10 @@ const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         clientTimeouts: true,
         runtimeTimeouts: true,
       },
+      isolation: {
+        safeForUntrustedReuse: false,
+        boundary: 'interpreter-cleanup',
+      },
     },
     project: LIVE_PROJECT_IO_CAPABILITIES,
     tracing: {
@@ -176,6 +180,10 @@ const JAVASCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       timeouts: {
         clientTimeouts: true,
         runtimeTimeouts: false,
+      },
+      isolation: {
+        safeForUntrustedReuse: true,
+        boundary: 'fresh-worker',
       },
     },
     project: LIVE_PROJECT_IO_CAPABILITIES,
@@ -246,6 +254,10 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         clientTimeouts: true,
         runtimeTimeouts: false,
       },
+      isolation: {
+        safeForUntrustedReuse: true,
+        boundary: 'fresh-worker',
+      },
     },
     project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
@@ -314,6 +326,10 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       timeouts: {
         clientTimeouts: true,
         runtimeTimeouts: true,
+      },
+      isolation: {
+        safeForUntrustedReuse: false,
+        boundary: 'fresh-class-loader',
       },
     },
     project: BRIDGED_PROJECT_IO_CAPABILITIES,
@@ -389,6 +405,10 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       timeouts: {
         clientTimeouts: true,
         runtimeTimeouts: true,
+      },
+      isolation: {
+        safeForUntrustedReuse: false,
+        boundary: 'fresh-assembly-load-context',
       },
     },
     project: BRIDGED_PROJECT_IO_CAPABILITIES,
@@ -470,6 +490,10 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         clientTimeouts: true,
         runtimeTimeouts: true,
       },
+      isolation: {
+        safeForUntrustedReuse: true,
+        boundary: 'fresh-program-instance',
+      },
     },
     project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
@@ -542,6 +566,20 @@ export function getLanguageRuntimeProfile(language: Language): LanguageRuntimePr
 
 export function getSupportedLanguageProfiles(): readonly LanguageRuntimeProfile[] {
   return SUPPORTED_LANGUAGES.map((language) => LANGUAGE_RUNTIME_PROFILES[language]);
+}
+
+/**
+ * Returns true only when the runtime creates a tested isolation boundary that
+ * permits sequential untrusted executions to reuse the initialized client.
+ * Consumers must use a fresh containing runtime when this returns false.
+ */
+export function isRuntimeSafeForUntrustedReuse(
+  profileOrLanguage: LanguageRuntimeProfile | Language
+): boolean {
+  const profile = typeof profileOrLanguage === 'string'
+    ? getLanguageRuntimeProfile(profileOrLanguage)
+    : profileOrLanguage;
+  return profile.capabilities.execution.isolation.safeForUntrustedReuse;
 }
 
 export function getRuntimeProjectIoSupport(profileOrLanguage: LanguageRuntimeProfile | Language): RuntimeProjectIoSupport {

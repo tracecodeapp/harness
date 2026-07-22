@@ -14,6 +14,24 @@ export type RuntimeExecutionPipeline = 'interpreted' | 'transpiled' | 'compiled'
 
 export type RuntimeCompileCost = 'none' | 'low' | 'high';
 
+export type RuntimeExecutionIsolationBoundary =
+  | 'fresh-worker'
+  | 'fresh-program-instance'
+  | 'interpreter-cleanup'
+  | 'fresh-class-loader'
+  | 'fresh-assembly-load-context';
+
+export interface RuntimeExecutionIsolationSupport {
+  /**
+   * Whether separate untrusted executions may safely share the initialized
+   * browser runtime. False means the consumer must replace the containing
+   * runtime (for example, its Worker or browser context) between principals.
+   */
+  safeForUntrustedReuse: boolean;
+  /** The strongest isolation boundary created between executions. */
+  boundary: RuntimeExecutionIsolationBoundary;
+}
+
 export type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live';
 
 export type RuntimeProjectIoEnvironment = 'browser' | 'node';
@@ -57,6 +75,7 @@ export interface RuntimeCapabilities {
       clientTimeouts: boolean;
       runtimeTimeouts: boolean;
     };
+    isolation: RuntimeExecutionIsolationSupport;
   };
   project: {
     workspace: {

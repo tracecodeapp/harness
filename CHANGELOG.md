@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [Unreleased]
+
+### Added
+
+- Runtime profiles now declare the concrete isolation boundary between executions and whether it is safe for sequential untrusted runs to reuse an initialized browser runtime. JavaScript and TypeScript use fresh execution workers, C++ uses a fresh program worker, while Python interpreter cleanup, Java class loaders, and C# assembly load contexts are conservatively marked as requiring a fresh containing runtime.
+
 ## [0.12.5] - 2026-07-21
 
 ### Fixed

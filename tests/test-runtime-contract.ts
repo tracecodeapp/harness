@@ -12,6 +12,7 @@ import {
   SUPPORTED_LANGUAGES,
   getLanguageRuntimeInfo,
   getLanguageRuntimeProfile,
+  isRuntimeSafeForUntrustedReuse,
   getRuntimeProjectIoCapability,
   getRuntimeProjectIoCapabilityMatrix,
   getRuntimeProjectIoSupport,
@@ -1125,10 +1126,16 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.events.stdout',
     'diagnostics.mappedErrorLines',
   ],
-  javascript: [...COMMON_STABLE_COVERAGE, ...PROJECT_IO_COVERAGE, 'project.filesystem.providerLiveInterception'],
+  javascript: [
+    ...COMMON_STABLE_COVERAGE,
+    ...PROJECT_IO_COVERAGE,
+    'execution.isolation.safeForUntrustedReuse',
+    'project.filesystem.providerLiveInterception',
+  ],
   typescript: [
     ...COMMON_STABLE_COVERAGE,
     'execution.compilation.required',
+    'execution.isolation.safeForUntrustedReuse',
     'project.workspace.supported',
     'project.workspace.kernelFs',
     'project.workspace.virtualDevices',
@@ -1230,6 +1237,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
   ],
   cpp: [
     'execution.compilation.required',
+    'execution.isolation.safeForUntrustedReuse',
     'execution.styles.function',
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
@@ -1433,6 +1441,10 @@ function createUnsupportedProfile(
         timeouts: {
           clientTimeouts: true,
           runtimeTimeouts: false,
+        },
+        isolation: {
+          safeForUntrustedReuse: false,
+          boundary: 'fresh-worker',
         },
       },
       project: {
@@ -1793,6 +1805,11 @@ async function main(): Promise<void> {
     'Python should advertise runtime-side timeouts'
   );
   assertCondition(
+    !pythonProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
+      pythonProfile.capabilities.execution.isolation.boundary === 'interpreter-cleanup',
+    'Python interpreter cleanup must not be represented as an untrusted reuse boundary'
+  );
+  assertCondition(
     !pythonProfile.capabilities.execution.compilation.required &&
       pythonProfile.capabilities.execution.compilation.pipeline === 'interpreted' &&
       pythonProfile.capabilities.execution.compilation.cost === 'none',
@@ -1811,6 +1828,13 @@ async function main(): Promise<void> {
   assertCondition(
     javascriptProfile.capabilities.structures.listNodeRefs,
     'JavaScript should advertise linked-list ref hydration'
+  );
+  assertCondition(
+    javascriptProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
+      javascriptProfile.capabilities.execution.isolation.boundary === 'fresh-worker' &&
+      typescriptProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
+      typescriptProfile.capabilities.execution.isolation.boundary === 'fresh-worker',
+    'JavaScript and TypeScript should expose their one-execution-per-worker isolation boundary'
   );
   assertCondition(
     javascriptProfile.capabilities.project.filesystem.providerLiveInterception &&
@@ -1861,6 +1885,11 @@ async function main(): Promise<void> {
   assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should support script execution');
   assertCondition(javaProfile.capabilities.execution.limits.wallClock, 'Java should honor wall-clock execution limits');
   assertCondition(
+    !javaProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
+      javaProfile.capabilities.execution.isolation.boundary === 'fresh-class-loader',
+    'A fresh Java class loader must not be represented as fresh JVM isolation'
+  );
+  assertCondition(
     javaProfile.capabilities.project.filesystem.liveMutationEvents &&
       javaProfile.capabilities.project.filesystem.finalDiff &&
       !javaProfile.capabilities.project.filesystem.providerLiveInterception,
@@ -1879,6 +1908,11 @@ async function main(): Promise<void> {
   );
   assertCondition(csharpProfile.capabilities.execution.styles.opsClass, 'C# should support ops-class execution');
   assertCondition(csharpProfile.capabilities.execution.limits.wallClock, 'C# should honor wall-clock execution limits');
+  assertCondition(
+    !csharpProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
+      csharpProfile.capabilities.execution.isolation.boundary === 'fresh-assembly-load-context',
+    'A fresh C# AssemblyLoadContext must not be represented as fresh runtime isolation'
+  );
   assertCondition(csharpProfile.capabilities.tracing.supported, 'C# should support basic tracing');
   assertCondition(csharpProfile.capabilities.tracing.fidelity.callStack, 'C# should attach call-stack frames');
   assertCondition(csharpProfile.capabilities.diagnostics.compileErrors, 'C# should support compile diagnostics');
@@ -1908,6 +1942,20 @@ async function main(): Promise<void> {
   assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ should support ops-class execution');
   assertCondition(cppProfile.capabilities.execution.styles.script, 'C++ should support script execution');
   assertCondition(cppProfile.capabilities.execution.limits.wallClock, 'C++ should honor wall-clock execution limits');
+  assertCondition(
+    cppProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
+      cppProfile.capabilities.execution.isolation.boundary === 'fresh-program-instance',
+    'C++ should advertise its one-execution-per-program-worker isolation boundary'
+  );
+  assertCondition(
+    isRuntimeSafeForUntrustedReuse('javascript') &&
+      isRuntimeSafeForUntrustedReuse(typescriptProfile) &&
+      isRuntimeSafeForUntrustedReuse('cpp') &&
+      !isRuntimeSafeForUntrustedReuse('python') &&
+      !isRuntimeSafeForUntrustedReuse(javaProfile) &&
+      !isRuntimeSafeForUntrustedReuse('csharp'),
+    'runtime reuse helper should preserve the reviewed per-language isolation policy'
+  );
   assertCondition(cppProfile.capabilities.tracing.supported, 'C++ should support generated-driver v4 trace events');
   assertCondition(cppProfile.capabilities.tracing.events.exception, 'C++ should support lowered exception trace events');
   assertCondition(
