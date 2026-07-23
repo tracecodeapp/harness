@@ -1,0 +1,819 @@
+import * as Deferred from 'effect/Deferred';
+import * as Effect from 'effect/Effect';
+import * as Exit from 'effect/Exit';
+import * as Fiber from 'effect/Fiber';
+import * as Scope from 'effect/Scope';
+import {
+  TraceKernelDescriptorTable,
+  TraceKernelPipe,
+  type TraceKernelDescriptorReadError,
+  type TraceKernelDescriptorWriteError,
+  type TraceKernelPipeOptions,
+} from './descriptors';
+import {
+  TraceKernelBadFileDescriptorError,
+  TraceKernelHostClosedError,
+  TraceKernelProcessStateError,
+  TraceKernelRuntimeUnavailableError,
+  TraceKernelSessionClosedError,
+  TraceKernelNetworkError,
+} from './errors';
+import {
+  TraceKernelNetworkNamespace,
+  TraceKernelTcpSocket,
+  type TraceKernelTcpAcceptResult,
+  type TraceKernelTcpAddress,
+  type TraceKernelTcpConnectResult,
+  type TraceKernelTcpListenOptions,
+  type TraceKernelTcpShutdownHow,
+} from './network';
+import type {
+  TraceKernelHostOptions,
+  TraceKernelPrincipal,
+  TraceKernelProcessPhase,
+  TraceKernelProcessSnapshot,
+  TraceKernelProcessSpec,
+  TraceKernelProcessTermination,
+  TraceKernelRuntimeFactory,
+  TraceKernelRuntimeLease,
+  TraceKernelRuntimeName,
+  TraceKernelRuntimeProcessContext,
+  TraceKernelRuntimeProvider,
+  TraceKernelRuntimeResult,
+  TraceKernelSessionOptions,
+  TraceKernelSignal,
+} from './model';
+import {
+  TraceKernelFileSystem,
+  TraceKernelOpenFileDescription,
+  type TraceKernelDirectoryEntry,
+  type TraceKernelFileSnapshot,
+  type TraceKernelMkdirOptions,
+  type TraceKernelOpenFileOptions,
+  type TraceKernelStat,
+} from './vfs';
+
+const SYSTEM_PRINCIPAL: TraceKernelPrincipal = Object.freeze({
+  id: 'system',
+  kind: 'system',
+});
+
+interface TraceKernelRuntimeProviderSlot {
+  readonly provider: TraceKernelRuntimeProvider;
+  readonly initialize: Effect.Effect<TraceKernelRuntimeFactory, Error>;
+}
+
+interface MutableProcessRecord {
+  pid: number;
+  ppid: number;
+  pgid: number;
+  sid: number;
+  phase: TraceKernelProcessPhase;
+  runtime: TraceKernelRuntimeName;
+  command: string;
+  args: readonly string[];
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+  owner: TraceKernelPrincipal;
+  protected: boolean;
+  visible: boolean;
+  startedAt?: number;
+  endedAt?: number;
+  termination?: TraceKernelProcessTermination;
+  stdout: string;
+  stderr: string;
+}
+
+function signalExitCode(signal: TraceKernelSignal): number {
+  if (signal === 'SIGINT') return 130;
+  if (signal === 'SIGTERM') return 143;
+  return 137;
+}
+
+function immutableSnapshot(record: MutableProcessRecord): TraceKernelProcessSnapshot {
+  return Object.freeze({
+    pid: record.pid,
+    ppid: record.ppid,
+    pgid: record.pgid,
+    sid: record.sid,
+    phase: record.phase,
+    runtime: record.runtime,
+    command: record.command,
+    args: Object.freeze([...record.args]),
+    cwd: record.cwd,
+    env: Object.freeze({ ...record.env }),
+    owner: record.owner,
+    protected: record.protected,
+    visible: record.visible,
+    ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),
+    ...(record.endedAt === undefined ? {} : { endedAt: record.endedAt }),
+    ...(record.termination === undefined ? {} : { termination: record.termination }),
+    stdout: record.stdout,
+    stderr: record.stderr,
+    descriptors: Object.freeze([]),
+  });
+}
+
+/**
+ * A running command represented by explicit kernel state.
+ *
+ * Its execution is supervised by an Effect fiber, but the fiber is not the
+ * process identity. PID, lifecycle, termination, and ownership stay in the
+ * process record and remain inspectable after the fiber completes.
+ */
+export class TraceKernelProcess {
+  private fiber?: Fiber.RuntimeFiber<TraceKernelProcessSnapshot, never>;
+  private requestedSignal?: TraceKernelSignal;
+  readonly descriptors = new TraceKernelDescriptorTable();
+
+  constructor(
+    private readonly record: MutableProcessRecord,
+    private readonly started: Deferred.Deferred<void, TraceKernelProcessStateError>
+  ) {}
+
+  get pid(): number {
+    return this.record.pid;
+  }
+
+  snapshot(): TraceKernelProcessSnapshot {
+    return Object.freeze({
+      ...immutableSnapshot(this.record),
+      descriptors: Object.freeze([...this.descriptors.snapshots()]),
+    });
+  }
+
+  read(
+    fd: number,
+    maxBytes: number,
+    position?: number
+  ): Effect.Effect<Uint8Array, TraceKernelDescriptorReadError> {
+    return this.descriptors.read(fd, maxBytes, position);
+  }
+
+  write(
+    fd: number,
+    bytes: Uint8Array,
+    position?: number
+  ): Effect.Effect<number, TraceKernelDescriptorWriteError> {
+    return this.descriptors.write(fd, bytes, position);
+  }
+
+  close(fd: number): Effect.Effect<void, TraceKernelBadFileDescriptorError> {
+    return this.descriptors.close(fd);
+  }
+
+  dup(fd: number): Effect.Effect<number, TraceKernelBadFileDescriptorError> {
+    return this.descriptors.dup(fd);
+  }
+
+  fstat(fd: number): Effect.Effect<TraceKernelStat, TraceKernelBadFileDescriptorError> {
+    return this.descriptors.stat(fd);
+  }
+
+  ftruncate(fd: number, length: number): Effect.Effect<void, TraceKernelBadFileDescriptorError> {
+    return this.descriptors.truncate(fd, length);
+  }
+
+  wait(): Effect.Effect<TraceKernelProcessSnapshot, TraceKernelProcessStateError> {
+    return Effect.suspend(() => {
+      if (!this.fiber) {
+        return Effect.fail(new TraceKernelProcessStateError({
+          pid: this.pid,
+          message: `Process ${this.pid} has not started execution.`,
+        }));
+      }
+      return Fiber.await(this.fiber).pipe(Effect.map(() => this.snapshot()));
+    });
+  }
+
+  awaitStarted(): Effect.Effect<void, TraceKernelProcessStateError> {
+    return Deferred.await(this.started);
+  }
+
+  signal(signal: TraceKernelSignal): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.record.phase === 'exited') return Effect.void;
+      this.requestedSignal = signal;
+      const recordSignalExit = Effect.sync(() =>
+        this.finish({
+          kind: 'signal',
+          signal,
+          exitCode: signalExitCode(signal),
+        }, this.record.stdout, this.record.stderr)
+      ).pipe(
+        Effect.andThen(Deferred.fail(this.started, new TraceKernelProcessStateError({
+          pid: this.pid,
+          message: `Process ${this.pid} terminated before reaching running state.`,
+        }))),
+        Effect.asVoid
+      );
+      return this.fiber
+        ? Fiber.interrupt(this.fiber).pipe(
+            Effect.asVoid,
+            Effect.ensuring(recordSignalExit)
+          )
+        : recordSignalExit;
+    });
+  }
+
+  attachFiber(fiber: Fiber.RuntimeFiber<TraceKernelProcessSnapshot, never>): void {
+    this.fiber = fiber;
+  }
+
+  markStarting(): void {
+    this.record.phase = 'starting';
+  }
+
+  failBeforeExecution(error: Error): Effect.Effect<void> {
+    return Effect.sync(() =>
+      this.finish({
+        kind: 'failure',
+        exitCode: 126,
+        message: error.message,
+      }, '', error.message.length > 0 ? `${error.message}\n` : '')
+    ).pipe(
+      Effect.andThen(Deferred.fail(this.started, new TraceKernelProcessStateError({
+        pid: this.pid,
+        message: error.message,
+      }))),
+      Effect.asVoid
+    );
+  }
+
+  execute(lease: TraceKernelRuntimeLease): Effect.Effect<TraceKernelProcessSnapshot, never> {
+    const context = this.runtimeContext();
+    return Effect.sync(() => {
+      this.record.phase = 'running';
+      this.record.startedAt = Date.now();
+    }).pipe(
+      Effect.andThen(Deferred.succeed(this.started, undefined)),
+      Effect.andThen(lease.execute(context)),
+      Effect.matchEffect({
+        onFailure: (error) =>
+          Effect.sync(() => this.finish({
+            kind: 'failure',
+            exitCode: 1,
+            message: error.message,
+          }, '', error.message.length > 0 ? `${error.message}\n` : '')),
+        onSuccess: (result) =>
+          Effect.sync(() => this.finish({
+            kind: 'exit',
+            exitCode: result.exitCode,
+          }, result.stdout ?? '', result.stderr ?? '')),
+      }),
+      Effect.onInterrupt(() =>
+        Effect.sync(() => {
+          const signal = this.requestedSignal ?? 'SIGTERM';
+          this.finish({
+            kind: 'signal',
+            signal,
+            exitCode: signalExitCode(signal),
+          }, this.record.stdout, this.record.stderr);
+        })
+      )
+    );
+  }
+
+  private runtimeContext(): TraceKernelRuntimeProcessContext {
+    return Object.freeze({
+      pid: this.record.pid,
+      ppid: this.record.ppid,
+      pgid: this.record.pgid,
+      sid: this.record.sid,
+      command: this.record.command,
+      args: this.record.args,
+      cwd: this.record.cwd,
+      env: this.record.env,
+    });
+  }
+
+  private finish(
+    termination: TraceKernelProcessTermination,
+    stdout: string,
+    stderr: string
+  ): TraceKernelProcessSnapshot {
+    if (this.record.phase === 'exited') return this.snapshot();
+    this.record.phase = 'exiting';
+    this.record.termination = termination;
+    this.record.stdout = stdout;
+    this.record.stderr = stderr;
+    this.record.endedAt = Date.now();
+    this.record.phase = 'exited';
+    return this.snapshot();
+  }
+}
+
+export class TraceKernelSession {
+  private readonly processes = new Map<number, TraceKernelProcess>();
+  private readonly resources = new Map<
+    string,
+    TraceKernelPipe | TraceKernelOpenFileDescription
+  >();
+  private nextPid = 100;
+  private nextResourceId = 1;
+  private closed = false;
+
+  constructor(
+    readonly id: string,
+    private readonly host: TraceKernelHost,
+    private readonly scope: Scope.CloseableScope,
+    readonly fileSystem: TraceKernelFileSystem,
+    readonly networkNamespace: TraceKernelNetworkNamespace,
+    readonly cwd: string,
+    readonly env: Readonly<Record<string, string>>
+  ) {}
+
+  spawn(
+    spec: TraceKernelProcessSpec
+  ): Effect.Effect<
+    TraceKernelProcess,
+    TraceKernelSessionClosedError
+  > {
+    return Effect.gen(this, function* () {
+      const started = yield* Deferred.make<void, TraceKernelProcessStateError>();
+      const process = yield* Effect.try({
+        try: () => this.registerProcess(spec, started),
+        catch: (error) => error instanceof TraceKernelSessionClosedError
+          ? error
+          : new TraceKernelSessionClosedError({
+              sessionId: this.id,
+              message: error instanceof Error ? error.message : String(error),
+            }),
+      });
+      process.markStarting();
+
+      const program = Effect.scoped(
+        this.host.acquireRuntimeLease(
+          spec.runtime,
+          this.runtimeContext(process)
+        ).pipe(
+          Effect.flatMap((lease) => process.execute(lease)),
+          Effect.catchAll((error) =>
+            process.failBeforeExecution(error).pipe(
+              Effect.map(() => process.snapshot())
+            )
+          )
+        )
+      ).pipe(
+        Effect.ensuring(process.descriptors.closeAll()),
+        Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
+      );
+
+      const fiber = yield* Effect.forkIn(program, this.scope);
+      process.attachFiber(fiber);
+      return process;
+    });
+  }
+
+  execute(
+    spec: TraceKernelProcessSpec
+  ): Effect.Effect<
+    TraceKernelProcessSnapshot,
+    TraceKernelSessionClosedError | TraceKernelProcessStateError
+  > {
+    return Effect.gen(this, function* () {
+      const process = yield* this.spawn(spec);
+      return yield* process.wait();
+    });
+  }
+
+  processSnapshots(): readonly TraceKernelProcessSnapshot[] {
+    return [...this.processes.values()]
+      .map((process) => process.snapshot())
+      .sort((left, right) => left.pid - right.pid);
+  }
+
+  createPipe(
+    reader: TraceKernelProcess,
+    writer: TraceKernelProcess,
+    options: TraceKernelPipeOptions = {}
+  ): Effect.Effect<{
+    readonly resourceId: string;
+    readonly readFd: number;
+    readonly writeFd: number;
+  }, TraceKernelProcessStateError> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(reader);
+      yield* this.assertOwnedProcess(writer);
+      const resourceId = `pipe-${this.nextResourceId++}`;
+      const pipe = yield* TraceKernelPipe.make(
+        resourceId,
+        options,
+        (closedId) => this.resources.delete(closedId)
+      );
+      this.resources.set(resourceId, pipe);
+      const readFd = reader.descriptors.install(pipe.reader());
+      const writeFd = writer.descriptors.install(pipe.writer());
+      return Object.freeze({ resourceId, readFd, writeFd });
+    });
+  }
+
+  resourceIds(): readonly string[] {
+    return [
+      ...this.resources.keys(),
+      ...this.networkNamespace.resourceIds(),
+    ].sort();
+  }
+
+  createTcpSocket(
+    process: TraceKernelProcess
+  ): Effect.Effect<number, TraceKernelProcessStateError | TraceKernelNetworkError> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const socket = yield* this.networkNamespace.createSocket();
+      return process.descriptors.install(socket.descriptor());
+    });
+  }
+
+  bindTcp(
+    process: TraceKernelProcess,
+    fd: number,
+    address: TraceKernelTcpAddress
+  ): Effect.Effect<TraceKernelTcpAddress, Error> {
+    return this.tcpSocketFor(process, fd).pipe(
+      Effect.flatMap((socket) => socket.bind(address))
+    );
+  }
+
+  listenTcp(
+    process: TraceKernelProcess,
+    fd: number,
+    options: TraceKernelTcpListenOptions = {}
+  ): Effect.Effect<void, Error> {
+    return this.tcpSocketFor(process, fd).pipe(
+      Effect.flatMap((socket) => socket.listen(options))
+    );
+  }
+
+  acceptTcp(
+    process: TraceKernelProcess,
+    fd: number
+  ): Effect.Effect<{
+    readonly fd: number;
+    readonly localAddress: TraceKernelTcpAddress;
+    readonly remoteAddress: TraceKernelTcpAddress;
+  }, Error> {
+    return this.tcpSocketFor(process, fd).pipe(
+      Effect.flatMap((socket) => socket.accept()),
+      Effect.map((accepted: TraceKernelTcpAcceptResult) => Object.freeze({
+        fd: process.descriptors.install(accepted.socket.descriptor()),
+        localAddress: accepted.localAddress,
+        remoteAddress: accepted.remoteAddress,
+      }))
+    );
+  }
+
+  connectTcp(
+    process: TraceKernelProcess,
+    fd: number,
+    address: TraceKernelTcpAddress
+  ): Effect.Effect<TraceKernelTcpConnectResult, Error> {
+    return this.tcpSocketFor(process, fd).pipe(
+      Effect.flatMap((socket) => socket.connect(address))
+    );
+  }
+
+  shutdownTcp(
+    process: TraceKernelProcess,
+    fd: number,
+    how: TraceKernelTcpShutdownHow
+  ): Effect.Effect<void, Error> {
+    return this.tcpSocketFor(process, fd).pipe(
+      Effect.flatMap((socket) => socket.shutdown(how))
+    );
+  }
+
+  tcpLocalAddress(
+    process: TraceKernelProcess,
+    fd: number
+  ): Effect.Effect<TraceKernelTcpAddress, Error> {
+    return this.tcpSocketFor(process, fd).pipe(
+      Effect.flatMap((socket) => socket.localAddress())
+    );
+  }
+
+  tcpRemoteAddress(
+    process: TraceKernelProcess,
+    fd: number
+  ): Effect.Effect<TraceKernelTcpAddress, Error> {
+    return this.tcpSocketFor(process, fd).pipe(
+      Effect.flatMap((socket) => socket.remoteAddress())
+    );
+  }
+
+  openFile(
+    process: TraceKernelProcess,
+    path: string,
+    options: TraceKernelOpenFileOptions = {}
+  ): Effect.Effect<number, TraceKernelProcessStateError | Error> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const resourceId = `file-${this.nextResourceId++}`;
+      const description = yield* TraceKernelOpenFileDescription.make(
+        resourceId,
+        this.fileSystem,
+        path,
+        process.snapshot().cwd,
+        options,
+        (closedId) => this.resources.delete(closedId)
+      );
+      this.resources.set(resourceId, description);
+      return process.descriptors.install(description.descriptor());
+    });
+  }
+
+  readFile(path: string): Effect.Effect<Uint8Array, Error> {
+    return this.fileSystem.readFile(path, this.cwd);
+  }
+
+  writeFile(path: string, contents: Uint8Array): Effect.Effect<void, Error> {
+    return this.fileSystem.writeFile(path, contents, this.cwd);
+  }
+
+  stat(path: string): Effect.Effect<TraceKernelStat, Error> {
+    return this.fileSystem.stat(path, this.cwd);
+  }
+
+  lstat(path: string): Effect.Effect<TraceKernelStat, Error> {
+    return this.fileSystem.lstat(path, this.cwd);
+  }
+
+  realpath(path: string): Effect.Effect<string, Error> {
+    return this.fileSystem.realpath(path, this.cwd);
+  }
+
+  readdir(path: string): Effect.Effect<readonly TraceKernelDirectoryEntry[], Error> {
+    return this.fileSystem.readdir(path, this.cwd);
+  }
+
+  mkdir(
+    path: string,
+    options: TraceKernelMkdirOptions = {}
+  ): Effect.Effect<void, Error> {
+    return this.fileSystem.mkdir(path, options, this.cwd);
+  }
+
+  rmdir(path: string): Effect.Effect<void, Error> {
+    return this.fileSystem.rmdir(path, this.cwd);
+  }
+
+  unlink(path: string): Effect.Effect<void, Error> {
+    return this.fileSystem.unlink(path, this.cwd);
+  }
+
+  link(existingPath: string, newPath: string): Effect.Effect<void, Error> {
+    return this.fileSystem.link(existingPath, newPath, this.cwd);
+  }
+
+  symlink(target: string, linkPath: string): Effect.Effect<void, Error> {
+    return this.fileSystem.symlink(target, linkPath, this.cwd);
+  }
+
+  readlink(path: string): Effect.Effect<string, Error> {
+    return this.fileSystem.readlink(path, this.cwd);
+  }
+
+  rename(sourcePath: string, destinationPath: string): Effect.Effect<void, Error> {
+    return this.fileSystem.rename(sourcePath, destinationPath, this.cwd);
+  }
+
+  fileSnapshots(): readonly TraceKernelFileSnapshot[] {
+    return this.fileSystem.snapshots();
+  }
+
+  get fileSystemGeneration(): number {
+    return this.fileSystem.mutationGeneration;
+  }
+
+  shutdown(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.closed) return Effect.void;
+      this.closed = true;
+      const processes = [...this.processes.values()];
+      return Effect.forEach(
+        processes,
+        (process) => process.signal('SIGKILL'),
+        { concurrency: 'unbounded', discard: true }
+      ).pipe(
+        Effect.andThen(Effect.forEach(
+          [...this.resources.values()],
+          (resource) => resource.dispose(),
+          { concurrency: 'unbounded', discard: true }
+        )),
+        Effect.andThen(this.networkNamespace.dispose()),
+        Effect.andThen(Scope.close(this.scope, Exit.void)),
+        Effect.ensuring(Effect.sync(() => {
+          this.processes.clear();
+          this.resources.clear();
+          this.fileSystem.clear();
+          this.host.unregisterSession(this.id);
+        }))
+      );
+    });
+  }
+
+  private registerProcess(
+    spec: TraceKernelProcessSpec,
+    started: Deferred.Deferred<void, TraceKernelProcessStateError>
+  ): TraceKernelProcess {
+    if (this.closed) {
+      throw new TraceKernelSessionClosedError({
+        sessionId: this.id,
+        message: `TraceKernel session ${this.id} is closed.`,
+      });
+    }
+    const pid = this.nextPid++;
+    const ppid = spec.parentPid ?? 1;
+    const pgid = spec.processGroupId ?? pid;
+    const sid = spec.sessionId ?? pid;
+    const record: MutableProcessRecord = {
+      pid,
+      ppid,
+      pgid,
+      sid,
+      phase: 'created',
+      runtime: spec.runtime,
+      command: spec.command,
+      args: Object.freeze([...(spec.args ?? [])]),
+      cwd: spec.cwd ?? this.cwd,
+      env: Object.freeze({ ...this.env, ...(spec.env ?? {}) }),
+      owner: spec.owner ?? SYSTEM_PRINCIPAL,
+      protected: spec.protected ?? false,
+      visible: spec.visible ?? true,
+      stdout: '',
+      stderr: '',
+    };
+    const process = new TraceKernelProcess(record, started);
+    this.processes.set(pid, process);
+    return process;
+  }
+
+  private unregisterProcess(pid: number): void {
+    this.processes.delete(pid);
+  }
+
+  private assertOwnedProcess(
+    process: TraceKernelProcess
+  ): Effect.Effect<void, TraceKernelProcessStateError> {
+    return !this.closed && this.processes.get(process.pid) === process
+      ? Effect.void
+      : Effect.fail(new TraceKernelProcessStateError({
+          pid: process.pid,
+          message: this.closed
+            ? `Session ${this.id} is closed.`
+            : `Process ${process.pid} is not running in session ${this.id}.`,
+        }));
+  }
+
+  private tcpSocketFor(
+    process: TraceKernelProcess,
+    fd: number
+  ): Effect.Effect<
+    TraceKernelTcpSocket,
+    TraceKernelProcessStateError | TraceKernelBadFileDescriptorError | TraceKernelNetworkError
+  > {
+    return this.assertOwnedProcess(process).pipe(
+      Effect.andThen(process.descriptors.lookup(fd)),
+      Effect.flatMap((descriptor) => descriptor.resource instanceof TraceKernelTcpSocket
+        ? Effect.succeed(descriptor.resource)
+        : Effect.fail(new TraceKernelNetworkError({
+            code: 'EOPNOTSUPP',
+            message: `EOPNOTSUPP: descriptor ${fd} is not a TCP socket`,
+          })))
+    );
+  }
+
+  private runtimeContext(process: TraceKernelProcess): TraceKernelRuntimeProcessContext {
+    const snapshot = process.snapshot();
+    return Object.freeze({
+      pid: snapshot.pid,
+      ppid: snapshot.ppid,
+      pgid: snapshot.pgid,
+      sid: snapshot.sid,
+      command: snapshot.command,
+      args: snapshot.args,
+      cwd: snapshot.cwd,
+      env: snapshot.env,
+    });
+  }
+}
+
+export class TraceKernelHost {
+  private readonly sessions = new Map<string, TraceKernelSession>();
+  private nextSessionId = 1;
+  private closed = false;
+
+  constructor(
+    private readonly providerSlots: ReadonlyMap<TraceKernelRuntimeName, TraceKernelRuntimeProviderSlot>
+  ) {}
+
+  openSession(
+    options: TraceKernelSessionOptions = {}
+  ): Effect.Effect<TraceKernelSession, TraceKernelHostClosedError, Scope.Scope> {
+    return Effect.gen(this, function* () {
+      if (this.closed) {
+        return yield* Effect.fail(new TraceKernelHostClosedError({
+          message: 'TraceKernel host is closed.',
+        }));
+      }
+      const sessionScope = yield* Scope.make();
+      const fileSystem = yield* TraceKernelFileSystem.make();
+      const networkNamespace = yield* TraceKernelNetworkNamespace.make();
+      return yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const id = `session-${this.nextSessionId++}`;
+          const session = new TraceKernelSession(
+            id,
+            this,
+            sessionScope,
+            fileSystem,
+            networkNamespace,
+            options.cwd ?? '/workspace',
+            Object.freeze({ ...(options.env ?? {}) })
+          );
+          this.sessions.set(id, session);
+          return session;
+        }),
+        (session) => session.shutdown()
+      );
+    });
+  }
+
+  sessionIds(): readonly string[] {
+    return [...this.sessions.keys()];
+  }
+
+  acquireRuntimeLease(
+    runtime: TraceKernelRuntimeName,
+    process: TraceKernelRuntimeProcessContext
+  ): Effect.Effect<
+    TraceKernelRuntimeLease,
+    TraceKernelRuntimeUnavailableError | Error,
+    Scope.Scope
+  > {
+    return Effect.suspend(() => {
+      if (this.closed) {
+        return Effect.fail(new TraceKernelHostClosedError({
+          message: 'TraceKernel host is closed.',
+        }));
+      }
+      const slot = this.providerSlots.get(runtime);
+      if (!slot) {
+        return Effect.fail(new TraceKernelRuntimeUnavailableError({
+          runtime,
+          message: `Runtime provider ${JSON.stringify(runtime)} is not registered.`,
+        }));
+      }
+      return slot.initialize.pipe(
+        Effect.flatMap((factory) => factory.acquire(process))
+      );
+    });
+  }
+
+  shutdown(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.closed) return Effect.void;
+      this.closed = true;
+      return Effect.forEach(
+        [...this.sessions.values()],
+        (session) => session.shutdown(),
+        { concurrency: 'unbounded', discard: true }
+      ).pipe(
+        Effect.ensuring(Effect.sync(() => this.sessions.clear()))
+      );
+    });
+  }
+
+  unregisterSession(id: string): void {
+    this.sessions.delete(id);
+  }
+}
+
+function makeProviderSlots(
+  providers: readonly TraceKernelRuntimeProvider[]
+): Effect.Effect<ReadonlyMap<TraceKernelRuntimeName, TraceKernelRuntimeProviderSlot>> {
+  return Effect.forEach(providers, (provider) =>
+    Effect.cached(provider.initialize).pipe(
+      Effect.map((initialize) => [provider.runtime, { provider, initialize }] as const)
+    )
+  ).pipe(
+    Effect.map((entries) => new Map(entries))
+  );
+}
+
+/**
+ * Acquire a host as a scoped resource.
+ *
+ * Provider initialization is memoized but remains lazy: constructing a host or
+ * opening a session does not initialize any language runtime.
+ */
+export function makeTraceKernelHost(
+  options: TraceKernelHostOptions = {}
+): Effect.Effect<TraceKernelHost, never, Scope.Scope> {
+  return Effect.acquireRelease(
+    makeProviderSlots(options.providers ?? []).pipe(
+      Effect.map((slots) => new TraceKernelHost(slots))
+    ),
+    (host) => host.shutdown()
+  );
+}

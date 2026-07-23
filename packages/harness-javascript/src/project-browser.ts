@@ -14,11 +14,18 @@ import type {
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
   RuntimeKernelInfo,
+  RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
+import type {
+  TraceKernelDirectoryEntry,
+  TraceKernelMkdirOptions,
+  TraceKernelOpenFileOptions,
+  TraceKernelStat,
+} from '@tracecode/tracekernel';
 import {
   RuntimeProjectLiveIoController,
   createRuntimeProjectIoBridge,
@@ -277,6 +284,30 @@ export interface BrowserJavaScriptProjectExecutionState {
   cleanupHostGlobals?: () => void;
   dispatchSignal?: (signal: string) => boolean;
   handledSignal?: string;
+  kernelFileSystem?: BrowserTraceKernelFileSystem;
+}
+
+export interface BrowserTraceKernelFileSystem {
+  open(path: string, options?: TraceKernelOpenFileOptions): number;
+  read(fd: number, maxBytes: number, position?: number): Uint8Array;
+  write(fd: number, bytes: Uint8Array, position?: number): number;
+  closeDescriptor(fd: number): void;
+  dup(fd: number): number;
+  fstat(fd: number): TraceKernelStat;
+  ftruncate(fd: number, length: number): void;
+  readFile(path: string): Uint8Array;
+  writeFile(path: string, bytes: Uint8Array): void;
+  stat(path: string): TraceKernelStat;
+  lstat(path: string): TraceKernelStat;
+  realpath(path: string): string;
+  readdir(path: string): readonly TraceKernelDirectoryEntry[];
+  mkdir(path: string, options?: TraceKernelMkdirOptions): void;
+  rmdir(path: string): void;
+  unlink(path: string): void;
+  link(existingPath: string, newPath: string): void;
+  symlink(target: string, linkPath: string): void;
+  readlink(path: string): string;
+  rename(sourcePath: string, destinationPath: string): void;
 }
 
 type ModuleRecord = {
@@ -3637,6 +3668,8 @@ interface BrowserJavaScriptProjectWorkerMessage {
     BrowserJavaScriptProjectRunnerOptions,
     'allowDynamicEval' | 'projectUserAuthorityMode'
   >;
+  kernelSyscallChannel?: RuntimeKernelSyscallBridge['channel'];
+  kernelSyscallGenerationBuffer?: SharedArrayBuffer;
   port?: MessagePort;
 }
 
@@ -3646,6 +3679,7 @@ interface BrowserJavaScriptProjectPendingMessage {
   reject: (error: Error) => void;
   onEvent?: (event: RuntimeCommandEvent) => void;
   kernelHttp?: RuntimeKernelHttpBridge;
+  kernelSyscalls?: RuntimeKernelSyscallBridge;
   port?: MessagePort;
   httpListeners: Map<string, RuntimeKernelHttpListenerHandle>;
   httpRequests: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
@@ -3719,9 +3753,22 @@ class BrowserJavaScriptProjectWorkerClient {
       this.terminateAndReset(abortError);
       return Promise.reject(abortError);
     }
-    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+    const {
+      signal: _signal,
+      onEvent: _requestOnEvent,
+      kernelHttp,
+      kernelSyscalls,
+      ...workerRequest
+    } = request;
     return this.executeWithTimeout(
-      () => this.sendMessage('execute-project-javascript', workerRequest, onEvent, kernelHttp, signal),
+      () => this.sendMessage(
+        'execute-project-javascript',
+        workerRequest,
+        onEvent,
+        kernelHttp,
+        kernelSyscalls,
+        signal
+      ),
       timeoutMs
     );
   }
@@ -3768,6 +3815,13 @@ class BrowserJavaScriptProjectWorkerClient {
       pending.onEvent?.(payload as RuntimeCommandEvent);
       return;
     }
+    if (type === 'kernel-syscall') {
+      if (!pending.kernelSyscalls) return;
+      void pending.kernelSyscalls.service().catch(() => {
+        pending.kernelSyscalls?.close();
+      });
+      return;
+    }
     if (
       type === 'kernel-http-listen' ||
       type === 'kernel-http-close' ||
@@ -3796,6 +3850,7 @@ class BrowserJavaScriptProjectWorkerClient {
     payload: unknown,
     onEvent?: (event: RuntimeCommandEvent) => void,
     kernelHttp?: RuntimeKernelHttpBridge,
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
     signal?: AbortSignal
   ): Promise<RuntimeCommandResult> {
     const worker = this.getWorker();
@@ -3815,6 +3870,7 @@ class BrowserJavaScriptProjectWorkerClient {
         reject,
         ...(onEvent ? { onEvent } : {}),
         ...(kernelHttp ? { kernelHttp } : {}),
+        ...(kernelSyscalls ? { kernelSyscalls } : {}),
         ...(channel ? { port: channel.port1 } : {}),
         httpListeners: new Map(),
         httpRequests: new Map(),
@@ -3827,6 +3883,14 @@ class BrowserJavaScriptProjectWorkerClient {
         payload,
         protocolToken,
         runnerOptions: this.runnerOptions,
+        ...(kernelSyscalls
+          ? {
+              kernelSyscallChannel: kernelSyscalls.channel,
+              ...(kernelSyscalls.generationBuffer
+                ? { kernelSyscallGenerationBuffer: kernelSyscalls.generationBuffer }
+                : {}),
+            }
+          : {}),
         ...(channel ? { port: channel.port2 } : {}),
       };
       if (channel) {
@@ -5100,6 +5164,41 @@ export async function runBrowserJavaScriptProjectRequest(
         isSymbolicLink: () => false,
       };
     };
+    const statForTraceKernelPath = (stat: TraceKernelStat): BrowserFileStat => {
+      const directory = stat.kind === 'directory';
+      const symbolicLink = stat.kind === 'symlink';
+      const modeType = directory ? 0o40000 : symbolicLink ? 0o120000 : 0o100000;
+      const mode = (stat.mode & 0o170000) === 0
+        ? modeType | stat.mode
+        : stat.mode;
+      return {
+        atimeMs: stat.modifiedAt,
+        birthtimeMs: stat.createdAt,
+        blksize: 4096,
+        blocks: Math.ceil(stat.size / 512),
+        ctimeMs: stat.changedAt,
+        dev: 1,
+        gid: 0,
+        ino: stat.inode,
+        mode,
+        mtimeMs: stat.modifiedAt,
+        nlink: stat.nlink,
+        rdev: 0,
+        size: stat.size,
+        uid: 0,
+        atime: new Date(stat.modifiedAt),
+        birthtime: new Date(stat.createdAt),
+        ctime: new Date(stat.changedAt),
+        mtime: new Date(stat.modifiedAt),
+        isBlockDevice: () => false,
+        isCharacterDevice: () => false,
+        isFIFO: () => false,
+        isFile: () => !directory && !symbolicLink,
+        isDirectory: () => directory,
+        isSocket: () => false,
+        isSymbolicLink: () => symbolicLink,
+      };
+    };
     const statForKernelTarget = (path: unknown, options?: BrowserStatOptions): BrowserFileStat | null | undefined => {
       const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices, procSnapshot);
       if (!statTarget || statTarget.kind === 'workspace') return null;
@@ -5544,6 +5643,19 @@ export async function runBrowserJavaScriptProjectRequest(
       }
       const device = openTarget?.kind === 'device' ? openTarget.device : null;
       const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
+      if (
+        executionState.kernelFileSystem &&
+        optionFd === null &&
+        (openTarget === null || openTarget?.kind === 'workspace')
+      ) {
+        const openedFd = fsApi.openSync(path, flags);
+        return createWritableStream(null, {
+          ...(typeof options === 'object' && options ? options : {}),
+          fd: openedFd,
+          flags,
+          autoClose,
+        });
+      }
       const rawNormalized = device || optionFd !== null
         ? null
         : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
@@ -5753,6 +5865,10 @@ export async function runBrowserJavaScriptProjectRequest(
         throwRuntimeRemoveTargetError(removeTarget, message);
       }
       const normalized = resolveWorkspaceEntryPath(path, false);
+      if (executionState.kernelFileSystem) {
+        executionState.kernelFileSystem.unlink(normalized);
+        return;
+      }
       assertReadonlyFilePath(normalized, 'delete');
       if (symlinkStore.delete(normalized)) {
         deleteEntryMetadata(normalized);
@@ -5809,6 +5925,14 @@ export async function runBrowserJavaScriptProjectRequest(
       }
       if (readTarget?.kind === 'error') return false;
       const normalized = resolveWorkspaceEntryPath(path);
+      if (executionState.kernelFileSystem) {
+        try {
+          executionState.kernelFileSystem.stat(normalized);
+          return true;
+        } catch {
+          return false;
+        }
+      }
       const prefix = normalized ? `${normalized}/` : '';
       return fileStore.has(normalized)
         || directoryStore.has(normalized)
@@ -5860,10 +5984,17 @@ export async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`${code}: ${reason}, access '${path}'`), { code });
       }
       const normalized = resolveWorkspaceEntryPath(path);
-      if (workspaceFileAncestor(normalized) !== null) {
-        throw Object.assign(new Error(`ENOTDIR: not a directory, access '${path}'`), { code: 'ENOTDIR' });
+      let stats: BrowserFileStat | null;
+      if (executionState.kernelFileSystem) {
+        stats = statForTraceKernelPath(
+          executionState.kernelFileSystem.stat(normalized)
+        );
+      } else {
+        if (workspaceFileAncestor(normalized) !== null) {
+          throw Object.assign(new Error(`ENOTDIR: not a directory, access '${path}'`), { code: 'ENOTDIR' });
+        }
+        stats = statForNormalizedPath(normalized);
       }
-      const stats = statForNormalizedPath(normalized);
       if (!stats) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
       }
@@ -5911,6 +6042,9 @@ export async function runBrowserJavaScriptProjectRequest(
         throwRuntimeMetadataTargetError(metadataTarget, message);
       }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      if (executionState.kernelFileSystem) {
+        return executionState.kernelFileSystem.realpath(normalized);
+      }
       if (workspaceFileAncestor(normalized) !== null) {
         throw Object.assign(new Error(`ENOTDIR: not a directory, metadata '${path}'`), { code: 'ENOTDIR' });
       }
@@ -5926,10 +6060,11 @@ export async function runBrowserJavaScriptProjectRequest(
       return Number.isFinite(parsed) ? Math.max(0, parsed * 1000) : fsTimestampMs;
     };
     type BrowserFileDescriptor = {
-      kind: 'file' | 'directory' | 'device' | 'proc';
+      kind: 'file' | 'directory' | 'device' | 'proc' | 'kernel';
       path?: string;
       bytes?: Uint8Array;
       device?: RuntimeKernelDevicePath;
+      kernelFd?: number;
       offset: number;
       readable: boolean;
       writable: boolean;
@@ -5995,6 +6130,12 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const descriptorMetadataPath = (fd: number, operation: string): string | null => {
       const entry = fileDescriptor(fd);
+      if (entry.kind === 'kernel') {
+        throw Object.assign(
+          new Error(`ENOSYS: ${operation} is not yet available for TraceKernel descriptors`),
+          { code: 'ENOSYS' }
+        );
+      }
       if (entry.kind === 'file' && !entry.path) return null;
       const path = entry.kind === 'device' ? entry.device ?? '/dev/stdin' : entry.path ?? '';
       const metadataTarget = runtimeKernelMetadataTarget(path, kernelDevices);
@@ -6008,6 +6149,26 @@ export async function runBrowserJavaScriptProjectRequest(
       return path;
     };
     const descriptorBytes = (entry: BrowserFileDescriptor): Uint8Array => {
+      if (entry.kind === 'kernel') {
+        const kernelFs = executionState.kernelFileSystem!;
+        const kernelFd = entry.kernelFd!;
+        const size = kernelFs.fstat(kernelFd).size;
+        const chunks: Uint8Array[] = [];
+        let offset = 0;
+        while (offset < size) {
+          const chunk = kernelFs.read(kernelFd, Math.min(256 * 1024, size - offset), offset);
+          if (chunk.byteLength === 0) break;
+          chunks.push(chunk);
+          offset += chunk.byteLength;
+        }
+        const bytes = new Uint8Array(offset);
+        let cursor = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, cursor);
+          cursor += chunk.byteLength;
+        }
+        return bytes;
+      }
       if (entry.kind === 'device') return utf8Bytes(readDevice(entry.device ?? '/dev/stdin'));
       if (entry.kind === 'proc') return utf8Bytes(browserProcFileContents(procSnapshot, entry.path ?? '', kernelInfo));
       if (entry.kind === 'directory') {
@@ -6019,6 +6180,23 @@ export async function runBrowserJavaScriptProjectRequest(
     const readDescriptorFileBytes = (fd: number): Uint8Array => {
       const entry = fileDescriptor(fd);
       if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
+      if (entry.kind === 'kernel') {
+        const chunks: Uint8Array[] = [];
+        let length = 0;
+        while (true) {
+          const chunk = executionState.kernelFileSystem!.read(entry.kernelFd!, 256 * 1024);
+          if (chunk.byteLength === 0) break;
+          chunks.push(chunk);
+          length += chunk.byteLength;
+        }
+        const bytes = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return bytes;
+      }
       if (entry.kind === 'device') return readDeviceBytes(entry.device ?? '/dev/stdin');
       const source = descriptorBytes(entry);
       const start = entry.offset;
@@ -6028,6 +6206,14 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const writeDescriptorBytes = (entry: BrowserFileDescriptor, bytes: Uint8Array, position?: number | null): void => {
       if (!entry.writable) throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
+      if (entry.kind === 'kernel') {
+        executionState.kernelFileSystem!.write(
+          entry.kernelFd!,
+          bytes,
+          typeof position === 'number' ? Math.max(0, position) : undefined
+        );
+        return;
+      }
       if (entry.kind === 'device') {
         writeDevice(entry.device ?? '/dev/stdout', textFromBytes(bytes));
         return;
@@ -6061,6 +6247,13 @@ export async function runBrowserJavaScriptProjectRequest(
       setFileBytes(path, next);
     };
     const truncateDescriptorBytes = (entry: BrowserFileDescriptor, length = 0): void => {
+      if (entry.kind === 'kernel') {
+        executionState.kernelFileSystem!.ftruncate(
+          entry.kernelFd!,
+          Math.max(0, Number(length) || 0)
+        );
+        return;
+      }
       if (entry.kind !== 'file') {
         if (entry.kind === 'device') throw Object.assign(new Error('EINVAL: invalid argument, ftruncate'), { code: 'EINVAL' });
         throw Object.assign(new Error(`EROFS: read-only file system, ftruncate '${entry.path ?? ''}'`), { code: 'EROFS' });
@@ -6074,12 +6267,29 @@ export async function runBrowserJavaScriptProjectRequest(
       if (entry.offset > size) entry.offset = size;
     };
     const realpathForEntry = (path: unknown): string => {
+      const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
+      if (
+        executionState.kernelFileSystem &&
+        readTarget?.kind === 'workspace'
+      ) {
+        const normalized = normalizeWorkspaceEntryPath(
+          path,
+          cwdPath,
+          true,
+          workspacePathContext
+        );
+        return executionState.kernelFileSystem.realpath(normalized);
+      }
       const accessTarget = runtimeAccessTarget(path, 0, kernelDevices, procSnapshot);
-      if (accessTarget?.kind === 'allowed') return accessTarget.path;
+      if (
+        accessTarget?.kind === 'allowed' &&
+        readTarget?.kind !== 'workspace'
+      ) {
+        return accessTarget.path;
+      }
       if (accessTarget?.kind === 'denied') {
         throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
       }
-      const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
       if (readTarget?.kind === 'device-file' || readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
         return readTarget.path;
       }
@@ -6437,6 +6647,29 @@ export async function runBrowserJavaScriptProjectRequest(
         }
         const rawNormalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const normalized = resolveStoredSymlinkPath(rawNormalized);
+        if (executionState.kernelFileSystem) {
+          const kernelFd = executionState.kernelFileSystem.open(normalized, {
+            access: parsed.readable && parsed.writable
+              ? 'read-write'
+              : parsed.writable
+                ? 'write'
+                : 'read',
+            ...(parsed.create ? { create: true } : {}),
+            ...(parsed.exclusive ? { exclusive: true } : {}),
+            ...(parsed.truncate ? { truncate: true } : {}),
+            ...(parsed.append ? { append: true } : {}),
+          });
+          fileDescriptors.set(fd, {
+            kind: 'kernel',
+            kernelFd,
+            path: normalized,
+            offset: 0,
+            readable: parsed.readable,
+            writable: parsed.writable,
+            append: parsed.append,
+          });
+          return fd;
+        }
         if (parsed.exclusive && (
           fileStore.has(rawNormalized) || symlinkStore.has(rawNormalized) || directoryStore.has(rawNormalized)
         )) {
@@ -6495,9 +6728,14 @@ export async function runBrowserJavaScriptProjectRequest(
       },
       closeSync: (fd: number) => {
         if (Number(fd) < 3) return undefined;
-        if (!fileDescriptors.delete(Number(fd))) {
+        const entry = fileDescriptors.get(Number(fd));
+        if (!entry) {
           throw Object.assign(new Error(`EBADF: bad file descriptor, close`), { code: 'EBADF' });
         }
+        if (entry.kind === 'kernel') {
+          executionState.kernelFileSystem!.closeDescriptor(entry.kernelFd!);
+        }
+        fileDescriptors.delete(Number(fd));
         return undefined;
       },
       close: (fd: number, callback?: (error?: Error | null) => void) => {
@@ -6511,6 +6749,16 @@ export async function runBrowserJavaScriptProjectRequest(
       readSync: (fd: number, buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position?: number | null) => {
         const entry = fileDescriptor(fd);
         if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
+        if (entry.kind === 'kernel') {
+          const count = Math.max(0, Math.min(length, buffer.byteLength - offset));
+          const bytes = executionState.kernelFileSystem!.read(
+            entry.kernelFd!,
+            count,
+            typeof position === 'number' ? Math.max(0, position) : undefined
+          );
+          buffer.set(bytes, offset);
+          return bytes.byteLength;
+        }
         if (entry.kind === 'device') {
           const bytes = readDeviceBytes(entry.device ?? '/dev/stdin', Math.max(0, Math.min(length, buffer.byteLength - offset)));
           buffer.set(bytes, offset);
@@ -6663,7 +6911,11 @@ export async function runBrowserJavaScriptProjectRequest(
       fstatSync: (fd: number, options?: BrowserStatOptions) => {
         const entry = fileDescriptor(fd);
         let stats: BrowserFileStat;
-        if (entry.kind === 'device') {
+        if (entry.kind === 'kernel') {
+          stats = statForTraceKernelPath(
+            executionState.kernelFileSystem!.fstat(entry.kernelFd!)
+          );
+        } else if (entry.kind === 'device') {
           const statTarget = runtimeKernelStatTarget(entry.device ?? '/dev/stdin', kernelInfo, kernelDevices);
           stats = statTarget.kind === 'stat' ? statForKernelPath(statTarget.path, statTarget.stat) : missingFileStat();
         } else if (entry.kind === 'proc') {
@@ -6786,10 +7038,25 @@ export async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback?.(error as Error));
         }
       },
-      createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; start?: number } | null) => {
+      createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; flags?: string; start?: number } | null): ReturnType<typeof createReadableStream> => {
         const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
         const readTarget = optionFd === null ? runtimeFileReadTarget(path, kernelDevices, procSnapshot) : null;
         const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
+        if (
+          executionState.kernelFileSystem &&
+          optionFd === null &&
+          (readTarget === null || readTarget?.kind === 'workspace')
+        ) {
+          const flags = typeof options === 'object' && options?.flags ? options.flags : 'r';
+          const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
+          const openedFd = fsApi.openSync(path, flags);
+          return fsApi.createReadStream(null, {
+            ...(typeof options === 'object' && options ? options : {}),
+            fd: openedFd,
+            flags,
+            autoClose,
+          });
+        }
         let sourceBytes: Uint8Array | undefined;
         if (readTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(readTarget.path));
         else if (readTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(browserProcFileContents(procSnapshot, readTarget.path, kernelInfo));
@@ -6852,6 +7119,12 @@ export async function runBrowserJavaScriptProjectRequest(
           throwRuntimeReadTargetError(readTarget, runtimeKernelFileReadFsErrorMessage(String(path), readTarget));
         }
         const normalized = resolveWorkspaceEntryPath(path);
+        if (executionState.kernelFileSystem) {
+          const fileBytes = executionState.kernelFileSystem.readFile(normalized);
+          return typeof requestedEncoding === 'string'
+            ? BrowserBuffer.from(fileBytes).toString(requestedEncoding)
+            : BrowserBuffer.from(fileBytes);
+        }
         if (workspaceFileAncestor(normalized) !== null) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, open '${path}'`), { code: 'ENOTDIR' });
         }
@@ -6876,7 +7149,15 @@ export async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
-      writeFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
+      writeFileSync: (
+        path: unknown,
+        value: unknown,
+        options?: string | {
+          encoding?: string | null;
+          flag?: string | number;
+          mode?: string | number;
+        } | null
+      ) => {
         if (typeof path === 'number') {
           writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options));
           return;
@@ -6890,6 +7171,20 @@ export async function runBrowserJavaScriptProjectRequest(
           return;
         }
         const normalized = resolveWorkspaceEntryPath(path);
+        const structuredOptions = typeof options === 'object' && options !== null
+          ? options
+          : undefined;
+        const usesDefaultReplaceSemantics = (
+          (structuredOptions?.flag === undefined || structuredOptions.flag === 'w') &&
+          structuredOptions?.mode === undefined
+        );
+        if (executionState.kernelFileSystem && usesDefaultReplaceSemantics) {
+          executionState.kernelFileSystem.writeFile(
+            normalized,
+            bytesFromFsWriteValue(value, options)
+          );
+          return;
+        }
         assertWorkspaceFileWritePath(normalized, path, 'write', 'open');
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
       },
@@ -6990,6 +7285,10 @@ export async function runBrowserJavaScriptProjectRequest(
         }
         const normalizedSource = assertSafeWorkspaceFilePath(existingPath, cwdPath, workspacePathContext);
         const normalizedDestination = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
+        if (executionState.kernelFileSystem) {
+          executionState.kernelFileSystem.link(normalizedSource, normalizedDestination);
+          return;
+        }
         const bytes = fileStore.get(normalizedSource);
         if (!bytes) {
           const sourceIsDirectory = directoryStore.has(normalizedSource)
@@ -7031,6 +7330,10 @@ export async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`ENOENT: no such file or directory, symlink '${targetText}' -> '${linkPath}'`), { code: 'ENOENT' });
         }
         const normalizedLink = resolveWorkspaceEntryPath(linkPath, false);
+        if (executionState.kernelFileSystem) {
+          executionState.kernelFileSystem.symlink(targetText, normalizedLink);
+          return;
+        }
         assertReadonlyFilePath(normalizedLink, 'symlink');
         assertWorkspaceParentDirectoryPath(normalizedLink, linkPath, 'symlink');
         if (
@@ -7061,6 +7364,13 @@ export async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: 'EINVAL' });
         }
         const normalized = resolveWorkspaceEntryPath(path, false);
+        if (executionState.kernelFileSystem) {
+          const target = executionState.kernelFileSystem.readlink(normalized);
+          const encoding = typeof options === 'string' ? options : options?.encoding;
+          return encoding === null || encoding === 'buffer'
+            ? BrowserBuffer.from(target)
+            : BrowserBuffer.from(target).toString(encoding ?? 'utf8');
+        }
         const target = symlinkStore.get(normalized);
         if (target === undefined) {
           const exists = fileStore.has(normalized) || directoryStore.has(normalized);
@@ -7105,6 +7415,13 @@ export async function runBrowserJavaScriptProjectRequest(
         }
         const normalizedOldPath = resolveWorkspaceEntryPath(oldPath, false);
         const normalizedNewPath = resolveWorkspaceEntryPath(newPath, false);
+        if (executionState.kernelFileSystem) {
+          executionState.kernelFileSystem.rename(
+            normalizedOldPath,
+            normalizedNewPath
+          );
+          return;
+        }
         if (normalizedOldPath === normalizedNewPath) {
           const prefix = normalizedOldPath ? `${normalizedOldPath}/` : '';
           if (
@@ -7280,6 +7597,37 @@ export async function runBrowserJavaScriptProjectRequest(
             throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, 'rm'));
           }
           const normalized = resolveWorkspaceEntryPath(path, false);
+          if (executionState.kernelFileSystem) {
+            const removeEntry = (entryPath: string, recursive: boolean): void => {
+              const stat = executionState.kernelFileSystem!.stat(entryPath);
+              if (stat.kind === 'file') {
+                executionState.kernelFileSystem!.unlink(entryPath);
+                return;
+              }
+              if (!recursive) {
+                throw Object.assign(
+                  new Error(`ERR_FS_EISDIR: path is a directory, rm '${path}'`),
+                  { code: 'ERR_FS_EISDIR' }
+                );
+              }
+              for (const entry of executionState.kernelFileSystem!.readdir(entryPath)) {
+                removeEntry(
+                  entryPath
+                    ? `${entryPath.replace(/\/+$/, '')}/${entry.name}`
+                    : entry.name,
+                  true
+                );
+              }
+              executionState.kernelFileSystem!.rmdir(entryPath);
+            };
+            try {
+              removeEntry(normalized, options?.recursive === true);
+            } catch (error) {
+              if (options?.force && (error as { code?: unknown }).code === 'ENOENT') return;
+              throw error;
+            }
+            return;
+          }
           if (fileStore.has(normalized) || symlinkStore.has(normalized)) {
             deleteFile(path);
             return;
@@ -7386,6 +7734,50 @@ export async function runBrowserJavaScriptProjectRequest(
             : `ENOENT: no such file or directory, scandir '${path}'`);
         }
         const normalized = resolveWorkspaceEntryPath(path);
+        if (executionState.kernelFileSystem) {
+          const recursive = typeof options === 'object' && options?.recursive === true;
+          const entries: Array<{
+            relativePath: string;
+            kind: 'file' | 'directory' | 'symlink';
+          }> = [];
+          const collectEntries = (
+            directoryPath: string,
+            relativePrefix: string
+          ): void => {
+            for (const entry of executionState.kernelFileSystem!.readdir(directoryPath)) {
+              const relativePath = relativePrefix
+                ? `${relativePrefix}/${entry.name}`
+                : entry.name;
+              entries.push({ relativePath, kind: entry.kind });
+              if (recursive && entry.kind === 'directory') {
+                collectEntries(
+                  directoryPath
+                    ? `${directoryPath.replace(/\/+$/, '')}/${entry.name}`
+                    : entry.name,
+                  relativePath
+                );
+              }
+            }
+          };
+          collectEntries(normalized, '');
+          entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+          if (!withFileTypes) return entries.map((entry) => entry.relativePath);
+          return entries.map((entry) => {
+            const parts = entry.relativePath.split('/');
+            const name = parts.pop() ?? entry.relativePath;
+            const relativeParent = parts.join('/');
+            const parentPath = relativeParent
+              ? normalized
+                ? `${normalized}/${relativeParent}`
+                : relativeParent
+              : normalized;
+            return makeDirent(
+              name,
+              entry.kind,
+              workspaceFilename(parentPath, workspaceRoot)
+            );
+          });
+        }
         if (workspaceFileAncestor(normalized) !== null || fileStore.has(normalized)) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
         }
@@ -7540,11 +7932,27 @@ export async function runBrowserJavaScriptProjectRequest(
         let stats = kernelStats;
         if (stats === null) {
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+          if (executionState.kernelFileSystem) {
+            try {
+              stats = statForTraceKernelPath(
+                executionState.kernelFileSystem.stat(normalized)
+              );
+            } catch (error) {
+              if (
+                options?.throwIfNoEntry === false &&
+                (error as { code?: unknown }).code === 'ENOENT'
+              ) {
+                return undefined;
+              }
+              throw error;
+            }
+          } else {
           if (workspaceFileAncestor(normalized) !== null) {
             if (options?.throwIfNoEntry === false) return undefined;
             throw Object.assign(new Error(`ENOTDIR: not a directory, stat '${path}'`), { code: 'ENOTDIR' });
           }
           stats = statForNormalizedPath(normalized);
+          }
         }
         if (!stats) {
           if (options?.throwIfNoEntry === false) return undefined;
@@ -7558,11 +7966,27 @@ export async function runBrowserJavaScriptProjectRequest(
         let stats = kernelStats;
         if (stats === null) {
           const normalized = resolveWorkspaceEntryPath(path, false);
+          if (executionState.kernelFileSystem) {
+            try {
+              stats = statForTraceKernelPath(
+                executionState.kernelFileSystem.lstat(normalized)
+              );
+            } catch (error) {
+              if (
+                options?.throwIfNoEntry === false &&
+                (error as { code?: unknown }).code === 'ENOENT'
+              ) {
+                return undefined;
+              }
+              throw error;
+            }
+          } else {
           if (workspaceFileAncestor(normalized) !== null) {
             if (options?.throwIfNoEntry === false) return undefined;
             throw Object.assign(new Error(`ENOTDIR: not a directory, lstat '${path}'`), { code: 'ENOTDIR' });
           }
           stats = statForNormalizedPath(normalized, false);
+          }
         }
         if (!stats) {
           if (options?.throwIfNoEntry === false) return undefined;
@@ -7652,7 +8076,10 @@ export async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
-      mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
+      mkdirSync: (
+        path: unknown,
+        options?: { recursive?: boolean; mode?: string | number } | number
+      ) => {
         const mkdirTarget = runtimeMkdirTarget(path, kernelDevices);
         if (mkdirTarget?.kind === 'error') {
           throwRuntimeMkdirTargetError(mkdirTarget, runtimeKernelMutationFsErrorMessage(String(path), mkdirTarget, 'mkdir'));
@@ -7660,6 +8087,40 @@ export async function runBrowserJavaScriptProjectRequest(
         const rawPath = workspacePathInputToString(path).replace(/\\/g, '/');
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
+        const recursive = typeof options === 'object' && options?.recursive === true;
+        const mode = typeof options === 'number'
+          ? options
+          : typeof options?.mode === 'number'
+            ? options.mode
+            : undefined;
+        if (executionState.kernelFileSystem) {
+          let firstCreated: string | undefined;
+          if (recursive) {
+            const parts = normalized.split('/');
+            for (let index = 1; index <= parts.length; index += 1) {
+              const candidate = parts.slice(0, index).join('/');
+              try {
+                executionState.kernelFileSystem.stat(candidate);
+              } catch (error) {
+                if ((error as { code?: unknown }).code !== 'ENOENT') throw error;
+                firstCreated = candidate;
+                break;
+              }
+            }
+          }
+          executionState.kernelFileSystem.mkdir(normalized, {
+            recursive,
+            ...(mode !== undefined ? { mode } : {}),
+          });
+          if (!recursive || firstCreated === undefined) return undefined;
+          if (rawPath.startsWith('/')) {
+            return workspaceFilename(firstCreated, workspaceRoot);
+          }
+          const relativeFirstCreated = relativeWorkspacePath(cwdPath, firstCreated);
+          return rawPath.startsWith('./') && !relativeFirstCreated.startsWith('.')
+            ? `./${relativeFirstCreated}`
+            : relativeFirstCreated;
+        }
         assertReadonlyFilePath(normalized, 'mkdir');
         const parent = dirname(normalized);
         const parentPath = parent === '' ? '' : parent;
@@ -7674,15 +8135,15 @@ export async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${path}'`), { code: 'EEXIST' });
         }
         if (directoryStore.has(normalized)) {
-          if (!options?.recursive) {
+          if (!recursive) {
             throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${path}'`), { code: 'EEXIST' });
           }
           return undefined;
         }
-        if (!options?.recursive && parentPath && !directoryStore.has(parentPath)) {
+        if (!recursive && parentPath && !directoryStore.has(parentPath)) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, mkdir '${path}'`), { code: 'ENOENT' });
         }
-        const start = options?.recursive ? 1 : parts.length;
+        const start = recursive ? 1 : parts.length;
         let firstCreated: string | undefined;
         for (let index = start; index <= parts.length; index += 1) {
           const directoryPath = parts.slice(0, index).join('/');
@@ -7695,7 +8156,7 @@ export async function runBrowserJavaScriptProjectRequest(
             notifyDirectoryMutation(directoryPath);
           }
         }
-        if (!options?.recursive || firstCreated === undefined) return undefined;
+        if (!recursive || firstCreated === undefined) return undefined;
         if (rawPath.startsWith('/')) return workspaceFilename(firstCreated, workspaceRoot);
         const relativeFirstCreated = relativeWorkspacePath(cwdPath, firstCreated);
         return rawPath.startsWith('./') && !relativeFirstCreated.startsWith('.')
@@ -7749,6 +8210,10 @@ export async function runBrowserJavaScriptProjectRequest(
           throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, 'rmdir'));
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+        if (executionState.kernelFileSystem) {
+          executionState.kernelFileSystem.rmdir(normalized);
+          return;
+        }
         assertWorkspaceParentDirectoryPath(normalized, path, 'rmdir');
         if (fileStore.has(normalized)) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, rmdir '${path}'`), { code: 'ENOTDIR' });
@@ -7802,12 +8267,7 @@ export async function runBrowserJavaScriptProjectRequest(
         };
         const readFileFromHandle = (encoding?: string | { encoding?: string | null } | null): BrowserBuffer | string => {
           assertFileHandleOpen();
-          const entry = fileDescriptor(fd);
-          if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, readFile'), { code: 'EBADF' });
-          const source = descriptorBytes(entry);
-          const start = entry.offset;
-          const bytes = BrowserBuffer.from(source.slice(start));
-          entry.offset = source.byteLength;
+          const bytes = BrowserBuffer.from(readDescriptorFileBytes(fd));
           const requestedEncoding = typeof encoding === 'string' ? encoding : encoding?.encoding;
           return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
         };

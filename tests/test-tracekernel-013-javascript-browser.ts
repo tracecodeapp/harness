@@ -1,0 +1,709 @@
+#!/usr/bin/env npx tsx
+
+import { spawn } from 'node:child_process';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { extname, join, normalize, resolve, sep } from 'node:path';
+import { build } from 'esbuild';
+import { chromium } from 'playwright';
+
+function assertCondition(condition: boolean, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+function contentType(pathname: string): string {
+  switch (extname(pathname)) {
+    case '.html':
+      return 'text/html; charset=utf-8';
+    case '.js':
+    case '.mjs':
+      return 'text/javascript; charset=utf-8';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+async function syncAssets(targetDirectory: string): Promise<void> {
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn(process.execPath, [
+      resolve('node_modules/tsx/dist/cli.mjs'),
+      resolve('src/cli.ts'),
+      'sync-assets',
+      targetDirectory,
+      '--languages',
+      'javascript,typescript',
+    ], { cwd: process.cwd(), stdio: 'inherit' });
+    child.once('error', rejectPromise);
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolvePromise();
+      else {
+        rejectPromise(
+          new Error(`Asset sync failed with ${signal ? `signal ${signal}` : `exit code ${code}.`}`)
+        );
+      }
+    });
+  });
+}
+
+async function startStaticServer(root: string): Promise<{
+  origin: string;
+  close(): Promise<void>;
+}> {
+  const server = createServer((request, response) => {
+    const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
+    const candidate = normalize(join(root, decodeURIComponent(requestUrl.pathname)));
+    if (!candidate.startsWith(root + sep) && candidate !== root) {
+      response.writeHead(403).end('Forbidden');
+      return;
+    }
+    const filePath = statSync(candidate, { throwIfNoEntry: false })?.isDirectory()
+      ? join(candidate, 'index.html')
+      : candidate;
+    if (!filePath || !existsSync(filePath)) {
+      response.writeHead(404).end('Not found');
+      return;
+    }
+    const stat = statSync(filePath);
+    response.writeHead(200, {
+      'Content-Length': String(stat.size),
+      'Content-Type': contentType(filePath),
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+    });
+    createReadStream(filePath).pipe(response);
+  });
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.once('error', rejectPromise);
+    server.listen(0, '127.0.0.1', resolvePromise);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Unable to resolve test server address.');
+  }
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolvePromise, rejectPromise) => {
+      server.close((error) => {
+        if (error) rejectPromise(error);
+        else resolvePromise();
+      });
+      server.closeIdleConnections?.();
+      server.closeAllConnections?.();
+    }),
+  };
+}
+
+const conformanceBody = [
+  'const fs = require("node:fs");',
+  'const fsp = require("node:fs/promises");',
+  'const assert = (condition, message) => { if (!condition) throw new Error(message); };',
+  'const code = (operation) => { try { operation(); return "ok"; } catch (error) { return error.code; } };',
+  'fs.mkdirSync("sync-tree/nested", { recursive: true, mode: 0o750 });',
+  'fs.writeFileSync("sync-tree/nested/value.txt", "sync-value");',
+  'assert(fs.readFileSync("sync-tree/nested/value.txt", "utf8") === "sync-value", "sync read/write");',
+  'assert(fs.statSync("sync-tree").isDirectory(), "sync directory stat");',
+  'assert(fs.statSync("sync-tree/nested/value.txt").isFile(), "sync file stat");',
+  'const syncEntries = fs.readdirSync("sync-tree", { recursive: true });',
+  'assert(syncEntries.join("|") === "nested|nested/value.txt", "recursive readdir: " + syncEntries.join("|"));',
+  'const syncDirents = fs.readdirSync("sync-tree/nested", { withFileTypes: true });',
+  'assert(syncDirents.length === 1 && syncDirents[0].isFile(), "sync dirent");',
+  'fs.renameSync("sync-tree/nested/value.txt", "sync-tree/nested/renamed.txt");',
+  'assert(!fs.existsSync("sync-tree/nested/value.txt"), "rename removes source");',
+  'assert(fs.readFileSync("sync-tree/nested/renamed.txt", "utf8") === "sync-value", "rename keeps bytes");',
+  'fs.linkSync("sync-tree/nested/renamed.txt", "sync-tree/nested/hard.txt");',
+  'const hardSource = fs.statSync("sync-tree/nested/renamed.txt");',
+  'const hardAlias = fs.statSync("sync-tree/nested/hard.txt");',
+  'assert(hardSource.ino === hardAlias.ino && hardSource.nlink === 2 && hardAlias.nlink === 2, "hard-link identity");',
+  'fs.writeFileSync("sync-tree/nested/hard.txt", "hard-value");',
+  'assert(fs.readFileSync("sync-tree/nested/renamed.txt", "utf8") === "hard-value", "hard-link shared bytes");',
+  'fs.unlinkSync("sync-tree/nested/renamed.txt");',
+  'assert(fs.statSync("sync-tree/nested/hard.txt").nlink === 1, "hard-link decrement");',
+  'fs.symlinkSync("hard.txt", "sync-tree/nested/value-link");',
+  'assert(fs.lstatSync("sync-tree/nested/value-link").isSymbolicLink(), "lstat symlink");',
+  'assert(fs.statSync("sync-tree/nested/value-link").ino === hardAlias.ino, "stat follows symlink");',
+  'assert(fs.readlinkSync("sync-tree/nested/value-link") === "hard.txt", "readlink literal target");',
+  'const linkRealpath = fs.realpathSync("sync-tree/nested/value-link");',
+  'assert(linkRealpath.endsWith("/sync-tree/nested/hard.txt"), "realpath symlink: " + linkRealpath);',
+  'fs.writeFileSync("sync-tree/nested/value-link", "link-value");',
+  'assert(fs.readFileSync("sync-tree/nested/hard.txt", "utf8") === "link-value", "write through symlink");',
+  'fs.symlinkSync("missing.txt", "sync-tree/nested/dangling-link");',
+  'assert(fs.lstatSync("sync-tree/nested/dangling-link").isSymbolicLink(), "dangling lstat");',
+  'assert(code(() => fs.statSync("sync-tree/nested/dangling-link")) === "ENOENT", "dangling stat");',
+  'fs.symlinkSync("loop-b", "sync-tree/nested/loop-a");',
+  'fs.symlinkSync("loop-a", "sync-tree/nested/loop-b");',
+  'assert(code(() => fs.statSync("sync-tree/nested/loop-a")) === "ELOOP", "symlink loop");',
+  'fs.unlinkSync("sync-tree/nested/value-link");',
+  'fs.unlinkSync("sync-tree/nested/dangling-link");',
+  'fs.unlinkSync("sync-tree/nested/loop-a");',
+  'fs.unlinkSync("sync-tree/nested/loop-b");',
+  'fs.unlinkSync("sync-tree/nested/hard.txt");',
+  'fs.rmdirSync("sync-tree/nested");',
+  'fs.rmdirSync("sync-tree");',
+  'assert(code(() => fs.statSync("sync-tree")) === "ENOENT", "ENOENT propagation");',
+  '(async () => {',
+  '  await fsp.mkdir("async-tree/nested", { recursive: true });',
+  '  await fsp.writeFile("async-tree/nested/value.txt", "async-value");',
+  '  assert(await fsp.readFile("async-tree/nested/value.txt", "utf8") === "async-value", "async read/write");',
+  '  assert((await fsp.stat("async-tree")).isDirectory(), "async stat");',
+  '  assert((await fsp.readdir("async-tree")).join("|") === "nested", "async readdir");',
+  '  await fsp.rename("async-tree/nested/value.txt", "async-tree/nested/renamed.txt");',
+  '  await fsp.unlink("async-tree/nested/renamed.txt");',
+  '  await fsp.rmdir("async-tree/nested");',
+  '  await fsp.rmdir("async-tree");',
+  '  fs.mkdirSync("rm-tree/a/b", { recursive: true });',
+  '  fs.writeFileSync("rm-tree/a/b/value.txt", "remove-me");',
+  '  fs.rmSync("rm-tree", { recursive: true });',
+  '  assert(!fs.existsSync("rm-tree"), "recursive rm");',
+  '  fs.writeFileSync("conformance-" + __CONFORMANCE_LANGUAGE__ + ".txt", __CONFORMANCE_LANGUAGE__);',
+  '  console.log(JSON.stringify({ language: __CONFORMANCE_LANGUAGE__, status: "pass" }));',
+  '})();',
+  '',
+].join('\n');
+
+const descriptorConformanceSource = [
+  'const fs = require("node:fs");',
+  'const fsp = require("node:fs/promises");',
+  'const assert = (condition, message) => { if (!condition) throw new Error(message); };',
+  'const text = (buffer) => Buffer.from(buffer).toString("utf8");',
+  'fs.writeFileSync("descriptor.txt", "abcdef");',
+  'const first = fs.openSync("descriptor.txt", "r+");',
+  'const second = fs.openSync("descriptor.txt", "r");',
+  'const a = Buffer.alloc(2);',
+  'const b = Buffer.alloc(2);',
+  'assert(fs.readSync(first, a, 0, 2, null) === 2 && text(a) === "ab", "first offset");',
+  'assert(fs.readSync(second, b, 0, 2, null) === 2 && text(b) === "ab", "independent offset");',
+  'const positioned = Buffer.alloc(2);',
+  'fs.readSync(first, positioned, 0, 2, 0);',
+  'assert(text(positioned) === "ab", "positioned read");',
+  'const afterPositioned = Buffer.alloc(2);',
+  'fs.readSync(first, afterPositioned, 0, 2, null);',
+  'assert(text(afterPositioned) === "cd", "positioned read changed shared offset");',
+  'const inodeBeforeRename = fs.fstatSync(first).ino;',
+  'fs.renameSync("descriptor.txt", "descriptor-renamed.txt");',
+  'fs.writeSync(first, Buffer.from("XY"), 0, 2, 0);',
+  'assert(fs.readFileSync("descriptor-renamed.txt", "utf8") === "XYcdef", "descriptor did not follow rename");',
+  'assert(fs.fstatSync(first).ino === inodeBeforeRename, "inode changed across rename");',
+  'fs.unlinkSync("descriptor-renamed.txt");',
+  'fs.writeSync(first, Buffer.from("Z"), 0, 1, 2);',
+  'const detached = Buffer.alloc(6);',
+  'fs.readSync(first, detached, 0, 6, 0);',
+  'assert(text(detached) === "XYZdef", "unlinked descriptor lost node");',
+  'fs.writeFileSync("descriptor-renamed.txt", "replacement");',
+  'assert(fs.readFileSync("descriptor-renamed.txt", "utf8") === "replacement", "replacement path wrong");',
+  'const stillDetached = Buffer.alloc(6);',
+  'fs.readSync(first, stillDetached, 0, 6, 0);',
+  'assert(text(stillDetached) === "XYZdef", "replacement rebound detached descriptor");',
+  'fs.ftruncateSync(first, 3);',
+  'assert(fs.fstatSync(first).size === 3, "ftruncate/fstat");',
+  'fs.closeSync(second);',
+  'fs.closeSync(first);',
+  'fs.writeFileSync("snapshot-before-unlink.txt", "before");',
+  'const snapshotFd = fs.openSync("snapshot-before-unlink.txt", "r");',
+  'fs.writeFileSync("snapshot-before-unlink.txt", "latest-before-unlink");',
+  'fs.unlinkSync("snapshot-before-unlink.txt");',
+  'const snapshotted = Buffer.alloc(32);',
+  'const snapshottedBytes = fs.readSync(snapshotFd, snapshotted, 0, snapshotted.length, 0);',
+  'assert(text(snapshotted.subarray(0, snapshottedBytes)) === "latest-before-unlink", "pre-unlink snapshot lost latest bytes");',
+  'fs.closeSync(snapshotFd);',
+  'const append = fs.openSync("append.txt", "a+");',
+  'fs.writeSync(append, "one");',
+  'fs.writeSync(append, "two", 0, "utf8");',
+  'assert(fs.readFileSync("append.txt", "utf8") === "onetwo", "append ignored EOF");',
+  'fs.closeSync(append);',
+  'const writeStream = fs.createWriteStream("stream.txt");',
+  'let writeStreamError = null;',
+  'writeStream.on("error", (error) => { writeStreamError = error; });',
+  'assert(writeStream.write("stream-value") === true, "write stream rejected: " + (writeStreamError && writeStreamError.message));',
+  'assert(fs.readFileSync("stream.txt", "utf8") === "stream-value", "descriptor-backed write stream");',
+  'writeStream.end();',
+  'const readStream = fs.createReadStream("stream.txt");',
+  'assert(String(readStream.read()) === "stream-value", "descriptor-backed read stream");',
+  '(async () => {',
+  '  const handle = await fsp.open("handle.txt", "w+");',
+  '  await handle.write(Buffer.from("handle"));',
+  '  const read = Buffer.alloc(6);',
+  '  const result = await handle.read(read, 0, 6, 0);',
+  '  assert(result.bytesRead === 6 && text(read) === "handle", "FileHandle read/write");',
+  '  await handle.truncate(4);',
+  '  assert((await handle.stat()).size === 4, "FileHandle truncate/stat");',
+  '  await handle.close();',
+  '  console.log(JSON.stringify({ descriptorStatus: "pass" }));',
+  '})();',
+  '',
+].join('\n');
+
+function conformanceSource(language: 'javascript' | 'typescript'): string {
+  const languageLiteral = JSON.stringify(language);
+  const source = conformanceBody.replaceAll('__CONFORMANCE_LANGUAGE__', languageLiteral);
+  if (language === 'javascript') return source;
+  return [
+    'declare function require(id: string): any;',
+    source
+      .replace(
+        'const assert = (condition, message) =>',
+        'const assert: (condition: unknown, message: string) => asserts condition = (condition, message) =>'
+      )
+      .replace(
+        'const code = (operation) =>',
+        'const code = (operation: () => unknown) =>'
+      )
+      .replace(
+        '} catch (error) { return error.code; }',
+        '} catch (error) { return (error as { code?: string }).code; }'
+      ),
+  ].join('\n');
+}
+
+async function main(): Promise<void> {
+  const tempRoot = await mkdtemp(join(tmpdir(), 'tracekernel-013-javascript-'));
+  let server: Awaited<ReturnType<typeof startStaticServer>> | undefined;
+  try {
+    await syncAssets(join(tempRoot, 'workers'));
+    await build({
+      entryPoints: [resolve('packages/harness-browser/src/project.ts')],
+      outfile: join(tempRoot, 'project-harness.mjs'),
+      bundle: true,
+      format: 'esm',
+      platform: 'browser',
+      target: ['es2022'],
+      logLevel: 'warning',
+      alias: {
+        zlib: resolve('packages/harness-project/src/zlib-browser-shim.ts'),
+        'node:zlib': resolve('packages/harness-project/src/zlib-browser-shim.ts'),
+      },
+      define: { 'process.env.NODE_ENV': '"production"' },
+    });
+    await writeFile(join(tempRoot, 'index.html'), '<!doctype html><meta charset="utf-8">\n');
+    server = await startStaticServer(tempRoot);
+
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      page.setDefaultTimeout(60_000);
+      const browserErrors: string[] = [];
+      page.on('console', (message) => {
+        if (message.type() === 'error') browserErrors.push(message.text());
+      });
+      page.on('pageerror', (error) => browserErrors.push(error.message));
+      await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
+      await page.evaluate('globalThis.__name = (fn) => fn');
+      const result = await page.evaluate(async ({
+        javascriptSource,
+        typescriptSource,
+        descriptorSource,
+      }) => {
+        // @ts-expect-error This module is generated into the browser test server.
+        const { createBrowserProjectWorkspace } = await import('/project-harness.mjs');
+        const workspace = await createBrowserProjectWorkspace({
+          assetBaseUrl: '/workers',
+          providers: ['javascript', 'typescript'],
+          projectWorkerIsolation: 'per-command',
+          nodeProjectTimeoutMs: 30_000,
+          files: [
+            { path: 'shared.txt', contents: 'before-writer' },
+            {
+              path: 'reader.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const initial = fs.readFileSync("shared.txt", "utf8");',
+                'console.log("reader:started:" + initial);',
+                'const deadline = performance.now() + 5000;',
+                'let observed = initial;',
+                'while (performance.now() < deadline) {',
+                '  observed = fs.readFileSync("shared.txt", "utf8");',
+                '  if (observed === "from-writer") break;',
+                '}',
+                'console.log("reader:observed:" + observed);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'writer.js',
+              contents: 'require("node:fs").writeFileSync("shared.txt", "from-writer");\n',
+            },
+            { path: 'descriptor-shared.txt', contents: 'before-descriptor-writer' },
+            {
+              path: 'descriptor-reader.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const fd = fs.openSync("descriptor-shared.txt", "r");',
+                'const read = () => {',
+                '  const buffer = Buffer.alloc(64);',
+                '  const count = fs.readSync(fd, buffer, 0, buffer.length, 0);',
+                '  return buffer.subarray(0, count).toString("utf8");',
+                '};',
+                'const initial = read();',
+                'console.log("descriptor-reader:started:" + initial);',
+                'const deadline = performance.now() + 5000;',
+                'let observed = initial;',
+                'while (performance.now() < deadline) {',
+                '  observed = read();',
+                '  if (observed === "from-descriptor-writer") break;',
+                '}',
+                'fs.closeSync(fd);',
+                'console.log("descriptor-reader:observed:" + observed);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'descriptor-writer.js',
+              contents: 'require("node:fs").writeFileSync("descriptor-shared.txt", "from-descriptor-writer");\n',
+            },
+            { path: 'namespace-target.txt', contents: 'before-namespace-writer' },
+            {
+              path: 'namespace-reader.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'console.log("namespace-reader:started");',
+                'const deadline = performance.now() + 5000;',
+                'let observed = false;',
+                'while (performance.now() < deadline) {',
+                '  try {',
+                '    const target = fs.statSync("namespace-target.txt");',
+                '    const hard = fs.statSync("namespace-hard.txt");',
+                '    const link = fs.lstatSync("namespace-link.txt");',
+                '    observed = target.ino === hard.ino && target.nlink === 2 && hard.nlink === 2',
+                '      && link.isSymbolicLink()',
+                '      && fs.readlinkSync("namespace-link.txt") === "namespace-target.txt"',
+                '      && fs.readFileSync("namespace-link.txt", "utf8") === "namespace-shared";',
+                '    if (observed) break;',
+                '  } catch (error) {',
+                '    if (error.code !== "ENOENT") throw error;',
+                '  }',
+                '}',
+                'console.log("namespace-reader:observed:" + observed);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'namespace-writer.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'fs.linkSync("namespace-target.txt", "namespace-hard.txt");',
+                'fs.symlinkSync("namespace-target.txt", "namespace-link.txt");',
+                'fs.writeFileSync("namespace-hard.txt", "namespace-shared");',
+                '',
+              ].join('\n'),
+            },
+            { path: 'host-cycle.txt', contents: 'before-host-cycle' },
+            {
+              path: 'host-cycle-reader.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const fd = fs.openSync("host-cycle.txt", "r");',
+                'console.log("host-cycle-reader:started");',
+                'const deadline = performance.now() + 5000;',
+                'while (performance.now() < deadline && !fs.existsSync("host-cycle-ready.txt")) {}',
+                'const buffer = Buffer.alloc(64);',
+                'const count = fs.readSync(fd, buffer, 0, buffer.length, 0);',
+                'fs.closeSync(fd);',
+                'console.log("host-cycle-reader:observed:" + buffer.subarray(0, count).toString("utf8"));',
+                '',
+              ].join('\n'),
+            },
+            { path: 'conformance.js', contents: javascriptSource },
+            { path: 'descriptor-conformance.js', contents: descriptorSource },
+            { path: 'conformance.ts', contents: typescriptSource },
+            {
+              path: 'tsconfig.json',
+              contents: JSON.stringify({
+                compilerOptions: {
+                  module: 'commonjs',
+                  target: 'es2020',
+                  strict: true,
+                  outDir: 'compiled',
+                },
+                files: ['conformance.ts'],
+              }),
+            },
+          ],
+        });
+        try {
+          let markReaderStarted!: () => void;
+          const readerStarted = new Promise<void>((resolvePromise) => {
+            markReaderStarted = resolvePromise;
+          });
+          const reader = workspace.runCommand('node reader.js', {
+            onEvent(event: { type: string; stream?: string; data?: string }) {
+              if (
+                event.type === 'output' &&
+                event.stream === 'stdout' &&
+                event.data?.includes('reader:started:before-writer')
+              ) {
+                markReaderStarted();
+              }
+            },
+          });
+          await Promise.race([
+            readerStarted,
+            reader.then((command: unknown) => {
+              throw new Error(`reader exited before startup: ${JSON.stringify(command)}`);
+            }),
+            new Promise<never>((_resolve, reject) => {
+              setTimeout(() => reject(new Error('reader did not start')), 10_000);
+            }),
+          ]);
+          const writer = await workspace.runCommand('node writer.js');
+          const readerResult = await reader;
+          let markDescriptorReaderStarted!: () => void;
+          const descriptorReaderStarted = new Promise<void>((resolvePromise) => {
+            markDescriptorReaderStarted = resolvePromise;
+          });
+          const descriptorReader = workspace.runCommand('node descriptor-reader.js', {
+            onEvent(event: { type: string; stream?: string; data?: string }) {
+              if (
+                event.type === 'output' &&
+                event.stream === 'stdout' &&
+                event.data?.includes('descriptor-reader:started:before-descriptor-writer')
+              ) {
+                markDescriptorReaderStarted();
+              }
+            },
+          });
+          await Promise.race([
+            descriptorReaderStarted,
+            descriptorReader.then((command: unknown) => {
+              throw new Error(`descriptor reader exited before startup: ${JSON.stringify(command)}`);
+            }),
+            new Promise<never>((_resolve, reject) => {
+              setTimeout(() => reject(new Error('descriptor reader did not start')), 10_000);
+            }),
+          ]);
+          const descriptorWriter = await workspace.runCommand('node descriptor-writer.js');
+          const descriptorReaderResult = await descriptorReader;
+          let markNamespaceReaderStarted!: () => void;
+          const namespaceReaderStarted = new Promise<void>((resolvePromise) => {
+            markNamespaceReaderStarted = resolvePromise;
+          });
+          const namespaceReader = workspace.runCommand('node namespace-reader.js', {
+            onEvent(event: { type: string; stream?: string; data?: string }) {
+              if (
+                event.type === 'output' &&
+                event.stream === 'stdout' &&
+                event.data?.includes('namespace-reader:started')
+              ) {
+                markNamespaceReaderStarted();
+              }
+            },
+          });
+          await Promise.race([
+            namespaceReaderStarted,
+            namespaceReader.then((command: unknown) => {
+              throw new Error(`namespace reader exited before startup: ${JSON.stringify(command)}`);
+            }),
+            new Promise<never>((_resolve, reject) => {
+              setTimeout(() => reject(new Error('namespace reader did not start')), 10_000);
+            }),
+          ]);
+          const namespaceWriter = await workspace.runCommand('node namespace-writer.js');
+          const namespaceReaderResult = await namespaceReader;
+          let markHostCycleReaderStarted!: () => void;
+          const hostCycleReaderStarted = new Promise<void>((resolvePromise) => {
+            markHostCycleReaderStarted = resolvePromise;
+          });
+          const hostCycleReader = workspace.runCommand('node host-cycle-reader.js', {
+            onEvent(event: { type: string; stream?: string; data?: string }) {
+              if (
+                event.type === 'output' &&
+                event.stream === 'stdout' &&
+                event.data?.includes('host-cycle-reader:started')
+              ) {
+                markHostCycleReaderStarted();
+              }
+            },
+          });
+          await Promise.race([
+            hostCycleReaderStarted,
+            hostCycleReader.then((command: unknown) => {
+              throw new Error(`host-cycle reader exited before startup: ${JSON.stringify(command)}`);
+            }),
+            new Promise<never>((_resolve, reject) => {
+              setTimeout(() => reject(new Error('host-cycle reader did not start')), 10_000);
+            }),
+          ]);
+          await workspace.writeFile('host-cycle.txt', 'latest-before-host-delete');
+          await workspace.deleteFile('host-cycle.txt');
+          await workspace.writeFile('host-cycle.txt', 'host-replacement');
+          await workspace.writeFile('host-cycle-ready.txt', 'ready');
+          const hostCycleReaderResult = await hostCycleReader;
+          const javascript = await workspace.runCommand('node conformance.js');
+          const descriptors = await workspace.runCommand('node descriptor-conformance.js');
+          const compile = await workspace.runCommand('tsc --project tsconfig.json');
+          const typescript = compile.exitCode === 0
+            ? await workspace.runCommand('node compiled/conformance.js')
+            : null;
+          const restricted = workspace.kernel.createProcess({
+            name: 'restricted-javascript',
+            actor: {
+              id: 'restricted-javascript',
+              kind: 'runtime',
+              capabilities: {
+                read: ['**'],
+                write: [],
+                delete: [],
+                execute: true,
+              },
+            },
+            signalPolicy: 'system-only',
+          });
+          let restrictedWrite;
+          try {
+            restrictedWrite = await restricted.runCommand(
+              'node -e "require(\\\"node:fs\\\").writeFileSync(\\\"blocked.txt\\\", \\\"blocked\\\")"'
+            );
+          } finally {
+            restricted.dispose();
+          }
+          return {
+            reader: readerResult,
+            writer,
+            descriptorReader: descriptorReaderResult,
+            descriptorWriter,
+            namespaceReader: namespaceReaderResult,
+            namespaceWriter,
+            hostCycleReader: hostCycleReaderResult,
+            javascript,
+            descriptors,
+            compile,
+            typescript,
+            restrictedWrite,
+            blockedExists: await workspace.exists('blocked.txt'),
+            shared: await workspace.readFile('shared.txt'),
+            hostCycle: await workspace.readFile('host-cycle.txt'),
+            javascriptMarker: javascript.exitCode === 0
+              ? await workspace.readFile('conformance-javascript.txt')
+              : null,
+            typescriptMarker: typescript?.exitCode === 0
+              ? await workspace.readFile('conformance-typescript.txt')
+              : null,
+          };
+        } finally {
+          workspace.dispose();
+        }
+      }, {
+        javascriptSource: conformanceSource('javascript'),
+        typescriptSource: conformanceSource('typescript'),
+        descriptorSource: descriptorConformanceSource,
+      });
+
+      assertCondition(
+        result.writer.exitCode === 0 &&
+          result.reader.exitCode === 0 &&
+          result.reader.stdout.includes('reader:observed:from-writer') &&
+          result.shared === 'from-writer',
+        `An already-running JS worker did not observe a peer's write: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.hostCycleReader.exitCode === 0 &&
+          result.hostCycleReader.stdout.includes(
+            'host-cycle-reader:observed:latest-before-host-delete'
+          ) &&
+          result.hostCycle === 'host-replacement',
+        `Host unlink/recreate did not preserve the open descriptor node: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.descriptorWriter.exitCode === 0 &&
+          result.descriptorReader.exitCode === 0 &&
+          result.descriptorReader.stdout.includes(
+            'descriptor-reader:observed:from-descriptor-writer'
+          ),
+        `An open descriptor did not observe a peer write: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.namespaceWriter.exitCode === 0 &&
+          result.namespaceReader.exitCode === 0 &&
+          result.namespaceReader.stdout.includes('namespace-reader:observed:true'),
+        `An already-running worker did not observe peer namespace changes: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.descriptors.exitCode === 0 &&
+          result.descriptors.stdout.includes('"descriptorStatus":"pass"'),
+        `JavaScript descriptor syscall conformance failed: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.javascript.exitCode === 0 &&
+          result.javascript.stdout.includes('"language":"javascript","status":"pass"') &&
+          result.javascriptMarker === 'javascript',
+        `JavaScript path syscall conformance failed: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.compile.exitCode === 0 &&
+          result.typescript?.exitCode === 0 &&
+          result.typescript.stdout.includes('"language":"typescript","status":"pass"') &&
+          result.typescriptMarker === 'typescript',
+        `TypeScript-emitted JavaScript path syscall conformance failed: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.restrictedWrite.exitCode !== 0 &&
+          result.restrictedWrite.stderr.includes('EACCES') &&
+          result.blockedExists === false,
+        `The host syscall handler did not enforce actor write capabilities: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        browserErrors.length === 0,
+        `Browser emitted unexpected errors: ${JSON.stringify(browserErrors)}`
+      );
+
+      const generatedWorkerPath = resolve('workers/javascript/javascript-project-worker.js');
+      const generatedWorker = await readFile(generatedWorkerPath, 'utf8');
+      assertCondition(
+        !generatedWorker.includes('effect/Effect') && !generatedWorker.includes('EffectPrimitive'),
+        'The browser runtime worker must not bundle the host-side Effect implementation.'
+      );
+      console.log(JSON.stringify({
+        schema: 'tracekernel-013-javascript-conformance-v1',
+        liveCrossWorkerVisibility: true,
+        pathOperations: [
+          'readFile',
+          'writeFile',
+          'stat',
+          'readdir',
+          'mkdir',
+          'rmdir',
+          'unlink',
+          'rename',
+          'link',
+          'symlink',
+          'readlink',
+          'lstat',
+          'realpath',
+          'recursive-rm',
+        ],
+        descriptorOperations: [
+          'open',
+          'read',
+          'write',
+          'close',
+          'fstat',
+          'ftruncate',
+          'positioned-io',
+          'append',
+          'rename-survival',
+          'unlink-survival',
+          'streams',
+          'cross-worker-live-read',
+          'cross-worker-namespace-visibility',
+        ],
+        adapters: ['javascript', 'typescript-emitted-javascript'],
+        hostCapabilityEnforcement: true,
+        generatedWorkerBytes: statSync(generatedWorkerPath).size,
+        hostEffectBundledIntoRuntime: false,
+      }, null, 2));
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    await server?.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+void main().catch((error) => {
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  process.exitCode = 1;
+});

@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness-browser",
-  "version": "0.12.6",
+  "version": "0.13.0-alpha.0",
   "description": "Browser harness factory and runtime clients for TraceCode.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
@@ -47,6 +47,7 @@
   "sideEffects": false,
   "dependencies": {
     "@tracecode/harness-core": "workspace:*",
+    "@tracecode/tracekernel": "workspace:*",
     "effect": "^3.22.0"
   }
 }

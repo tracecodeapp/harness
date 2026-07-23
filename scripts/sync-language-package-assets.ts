@@ -23,6 +23,10 @@ const SHARED_PACKAGE_FILES = ['LICENSE', 'THIRD_PARTY_NOTICES.md'] as const;
 
 const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
   {
+    packageDir: 'packages/tracekernel',
+    assets: [],
+  },
+  {
     packageDir: 'packages/harness-core',
     assets: [],
   },

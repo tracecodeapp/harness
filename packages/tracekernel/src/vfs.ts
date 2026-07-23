@@ -1,0 +1,1070 @@
+import * as Effect from 'effect/Effect';
+import type { TraceKernelDescriptor } from './descriptors';
+import {
+  TraceKernelFileSystemError,
+  type TraceKernelFileSystemErrorCode,
+} from './errors';
+
+export type TraceKernelFileAccess = 'read' | 'write' | 'read-write';
+export type TraceKernelNodeKind = 'file' | 'directory' | 'symlink';
+
+export interface TraceKernelOpenFileOptions {
+  readonly access?: TraceKernelFileAccess;
+  readonly create?: boolean;
+  readonly exclusive?: boolean;
+  readonly truncate?: boolean;
+  readonly append?: boolean;
+}
+
+export interface TraceKernelMkdirOptions {
+  readonly recursive?: boolean;
+  readonly mode?: number;
+}
+
+export interface TraceKernelFileSnapshot {
+  readonly path: string;
+  readonly contents: Uint8Array;
+  readonly generation: number;
+}
+
+export interface TraceKernelVersionedFile {
+  readonly contents: Uint8Array;
+  /**
+   * Signed 32-bit session mutation token used by runtime read caches.
+   *
+   * This is deliberately distinct from the node's metadata generation. It
+   * conservatively invalidates all runtime read caches after any TKFS mutation.
+   */
+  readonly cacheGeneration: number;
+}
+
+export interface TraceKernelStat {
+  readonly path: string;
+  readonly kind: TraceKernelNodeKind;
+  readonly inode: number;
+  readonly nlink: number;
+  readonly mode: number;
+  readonly size: number;
+  readonly generation: number;
+  readonly createdAt: number;
+  readonly modifiedAt: number;
+  readonly changedAt: number;
+}
+
+export interface TraceKernelDirectoryEntry {
+  readonly name: string;
+  readonly kind: TraceKernelNodeKind;
+  readonly inode: number;
+}
+
+interface TraceKernelNodeBase {
+  readonly kind: TraceKernelNodeKind;
+  readonly inode: number;
+  mode: number;
+  generation: number;
+  readonly createdAt: number;
+  modifiedAt: number;
+  changedAt: number;
+}
+
+interface TraceKernelFileNode extends TraceKernelNodeBase {
+  readonly kind: 'file';
+  contents: Uint8Array;
+}
+
+interface TraceKernelDirectoryNode extends TraceKernelNodeBase {
+  readonly kind: 'directory';
+}
+
+interface TraceKernelSymlinkNode extends TraceKernelNodeBase {
+  readonly kind: 'symlink';
+  readonly target: string;
+}
+
+type TraceKernelNode =
+  | TraceKernelFileNode
+  | TraceKernelDirectoryNode
+  | TraceKernelSymlinkNode;
+
+class TraceKernelOpenFileNode {
+  constructor(
+    readonly openedPath: string,
+    readonly node: TraceKernelFileNode
+  ) {}
+}
+
+function normalizeTraceKernelPath(path: string, cwd: string): string {
+  if (path.includes('\0')) {
+    throw new TraceKernelFileSystemError({
+      code: 'EINVAL',
+      path,
+      message: `EINVAL: invalid path ${JSON.stringify(path)}`,
+    });
+  }
+  const source = path.startsWith('/') ? path : `${cwd}/${path}`;
+  const parts: string[] = [];
+  for (const part of source.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
+function parentPath(path: string): string {
+  if (path === '/') return '/';
+  const separator = path.lastIndexOf('/');
+  return separator <= 0 ? '/' : path.slice(0, separator);
+}
+
+/**
+ * TKFS: the authoritative, session-owned TraceKernel virtual filesystem.
+ *
+ * The namespace map owns path-to-inode bindings while open file descriptions
+ * retain direct references to file nodes. Consequently rename, unlink, and
+ * replacement are atomic namespace operations without redirecting descriptors
+ * that were already open.
+ *
+ * The semaphore is the linearization point for every namespace and file-data
+ * mutation. State remains explicit kernel data; Effect supplies scoped
+ * concurrency and typed failure, rather than becoming the state model.
+ */
+export class TraceKernelFileSystem {
+  private readonly nodes = new Map<string, TraceKernelNode>();
+  private nextInode = 1;
+  private nextGeneration = 1;
+  private generationBuffer?: SharedArrayBuffer;
+
+  private constructor(private readonly mutex: Effect.Semaphore) {
+    this.installInitialDirectory('/');
+    this.installInitialDirectory('/workspace');
+  }
+
+  static make(): Effect.Effect<TraceKernelFileSystem> {
+    return Effect.makeSemaphore(1).pipe(
+      Effect.map((mutex) => new TraceKernelFileSystem(mutex))
+    );
+  }
+
+  get mutationGeneration(): number {
+    return this.nextGeneration - 1;
+  }
+
+  get cacheGeneration(): number {
+    return this.mutationGeneration | 0;
+  }
+
+  /**
+   * Lazily exposes the conservative session mutation token to isolated runtime
+   * workers. Shared memory is an optimization signal only; TKFS remains the
+   * source of truth and every cache miss still uses a syscall.
+   */
+  sharedGenerationBuffer(): SharedArrayBuffer | undefined {
+    if (typeof SharedArrayBuffer === 'undefined') return undefined;
+    if (!this.generationBuffer) {
+      this.generationBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+      Atomics.store(new Int32Array(this.generationBuffer), 0, this.cacheGeneration);
+    }
+    return this.generationBuffer;
+  }
+
+  resolve(path: string, cwd = '/workspace'): Effect.Effect<string, TraceKernelFileSystemError> {
+    return Effect.try({
+      try: () => normalizeTraceKernelPath(path, cwd),
+      catch: (error) => error instanceof TraceKernelFileSystemError
+        ? error
+        : new TraceKernelFileSystemError({
+            code: 'EINVAL',
+            path,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+    });
+  }
+
+  stat(path: string, cwd = '/workspace'): Effect.Effect<TraceKernelStat, TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const realPath = this.resolveNodePath(resolved, true);
+          if (realPath instanceof TraceKernelFileSystemError) return Effect.fail(realPath);
+          const node = this.nodes.get(realPath);
+          return node
+            ? Effect.succeed(this.snapshotStat(realPath, node))
+            : this.fail('ENOENT', realPath, 'no such file or directory');
+        })
+      ))
+    );
+  }
+
+  lstat(path: string, cwd = '/workspace'): Effect.Effect<TraceKernelStat, TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const linkPath = this.resolveNodePath(resolved, false);
+          if (linkPath instanceof TraceKernelFileSystemError) return Effect.fail(linkPath);
+          const node = this.nodes.get(linkPath);
+          return node
+            ? Effect.succeed(this.snapshotStat(linkPath, node))
+            : this.fail('ENOENT', linkPath, 'no such file or directory');
+        })
+      ))
+    );
+  }
+
+  realpath(path: string, cwd = '/workspace'): Effect.Effect<string, TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const realPath = this.resolveNodePath(resolved, true);
+          return realPath instanceof TraceKernelFileSystemError
+            ? Effect.fail(realPath)
+            : Effect.succeed(realPath);
+        })
+      ))
+    );
+  }
+
+  readdir(
+    path: string,
+    cwd = '/workspace'
+  ): Effect.Effect<readonly TraceKernelDirectoryEntry[], TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const realPath = this.resolveNodePath(resolved, true);
+          if (realPath instanceof TraceKernelFileSystemError) return Effect.fail(realPath);
+          const node = this.nodes.get(realPath);
+          if (!node) return this.fail('ENOENT', realPath, 'no such directory');
+          if (node.kind !== 'directory') {
+            return this.fail('ENOTDIR', realPath, 'not a directory');
+          }
+          const prefix = realPath === '/' ? '/' : `${realPath}/`;
+          const entries: TraceKernelDirectoryEntry[] = [];
+          for (const [candidate, child] of this.nodes) {
+            if (!candidate.startsWith(prefix)) continue;
+            const remainder = candidate.slice(prefix.length);
+            if (remainder.length === 0 || remainder.includes('/')) continue;
+            entries.push(Object.freeze({
+              name: remainder,
+              kind: child.kind,
+              inode: child.inode,
+            }));
+          }
+          entries.sort((left, right) => left.name.localeCompare(right.name));
+          return Effect.succeed(Object.freeze(entries));
+        })
+      ))
+    );
+  }
+
+  mkdir(
+    path: string,
+    options: TraceKernelMkdirOptions = {},
+    cwd = '/workspace'
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const directoryPath = this.resolveNodePath(resolved, false, options.recursive ? 'suffix' : 'final');
+          if (directoryPath instanceof TraceKernelFileSystemError) return Effect.fail(directoryPath);
+          const existing = this.nodes.get(directoryPath);
+          if (existing) {
+            if (options.recursive && existing.kind === 'directory') return Effect.void;
+            return this.fail('EEXIST', directoryPath, 'file already exists');
+          }
+          if (directoryPath === '/') return Effect.void;
+
+          const missing: string[] = [];
+          let cursor = directoryPath;
+          while (!this.nodes.has(cursor)) {
+            missing.push(cursor);
+            cursor = parentPath(cursor);
+          }
+          const ancestor = this.nodes.get(cursor)!;
+          if (ancestor.kind !== 'directory') {
+            return this.fail('ENOTDIR', cursor, 'path component is not a directory');
+          }
+          if (!options.recursive && missing.length > 1) {
+            return this.fail('ENOENT', parentPath(directoryPath), 'parent directory does not exist');
+          }
+
+          const generation = this.beginMutation();
+          const timestamp = Date.now();
+          for (const directoryPath of missing.reverse()) {
+            this.nodes.set(directoryPath, this.makeDirectory(
+              options.mode ?? 0o777,
+              generation,
+              timestamp
+            ));
+          }
+          this.touchDirectory(cursor, generation, timestamp);
+          return Effect.void;
+        })
+      ))
+    );
+  }
+
+  rmdir(path: string, cwd = '/workspace'): Effect.Effect<void, TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const directoryPath = this.resolveNodePath(resolved, false);
+          if (directoryPath instanceof TraceKernelFileSystemError) return Effect.fail(directoryPath);
+          if (directoryPath === '/') return this.fail('EBUSY', directoryPath, 'cannot remove root directory');
+          const node = this.nodes.get(directoryPath);
+          if (!node) return this.fail('ENOENT', directoryPath, 'no such directory');
+          if (node.kind !== 'directory') return this.fail('ENOTDIR', directoryPath, 'not a directory');
+          if (this.hasDescendants(directoryPath)) {
+            return this.fail('ENOTEMPTY', directoryPath, 'directory not empty');
+          }
+          this.nodes.delete(directoryPath);
+          const generation = this.beginMutation();
+          this.touchDirectory(parentPath(directoryPath), generation, Date.now());
+          return Effect.void;
+        })
+      ))
+    );
+  }
+
+  readFile(path: string, cwd = '/workspace'): Effect.Effect<Uint8Array, TraceKernelFileSystemError> {
+    return this.readFileVersioned(path, cwd).pipe(
+      Effect.map((file) => file.contents)
+    );
+  }
+
+  readFileVersioned(
+    path: string,
+    cwd = '/workspace'
+  ): Effect.Effect<TraceKernelVersionedFile, TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const filePath = this.resolveNodePath(resolved, true);
+          if (filePath instanceof TraceKernelFileSystemError) return Effect.fail(filePath);
+          const node = this.nodes.get(filePath);
+          if (!node) return this.fail('ENOENT', filePath, 'no such file');
+          return node.kind === 'file'
+            ? Effect.succeed(Object.freeze({
+                contents: Uint8Array.from(node.contents),
+                cacheGeneration: this.cacheGeneration,
+              }))
+            : this.fail('EISDIR', filePath, 'is a directory');
+        })
+      ))
+    );
+  }
+
+  writeFile(
+    path: string,
+    contents: Uint8Array,
+    cwd = '/workspace'
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const filePath = this.resolveNodePath(resolved, true, 'final');
+          if (filePath instanceof TraceKernelFileSystemError) return Effect.fail(filePath);
+          const existing = this.nodes.get(filePath);
+          if (existing?.kind === 'directory') {
+            return this.fail('EISDIR', filePath, 'is a directory');
+          }
+          if (existing?.kind === 'symlink') {
+            return this.fail('ELOOP', filePath, 'unresolved symbolic link');
+          }
+          const parent = this.requireDirectory(parentPath(filePath));
+          if (parent instanceof TraceKernelFileSystemError) return Effect.fail(parent);
+
+          const generation = this.beginMutation();
+          const timestamp = Date.now();
+          if (existing) {
+            existing.contents = Uint8Array.from(contents);
+            this.touchNode(existing, generation, timestamp, true);
+          } else {
+            this.nodes.set(filePath, this.makeFile(
+              Uint8Array.from(contents),
+              0o666,
+              generation,
+              timestamp
+            ));
+            this.touchNode(parent, generation, timestamp, true);
+          }
+          return Effect.void;
+        })
+      ))
+    );
+  }
+
+  link(
+    existingPath: string,
+    newPath: string,
+    cwd = '/workspace'
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    return Effect.all([
+      this.resolve(existingPath, cwd),
+      this.resolve(newPath, cwd),
+    ]).pipe(
+      Effect.flatMap(([unresolvedExisting, unresolvedNew]) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const existingResult = this.resolveNodePath(unresolvedExisting, false);
+          if (existingResult instanceof TraceKernelFileSystemError) {
+            return Effect.fail(existingResult);
+          }
+          const newResult = this.resolveNodePath(unresolvedNew, false, 'final');
+          if (newResult instanceof TraceKernelFileSystemError) return Effect.fail(newResult);
+          const existing = this.nodes.get(existingResult);
+          if (!existing) return this.fail('ENOENT', existingResult, 'no such file');
+          if (existing.kind === 'directory') {
+            return this.fail('EPERM', existingResult, 'hard links to directories are not permitted');
+          }
+          if (this.nodes.has(newResult)) {
+            return this.fail('EEXIST', newResult, 'file already exists');
+          }
+          const parent = this.requireDirectory(parentPath(newResult));
+          if (parent instanceof TraceKernelFileSystemError) return Effect.fail(parent);
+
+          this.nodes.set(newResult, existing);
+          const generation = this.beginMutation();
+          const timestamp = Date.now();
+          this.touchNode(existing, generation, timestamp, false);
+          this.touchNode(parent, generation, timestamp, true);
+          return Effect.void;
+        })
+      ))
+    );
+  }
+
+  symlink(
+    target: string,
+    linkPath: string,
+    cwd = '/workspace'
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    return Effect.try({
+      try: () => {
+        if (target.includes('\0')) {
+          throw this.error('EINVAL', target, 'invalid symbolic link target');
+        }
+        return target;
+      },
+      catch: (error) => error instanceof TraceKernelFileSystemError
+        ? error
+        : this.error('EINVAL', target, 'invalid symbolic link target'),
+    }).pipe(
+      Effect.zipRight(this.resolve(linkPath, cwd)),
+      Effect.flatMap((unresolvedLink) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const linkResult = this.resolveNodePath(unresolvedLink, false, 'final');
+          if (linkResult instanceof TraceKernelFileSystemError) return Effect.fail(linkResult);
+          if (this.nodes.has(linkResult)) {
+            return this.fail('EEXIST', linkResult, 'file already exists');
+          }
+          const parent = this.requireDirectory(parentPath(linkResult));
+          if (parent instanceof TraceKernelFileSystemError) return Effect.fail(parent);
+
+          const generation = this.beginMutation();
+          const timestamp = Date.now();
+          this.nodes.set(linkResult, this.makeSymlink(target, generation, timestamp));
+          this.touchNode(parent, generation, timestamp, true);
+          return Effect.void;
+        })
+      ))
+    );
+  }
+
+  readlink(path: string, cwd = '/workspace'): Effect.Effect<string, TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const linkPath = this.resolveNodePath(resolved, false);
+          if (linkPath instanceof TraceKernelFileSystemError) return Effect.fail(linkPath);
+          const node = this.nodes.get(linkPath);
+          if (!node) return this.fail('ENOENT', linkPath, 'no such file');
+          return node.kind === 'symlink'
+            ? Effect.succeed(node.target)
+            : this.fail('EINVAL', linkPath, 'not a symbolic link');
+        })
+      ))
+    );
+  }
+
+  unlink(path: string, cwd = '/workspace'): Effect.Effect<void, TraceKernelFileSystemError> {
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const entryPath = this.resolveNodePath(resolved, false);
+          if (entryPath instanceof TraceKernelFileSystemError) return Effect.fail(entryPath);
+          const node = this.nodes.get(entryPath);
+          if (!node) return this.fail('ENOENT', entryPath, 'no such file');
+          if (node.kind === 'directory') return this.fail('EISDIR', entryPath, 'is a directory');
+          this.nodes.delete(entryPath);
+          const generation = this.beginMutation();
+          this.touchDirectory(parentPath(entryPath), generation, Date.now());
+          return Effect.void;
+        })
+      ))
+    );
+  }
+
+  rename(
+    sourcePath: string,
+    destinationPath: string,
+    cwd = '/workspace'
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    return Effect.all([
+      this.resolve(sourcePath, cwd),
+      this.resolve(destinationPath, cwd),
+    ]).pipe(
+      Effect.flatMap(([unresolvedSource, unresolvedDestination]) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const sourceResult = this.resolveNodePath(unresolvedSource, false);
+          if (sourceResult instanceof TraceKernelFileSystemError) return Effect.fail(sourceResult);
+          const destinationResult = this.resolveNodePath(unresolvedDestination, false, 'final');
+          if (destinationResult instanceof TraceKernelFileSystemError) {
+            return Effect.fail(destinationResult);
+          }
+          const source = sourceResult;
+          const destination = destinationResult;
+          if (source === destination) {
+            return this.nodes.has(source)
+              ? Effect.void
+              : this.fail('ENOENT', source, 'no such file or directory');
+          }
+          if (source === '/' || destination === '/') {
+            return this.fail('EBUSY', source, 'cannot rename the root directory');
+          }
+
+          const sourceNode = this.nodes.get(source);
+          if (!sourceNode) {
+            return this.fail('ENOENT', source, 'no such file or directory');
+          }
+          if (
+            sourceNode.kind === 'directory' &&
+            destination.startsWith(`${source}/`)
+          ) {
+            return this.fail('EINVAL', destination, 'cannot move a directory into itself');
+          }
+
+          const destinationParent = this.requireDirectory(parentPath(destination));
+          if (destinationParent instanceof TraceKernelFileSystemError) {
+            return Effect.fail(destinationParent);
+          }
+          const destinationNode = this.nodes.get(destination);
+          if (destinationNode === sourceNode) return Effect.void;
+          if (destinationNode) {
+            if (sourceNode.kind !== 'directory' && destinationNode.kind === 'directory') {
+              return this.fail('EISDIR', destination, 'destination is a directory');
+            }
+            if (sourceNode.kind === 'directory' && destinationNode.kind !== 'directory') {
+              return this.fail('ENOTDIR', destination, 'destination is not a directory');
+            }
+            if (destinationNode.kind === 'directory' && this.hasDescendants(destination)) {
+              return this.fail('ENOTEMPTY', destination, 'destination directory not empty');
+            }
+          }
+
+          const movedEntries = [...this.nodes.entries()]
+            .filter(([path]) => path === source || path.startsWith(`${source}/`));
+          if (destinationNode) this.nodes.delete(destination);
+          for (const [path] of movedEntries) this.nodes.delete(path);
+          for (const [path, node] of movedEntries) {
+            const suffix = path.slice(source.length);
+            this.nodes.set(`${destination}${suffix}`, node);
+          }
+
+          const generation = this.beginMutation();
+          const timestamp = Date.now();
+          this.touchNode(sourceNode, generation, timestamp, false);
+          this.touchDirectory(parentPath(source), generation, timestamp);
+          this.touchNode(destinationParent, generation, timestamp, true);
+          return Effect.void;
+        })
+      ))
+    );
+  }
+
+  prepareOpen(
+    path: string,
+    cwd: string,
+    options: TraceKernelOpenFileOptions
+  ): Effect.Effect<TraceKernelOpenFileNode, TraceKernelFileSystemError> {
+    const access = options.access ?? 'read';
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          if (options.create && options.exclusive) {
+            const entryPath = this.resolveNodePath(resolved, false, 'final');
+            if (entryPath instanceof TraceKernelFileSystemError) return Effect.fail(entryPath);
+            if (this.nodes.has(entryPath)) {
+              return this.fail('EEXIST', entryPath, 'file already exists');
+            }
+          }
+          const filePath = this.resolveNodePath(resolved, true, options.create ? 'final' : 'none');
+          if (filePath instanceof TraceKernelFileSystemError) return Effect.fail(filePath);
+          const existing = this.nodes.get(filePath);
+          if (!existing) {
+            if (!options.create) return this.fail('ENOENT', filePath, 'no such file');
+            if (access === 'read') {
+              return this.fail('EACCES', filePath, 'read-only open cannot create file');
+            }
+            const parent = this.requireDirectory(parentPath(filePath));
+            if (parent instanceof TraceKernelFileSystemError) return Effect.fail(parent);
+            const generation = this.beginMutation();
+            const timestamp = Date.now();
+            const file = this.makeFile(new Uint8Array(0), 0o666, generation, timestamp);
+            this.nodes.set(filePath, file);
+            this.touchNode(parent, generation, timestamp, true);
+            return Effect.succeed(new TraceKernelOpenFileNode(filePath, file));
+          }
+          if (existing.kind === 'directory') {
+            return this.fail('EISDIR', filePath, 'is a directory');
+          }
+          if (existing.kind === 'symlink') {
+            return this.fail('ELOOP', filePath, 'unresolved symbolic link');
+          }
+          if (options.create && options.exclusive) {
+            return this.fail('EEXIST', filePath, 'file already exists');
+          }
+          if (options.truncate) {
+            if (access === 'read') {
+              return this.fail('EACCES', resolved, 'read-only descriptor cannot truncate file');
+            }
+            existing.contents = new Uint8Array(0);
+            const generation = this.beginMutation();
+            this.touchNode(existing, generation, Date.now(), true);
+          }
+          return Effect.succeed(new TraceKernelOpenFileNode(filePath, existing));
+        })
+      ))
+    );
+  }
+
+  readAt(
+    file: TraceKernelOpenFileNode,
+    offset: number,
+    maxBytes: number
+  ): Effect.Effect<Uint8Array, TraceKernelFileSystemError> {
+    return this.mutex.withPermits(1)(
+      Effect.sync(() => file.node.contents.slice(offset, offset + maxBytes))
+    );
+  }
+
+  statOpen(file: TraceKernelOpenFileNode): Effect.Effect<TraceKernelStat> {
+    return this.mutex.withPermits(1)(
+      Effect.sync(() => this.snapshotStat(file.openedPath, file.node))
+    );
+  }
+
+  truncateOpen(
+    file: TraceKernelOpenFileNode,
+    length: number
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    return this.mutex.withPermits(1)(
+      Effect.sync(() => {
+        const nextLength = Math.max(0, Math.floor(length));
+        if (file.node.contents.byteLength === nextLength) return;
+        const next = new Uint8Array(nextLength);
+        next.set(file.node.contents.slice(0, nextLength));
+        file.node.contents = next;
+        this.touchNode(file.node, this.beginMutation(), Date.now(), true);
+      })
+    );
+  }
+
+  writeAt(
+    file: TraceKernelOpenFileNode,
+    offset: number,
+    bytes: Uint8Array,
+    append: boolean
+  ): Effect.Effect<number, TraceKernelFileSystemError> {
+    return this.mutex.withPermits(1)(
+      Effect.sync(() => {
+        const node = file.node;
+        const writeOffset = append ? node.contents.byteLength : offset;
+        const nextLength = Math.max(node.contents.byteLength, writeOffset + bytes.byteLength);
+        const next = new Uint8Array(nextLength);
+        next.set(node.contents);
+        next.set(bytes, writeOffset);
+        node.contents = next;
+        if (bytes.byteLength > 0) {
+          this.touchNode(node, this.beginMutation(), Date.now(), true);
+        }
+        return writeOffset + bytes.byteLength;
+      })
+    );
+  }
+
+  snapshots(): readonly TraceKernelFileSnapshot[] {
+    return [...this.nodes.entries()]
+      .filter((entry): entry is [string, TraceKernelFileNode] => entry[1].kind === 'file')
+      .map(([path, node]) => Object.freeze({
+        path,
+        contents: Uint8Array.from(node.contents),
+        generation: node.generation,
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path));
+  }
+
+  clear(): void {
+    if (this.nodes.size > 0) this.beginMutation();
+    this.nodes.clear();
+  }
+
+  private installInitialDirectory(path: string): void {
+    this.nodes.set(path, this.makeDirectory(0o777, 0, Date.now()));
+  }
+
+  private makeFile(
+    contents: Uint8Array,
+    mode: number,
+    generation: number,
+    timestamp: number
+  ): TraceKernelFileNode {
+    return {
+      kind: 'file',
+      inode: this.nextInode++,
+      mode,
+      contents,
+      generation,
+      createdAt: timestamp,
+      modifiedAt: timestamp,
+      changedAt: timestamp,
+    };
+  }
+
+  private makeDirectory(
+    mode: number,
+    generation: number,
+    timestamp: number
+  ): TraceKernelDirectoryNode {
+    return {
+      kind: 'directory',
+      inode: this.nextInode++,
+      mode,
+      generation,
+      createdAt: timestamp,
+      modifiedAt: timestamp,
+      changedAt: timestamp,
+    };
+  }
+
+  private makeSymlink(
+    target: string,
+    generation: number,
+    timestamp: number
+  ): TraceKernelSymlinkNode {
+    return {
+      kind: 'symlink',
+      inode: this.nextInode++,
+      mode: 0o777,
+      target,
+      generation,
+      createdAt: timestamp,
+      modifiedAt: timestamp,
+      changedAt: timestamp,
+    };
+  }
+
+  private snapshotStat(path: string, node: TraceKernelNode): TraceKernelStat {
+    return Object.freeze({
+      path,
+      kind: node.kind,
+      inode: node.inode,
+      nlink: this.linkCount(node),
+      mode: node.mode,
+      size: node.kind === 'file'
+        ? node.contents.byteLength
+        : node.kind === 'symlink'
+          ? new TextEncoder().encode(node.target).byteLength
+          : 0,
+      generation: node.generation,
+      createdAt: node.createdAt,
+      modifiedAt: node.modifiedAt,
+      changedAt: node.changedAt,
+    });
+  }
+
+  private linkCount(node: TraceKernelNode): number {
+    if (node.kind === 'directory') return 2;
+    let count = 0;
+    for (const candidate of this.nodes.values()) {
+      if (candidate === node) count += 1;
+    }
+    return count;
+  }
+
+  /**
+   * Resolve symbolic links while the namespace semaphore is held.
+   *
+   * Parent components are always followed. The final component is optionally
+   * left unresolved for operations that act on the directory entry itself
+   * (lstat, readlink, unlink, rename, link). Missing paths can be admitted only
+   * at the final component, or for the entire remaining suffix when recursive
+   * mkdir is materializing a new subtree.
+   */
+  private resolveNodePath(
+    path: string,
+    followFinal: boolean,
+    allowMissing: 'none' | 'final' | 'suffix' = 'none'
+  ): string | TraceKernelFileSystemError {
+    let current = path;
+    let followedLinks = 0;
+
+    resolveAgain: while (true) {
+      if (current === '/') {
+        return this.nodes.has('/')
+          ? '/'
+          : this.error('ENOENT', '/', 'no such file or directory');
+      }
+      const parts = current.split('/').filter(Boolean);
+      for (let index = 0; index < parts.length; index += 1) {
+        const candidate = `/${parts.slice(0, index + 1).join('/')}`;
+        const node = this.nodes.get(candidate);
+        const final = index === parts.length - 1;
+        if (!node) {
+          if (
+            allowMissing === 'suffix' ||
+            (allowMissing === 'final' && final)
+          ) {
+            return current;
+          }
+          return this.error('ENOENT', candidate, 'no such file or directory');
+        }
+        if (node.kind === 'symlink' && (!final || followFinal)) {
+          followedLinks += 1;
+          if (followedLinks > 40) {
+            return this.error('ELOOP', candidate, 'too many symbolic links');
+          }
+          const targetPath = normalizeTraceKernelPath(node.target, parentPath(candidate));
+          const remaining = parts.slice(index + 1).join('/');
+          current = remaining
+            ? normalizeTraceKernelPath(`${targetPath}/${remaining}`, '/')
+            : targetPath;
+          continue resolveAgain;
+        }
+        if (!final && node.kind !== 'directory') {
+          return this.error('ENOTDIR', candidate, 'path component is not a directory');
+        }
+      }
+      return current;
+    }
+  }
+
+  private requireDirectory(path: string): TraceKernelDirectoryNode | TraceKernelFileSystemError {
+    const node = this.nodes.get(path);
+    if (!node) {
+      return this.error('ENOENT', path, 'parent directory does not exist');
+    }
+    if (node.kind !== 'directory') {
+      return this.error('ENOTDIR', path, 'path component is not a directory');
+    }
+    return node;
+  }
+
+  private hasDescendants(path: string): boolean {
+    const prefix = `${path}/`;
+    for (const candidate of this.nodes.keys()) {
+      if (candidate.startsWith(prefix)) return true;
+    }
+    return false;
+  }
+
+  private beginMutation(): number {
+    const generation = this.nextGeneration++;
+    if (this.generationBuffer) {
+      const sharedGeneration = new Int32Array(this.generationBuffer);
+      Atomics.store(sharedGeneration, 0, generation | 0);
+      Atomics.notify(sharedGeneration, 0);
+    }
+    return generation;
+  }
+
+  private touchDirectory(path: string, generation: number, timestamp: number): void {
+    const node = this.nodes.get(path);
+    if (node?.kind === 'directory') this.touchNode(node, generation, timestamp, true);
+  }
+
+  private touchNode(
+    node: TraceKernelNode,
+    generation: number,
+    timestamp: number,
+    updateModifiedAt: boolean
+  ): void {
+    node.generation = generation;
+    node.changedAt = timestamp;
+    if (updateModifiedAt) node.modifiedAt = timestamp;
+  }
+
+  private error(
+    code: TraceKernelFileSystemErrorCode,
+    path: string,
+    message: string
+  ): TraceKernelFileSystemError {
+    return new TraceKernelFileSystemError({
+      code,
+      path,
+      message: `${code}: ${message} ${JSON.stringify(path)}`,
+    });
+  }
+
+  private fail(
+    code: TraceKernelFileSystemErrorCode,
+    path: string,
+    message: string
+  ): Effect.Effect<never, TraceKernelFileSystemError> {
+    return Effect.fail(this.error(code, path, message));
+  }
+}
+
+export class TraceKernelOpenFileDescription {
+  private references = 1;
+  private closed = false;
+  private offset = 0;
+
+  private constructor(
+    readonly id: string,
+    private readonly fileSystem: TraceKernelFileSystem,
+    private readonly file: TraceKernelOpenFileNode,
+    readonly options: TraceKernelOpenFileOptions,
+    private readonly mutex: Effect.Semaphore,
+    private readonly onFullyClosed: (id: string) => void
+  ) {}
+
+  static make(
+    id: string,
+    fileSystem: TraceKernelFileSystem,
+    path: string,
+    cwd: string,
+    options: TraceKernelOpenFileOptions,
+    onFullyClosed: (id: string) => void
+  ): Effect.Effect<TraceKernelOpenFileDescription, TraceKernelFileSystemError> {
+    return Effect.gen(function* () {
+      const file = yield* fileSystem.prepareOpen(path, cwd, options);
+      const mutex = yield* Effect.makeSemaphore(1);
+      return new TraceKernelOpenFileDescription(
+        id,
+        fileSystem,
+        file,
+        Object.freeze({ ...options }),
+        mutex,
+        onFullyClosed
+      );
+    });
+  }
+
+  get path(): string {
+    return this.file.openedPath;
+  }
+
+  descriptor(): TraceKernelDescriptor {
+    const access = this.options.access ?? 'read';
+    return {
+      kind: 'file',
+      resourceId: this.id,
+      ...(access === 'read' || access === 'read-write'
+        ? { read: (maxBytes: number, position?: number) => this.read(maxBytes, position) }
+        : {}),
+      ...(access === 'write' || access === 'read-write'
+        ? {
+            write: (bytes: Uint8Array, position?: number) => this.write(bytes, position),
+            truncate: (length: number) => this.truncate(length),
+          }
+        : {}),
+      stat: () => this.fileSystem.statOpen(this.file),
+      duplicate: () => this.duplicate(),
+      close: () => this.close(),
+    };
+  }
+
+  dispose(): Effect.Effect<void> {
+    return Effect.sync(() => {
+      if (this.closed) return;
+      this.closed = true;
+      this.references = 0;
+      this.onFullyClosed(this.id);
+    });
+  }
+
+  private read(
+    maxBytes: number,
+    position?: number
+  ): Effect.Effect<Uint8Array, TraceKernelFileSystemError> {
+    return this.mutex.withPermits(1)(
+      Effect.suspend(() => {
+        if (this.closed) return this.closedError();
+        const readOffset = position ?? this.offset;
+        return this.fileSystem.readAt(this.file, readOffset, maxBytes).pipe(
+          Effect.tap((bytes) => position === undefined
+            ? Effect.sync(() => {
+                this.offset = readOffset + bytes.byteLength;
+              })
+            : Effect.void)
+        );
+      })
+    );
+  }
+
+  private write(
+    bytes: Uint8Array,
+    position?: number
+  ): Effect.Effect<number, TraceKernelFileSystemError> {
+    return this.mutex.withPermits(1)(
+      Effect.suspend(() => {
+        if (this.closed) return this.closedError();
+        return this.fileSystem.writeAt(
+          this.file,
+          position ?? this.offset,
+          Uint8Array.from(bytes),
+          this.options.append === true
+        ).pipe(
+          Effect.tap((nextOffset) => position === undefined || this.options.append === true
+            ? Effect.sync(() => {
+                this.offset = nextOffset;
+              })
+            : Effect.void),
+          Effect.as(bytes.byteLength)
+        );
+      })
+    );
+  }
+
+  private truncate(length: number): Effect.Effect<void, TraceKernelFileSystemError> {
+    return this.mutex.withPermits(1)(
+      Effect.suspend(() => {
+        if (this.closed) return this.closedError();
+        return this.fileSystem.truncateOpen(this.file, length).pipe(
+          Effect.tap(() => Effect.sync(() => {
+            if (this.offset > length) this.offset = length;
+          }))
+        );
+      })
+    );
+  }
+
+  private duplicate(): Effect.Effect<TraceKernelDescriptor, Error> {
+    return Effect.suspend(() => {
+      if (this.closed) return this.closedError();
+      this.references += 1;
+      return Effect.succeed(this.descriptor());
+    });
+  }
+
+  private close(): Effect.Effect<void> {
+    return Effect.sync(() => {
+      if (this.closed) return;
+      this.references -= 1;
+      if (this.references > 0) return;
+      this.closed = true;
+      this.onFullyClosed(this.id);
+    });
+  }
+
+  private closedError(): Effect.Effect<never, TraceKernelFileSystemError> {
+    return Effect.fail(new TraceKernelFileSystemError({
+      code: 'EBADF',
+      path: this.path,
+      message: `EBADF: open file description ${this.id} is closed`,
+    }));
+  }
+}

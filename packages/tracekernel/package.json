@@ -1,13 +1,13 @@
 {
-  "name": "@tracecode/harness-sql",
+  "name": "@tracecode/tracekernel",
   "version": "0.13.0-alpha.0",
-  "description": "Browser-first SQL trace contract and client wrappers for TraceCode harness.",
+  "description": "Browser-native process, resource, and syscall kernel for TraceCode.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
     "type": "git",
     "url": "https://github.com/tracecodeapp/harness.git",
-    "directory": "packages/harness-sql"
+    "directory": "packages/tracekernel"
   },
   "type": "module",
   "main": "./dist/index.cjs",
@@ -28,5 +28,8 @@
     },
     "./package.json": "./package.json"
   },
-  "sideEffects": false
+  "sideEffects": false,
+  "dependencies": {
+    "effect": "3.22.0"
+  }
 }

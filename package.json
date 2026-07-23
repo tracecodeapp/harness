@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness",
-  "version": "0.12.6",
+  "version": "0.13.0-alpha.0",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
@@ -116,7 +116,8 @@
   },
   "scripts": {
     "prepublishOnly": "pnpm build",
-    "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm exec tsup --config tsup.core.config.ts && pnpm exec tsup",
+    "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm exec tsup",
+    "build:tracekernel": "pnpm exec tsup --config tsup.tracekernel.config.ts",
     "generate:runtime-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts",
     "generate:python-harness": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
     "generate:typescript-project-libs": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts",
@@ -134,7 +135,9 @@
     "typecheck": "pnpm typecheck:root && pnpm typecheck:packages && pnpm typecheck:tests",
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
-    "typecheck:packages": "pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
+    "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
+    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
+    "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",

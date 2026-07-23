@@ -10,9 +10,16 @@ import type {
   RuntimeKernelHttpProtocolMessage,
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
+  RuntimeKernelSyscallBridge,
 } from '@tracecode/harness-core';
 import {
+  TraceKernelRuntimeFileClient,
+  TraceKernelSharedGenerationSource,
+  TraceKernelSharedSyscallClient,
+} from '@tracecode/tracekernel';
+import {
   runBrowserJavaScriptProjectRequest,
+  type BrowserTraceKernelFileSystem,
   type BrowserJavaScriptProjectRunnerOptions,
   type BrowserJavaScriptProjectExecutionState,
   type JavaScriptProjectCommandRequest,
@@ -27,6 +34,8 @@ interface WorkerMessage {
     BrowserJavaScriptProjectRunnerOptions,
     'allowDynamicEval' | 'projectUserAuthorityMode'
   >;
+  kernelSyscallChannel?: RuntimeKernelSyscallBridge['channel'];
+  kernelSyscallGenerationBuffer?: SharedArrayBuffer;
   port?: MessagePort;
 }
 
@@ -207,6 +216,7 @@ interface ActiveWorkerCommand {
   bridge: WorkerKernelHttpBridge;
   protocolToken: string;
   executionState: BrowserJavaScriptProjectExecutionState;
+  syscallClient?: TraceKernelSharedSyscallClient;
 }
 
 const activeHttpBridges = new Map<string, ActiveWorkerCommand>();
@@ -287,7 +297,16 @@ function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
 }
 
 workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
-  const { id, type, payload, protocolToken, runnerOptions, port } = event.data;
+  const {
+    id,
+    type,
+    payload,
+    protocolToken,
+    runnerOptions,
+    kernelSyscallChannel,
+    kernelSyscallGenerationBuffer,
+    port,
+  } = event.data;
   if (!id) return;
 
   if (handleKernelHttpHostMessage(event.data)) return;
@@ -320,11 +339,42 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     cancelled: false,
     abortController: new AbortController(),
   };
+  let syscallClient: TraceKernelSharedSyscallClient | undefined;
+  if (kernelSyscallChannel) {
+    syscallClient = new TraceKernelSharedSyscallClient(
+      kernelSyscallChannel,
+      () => postCommandMessage(
+        postToHost,
+        id,
+        protocolToken,
+        'kernel-syscall',
+        {}
+      )
+    );
+    executionState.kernelFileSystem = new TraceKernelRuntimeFileClient(
+      syscallClient,
+      {
+        ...(kernelSyscallGenerationBuffer
+          ? {
+              generation: new TraceKernelSharedGenerationSource(
+                kernelSyscallGenerationBuffer
+              ),
+            }
+          : {}),
+      }
+    ) satisfies BrowserTraceKernelFileSystem;
+  }
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
     postCommandMessage(postToHost, id, protocolToken, message.type, message);
   });
-  activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken, executionState });
+  activeHttpBridges.set(id, {
+    bridge: kernelHttp,
+    protocolToken,
+    executionState,
+    ...(syscallClient ? { syscallClient } : {}),
+  });
   const clearActiveCommand = (): void => {
+    activeHttpBridges.get(id)?.syscallClient?.close();
     activeHttpBridges.delete(id);
   };
 

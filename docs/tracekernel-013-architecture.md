@@ -1,0 +1,368 @@
+# TraceKernel 0.13 architecture
+
+Status: initial implementation contract
+
+## Release intent
+
+TraceKernel 0.13 is the kernelization release. TraceKernel becomes the
+authoritative owner of processes, descriptors, blocking I/O, shared files,
+runtime leases, and the foundation of the session-local network.
+
+The architecture has four ownership layers:
+
+```text
+Runtime host
+  -> Session
+      -> Process
+          -> Runtime engine lease
+```
+
+### Runtime host
+
+The host owns expensive reusable, immutable infrastructure:
+
+- downloaded assets;
+- compiled WebAssembly modules;
+- runtime factories;
+- immutable caches;
+- provider initialization and health.
+
+It may outlive sessions. It must not own learner-visible mutable state.
+
+### Session
+
+A session is one isolated browser-native machine. It owns the filesystem,
+environment defaults, process table, terminals, resource registry, network
+namespace, ports, listeners, accounting, and session services.
+
+Destroying a session terminates descendants, closes resources, releases runtime
+leases, and makes all mutable session state unreachable.
+
+### Process
+
+A process is an explicit kernel record, not an Effect fiber or worker. It owns
+PID relationships, arguments, resolved environment, cwd, descriptor table,
+runtime lease, lifecycle, ownership policy, signals, and accounting.
+
+`spawn`, `execute`, and terminal execution use this same process model.
+`execute` is scoped spawn, wait, and output collection.
+
+The lifecycle phase is:
+
+```text
+created -> starting -> running -> exiting -> exited
+```
+
+Normal exit, signal termination, and failure are termination causes recorded on
+the final process state.
+
+### Runtime engine lease
+
+A lease represents mutable language execution state assigned to one process.
+Immutable initialization may be shared at host level; mutable state may be
+reused only after a complete, proven reset.
+
+Safe isolation is the default. Unsafe reuse requires explicit opt-in.
+
+## Effect boundary
+
+Effect is the structured-concurrency and resource-safety substrate, not the
+definition of kernel semantics.
+
+TraceKernel uses Effect for:
+
+- `Scope` and `acquireRelease` around hosts, sessions, processes, descriptors,
+  and runtime leases;
+- lazy, concurrency-safe runtime initialization;
+- interruption and supervised background fibers;
+- bounded queues, deferred results, and synchronization;
+- typed failures and separation of failure, interruption, and defects.
+
+TraceKernel does not use Effect to replace:
+
+- process identity or process tables;
+- file descriptor and open-resource state;
+- signals and signal policy;
+- syscall linearization;
+- scheduler-visible behavior;
+- protocol contracts crossing worker or language boundaries.
+
+Effect values never cross a worker boundary. Promise-facing adapters may exist
+at product integration boundaries without weakening the Effect-native core.
+
+Runtime adapters use a plain structured-cloneable syscall protocol. The
+dispatcher composes Effect operations internally and translates typed failures
+into POSIX-style wire errors. Requests, byte payloads, descriptor numbers, and
+responses remain ordinary data suitable for JavaScript workers, WASM runtimes,
+or SharedArrayBuffer transports.
+
+## Descriptor and resource ownership
+
+The session owns kernel resources. Each process owns a descriptor table whose
+entries reference session-owned open-resource descriptions.
+
+```text
+process fd -> open-resource description -> file | pipe | tty | socket | device
+```
+
+The open-resource description owns shared offset/state, flags, reference count,
+and resource-specific state. This supports `dup`, deterministic inheritance,
+pipe EOF, terminal attachment, socket half-closes, and close-on-exit.
+
+## Shared filesystem
+
+The session filesystem is authoritative. Its subsystem shorthand is **TKFS**
+(TraceKernel filesystem); architecture and public documentation call it the
+**TraceKernel VFS**. TKFS names the virtual kernel subsystem, not a persistent
+on-disk format or storage backend.
+
+TKFS separates namespace bindings from inode-like file nodes:
+
+```text
+path -> namespace binding -> node
+                         ^
+open file description ---|
+```
+
+An open file description retains its node when a path is renamed, unlinked, or
+atomically replaced. The namespace operation changes future path resolution,
+not the identity observed by already-open descriptors.
+
+Multiple namespace bindings may reference the same non-directory node. Hard
+links therefore share inode identity, bytes, metadata, and a live link count;
+unlink removes one binding and an unlinked open node reports zero links.
+Symbolic links are independent nodes containing a literal target. One bounded
+resolver follows parent components for every path operation and follows the
+final component only when the operation addresses the target. `lstat`,
+`readlink`, `unlink`, and rename act on the link entry itself. Resolution is
+limited to 40 link traversals and reports `ELOOP` deterministically.
+
+Runtimes do not retain divergent mutable copies. Runtime syscalls use the
+descriptor/syscall protocol.
+
+Immutable reads may be cached only against kernel-issued generations. A kernel
+mutation invalidates any cache whose generation is no longer current.
+
+The 0.12 filesystem syscall experiment established that synchronous browser
+workers can use a SharedArrayBuffer transport and that generation-validated hot
+reads can approach snapshot performance. SharedArrayBuffer is one transport
+implementation, not part of the public syscall contract.
+
+The 0.13 transport keeps three layers separate:
+
+```text
+language filesystem adapter
+  -> transport-neutral syscall client
+      -> binary SharedArrayBuffer channel | async messages | native adapter
+          -> TraceKernel syscall dispatcher
+              -> TKFS
+```
+
+The synchronous browser channel has one in-flight syscall per runtime worker.
+It uses a bounded binary request/response frame and an atomic
+idle/request/processing/response/closed state machine. The worker sends only a
+lightweight wakeup over its `MessagePort`; syscall bodies remain in shared
+memory. A timeout or teardown closes the channel so a late host response cannot
+be mistaken for a later process's response.
+
+Bulk file reads return the file bytes and the session cache generation from one
+TKFS critical section. Runtime adapters may keep a byte-bounded, entry-bounded
+LRU only when the shared generation still equals the generation attached to
+that read. Every TKFS mutation advances the shared generation, including host,
+editor, and other-process writes. This global token is intentionally
+conservative; path-scoped invalidation can be introduced later without changing
+the syscall contract.
+
+## Networking
+
+The initial network foundation is session-local TCP:
+
+```text
+runtime socket API
+  -> process socket descriptor
+  -> session network namespace
+  -> TCP stream
+  -> higher-level protocol adapter
+```
+
+The first implemented slice is a local IPv4 namespace. Each session owns an
+independent port table, so the same port may be bound in different sessions but
+conflicting binds within one session return `EADDRINUSE`. `localhost` resolves
+to `127.0.0.1`; `0.0.0.0` is a wildcard listener. Other addresses are rejected
+instead of escaping to the host network.
+
+Socket descriptors reference a shared socket open-file description:
+
+```text
+process fd
+  -> TCP socket description
+      -> listener backlog
+      |  or
+      -> inbound byte stream + outbound byte stream
+```
+
+`socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recv`, `shutdown`,
+`getsockname`, and `getpeername` use the same transport-neutral syscall
+contract as TKFS. Listener backlogs and stream chunk queues are bounded.
+`accept`, `recv`, and a connect waiting for backlog space are interruptible.
+Write shutdown produces peer EOF without disabling the reverse stream. Final
+descriptor close, process exit, listener close, and session teardown wake
+blocked operations and release sockets and ports.
+
+Structured HTTP remains compatible and has not yet been routed onto this
+substrate. External arbitrary TCP remains unavailable in browser environments;
+allowed external HTTP remains a fetch-backed proxy. DNS beyond local aliases,
+UDP, TLS, and HTTP stream parsing remain later slices.
+
+## Required invariants
+
+After a process exits:
+
+- no process-owned background task remains;
+- old streams cannot emit new output;
+- descriptors close unless explicitly transferred;
+- ports and sockets are released;
+- signal and cancellation state cannot affect another process;
+- mutable runtime state is reset, validated, or destroyed.
+
+After a session exits:
+
+- its process table and resource registry are empty;
+- descendants and runtime leases are gone;
+- descriptors, listeners, and sockets are closed;
+- session files and environment are unreachable;
+- host immutable caches remain reusable.
+
+## Initial implementation sequence
+
+1. Host, session, process, and runtime-lease lifecycles.
+2. Process-owned descriptor tables and session resource registry.
+3. Standard streams, pipes, blocked I/O, and interruption.
+4. Shared VFS syscalls and generation caches.
+5. Runtime adapters and cross-language conformance.
+6. Virtual network namespace and local TCP.
+7. Progressive local HTTP transport migration.
+
+## First product runtime adapter
+
+Browser JavaScript is the first product runtime attached to the 0.13 syscall
+wire contract. TypeScript uses the same adapter after compilation; the compiler
+itself remains a host service and commits emitted files through the existing
+workspace transaction boundary.
+
+During the 0.12-to-0.13 migration, `RuntimeProjectWorkspace` remains the product
+filesystem authority and exposes a transitional TraceKernel syscall handler.
+That handler is deliberately behind the same transport-neutral request/result
+contract as the new session VFS. Moving workspace storage onto the 0.13 session
+VFS therefore replaces the handler, not each language adapter.
+
+The browser runtime uses the binary SharedArrayBuffer channel for:
+
+| Runtime API surface | 0.13 syscall |
+| --- | --- |
+| `readFile`, `readFileSync` | `readFile` |
+| default replacement `writeFile`, `writeFileSync` | `writeFile` |
+| `stat`, `statSync`, `access`, `existsSync` | `stat` |
+| `lstat`, `lstatSync` | `lstat` |
+| `realpath`, `realpathSync` | `realpath` |
+| `readdir`, `readdirSync` | `readdir` |
+| `mkdir`, `mkdirSync` | `mkdir` |
+| `rmdir`, `rmdirSync` | `rmdir` |
+| `unlink`, `unlinkSync` | `unlink` |
+| `link`, `linkSync` | `link` |
+| `symlink`, `symlinkSync` | `symlink` |
+| `readlink`, `readlinkSync` | `readlink` |
+| `rename`, `renameSync` | `rename` |
+| recursive `rm`, `rmSync` | `stat` + `readdir` + `unlink` + `rmdir` |
+
+Synchronous, callback, and promise forms share these operations. Conformance
+requires that:
+
+- two already-running JavaScript workers observe one authoritative namespace;
+- a cached read is invalidated by a peer or host mutation;
+- path operations return the same bytes, entry kinds, and POSIX-style errors
+  for direct JavaScript and TypeScript-emitted JavaScript;
+- actor capabilities and readonly policy are enforced by the host handler, not
+  trusted to the runtime;
+- the runtime worker bundle contains the transport client but no Effect
+  implementation.
+
+Regular-file descriptors are the second JavaScript migration slice. Node
+`open`, descriptor `read`/`write`, `close`, `fstat`, `ftruncate`, FileHandle
+operations, and file streams now use process-owned descriptor tables behind the
+same syscall transport. Positioned I/O leaves the shared open-description
+offset unchanged; `dup` shares it; append is linearized at the session-owned
+file node. Open descriptions retain inode identity across rename, unlink, and
+path replacement, and are closed as a unit when their process exits.
+
+During the storage transition, `RuntimeProjectWorkspace` provides the
+process-owned descriptor table and session-level inode nodes while
+`KernelObservedFileSystem` remains the backing namespace. Pre-mutation
+snapshots preserve the last linked bytes before any host, shell, or peer
+deletion. This is an adapter behind the kernel contract, not a separate runtime
+filesystem model. The 0.12 in-memory backend intentionally applies
+copy-on-write to hard-link paths, so the transitional handler performs a
+locked, rollback-capable update of every pathname bound to a TraceKernel inode.
+That compatibility rule disappears when TKFS becomes the backing store.
+
+Device and proc descriptors, descriptor metadata mutation, and watchers remain
+on the command-local compatibility surface. They should move only with their
+corresponding kernel resource or namespace model.
+
+## Implemented foundation
+
+The initial 0.13 branch now establishes:
+
+- scoped host and session resources;
+- lazy, concurrency-deduplicated runtime provider initialization;
+- session-owned process supervision;
+- process-owned runtime leases released on exit, failure, signal, or teardown;
+- explicit process lifecycle and termination records;
+- process environment isolation;
+- process-owned descriptor tables;
+- session-owned pipe resources;
+- fragmented pipe reads, bounded chunk backpressure, EOF on final-writer close,
+  and blocked-read wakeup when the reader process exits;
+- an authoritative session regular-file store with mutation generations;
+- a TKFS directory namespace with inode-like identity, metadata, deterministic
+  directory reads, recursive creation, removal, and POSIX-style errors;
+- file-backed open-resource descriptions with independent offsets per open and
+  shared offsets after `dup`;
+- atomic append/truncate behavior and stable open file nodes across
+  unlink-and-recreate;
+- atomic file replacement and directory-subtree rename while existing
+  descriptors remain attached to their original nodes;
+- hard-link identity, shared contents, and live link counts;
+- relative and absolute symbolic links with `stat`/`lstat` separation,
+  dangling-link behavior, parent-component traversal, realpath, and bounded
+  loop detection;
+- cross-process visibility without private mutable file snapshots;
+- a language-neutral syscall dispatcher covering descriptor I/O and namespace
+  operations whose wire contract does not expose Effect;
+- a transport-neutral synchronous runtime adapter plus a bounded binary
+  SharedArrayBuffer implementation for dedicated browser workers;
+- atomic versioned bulk reads and a bounded generation-validated runtime read
+  cache that invalidates across concurrent processes;
+- a browser JavaScript/TypeScript path adapter using the real binary syscall
+  transport, with cross-worker live data and namespace visibility plus browser
+  conformance coverage;
+- process-owned regular-file descriptors in the JavaScript runtime, including
+  independent open offsets, shared offsets after `dup`, positioned I/O,
+  append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic
+  process-exit cleanup, and stable open nodes across rename/unlink/replacement;
+- an isolated session-local TCP namespace with process-owned socket
+  descriptors, exclusive port binding, bounded listener backlogs, blocking
+  accept/connect, bidirectional fragmented streams, sender backpressure,
+  half-close semantics, address inspection, and deterministic teardown;
+- TCP syscall frames proven across two independent synchronous runtime workers;
+- exactly-once lease and resource cleanup assertions.
+
+The pipe is intentionally the first descriptor resource. It exercises blocking,
+interruption, endpoint lifecycle, and backpressure before the same contracts are
+applied to files, terminals, and sockets.
+
+The governing invariant is:
+
+> Reuse immutable host infrastructure. Isolate mutable session state. Processes
+> own executions and descriptors. TraceKernel owns resources and every
+> observable state transition.

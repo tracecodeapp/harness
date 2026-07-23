@@ -198,6 +198,9 @@ async function main(): Promise<void> {
             });
             await Promise.race([
               heldStarted,
+              held.then((command: unknown) => {
+                throw new Error(`held Python command exited before startup: ${JSON.stringify(command)}`);
+              }),
               new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('held Python command did not start')), 20_000)),
             ]);
             const javascriptWriter = await workspace.runCommand('node writer.js');

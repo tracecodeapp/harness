@@ -86,6 +86,14 @@ import {
 } from '@tracecode/harness-core';
 import { getLanguageRuntimeInfo, TRACECODE_HARNESS_VERSION } from '@tracecode/harness-core';
 import type { Language } from '@tracecode/harness-core';
+import {
+  makeTraceKernelPromiseSyscallHandler,
+  makeTraceKernelSharedSyscallChannel,
+  TraceKernelSharedSyscallServer,
+  type TraceKernelSyscallErrorCode,
+  type TraceKernelSyscallRequest,
+  type TraceKernelSyscallResult,
+} from '@tracecode/tracekernel';
 import type {
   BashOptions,
   Command,
@@ -132,6 +140,7 @@ import type {
   RuntimeKernelHttpListenerInfo,
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
+  RuntimeKernelSyscallBridge,
   RuntimeWorkspaceHttpClient,
   RuntimeWorkspaceHttpJsonRequestOptions,
   RuntimeWorkspaceHttpJsonResponse,
@@ -257,6 +266,7 @@ import {
   normalizeRuntimeSchedulerConfig,
   type RuntimeCommandSchedulerOptions,
 } from './scheduler';
+import { RuntimeKernelDescriptorManager } from './runtime-kernel-descriptors';
 import {
   RUNTIME_PROJECT_PATCH_HASH_PATTERN,
   RUNTIME_PROJECT_PATCH_VERSION,
@@ -545,6 +555,26 @@ const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_TIMEOUT_MS = 10_000;
 const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_CONCURRENT_REQUESTS = 8;
 const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_REQUESTS_PER_COMMAND = 64;
 const TRACEKERNEL_EXTERNAL_HTTP_MAX_TIMEOUT_MS = 60_000;
+const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
+  'E2BIG',
+  'EACCES',
+  'EBADF',
+  'EBUSY',
+  'ELOOP',
+  'EEXIST',
+  'EISDIR',
+  'EINVAL',
+  'EIO',
+  'ENOENT',
+  'ENOSYS',
+  'ENOTDIR',
+  'ENOTEMPTY',
+  'EPERM',
+  'EPIPE',
+  'EPROTO',
+  'EROFS',
+  'ESRCH',
+]);
 
 interface NormalizedRuntimeExternalHttpHostRule {
   hostname: string;
@@ -898,6 +928,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly bashOptions: BashOptions;
   private readonly baseEnv: Record<string, string>;
   private readonly fs: KernelObservedFileSystem;
+  private readonly kernelDescriptors: RuntimeKernelDescriptorManager;
   // Cached RuntimeFile objects are immutable; consumers must shallow-copy arrays before filtering.
   private snapshotCache: { version: number; files: RuntimeFile[]; directories: string[]; directoryMetadata: RuntimeDirectory[]; symlinks: RuntimeSymlink[]; kernelFiles: RuntimeFile[] } | null = null;
   private readonly fsLocks = new RuntimeFileSystemLockCoordinator();
@@ -924,6 +955,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly httpLifecycleAbortController = new AbortController();
   private readonly readonlyFiles = new Set<string>();
   private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
+  private kernelSyscallGenerationBuffer?: SharedArrayBuffer;
+  private kernelSyscallGenerationUnsubscribe?: RuntimeWorkspaceUnsubscribe;
   private readonlySuspendDepth = 0;
   private nextCommandId = 1;
   private nextPid = 100;
@@ -984,8 +1017,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       (context, device, data) => this.writeDevice(device, data, context),
       normalizeRuntimeWorkspaceStorageLimits(options.storageLimits)
     );
+    this.kernelDescriptors = new RuntimeKernelDescriptorManager(this.fs);
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
-      runner: RuntimeProjectCommandRunner<Request>
+      runner: RuntimeProjectCommandRunner<Request>,
+      options: { kernelSyscalls?: boolean } = {}
     ): RuntimeProjectCommandRunner<Request> => (
       async (request, ctx?: CommandContext) => {
         const commandContext = this.resolveCommandContext(ctx);
@@ -997,6 +1032,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const runtimeIo = commandContext?.runtimeIo;
         let acceptingRunnerEvents = true;
         let result: RuntimeCommandResult;
+        const kernelSyscalls = options.kernelSyscalls
+          ? this.createKernelSyscallBridge(commandContext)
+          : undefined;
         try {
           result = await runner({
             ...request,
@@ -1014,6 +1052,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             ...(commandContext?.terminal ? { terminal: commandContext.terminal } : {}),
             ...(signal ? { signal } : {}),
             kernelHttp: this.createKernelHttpBridge(commandContext),
+            ...(kernelSyscalls ? { kernelSyscalls } : {}),
             onEvent: (event) => {
               if (!acceptingRunnerEvents) return;
               this.handleRuntimeCommandEvent(event, commandContext);
@@ -1021,6 +1060,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           } as Request);
         } finally {
           acceptingRunnerEvents = false;
+          kernelSyscalls?.close();
         }
         if (result.handledSignal && commandContext) {
           commandContext.handledSignal = result.handledSignal;
@@ -1062,7 +1102,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.snapshotForCommand(includeHiddenFiles);
     const exposedCustomCommands: CustomCommand[] = [
       ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
-      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
+      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner, { kernelSyscalls: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
       ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
@@ -1295,6 +1335,375 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         return this.registerHttpListener(options, handler, owner);
       },
       dispatch: (request, options) => this.dispatchHttpRequest(request, { ...options, actor, commandContext: context }),
+    };
+  }
+
+  private createKernelSyscallBridge(
+    context?: RuntimeCommandExecutionContext
+  ): RuntimeKernelSyscallBridge | undefined {
+    if (typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined') {
+      return undefined;
+    }
+    const channel = makeTraceKernelSharedSyscallChannel();
+    const generationBuffer = this.ensureKernelSyscallGenerationBuffer();
+    const server = new TraceKernelSharedSyscallServer(
+      channel,
+      makeTraceKernelPromiseSyscallHandler((request) =>
+        this.dispatchRuntimeKernelSyscall(request, context)
+      )
+    );
+    let closed = false;
+    return {
+      channel,
+      ...(generationBuffer ? { generationBuffer } : {}),
+      service: () => server.servicePromise(),
+      close: () => {
+        if (closed) return;
+        closed = true;
+        server.close();
+      },
+    };
+  }
+
+  private ensureKernelSyscallGenerationBuffer(): SharedArrayBuffer | undefined {
+    if (typeof SharedArrayBuffer === 'undefined') return undefined;
+    if (this.kernelSyscallGenerationBuffer) return this.kernelSyscallGenerationBuffer;
+    const buffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+    const generation = new Int32Array(buffer);
+    Atomics.store(generation, 0, this.fs.mutationVersion | 0);
+    this.kernelSyscallGenerationUnsubscribe = this.fs.watchMutations((revision) => {
+      Atomics.store(generation, 0, revision | 0);
+      Atomics.notify(generation, 0);
+    });
+    this.kernelSyscallGenerationBuffer = buffer;
+    return buffer;
+  }
+
+  private async dispatchRuntimeKernelSyscall(
+    request: TraceKernelSyscallRequest,
+    context?: RuntimeCommandExecutionContext
+  ): Promise<TraceKernelSyscallResult> {
+    const actor = context?.actor ?? SYSTEM_ACTOR;
+    const workspacePath = (path: string): string => this.toWorkspacePath(path);
+    try {
+      switch (request.op) {
+        case 'open': {
+          const access = request.options?.access ?? 'read';
+          if (access === 'read' || access === 'read-write') {
+            this.assertActorFileCapability(actor, 'read', request.path);
+          }
+          if (
+            access === 'write' ||
+            access === 'read-write' ||
+            request.options?.create ||
+            request.options?.truncate ||
+            request.options?.append
+          ) {
+            this.assertActorFileCapability(actor, 'write', request.path);
+          }
+          const fd = await this.kernelDescriptors.open(
+            context?.process.pid ?? 0,
+            context,
+            workspacePath(request.path),
+            request.options
+          );
+          return { ok: true, value: { op: 'open', fd } };
+        }
+        case 'read': {
+          const bytes = await this.kernelDescriptors.read(
+            context?.process.pid ?? 0,
+            context,
+            request.fd,
+            request.maxBytes,
+            request.position
+          );
+          return { ok: true, value: { op: 'read', bytes } };
+        }
+        case 'write': {
+          const bytesWritten = await this.kernelDescriptors.write(
+            context?.process.pid ?? 0,
+            context,
+            request.fd,
+            request.bytes,
+            request.position
+          );
+          return { ok: true, value: { op: 'write', bytesWritten } };
+        }
+        case 'close':
+          this.kernelDescriptors.close(context?.process.pid ?? 0, request.fd);
+          return { ok: true, value: { op: 'close' } };
+        case 'dup': {
+          const fd = this.kernelDescriptors.dup(
+            context?.process.pid ?? 0,
+            request.fd
+          );
+          return { ok: true, value: { op: 'dup', fd } };
+        }
+        case 'fstat': {
+          const stat = await this.kernelDescriptors.fstat(
+            context?.process.pid ?? 0,
+            context,
+            request.fd
+          );
+          return { ok: true, value: { op: 'fstat', stat } };
+        }
+        case 'ftruncate':
+          await this.kernelDescriptors.ftruncate(
+            context?.process.pid ?? 0,
+            context,
+            request.fd,
+            request.length
+          );
+          return { ok: true, value: { op: 'ftruncate' } };
+        case 'readFile': {
+          this.assertActorFileCapability(actor, 'read', request.path);
+          const path = workspacePath(request.path);
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const cacheGeneration = this.fs.mutationVersion | 0;
+            const fileBytes = await this.fs.readFileBufferWithContext(context, path);
+            if (cacheGeneration === (this.fs.mutationVersion | 0)) {
+              return {
+                ok: true,
+                value: {
+                  op: 'readFile',
+                  bytes: fileBytes,
+                  cacheGeneration,
+                },
+              };
+            }
+            if (attempt === 1) {
+              return {
+                ok: true,
+                value: {
+                  op: 'readFile',
+                  bytes: fileBytes,
+                  cacheGeneration: -1,
+                },
+              };
+            }
+          }
+          break;
+        }
+        case 'writeFile': {
+          this.assertActorFileCapability(actor, 'write', request.path);
+          await this.fs.writeFileByInodeWithContext(
+            context,
+            workspacePath(request.path),
+            request.bytes
+          );
+          return { ok: true, value: { op: 'writeFile' } };
+        }
+        case 'stat': {
+          this.assertActorFileCapability(actor, 'read', request.path);
+          const path = workspacePath(request.path);
+          const stat = await this.fs.statWithContext(context, path);
+          const identityPath = await this.fs.inodeIdentityPathWithContext(context, path);
+          const modifiedAt = stat.mtime instanceof Date ? stat.mtime.getTime() : 0;
+          return {
+            ok: true,
+            value: {
+              op: 'stat',
+              stat: {
+                path: request.path,
+                kind: stat.isDirectory ? 'directory' : 'file',
+                inode: this.fs.inodeForPath(identityPath),
+                nlink: stat.isDirectory ? 2 : this.fs.inodeLinkCount(identityPath),
+                mode: stat.mode ?? (stat.isDirectory ? 0o40755 : 0o100644),
+                size: stat.size ?? 0,
+                generation: this.fs.mutationVersion,
+                createdAt: modifiedAt,
+                modifiedAt,
+                changedAt: modifiedAt,
+              },
+            },
+          };
+        }
+        case 'lstat': {
+          this.assertActorFileCapability(actor, 'read', request.path);
+          const path = workspacePath(request.path);
+          const stat = await this.fs.lstatWithContext(context, path);
+          const symbolicLink = runtimeFileSystemEntryIsSymlink(stat);
+          const modifiedAt = stat.mtime instanceof Date ? stat.mtime.getTime() : 0;
+          return {
+            ok: true,
+            value: {
+              op: 'lstat',
+              stat: {
+                path: request.path,
+                kind: symbolicLink
+                  ? 'symlink'
+                  : stat.isDirectory
+                    ? 'directory'
+                    : 'file',
+                inode: this.fs.inodeForPath(path),
+                nlink: symbolicLink
+                  ? 1
+                  : stat.isDirectory
+                    ? 2
+                    : this.fs.inodeLinkCount(path),
+                mode: stat.mode ?? (
+                  symbolicLink
+                    ? 0o120777
+                    : stat.isDirectory
+                      ? 0o40755
+                      : 0o100644
+                ),
+                size: stat.size ?? 0,
+                generation: this.fs.mutationVersion,
+                createdAt: modifiedAt,
+                modifiedAt,
+                changedAt: modifiedAt,
+              },
+            },
+          };
+        }
+        case 'realpath': {
+          this.assertActorFileCapability(actor, 'read', request.path);
+          const path = await this.fs.realpathWithContext(
+            context,
+            workspacePath(request.path)
+          );
+          return { ok: true, value: { op: 'realpath', path } };
+        }
+        case 'readdir': {
+          this.assertActorFileCapability(actor, 'read', request.path);
+          const path = workspacePath(request.path);
+          const entries = await this.fs.readdirWithFileTypesWithContext(
+            context,
+            path
+          );
+          return {
+            ok: true,
+            value: {
+              op: 'readdir',
+              entries: Object.freeze(entries
+                .map((entry) => Object.freeze({
+                  name: entry.name,
+                  kind: entry.isSymbolicLink
+                    ? 'symlink' as const
+                    : entry.isDirectory
+                      ? 'directory' as const
+                      : 'file' as const,
+                  inode: this.fs.inodeForPath(
+                    path === '.'
+                      ? entry.name
+                      : `${path.replace(/\/+$/, '')}/${entry.name}`
+                  ),
+                }))
+                .sort((left, right) => left.name.localeCompare(right.name))),
+            },
+          };
+        }
+        case 'mkdir': {
+          this.assertActorFileCapability(actor, 'write', request.path);
+          const path = workspacePath(request.path);
+          await this.fs.mkdirWithContext(context, path, {
+            recursive: request.options?.recursive,
+          });
+          if (request.options?.mode !== undefined) {
+            await this.fs.chmodWithContext(context, path, request.options.mode);
+          }
+          return { ok: true, value: { op: 'mkdir' } };
+        }
+        case 'rmdir': {
+          this.assertActorFileCapability(actor, 'delete', request.path);
+          const path = workspacePath(request.path);
+          const stat = await this.fs.statWithContext(context, path);
+          if (!stat.isDirectory) {
+            throw Object.assign(
+              new Error(`ENOTDIR: not a directory, rmdir '${request.path}'`),
+              { code: 'ENOTDIR' }
+            );
+          }
+          await this.fs.rmWithContext(context, path, {
+            force: false,
+            recursive: false,
+          });
+          return { ok: true, value: { op: 'rmdir' } };
+        }
+        case 'unlink': {
+          this.assertActorFileCapability(actor, 'delete', request.path);
+          const path = workspacePath(request.path);
+          const stat = await this.fs.lstatWithContext(context, path);
+          if (stat.isDirectory) {
+            throw Object.assign(
+              new Error(`EISDIR: illegal operation on a directory, unlink '${request.path}'`),
+              { code: 'EISDIR' }
+            );
+          }
+          await this.fs.rmWithContext(context, path, {
+            force: false,
+            recursive: false,
+          });
+          return { ok: true, value: { op: 'unlink' } };
+        }
+        case 'link': {
+          this.assertActorFileCapability(actor, 'read', request.existingPath);
+          this.assertActorFileCapability(actor, 'write', request.newPath);
+          await this.fs.linkWithContext(
+            context,
+            workspacePath(request.existingPath),
+            workspacePath(request.newPath)
+          );
+          return { ok: true, value: { op: 'link' } };
+        }
+        case 'symlink': {
+          this.assertActorFileCapability(actor, 'write', request.linkPath);
+          await this.fs.symlinkWithContext(
+            context,
+            request.target,
+            workspacePath(request.linkPath)
+          );
+          return { ok: true, value: { op: 'symlink' } };
+        }
+        case 'readlink': {
+          this.assertActorFileCapability(actor, 'read', request.path);
+          const target = await this.fs.readlinkWithContext(
+            context,
+            workspacePath(request.path)
+          );
+          return { ok: true, value: { op: 'readlink', target } };
+        }
+        case 'rename': {
+          this.assertActorFileCapability(actor, 'delete', request.sourcePath);
+          this.assertActorFileCapability(actor, 'write', request.destinationPath);
+          await this.fs.mvWithContext(
+            context,
+            workspacePath(request.sourcePath),
+            workspacePath(request.destinationPath)
+          );
+          return { ok: true, value: { op: 'rename' } };
+        }
+        default:
+          return {
+            ok: false,
+            error: {
+              code: 'ENOSYS',
+              message: `ENOSYS: ${(request as { op: string }).op} is not available through the transitional workspace bridge`,
+            },
+          };
+      }
+      return {
+        ok: false,
+        error: { code: 'EIO', message: 'EIO: unreachable syscall state' },
+      };
+    } catch (error) {
+      return this.runtimeKernelSyscallFailure(error);
+    }
+  }
+
+  private runtimeKernelSyscallFailure(error: unknown): TraceKernelSyscallResult {
+    const explicitCode = (error as { code?: unknown } | null)?.code;
+    const message = error instanceof Error ? error.message : String(error);
+    const detectedCode = typeof explicitCode === 'string'
+      ? explicitCode
+      : /^([A-Z][A-Z0-9]+):/.exec(message)?.[1];
+    const code = detectedCode && TRACEKERNEL_SYSCALL_ERROR_CODES.has(detectedCode as TraceKernelSyscallErrorCode)
+      ? detectedCode as TraceKernelSyscallErrorCode
+      : 'EIO';
+    return {
+      ok: false,
+      error: { code, message },
     };
   }
 
@@ -6459,6 +6868,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       throw error;
     }).finally(() => {
       this.closeHttpListenersForProcess(process.pid);
+      this.kernelDescriptors.closeProcess(process.pid);
       cleanupExternalSignal?.();
       const retainProcessOnExit = process.signal || options.retainOnExit === true;
       process.state = retainProcessOnExit ? 'zombie' : 'exited';
@@ -6810,6 +7220,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
     this.httpListeners.clear();
     if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
+    this.kernelSyscallGenerationUnsubscribe?.();
+    this.kernelSyscallGenerationUnsubscribe = undefined;
+    this.kernelDescriptors.dispose();
     this.processTable.clear();
     this.zombieProcessTable.clear();
     this.processWaiters.clear();
@@ -7096,6 +7509,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
     this.httpListeners.clear();
     this.eventWatchers.clear();
+    this.kernelSyscallGenerationUnsubscribe?.();
+    this.kernelSyscallGenerationUnsubscribe = undefined;
+    this.kernelDescriptors.dispose();
     // Native/just-bash workspaces currently own no external resources.
   }
 
@@ -7249,6 +7665,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         for (const child of this.activeProcessRecords()) {
           if (child.ppid === process.pid) this.signalProcess(child, 'SIGTERM', 'system');
         }
+        this.kernelDescriptors.closeProcess(process.pid);
         this.processTable.delete(process.pid);
         process.state = 'exited';
         process.exitCode = 0;

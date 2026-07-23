@@ -437,6 +437,21 @@ export interface RuntimeKernelHttpBridge {
   dispatch(request: RuntimeKernelHttpRequest, options?: RuntimeKernelHttpDispatchOptions): Promise<RuntimeKernelHttpResponse>;
 }
 
+/**
+ * Product-integration wrapper around one process-bound TraceKernel syscall
+ * channel. Runtime workers receive only the shared channel and generation
+ * buffer; servicing and lifecycle remain host-owned.
+ */
+export interface RuntimeKernelSyscallBridge {
+  readonly channel: {
+    readonly buffer: SharedArrayBuffer;
+    readonly byteCapacity: number;
+  };
+  readonly generationBuffer?: SharedArrayBuffer;
+  service(): Promise<void>;
+  close(): void;
+}
+
 type RuntimeHttpBufferConstructor = {
   from(value: string, encoding: 'base64'): Uint8Array;
   from(value: Uint8Array): { toString(encoding: 'base64'): string };
@@ -1893,6 +1908,7 @@ export interface RuntimeProjectCommandRequest<
   stdinPipe?: RuntimeCommandStdinSharedBuffer;
   project: RuntimeProjectSnapshot;
   kernelHttp?: RuntimeKernelHttpBridge;
+  kernelSyscalls?: RuntimeKernelSyscallBridge;
   options?: Record<string, unknown>;
   signal?: AbortSignal;
   onEvent?: RuntimeCommandEventHandler;
