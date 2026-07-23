@@ -196,12 +196,52 @@ async function main(): Promise<void> {
         limitedSession.processSnapshots().length === 0,
         'Process capacity was not released after termination.'
       );
+
+      const treeSession = yield* host.openSession();
+      const parent = yield* treeSession.spawn({
+        runtime: 'test',
+        command: 'block',
+      });
+      yield* parent.awaitStarted();
+      const child = yield* treeSession.spawn({
+        runtime: 'test',
+        command: 'block',
+        parentPid: parent.pid,
+      });
+      yield* child.awaitStarted();
+      const parentSnapshot = parent.snapshot();
+      const childSnapshot = child.snapshot();
+      assertCondition(
+        childSnapshot.ppid === parent.pid &&
+          childSnapshot.pgid === parentSnapshot.pgid &&
+          childSnapshot.sid === parentSnapshot.sid,
+        `Child did not inherit its parent process topology: ${JSON.stringify(childSnapshot)}`
+      );
+      yield* parent.signal('SIGTERM');
+      assertCondition(
+        child.snapshot().ppid === 1 &&
+          treeSession.processSnapshots().some(
+            (snapshot) => snapshot.pid === child.pid
+          ),
+        'A surviving child was not reparented to session init.'
+      );
+      const missingParent = yield* Effect.flip(treeSession.spawn({
+        runtime: 'test',
+        command: 'block',
+        parentPid: 999_999,
+      }));
+      assertCondition(
+        missingParent instanceof Error &&
+          missingParent.message.startsWith('ESRCH: parent process'),
+        `A missing parent was accepted or misclassified: ${String(missingParent)}`
+      );
+      yield* child.signal('SIGTERM');
     })
   ));
 
   assertCondition(initializeCount === 1, 'Provider initialization should remain memoized for the host lifetime.');
-  assertCondition(acquireCount === 7, `Expected seven leases, acquired ${acquireCount}.`);
-  assertCondition(releaseCount === 7, `Expected seven lease releases, observed ${releaseCount}.`);
+  assertCondition(acquireCount === 9, `Expected nine leases, acquired ${acquireCount}.`);
+  assertCondition(releaseCount === 9, `Expected nine lease releases, observed ${releaseCount}.`);
   assertCondition(new Set(releasedLeaseIds).size === releasedLeaseIds.length, 'A runtime lease was released more than once.');
 
   console.log(JSON.stringify({
@@ -215,6 +255,9 @@ async function main(): Promise<void> {
     sessionTeardownTerminatedDescendants: true,
     processCeilingReturnsEagain: true,
     processCapacityReleasedOnExit: true,
+    parentTopologyInherited: true,
+    orphanedChildrenReparented: true,
+    missingParentsRejected: true,
   }, null, 2));
 }
 

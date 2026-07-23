@@ -156,6 +156,12 @@ export class TraceKernelProcess {
     return this.record.pid;
   }
 
+  reparent(exitedParentPid: number, replacementPid: number): void {
+    if (this.record.ppid === exitedParentPid) {
+      this.record.ppid = replacementPid;
+    }
+  }
+
   snapshot(): TraceKernelProcessSnapshot {
     return Object.freeze({
       ...immutableSnapshot(this.record),
@@ -350,7 +356,9 @@ export class TraceKernelSession {
     spec: TraceKernelProcessSpec
   ): Effect.Effect<
     TraceKernelProcess,
-    TraceKernelSessionClosedError | TraceKernelProcessLimitError
+    TraceKernelSessionClosedError |
+      TraceKernelProcessLimitError |
+      TraceKernelProcessStateError
   > {
     return Effect.gen(this, function* () {
       const started = yield* Deferred.make<void, TraceKernelProcessStateError>();
@@ -358,7 +366,8 @@ export class TraceKernelSession {
         try: () => this.registerProcess(spec, started),
         catch: (error) =>
           error instanceof TraceKernelSessionClosedError ||
-          error instanceof TraceKernelProcessLimitError
+          error instanceof TraceKernelProcessLimitError ||
+          error instanceof TraceKernelProcessStateError
           ? error
           : new TraceKernelSessionClosedError({
               sessionId: this.id,
@@ -673,10 +682,18 @@ export class TraceKernelSession {
         message: `EAGAIN: session process limit ${this.maxProcesses} reached`,
       });
     }
-    const pid = this.nextPid++;
     const ppid = spec.parentPid ?? 1;
-    const pgid = spec.processGroupId ?? pid;
-    const sid = spec.sessionId ?? pid;
+    const parent = ppid === 1 ? undefined : this.processes.get(ppid);
+    if (ppid !== 1 && !parent) {
+      throw new TraceKernelProcessStateError({
+        pid: ppid,
+        message: `ESRCH: parent process ${ppid} does not exist in session ${this.id}`,
+      });
+    }
+    const pid = this.nextPid++;
+    const parentSnapshot = parent?.snapshot();
+    const pgid = spec.processGroupId ?? parentSnapshot?.pgid ?? pid;
+    const sid = spec.sessionId ?? parentSnapshot?.sid ?? pid;
     const record: MutableProcessRecord = {
       pid,
       ppid,
@@ -705,6 +722,9 @@ export class TraceKernelSession {
 
   private unregisterProcess(pid: number): void {
     this.processes.delete(pid);
+    for (const process of this.processes.values()) {
+      process.reparent(pid, 1);
+    }
   }
 
   private assertOwnedProcess(

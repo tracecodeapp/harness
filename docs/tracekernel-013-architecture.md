@@ -52,6 +52,12 @@ to 256. Admission beyond that ceiling fails with typed `EAGAIN` before a PID,
 runtime lease, or process-table entry is allocated. Capacity returns only when
 the process has completed descriptor cleanup and left the process table.
 
+Explicit child processes must name a live parent in the same session. They
+inherit the parent's process group and session unless the spawn request
+overrides them. When a parent exits before its child, the child remains alive
+and is reparented to the session's logical init PID 1; nonexistent parents fail
+with `ESRCH` before process admission.
+
 The lifecycle phase is:
 
 ```text
