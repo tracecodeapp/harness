@@ -17,6 +17,7 @@ import {
   TraceKernelDescriptorLimitError,
   TraceKernelHostClosedError,
   TraceKernelProcessLimitError,
+  TraceKernelProcessPermissionError,
   TraceKernelProcessStateError,
   TraceKernelRuntimeUnavailableError,
   TraceKernelSessionClosedError,
@@ -217,9 +218,32 @@ export class TraceKernelProcess {
     return Deferred.await(this.started);
   }
 
-  signal(signal: TraceKernelSignal): Effect.Effect<void> {
+  signal(signal: TraceKernelSignal): Effect.Effect<void>;
+  signal(
+    signal: TraceKernelSignal,
+    requester: TraceKernelPrincipal
+  ): Effect.Effect<void, TraceKernelProcessPermissionError>;
+  signal(
+    signal: TraceKernelSignal,
+    requester: TraceKernelPrincipal = SYSTEM_PRINCIPAL
+  ): Effect.Effect<void, TraceKernelProcessPermissionError> {
     return Effect.suspend(() => {
       if (this.record.phase === 'exited') return Effect.void;
+      if (
+        this.record.protected &&
+        requester.kind !== 'system' &&
+        (
+          requester.id !== this.record.owner.id ||
+          requester.kind !== this.record.owner.kind
+        )
+      ) {
+        return Effect.fail(new TraceKernelProcessPermissionError({
+          code: 'EACCES',
+          pid: this.pid,
+          requesterId: requester.id,
+          message: `EACCES: actor ${requester.kind}:${requester.id} cannot signal protected process ${this.pid}`,
+        }));
+      }
       this.requestedSignal = signal;
       const recordSignalExit = Effect.sync(() =>
         this.finish({
@@ -413,10 +437,37 @@ export class TraceKernelSession {
     });
   }
 
-  processSnapshots(): readonly TraceKernelProcessSnapshot[] {
+  processSnapshots(
+    requester: TraceKernelPrincipal = SYSTEM_PRINCIPAL
+  ): readonly TraceKernelProcessSnapshot[] {
     return [...this.processes.values()]
       .map((process) => process.snapshot())
+      .filter((process) =>
+        requester.kind === 'system' ||
+        process.visible ||
+        (
+          process.owner.id === requester.id &&
+          process.owner.kind === requester.kind
+        )
+      )
       .sort((left, right) => left.pid - right.pid);
+  }
+
+  signalProcess(
+    requester: TraceKernelPrincipal,
+    pid: number,
+    signal: TraceKernelSignal
+  ): Effect.Effect<
+    void,
+    TraceKernelProcessStateError | TraceKernelProcessPermissionError
+  > {
+    const process = this.processes.get(pid);
+    return process
+      ? process.signal(signal, requester)
+      : Effect.fail(new TraceKernelProcessStateError({
+          pid,
+          message: `ESRCH: process ${pid} does not exist in session ${this.id}`,
+        }));
   }
 
   createPipe(

@@ -4,6 +4,7 @@ import * as Effect from 'effect/Effect';
 import {
   makeTraceKernelHost,
   TraceKernelProcessLimitError,
+  TraceKernelProcessPermissionError,
   type TraceKernelProcess,
   type TraceKernelProcessSnapshot,
   type TraceKernelRuntimeProvider,
@@ -236,12 +237,50 @@ async function main(): Promise<void> {
         `A missing parent was accepted or misclassified: ${String(missingParent)}`
       );
       yield* child.signal('SIGTERM');
+
+      const protectedProcess = yield* treeSession.spawn({
+        runtime: 'test',
+        command: 'block',
+        owner: { id: 'grader-owner', kind: 'grader' },
+        protected: true,
+        visible: false,
+      });
+      yield* protectedProcess.awaitStarted();
+      const learner = { id: 'learner-owner', kind: 'user' } as const;
+      const grader = { id: 'grader-owner', kind: 'grader' } as const;
+      assertCondition(
+        treeSession.processSnapshots(learner).every(
+          (snapshot) => snapshot.pid !== protectedProcess.pid
+        ) &&
+          treeSession.processSnapshots(grader).some(
+            (snapshot) => snapshot.pid === protectedProcess.pid
+          ),
+        'Actor-aware process inspection exposed a hidden foreign process.'
+      );
+      const deniedSignal = yield* Effect.flip(
+        treeSession.signalProcess(
+          learner,
+          protectedProcess.pid,
+          'SIGTERM'
+        )
+      );
+      assertCondition(
+        deniedSignal instanceof TraceKernelProcessPermissionError &&
+          deniedSignal.code === 'EACCES' &&
+          protectedProcess.snapshot().phase === 'running',
+        `Protected process signal was not denied cleanly: ${String(deniedSignal)}`
+      );
+      yield* treeSession.signalProcess(
+        grader,
+        protectedProcess.pid,
+        'SIGTERM'
+      );
     })
   ));
 
   assertCondition(initializeCount === 1, 'Provider initialization should remain memoized for the host lifetime.');
-  assertCondition(acquireCount === 9, `Expected nine leases, acquired ${acquireCount}.`);
-  assertCondition(releaseCount === 9, `Expected nine lease releases, observed ${releaseCount}.`);
+  assertCondition(acquireCount === 10, `Expected ten leases, acquired ${acquireCount}.`);
+  assertCondition(releaseCount === 10, `Expected ten lease releases, observed ${releaseCount}.`);
   assertCondition(new Set(releasedLeaseIds).size === releasedLeaseIds.length, 'A runtime lease was released more than once.');
 
   console.log(JSON.stringify({
@@ -258,6 +297,8 @@ async function main(): Promise<void> {
     parentTopologyInherited: true,
     orphanedChildrenReparented: true,
     missingParentsRejected: true,
+    protectedSignalsEnforced: true,
+    actorAwareInspection: true,
   }, null, 2));
 }
 

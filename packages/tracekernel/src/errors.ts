@@ -35,6 +35,15 @@ export class TraceKernelProcessLimitError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class TraceKernelProcessPermissionError extends Data.TaggedError(
+  'TraceKernelProcessPermissionError'
+)<{
+  readonly code: 'EACCES';
+  readonly pid: number;
+  readonly requesterId: string;
+  readonly message: string;
+}> {}
+
 export class TraceKernelBadFileDescriptorError extends Data.TaggedError(
   'TraceKernelBadFileDescriptorError'
 )<{
@@ -110,6 +119,7 @@ export type TraceKernelLifecycleError =
   | TraceKernelRuntimeUnavailableError
   | TraceKernelProcessStateError
   | TraceKernelProcessLimitError
+  | TraceKernelProcessPermissionError
   | TraceKernelBadFileDescriptorError
   | TraceKernelBrokenPipeError
   | TraceKernelDescriptorLimitError

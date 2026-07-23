@@ -67,6 +67,12 @@ created -> starting -> running -> exiting -> exited
 Normal exit, signal termination, and failure are termination causes recorded on
 the final process state.
 
+Ownership policy is generic kernel metadata. System callers and a protected
+process's owning principal may signal it; foreign non-system principals receive
+`EACCES`. Actor-aware inspection hides an invisible process from foreign
+callers while retaining it for its owner and the system. Product-specific role
+names do not enter this policy.
+
 ### Runtime engine lease
 
 A lease represents mutable language execution state assigned to one process.
