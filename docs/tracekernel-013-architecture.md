@@ -209,6 +209,13 @@ Write shutdown produces peer EOF without disabling the reverse stream. Final
 descriptor close, process exit, listener close, and session teardown wake
 blocked operations and release sockets and ports.
 
+The transitional `RuntimeWorkspace` bridge now installs regular files and TCP
+sockets in the same process descriptor table and routes all ten socket syscalls
+to one workspace-owned TraceKernel network namespace. Capability enforcement
+remains host-side: binding/listening requires the listen capability and
+connecting requires dispatch capability. This establishes the real product
+boundary before a language-specific socket module is exposed.
+
 Structured HTTP remains compatible and has not yet been routed onto this
 substrate. External arbitrary TCP remains unavailable in browser environments;
 allowed external HTTP remains a fetch-backed proxy. DNS beyond local aliases,

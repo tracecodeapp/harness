@@ -267,6 +267,7 @@ import {
   type RuntimeCommandSchedulerOptions,
 } from './scheduler';
 import { RuntimeKernelDescriptorManager } from './runtime-kernel-descriptors';
+import { RuntimeKernelNetworkManager } from './runtime-kernel-network';
 import {
   RUNTIME_PROJECT_PATCH_HASH_PATTERN,
   RUNTIME_PROJECT_PATCH_VERSION,
@@ -558,17 +559,24 @@ const TRACEKERNEL_EXTERNAL_HTTP_MAX_TIMEOUT_MS = 60_000;
 const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'E2BIG',
   'EACCES',
+  'EADDRINUSE',
+  'EAFNOSUPPORT',
   'EBADF',
   'EBUSY',
+  'ECONNREFUSED',
+  'EDESTADDRREQ',
   'ELOOP',
   'EEXIST',
   'EISDIR',
+  'EISCONN',
   'EINVAL',
   'EIO',
   'ENOENT',
+  'ENOTCONN',
   'ENOSYS',
   'ENOTDIR',
   'ENOTEMPTY',
+  'EOPNOTSUPP',
   'EPERM',
   'EPIPE',
   'EPROTO',
@@ -929,6 +937,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly baseEnv: Record<string, string>;
   private readonly fs: KernelObservedFileSystem;
   private readonly kernelDescriptors: RuntimeKernelDescriptorManager;
+  private readonly kernelNetwork: RuntimeKernelNetworkManager;
   // Cached RuntimeFile objects are immutable; consumers must shallow-copy arrays before filtering.
   private snapshotCache: { version: number; files: RuntimeFile[]; directories: string[]; directoryMetadata: RuntimeDirectory[]; symlinks: RuntimeSymlink[]; kernelFiles: RuntimeFile[] } | null = null;
   private readonly fsLocks = new RuntimeFileSystemLockCoordinator();
@@ -1018,6 +1027,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       normalizeRuntimeWorkspaceStorageLimits(options.storageLimits)
     );
     this.kernelDescriptors = new RuntimeKernelDescriptorManager(this.fs);
+    this.kernelNetwork = new RuntimeKernelNetworkManager(this.kernelDescriptors);
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>,
       options: { kernelSyscalls?: boolean } = {}
@@ -1387,6 +1397,100 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const workspacePath = (path: string): string => this.toWorkspacePath(path);
     try {
       switch (request.op) {
+        case 'socket': {
+          const fd = await this.kernelNetwork.socket(
+            context?.process.pid ?? 0
+          );
+          return { ok: true, value: { op: 'socket', fd } };
+        }
+        case 'bind': {
+          this.assertHttpCapability(actor, 'listen');
+          const address = await this.kernelNetwork.bind(
+            context?.process.pid ?? 0,
+            request.fd,
+            request.address
+          );
+          return { ok: true, value: { op: 'bind', address } };
+        }
+        case 'listen':
+          this.assertHttpCapability(actor, 'listen');
+          await this.kernelNetwork.listen(
+            context?.process.pid ?? 0,
+            request.fd,
+            request.options
+          );
+          return { ok: true, value: { op: 'listen' } };
+        case 'accept': {
+          this.assertHttpCapability(actor, 'listen');
+          const accepted = await this.kernelNetwork.accept(
+            context?.process.pid ?? 0,
+            request.fd
+          );
+          return {
+            ok: true,
+            value: {
+              op: 'accept',
+              fd: accepted.fd,
+              localAddress: accepted.localAddress,
+              remoteAddress: accepted.remoteAddress,
+            },
+          };
+        }
+        case 'connect': {
+          this.assertHttpCapability(actor, 'dispatch');
+          const connected = await this.kernelNetwork.connect(
+            context?.process.pid ?? 0,
+            request.fd,
+            request.address
+          );
+          return {
+            ok: true,
+            value: {
+              op: 'connect',
+              localAddress: connected.localAddress,
+              remoteAddress: connected.remoteAddress,
+            },
+          };
+        }
+        case 'send': {
+          const bytesWritten = await this.kernelDescriptors.write(
+            context?.process.pid ?? 0,
+            context,
+            request.fd,
+            request.bytes
+          );
+          return { ok: true, value: { op: 'send', bytesWritten } };
+        }
+        case 'recv': {
+          const bytes = await this.kernelDescriptors.read(
+            context?.process.pid ?? 0,
+            context,
+            request.fd,
+            request.maxBytes
+          );
+          return { ok: true, value: { op: 'recv', bytes } };
+        }
+        case 'shutdown':
+          await this.kernelNetwork.shutdown(
+            context?.process.pid ?? 0,
+            request.fd,
+            request.how
+          );
+          return { ok: true, value: { op: 'shutdown' } };
+        case 'getsockname': {
+          const address = await this.kernelNetwork.localAddress(
+            context?.process.pid ?? 0,
+            request.fd
+          );
+          return { ok: true, value: { op: 'getsockname', address } };
+        }
+        case 'getpeername': {
+          const address = await this.kernelNetwork.remoteAddress(
+            context?.process.pid ?? 0,
+            request.fd
+          );
+          return { ok: true, value: { op: 'getpeername', address } };
+        }
         case 'open': {
           const access = request.options?.access ?? 'read';
           if (access === 'read' || access === 'read-write') {
@@ -7223,6 +7327,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
     await this.kernelDescriptors.dispose();
+    await this.kernelNetwork.dispose();
     this.processTable.clear();
     this.zombieProcessTable.clear();
     this.processWaiters.clear();
@@ -7511,7 +7616,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.eventWatchers.clear();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
-    void this.kernelDescriptors.dispose();
+    void Promise.all([
+      this.kernelDescriptors.dispose(),
+      this.kernelNetwork.dispose(),
+    ]);
     // Native/just-bash workspaces currently own no external resources.
   }
 
