@@ -240,6 +240,9 @@ loop parses each connection independently. Structured clients use the same
 socket, bind, connect, send, receive, shutdown, and close operations as raw
 clients. A raw TCP client can therefore speak HTTP to a structured service, and
 a raw listener cannot claim a port already owned by structured HTTP.
+Graceful listener close stops new accepts but drains already-accepted
+connections; process exit and session teardown force-close them and abort their
+handler signals.
 
 Host-side capabilities, scenario services, journals, and graders remain the
 control plane. A short-lived correlation record associates a structured

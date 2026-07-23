@@ -1016,6 +1016,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
   private readonly kernelJournalLog: KernelJournalRecord[] = [];
   private readonly httpListeners = new Map<string, RuntimeKernelHttpListenerRecord>();
+  private readonly retiredHttpListeners = new Set<RuntimeKernelHttpListenerRecord>();
   private readonly httpTcpDispatches = new Map<number, RuntimeKernelHttpTcpDispatchContext>();
   private readonly httpRequestLog: RuntimeKernelHttpRequestRecord[] = [];
   private readonly httpLifecycleAbortController = new AbortController();
@@ -2395,9 +2396,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private closeHttpListener(
     key: string,
-    listener: RuntimeKernelHttpListenerRecord
+    listener: RuntimeKernelHttpListenerRecord,
+    forceConnections = false
   ): void {
-    if (listener.closed) return;
+    if (listener.closed) {
+      if (forceConnections) this.forceCloseHttpConnections(listener);
+      return;
+    }
     listener.closed = true;
     if (this.httpListeners.get(key) === listener) this.httpListeners.delete(key);
     if (listener.listening) {
@@ -2409,16 +2414,24 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         port: listener.info.port,
       });
     }
-    for (const [fd, controller] of listener.connectionControllers) {
-      if (!controller.signal.aborted) controller.abort();
-      void this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+    if (forceConnections) this.forceCloseHttpConnections(listener);
+    else if (listener.connectionControllers.size > 0) {
+      this.retiredHttpListeners.add(listener);
     }
-    listener.connectionControllers.clear();
     if (listener.listenerFd !== undefined) {
       void this.kernelDescriptors
         .close(listener.info.pid, listener.listenerFd)
         .catch(() => undefined);
     }
+  }
+
+  private forceCloseHttpConnections(listener: RuntimeKernelHttpListenerRecord): void {
+    this.retiredHttpListeners.delete(listener);
+    for (const [fd, controller] of listener.connectionControllers) {
+      if (!controller.signal.aborted) controller.abort();
+      void this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+    }
+    listener.connectionControllers.clear();
   }
 
   private async serveHttpTcpListener(
@@ -2460,6 +2473,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         })
         .finally(() => {
           listener.connectionControllers.delete(accepted.fd);
+          if (listener.closed && listener.connectionControllers.size === 0) {
+            this.retiredHttpListeners.delete(listener);
+          }
           void this.kernelDescriptors
             .close(listener.info.pid, accepted.fd)
             .catch(() => undefined);
@@ -2567,13 +2583,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private closeHttpListenersForProcess(pid: number): void {
     for (const [key, listener] of this.httpListeners) {
       if (listener.info.pid !== pid) continue;
-      this.closeHttpListener(key, listener);
+      this.closeHttpListener(key, listener, true);
+    }
+    for (const listener of this.retiredHttpListeners) {
+      if (listener.info.pid === pid) this.forceCloseHttpConnections(listener);
     }
   }
 
   private closeAllHttpListeners(): void {
     for (const [key, listener] of this.httpListeners) {
-      this.closeHttpListener(key, listener);
+      this.closeHttpListener(key, listener, true);
+    }
+    for (const listener of this.retiredHttpListeners) {
+      this.forceCloseHttpConnections(listener);
     }
     this.httpTcpDispatches.clear();
   }
