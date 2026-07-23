@@ -3,6 +3,7 @@ export * from './errors';
 export * from './kernel';
 export * from './model';
 export * from './network';
+export * from './http1';
 export * from './syscalls';
 export * from './transport';
 export * from './vfs';

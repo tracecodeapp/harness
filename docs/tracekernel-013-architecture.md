@@ -226,10 +226,20 @@ the same host dispatcher, process descriptor table, capability checks, and
 session network namespace. Cross-process browser conformance proves an echo
 exchange and half-close through two independently isolated runtime workers.
 
-Structured HTTP remains compatible and has not yet been routed onto this
-substrate. External arbitrary TCP remains unavailable in browser environments;
-allowed external HTTP remains a fetch-backed proxy. DNS beyond local aliases,
-UDP, TLS, HTTP stream parsing, Unix-domain sockets, and the remainder of Node's
+The first HTTP/1.1 stream codec is deliberately small and bounded. It
+incrementally decodes fragmented request or response bytes, preserves repeated
+headers and binary bodies, validates content lengths, and caps the start line,
+header bytes, header count, and body bytes. Its initial one-message contract
+rejects pipelining, obsolete header folding, and transfer codings other than
+identity. Chunked coding and connection reuse require their own conformance
+slice rather than silently weakening these bounds.
+
+Structured HTTP remains compatible and is the next service to route onto this
+substrate. Its host-side capability checks, scenario service, journal, and
+grader remain the control plane while local request and response bytes travel
+through TCP descriptors. External arbitrary TCP remains unavailable in browser
+environments; allowed external HTTP remains a fetch-backed proxy. DNS beyond
+local aliases, UDP, TLS, Unix-domain sockets, and the remainder of Node's
 advanced `net` options remain later slices.
 
 ## Required invariants
