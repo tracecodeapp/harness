@@ -204,11 +204,86 @@ async function main(): Promise<void> {
         limitedSession.resourceIds().length === 0,
         'Limited process teardown stranded socket resources.'
       );
+
+      const inheritanceSession = yield* host.openSession();
+      const parent = yield* inheritanceSession.spawn({
+        runtime: 'blocking-test',
+        command: 'descriptor-parent',
+      });
+      yield* parent.awaitStarted();
+      yield* inheritanceSession.writeFile('/not-inherited.txt', encoder.encode('private'));
+      yield* inheritanceSession.writeFile('/inherited.txt', new Uint8Array(0));
+      const privateFd = yield* inheritanceSession.openFile(parent, '/not-inherited.txt', {
+        access: 'read',
+      });
+      const sharedFd = yield* inheritanceSession.openFile(parent, '/inherited.txt', {
+        access: 'read-write',
+      });
+      yield* parent.write(sharedFd, encoder.encode('parent-'));
+
+      const child = yield* inheritanceSession.spawn({
+        runtime: 'blocking-test',
+        command: 'descriptor-child',
+        parentPid: parent.pid,
+        inheritDescriptors: [sharedFd],
+      });
+      yield* child.awaitStarted();
+      assertCondition(
+        child.snapshot().descriptors.length === 1 &&
+          child.snapshot().descriptors[0]?.fd === sharedFd &&
+          child.snapshot().descriptors[0]?.resourceId ===
+            parent.snapshot().descriptors.find((descriptor) => descriptor.fd === sharedFd)?.resourceId,
+        `Child descriptor inheritance did not preserve fd and open-description identity: ${JSON.stringify(child.snapshot().descriptors)}`
+      );
+
+      yield* parent.close(sharedFd);
+      yield* child.write(sharedFd, encoder.encode('child'));
+      assertCondition(
+        decoder.decode(yield* inheritanceSession.readFile('/inherited.txt')) === 'parent-child',
+        'Inherited file descriptor did not retain the shared offset after parent close.'
+      );
+      const childSocket = yield* inheritanceSession.createTcpSocket(child);
+      assertCondition(
+        childSocket === privateFd,
+        `Selective inheritance did not preserve the lowest free fd hole: ${childSocket}`
+      );
+
+      const invalidInheritance = yield* Effect.exit(inheritanceSession.spawn({
+        runtime: 'blocking-test',
+        command: 'invalid-inheritance',
+        parentPid: parent.pid,
+        inheritDescriptors: [999_999],
+      }));
+      assertCondition(
+        Exit.isFailure(invalidInheritance),
+        'A child inherited a descriptor that was absent from its parent.'
+      );
+      if (Exit.isFailure(invalidInheritance)) {
+        const failure = Cause.failureOption(invalidInheritance.cause);
+        assertCondition(
+          Option.isSome(failure) &&
+            failure.value instanceof TraceKernelBadFileDescriptorError &&
+            inheritanceSession.processSnapshots().length === 2,
+          `Failed inheritance was not rolled back atomically: ${Cause.pretty(invalidInheritance.cause)}`
+        );
+      }
+
+      yield* child.close(sharedFd);
+      yield* child.close(childSocket);
+      yield* parent.close(privateFd);
+      yield* Effect.all([
+        parent.signal('SIGTERM'),
+        child.signal('SIGTERM'),
+      ], { concurrency: 'unbounded', discard: true });
+      assertCondition(
+        inheritanceSession.resourceIds().length === 0,
+        'Inherited descriptor references stranded session resources after teardown.'
+      );
     })
   ));
 
-  assertCondition(leaseAcquireCount === 3, `Expected three runtime leases, acquired ${leaseAcquireCount}.`);
-  assertCondition(leaseReleaseCount === 3, `Expected three runtime lease releases, observed ${leaseReleaseCount}.`);
+  assertCondition(leaseAcquireCount === 5, `Expected five runtime leases, acquired ${leaseAcquireCount}.`);
+  assertCondition(leaseReleaseCount === 5, `Expected five runtime lease releases, observed ${leaseReleaseCount}.`);
 
   console.log(JSON.stringify({
     schema: 'tracekernel-013-descriptors-v1',
@@ -221,6 +296,9 @@ async function main(): Promise<void> {
     descriptorCeilingReturnsEmfile: true,
     lowestAvailableFdReused: true,
     failedInstallsReleaseResources: true,
+    selectiveDescriptorInheritance: true,
+    inheritedOpenDescriptionShared: true,
+    failedInheritanceRollsBack: true,
   }, null, 2));
 }
 

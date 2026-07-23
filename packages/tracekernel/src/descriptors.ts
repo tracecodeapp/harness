@@ -65,6 +65,10 @@ export type TraceKernelDescriptorDupError =
   | TraceKernelBadFileDescriptorError
   | TraceKernelDescriptorLimitError;
 
+export type TraceKernelDescriptorInheritanceError =
+  | TraceKernelBadFileDescriptorError
+  | TraceKernelDescriptorLimitError;
+
 export class TraceKernelDescriptorTable {
   private readonly descriptors = new Map<number, TraceKernelDescriptor>();
   private nextFd = 3;
@@ -239,6 +243,93 @@ export class TraceKernelDescriptorTable {
     );
   }
 
+  /**
+   * Duplicate selected descriptors from a parent table while preserving their
+   * numeric descriptor identities.
+   *
+   * All source descriptors are validated and all duplicate references are
+   * acquired before the child table is mutated. A failure closes every
+   * provisional reference, leaving the target table unchanged.
+   */
+  inherit(
+    source: TraceKernelDescriptorTable,
+    fds?: readonly number[]
+  ): Effect.Effect<void, TraceKernelDescriptorInheritanceError> {
+    return Effect.gen(this, function* () {
+      const selected = yield* Effect.try({
+        try: () => {
+          const selectedFds = fds === undefined
+            ? [...source.descriptors.keys()].sort((left, right) => left - right)
+            : [...new Set(fds.map((fd) => Math.floor(fd)))].sort((left, right) => left - right);
+          return selectedFds.map((fd) => {
+            const descriptor = source.descriptors.get(fd);
+            if (!descriptor) {
+              throw new TraceKernelBadFileDescriptorError({
+                fd,
+                operation: 'inherit',
+                message: `EBADF: bad file descriptor, inherit ${fd}`,
+              });
+            }
+            return [fd, descriptor] as const;
+          });
+        },
+        catch: (error) => error instanceof TraceKernelBadFileDescriptorError
+          ? error
+          : new TraceKernelBadFileDescriptorError({
+              fd: -1,
+              operation: 'inherit',
+              message: error instanceof Error ? error.message : String(error),
+            }),
+      });
+
+      if (this.descriptors.size + selected.length > this.maxDescriptors) {
+        return yield* Effect.fail(new TraceKernelDescriptorLimitError({
+          code: 'EMFILE',
+          maxDescriptors: this.maxDescriptors,
+          message: `EMFILE: inherited descriptors exceed process descriptor limit ${this.maxDescriptors}`,
+        }));
+      }
+      for (const [fd] of selected) {
+        if (this.descriptors.has(fd)) {
+          return yield* Effect.fail(new TraceKernelDescriptorLimitError({
+            code: 'EMFILE',
+            maxDescriptors: this.maxDescriptors,
+            message: `EMFILE: target descriptor ${fd} is already occupied`,
+          }));
+        }
+      }
+
+      const duplicates: Array<readonly [number, TraceKernelDescriptor]> = [];
+      yield* Effect.forEach(
+        selected,
+        ([fd, descriptor]) => descriptor.duplicate().pipe(
+          Effect.tap((duplicate) => Effect.sync(() => {
+            duplicates.push([fd, duplicate]);
+          })),
+          Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
+            fd,
+            operation: 'inherit',
+            message: error.message,
+          }))
+        ),
+        { concurrency: 1, discard: true }
+      ).pipe(
+        Effect.onError(() =>
+          Effect.forEach(
+            duplicates,
+            ([, duplicate]) => duplicate.close(),
+            { concurrency: 'unbounded', discard: true }
+          )
+        )
+      );
+
+      for (const [fd, duplicate] of duplicates) {
+        this.descriptors.set(fd, duplicate);
+      }
+      this.resetNextFd();
+    });
+  }
+
   close(fd: number): Effect.Effect<void, TraceKernelBadFileDescriptorError> {
     const descriptor = this.descriptors.get(fd);
     if (!descriptor) {
@@ -264,6 +355,11 @@ export class TraceKernelDescriptorTable {
         { concurrency: 'unbounded', discard: true }
       );
     });
+  }
+
+  private resetNextFd(): void {
+    this.nextFd = 3;
+    while (this.descriptors.has(this.nextFd)) this.nextFd += 1;
   }
 
   private installEffect(

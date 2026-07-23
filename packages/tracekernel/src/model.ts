@@ -71,6 +71,12 @@ export interface TraceKernelProcessSpec {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly parentPid?: number;
+  /**
+   * Descriptors to duplicate from the explicit live parent. Inherited
+   * descriptors retain their numeric fd and share the same open-resource
+   * description. Omitted means no inheritance.
+   */
+  readonly inheritDescriptors?: 'all' | readonly number[];
   readonly processGroupId?: number;
   readonly sessionId?: number;
   readonly owner?: TraceKernelPrincipal;

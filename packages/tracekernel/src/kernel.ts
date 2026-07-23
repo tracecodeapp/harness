@@ -8,6 +8,7 @@ import {
   TraceKernelPipe,
   type TraceKernelDescriptor,
   type TraceKernelDescriptorDupError,
+  type TraceKernelDescriptorInheritanceError,
   type TraceKernelDescriptorReadError,
   type TraceKernelDescriptorWriteError,
   type TraceKernelPipeOptions,
@@ -382,7 +383,8 @@ export class TraceKernelSession {
     TraceKernelProcess,
     TraceKernelSessionClosedError |
       TraceKernelProcessLimitError |
-      TraceKernelProcessStateError
+      TraceKernelProcessStateError |
+      TraceKernelDescriptorInheritanceError
   > {
     return Effect.gen(this, function* () {
       const started = yield* Deferred.make<void, TraceKernelProcessStateError>();
@@ -398,6 +400,13 @@ export class TraceKernelSession {
               message: error instanceof Error ? error.message : String(error),
             }),
       });
+      yield* this.inheritProcessDescriptors(process, spec).pipe(
+        Effect.tapError(() =>
+          process.descriptors.closeAll().pipe(
+            Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
+          )
+        )
+      );
       process.markStarting();
 
       const program = Effect.scoped(
@@ -429,7 +438,8 @@ export class TraceKernelSession {
     TraceKernelProcessSnapshot,
     TraceKernelSessionClosedError |
       TraceKernelProcessLimitError |
-      TraceKernelProcessStateError
+      TraceKernelProcessStateError |
+      TraceKernelDescriptorInheritanceError
   > {
     return Effect.gen(this, function* () {
       const process = yield* this.spawn(spec);
@@ -776,6 +786,25 @@ export class TraceKernelSession {
     for (const process of this.processes.values()) {
       process.reparent(pid, 1);
     }
+  }
+
+  private inheritProcessDescriptors(
+    process: TraceKernelProcess,
+    spec: TraceKernelProcessSpec
+  ): Effect.Effect<void, TraceKernelProcessStateError | TraceKernelDescriptorInheritanceError> {
+    if (spec.inheritDescriptors === undefined) return Effect.void;
+    const parentPid = spec.parentPid ?? 1;
+    const parent = this.processes.get(parentPid);
+    if (!parent || parent === process) {
+      return Effect.fail(new TraceKernelProcessStateError({
+        pid: parentPid,
+        message: `ESRCH: descriptor inheritance requires a live parent process in session ${this.id}`,
+      }));
+    }
+    return process.descriptors.inherit(
+      parent.descriptors,
+      spec.inheritDescriptors === 'all' ? undefined : spec.inheritDescriptors
+    );
   }
 
   private assertOwnedProcess(

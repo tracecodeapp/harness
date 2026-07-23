@@ -133,6 +133,16 @@ Failed file, pipe, socket, accepted-connection, and `dup` installs close the
 provisional resource or reference before returning, so admission failure cannot
 leak a session resource.
 
+Child descriptor inheritance is explicit rather than an implicit side effect of
+every spawn. A child may request all parent descriptors or a selected fd set.
+The child retains the same numeric fd values, and each inherited entry
+duplicates the parent's open-resource description, so offsets, pipe endpoint
+counts, socket state, and final-close behavior remain shared. The kernel
+validates the complete selection and acquires every reference before publishing
+any child entry; `EBADF`, `EMFILE`, or duplication failure closes provisional
+references and removes the failed child admission atomically. Omitting the
+inheritance request produces an empty descriptor table.
+
 ## Shared filesystem
 
 The session filesystem is authoritative. Its subsystem shorthand is **TKFS**
@@ -400,6 +410,8 @@ The initial 0.13 branch now establishes:
 - explicit process lifecycle and termination records;
 - process environment isolation;
 - process-owned descriptor tables;
+- explicit all-or-selected child descriptor inheritance with stable fd numbers,
+  shared open descriptions, and atomic failure rollback;
 - session-owned pipe resources;
 - fragmented pipe reads, bounded chunk backpressure, EOF on final-writer close,
   and blocked-read wakeup when the reader process exits;
