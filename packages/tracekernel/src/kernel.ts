@@ -16,6 +16,7 @@ import {
   TraceKernelBadFileDescriptorError,
   TraceKernelDescriptorLimitError,
   TraceKernelHostClosedError,
+  TraceKernelProcessLimitError,
   TraceKernelProcessStateError,
   TraceKernelRuntimeUnavailableError,
   TraceKernelSessionClosedError,
@@ -66,6 +67,13 @@ function normalizeDescriptorLimit(value: number | undefined): number {
   return Number.isFinite(requested) && requested > 0
     ? Math.floor(requested)
     : 1024;
+}
+
+function normalizeProcessLimit(value: number | undefined): number {
+  const requested = Number(value ?? 256);
+  return Number.isFinite(requested) && requested > 0
+    ? Math.floor(requested)
+    : 256;
 }
 
 interface TraceKernelRuntimeProviderSlot {
@@ -334,20 +342,23 @@ export class TraceKernelSession {
     readonly networkNamespace: TraceKernelNetworkNamespace,
     readonly cwd: string,
     readonly env: Readonly<Record<string, string>>,
-    readonly maxDescriptorsPerProcess: number
+    readonly maxDescriptorsPerProcess: number,
+    readonly maxProcesses: number
   ) {}
 
   spawn(
     spec: TraceKernelProcessSpec
   ): Effect.Effect<
     TraceKernelProcess,
-    TraceKernelSessionClosedError
+    TraceKernelSessionClosedError | TraceKernelProcessLimitError
   > {
     return Effect.gen(this, function* () {
       const started = yield* Deferred.make<void, TraceKernelProcessStateError>();
       const process = yield* Effect.try({
         try: () => this.registerProcess(spec, started),
-        catch: (error) => error instanceof TraceKernelSessionClosedError
+        catch: (error) =>
+          error instanceof TraceKernelSessionClosedError ||
+          error instanceof TraceKernelProcessLimitError
           ? error
           : new TraceKernelSessionClosedError({
               sessionId: this.id,
@@ -383,7 +394,9 @@ export class TraceKernelSession {
     spec: TraceKernelProcessSpec
   ): Effect.Effect<
     TraceKernelProcessSnapshot,
-    TraceKernelSessionClosedError | TraceKernelProcessStateError
+    TraceKernelSessionClosedError |
+      TraceKernelProcessLimitError |
+      TraceKernelProcessStateError
   > {
     return Effect.gen(this, function* () {
       const process = yield* this.spawn(spec);
@@ -653,6 +666,13 @@ export class TraceKernelSession {
         message: `TraceKernel session ${this.id} is closed.`,
       });
     }
+    if (this.processes.size >= this.maxProcesses) {
+      throw new TraceKernelProcessLimitError({
+        code: 'EAGAIN',
+        maxProcesses: this.maxProcesses,
+        message: `EAGAIN: session process limit ${this.maxProcesses} reached`,
+      });
+    }
     const pid = this.nextPid++;
     const ppid = spec.parentPid ?? 1;
     const pgid = spec.processGroupId ?? pid;
@@ -783,7 +803,8 @@ export class TraceKernelHost {
             networkNamespace,
             options.cwd ?? '/workspace',
             Object.freeze({ ...(options.env ?? {}) }),
-            normalizeDescriptorLimit(options.maxDescriptorsPerProcess)
+            normalizeDescriptorLimit(options.maxDescriptorsPerProcess),
+            normalizeProcessLimit(options.maxProcesses)
           );
           this.sessions.set(id, session);
           return session;

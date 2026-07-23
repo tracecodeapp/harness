@@ -27,6 +27,14 @@ export class TraceKernelProcessStateError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class TraceKernelProcessLimitError extends Data.TaggedError(
+  'TraceKernelProcessLimitError'
+)<{
+  readonly code: 'EAGAIN';
+  readonly maxProcesses: number;
+  readonly message: string;
+}> {}
+
 export class TraceKernelBadFileDescriptorError extends Data.TaggedError(
   'TraceKernelBadFileDescriptorError'
 )<{
@@ -101,6 +109,7 @@ export type TraceKernelLifecycleError =
   | TraceKernelSessionClosedError
   | TraceKernelRuntimeUnavailableError
   | TraceKernelProcessStateError
+  | TraceKernelProcessLimitError
   | TraceKernelBadFileDescriptorError
   | TraceKernelBrokenPipeError
   | TraceKernelDescriptorLimitError

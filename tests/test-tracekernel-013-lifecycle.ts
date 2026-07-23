@@ -3,6 +3,7 @@
 import * as Effect from 'effect/Effect';
 import {
   makeTraceKernelHost,
+  TraceKernelProcessLimitError,
   type TraceKernelProcess,
   type TraceKernelProcessSnapshot,
   type TraceKernelRuntimeProvider,
@@ -163,12 +164,44 @@ async function main(): Promise<void> {
       );
       assertCondition(releaseCount === 5, 'Session teardown did not release the process lease exactly once.');
       assertCondition(host.sessionIds().length === 1, 'Closed child session remained registered with the host.');
+
+      const limitedSession = yield* host.openSession({ maxProcesses: 1 });
+      const admitted = yield* limitedSession.spawn({
+        runtime: 'test',
+        command: 'block',
+      });
+      yield* admitted.awaitStarted();
+      const rejected = yield* Effect.flip(limitedSession.spawn({
+        runtime: 'test',
+        command: 'block',
+      }));
+      assertCondition(
+        rejected instanceof TraceKernelProcessLimitError &&
+          rejected.code === 'EAGAIN' &&
+          rejected.maxProcesses === 1,
+        `Process admission did not retain typed EAGAIN: ${String(rejected)}`
+      );
+      assertCondition(
+        limitedSession.processSnapshots().length === 1,
+        'Rejected process admission mutated the process table.'
+      );
+      yield* admitted.signal('SIGTERM');
+      const replacement = yield* limitedSession.spawn({
+        runtime: 'test',
+        command: 'block',
+      });
+      yield* replacement.awaitStarted();
+      yield* replacement.signal('SIGTERM');
+      assertCondition(
+        limitedSession.processSnapshots().length === 0,
+        'Process capacity was not released after termination.'
+      );
     })
   ));
 
   assertCondition(initializeCount === 1, 'Provider initialization should remain memoized for the host lifetime.');
-  assertCondition(acquireCount === 5, `Expected five leases, acquired ${acquireCount}.`);
-  assertCondition(releaseCount === 5, `Expected five lease releases, observed ${releaseCount}.`);
+  assertCondition(acquireCount === 7, `Expected seven leases, acquired ${acquireCount}.`);
+  assertCondition(releaseCount === 7, `Expected seven lease releases, observed ${releaseCount}.`);
   assertCondition(new Set(releasedLeaseIds).size === releasedLeaseIds.length, 'A runtime lease was released more than once.');
 
   console.log(JSON.stringify({
@@ -180,6 +213,8 @@ async function main(): Promise<void> {
     concurrentInitializationDeduplicated: true,
     signalInterruptionMappedToProcessExit: true,
     sessionTeardownTerminatedDescendants: true,
+    processCeilingReturnsEagain: true,
+    processCapacityReleasedOnExit: true,
   }, null, 2));
 }
 
