@@ -67,6 +67,16 @@ created -> starting -> running -> exiting -> exited
 Normal exit, signal termination, and failure are termination causes recorded on
 the final process state.
 
+Catchable `SIGINT` and `SIGTERM` are offered to an optional runtime-lease signal
+hook. Hook completion acknowledges delivery only: TraceKernel continues to own
+the process deadline and waits for execution to finish for a configurable
+session grace period (one second by default). A clean runtime exit during that
+window retains its actual exit code and output. Missing or failed delivery and
+grace-period expiry force-interrupt the process and record signal termination.
+`SIGKILL` always bypasses runtime hooks and interrupts immediately. Descriptor
+cleanup, lease release, and process-table removal remain attached to the same
+supervised process fiber in every path.
+
 Ownership policy is generic kernel metadata. System callers and a protected
 process's owning principal may signal it; foreign non-system principals receive
 `EACCES`. Actor-aware inspection hides an invisible process from foreign
@@ -408,6 +418,8 @@ The initial 0.13 branch now establishes:
 - session-owned process supervision;
 - process-owned runtime leases released on exit, failure, signal, or teardown;
 - explicit process lifecycle and termination records;
+- lease-level graceful `SIGINT`/`SIGTERM` delivery with a kernel-owned deadline
+  and unconditional `SIGKILL` force interruption;
 - process environment isolation;
 - process-owned descriptor tables;
 - explicit all-or-selected child descriptor inheritance with stable fd numbers,

@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import {
   makeTraceKernelHost,
@@ -19,6 +20,7 @@ async function main(): Promise<void> {
   let acquireCount = 0;
   let releaseCount = 0;
   const releasedLeaseIds: string[] = [];
+  const deliveredSignals: Array<{ pid: number; signal: string }> = [];
 
   const provider: TraceKernelRuntimeProvider = {
     runtime: 'test',
@@ -27,14 +29,29 @@ async function main(): Promise<void> {
       return {
         acquire: (process) =>
           Effect.acquireRelease(
-            Effect.sync(() => {
+            Effect.gen(function* () {
               acquireCount += 1;
               const leaseId = `lease-${acquireCount}`;
+              const gracefulExit = yield* Deferred.make<void>();
+              const supportsSignals =
+                process.command === 'graceful' ||
+                process.command === 'stubborn' ||
+                process.command === 'kill-hook';
               return {
                 id: leaseId,
                 runtime: 'test',
                 execute: () => {
                   if (process.command === 'block') return Effect.never;
+                  if (process.command === 'stubborn') return Effect.never;
+                  if (process.command === 'graceful' || process.command === 'kill-hook') {
+                    return Deferred.await(gracefulExit).pipe(
+                      Effect.as({
+                        exitCode: 0,
+                        stdout: `${process.command}:clean-exit\n`,
+                        stderr: '',
+                      })
+                    );
+                  }
                   if (process.command === 'fail') return Effect.fail(new Error('runtime failed'));
                   return Effect.sleep(5).pipe(
                     Effect.as({
@@ -44,6 +61,18 @@ async function main(): Promise<void> {
                     })
                   );
                 },
+                ...(supportsSignals ? {
+                  signal: (signal: 'SIGINT' | 'SIGTERM') =>
+                    Effect.sync(() => {
+                      deliveredSignals.push({ pid: process.pid, signal });
+                    }).pipe(
+                      Effect.andThen(
+                        process.command === 'stubborn'
+                          ? Effect.void
+                          : Deferred.succeed(gracefulExit, undefined)
+                      )
+                    ),
+                } : {}),
               };
             }),
             (lease) =>
@@ -275,12 +304,68 @@ async function main(): Promise<void> {
         protectedProcess.pid,
         'SIGTERM'
       );
+
+      const signalSession = yield* host.openSession({
+        signalGracePeriodMs: 20,
+      });
+      const graceful = yield* signalSession.spawn({
+        runtime: 'test',
+        command: 'graceful',
+      });
+      yield* graceful.awaitStarted();
+      yield* graceful.signal('SIGTERM');
+      const gracefulSnapshot = yield* graceful.wait();
+      assertCondition(
+        gracefulSnapshot.termination?.kind === 'exit' &&
+          gracefulSnapshot.termination.exitCode === 0 &&
+          gracefulSnapshot.stdout === 'graceful:clean-exit\n',
+        `A runtime-handled signal lost the graceful process result: ${JSON.stringify(gracefulSnapshot)}`
+      );
+
+      const stubborn = yield* signalSession.spawn({
+        runtime: 'test',
+        command: 'stubborn',
+      });
+      yield* stubborn.awaitStarted();
+      yield* stubborn.signal('SIGINT');
+      const stubbornSnapshot = yield* stubborn.wait();
+      assertCondition(
+        stubbornSnapshot.termination?.kind === 'signal' &&
+          stubbornSnapshot.termination.signal === 'SIGINT' &&
+          stubbornSnapshot.termination.exitCode === 130,
+        `A process surviving the grace deadline was not force-interrupted: ${JSON.stringify(stubbornSnapshot)}`
+      );
+
+      const killHook = yield* signalSession.spawn({
+        runtime: 'test',
+        command: 'kill-hook',
+      });
+      yield* killHook.awaitStarted();
+      const deliveriesBeforeKill = deliveredSignals.length;
+      yield* killHook.signal('SIGKILL');
+      const killedSnapshot = yield* killHook.wait();
+      assertCondition(
+        killedSnapshot.termination?.kind === 'signal' &&
+          killedSnapshot.termination.signal === 'SIGKILL' &&
+          killedSnapshot.termination.exitCode === 137 &&
+          deliveredSignals.length === deliveriesBeforeKill,
+        `SIGKILL was delivered as a catchable runtime signal: ${JSON.stringify(killedSnapshot)}`
+      );
+      assertCondition(
+        deliveredSignals.some((delivery) =>
+          delivery.pid === graceful.pid && delivery.signal === 'SIGTERM'
+        ) &&
+          deliveredSignals.some((delivery) =>
+            delivery.pid === stubborn.pid && delivery.signal === 'SIGINT'
+          ),
+        `Catchable signals were not delivered exactly to their runtime leases: ${JSON.stringify(deliveredSignals)}`
+      );
     })
   ));
 
   assertCondition(initializeCount === 1, 'Provider initialization should remain memoized for the host lifetime.');
-  assertCondition(acquireCount === 10, `Expected ten leases, acquired ${acquireCount}.`);
-  assertCondition(releaseCount === 10, `Expected ten lease releases, observed ${releaseCount}.`);
+  assertCondition(acquireCount === 13, `Expected thirteen leases, acquired ${acquireCount}.`);
+  assertCondition(releaseCount === 13, `Expected thirteen lease releases, observed ${releaseCount}.`);
   assertCondition(new Set(releasedLeaseIds).size === releasedLeaseIds.length, 'A runtime lease was released more than once.');
 
   console.log(JSON.stringify({
@@ -299,6 +384,9 @@ async function main(): Promise<void> {
     missingParentsRejected: true,
     protectedSignalsEnforced: true,
     actorAwareInspection: true,
+    gracefulSignalDelivery: true,
+    signalGraceDeadlineForcesExit: true,
+    sigkillBypassesRuntimeHooks: true,
   }, null, 2));
 }
 

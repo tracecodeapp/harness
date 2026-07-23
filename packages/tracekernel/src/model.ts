@@ -113,6 +113,12 @@ export interface TraceKernelRuntimeLease {
   execute(
     process: TraceKernelRuntimeProcessContext
   ): Effect.Effect<TraceKernelRuntimeResult, Error>;
+  /**
+   * Deliver a catchable signal to the leased runtime. Resolving acknowledges
+   * delivery, not process termination. TraceKernel still owns the grace
+   * deadline and force-interrupts the process if execution does not finish.
+   */
+  signal?(signal: Exclude<TraceKernelSignal, 'SIGKILL'>): Effect.Effect<void, Error>;
 }
 
 export interface TraceKernelRuntimeFactory {
@@ -139,4 +145,5 @@ export interface TraceKernelSessionOptions {
   readonly env?: Readonly<Record<string, string>>;
   readonly maxDescriptorsPerProcess?: number;
   readonly maxProcesses?: number;
+  readonly signalGracePeriodMs?: number;
 }

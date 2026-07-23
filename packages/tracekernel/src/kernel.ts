@@ -78,6 +78,13 @@ function normalizeProcessLimit(value: number | undefined): number {
     : 256;
 }
 
+function normalizeSignalGracePeriod(value: number | undefined): number {
+  const requested = Number(value ?? 1_000);
+  return Number.isFinite(requested) && requested >= 0
+    ? Math.floor(requested)
+    : 1_000;
+}
+
 interface TraceKernelRuntimeProviderSlot {
   readonly provider: TraceKernelRuntimeProvider;
   readonly initialize: Effect.Effect<TraceKernelRuntimeFactory, Error>;
@@ -143,13 +150,15 @@ function immutableSnapshot(record: MutableProcessRecord): TraceKernelProcessSnap
  */
 export class TraceKernelProcess {
   private fiber?: Fiber.RuntimeFiber<TraceKernelProcessSnapshot, never>;
+  private runtimeLease?: TraceKernelRuntimeLease;
   private requestedSignal?: TraceKernelSignal;
   readonly descriptors: TraceKernelDescriptorTable;
 
   constructor(
     private readonly record: MutableProcessRecord,
     private readonly started: Deferred.Deferred<void, TraceKernelProcessStateError>,
-    maxDescriptors: number
+    maxDescriptors: number,
+    private readonly signalGracePeriodMs: number
   ) {
     this.descriptors = new TraceKernelDescriptorTable({ maxDescriptors });
   }
@@ -246,25 +255,36 @@ export class TraceKernelProcess {
         }));
       }
       this.requestedSignal = signal;
-      const recordSignalExit = Effect.sync(() =>
-        this.finish({
-          kind: 'signal',
-          signal,
-          exitCode: signalExitCode(signal),
-        }, this.record.stdout, this.record.stderr)
-      ).pipe(
-        Effect.andThen(Deferred.fail(this.started, new TraceKernelProcessStateError({
-          pid: this.pid,
-          message: `Process ${this.pid} terminated before reaching running state.`,
-        }))),
-        Effect.asVoid
+      const fiber = this.fiber;
+      const runtimeLease = this.runtimeLease;
+      if (
+        signal === 'SIGKILL' ||
+        !fiber ||
+        !runtimeLease?.signal ||
+        this.signalGracePeriodMs === 0
+      ) {
+        return this.forceSignal(signal);
+      }
+
+      const completed = Fiber.await(fiber).pipe(
+        Effect.as<'completed'>('completed')
       );
-      return this.fiber
-        ? Fiber.interrupt(this.fiber).pipe(
-            Effect.asVoid,
-            Effect.ensuring(recordSignalExit)
-          )
-        : recordSignalExit;
+      const deliveryFailed = runtimeLease.signal(signal).pipe(
+        Effect.matchEffect({
+          onFailure: () => Effect.succeed<'delivery-failed'>('delivery-failed'),
+          onSuccess: () => Effect.never,
+        })
+      );
+      const deadline = Effect.sleep(this.signalGracePeriodMs).pipe(
+        Effect.as<'deadline'>('deadline')
+      );
+      return Effect.raceAll([completed, deliveryFailed, deadline]).pipe(
+        Effect.flatMap((outcome) =>
+          outcome === 'completed'
+            ? Effect.void
+            : this.forceSignal(signal)
+        )
+      );
     });
   }
 
@@ -295,6 +315,7 @@ export class TraceKernelProcess {
   execute(lease: TraceKernelRuntimeLease): Effect.Effect<TraceKernelProcessSnapshot, never> {
     const context = this.runtimeContext();
     return Effect.sync(() => {
+      this.runtimeLease = lease;
       this.record.phase = 'running';
       this.record.startedAt = Date.now();
     }).pipe(
@@ -322,8 +343,34 @@ export class TraceKernelProcess {
             exitCode: signalExitCode(signal),
           }, this.record.stdout, this.record.stderr);
         })
-      )
+      ),
+      Effect.ensuring(Effect.sync(() => {
+        if (this.runtimeLease === lease) this.runtimeLease = undefined;
+      }))
     );
+  }
+
+  private forceSignal(signal: TraceKernelSignal): Effect.Effect<void> {
+    this.requestedSignal = signal;
+    const recordSignalExit = Effect.sync(() =>
+      this.finish({
+        kind: 'signal',
+        signal,
+        exitCode: signalExitCode(signal),
+      }, this.record.stdout, this.record.stderr)
+    ).pipe(
+      Effect.andThen(Deferred.fail(this.started, new TraceKernelProcessStateError({
+        pid: this.pid,
+        message: `Process ${this.pid} terminated before reaching running state.`,
+      }))),
+      Effect.asVoid
+    );
+    return this.fiber
+      ? Fiber.interrupt(this.fiber).pipe(
+          Effect.asVoid,
+          Effect.ensuring(recordSignalExit)
+        )
+      : recordSignalExit;
   }
 
   private runtimeContext(): TraceKernelRuntimeProcessContext {
@@ -374,7 +421,8 @@ export class TraceKernelSession {
     readonly cwd: string,
     readonly env: Readonly<Record<string, string>>,
     readonly maxDescriptorsPerProcess: number,
-    readonly maxProcesses: number
+    readonly maxProcesses: number,
+    readonly signalGracePeriodMs: number
   ) {}
 
   spawn(
@@ -775,7 +823,8 @@ export class TraceKernelSession {
     const process = new TraceKernelProcess(
       record,
       started,
-      this.maxDescriptorsPerProcess
+      this.maxDescriptorsPerProcess,
+      this.signalGracePeriodMs
     );
     this.processes.set(pid, process);
     return process;
@@ -904,7 +953,8 @@ export class TraceKernelHost {
             options.cwd ?? '/workspace',
             Object.freeze({ ...(options.env ?? {}) }),
             normalizeDescriptorLimit(options.maxDescriptorsPerProcess),
-            normalizeProcessLimit(options.maxProcesses)
+            normalizeProcessLimit(options.maxProcesses),
+            normalizeSignalGracePeriod(options.signalGracePeriodMs)
           );
           this.sessions.set(id, session);
           return session;
