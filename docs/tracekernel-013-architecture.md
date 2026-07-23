@@ -234,13 +234,26 @@ rejects pipelining, obsolete header folding, and transfer codings other than
 identity. Chunked coding and connection reuse require their own conformance
 slice rather than silently weakening these bounds.
 
-Structured HTTP remains compatible and is the next service to route onto this
-substrate. Its host-side capability checks, scenario service, journal, and
-grader remain the control plane while local request and response bytes travel
-through TCP descriptors. External arbitrary TCP remains unavailable in browser
-environments; allowed external HTTP remains a fetch-backed proxy. DNS beyond
-local aliases, UDP, TLS, Unix-domain sockets, and the remainder of Node's
-advanced `net` options remain later slices.
+Structured local HTTP now routes through this substrate. Listener registration
+owns a process descriptor and real TCP binding, and a listener-owned accept
+loop parses each connection independently. Structured clients use the same
+socket, bind, connect, send, receive, shutdown, and close operations as raw
+clients. A raw TCP client can therefore speak HTTP to a structured service, and
+a raw listener cannot claim a port already owned by structured HTTP.
+
+Host-side capabilities, scenario services, journals, and graders remain the
+control plane. A short-lived correlation record associates a structured
+client's ephemeral source port with its trusted actor, abort signal, logical
+URL, and response annotation; none of that authority is serialized into
+learner-visible HTTP headers. Only non-runtime listeners may contribute trusted
+grading annotations. Synthetic scenario hostnames retain their logical
+identity while using private ephemeral loopback transport endpoints; loopback
+and wildcard listeners bind their advertised ports directly.
+
+External arbitrary TCP remains unavailable in browser environments; allowed
+external HTTP remains a fetch-backed proxy. DNS beyond local aliases, UDP, TLS,
+Unix-domain sockets, and the remainder of Node's advanced `net` options remain
+later slices.
 
 ## Required invariants
 

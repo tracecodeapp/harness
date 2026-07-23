@@ -87,9 +87,16 @@ import {
 import { getLanguageRuntimeInfo, TRACECODE_HARNESS_VERSION } from '@tracecode/harness-core';
 import type { Language } from '@tracecode/harness-core';
 import {
+  encodeTraceKernelHttp1Request,
+  encodeTraceKernelHttp1Response,
   makeTraceKernelPromiseSyscallHandler,
   makeTraceKernelSharedSyscallChannel,
+  TraceKernelHttp1Decoder,
   TraceKernelSharedSyscallServer,
+  type TraceKernelHttp1Header,
+  type TraceKernelHttp1Message,
+  type TraceKernelHttp1Request,
+  type TraceKernelHttp1Response,
   type TraceKernelSyscallErrorCode,
   type TraceKernelSyscallRequest,
   type TraceKernelSyscallResult,
@@ -543,6 +550,7 @@ export function normalizeRuntimeWorkspaceStorageLimits(
 }
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
+const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('system');
 const TRACEKERNEL_EVENT_LOG_LIMIT = 256;
 const TRACEKERNEL_HTTP_LISTENER_LIMIT = 128;
@@ -552,10 +560,43 @@ const TRACEKERNEL_HTTP_MAX_BODY_BYTES = 4 * 1024 * 1024;
 const TRACEKERNEL_HTTP_MAX_HEADER_COUNT = 128;
 const TRACEKERNEL_HTTP_MAX_HEADER_BYTES = 64 * 1024;
 const TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH = 4096;
+const TRACEKERNEL_HTTP_TCP_READ_BYTES = 64 * 1024;
 const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_TIMEOUT_MS = 10_000;
 const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_CONCURRENT_REQUESTS = 8;
 const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_REQUESTS_PER_COMMAND = 64;
 const TRACEKERNEL_EXTERNAL_HTTP_MAX_TIMEOUT_MS = 60_000;
+const TRACEKERNEL_HTTP_STATUS_TEXT: Readonly<Record<number, string>> = Object.freeze({
+  100: 'Continue',
+  200: 'OK',
+  201: 'Created',
+  202: 'Accepted',
+  204: 'No Content',
+  206: 'Partial Content',
+  300: 'Multiple Choices',
+  301: 'Moved Permanently',
+  302: 'Found',
+  304: 'Not Modified',
+  307: 'Temporary Redirect',
+  308: 'Permanent Redirect',
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  405: 'Method Not Allowed',
+  408: 'Request Timeout',
+  409: 'Conflict',
+  410: 'Gone',
+  413: 'Payload Too Large',
+  415: 'Unsupported Media Type',
+  418: "I'm a Teapot",
+  422: 'Unprocessable Content',
+  429: 'Too Many Requests',
+  500: 'Internal Server Error',
+  501: 'Not Implemented',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+  504: 'Gateway Timeout',
+});
 const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'E2BIG',
   'EACCES',
@@ -679,6 +720,21 @@ interface RuntimeKernelHttpListenerRecord {
   info: RuntimeKernelHttpListenerInfo;
   handler: RuntimeKernelHttpHandler;
   actor: RuntimeWorkspaceActor;
+  ready: Promise<void>;
+  listenerFd?: number;
+  transportAddress?: { host: string; port: number };
+  closed: boolean;
+  listening: boolean;
+  readonly connectionControllers: Map<number, AbortController>;
+}
+
+interface RuntimeKernelHttpTcpDispatchContext {
+  readonly url: URL;
+  readonly actor: RuntimeWorkspaceActor;
+  readonly signal: AbortSignal;
+  readonly response: Promise<RuntimeKernelHttpResponse>;
+  resolve(response: RuntimeKernelHttpResponse): void;
+  reject(error: unknown): void;
 }
 
 interface RuntimeKernelHttpListenerOwner {
@@ -960,6 +1016,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
   private readonly kernelJournalLog: KernelJournalRecord[] = [];
   private readonly httpListeners = new Map<string, RuntimeKernelHttpListenerRecord>();
+  private readonly httpTcpDispatches = new Map<number, RuntimeKernelHttpTcpDispatchContext>();
   private readonly httpRequestLog: RuntimeKernelHttpRequestRecord[] = [];
   private readonly httpLifecycleAbortController = new AbortController();
   private readonly readonlyFiles = new Set<string>();
@@ -2250,35 +2307,275 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       protocol,
       startedAt: new Date().toISOString(),
     };
-    this.httpListeners.set(key, { info, handler, actor });
-    this.recordKernelEvent('net-listen', listenerOwner.pid, { id: info.id, protocol, host, port });
-    let closed = false;
+    const listener: RuntimeKernelHttpListenerRecord = {
+      info,
+      handler,
+      actor,
+      ready: Promise.resolve(),
+      closed: false,
+      listening: false,
+      connectionControllers: new Map(),
+    };
+    this.httpListeners.set(key, listener);
+    listener.ready = this.initializeHttpTcpListener(key, listener);
+    // Direct workspace consumers historically did not have to observe a
+    // readiness promise. Keep asynchronous bind failures available to callers
+    // without turning an intentionally ignored handle into an unhandled
+    // rejection.
+    void listener.ready.catch(() => undefined);
     return {
       id: info.id,
       info,
+      ready: listener.ready.then(() => info),
       close: () => {
-        if (closed) return;
-        closed = true;
-        const current = this.httpListeners.get(key);
-        if (current?.info.id === info.id) {
-          this.httpListeners.delete(key);
-          this.recordKernelEvent('net-close', info.pid, { id: info.id, protocol, host, port });
-        }
+        this.closeHttpListener(key, listener);
       },
     };
   }
 
-  private closeHttpListenersForProcess(pid: number): void {
-    for (const [key, listener] of this.httpListeners) {
-      if (listener.info.pid !== pid) continue;
-      this.httpListeners.delete(key);
-      this.recordKernelEvent('net-close', pid, {
+  private async initializeHttpTcpListener(
+    key: string,
+    listener: RuntimeKernelHttpListenerRecord
+  ): Promise<void> {
+    let fd: number | undefined;
+    try {
+      fd = await this.kernelNetwork.socket(listener.info.pid);
+      listener.listenerFd = fd;
+      if (listener.closed || this.httpListeners.get(key) !== listener) {
+        await this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+        listener.listenerFd = undefined;
+        return;
+      }
+      const localTransportHost =
+        listener.info.host === '127.0.0.1' || listener.info.host === '0.0.0.0';
+      listener.transportAddress = await this.kernelNetwork.bind(
+        listener.info.pid,
+        fd,
+        localTransportHost
+          ? { host: listener.info.host, port: listener.info.port }
+          : { host: '127.0.0.1', port: 0 }
+      );
+      await this.kernelNetwork.listen(listener.info.pid, fd, {
+        backlog: TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS,
+      });
+      if (listener.closed || this.httpListeners.get(key) !== listener) {
+        await this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+        listener.listenerFd = undefined;
+        listener.transportAddress = undefined;
+        return;
+      }
+      listener.listening = true;
+      this.recordKernelEvent('net-listen', listener.info.pid, {
+        id: listener.info.id,
+        protocol: listener.info.protocol,
+        host: listener.info.host,
+        port: listener.info.port,
+      });
+      void this.serveHttpTcpListener(listener).catch((error) => {
+        if (listener.closed) return;
+        this.recordKernelEvent('net-error', listener.info.pid, {
+          id: listener.info.id,
+          protocol: listener.info.protocol,
+          error: this.sanitizeHttpDiagnosticField(
+            error instanceof Error ? error.message : String(error)
+          ),
+        });
+      });
+    } catch (error) {
+      if (this.httpListeners.get(key) === listener) this.httpListeners.delete(key);
+      listener.closed = true;
+      if (fd !== undefined) {
+        await this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+      }
+      listener.listenerFd = undefined;
+      listener.transportAddress = undefined;
+      throw error;
+    }
+  }
+
+  private closeHttpListener(
+    key: string,
+    listener: RuntimeKernelHttpListenerRecord
+  ): void {
+    if (listener.closed) return;
+    listener.closed = true;
+    if (this.httpListeners.get(key) === listener) this.httpListeners.delete(key);
+    if (listener.listening) {
+      listener.listening = false;
+      this.recordKernelEvent('net-close', listener.info.pid, {
         id: listener.info.id,
         protocol: listener.info.protocol,
         host: listener.info.host,
         port: listener.info.port,
       });
     }
+    for (const [fd, controller] of listener.connectionControllers) {
+      if (!controller.signal.aborted) controller.abort();
+      void this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+    }
+    listener.connectionControllers.clear();
+    if (listener.listenerFd !== undefined) {
+      void this.kernelDescriptors
+        .close(listener.info.pid, listener.listenerFd)
+        .catch(() => undefined);
+    }
+  }
+
+  private async serveHttpTcpListener(
+    listener: RuntimeKernelHttpListenerRecord
+  ): Promise<void> {
+    const listenerFd = listener.listenerFd;
+    if (listenerFd === undefined) return;
+    while (!listener.closed) {
+      let accepted: Awaited<ReturnType<RuntimeKernelNetworkManager['accept']>>;
+      try {
+        accepted = await this.kernelNetwork.accept(listener.info.pid, listenerFd);
+      } catch (error) {
+        if (listener.closed) return;
+        throw error;
+      }
+      if (listener.closed) {
+        await this.kernelDescriptors
+          .close(listener.info.pid, accepted.fd)
+          .catch(() => undefined);
+        return;
+      }
+      const controller = new AbortController();
+      listener.connectionControllers.set(accepted.fd, controller);
+      void this.serveHttpTcpConnection(
+        listener,
+        accepted.fd,
+        accepted.remoteAddress.port,
+        controller
+      )
+        .catch((error) => {
+          if (listener.closed || controller.signal.aborted) return;
+          this.recordKernelEvent('net-error', listener.info.pid, {
+            id: listener.info.id,
+            protocol: listener.info.protocol,
+            error: this.sanitizeHttpDiagnosticField(
+              error instanceof Error ? error.message : String(error)
+            ),
+          });
+        })
+        .finally(() => {
+          listener.connectionControllers.delete(accepted.fd);
+          void this.kernelDescriptors
+            .close(listener.info.pid, accepted.fd)
+            .catch(() => undefined);
+        });
+    }
+  }
+
+  private httpTcpRequestUrl(
+    listener: RuntimeKernelHttpListenerRecord,
+    request: TraceKernelHttp1Request,
+    headers: Record<string, string> | undefined,
+    context: RuntimeKernelHttpTcpDispatchContext | undefined
+  ): string {
+    if (context) return new URL(request.target, context.url).toString();
+    const defaultAuthority = listener.info.port === 80
+      ? listener.info.host
+      : `${listener.info.host}:${listener.info.port}`;
+    const authority = headers?.host ?? defaultAuthority;
+    try {
+      return new URL(request.target, `http://${authority}/`).toString();
+    } catch {
+      return new URL(request.target, `http://${defaultAuthority}/`).toString();
+    }
+  }
+
+  private async serveHttpTcpConnection(
+    listener: RuntimeKernelHttpListenerRecord,
+    fd: number,
+    remotePort: number,
+    controller: AbortController
+  ): Promise<void> {
+    const context = this.httpTcpDispatches.get(remotePort);
+    const forwardAbort = (): void => {
+      if (!controller.signal.aborted) controller.abort(context?.signal.reason);
+    };
+    if (context) {
+      context.signal.addEventListener('abort', forwardAbort, { once: true });
+      if (context.signal.aborted) forwardAbort();
+    }
+    let response: RuntimeKernelHttpResponse;
+    try {
+      const decodedRequest = await this.readHttp1Message(
+        'request',
+        listener.info.pid,
+        fd
+      );
+      const headers = this.httpHeadersFromHttp1(decodedRequest.headers);
+      const body = decodedRequest.body.byteLength > 0
+        ? runtimeHttpBodyFromBytes(decodedRequest.body)
+        : {};
+      const request: RuntimeKernelHttpRequest = {
+        method: decodedRequest.method,
+        url: this.httpTcpRequestUrl(listener, decodedRequest, headers, context),
+        path: decodedRequest.target,
+        ...(headers ? { headers } : {}),
+        ...(decodedRequest.headers.length > 0
+          ? {
+              rawHeaders: decodedRequest.headers.map(
+                ({ name, value }): [string, string] => [name, value]
+              ),
+            }
+          : {}),
+        ...body,
+        signal: controller.signal,
+      };
+      try {
+        response = this.normalizeHttpResponse(await listener.handler(request));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        response = {
+          status: 500,
+          body: this.httpListenerErrorBody(
+            listener,
+            context?.actor ?? RUNTIME_ACTOR,
+            message
+          ),
+        };
+      }
+      context?.resolve(response);
+    } catch (error) {
+      context?.reject(error);
+      response = {
+        status: 400,
+        body: 'Bad Request\n',
+      };
+    } finally {
+      context?.signal.removeEventListener('abort', forwardAbort);
+    }
+
+    const responseBytes = encodeTraceKernelHttp1Response({
+      status: response.status,
+      statusText: TRACEKERNEL_HTTP_STATUS_TEXT[response.status] ?? '',
+      headers: this.http1Headers(response.rawHeaders, response.headers),
+      body: runtimeHttpResponseBytes(response),
+    }, this.traceKernelHttp1Limits());
+    await this.kernelDescriptors.write(
+      listener.info.pid,
+      undefined,
+      fd,
+      responseBytes
+    );
+    await this.kernelNetwork.shutdown(listener.info.pid, fd, 'write');
+  }
+
+  private closeHttpListenersForProcess(pid: number): void {
+    for (const [key, listener] of this.httpListeners) {
+      if (listener.info.pid !== pid) continue;
+      this.closeHttpListener(key, listener);
+    }
+  }
+
+  private closeAllHttpListeners(): void {
+    for (const [key, listener] of this.httpListeners) {
+      this.closeHttpListener(key, listener);
+    }
+    this.httpTcpDispatches.clear();
   }
 
   private findHttpListener(url: URL): RuntimeKernelHttpListenerRecord | undefined {
@@ -2290,6 +2587,194 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return this.isHttpWildcardConnectHost(host)
       ? this.httpListeners.get(this.httpListenerKey('0.0.0.0', port, 'http'))
       : undefined;
+  }
+
+  private traceKernelHttp1Limits(): {
+    maxStartLineBytes: number;
+    maxHeaderBytes: number;
+    maxHeaderCount: number;
+    maxBodyBytes: number;
+  } {
+    return {
+      maxStartLineBytes: 8 * 1024,
+      maxHeaderBytes: TRACEKERNEL_HTTP_MAX_HEADER_BYTES,
+      maxHeaderCount: TRACEKERNEL_HTTP_MAX_HEADER_COUNT,
+      maxBodyBytes: TRACEKERNEL_HTTP_MAX_BODY_BYTES,
+    };
+  }
+
+  private http1Headers(
+    rawHeaders: readonly [string, string][] | undefined,
+    headers: Record<string, string> | undefined
+  ): TraceKernelHttp1Header[] {
+    const entries = rawHeaders ?? Object.entries(headers ?? {});
+    return entries.map(([name, value]) => ({ name, value }));
+  }
+
+  private httpHeadersFromHttp1(
+    headers: readonly TraceKernelHttp1Header[]
+  ): Record<string, string> | undefined {
+    if (headers.length === 0) return undefined;
+    const normalized: Record<string, string> = {};
+    for (const header of headers) {
+      normalized[header.name.toLowerCase()] = header.value;
+    }
+    return normalized;
+  }
+
+  private readHttp1Message(
+    kind: 'request',
+    pid: number,
+    fd: number,
+    context?: RuntimeCommandExecutionContext
+  ): Promise<TraceKernelHttp1Request>;
+  private readHttp1Message(
+    kind: 'response',
+    pid: number,
+    fd: number,
+    context?: RuntimeCommandExecutionContext
+  ): Promise<TraceKernelHttp1Response>;
+  private async readHttp1Message(
+    kind: 'request' | 'response',
+    pid: number,
+    fd: number,
+    context?: RuntimeCommandExecutionContext
+  ): Promise<TraceKernelHttp1Message> {
+    const decoder = new TraceKernelHttp1Decoder(kind, this.traceKernelHttp1Limits());
+    while (true) {
+      const bytes = await this.kernelDescriptors.read(
+        pid,
+        context,
+        fd,
+        TRACEKERNEL_HTTP_TCP_READ_BYTES
+      );
+      if (bytes.byteLength === 0) {
+        return decoder.finish();
+      }
+      const message = decoder.push(bytes);
+      if (message) return message;
+    }
+  }
+
+  private async dispatchLocalHttpOverTcp(
+    listener: RuntimeKernelHttpListenerRecord,
+    request: RuntimeKernelHttpRequest,
+    url: URL,
+    actor: RuntimeWorkspaceActor,
+    handlerSignal: AbortSignal,
+    commandContext?: RuntimeCommandExecutionContext
+  ): Promise<RuntimeKernelHttpResponse> {
+    await listener.ready;
+    const transportAddress = listener.transportAddress;
+    if (listener.closed || listener.listenerFd === undefined || transportAddress === undefined) {
+      throw Object.assign(new Error('ECONNREFUSED: HTTP listener is closed'), {
+        code: 'ECONNREFUSED',
+      });
+    }
+
+    const clientPid = commandContext?.process.pid ?? 0;
+    let clientFd: number | undefined;
+    let clientPort: number | undefined;
+    let resolveControl!: (response: RuntimeKernelHttpResponse) => void;
+    let rejectControl!: (error: unknown) => void;
+    const controlResponse = new Promise<RuntimeKernelHttpResponse>((resolve, reject) => {
+      resolveControl = resolve;
+      rejectControl = reject;
+    });
+    void controlResponse.catch(() => undefined);
+    const dispatchContext: RuntimeKernelHttpTcpDispatchContext = {
+      url,
+      actor,
+      signal: handlerSignal,
+      response: controlResponse,
+      resolve: resolveControl,
+      reject: rejectControl,
+    };
+    const abortError = Object.assign(new Error('EINTR: HTTP request interrupted'), {
+      code: 'EINTR',
+    });
+    let abortReject: ((error: Error) => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      abortReject = reject;
+    });
+    const onAbort = (): void => {
+      if (clientFd !== undefined) {
+        void this.kernelDescriptors.close(clientPid, clientFd).catch(() => undefined);
+      }
+      abortReject?.(abortError);
+    };
+
+    try {
+      clientFd = await this.kernelNetwork.socket(clientPid);
+      const localAddress = await this.kernelNetwork.bind(clientPid, clientFd, {
+        host: '127.0.0.1',
+        port: 0,
+      });
+      clientPort = localAddress.port;
+      this.httpTcpDispatches.set(clientPort, dispatchContext);
+      await this.kernelNetwork.connect(clientPid, clientFd, {
+        host: transportAddress.host === '0.0.0.0'
+          ? '127.0.0.1'
+          : transportAddress.host,
+        port: transportAddress.port,
+      });
+
+      const requestHeaders = this.http1Headers(request.rawHeaders, request.headers);
+      if (!requestHeaders.some((header) => header.name.toLowerCase() === 'host')) {
+        requestHeaders.push({ name: 'Host', value: url.host });
+      }
+      const requestBytes = encodeTraceKernelHttp1Request({
+        method: request.method,
+        target: request.path,
+        headers: requestHeaders,
+        body: runtimeHttpRequestBytes(request),
+      }, this.traceKernelHttp1Limits());
+      await this.kernelDescriptors.write(
+        clientPid,
+        commandContext,
+        clientFd,
+        requestBytes
+      );
+      await this.kernelNetwork.shutdown(clientPid, clientFd, 'write');
+
+      handlerSignal.addEventListener('abort', onAbort, { once: true });
+      if (handlerSignal.aborted) onAbort();
+
+      const decodedResponse = await Promise.race([
+        this.readHttp1Message('response', clientPid, clientFd, commandContext),
+        aborted,
+      ]);
+      const control = await Promise.race([controlResponse, aborted]);
+      const decodedResponseHeaders = this.httpHeadersFromHttp1(decodedResponse.headers);
+      return {
+        status: decodedResponse.status,
+        ...(decodedResponseHeaders ? { headers: decodedResponseHeaders } : {}),
+        ...(decodedResponse.headers.length > 0
+          ? {
+              rawHeaders: decodedResponse.headers.map(
+                ({ name, value }): [string, string] => [name, value]
+              ),
+            }
+          : {}),
+        ...(decodedResponse.body.byteLength > 0
+          ? runtimeHttpBodyFromBytes(decodedResponse.body)
+          : {}),
+        ...(control.annotation !== undefined
+          ? { annotation: control.annotation }
+          : {}),
+      };
+    } finally {
+      handlerSignal.removeEventListener('abort', onAbort);
+      if (
+        clientPort !== undefined &&
+        this.httpTcpDispatches.get(clientPort) === dispatchContext
+      ) {
+        this.httpTcpDispatches.delete(clientPort);
+      }
+      if (clientFd !== undefined) {
+        await this.kernelDescriptors.close(clientPid, clientFd).catch(() => undefined);
+      }
+    }
   }
 
   private recordHttpRequest(entry: Omit<RuntimeKernelHttpRequestRecord, 'seq' | 'time'>): void {
@@ -2813,10 +3298,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.activeHttpRequests += 1;
     const response = await this.runHttpDispatchWithAbortRace(options, timeoutMs, async (handlerSignal) => {
       try {
-        const response = this.normalizeHttpResponse(await listener.handler({
-          ...normalizedRequest,
-          signal: handlerSignal,
-        }));
+        const response = await this.dispatchLocalHttpOverTcp(
+          listener,
+          normalizedRequest,
+          url,
+          actor,
+          handlerSignal,
+          options.commandContext
+        );
         const status = response.status;
         if (!settled) {
           this.recordHttpRequest({
@@ -2834,6 +3323,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           });
           this.recordHttpJournal(normalizedRequest, url, 'listener', actor, options.commandContext, {
             status,
+            ...(listener.actor.kind !== 'runtime' && response.annotation !== undefined
+              ? { annotation: response.annotation }
+              : {}),
             response,
           });
         }
@@ -7326,7 +7818,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     await this.withSuspendedReadonlyPolicy(() =>
       this.fs.withBaseMutation([this.cwd], (fs) => fs.rm(this.cwd, { force: true, recursive: true }), 'recursive-delete')
     );
-    this.httpListeners.clear();
+    this.closeAllHttpListeners();
     if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
@@ -7616,7 +8108,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   dispose(): void {
     if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
-    this.httpListeners.clear();
+    this.closeAllHttpListeners();
     this.eventWatchers.clear();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
