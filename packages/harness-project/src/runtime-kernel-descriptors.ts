@@ -1,7 +1,10 @@
-import type {
-  TraceKernelOpenFileOptions,
-  TraceKernelStat,
+import {
+  TraceKernelDescriptorTable,
+  type TraceKernelDescriptor,
+  type TraceKernelOpenFileOptions,
+  type TraceKernelStat,
 } from '@tracecode/tracekernel';
+import { Effect } from 'effect';
 import type {
   KernelObservedFileSystem,
   RuntimeCommandExecutionContext,
@@ -31,11 +34,6 @@ interface RuntimeKernelOpenFileDescription {
   closed: boolean;
 }
 
-interface RuntimeKernelDescriptorTable {
-  nextFd: number;
-  readonly descriptors: Map<number, RuntimeKernelOpenFileDescription>;
-}
-
 function descriptorError(
   code: 'EACCES' | 'EBADF' | 'EEXIST' | 'EISDIR' | 'EINVAL' | 'ENOENT',
   message: string
@@ -61,7 +59,7 @@ function timestamp(stat: { mtime?: Date }): number {
  * language runtime.
  */
 export class RuntimeKernelDescriptorManager {
-  private readonly tables = new Map<number, RuntimeKernelDescriptorTable>();
+  private readonly tables = new Map<number, TraceKernelDescriptorTable>();
   private readonly nodes = new Map<number, RuntimeKernelOpenFileNode>();
   private readonly stopSnapshotting: () => void;
   private openTail: Promise<void> = Promise.resolve();
@@ -155,26 +153,38 @@ export class RuntimeKernelDescriptorManager {
       references: 1,
       closed: false,
     };
-    const table = this.table(pid);
-    const fd = table.nextFd++;
-    table.descriptors.set(fd, description);
-    return fd;
+    return this.tableForProcess(pid).install(
+      this.fileDescriptor(context, description)
+    );
   }
 
   read(
     pid: number,
-    context: RuntimeCommandExecutionContext | undefined,
+    _context: RuntimeCommandExecutionContext | undefined,
     fd: number,
     maxBytes: number,
     position?: number
   ): Promise<Uint8Array> {
-    const description = this.description(pid, fd, 'read');
+    return this.descriptor(pid, fd, 'read').then((descriptor) => {
+      if (!descriptor.read) {
+        throw descriptorError('EBADF', `descriptor ${fd} is not readable`);
+      }
+      return Effect.runPromise(descriptor.read(maxBytes, position));
+    });
+  }
+
+  private readDescription(
+    context: RuntimeCommandExecutionContext | undefined,
+    description: RuntimeKernelOpenFileDescription,
+    maxBytes: number,
+    position?: number
+  ): Promise<Uint8Array> {
     const access = description.options.access ?? 'read';
     if (access === 'write') {
-      throw descriptorError('EBADF', `descriptor ${fd} is not readable`);
+      throw descriptorError('EBADF', 'descriptor is not readable');
     }
     return this.withNode(description.node, async () => {
-      this.assertDescriptionOpen(description, fd, 'read');
+      this.assertDescriptionOpen(description, 'read');
       await this.refreshNode(context, description.node);
       const start = position === undefined
         ? description.offset
@@ -188,18 +198,31 @@ export class RuntimeKernelDescriptorManager {
 
   write(
     pid: number,
-    context: RuntimeCommandExecutionContext | undefined,
+    _context: RuntimeCommandExecutionContext | undefined,
     fd: number,
     bytes: Uint8Array,
     position?: number
   ): Promise<number> {
-    const description = this.description(pid, fd, 'write');
+    return this.descriptor(pid, fd, 'write').then((descriptor) => {
+      if (!descriptor.write) {
+        throw descriptorError('EBADF', `descriptor ${fd} is not writable`);
+      }
+      return Effect.runPromise(descriptor.write(bytes, position));
+    });
+  }
+
+  private writeDescription(
+    context: RuntimeCommandExecutionContext | undefined,
+    description: RuntimeKernelOpenFileDescription,
+    bytes: Uint8Array,
+    position?: number
+  ): Promise<number> {
     const access = description.options.access ?? 'read';
     if (access === 'read') {
-      throw descriptorError('EBADF', `descriptor ${fd} is not writable`);
+      throw descriptorError('EBADF', 'descriptor is not writable');
     }
     return this.withNode(description.node, async () => {
-      this.assertDescriptionOpen(description, fd, 'write');
+      this.assertDescriptionOpen(description, 'write');
       const node = description.node;
       await this.refreshNode(context, node);
       const payload = Uint8Array.from(bytes);
@@ -220,12 +243,23 @@ export class RuntimeKernelDescriptorManager {
 
   fstat(
     pid: number,
-    context: RuntimeCommandExecutionContext | undefined,
+    _context: RuntimeCommandExecutionContext | undefined,
     fd: number
   ): Promise<TraceKernelStat> {
-    const description = this.description(pid, fd, 'fstat');
+    return this.descriptor(pid, fd, 'fstat').then((descriptor) => {
+      if (!descriptor.stat) {
+        throw descriptorError('EBADF', `descriptor ${fd} does not support fstat`);
+      }
+      return Effect.runPromise(descriptor.stat());
+    });
+  }
+
+  private fstatDescription(
+    context: RuntimeCommandExecutionContext | undefined,
+    description: RuntimeKernelOpenFileDescription
+  ): Promise<TraceKernelStat> {
     return this.withNode(description.node, async () => {
-      this.assertDescriptionOpen(description, fd, 'fstat');
+      this.assertDescriptionOpen(description, 'fstat');
       const node = description.node;
       await this.refreshNode(context, node);
       return Object.freeze({
@@ -247,20 +281,32 @@ export class RuntimeKernelDescriptorManager {
 
   ftruncate(
     pid: number,
-    context: RuntimeCommandExecutionContext | undefined,
+    _context: RuntimeCommandExecutionContext | undefined,
     fd: number,
     length: number
   ): Promise<void> {
-    const description = this.description(pid, fd, 'ftruncate');
+    return this.descriptor(pid, fd, 'ftruncate').then((descriptor) => {
+      if (!descriptor.truncate) {
+        throw descriptorError('EBADF', `descriptor ${fd} does not support ftruncate`);
+      }
+      return Effect.runPromise(descriptor.truncate(length));
+    });
+  }
+
+  private ftruncateDescription(
+    context: RuntimeCommandExecutionContext | undefined,
+    description: RuntimeKernelOpenFileDescription,
+    length: number
+  ): Promise<void> {
     const access = description.options.access ?? 'read';
     if (access === 'read') {
-      throw descriptorError('EBADF', `descriptor ${fd} is not writable`);
+      throw descriptorError('EBADF', 'descriptor is not writable');
     }
     if (!Number.isSafeInteger(length) || length < 0) {
       throw descriptorError('EINVAL', `invalid ftruncate length ${length}`);
     }
     return this.withNode(description.node, async () => {
-      this.assertDescriptionOpen(description, fd, 'ftruncate');
+      this.assertDescriptionOpen(description, 'ftruncate');
       const node = description.node;
       await this.refreshNode(context, node);
       const next = new Uint8Array(length);
@@ -270,70 +316,106 @@ export class RuntimeKernelDescriptorManager {
     });
   }
 
-  dup(pid: number, fd: number): number {
-    const description = this.description(pid, fd, 'dup');
-    this.assertDescriptionOpen(description, fd, 'dup');
-    description.references += 1;
-    const table = this.table(pid);
-    const duplicateFd = table.nextFd++;
-    table.descriptors.set(duplicateFd, description);
-    return duplicateFd;
+  dup(pid: number, fd: number): Promise<number> {
+    return Effect.runPromise(this.existingTable(pid, fd, 'dup').dup(fd));
   }
 
-  close(pid: number, fd: number): void {
-    const table = this.tables.get(pid);
-    const description = table?.descriptors.get(fd);
-    if (!table || !description) {
-      throw descriptorError('EBADF', `bad file descriptor, close ${fd}`);
-    }
-    table.descriptors.delete(fd);
-    this.release(description);
-    if (table.descriptors.size === 0) this.tables.delete(pid);
+  async close(pid: number, fd: number): Promise<void> {
+    const table = this.existingTable(pid, fd, 'close');
+    await Effect.runPromise(table.close(fd));
+    if (table.snapshots().length === 0) this.tables.delete(pid);
   }
 
-  closeProcess(pid: number): void {
+  async closeProcess(pid: number): Promise<void> {
     const table = this.tables.get(pid);
     if (!table) return;
     this.tables.delete(pid);
-    for (const description of table.descriptors.values()) this.release(description);
-    table.descriptors.clear();
+    await Effect.runPromise(table.closeAll());
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.stopSnapshotting();
-    for (const pid of [...this.tables.keys()]) this.closeProcess(pid);
+    await Promise.all([...this.tables.keys()].map((pid) => this.closeProcess(pid)));
     this.nodes.clear();
   }
 
-  private table(pid: number): RuntimeKernelDescriptorTable {
+  tableForProcess(pid: number): TraceKernelDescriptorTable {
     let table = this.tables.get(pid);
     if (!table) {
-      table = { nextFd: 3, descriptors: new Map() };
+      table = new TraceKernelDescriptorTable();
       this.tables.set(pid, table);
     }
     return table;
   }
 
-  private description(
+  install(pid: number, descriptor: TraceKernelDescriptor): number {
+    return this.tableForProcess(pid).install(descriptor);
+  }
+
+  descriptor(
     pid: number,
     fd: number,
     operation: string
-  ): RuntimeKernelOpenFileDescription {
-    const description = this.tables.get(pid)?.descriptors.get(fd);
-    if (!description) {
+  ): Promise<TraceKernelDescriptor> {
+    return Effect.runPromise(this.existingTable(pid, fd, operation).lookup(fd));
+  }
+
+  private existingTable(
+    pid: number,
+    fd: number,
+    operation: string
+  ): TraceKernelDescriptorTable {
+    const table = this.tables.get(pid);
+    if (!table || !table.snapshots().some((snapshot) => snapshot.fd === fd)) {
       throw descriptorError('EBADF', `bad file descriptor, ${operation} ${fd}`);
     }
-    return description;
+    return table;
   }
 
   private assertDescriptionOpen(
     description: RuntimeKernelOpenFileDescription,
-    fd: number,
     operation: string
   ): void {
     if (description.closed) {
-      throw descriptorError('EBADF', `bad file descriptor, ${operation} ${fd}`);
+      throw descriptorError('EBADF', `bad file descriptor, ${operation}`);
     }
+  }
+
+  private fileDescriptor(
+    context: RuntimeCommandExecutionContext | undefined,
+    description: RuntimeKernelOpenFileDescription
+  ): TraceKernelDescriptor {
+    const attemptPromise = <A>(operation: () => Promise<A>) =>
+      Effect.tryPromise({
+        try: operation,
+        catch: (error) => error instanceof Error ? error : new Error(String(error)),
+      });
+    return {
+      kind: 'file',
+      resourceId: `workspace-file-${description.node.inode}`,
+      resource: description,
+      read: (maxBytes, position) => attemptPromise(
+        () => this.readDescription(context, description, maxBytes, position)
+      ),
+      write: (bytes, position) => attemptPromise(
+        () => this.writeDescription(context, description, bytes, position)
+      ),
+      stat: () => attemptPromise(
+        () => this.fstatDescription(context, description)
+      ),
+      truncate: (length) => attemptPromise(
+        () => this.ftruncateDescription(context, description, length)
+      ),
+      duplicate: () => Effect.try({
+        try: () => {
+          this.assertDescriptionOpen(description, 'dup');
+          description.references += 1;
+          return this.fileDescriptor(context, description);
+        },
+        catch: (error) => error instanceof Error ? error : new Error(String(error)),
+      }),
+      close: () => Effect.sync(() => this.release(description)),
+    };
   }
 
   private release(description: RuntimeKernelOpenFileDescription): void {

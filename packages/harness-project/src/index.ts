@@ -1430,10 +1430,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           return { ok: true, value: { op: 'write', bytesWritten } };
         }
         case 'close':
-          this.kernelDescriptors.close(context?.process.pid ?? 0, request.fd);
+          await this.kernelDescriptors.close(context?.process.pid ?? 0, request.fd);
           return { ok: true, value: { op: 'close' } };
         case 'dup': {
-          const fd = this.kernelDescriptors.dup(
+          const fd = await this.kernelDescriptors.dup(
             context?.process.pid ?? 0,
             request.fd
           );
@@ -6866,9 +6866,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         };
       }
       throw error;
-    }).finally(() => {
+    }).finally(async () => {
       this.closeHttpListenersForProcess(process.pid);
-      this.kernelDescriptors.closeProcess(process.pid);
+      await this.kernelDescriptors.closeProcess(process.pid);
       cleanupExternalSignal?.();
       const retainProcessOnExit = process.signal || options.retainOnExit === true;
       process.state = retainProcessOnExit ? 'zombie' : 'exited';
@@ -7222,7 +7222,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
-    this.kernelDescriptors.dispose();
+    await this.kernelDescriptors.dispose();
     this.processTable.clear();
     this.zombieProcessTable.clear();
     this.processWaiters.clear();
@@ -7511,7 +7511,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.eventWatchers.clear();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
-    this.kernelDescriptors.dispose();
+    void this.kernelDescriptors.dispose();
     // Native/just-bash workspaces currently own no external resources.
   }
 
@@ -7665,7 +7665,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         for (const child of this.activeProcessRecords()) {
           if (child.ppid === process.pid) this.signalProcess(child, 'SIGTERM', 'system');
         }
-        this.kernelDescriptors.closeProcess(process.pid);
+        void this.kernelDescriptors.closeProcess(process.pid);
         this.processTable.delete(process.pid);
         process.state = 'exited';
         process.exitCode = 0;
