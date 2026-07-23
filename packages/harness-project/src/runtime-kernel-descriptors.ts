@@ -4,7 +4,7 @@ import {
   type TraceKernelOpenFileOptions,
   type TraceKernelStat,
 } from '@tracecode/tracekernel';
-import { Effect } from 'effect';
+import * as Effect from 'effect/Effect';
 import type {
   KernelObservedFileSystem,
   RuntimeCommandExecutionContext,

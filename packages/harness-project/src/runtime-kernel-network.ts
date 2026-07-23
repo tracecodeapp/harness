@@ -8,7 +8,7 @@ import {
   type TraceKernelTcpListenOptions,
   type TraceKernelTcpShutdownHow,
 } from '@tracecode/tracekernel';
-import { Effect } from 'effect';
+import * as Effect from 'effect/Effect';
 
 export interface RuntimeKernelDescriptorRegistry {
   install(pid: number, descriptor: TraceKernelDescriptor): number;

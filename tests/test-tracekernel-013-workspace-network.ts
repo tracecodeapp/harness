@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
-import { Effect } from 'effect';
+import * as Effect from 'effect/Effect';
 import {
   TraceKernelDescriptorTable,
   type TraceKernelDescriptor,
