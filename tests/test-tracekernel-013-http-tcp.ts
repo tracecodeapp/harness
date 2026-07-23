@@ -9,6 +9,7 @@ import {
 } from '../packages/harness-project/src/index';
 import {
   encodeTraceKernelHttp1Request,
+  encodeTraceKernelHttp1Response,
   TraceKernelHttp1Decoder,
   type TraceKernelSyscallRequest,
   type TraceKernelSyscallResult,
@@ -32,6 +33,13 @@ function syscallValue(
 
 async function main(): Promise<void> {
   const workspace = await createRuntimeWorkspace();
+  const dispatch = (
+    workspace as unknown as {
+      dispatchRuntimeKernelSyscall(
+        request: TraceKernelSyscallRequest
+      ): Promise<TraceKernelSyscallResult>;
+    }
+  ).dispatchRuntimeKernelSyscall.bind(workspace);
   const observedPaths: string[] = [];
   let timeoutSignalAborted = false;
   const listener = workspace.http.listen(
@@ -147,14 +155,6 @@ async function main(): Promise<void> {
     );
     try {
       await rawListener.ready;
-      const dispatch = (
-        workspace as unknown as {
-          dispatchRuntimeKernelSyscall(
-            request: TraceKernelSyscallRequest
-          ): Promise<TraceKernelSyscallResult>;
-        }
-      ).dispatchRuntimeKernelSyscall.bind(workspace);
-
       const contender = syscallValue(await dispatch({ op: 'socket' }), 'socket');
       assertCondition(contender.op === 'socket', 'socket syscall returned the wrong value');
       const conflict = await dispatch({
@@ -209,6 +209,75 @@ async function main(): Promise<void> {
       rawListener.close();
     }
 
+    const rawServer = syscallValue(await dispatch({ op: 'socket' }), 'socket');
+    assertCondition(rawServer.op === 'socket', 'raw HTTP server socket was not created');
+    const rawServerAddress = syscallValue(
+      await dispatch({
+        op: 'bind',
+        fd: rawServer.fd,
+        address: { host: '127.0.0.1', port: 3864 },
+      }),
+      'bind'
+    );
+    assertCondition(rawServerAddress.op === 'bind', 'raw HTTP server did not bind');
+    await dispatch({ op: 'listen', fd: rawServer.fd, options: { backlog: 4 } });
+    try {
+      const rawClientResponse = workspace.http.request({
+        method: 'DELETE',
+        url: 'http://localhost:3864/from-structured',
+      });
+      const accepted = syscallValue(
+        await dispatch({ op: 'accept', fd: rawServer.fd }),
+        'accept'
+      );
+      assertCondition(accepted.op === 'accept', 'raw HTTP server did not accept');
+      const requestDecoder = new TraceKernelHttp1Decoder('request');
+      let decodedRequest: ReturnType<typeof requestDecoder.push> = null;
+      while (!decodedRequest) {
+        const received = syscallValue(
+          await dispatch({ op: 'recv', fd: accepted.fd, maxBytes: 5 }),
+          'recv'
+        );
+        assertCondition(received.op === 'recv', 'raw HTTP server recv failed');
+        decodedRequest = received.bytes.byteLength === 0
+          ? requestDecoder.finish()
+          : requestDecoder.push(received.bytes);
+      }
+      assertCondition(
+        decodedRequest.method === 'DELETE' &&
+          decodedRequest.target === '/from-structured',
+        `Structured client did not emit HTTP over raw TCP: ${JSON.stringify(decodedRequest)}`
+      );
+      const rawServerResponse = encodeTraceKernelHttp1Response({
+        status: 213,
+        statusText: '',
+        headers: [{ name: 'X-Raw-Server', value: 'yes' }],
+        body: new TextEncoder().encode('from-raw-server\n'),
+      });
+      await dispatch({ op: 'send', fd: accepted.fd, bytes: rawServerResponse });
+      await dispatch({ op: 'shutdown', fd: accepted.fd, how: 'write' });
+      const structuredResponse = await rawClientResponse;
+      assertCondition(
+        structuredResponse.status === 213 &&
+          structuredResponse.headers?.['x-raw-server'] === 'yes' &&
+          structuredResponse.body === 'from-raw-server\n',
+        `Structured HTTP client did not decode the raw TCP service: ${JSON.stringify(structuredResponse)}`
+      );
+      await dispatch({ op: 'close', fd: accepted.fd });
+      assertCondition(
+        workspace.journal().some(
+          (record) =>
+            record.kind === 'http' &&
+            record.path === '/from-structured' &&
+            record.via === 'loopback' &&
+            record.status === 213
+        ),
+        'Raw local HTTP traffic was not retained in the structured journal'
+      );
+    } finally {
+      await dispatch({ op: 'close', fd: rawServer.fd });
+    }
+
     const stalled = workspace.http.listen(
       { host: '127.0.0.1', port: 3862 },
       (request) =>
@@ -250,6 +319,7 @@ async function main(): Promise<void> {
       binaryBodies: true,
       logicalHosts: true,
       rawTcpClients: true,
+      structuredClientsToRawTcp: true,
       unifiedPortOwnership: true,
       annotations: true,
       cancellation: true,

@@ -463,6 +463,51 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'raw-http-server.js',
+              contents: [
+                'const net = require("node:net");',
+                'const server = net.createServer((socket) => {',
+                '  let request = "";',
+                '  socket.setEncoding("utf8");',
+                '  socket.on("data", (chunk) => {',
+                '    request += chunk;',
+                '    if (!request.includes("\\r\\n\\r\\n")) return;',
+                '    const body = "raw-server:" + request.split("\\r\\n", 1)[0];',
+                '    socket.end("HTTP/1.1 212 \\r\\nX-Raw-Server: yes\\r\\nContent-Length: " + body.length + "\\r\\n\\r\\n" + body);',
+                '    server.close();',
+                '  });',
+                '});',
+                'server.on("error", (error) => { throw error; });',
+                'server.listen(41237, "127.0.0.1", () => {',
+                '  console.log("raw-http-server:listening");',
+                '});',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'node-http-client.js',
+              contents: [
+                'const http = require("node:http");',
+                'const request = http.request({',
+                '  hostname: "127.0.0.1",',
+                '  port: 41237,',
+                '  method: "PUT",',
+                '  path: "/from-http",',
+                '  headers: { "X-Node-Http": "yes" },',
+                '}, (response) => {',
+                '  let body = "";',
+                '  response.setEncoding("utf8");',
+                '  response.on("data", (chunk) => { body += chunk; });',
+                '  response.on("end", () => {',
+                '    console.log("node-http-client:response:" + response.statusCode + ":" + response.headers["x-raw-server"] + ":" + body);',
+                '  });',
+                '});',
+                'request.on("error", (error) => { throw error; });',
+                'request.end();',
+                '',
+              ].join('\n'),
+            },
             { path: 'host-cycle.txt', contents: 'before-host-cycle' },
             {
               path: 'host-cycle-reader.js',
@@ -627,6 +672,32 @@ async function main(): Promise<void> {
           ]);
           const httpRawClient = await workspace.runCommand('node http-raw-client.js');
           const httpServerResult = await httpServer;
+          let markRawHttpServerStarted!: () => void;
+          const rawHttpServerStarted = new Promise<void>((resolvePromise) => {
+            markRawHttpServerStarted = resolvePromise;
+          });
+          const rawHttpServer = workspace.runCommand('node raw-http-server.js', {
+            onEvent(event: { type: string; stream?: string; data?: string }) {
+              if (
+                event.type === 'output' &&
+                event.stream === 'stdout' &&
+                event.data?.includes('raw-http-server:listening')
+              ) {
+                markRawHttpServerStarted();
+              }
+            },
+          });
+          await Promise.race([
+            rawHttpServerStarted,
+            rawHttpServer.then((command: unknown) => {
+              throw new Error(`Raw HTTP server exited before listening: ${JSON.stringify(command)}`);
+            }),
+            new Promise<never>((_resolve, reject) => {
+              setTimeout(() => reject(new Error('Raw HTTP server did not start')), 10_000);
+            }),
+          ]);
+          const nodeHttpClient = await workspace.runCommand('node node-http-client.js');
+          const rawHttpServerResult = await rawHttpServer;
           let markHostCycleReaderStarted!: () => void;
           const hostCycleReaderStarted = new Promise<void>((resolvePromise) => {
             markHostCycleReaderStarted = resolvePromise;
@@ -699,6 +770,8 @@ async function main(): Promise<void> {
             tcpClient,
             httpServer: httpServerResult,
             httpRawClient,
+            rawHttpServer: rawHttpServerResult,
+            nodeHttpClient,
             hostCycleReader: hostCycleReaderResult,
             javascript,
             descriptors,
@@ -768,6 +841,14 @@ async function main(): Promise<void> {
           result.httpRawClient.stdout.includes('X-TraceKernel-Transport: tcp') &&
           result.httpRawClient.stdout.includes('http:POST:/from-net:ping'),
         `A raw node:net client did not reach node:http over TraceKernel TCP: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.rawHttpServer.exitCode === 0 &&
+          result.nodeHttpClient.exitCode === 0 &&
+          result.nodeHttpClient.stdout.includes(
+            'node-http-client:response:212:yes:raw-server:PUT /from-http HTTP/1.1'
+          ),
+        `A node:http client did not reach a raw node:net HTTP server: ${JSON.stringify(result)}`
       );
       assertCondition(
         result.descriptors.exitCode === 0 &&
@@ -849,6 +930,7 @@ async function main(): Promise<void> {
           'bidirectional-stream',
           'cross-process-half-close',
           'node:http-over-raw-tcp',
+          'node:http-client-to-raw-tcp',
         ],
         adapters: ['javascript', 'typescript-emitted-javascript'],
         hostCapabilityEnforcement: true,

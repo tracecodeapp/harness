@@ -244,6 +244,14 @@ Graceful listener close stops new accepts but drains already-accepted
 connections; process exit and session teardown force-close them and abort their
 handler signals.
 
+The path is bidirectional: when a structured local HTTP client finds no
+structured listener record, it connects to the advertised loopback TCP port
+and speaks the same bounded HTTP/1.1 framing. This lets `node:http`, `fetch`,
+curl, and host workspace requests call a raw `node:net` HTTP service. Successful
+traffic and transport failures still enter the HTTP journal with `loopback`
+provenance; trusted grading metadata remains available only on the structured
+control-plane path.
+
 Host-side capabilities, scenario services, journals, and graders remain the
 control plane. A short-lived correlation record associates a structured
 client's ephemeral source port with its trusted actor, abort signal, logical

@@ -2678,6 +2678,97 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
   }
 
+  private runtimeHttpResponseFromHttp1(
+    response: TraceKernelHttp1Response
+  ): RuntimeKernelHttpResponse {
+    const headers = this.httpHeadersFromHttp1(response.headers);
+    return {
+      status: response.status,
+      ...(headers ? { headers } : {}),
+      ...(response.headers.length > 0
+        ? {
+            rawHeaders: response.headers.map(
+              ({ name, value }): [string, string] => [name, value]
+            ),
+          }
+        : {}),
+      ...(response.body.byteLength > 0
+        ? runtimeHttpBodyFromBytes(response.body)
+        : {}),
+    };
+  }
+
+  private isLocalTcpHttpTarget(url: URL): boolean {
+    if (url.protocol !== 'http:') return false;
+    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '0.0.0.0';
+  }
+
+  private async dispatchUnmanagedHttpOverTcp(
+    request: RuntimeKernelHttpRequest,
+    url: URL,
+    signal: AbortSignal,
+    commandContext?: RuntimeCommandExecutionContext
+  ): Promise<RuntimeKernelHttpResponse> {
+    const pid = commandContext?.process.pid ?? 0;
+    let fd: number | undefined;
+    let abortReject: ((error: Error) => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      abortReject = reject;
+    });
+    const abortError = Object.assign(new Error('EINTR: HTTP request interrupted'), {
+      code: 'EINTR',
+    });
+    const onAbort = (): void => {
+      if (fd !== undefined) {
+        void this.kernelDescriptors.close(pid, fd).catch(() => undefined);
+      }
+      abortReject?.(abortError);
+    };
+    try {
+      fd = await this.kernelNetwork.socket(pid);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      await Promise.race([
+        this.kernelNetwork.connect(pid, fd, {
+          host: this.normalizeHttpConnectHost(url.hostname),
+          port: this.normalizeHttpConnectPort(url.port ? Number(url.port) : 80),
+        }),
+        aborted,
+      ]);
+      const headers = this.http1Headers(request.rawHeaders, request.headers);
+      if (!headers.some((header) => header.name.toLowerCase() === 'host')) {
+        headers.push({ name: 'Host', value: url.host });
+      }
+      const bytes = encodeTraceKernelHttp1Request({
+        method: request.method,
+        target: request.path,
+        headers,
+        body: runtimeHttpRequestBytes(request),
+      }, this.traceKernelHttp1Limits());
+      await Promise.race([
+        this.kernelDescriptors.write(pid, commandContext, fd, bytes),
+        aborted,
+      ]);
+      await Promise.race([
+        this.kernelNetwork.shutdown(pid, fd, 'write'),
+        aborted,
+      ]);
+      const response = await Promise.race([
+        this.readHttp1Message('response', pid, fd, commandContext),
+        aborted,
+      ]);
+      return this.runtimeHttpResponseFromHttp1(response);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+      if (fd !== undefined) {
+        await this.kernelDescriptors.close(pid, fd).catch(() => undefined);
+      }
+    }
+  }
+
   private async dispatchLocalHttpOverTcp(
     listener: RuntimeKernelHttpListenerRecord,
     request: RuntimeKernelHttpRequest,
@@ -2767,20 +2858,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         aborted,
       ]);
       const control = await Promise.race([controlResponse, aborted]);
-      const decodedResponseHeaders = this.httpHeadersFromHttp1(decodedResponse.headers);
       return {
-        status: decodedResponse.status,
-        ...(decodedResponseHeaders ? { headers: decodedResponseHeaders } : {}),
-        ...(decodedResponse.headers.length > 0
-          ? {
-              rawHeaders: decodedResponse.headers.map(
-                ({ name, value }): [string, string] => [name, value]
-              ),
-            }
-          : {}),
-        ...(decodedResponse.body.byteLength > 0
-          ? runtimeHttpBodyFromBytes(decodedResponse.body)
-          : {}),
+        ...this.runtimeHttpResponseFromHttp1(decodedResponse),
         ...(control.annotation !== undefined
           ? { annotation: control.annotation }
           : {}),
@@ -3185,6 +3264,126 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return response;
   }
 
+  private async dispatchUnmanagedLocalHttpRequest(
+    normalizedRequest: RuntimeKernelHttpRequest,
+    url: URL,
+    actor: RuntimeWorkspaceActor,
+    options: RuntimeKernelHttpDispatchOptions & {
+      timeoutBody?: string;
+      commandContext?: RuntimeCommandExecutionContext;
+    }
+  ): Promise<RuntimeKernelHttpResponse> {
+    if (this.activeHttpRequests >= TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS) {
+      return {
+        status: 503,
+        body: 'Resource temporarily unavailable\n',
+        error: this.createHttpError('EAGAIN', 'Resource temporarily unavailable'),
+      };
+    }
+    const timeoutMs = options.timeoutMs === undefined
+      ? undefined
+      : Math.max(1, Math.ceil(Number(options.timeoutMs)));
+    if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) {
+      return this.httpErrorResponse(
+        400,
+        this.createHttpError('EINVAL', `EINVAL: invalid network timeout: ${options.timeoutMs}`)
+      );
+    }
+    if (options.signal?.aborted) {
+      return {
+        status: 0,
+        body: 'Network request aborted\n',
+        error: this.createHttpError('EINTR', 'Network request aborted'),
+      };
+    }
+
+    let settled = false;
+    const recordFailure = (error: string): void => {
+      if (settled) return;
+      settled = true;
+      this.recordHttpRequest({
+        method: normalizedRequest.method,
+        url: normalizedRequest.url,
+        error,
+      });
+      this.recordHttpJournal(
+        normalizedRequest,
+        url,
+        'loopback',
+        actor,
+        options.commandContext,
+        { error }
+      );
+    };
+    const settleFailure = (error: string, body: string): RuntimeKernelHttpResponse => {
+      recordFailure(error);
+      return {
+        status: 0,
+        body,
+        error: this.createHttpError(error, body.trim()),
+      };
+    };
+
+    this.activeHttpRequests += 1;
+    const response = await this.runHttpDispatchWithAbortRace(
+      options,
+      timeoutMs,
+      async (signal) => {
+        try {
+          const rawResponse = await this.dispatchUnmanagedHttpOverTcp(
+            normalizedRequest,
+            url,
+            signal,
+            options.commandContext
+          );
+          if (!settled) {
+            settled = true;
+            this.recordHttpRequest({
+              method: normalizedRequest.method,
+              url: normalizedRequest.url,
+              status: rawResponse.status,
+            });
+            this.recordKernelEvent('net-request', options.commandContext?.process.pid, {
+              protocol: 'http',
+              method: normalizedRequest.method,
+              url: redactRuntimeDiagnosticUrl(normalizedRequest.url),
+              status: rawResponse.status,
+              transport: 'tcp',
+            });
+            this.recordHttpJournal(
+              normalizedRequest,
+              url,
+              'loopback',
+              actor,
+              options.commandContext,
+              { status: rawResponse.status, response: rawResponse }
+            );
+          }
+          return rawResponse;
+        } catch (error) {
+          const failure = this.runtimeKernelSyscallFailure(error);
+          const rawCode = failure.ok ? 'EIO' : failure.error.code;
+          const code = rawCode === 'ECONNREFUSED'
+            ? rawCode
+            : 'ECONNRESET';
+          const port = url.port || '80';
+          const body = code === 'ECONNREFUSED'
+            ? `curl: (7) Failed to connect to ${url.hostname} port ${port}: Connection refused\n`
+            : `connect ${code} ${url.hostname}:${port}\n`;
+          return settleFailure(code, body);
+        } finally {
+          this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
+        }
+      },
+      settleFailure,
+      () => {
+        this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
+      }
+    );
+    settled = true;
+    return response;
+  }
+
   private async dispatchHttpRequest(
     request: RuntimeKernelHttpRequest,
     options: RuntimeKernelHttpDispatchOptions & {
@@ -3246,6 +3445,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       };
     }
     if (!listener) {
+      if (this.isLocalTcpHttpTarget(url)) {
+        return this.dispatchUnmanagedLocalHttpRequest(
+          normalizedRequest,
+          url,
+          actor,
+          options
+        );
+      }
       if (this.externalHttp) {
         return this.dispatchExternalHttpRequest(this.externalHttp, normalizedRequest, url, actor, options);
       }
