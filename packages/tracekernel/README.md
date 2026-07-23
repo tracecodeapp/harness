@@ -23,3 +23,9 @@ socket descriptors, port bindings, listener backlogs, duplex streams,
 half-closes, and teardown are kernel-owned. Existing structured HTTP adapters
 are intentionally still separate until they can be migrated onto the byte
 stream model with protocol conformance coverage.
+
+The browser JavaScript integration now maps the foundational event-driven
+`node:net` server/client surface onto those syscalls. It uses an asynchronous
+MessagePort request path for blocking socket operations while synchronous
+filesystem APIs retain the SharedArrayBuffer path; both transports terminate at
+the same host-owned syscall dispatcher.

@@ -390,6 +390,41 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'tcp-server.js',
+              contents: [
+                'const net = require("node:net");',
+                'const server = net.createServer((socket) => {',
+                '  socket.setEncoding("utf8");',
+                '  socket.on("data", (chunk) => {',
+                '    socket.end("echo:" + chunk);',
+                '    server.close();',
+                '  });',
+                '});',
+                'server.on("error", (error) => { throw error; });',
+                'server.listen(41234, "127.0.0.1", () => {',
+                '  console.log("tcp-server:listening");',
+                '});',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'tcp-client.js',
+              contents: [
+                'const net = require("node:net");',
+                'let response = "";',
+                'const socket = net.connect(41234, "127.0.0.1", () => {',
+                '  socket.end("ping");',
+                '});',
+                'socket.setEncoding("utf8");',
+                'socket.on("data", (chunk) => { response += chunk; });',
+                'socket.on("end", () => {',
+                '  console.log("tcp-client:response:" + response);',
+                '});',
+                'socket.on("error", (error) => { throw error; });',
+                '',
+              ].join('\n'),
+            },
             { path: 'host-cycle.txt', contents: 'before-host-cycle' },
             {
               path: 'host-cycle-reader.js',
@@ -502,6 +537,32 @@ async function main(): Promise<void> {
           ]);
           const namespaceWriter = await workspace.runCommand('node namespace-writer.js');
           const namespaceReaderResult = await namespaceReader;
+          let markTcpServerStarted!: () => void;
+          const tcpServerStarted = new Promise<void>((resolvePromise) => {
+            markTcpServerStarted = resolvePromise;
+          });
+          const tcpServer = workspace.runCommand('node tcp-server.js', {
+            onEvent(event: { type: string; stream?: string; data?: string }) {
+              if (
+                event.type === 'output' &&
+                event.stream === 'stdout' &&
+                event.data?.includes('tcp-server:listening')
+              ) {
+                markTcpServerStarted();
+              }
+            },
+          });
+          await Promise.race([
+            tcpServerStarted,
+            tcpServer.then((command: unknown) => {
+              throw new Error(`TCP server exited before listening: ${JSON.stringify(command)}`);
+            }),
+            new Promise<never>((_resolve, reject) => {
+              setTimeout(() => reject(new Error('TCP server did not start')), 10_000);
+            }),
+          ]);
+          const tcpClient = await workspace.runCommand('node tcp-client.js');
+          const tcpServerResult = await tcpServer;
           let markHostCycleReaderStarted!: () => void;
           const hostCycleReaderStarted = new Promise<void>((resolvePromise) => {
             markHostCycleReaderStarted = resolvePromise;
@@ -552,9 +613,13 @@ async function main(): Promise<void> {
             signalPolicy: 'system-only',
           });
           let restrictedWrite;
+          let restrictedListen;
           try {
             restrictedWrite = await restricted.runCommand(
               'node -e "require(\\\"node:fs\\\").writeFileSync(\\\"blocked.txt\\\", \\\"blocked\\\")"'
+            );
+            restrictedListen = await restricted.runCommand(
+              'node -e "require(\\\"node:net\\\").createServer().listen(41235, \\\"127.0.0.1\\\")"'
             );
           } finally {
             restricted.dispose();
@@ -566,12 +631,15 @@ async function main(): Promise<void> {
             descriptorWriter,
             namespaceReader: namespaceReaderResult,
             namespaceWriter,
+            tcpServer: tcpServerResult,
+            tcpClient,
             hostCycleReader: hostCycleReaderResult,
             javascript,
             descriptors,
             compile,
             typescript,
             restrictedWrite,
+            restrictedListen,
             blockedExists: await workspace.exists('blocked.txt'),
             shared: await workspace.readFile('shared.txt'),
             hostCycle: await workspace.readFile('host-cycle.txt'),
@@ -621,6 +689,13 @@ async function main(): Promise<void> {
         `An already-running worker did not observe peer namespace changes: ${JSON.stringify(result)}`
       );
       assertCondition(
+        result.tcpServer.exitCode === 0 &&
+          result.tcpClient.exitCode === 0 &&
+          result.tcpServer.stdout.includes('tcp-server:listening') &&
+          result.tcpClient.stdout.includes('tcp-client:response:echo:ping'),
+        `Cross-process node:net traffic did not traverse TraceKernel: ${JSON.stringify(result)}`
+      );
+      assertCondition(
         result.descriptors.exitCode === 0 &&
           result.descriptors.stdout.includes('"descriptorStatus":"pass"'),
         `JavaScript descriptor syscall conformance failed: ${JSON.stringify(result)}`
@@ -643,6 +718,11 @@ async function main(): Promise<void> {
           result.restrictedWrite.stderr.includes('EACCES') &&
           result.blockedExists === false,
         `The host syscall handler did not enforce actor write capabilities: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.restrictedListen.exitCode !== 0 &&
+          result.restrictedListen.stderr.includes('EACCES'),
+        `The async socket handler did not enforce actor listen capabilities: ${JSON.stringify(result)}`
       );
       assertCondition(
         browserErrors.length === 0,
@@ -688,6 +768,12 @@ async function main(): Promise<void> {
           'streams',
           'cross-worker-live-read',
           'cross-worker-namespace-visibility',
+        ],
+        networkOperations: [
+          'node:net-listen',
+          'node:net-connect',
+          'bidirectional-stream',
+          'cross-process-half-close',
         ],
         adapters: ['javascript', 'typescript-emitted-javascript'],
         hostCapabilityEnforcement: true,

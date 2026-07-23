@@ -448,6 +448,12 @@ export interface RuntimeKernelSyscallBridge {
     readonly byteCapacity: number;
   };
   readonly generationBuffer?: SharedArrayBuffer;
+  /**
+   * Asynchronous runtime operations use the command MessagePort so blocking
+   * kernel work never stalls the language worker's event loop. Requests and
+   * results are the plain TraceKernel syscall wire contract.
+   */
+  dispatch(request: unknown): Promise<unknown>;
   service(): Promise<void>;
   close(): void;
 }

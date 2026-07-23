@@ -16,6 +16,8 @@ import {
   TraceKernelRuntimeFileClient,
   TraceKernelSharedGenerationSource,
   TraceKernelSharedSyscallClient,
+  type TraceKernelSyscallRequest,
+  type TraceKernelSyscallResult,
 } from '@tracecode/tracekernel';
 import {
   runBrowserJavaScriptProjectRequest,
@@ -217,9 +219,58 @@ interface ActiveWorkerCommand {
   protocolToken: string;
   executionState: BrowserJavaScriptProjectExecutionState;
   syscallClient?: TraceKernelSharedSyscallClient;
+  asyncSyscallClient?: WorkerKernelAsyncSyscallClient;
 }
 
 const activeHttpBridges = new Map<string, ActiveWorkerCommand>();
+
+class WorkerKernelAsyncSyscallClient {
+  private nextRequestId = 1;
+  private closed = false;
+  private readonly pending = new Map<string, {
+    resolve: (result: TraceKernelSyscallResult) => void;
+    reject: (error: Error) => void;
+  }>();
+
+  constructor(
+    private readonly postProtocolMessage: (
+      requestId: string,
+      request: TraceKernelSyscallRequest
+    ) => void
+  ) {}
+
+  dispatch(request: TraceKernelSyscallRequest): Promise<TraceKernelSyscallResult> {
+    if (this.closed) {
+      return Promise.reject(
+        Object.assign(new Error('ECLOSED: async syscall client is closed'), {
+          code: 'ECLOSED',
+        })
+      );
+    }
+    const requestId = `async-syscall-${this.nextRequestId++}`;
+    return new Promise<TraceKernelSyscallResult>((resolve, reject) => {
+      this.pending.set(requestId, { resolve, reject });
+      this.postProtocolMessage(requestId, request);
+    });
+  }
+
+  resolve(requestId: string, result: TraceKernelSyscallResult): void {
+    const pending = this.pending.get(requestId);
+    this.pending.delete(requestId);
+    pending?.resolve(result);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    const error = Object.assign(
+      new Error('ECLOSED: async syscall client is closed'),
+      { code: 'ECLOSED' }
+    );
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
+  }
+}
 
 function postCommandMessage(
   postMessage: (message: WorkerMessage) => void,
@@ -247,6 +298,20 @@ function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
       command.executionState.cancelled = true;
       command.executionState.abortController.abort({ signal });
       command.executionState.cleanupHostGlobals?.();
+    }
+    return true;
+  }
+
+  if (type === 'kernel-syscall-async-result') {
+    const result = payload as {
+      requestId?: unknown;
+      result?: unknown;
+    };
+    if (typeof result.requestId === 'string') {
+      command.asyncSyscallClient?.resolve(
+        result.requestId,
+        result.result as TraceKernelSyscallResult
+      );
     }
     return true;
   }
@@ -340,6 +405,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     abortController: new AbortController(),
   };
   let syscallClient: TraceKernelSharedSyscallClient | undefined;
+  let asyncSyscallClient: WorkerKernelAsyncSyscallClient | undefined;
   if (kernelSyscallChannel) {
     syscallClient = new TraceKernelSharedSyscallClient(
       kernelSyscallChannel,
@@ -363,6 +429,16 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
           : {}),
       }
     ) satisfies BrowserTraceKernelFileSystem;
+    asyncSyscallClient = new WorkerKernelAsyncSyscallClient(
+      (requestId, request) => postCommandMessage(
+        postToHost,
+        id,
+        protocolToken,
+        'kernel-syscall-async',
+        { requestId, request }
+      )
+    );
+    executionState.kernelNetwork = asyncSyscallClient;
   }
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
     postCommandMessage(postToHost, id, protocolToken, message.type, message);
@@ -372,9 +448,11 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     protocolToken,
     executionState,
     ...(syscallClient ? { syscallClient } : {}),
+    ...(asyncSyscallClient ? { asyncSyscallClient } : {}),
   });
   const clearActiveCommand = (): void => {
     activeHttpBridges.get(id)?.syscallClient?.close();
+    activeHttpBridges.get(id)?.asyncSyscallClient?.close();
     activeHttpBridges.delete(id);
   };
 

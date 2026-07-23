@@ -615,10 +615,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectWorker.includes('activeHttpBridges.set(id, {') &&
           projectWorker.includes('new TraceKernelSharedSyscallClient(') &&
           projectWorker.includes('new TraceKernelRuntimeFileClient(') &&
+          projectWorker.includes('WorkerKernelAsyncSyscallClient = class') &&
+          projectWorker.includes('function createNetApi(') &&
+          projectWorker.includes('["node:net", netApi.module]') &&
           projectWorker.includes('"kernel-syscall"') &&
+          projectWorker.includes('"kernel-syscall-async"') &&
           projectWorker.includes('protocolToken !== command.protocolToken') &&
           projectWorker.includes('["node:http", httpApi.module]'),
-        '@tracecode/harness-javascript packaged project worker should include TraceKernel HTTP globals and node:http bridge'
+        '@tracecode/harness-javascript packaged project worker should include TraceKernel fs, node:net, and node:http bridges'
       );
     }
     if (packageCheck.name === '@tracecode/harness-java') {

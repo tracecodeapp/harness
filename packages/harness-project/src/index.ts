@@ -1366,6 +1366,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return {
       channel,
       ...(generationBuffer ? { generationBuffer } : {}),
+      dispatch: (request) => this.dispatchRuntimeKernelSyscall(
+        request as TraceKernelSyscallRequest,
+        context
+      ),
       service: () => server.servicePromise(),
       close: () => {
         if (closed) return;

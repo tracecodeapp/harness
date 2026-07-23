@@ -214,12 +214,23 @@ sockets in the same process descriptor table and routes all ten socket syscalls
 to one workspace-owned TraceKernel network namespace. Capability enforcement
 remains host-side: binding/listening requires the listen capability and
 connecting requires dispatch capability. This establishes the real product
-boundary before a language-specific socket module is exposed.
+boundary beneath language-specific socket modules.
+
+The browser JavaScript runtime exposes the first `node:net` adapter:
+`createServer`, `Server.listen`, `net.connect`/`createConnection`, duplex socket
+reads and writes, address inspection, half-close, and deterministic close.
+These event-driven calls use an asynchronous command-port syscall path so a
+blocked `accept` or `recv` does not stall the runtime worker. Synchronous file
+APIs continue to use the bounded SharedArrayBuffer transport. Both paths reach
+the same host dispatcher, process descriptor table, capability checks, and
+session network namespace. Cross-process browser conformance proves an echo
+exchange and half-close through two independently isolated runtime workers.
 
 Structured HTTP remains compatible and has not yet been routed onto this
 substrate. External arbitrary TCP remains unavailable in browser environments;
 allowed external HTTP remains a fetch-backed proxy. DNS beyond local aliases,
-UDP, TLS, and HTTP stream parsing remain later slices.
+UDP, TLS, HTTP stream parsing, Unix-domain sockets, and the remainder of Node's
+advanced `net` options remain later slices.
 
 ## Required invariants
 

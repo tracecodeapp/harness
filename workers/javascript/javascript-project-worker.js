@@ -6785,6 +6785,468 @@ function runtimeKernelFetchError(response, url) {
   const cause = runtimeKernelNetworkCause(response, url);
   return Object.assign(new TypeError("fetch failed"), { cause });
 }
+async function dispatchBrowserNetworkSyscall(kernelNetwork, request) {
+  if (!kernelNetwork) {
+    throw Object.assign(
+      new Error("ENOSYS: network subsystem is unavailable"),
+      { code: "ENOSYS" }
+    );
+  }
+  const result = await kernelNetwork.dispatch(request);
+  if (result.ok === false) {
+    throw Object.assign(new Error(result.error.message), {
+      code: result.error.code
+    });
+  }
+  return result.value;
+}
+function normalizeNetConnectArgs(args) {
+  const callback = args.find((value) => typeof value === "function");
+  const first = args[0];
+  if (typeof first === "object" && first !== null) {
+    const options = first;
+    return {
+      port: Number(options.port),
+      host: typeof options.host === "string" ? options.host : "127.0.0.1",
+      ...callback ? { callback } : {}
+    };
+  }
+  return {
+    port: Number(first),
+    host: typeof args[1] === "string" ? args[1] : "127.0.0.1",
+    ...callback ? { callback } : {}
+  };
+}
+function createNetApi(kernelNetwork, signal) {
+  const activeSockets = /* @__PURE__ */ new Set();
+  const activeServers = /* @__PURE__ */ new Set();
+  const closeWaiters = [];
+  let activeWorkError = null;
+  const notifyCloseWaiters = () => {
+    if (activeSockets.size > 0 || activeServers.size > 0) return;
+    while (closeWaiters.length > 0) {
+      const waiter = closeWaiters.shift();
+      if (!waiter) continue;
+      if (activeWorkError) waiter.reject(activeWorkError);
+      else waiter.resolve();
+    }
+  };
+  function createSocket(existingFd) {
+    const events = createListenerMap();
+    let fd2 = existingFd;
+    let destroyed = false;
+    let connected = false;
+    let readableEnded = false;
+    let writableEnded = false;
+    let paused = false;
+    let resumeReader;
+    let encoding;
+    let localAddress;
+    let remoteAddress;
+    let writeTail = Promise.resolve();
+    let onFinalClose;
+    const removeActive = () => {
+      if (!activeSockets.delete(socket)) return;
+      onFinalClose?.();
+      notifyCloseWaiters();
+    };
+    const closeDescriptor = async () => {
+      const closingFd = fd2;
+      fd2 = void 0;
+      if (closingFd === void 0) return;
+      try {
+        await dispatchBrowserNetworkSyscall(kernelNetwork, {
+          op: "close",
+          fd: closingFd
+        });
+      } catch (error) {
+        if (error?.code !== "EBADF") throw error;
+      }
+    };
+    const fail = (error) => {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      try {
+        if (!events.emit("error", cause)) activeWorkError ??= cause;
+      } catch (listenerError) {
+        activeWorkError ??= listenerError instanceof Error ? listenerError : new Error(String(listenerError));
+      }
+    };
+    const finishClose = async (error) => {
+      if (destroyed) return;
+      destroyed = true;
+      resumeReader?.();
+      resumeReader = void 0;
+      try {
+        await closeDescriptor();
+      } catch (closeError) {
+        error ??= closeError;
+      }
+      if (error) fail(error);
+      events.emit("close", Boolean(error));
+      removeActive();
+    };
+    const receive = async () => {
+      while (!destroyed && fd2 !== void 0) {
+        try {
+          if (paused) {
+            await new Promise((resolve) => {
+              resumeReader = resolve;
+            });
+            resumeReader = void 0;
+            if (destroyed) return;
+          }
+          const result = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: "recv",
+            fd: fd2,
+            maxBytes: 64 * 1024
+          });
+          if (result.bytes.byteLength === 0) {
+            readableEnded = true;
+            events.emit("end");
+            await writeTail;
+            if (!writableEnded && fd2 !== void 0) {
+              writableEnded = true;
+              await dispatchBrowserNetworkSyscall(kernelNetwork, {
+                op: "shutdown",
+                fd: fd2,
+                how: "write"
+              });
+            }
+            await finishClose();
+            return;
+          }
+          const chunk = BrowserBuffer.from(result.bytes);
+          events.emit(
+            "data",
+            encoding ? chunk.toString(encoding) : chunk
+          );
+        } catch (error) {
+          if (!destroyed) await finishClose(error);
+          return;
+        }
+      }
+    };
+    const attach = (nextFd, nextLocalAddress, nextRemoteAddress, emitConnect) => {
+      fd2 = nextFd;
+      localAddress = nextLocalAddress;
+      remoteAddress = nextRemoteAddress;
+      connected = true;
+      activeSockets.add(socket);
+      if (emitConnect) events.emit("connect");
+      void receive();
+    };
+    const socket = {
+      connecting: false,
+      get destroyed() {
+        return destroyed;
+      },
+      get readableEnded() {
+        return readableEnded;
+      },
+      get writableEnded() {
+        return writableEnded;
+      },
+      get remoteAddress() {
+        return remoteAddress?.host;
+      },
+      get remotePort() {
+        return remoteAddress?.port;
+      },
+      get remoteFamily() {
+        return remoteAddress ? "IPv4" : void 0;
+      },
+      address: () => localAddress ? { address: localAddress.host, port: localAddress.port, family: "IPv4" } : {},
+      connect: (...args) => {
+        const options = normalizeNetConnectArgs(args);
+        if (options.callback) events.once("connect", options.callback);
+        socket.connecting = true;
+        activeSockets.add(socket);
+        void (async () => {
+          try {
+            const created = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "socket"
+            });
+            fd2 = created.fd;
+            const connection = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "connect",
+              fd: fd2,
+              address: { host: options.host, port: options.port }
+            });
+            socket.connecting = false;
+            attach(
+              fd2,
+              connection.localAddress,
+              connection.remoteAddress,
+              true
+            );
+          } catch (error) {
+            socket.connecting = false;
+            await finishClose(error);
+          }
+        })();
+        return socket;
+      },
+      write: (chunk, encodingOrCallback, callback) => {
+        const writeCallback = typeof encodingOrCallback === "function" ? encodingOrCallback : typeof callback === "function" ? callback : void 0;
+        const bytes = typeof chunk === "string" ? BrowserBuffer.from(
+          chunk,
+          typeof encodingOrCallback === "string" ? encodingOrCallback : "utf8"
+        ) : BrowserBuffer.from(bytesFromNodeValue(chunk));
+        writeTail = writeTail.then(async () => {
+          if (destroyed || fd2 === void 0 || !connected) {
+            throw Object.assign(new Error("ENOTCONN: socket is not connected"), {
+              code: "ENOTCONN"
+            });
+          }
+          await dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: "send",
+            fd: fd2,
+            bytes
+          });
+        });
+        void writeTail.then(
+          () => writeCallback?.(),
+          (error) => {
+            writeCallback?.(error instanceof Error ? error : new Error(String(error)));
+            void finishClose(error);
+          }
+        );
+        return true;
+      },
+      end: (chunk, encodingOrCallback, callback) => {
+        const endCallback = typeof encodingOrCallback === "function" ? encodingOrCallback : typeof callback === "function" ? callback : void 0;
+        if (chunk !== void 0) socket.write(chunk, typeof encodingOrCallback === "string" ? encodingOrCallback : void 0);
+        writeTail = writeTail.then(async () => {
+          if (fd2 !== void 0 && !writableEnded) {
+            writableEnded = true;
+            await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "shutdown",
+              fd: fd2,
+              how: "write"
+            });
+          }
+          events.emit("finish");
+          endCallback?.();
+          if (readableEnded) await finishClose();
+        });
+        void writeTail.catch((error) => finishClose(error));
+        return socket;
+      },
+      destroy: (error) => {
+        void finishClose(error);
+        return socket;
+      },
+      setEncoding: (nextEncoding) => {
+        encoding = nextEncoding;
+        return socket;
+      },
+      setNoDelay: () => socket,
+      setKeepAlive: () => socket,
+      pause: () => {
+        paused = true;
+        return socket;
+      },
+      resume: () => {
+        paused = false;
+        resumeReader?.();
+        resumeReader = void 0;
+        return socket;
+      },
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit,
+      _attach: attach,
+      _setOnFinalClose: (listener) => {
+        onFinalClose = listener;
+      }
+    };
+    return socket;
+  }
+  function createServer(connectionListener) {
+    const events = createListenerMap();
+    const connections = /* @__PURE__ */ new Set();
+    let fd2;
+    let listening = false;
+    let closing = false;
+    let boundAddress;
+    const maybeFinishClose = () => {
+      if (!closing || connections.size > 0 || fd2 !== void 0) return;
+      activeServers.delete(server);
+      events.emit("close");
+      notifyCloseWaiters();
+    };
+    const recordServerError = (error) => {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      try {
+        if (!events.emit("error", cause)) activeWorkError ??= cause;
+      } catch (listenerError) {
+        activeWorkError ??= listenerError instanceof Error ? listenerError : new Error(String(listenerError));
+      }
+    };
+    const acceptLoop = async () => {
+      while (listening && fd2 !== void 0) {
+        try {
+          const accepted = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: "accept",
+            fd: fd2
+          });
+          if (!listening) {
+            await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "close",
+              fd: accepted.fd
+            });
+            continue;
+          }
+          const socket = createSocket(accepted.fd);
+          connections.add(socket);
+          socket._setOnFinalClose(() => {
+            connections.delete(socket);
+            maybeFinishClose();
+          });
+          socket._attach(
+            accepted.fd,
+            accepted.localAddress,
+            accepted.remoteAddress,
+            false
+          );
+          events.emit("connection", socket);
+        } catch (error) {
+          if (listening) {
+            recordServerError(error);
+            closing = true;
+            listening = false;
+            const closingFd = fd2;
+            fd2 = void 0;
+            if (closingFd !== void 0) {
+              await dispatchBrowserNetworkSyscall(kernelNetwork, {
+                op: "close",
+                fd: closingFd
+              }).catch(() => void 0);
+            }
+          }
+          break;
+        }
+      }
+      maybeFinishClose();
+    };
+    const server = {
+      get listening() {
+        return listening;
+      },
+      listen: (...args) => {
+        const callback = args.find((value) => typeof value === "function");
+        const first = args[0];
+        const options = typeof first === "object" && first !== null ? first : {
+          port: first,
+          host: typeof args[1] === "string" ? args[1] : void 0,
+          backlog: void 0
+        };
+        activeServers.add(server);
+        void (async () => {
+          try {
+            const created = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "socket"
+            });
+            fd2 = created.fd;
+            boundAddress = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "bind",
+              fd: fd2,
+              address: {
+                host: typeof options.host === "string" ? options.host : "127.0.0.1",
+                port: Number(options.port)
+              }
+            }).then((result) => result.address);
+            await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "listen",
+              fd: fd2,
+              options: {
+                ...Number.isFinite(Number(options.backlog)) ? { backlog: Number(options.backlog) } : {}
+              }
+            });
+            listening = true;
+            events.emit("listening");
+            callback?.();
+            void acceptLoop();
+          } catch (error) {
+            recordServerError(error);
+            closing = true;
+            if (fd2 !== void 0) {
+              const closingFd = fd2;
+              fd2 = void 0;
+              await dispatchBrowserNetworkSyscall(kernelNetwork, {
+                op: "close",
+                fd: closingFd
+              }).catch(() => void 0);
+            }
+            maybeFinishClose();
+          }
+        })();
+        return server;
+      },
+      close: (callback) => {
+        if (callback) events.once("close", callback);
+        closing = true;
+        listening = false;
+        const closingFd = fd2;
+        fd2 = void 0;
+        if (closingFd !== void 0) {
+          void dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: "close",
+            fd: closingFd
+          }).then(maybeFinishClose, (error) => {
+            recordServerError(error);
+            maybeFinishClose();
+          });
+        } else {
+          queueMicrotask(maybeFinishClose);
+        }
+        return server;
+      },
+      address: () => boundAddress ? { address: boundAddress.host, port: boundAddress.port, family: "IPv4" } : null,
+      getConnections: (callback) => {
+        queueMicrotask(() => callback(null, connections.size));
+      },
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit
+    };
+    if (connectionListener) server.on("connection", connectionListener);
+    return server;
+  }
+  const closeAll = () => {
+    for (const server of [...activeServers]) server.close();
+    for (const socket of [...activeSockets]) socket.destroy();
+  };
+  signal?.addEventListener("abort", closeAll, { once: true });
+  const connect = (...args) => createSocket().connect(...args);
+  const Socket = function Socket2() {
+    return createSocket();
+  };
+  const Server = function Server2(connectionListener) {
+    return createServer(connectionListener);
+  };
+  return {
+    module: {
+      createServer,
+      connect,
+      createConnection: connect,
+      Socket,
+      Server,
+      isIP: (input) => input === "127.0.0.1" || input === "0.0.0.0" ? 4 : 0,
+      isIPv4: (input) => input === "127.0.0.1" || input === "0.0.0.0",
+      isIPv6: () => false
+    },
+    hasActiveWork: () => activeSockets.size > 0 || activeServers.size > 0 || activeWorkError !== null,
+    waitForClose: () => activeSockets.size === 0 && activeServers.size === 0 ? activeWorkError ? Promise.reject(activeWorkError) : Promise.resolve() : new Promise((resolve, reject) => closeWaiters.push({ resolve, reject })),
+    closeAll
+  };
+}
 function createHttpApi(kernelHttp, signal) {
   const activeHandles = /* @__PURE__ */ new Set();
   const activeClientAborters = /* @__PURE__ */ new Set();
@@ -11678,6 +12140,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   fsApi.realpathSync.native = fsApi.realpathSync;
   Object.assign(fsApi, { promises: fsPromisesApi });
   const zlibApi = createZlibApi();
+  const netApi = createNetApi(
+    executionState.kernelNetwork,
+    request.signal
+  );
   const httpApi = createHttpApi(request.kernelHttp, request.signal);
   const restoreHttpGlobals = installBrowserHttpGlobalLockdown(
     httpApi,
@@ -11689,6 +12155,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     if (hostGlobalsRestored) return;
     hostGlobalsRestored = true;
     eventLoopApi.clearAll();
+    netApi.closeAll();
     restoreTimerGlobals();
     restoreHttpGlobals();
   };
@@ -11710,6 +12177,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ["node:url", urlApi],
     ["buffer", { Buffer: BrowserBuffer }],
     ["node:buffer", { Buffer: BrowserBuffer }],
+    ["net", netApi.module],
+    ["node:net", netApi.module],
     ["http", httpApi.module],
     ["node:http", httpApi.module],
     ["https", httpApi.httpsModule],
@@ -11948,8 +12417,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
     while (!executionState.cancelled) {
       await eventLoopApi.drain();
-      if (!httpApi.hasActiveWork()) break;
-      await httpApi.waitForClose();
+      if (!httpApi.hasActiveWork() && !netApi.hasActiveWork()) break;
+      await Promise.all([
+        httpApi.hasActiveWork() ? httpApi.waitForClose() : Promise.resolve(),
+        netApi.hasActiveWork() ? netApi.waitForClose() : Promise.resolve()
+      ]);
     }
     liveIo.close();
     try {
@@ -12203,6 +12675,43 @@ var WorkerKernelHttpBridge = class {
   }
 };
 var activeHttpBridges = /* @__PURE__ */ new Map();
+var WorkerKernelAsyncSyscallClient = class {
+  constructor(postProtocolMessage) {
+    this.postProtocolMessage = postProtocolMessage;
+  }
+  nextRequestId = 1;
+  closed = false;
+  pending = /* @__PURE__ */ new Map();
+  dispatch(request) {
+    if (this.closed) {
+      return Promise.reject(
+        Object.assign(new Error("ECLOSED: async syscall client is closed"), {
+          code: "ECLOSED"
+        })
+      );
+    }
+    const requestId = `async-syscall-${this.nextRequestId++}`;
+    return new Promise((resolve, reject) => {
+      this.pending.set(requestId, { resolve, reject });
+      this.postProtocolMessage(requestId, request);
+    });
+  }
+  resolve(requestId, result) {
+    const pending = this.pending.get(requestId);
+    this.pending.delete(requestId);
+    pending?.resolve(result);
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    const error = Object.assign(
+      new Error("ECLOSED: async syscall client is closed"),
+      { code: "ECLOSED" }
+    );
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
+  }
+};
 function postCommandMessage(postMessage2, id, protocolToken, type, payload) {
   postMessage2({ id, type, payload, protocolToken });
 }
@@ -12219,6 +12728,16 @@ function handleKernelHttpHostMessage(message) {
       command.executionState.cancelled = true;
       command.executionState.abortController.abort({ signal });
       command.executionState.cleanupHostGlobals?.();
+    }
+    return true;
+  }
+  if (type === "kernel-syscall-async-result") {
+    const result = payload;
+    if (typeof result.requestId === "string") {
+      command.asyncSyscallClient?.resolve(
+        result.requestId,
+        result.result
+      );
     }
     return true;
   }
@@ -12300,6 +12819,7 @@ workerScope.onmessage = (event) => {
     abortController: new AbortController()
   };
   let syscallClient;
+  let asyncSyscallClient;
   if (kernelSyscallChannel) {
     syscallClient = new TraceKernelSharedSyscallClient(
       kernelSyscallChannel,
@@ -12321,6 +12841,16 @@ workerScope.onmessage = (event) => {
         } : {}
       }
     );
+    asyncSyscallClient = new WorkerKernelAsyncSyscallClient(
+      (requestId, request2) => postCommandMessage(
+        postToHost,
+        id,
+        protocolToken,
+        "kernel-syscall-async",
+        { requestId, request: request2 }
+      )
+    );
+    executionState.kernelNetwork = asyncSyscallClient;
   }
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
     postCommandMessage(postToHost, id, protocolToken, message.type, message);
@@ -12329,10 +12859,12 @@ workerScope.onmessage = (event) => {
     bridge: kernelHttp,
     protocolToken,
     executionState,
-    ...syscallClient ? { syscallClient } : {}
+    ...syscallClient ? { syscallClient } : {},
+    ...asyncSyscallClient ? { asyncSyscallClient } : {}
   });
   const clearActiveCommand = () => {
     activeHttpBridges.get(id)?.syscallClient?.close();
+    activeHttpBridges.get(id)?.asyncSyscallClient?.close();
     activeHttpBridges.delete(id);
   };
   runBrowserJavaScriptProjectRequest(
