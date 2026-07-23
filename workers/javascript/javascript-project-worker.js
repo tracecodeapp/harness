@@ -56,6 +56,7 @@ var SYSCALL_ERROR_CODES = /* @__PURE__ */ new Set([
   "EBADF",
   "EBUSY",
   "ELOOP",
+  "EMFILE",
   "EEXIST",
   "ECONNREFUSED",
   "EDESTADDRREQ",
