@@ -6,12 +6,15 @@ import * as Scope from 'effect/Scope';
 import {
   TraceKernelDescriptorTable,
   TraceKernelPipe,
+  type TraceKernelDescriptor,
+  type TraceKernelDescriptorDupError,
   type TraceKernelDescriptorReadError,
   type TraceKernelDescriptorWriteError,
   type TraceKernelPipeOptions,
 } from './descriptors';
 import {
   TraceKernelBadFileDescriptorError,
+  TraceKernelDescriptorLimitError,
   TraceKernelHostClosedError,
   TraceKernelProcessStateError,
   TraceKernelRuntimeUnavailableError,
@@ -57,6 +60,13 @@ const SYSTEM_PRINCIPAL: TraceKernelPrincipal = Object.freeze({
   id: 'system',
   kind: 'system',
 });
+
+function normalizeDescriptorLimit(value: number | undefined): number {
+  const requested = Number(value ?? 1024);
+  return Number.isFinite(requested) && requested > 0
+    ? Math.floor(requested)
+    : 1024;
+}
 
 interface TraceKernelRuntimeProviderSlot {
   readonly provider: TraceKernelRuntimeProvider;
@@ -124,12 +134,15 @@ function immutableSnapshot(record: MutableProcessRecord): TraceKernelProcessSnap
 export class TraceKernelProcess {
   private fiber?: Fiber.RuntimeFiber<TraceKernelProcessSnapshot, never>;
   private requestedSignal?: TraceKernelSignal;
-  readonly descriptors = new TraceKernelDescriptorTable();
+  readonly descriptors: TraceKernelDescriptorTable;
 
   constructor(
     private readonly record: MutableProcessRecord,
-    private readonly started: Deferred.Deferred<void, TraceKernelProcessStateError>
-  ) {}
+    private readonly started: Deferred.Deferred<void, TraceKernelProcessStateError>,
+    maxDescriptors: number
+  ) {
+    this.descriptors = new TraceKernelDescriptorTable({ maxDescriptors });
+  }
 
   get pid(): number {
     return this.record.pid;
@@ -162,7 +175,7 @@ export class TraceKernelProcess {
     return this.descriptors.close(fd);
   }
 
-  dup(fd: number): Effect.Effect<number, TraceKernelBadFileDescriptorError> {
+  dup(fd: number): Effect.Effect<number, TraceKernelDescriptorDupError> {
     return this.descriptors.dup(fd);
   }
 
@@ -320,7 +333,8 @@ export class TraceKernelSession {
     readonly fileSystem: TraceKernelFileSystem,
     readonly networkNamespace: TraceKernelNetworkNamespace,
     readonly cwd: string,
-    readonly env: Readonly<Record<string, string>>
+    readonly env: Readonly<Record<string, string>>,
+    readonly maxDescriptorsPerProcess: number
   ) {}
 
   spawn(
@@ -391,7 +405,7 @@ export class TraceKernelSession {
     readonly resourceId: string;
     readonly readFd: number;
     readonly writeFd: number;
-  }, TraceKernelProcessStateError> {
+  }, TraceKernelProcessStateError | TraceKernelDescriptorLimitError> {
     return Effect.gen(this, function* () {
       yield* this.assertOwnedProcess(reader);
       yield* this.assertOwnedProcess(writer);
@@ -402,9 +416,17 @@ export class TraceKernelSession {
         (closedId) => this.resources.delete(closedId)
       );
       this.resources.set(resourceId, pipe);
-      const readFd = reader.descriptors.install(pipe.reader());
-      const writeFd = writer.descriptors.install(pipe.writer());
-      return Object.freeze({ resourceId, readFd, writeFd });
+      return yield* Effect.gen(this, function* () {
+        const readFd = yield* this.installDescriptor(reader, pipe.reader());
+        const writeFd = yield* this.installDescriptor(writer, pipe.writer()).pipe(
+          Effect.tapError(() =>
+            reader.descriptors.close(readFd).pipe(Effect.catchAll(() => Effect.void))
+          )
+        );
+        return Object.freeze({ resourceId, readFd, writeFd });
+      }).pipe(
+        Effect.onError(() => pipe.dispose())
+      );
     });
   }
 
@@ -417,11 +439,16 @@ export class TraceKernelSession {
 
   createTcpSocket(
     process: TraceKernelProcess
-  ): Effect.Effect<number, TraceKernelProcessStateError | TraceKernelNetworkError> {
+  ): Effect.Effect<
+    number,
+    TraceKernelProcessStateError |
+      TraceKernelNetworkError |
+      TraceKernelDescriptorLimitError
+  > {
     return Effect.gen(this, function* () {
       yield* this.assertOwnedProcess(process);
       const socket = yield* this.networkNamespace.createSocket();
-      return process.descriptors.install(socket.descriptor());
+      return yield* this.installDescriptor(process, socket.descriptor());
     });
   }
 
@@ -455,11 +482,15 @@ export class TraceKernelSession {
   }, Error> {
     return this.tcpSocketFor(process, fd).pipe(
       Effect.flatMap((socket) => socket.accept()),
-      Effect.map((accepted: TraceKernelTcpAcceptResult) => Object.freeze({
-        fd: process.descriptors.install(accepted.socket.descriptor()),
-        localAddress: accepted.localAddress,
-        remoteAddress: accepted.remoteAddress,
-      }))
+      Effect.flatMap((accepted: TraceKernelTcpAcceptResult) =>
+        this.installDescriptor(process, accepted.socket.descriptor()).pipe(
+          Effect.map((fd) => Object.freeze({
+            fd,
+            localAddress: accepted.localAddress,
+            remoteAddress: accepted.remoteAddress,
+          }))
+        )
+      )
     );
   }
 
@@ -518,7 +549,7 @@ export class TraceKernelSession {
         (closedId) => this.resources.delete(closedId)
       );
       this.resources.set(resourceId, description);
-      return process.descriptors.install(description.descriptor());
+      return yield* this.installDescriptor(process, description.descriptor());
     });
   }
 
@@ -643,7 +674,11 @@ export class TraceKernelSession {
       stdout: '',
       stderr: '',
     };
-    const process = new TraceKernelProcess(record, started);
+    const process = new TraceKernelProcess(
+      record,
+      started,
+      this.maxDescriptorsPerProcess
+    );
     this.processes.set(pid, process);
     return process;
   }
@@ -696,6 +731,24 @@ export class TraceKernelSession {
       env: snapshot.env,
     });
   }
+
+  private installDescriptor(
+    process: TraceKernelProcess,
+    descriptor: TraceKernelDescriptor
+  ): Effect.Effect<number, TraceKernelDescriptorLimitError> {
+    return Effect.try({
+      try: () => process.descriptors.install(descriptor),
+      catch: (error) => error instanceof TraceKernelDescriptorLimitError
+        ? error
+        : new TraceKernelDescriptorLimitError({
+            code: 'EMFILE',
+            maxDescriptors: process.descriptors.maxDescriptors,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+    }).pipe(
+      Effect.tapError(() => descriptor.close())
+    );
+  }
 }
 
 export class TraceKernelHost {
@@ -729,7 +782,8 @@ export class TraceKernelHost {
             fileSystem,
             networkNamespace,
             options.cwd ?? '/workspace',
-            Object.freeze({ ...(options.env ?? {}) })
+            Object.freeze({ ...(options.env ?? {}) }),
+            normalizeDescriptorLimit(options.maxDescriptorsPerProcess)
           );
           this.sessions.set(id, session);
           return session;

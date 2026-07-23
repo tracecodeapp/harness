@@ -5,6 +5,7 @@ import * as Queue from 'effect/Queue';
 import {
   TraceKernelBadFileDescriptorError,
   TraceKernelBrokenPipeError,
+  TraceKernelDescriptorLimitError,
   TraceKernelInvalidDescriptorOperationError,
 } from './errors';
 import type { TraceKernelStat } from './vfs';
@@ -56,13 +57,38 @@ export type TraceKernelDescriptorWriteError =
   | TraceKernelInvalidDescriptorOperationError
   | TraceKernelBrokenPipeError;
 
+export interface TraceKernelDescriptorTableOptions {
+  readonly maxDescriptors?: number;
+}
+
+export type TraceKernelDescriptorDupError =
+  | TraceKernelBadFileDescriptorError
+  | TraceKernelDescriptorLimitError;
+
 export class TraceKernelDescriptorTable {
   private readonly descriptors = new Map<number, TraceKernelDescriptor>();
   private nextFd = 3;
+  readonly maxDescriptors: number;
+
+  constructor(options: TraceKernelDescriptorTableOptions = {}) {
+    const requested = Number(options.maxDescriptors ?? 1024);
+    this.maxDescriptors = Number.isFinite(requested) && requested > 0
+      ? Math.floor(requested)
+      : 1024;
+  }
 
   install(descriptor: TraceKernelDescriptor): number {
-    const fd = this.nextFd++;
+    if (this.descriptors.size >= this.maxDescriptors) {
+      throw new TraceKernelDescriptorLimitError({
+        code: 'EMFILE',
+        maxDescriptors: this.maxDescriptors,
+        message: `EMFILE: process descriptor limit ${this.maxDescriptors} reached`,
+      });
+    }
+    let fd = this.nextFd;
+    while (this.descriptors.has(fd)) fd += 1;
     this.descriptors.set(fd, descriptor);
+    this.nextFd = fd + 1;
     return fd;
   }
 
@@ -194,7 +220,7 @@ export class TraceKernelDescriptorTable {
     );
   }
 
-  dup(fd: number): Effect.Effect<number, TraceKernelBadFileDescriptorError> {
+  dup(fd: number): Effect.Effect<number, TraceKernelDescriptorDupError> {
     const descriptor = this.descriptors.get(fd);
     if (!descriptor) {
       return Effect.fail(new TraceKernelBadFileDescriptorError({
@@ -204,12 +230,12 @@ export class TraceKernelDescriptorTable {
       }));
     }
     return descriptor.duplicate().pipe(
-      Effect.map((duplicate) => this.install(duplicate)),
       Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: 'dup',
         message: error.message,
-      }))
+      })),
+      Effect.flatMap((duplicate) => this.installEffect(duplicate))
     );
   }
 
@@ -223,6 +249,7 @@ export class TraceKernelDescriptorTable {
       }));
     }
     this.descriptors.delete(fd);
+    if (fd < this.nextFd) this.nextFd = fd;
     return descriptor.close();
   }
 
@@ -230,12 +257,30 @@ export class TraceKernelDescriptorTable {
     return Effect.suspend(() => {
       const descriptors = [...this.descriptors.values()];
       this.descriptors.clear();
+      this.nextFd = 3;
       return Effect.forEach(
         descriptors,
         (descriptor) => descriptor.close(),
         { concurrency: 'unbounded', discard: true }
       );
     });
+  }
+
+  private installEffect(
+    descriptor: TraceKernelDescriptor
+  ): Effect.Effect<number, TraceKernelDescriptorLimitError> {
+    return Effect.try({
+      try: () => this.install(descriptor),
+      catch: (error) => error instanceof TraceKernelDescriptorLimitError
+        ? error
+        : new TraceKernelDescriptorLimitError({
+            code: 'EMFILE',
+            maxDescriptors: this.maxDescriptors,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+    }).pipe(
+      Effect.tapError(() => descriptor.close())
+    );
   }
 }
 

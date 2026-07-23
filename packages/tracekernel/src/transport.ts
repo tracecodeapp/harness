@@ -64,6 +64,7 @@ const SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'EBADF',
   'EBUSY',
   'ELOOP',
+  'EMFILE',
   'EEXIST',
   'ECONNREFUSED',
   'EDESTADDRREQ',

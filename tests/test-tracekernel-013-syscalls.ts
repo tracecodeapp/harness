@@ -329,6 +329,35 @@ async function main(): Promise<void> {
       yield* syscalls.dispatch({ op: 'close', fd: listener.value.fd });
       yield* peer.signal('SIGTERM');
       yield* process.signal('SIGTERM');
+
+      const limitedSession = yield* host.openSession({
+        maxDescriptorsPerProcess: 1,
+      });
+      const limitedProcess = yield* limitedSession.spawn({
+        runtime: 'syscall-test',
+        command: 'limited-syscall-client',
+      });
+      yield* limitedProcess.awaitStarted();
+      const limitedSyscalls = new TraceKernelSyscallDispatcher(
+        limitedSession,
+        limitedProcess
+      );
+      const onlySocket = yield* limitedSyscalls.dispatch({ op: 'socket' });
+      success(onlySocket);
+      const exhausted = yield* limitedSyscalls.dispatch({ op: 'socket' });
+      assertCondition(
+        !exhausted.ok && exhausted.error.code === 'EMFILE',
+        `Descriptor exhaustion did not cross the wire as EMFILE: ${JSON.stringify(exhausted)}`
+      );
+      assertCondition(
+        limitedProcess.snapshot().descriptors.length === 1 &&
+          limitedSession.resourceIds().length === 1,
+        'A wire-level EMFILE failure leaked a socket resource.'
+      );
+      if (onlySocket.value.op === 'socket') {
+        yield* limitedSyscalls.dispatch({ op: 'close', fd: onlySocket.value.fd });
+      }
+      yield* limitedProcess.signal('SIGTERM');
     })
   ));
 
@@ -339,6 +368,7 @@ async function main(): Promise<void> {
     namespaceOperationsShareTheWireContract: true,
     tcpOperationsShareTheWireContract: true,
     typedErrorsMappedToPosixWireErrors: true,
+    descriptorLimitsCrossWireAsEmfile: true,
     effectDoesNotCrossRuntimeBoundary: true,
   }, null, 2));
 }

@@ -109,6 +109,13 @@ The open-resource description owns shared offset/state, flags, reference count,
 and resource-specific state. This supports `dup`, deterministic inheritance,
 pipe EOF, terminal attachment, socket half-closes, and close-on-exit.
 
+Each process descriptor table has a configurable ceiling, defaulting to 1024
+open descriptors. Exhaustion returns `EMFILE` through the plain syscall wire
+contract. Closing a descriptor makes the lowest available number reusable.
+Failed file, pipe, socket, accepted-connection, and `dup` installs close the
+provisional resource or reference before returning, so admission failure cannot
+leak a session resource.
+
 ## Shared filesystem
 
 The session filesystem is authoritative. Its subsystem shorthand is **TKFS**

@@ -153,9 +153,13 @@ export class RuntimeKernelDescriptorManager {
       references: 1,
       closed: false,
     };
-    return this.tableForProcess(pid).install(
-      this.fileDescriptor(context, description)
-    );
+    const descriptor = this.fileDescriptor(context, description);
+    try {
+      return this.tableForProcess(pid).install(descriptor);
+    } catch (error) {
+      await Effect.runPromise(descriptor.close());
+      throw error;
+    }
   }
 
   read(

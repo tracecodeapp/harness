@@ -131,4 +131,5 @@ export interface TraceKernelHostOptions {
 export interface TraceKernelSessionOptions {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
+  readonly maxDescriptorsPerProcess?: number;
 }

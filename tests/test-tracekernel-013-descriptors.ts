@@ -8,6 +8,7 @@ import * as Option from 'effect/Option';
 import {
   makeTraceKernelHost,
   TraceKernelBadFileDescriptorError,
+  TraceKernelDescriptorLimitError,
   type TraceKernelRuntimeProvider,
 } from '@tracecode/tracekernel';
 
@@ -128,11 +129,86 @@ async function main(): Promise<void> {
       assertCondition(leaseReleaseCount === 2, 'Writer runtime lease was not released on process exit.');
       assertCondition(session.resourceIds().length === 0, 'Process teardown stranded a pipe resource.');
       assertCondition(session.processSnapshots().length === 0, 'Terminated pipe processes remained registered.');
+
+      const limitedSession = yield* host.openSession({
+        maxDescriptorsPerProcess: 2,
+      });
+      const limited = yield* limitedSession.spawn({
+        runtime: 'blocking-test',
+        command: 'descriptor-limit',
+      });
+      yield* limited.awaitStarted();
+      const firstSocket = yield* limitedSession.createTcpSocket(limited);
+      const secondSocket = yield* limitedSession.createTcpSocket(limited);
+      const overflow = yield* Effect.exit(
+        limitedSession.createTcpSocket(limited)
+      );
+      assertCondition(
+        Exit.isFailure(overflow),
+        'Opening beyond the process descriptor ceiling unexpectedly succeeded.'
+      );
+      if (Exit.isFailure(overflow)) {
+        const failure = Cause.failureOption(overflow.cause);
+        assertCondition(
+          Option.isSome(failure) &&
+            failure.value instanceof TraceKernelDescriptorLimitError &&
+            failure.value.code === 'EMFILE',
+          `Descriptor exhaustion did not return EMFILE: ${Cause.pretty(overflow.cause)}`
+        );
+      }
+      assertCondition(
+        limited.snapshot().descriptors.length === 2 &&
+          limitedSession.resourceIds().length === 2,
+        'A rejected socket install leaked a descriptor or network resource.'
+      );
+
+      yield* limited.close(firstSocket);
+      const reusedSocket = yield* limitedSession.createTcpSocket(limited);
+      assertCondition(
+        reusedSocket === firstSocket,
+        `The descriptor table did not reuse its lowest available FD: ${reusedSocket}`
+      );
+      const duplicateOverflow = yield* Effect.exit(limited.dup(secondSocket));
+      assertCondition(
+        Exit.isFailure(duplicateOverflow),
+        'dup() bypassed the process descriptor ceiling.'
+      );
+      if (Exit.isFailure(duplicateOverflow)) {
+        const failure = Cause.failureOption(duplicateOverflow.cause);
+        assertCondition(
+          Option.isSome(failure) &&
+            failure.value instanceof TraceKernelDescriptorLimitError,
+          `dup() exhaustion did not retain EMFILE: ${Cause.pretty(duplicateOverflow.cause)}`
+        );
+      }
+      assertCondition(
+        limited.snapshot().descriptors.length === 2 &&
+          limitedSession.resourceIds().length === 2,
+        'A rejected dup() leaked a descriptor reference.'
+      );
+      yield* limited.close(secondSocket);
+      yield* limited.close(reusedSocket);
+      const pipeLimitBlocker = yield* limitedSession.createTcpSocket(limited);
+      const pipeOverflow = yield* Effect.exit(
+        limitedSession.createPipe(limited, limited)
+      );
+      assertCondition(
+        Exit.isFailure(pipeOverflow) &&
+          limited.snapshot().descriptors.length === 1 &&
+          limitedSession.resourceIds().length === 1,
+        'A partially installed pipe survived an EMFILE rollback.'
+      );
+      yield* limited.close(pipeLimitBlocker);
+      yield* limited.signal('SIGTERM');
+      assertCondition(
+        limitedSession.resourceIds().length === 0,
+        'Limited process teardown stranded socket resources.'
+      );
     })
   ));
 
-  assertCondition(leaseAcquireCount === 2, `Expected two runtime leases, acquired ${leaseAcquireCount}.`);
-  assertCondition(leaseReleaseCount === 2, `Expected two runtime lease releases, observed ${leaseReleaseCount}.`);
+  assertCondition(leaseAcquireCount === 3, `Expected three runtime leases, acquired ${leaseAcquireCount}.`);
+  assertCondition(leaseReleaseCount === 3, `Expected three runtime lease releases, observed ${leaseReleaseCount}.`);
 
   console.log(JSON.stringify({
     schema: 'tracekernel-013-descriptors-v1',
@@ -142,6 +218,9 @@ async function main(): Promise<void> {
     writerCloseProducesEof: true,
     blockedReadInterruptedOnProcessExit: true,
     resourcesReleasedOnFinalDescriptorClose: true,
+    descriptorCeilingReturnsEmfile: true,
+    lowestAvailableFdReused: true,
+    failedInstallsReleaseResources: true,
   }, null, 2));
 }
 

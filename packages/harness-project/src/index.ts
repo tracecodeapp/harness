@@ -608,6 +608,7 @@ const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> 
   'ECONNREFUSED',
   'EDESTADDRREQ',
   'ELOOP',
+  'EMFILE',
   'EEXIST',
   'EISDIR',
   'EISCONN',

@@ -41,6 +41,14 @@ export class TraceKernelBrokenPipeError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class TraceKernelDescriptorLimitError extends Data.TaggedError(
+  'TraceKernelDescriptorLimitError'
+)<{
+  readonly code: 'EMFILE';
+  readonly maxDescriptors: number;
+  readonly message: string;
+}> {}
+
 export type TraceKernelNetworkErrorCode =
   | 'EADDRINUSE'
   | 'EAFNOSUPPORT'
@@ -95,6 +103,7 @@ export type TraceKernelLifecycleError =
   | TraceKernelProcessStateError
   | TraceKernelBadFileDescriptorError
   | TraceKernelBrokenPipeError
+  | TraceKernelDescriptorLimitError
   | TraceKernelNetworkError
   | TraceKernelInvalidDescriptorOperationError
   | TraceKernelFileSystemError

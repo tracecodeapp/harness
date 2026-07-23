@@ -2,6 +2,7 @@ import * as Effect from 'effect/Effect';
 import {
   TraceKernelBadFileDescriptorError,
   TraceKernelBrokenPipeError,
+  TraceKernelDescriptorLimitError,
   TraceKernelFileSystemError,
   TraceKernelInvalidDescriptorOperationError,
   TraceKernelNetworkError,
@@ -207,6 +208,7 @@ export type TraceKernelSyscallErrorCode =
   | 'EBADF'
   | 'EBUSY'
   | 'ELOOP'
+  | 'EMFILE'
   | 'EEXIST'
   | 'ECONNREFUSED'
   | 'EDESTADDRREQ'
@@ -250,6 +252,9 @@ function syscallWireError(error: unknown): TraceKernelSyscallWireError {
   }
   if (error instanceof TraceKernelBrokenPipeError) {
     return Object.freeze({ code: 'EPIPE', message: error.message });
+  }
+  if (error instanceof TraceKernelDescriptorLimitError) {
+    return Object.freeze({ code: 'EMFILE', message: error.message });
   }
   if (error instanceof TraceKernelProcessStateError) {
     return Object.freeze({ code: 'ESRCH', message: error.message });

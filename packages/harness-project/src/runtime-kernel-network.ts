@@ -40,7 +40,13 @@ export class RuntimeKernelNetworkManager {
   async socket(pid: number): Promise<number> {
     const namespace = await this.namespace;
     const socket = await Effect.runPromise(namespace.createSocket());
-    return this.descriptors.install(pid, socket.descriptor());
+    const descriptor = socket.descriptor();
+    try {
+      return this.descriptors.install(pid, descriptor);
+    } catch (error) {
+      await Effect.runPromise(descriptor.close());
+      throw error;
+    }
   }
 
   async bind(
@@ -67,10 +73,14 @@ export class RuntimeKernelNetworkManager {
   ): Promise<TraceKernelTcpAcceptResult & { readonly fd: number }> {
     const listener = await this.socketFor(pid, fd, 'accept');
     const accepted = await Effect.runPromise(listener.accept());
-    const acceptedFd = this.descriptors.install(
-      pid,
-      accepted.socket.descriptor()
-    );
+    const descriptor = accepted.socket.descriptor();
+    let acceptedFd: number;
+    try {
+      acceptedFd = this.descriptors.install(pid, descriptor);
+    } catch (error) {
+      await Effect.runPromise(descriptor.close());
+      throw error;
+    }
     return Object.freeze({
       ...accepted,
       fd: acceptedFd,

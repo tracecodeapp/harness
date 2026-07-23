@@ -345,6 +345,7 @@ async function main(): Promise<void> {
     },
     { ok: true, value: { op: 'writeFile' } },
     { ok: false, error: { code: 'ENOENT', message: 'ENOENT: missing' } },
+    { ok: false, error: { code: 'EMFILE', message: 'EMFILE: descriptor limit' } },
     { ok: false, error: { code: 'EROFS', message: 'EROFS: read-only filesystem' } },
   ];
   for (const result of results) {
