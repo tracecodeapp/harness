@@ -209,6 +209,57 @@ async function main(): Promise<void> {
       rawListener.close();
     }
 
+    let malformedHandlerCalls = 0;
+    const malformedListener = workspace.http.listen(
+      { host: '127.0.0.1', port: 3865 },
+      () => {
+        malformedHandlerCalls += 1;
+        return { status: 200, body: 'unexpected\n' };
+      }
+    );
+    try {
+      await malformedListener.ready;
+      const malformedSocket = syscallValue(
+        await dispatch({ op: 'socket' }),
+        'socket'
+      );
+      assertCondition(malformedSocket.op === 'socket', 'malformed client socket failed');
+      await dispatch({
+        op: 'connect',
+        fd: malformedSocket.fd,
+        address: { host: '127.0.0.1', port: 3865 },
+      });
+      await dispatch({
+        op: 'send',
+        fd: malformedSocket.fd,
+        bytes: new TextEncoder().encode(
+          'POST /bad HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nbad\r\n0\r\n\r\n'
+        ),
+      });
+      await dispatch({ op: 'shutdown', fd: malformedSocket.fd, how: 'write' });
+      const malformedDecoder = new TraceKernelHttp1Decoder('response');
+      let malformedResponse: ReturnType<typeof malformedDecoder.push> = null;
+      while (!malformedResponse) {
+        const received = syscallValue(
+          await dispatch({ op: 'recv', fd: malformedSocket.fd, maxBytes: 11 }),
+          'recv'
+        );
+        assertCondition(received.op === 'recv', 'malformed client recv failed');
+        malformedResponse = received.bytes.byteLength === 0
+          ? malformedDecoder.finish()
+          : malformedDecoder.push(received.bytes);
+      }
+      assertCondition(
+        malformedResponse.status === 400 &&
+          new TextDecoder().decode(malformedResponse.body) === 'Bad Request\n' &&
+          malformedHandlerCalls === 0,
+        `Malformed HTTP reached the application handler: ${JSON.stringify(malformedResponse)}`
+      );
+      await dispatch({ op: 'close', fd: malformedSocket.fd });
+    } finally {
+      malformedListener.close();
+    }
+
     const rawServer = syscallValue(await dispatch({ op: 'socket' }), 'socket');
     assertCondition(rawServer.op === 'socket', 'raw HTTP server socket was not created');
     const rawServerAddress = syscallValue(
@@ -323,6 +374,7 @@ async function main(): Promise<void> {
       unifiedPortOwnership: true,
       annotations: true,
       cancellation: true,
+      malformedFramesRejectedBeforeHandlers: true,
     })
   );
 }

@@ -561,6 +561,7 @@ const TRACEKERNEL_HTTP_MAX_HEADER_COUNT = 128;
 const TRACEKERNEL_HTTP_MAX_HEADER_BYTES = 64 * 1024;
 const TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH = 4096;
 const TRACEKERNEL_HTTP_TCP_READ_BYTES = 64 * 1024;
+const TRACEKERNEL_HTTP_REQUEST_FRAME_TIMEOUT_MS = 30_000;
 const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_TIMEOUT_MS = 10_000;
 const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_CONCURRENT_REQUESTS = 8;
 const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_REQUESTS_PER_COMMAND = 64;
@@ -2453,6 +2454,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           .catch(() => undefined);
         return;
       }
+      if (
+        listener.connectionControllers.size >=
+        TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS
+      ) {
+        await this.kernelDescriptors
+          .close(listener.info.pid, accepted.fd)
+          .catch(() => undefined);
+        this.recordKernelEvent('net-reject', listener.info.pid, {
+          id: listener.info.id,
+          protocol: listener.info.protocol,
+          error: 'EAGAIN',
+          reason: 'HTTP connection limit reached',
+        });
+        continue;
+      }
       const controller = new AbortController();
       listener.connectionControllers.set(accepted.fd, controller);
       void this.serveHttpTcpConnection(
@@ -2517,11 +2533,28 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     let response: RuntimeKernelHttpResponse;
     try {
-      const decodedRequest = await this.readHttp1Message(
-        'request',
-        listener.info.pid,
-        fd
-      );
+      let requestHeadTimeout: ReturnType<typeof setTimeout> | undefined;
+      const requestHeadTimedOut = new Promise<never>((_resolve, reject) => {
+        requestHeadTimeout = setTimeout(() => {
+          if (!controller.signal.aborted) controller.abort();
+          void this.kernelDescriptors
+            .close(listener.info.pid, fd)
+            .catch(() => undefined);
+          reject(Object.assign(
+            new Error('ETIMEDOUT: HTTP request head timed out'),
+            { code: 'ETIMEDOUT' }
+          ));
+        }, TRACEKERNEL_HTTP_REQUEST_FRAME_TIMEOUT_MS);
+      });
+      let decodedRequest: TraceKernelHttp1Request;
+      try {
+        decodedRequest = await Promise.race([
+          this.readHttp1Message('request', listener.info.pid, fd),
+          requestHeadTimedOut,
+        ]);
+      } finally {
+        if (requestHeadTimeout !== undefined) clearTimeout(requestHeadTimeout);
+      }
       const headers = this.httpHeadersFromHttp1(decodedRequest.headers);
       const body = decodedRequest.body.byteLength > 0
         ? runtimeHttpBodyFromBytes(decodedRequest.body)

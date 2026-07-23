@@ -243,6 +243,10 @@ a raw listener cannot claim a port already owned by structured HTTP.
 Graceful listener close stops new accepts but drains already-accepted
 connections; process exit and session teardown force-close them and abort their
 handler signals.
+Each listener admits at most 256 accepted HTTP connections, and an incomplete
+request frame is closed after 30 seconds. Malformed, folded, pipelined, or
+unsupported transfer-coded requests receive a bounded `400` response without
+reaching the application handler.
 
 The path is bidirectional: when a structured local HTTP client finds no
 structured listener record, it connects to the advertised loopback TCP port
