@@ -4980,25 +4980,25 @@ class _TraceKernelSocket:
         return (_address["host"], int(_address["port"]))
 
     def settimeout(self, value):
-        if value is not None and float(value) != 0:
+        if value is not None and float(value) < 0:
+            raise ValueError("Timeout value out of range")
+        if value is not None and float(value) > 0:
             raise NotImplementedError(
                 "TraceKernel socket deadlines require a timed blocking-I/O syscall"
             )
-        if value == 0:
-            raise NotImplementedError(
-                "TraceKernel nonblocking sockets are not implemented"
-            )
-        self._timeout = None
+        self.setblocking(value is None)
 
     def gettimeout(self):
         return self._timeout
 
     def setblocking(self, flag):
-        if not flag:
-            raise NotImplementedError(
-                "TraceKernel nonblocking sockets are not implemented"
-            )
-        self._timeout = None
+        if self._closed:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        os.set_blocking(self._fd, bool(flag))
+        self._timeout = None if flag else 0.0
+
+    def getblocking(self):
+        return self._timeout != 0.0
 
     def makefile(
         self,

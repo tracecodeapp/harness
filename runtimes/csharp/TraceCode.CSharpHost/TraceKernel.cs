@@ -986,6 +986,31 @@ public sealed class KernelSocket : IDisposable
 
     public int Descriptor { get; }
     public bool IsClosed => closed;
+    public bool Nonblocking
+    {
+        get
+        {
+            ThrowIfClosed();
+            JsonElement value = KernelInterop.Call(new
+            {
+                op = "fcntl",
+                fd = Descriptor,
+                action = "get-nonblocking",
+            });
+            return value.GetProperty("nonblocking").GetBoolean();
+        }
+        set
+        {
+            ThrowIfClosed();
+            KernelInterop.Call(new
+            {
+                op = "fcntl",
+                fd = Descriptor,
+                action = "set-nonblocking",
+                nonblocking = value,
+            });
+        }
+    }
 
     public static KernelSocket Create()
     {
