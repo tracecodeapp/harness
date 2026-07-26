@@ -495,8 +495,12 @@ descriptions with the flag already set, and `fcntl` can inspect or mutate it
 afterward. C/C++ maps `F_GETFL`/`F_SETFL`, Python maps `os.get_blocking`,
 `os.set_blocking`, socket `setblocking`/`settimeout(0)`, and `fcntl`, and
 managed C# exposes `KernelDescriptor.Nonblocking` and
-`KernelSocket.Nonblocking`. Nonblocking connect remains separate because its
-truthful contract requires persistent `EINPROGRESS` state.
+`KernelSocket.Nonblocking`. Nonblocking connect is a descriptor-owned,
+session-scoped operation: the initiating call returns `EINPROGRESS`, a second
+call while pending returns `EALREADY`, write/error readiness reports
+completion, and `getsockopt(SO_ERROR)` consumes the final error exactly once.
+Final close interrupts the pending connection and releases its provisional
+binding.
 
 Descriptor readiness is one level-triggered kernel syscall rather than a
 runtime-specific probe loop. `poll` snapshots regular files, pipes, filesystem
@@ -624,9 +628,9 @@ The initial 0.13 branch now establishes:
   process-owned TraceKernel descriptors, with bind/listen/accept/connect,
   fragmented send/recv, half-close, address inspection, local Pyodide
   descriptor identities, poll/select/selectors readiness, nonblocking
-  accept/receive/send, and cross-language Python/JavaScript stream conformance;
-  positive socket deadlines, nonblocking connect, UDP, and broader
-  address-family compatibility remain later slices;
+  accept/connect/receive/send, `SO_ERROR`, and cross-language
+  Python/JavaScript stream conformance; positive socket deadlines, UDP, and
+  broader address-family compatibility remain later slices;
 - a browser C# binary syscall client and Emscripten filesystem mount that back
   ordinary managed `System.IO` path and regular-file descriptor operations
   with authoritative TKFS; the mount preserves kernel-owned open-file offsets,
@@ -647,7 +651,8 @@ The initial 0.13 branch now establishes:
 - managed C# `KernelSocket` TCP descriptors with ephemeral/exclusive bind,
   listen/accept/connect, bounded fragmented send/receive, endpoint inspection,
   read/write/both half-close, nonblocking state, and deterministic close;
-  `KernelPoll` multiplexes pipe, listener, stream, and watch descriptors.
+  `KernelPoll` multiplexes pipe, listener, stream, and watch descriptors, and
+  `GetAndClearConnectError` exposes asynchronous connect completion.
   Browser conformance covers C# listeners serving JavaScript and C# children
   through the same session-local virtual network namespace;
 - browser C# symbolic-link snapshots and ordinary `System.IO` link traversal,
@@ -666,7 +671,8 @@ The initial 0.13 branch now establishes:
   descriptors, exclusive port binding, bounded listener backlogs, blocking
   accept/connect, bidirectional fragmented streams, sender backpressure,
   half-close semantics, address inspection, descriptor readiness,
-  nonblocking accept/receive/send, and deterministic teardown;
+  nonblocking accept/connect/receive/send, consume-on-read connection errors,
+  and deterministic teardown;
 - TCP syscall frames proven across two independent synchronous runtime workers;
 - exactly-once lease and resource cleanup assertions.
 
