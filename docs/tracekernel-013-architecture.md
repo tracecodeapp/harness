@@ -444,13 +444,18 @@ descriptor mapping, including descriptors above stderr, while string
 extra piped descriptors and IPC channels return `ENOSYS` until the spawn
 response can return a variable set of parent pipe endpoints.
 
-Kernel wait/reap now has an explicit nonblocking mode. It returns a running
-state without reserving or reaping the child, while an exited child is still
-reaped exactly once and subsequent or competing waits return `ECHILD`. C++
-maps this to `waitpid(..., WNOHANG)`, Python uses it for `Popen.poll()` and
-timed waits, and managed C# exposes `KernelProcess.TryWait`; JavaScript keeps
-its event-driven `ChildProcess` completion path on the same authoritative
-blocking wait.
+Kernel wait/reap implements the traditional child selectors: a positive PID
+waits for that exact child, `-1` waits for any child, `0` waits for a child in
+the caller's process group, and a value below `-1` waits for a child in that
+PGID. `WNOHANG` returns a running state without reserving or reaping a child.
+An exited child is reaped exactly once; subsequent or competing waits return
+`ECHILD`, and concurrent selector waiters cannot claim the same child.
+Selection is event-driven and process-group changes wake affected waiters.
+C++ maps the contract to ordinary `waitpid`, Python exposes `os.waitpid`,
+`os.wait`, `Popen.poll()`, and timed waits, and managed C# exposes
+`KernelProcess.WaitChild`/`TryWaitChild` in addition to instance waits.
+JavaScript keeps its event-driven `ChildProcess` completion path on the same
+authoritative blocking wait.
 
 Process admission validates topology before allocating a PID or runtime lease.
 A child can inherit its parent's session, create a new session (which also
@@ -521,15 +526,16 @@ close-on-exec; `os.pipe2` retains explicit `O_CLOEXEC` and `O_NONBLOCK`
 behavior.
 
 The C/C++ WASI process compatibility slice is intentionally smaller than a
-complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,
-`SIGTERM`, and `SIGKILL`, and maps `posix_spawnp` through TraceKernel's runtime
-command resolver. An explicit `envp` is forwarded as child environment
-overrides; a null `envp` inherits the parent environment. Ordered
+complete host libc. It supports blocking and nonblocking `waitpid` with exact,
+any-child, caller-PGID, and named-PGID selectors, `SIGINT`, `SIGTERM`, and
+`SIGKILL`, and maps `posix_spawnp` through TraceKernel's runtime command
+resolver. An explicit `envp` is forwarded as child environment overrides; a
+null `envp` inherits the parent environment. Ordered
 `posix_spawn_file_actions_adddup2` and `addclose` operations run against the
 child descriptor table after inheritance and structured stdio setup.
-Nonblocking and selector-based waits, arbitrary signal handlers,
-PATH-compatible executable search, and `addopen` remain explicit later slices
-rather than silently falling back to WASI placeholders.
+Arbitrary signal handlers, PATH-compatible executable search, stopped/continued
+child states, and `addopen` remain explicit later slices rather than silently
+falling back to WASI placeholders.
 
 Filesystem watches are now session resources exposed through process-owned
 descriptors. `watch(path)` installs an `fs-watch` descriptor; ordinary
@@ -623,7 +629,9 @@ The initial 0.13 branch now establishes:
   JavaScript and Python children, including process-owned piped stdio,
   synchronous wait/reap, signal delivery, local-to-kernel descriptor
   inheritance/remapping, shared TKFS visibility, and separate-worker
-  interpreter isolation;
+  interpreter isolation; ordinary `os.waitpid`/`os.wait` expose exact,
+  any-child, caller-PGID, and named-PGID selection with `WNOHANG`, POSIX status
+  words, and `ChildProcessError(ECHILD)`;
 - a Python `socket` adapter for IPv4 TCP sockets backed by
   process-owned TraceKernel descriptors, with bind/listen/accept/connect,
   fragmented send/recv, half-close, address inspection, local Pyodide
@@ -640,7 +648,8 @@ The initial 0.13 branch now establishes:
 - managed C# `KernelProcess`, `KernelDescriptor`, and `KernelPipe` surfaces for
   spawn, selected/all descriptor inheritance, atomic parent-to-child descriptor
   mappings, ordered child `dup2`/close actions, piped stdio, raw descriptor I/O,
-  signal delivery, synchronous wait/reap, and descriptor duplication/close;
+  signal delivery, synchronous wait/reap, selector-based
+  `WaitChild`/`TryWaitChild`, and descriptor duplication/close;
   real browser conformance covers C# parents spawning both JavaScript and C#
   children, same-language worker/static-state isolation, shared TKFS mutation,
   and a JavaScript child writing through a remapped inherited C# pipe fd;
