@@ -1,7 +1,9 @@
 import {
   TraceKernelDescriptorTable,
+  TraceKernelPipe,
   type TraceKernelDescriptor,
   type TraceKernelOpenFileOptions,
+  type TraceKernelPipeOptions,
   type TraceKernelStat,
 } from '@tracecode/tracekernel';
 import * as Effect from 'effect/Effect';
@@ -61,8 +63,10 @@ function timestamp(stat: { mtime?: Date }): number {
 export class RuntimeKernelDescriptorManager {
   private readonly tables = new Map<number, TraceKernelDescriptorTable>();
   private readonly nodes = new Map<number, RuntimeKernelOpenFileNode>();
+  private readonly pipes = new Map<string, TraceKernelPipe>();
   private readonly stopSnapshotting: () => void;
   private openTail: Promise<void> = Promise.resolve();
+  private nextPipeId = 1;
 
   constructor(private readonly fs: KernelObservedFileSystem) {
     this.stopSnapshotting = fs.watchBeforeMutations((mutation) =>
@@ -324,6 +328,53 @@ export class RuntimeKernelDescriptorManager {
     return Effect.runPromise(this.existingTable(pid, fd, 'dup').dup(fd));
   }
 
+  async createPipe(
+    pid: number,
+    options: TraceKernelPipeOptions = {}
+  ): Promise<{ readonly readFd: number; readonly writeFd: number }> {
+    const pipeId = `workspace-pipe-${this.nextPipeId++}`;
+    const pipe = await Effect.runPromise(TraceKernelPipe.make(
+      pipeId,
+      options,
+      (closedId) => this.pipes.delete(closedId)
+    ));
+    this.pipes.set(pipeId, pipe);
+    let readFd: number | undefined;
+    try {
+      readFd = this.install(pid, pipe.reader());
+      const writeFd = this.install(pid, pipe.writer());
+      return Object.freeze({ readFd, writeFd });
+    } catch (error) {
+      if (readFd !== undefined) {
+        await this.close(pid, readFd).catch(() => undefined);
+      }
+      await Effect.runPromise(pipe.dispose());
+      this.pipes.delete(pipeId);
+      throw error;
+    }
+  }
+
+  inherit(
+    childPid: number,
+    parentPid: number,
+    descriptors: 'all' | readonly number[]
+  ): Promise<void> {
+    const parent = this.tables.get(parentPid);
+    if (!parent) {
+      if (descriptors === 'all' || descriptors.length === 0) return Promise.resolve();
+      return Promise.reject(descriptorError(
+        'EBADF',
+        `parent process ${parentPid} has no inheritable descriptors`
+      ));
+    }
+    return Effect.runPromise(
+      this.tableForProcess(childPid).inherit(
+        parent,
+        descriptors === 'all' ? undefined : descriptors
+      )
+    );
+  }
+
   async close(pid: number, fd: number): Promise<void> {
     const table = this.existingTable(pid, fd, 'close');
     await Effect.runPromise(table.close(fd));
@@ -340,6 +391,12 @@ export class RuntimeKernelDescriptorManager {
   async dispose(): Promise<void> {
     this.stopSnapshotting();
     await Promise.all([...this.tables.keys()].map((pid) => this.closeProcess(pid)));
+    await Promise.all(
+      [...this.pipes.values()].map((pipe) =>
+        Effect.runPromise(pipe.dispose()).catch(() => undefined)
+      )
+    );
+    this.pipes.clear();
     this.nodes.clear();
   }
 

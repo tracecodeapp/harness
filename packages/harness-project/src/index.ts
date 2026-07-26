@@ -600,11 +600,13 @@ const TRACEKERNEL_HTTP_STATUS_TEXT: Readonly<Record<number, string>> = Object.fr
 });
 const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'E2BIG',
+  'EAGAIN',
   'EACCES',
   'EADDRINUSE',
   'EAFNOSUPPORT',
   'EBADF',
   'EBUSY',
+  'ECHILD',
   'ECONNREFUSED',
   'EDESTADDRREQ',
   'ELOOP',
@@ -687,6 +689,7 @@ interface RuntimeKernelProcessRecord {
   tty: RuntimeKernelTtyName;
   readonly command: string;
   readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
   readonly actor: RuntimeWorkspaceActor;
   readonly signalPolicy: RuntimeWorkspaceProcessSignalPolicy;
   readonly startedAt: string;
@@ -708,6 +711,14 @@ interface RuntimeKernelFileDescriptorRecord {
 interface RuntimeKernelZombieRecord {
   process: RuntimeKernelProcessRecord;
   expiresAtMs: number;
+}
+
+interface RuntimeKernelProcessLaunchHooks {
+  initialize?: (
+    process: RuntimeKernelProcessRecord,
+    context: RuntimeCommandExecutionContext
+  ) => Promise<void>;
+  ready?: (process: RuntimeKernelProcessRecord) => void;
 }
 
 interface RuntimeKernelEventRecord {
@@ -1015,6 +1026,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly zombieProcessTable = new Map<number, RuntimeKernelZombieRecord>();
   private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
   private readonly anyProcessWaiters: Array<(process: RuntimeKernelProcessRecord) => void> = [];
+  private readonly runtimeChildWaits = new Set<number>();
   private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
   private readonly kernelJournalLog: KernelJournalRecord[] = [];
   private readonly httpListeners = new Map<string, RuntimeKernelHttpListenerRecord>();
@@ -1464,6 +1476,80 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     try {
       switch (request.op) {
+        case 'pipe': {
+          const process = this.runtimeSyscallProcess(context);
+          const pipe = await this.kernelDescriptors.createPipe(
+            process.pid,
+            request.options
+          );
+          return {
+            ok: true,
+            value: {
+              op: 'pipe',
+              readFd: pipe.readFd,
+              writeFd: pipe.writeFd,
+            },
+          };
+        }
+        case 'spawn': {
+          const process = this.runtimeSyscallProcess(context);
+          const child = await this.spawnRuntimeSyscallChild(
+            process,
+            request
+          );
+          return { ok: true, value: { op: 'spawn', pid: child.pid } };
+        }
+        case 'wait': {
+          const process = this.runtimeSyscallProcess(context);
+          const child = await this.waitRuntimeSyscallChild(
+            process,
+            request.pid
+          );
+          const exitCode = child.exitCode ?? 1;
+          const signal = child.signal === 'SIGINT' ||
+            child.signal === 'SIGTERM' ||
+            child.signal === 'SIGKILL'
+            ? child.signal
+            : undefined;
+          return {
+            ok: true,
+            value: {
+              op: 'wait',
+              pid: child.pid,
+              termination: signal
+                ? {
+                    kind: 'signal',
+                    signal,
+                    exitCode,
+                  }
+                : {
+                    kind: 'exit',
+                    exitCode,
+                  },
+            },
+          };
+        }
+        case 'kill': {
+          const process = this.runtimeSyscallProcess(context);
+          const target = this.findProcessRecord(request.pid);
+          if (!target || target.state === 'exited') {
+            throw Object.assign(
+              new Error(`ESRCH: process ${request.pid} does not exist`),
+              { code: 'ESRCH' }
+            );
+          }
+          if (
+            target.signalPolicy === 'system-only' &&
+            process.actor.kind !== 'system'
+          ) {
+            throw Object.assign(
+              new Error(`EACCES: process ${request.pid} is protected`),
+              { code: 'EACCES' }
+            );
+          }
+          this.signalProcess(target, request.signal);
+          return { ok: true, value: { op: 'kill' } };
+        }
         case 'socket': {
           const fd = await this.kernelNetwork.socket(
             context?.process.pid ?? 0
@@ -1883,6 +1969,122 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ok: false,
       error: { code, message },
     };
+  }
+
+  private runtimeSyscallProcess(
+    context?: RuntimeCommandExecutionContext
+  ): RuntimeKernelProcessRecord {
+    const process = context?.process as RuntimeKernelProcessRecord | undefined;
+    if (!process || this.processTable.get(process.pid) !== process) {
+      throw Object.assign(
+        new Error('ESRCH: runtime syscall is not attached to a live process'),
+        { code: 'ESRCH' }
+      );
+    }
+    return process;
+  }
+
+  private async spawnRuntimeSyscallChild(
+    parent: RuntimeKernelProcessRecord,
+    request: Extract<TraceKernelSyscallRequest, { op: 'spawn' }>
+  ): Promise<RuntimeKernelProcessRecord> {
+    const command = [request.command, ...(request.args ?? [])]
+      .map(shellQuote)
+      .join(' ');
+    const admissionError = this.processAdmissionError(command);
+    if (admissionError) throw admissionError;
+
+    let created = false;
+    let resolveCreated!: (process: RuntimeKernelProcessRecord) => void;
+    let rejectCreated!: (error: unknown) => void;
+    const childCreated = new Promise<RuntimeKernelProcessRecord>((resolve, reject) => {
+      resolveCreated = resolve;
+      rejectCreated = reject;
+    });
+    const completion = this.runCommandAs(
+      command,
+      {
+        cwd: request.cwd ?? parent.cwd,
+        env: {
+          ...parent.env,
+          ...(request.env ?? {}),
+        },
+        retainOnExit: true,
+      },
+      parent,
+      {
+        initialize: async (child) => {
+          if (request.inheritDescriptors !== undefined) {
+            await this.kernelDescriptors.inherit(
+              child.pid,
+              parent.pid,
+              request.inheritDescriptors
+            );
+          }
+        },
+        ready: (child) => {
+          created = true;
+          resolveCreated(child);
+        },
+      }
+    );
+    void completion.then(
+      (result) => {
+        if (!created) {
+          rejectCreated(Object.assign(
+            new Error(
+              result.error?.message ??
+              `EIO: child process '${command}' completed before admission`
+            ),
+            { code: result.error?.code ?? 'EIO' }
+          ));
+        }
+      },
+      (error) => {
+        if (!created) rejectCreated(error);
+      }
+    );
+    return childCreated;
+  }
+
+  private async waitRuntimeSyscallChild(
+    parent: RuntimeKernelProcessRecord,
+    pid: number
+  ): Promise<RuntimeKernelProcessRecord> {
+    const child = this.findProcessRecord(pid);
+    if (
+      !child ||
+      child.ppid !== parent.pid ||
+      this.runtimeChildWaits.has(pid)
+    ) {
+      throw Object.assign(
+        new Error(
+          `ECHILD: process ${pid} is not an unreaped child of process ${parent.pid}`
+        ),
+        { code: 'ECHILD' }
+      );
+    }
+    this.runtimeChildWaits.add(pid);
+    try {
+      const zombie = await this.waitForZombieProcess(pid, parent.pid);
+      if (!zombie || zombie.ppid !== parent.pid) {
+        throw Object.assign(
+          new Error(
+            `ECHILD: process ${pid} is not an unreaped child of process ${parent.pid}`
+          ),
+          { code: 'ECHILD' }
+        );
+      }
+      this.zombieProcessTable.delete(pid);
+      this.recordKernelEvent('process-reap', pid, {
+        exitCode: zombie.exitCode ?? 0,
+        signal: zombie.signal,
+        parentPid: parent.pid,
+      });
+      return zombie;
+    } finally {
+      this.runtimeChildWaits.delete(pid);
+    }
   }
 
   private listenHttp(
@@ -3660,6 +3862,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       tty: '/dev/tty',
       command: 'tracekernel',
       cwd: this.cwd,
+      env: Object.freeze({ ...this.baseEnv }),
       actor: SYSTEM_ACTOR,
       signalPolicy: 'system-only',
       startedAt: this.projectSession?.lifecycle.createdAt ?? new Date(0).toISOString(),
@@ -7508,7 +7711,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private async runCommandAs(
     command: string,
     options: RuntimeCommandOptions = {},
-    parent?: RuntimeKernelProcessRecord
+    parent?: RuntimeKernelProcessRecord,
+    launchHooks?: RuntimeKernelProcessLaunchHooks
   ): Promise<RuntimeCommandResult> {
     const unusable = this.assertWorkspaceUsableForRun(command);
     if (unusable) return unusable;
@@ -7540,6 +7744,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       tty: terminalPresentation ? '/dev/tty' : '?',
       command,
       cwd: commandCwd,
+      env: Object.freeze({
+        ...(parent?.env ?? this.baseEnv),
+        ...(options.env ?? {}),
+      }),
       actor,
       signalPolicy: 'standard',
       startedAt: new Date().toISOString(),
@@ -7572,6 +7780,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const commandFs = new CommandBoundFileSystem(this.fs, commandContext);
     registerCommandContext(commandFs, commandContext);
     this.processTable.set(process.pid, process);
+    try {
+      await launchHooks?.initialize?.(process, commandContext);
+      launchHooks?.ready?.(process);
+    } catch (error) {
+      this.processTable.delete(process.pid);
+      await this.kernelDescriptors.closeProcess(process.pid);
+      process.state = 'exited';
+      process.exitCode = 126;
+      process.endedAt = new Date().toISOString();
+      throw error;
+    }
     this.recordKernelEvent('process-queue', process.pid, {
       ppid: process.ppid,
       pgid: process.pgid,
@@ -7628,7 +7847,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
 
         const bash = this.createBash(options.executionLimits, commandContext, commandFs);
-        const commandEnv = { ...this.baseEnv, ...(options.env ?? {}) };
+        const commandEnv = { ...process.env };
         const baselineEnv = options.onEnvChanges ? { ...bash.getEnv(), ...commandEnv } : undefined;
         // Closed stdin pipes represent complete input supplied with a command
         // (for example a captured file, fixture, or non-interactive API call).
@@ -8101,6 +8320,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.zombieProcessTable.clear();
     this.processWaiters.clear();
     this.anyProcessWaiters.splice(0);
+    this.runtimeChildWaits.clear();
     this.recordKernelEvent('kernel-destroy', 1, { reason: options.reason ?? 'destroy', clearStorage: options.clearStorage === true });
     this.destroyed = true;
   }
@@ -8483,6 +8703,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       tty: '?',
       command: name,
       cwd,
+      env: Object.freeze({
+        ...this.baseEnv,
+        ...(options.env ?? {}),
+      }),
       actor: options.actor,
       signalPolicy: options.signalPolicy ?? 'standard',
       startedAt: new Date().toISOString(),
