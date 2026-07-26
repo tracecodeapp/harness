@@ -3,7 +3,9 @@ import * as Effect from 'effect/Effect';
 import * as Queue from 'effect/Queue';
 import type {
   TraceKernelDescriptor,
+  TraceKernelDescriptorReadiness,
   TraceKernelDescriptorKind,
+  TraceKernelPollEvents,
 } from './descriptors';
 import { TraceKernelBadFileDescriptorError } from './errors';
 
@@ -103,6 +105,7 @@ class TraceKernelFileWatch {
     readonly registration: TraceKernelWatchRegistration,
     private readonly events: Queue.Queue<Uint8Array>,
     private readonly closedSignal: Deferred.Deferred<void>,
+    private readinessChanged: Deferred.Deferred<void>,
     private readonly readMutex: Effect.Semaphore,
     private readonly onFinalClose: (id: string) => void
   ) {}
@@ -118,12 +121,14 @@ class TraceKernelFileWatch {
         Math.max(1, Math.floor(options.capacityEvents ?? 1024))
       );
       const closedSignal = yield* Deferred.make<void>();
+      const readinessChanged = yield* Deferred.make<void>();
       const readMutex = yield* Effect.makeSemaphore(1);
       return new TraceKernelFileWatch(
         id,
         registration,
         events,
         closedSignal,
+        readinessChanged,
         readMutex,
         onFinalClose
       );
@@ -148,12 +153,14 @@ class TraceKernelFileWatch {
         frame = encodeTraceKernelWatchEvent(event);
       } catch {
         this.overflowPending = true;
-        return Effect.void;
+        return this.enqueueOverflowIfNeeded();
       }
       return Queue.offer(this.events, frame).pipe(
-        Effect.tap((accepted) => Effect.sync(() => {
-          if (!accepted) this.overflowPending = true;
-        })),
+        Effect.tap((accepted) => accepted
+          ? this.notifyReadiness()
+          : Effect.sync(() => {
+              this.overflowPending = true;
+            })),
         Effect.asVoid
       );
     });
@@ -164,7 +171,11 @@ class TraceKernelFileWatch {
       kind: 'fs-watch' as TraceKernelDescriptorKind,
       resourceId: this.id,
       resource: this,
-      read: (maxBytes) => this.read(maxBytes),
+      read: (maxBytes) => this.read(maxBytes).pipe(
+        Effect.tap(() => this.notifyReadiness())
+      ),
+      readiness: (events) => this.readiness(events),
+      awaitReadiness: (events) => this.awaitReadiness(events),
       duplicate: () => this.duplicate(),
       close: () => this.close(),
     };
@@ -199,11 +210,53 @@ class TraceKernelFileWatch {
       this.events,
       encodeTraceKernelWatchEvent({ eventType: 'overflow', path: '' })
     ).pipe(
-      Effect.tap((accepted) => Effect.sync(() => {
-        if (accepted) this.overflowPending = false;
-      })),
+      Effect.tap((accepted) => accepted
+        ? Effect.sync(() => {
+            this.overflowPending = false;
+          }).pipe(Effect.andThen(this.notifyReadiness()))
+        : Effect.void),
       Effect.asVoid
     );
+  }
+
+  private readiness(
+    events: TraceKernelPollEvents
+  ): Effect.Effect<TraceKernelDescriptorReadiness> {
+    return Queue.isEmpty(this.events).pipe(
+      Effect.map((empty) => Object.freeze({
+        read: events.read &&
+          (this.remainder.byteLength > 0 || !empty),
+        write: false,
+        hangup: this.closed,
+        error: false,
+      }))
+    );
+  }
+
+  private awaitReadiness(
+    events: TraceKernelPollEvents
+  ): Effect.Effect<TraceKernelDescriptorReadiness> {
+    return Effect.suspend(() => {
+      const changed = this.readinessChanged;
+      return this.readiness(events).pipe(
+        Effect.flatMap((readiness) =>
+          readiness.read || readiness.hangup
+            ? Effect.succeed(readiness)
+            : Deferred.await(changed).pipe(
+                Effect.andThen(this.awaitReadiness(events))
+              )
+        )
+      );
+    });
+  }
+
+  private notifyReadiness(): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      const previous = this.readinessChanged;
+      const next = yield* Deferred.make<void>();
+      this.readinessChanged = next;
+      yield* Deferred.succeed(previous, undefined);
+    });
   }
 
   private takeFrame(frame: Uint8Array, maxBytes: number): Uint8Array {
@@ -233,7 +286,10 @@ class TraceKernelFileWatch {
       if (this.references > 0) return Effect.void;
       this.closed = true;
       this.onFinalClose(this.id);
-      return Deferred.succeed(this.closedSignal, undefined).pipe(Effect.asVoid);
+      return Deferred.succeed(this.closedSignal, undefined).pipe(
+        Effect.asVoid,
+        Effect.andThen(this.notifyReadiness())
+      );
     });
   }
 

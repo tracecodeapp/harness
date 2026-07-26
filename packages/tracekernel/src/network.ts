@@ -5,6 +5,8 @@ import * as Queue from 'effect/Queue';
 import {
   TraceKernelPipe,
   type TraceKernelDescriptor,
+  type TraceKernelDescriptorReadiness,
+  type TraceKernelPollEvents,
 } from './descriptors';
 import {
   TraceKernelNetworkError,
@@ -102,6 +104,7 @@ export class TraceKernelTcpSocket {
     readonly id: string,
     private readonly namespace: TraceKernelNetworkNamespace,
     private readonly closed: Deferred.Deferred<void>,
+    private readinessChanged: Deferred.Deferred<void>,
     private readonly onFullyClosed: (id: string) => void
   ) {}
 
@@ -112,6 +115,8 @@ export class TraceKernelTcpSocket {
       resource: this,
       read: (maxBytes) => this.read(maxBytes),
       write: (bytes) => this.write(bytes),
+      readiness: (events) => this.readiness(events),
+      awaitReadiness: (events) => this.awaitReadiness(events),
       duplicate: () => this.duplicate(),
       close: () => this.closeReference(),
     };
@@ -167,6 +172,7 @@ export class TraceKernelTcpSocket {
         this.listener = { queue, closed };
         this.state = 'listening';
         this.namespace.markListening(this, options.capacityChunks);
+        yield* this.notifyReadiness();
       });
     });
   }
@@ -183,6 +189,7 @@ export class TraceKernelTcpSocket {
           Effect.andThen(Effect.fail(networkError('EBADF', 'listening socket is closed')))
         )
       ).pipe(
+        Effect.tap(() => this.notifyReadiness()),
         Effect.flatMap((socket) => Effect.all({
           localAddress: socket.localAddress(),
           remoteAddress: socket.remoteAddress(),
@@ -234,12 +241,14 @@ export class TraceKernelTcpSocket {
     localAddress: TraceKernelTcpAddress,
     remoteAddress: TraceKernelTcpAddress,
     ownsBinding: boolean
-  ): void {
-    this.endpoint = endpoint;
-    this.localAddressValue = Object.freeze({ ...localAddress });
-    this.remoteAddressValue = Object.freeze({ ...remoteAddress });
-    this.ownsBinding = this.ownsBinding || ownsBinding;
-    this.state = 'connected';
+  ): Effect.Effect<void> {
+    return Effect.sync(() => {
+      this.endpoint = endpoint;
+      this.localAddressValue = Object.freeze({ ...localAddress });
+      this.remoteAddressValue = Object.freeze({ ...remoteAddress });
+      this.ownsBinding = this.ownsBinding || ownsBinding;
+      this.state = 'connected';
+    }).pipe(Effect.andThen(this.notifyReadiness()));
   }
 
   reserveImplicitBinding(address: TraceKernelTcpAddress): void {
@@ -263,7 +272,7 @@ export class TraceKernelTcpSocket {
       Deferred.await(listener.closed).pipe(
         Effect.andThen(Effect.fail(networkError('ECONNREFUSED', 'listener closed during connect')))
       )
-    );
+    ).pipe(Effect.tap(() => this.notifyReadiness()));
   }
 
   shutdown(how: TraceKernelTcpShutdownHow): Effect.Effect<void, TraceKernelNetworkError> {
@@ -280,7 +289,9 @@ export class TraceKernelTcpSocket {
         this.writeShutdown = true;
         effects.push(this.endpoint.writer.close());
       }
-      return Effect.all(effects, { concurrency: 'unbounded', discard: true });
+      return Effect.all(effects, { concurrency: 'unbounded', discard: true }).pipe(
+        Effect.andThen(this.notifyReadiness())
+      );
     });
   }
 
@@ -314,6 +325,7 @@ export class TraceKernelTcpSocket {
         : Effect.void;
       return Effect.all([
         notifyClosed,
+        this.notifyReadiness(),
         closeListener,
         closeEndpoint,
         this.ownsBinding
@@ -345,6 +357,117 @@ export class TraceKernelTcpSocket {
     }
     return this.endpoint.writer.write?.(bytes)
       ?? Effect.fail(networkError('EBADF', 'socket is not writable'));
+  }
+
+  private readiness(
+    events: TraceKernelPollEvents
+  ): Effect.Effect<TraceKernelDescriptorReadiness, Error> {
+    return Effect.suspend(() => {
+      if (this.state === 'closed') {
+        return Effect.succeed(Object.freeze({
+          read: false,
+          write: false,
+          hangup: true,
+          error: true,
+        }));
+      }
+      if (this.state === 'listening' && this.listener) {
+        return Queue.isEmpty(this.listener.queue).pipe(
+          Effect.map((empty) => Object.freeze({
+            read: events.read && !empty,
+            write: false,
+            hangup: false,
+            error: false,
+          }))
+        );
+      }
+      if (this.state !== 'connected' || !this.endpoint) {
+        return Effect.succeed(Object.freeze({
+          read: false,
+          write: false,
+          hangup: false,
+          error: false,
+        }));
+      }
+      const endpoint = this.endpoint;
+      const read = endpoint.reader.readiness?.({
+        read: events.read && !this.readShutdown,
+        write: false,
+      }) ?? Effect.succeed({
+        read: false,
+        write: false,
+        hangup: false,
+        error: false,
+      });
+      const write = endpoint.writer.readiness?.({
+        read: false,
+        write: events.write && !this.writeShutdown,
+      }) ?? Effect.succeed({
+        read: false,
+        write: false,
+        hangup: false,
+        error: false,
+      });
+      return Effect.all({ read, write }).pipe(
+        Effect.map((ready) => Object.freeze({
+          read: !this.readShutdown && ready.read.read,
+          write: !this.writeShutdown && ready.write.write,
+          hangup: this.readShutdown ||
+            ready.read.hangup ||
+            ready.write.hangup,
+          error: ready.read.error || ready.write.error,
+        }))
+      );
+    });
+  }
+
+  private awaitReadiness(
+    events: TraceKernelPollEvents
+  ): Effect.Effect<TraceKernelDescriptorReadiness, Error> {
+    return Effect.suspend(() => {
+      const changed = this.readinessChanged;
+      return this.readiness(events).pipe(
+        Effect.flatMap((readiness) => {
+          if (
+            readiness.read ||
+            readiness.write ||
+            readiness.hangup ||
+            readiness.error
+          ) {
+            return Effect.succeed(readiness);
+          }
+          const waits: Effect.Effect<unknown, Error>[] = [
+            Deferred.await(changed),
+          ];
+          if (this.state === 'connected' && this.endpoint) {
+            if (this.endpoint.reader.awaitReadiness) {
+              waits.push(this.endpoint.reader.awaitReadiness({
+                read: events.read && !this.readShutdown,
+                write: false,
+              }));
+            }
+            if (this.endpoint.writer.awaitReadiness) {
+              waits.push(this.endpoint.writer.awaitReadiness({
+                read: false,
+                write: events.write && !this.writeShutdown,
+              }));
+            }
+          }
+          return Effect.raceAll(waits).pipe(
+            Effect.andThen(this.awaitReadiness(events))
+          );
+        })
+      );
+    });
+  }
+
+  private notifyReadiness(): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      const previous = this.readinessChanged;
+      const next = yield* Deferred.make<void>();
+      this.readinessChanged = next;
+      yield* Deferred.succeed(previous, undefined);
+    });
   }
 
   private duplicate(): Effect.Effect<TraceKernelDescriptor, Error> {
@@ -394,10 +517,12 @@ export class TraceKernelNetworkNamespace {
       }
       const id = `tcp-${this.nextSocketId++}`;
       const closed = yield* Deferred.make<void>();
+      const readinessChanged = yield* Deferred.make<void>();
       const socket = new TraceKernelTcpSocket(
         id,
         this,
         closed,
+        readinessChanged,
         (closedId) => this.sockets.delete(closedId)
       );
       this.sockets.set(id, socket);
@@ -474,7 +599,7 @@ export class TraceKernelNetworkNamespace {
       const listenerAddress = target.address.host === '0.0.0.0'
         ? Object.freeze({ host: '127.0.0.1', port: target.address.port })
         : target.address;
-      serverSocket.attachConnected(
+      yield* serverSocket.attachConnected(
         pair.server,
         listenerAddress,
         localAddress,
@@ -491,7 +616,12 @@ export class TraceKernelNetworkNamespace {
         }
         return yield* Effect.failCause(offered.cause);
       }
-      client.attachConnected(pair.client, localAddress, listenerAddress, ownsBinding);
+      yield* client.attachConnected(
+        pair.client,
+        localAddress,
+        listenerAddress,
+        ownsBinding
+      );
       return Object.freeze({
         localAddress,
         remoteAddress: listenerAddress,

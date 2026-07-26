@@ -1,6 +1,8 @@
 #!/usr/bin/env npx tsx
 
 import * as Effect from 'effect/Effect';
+import * as Fiber from 'effect/Fiber';
+import * as Option from 'effect/Option';
 import {
   decodeTraceKernelWatchEvent,
   makeTraceKernelHost,
@@ -64,18 +66,44 @@ async function main(): Promise<void> {
       assertCondition(watched.value.op === 'watch', 'watch returned the wrong response variant.');
       if (watched.value.op !== 'watch') return;
 
-      const firstRead = yield* Effect.fork(watcherSyscalls.dispatch({
-        op: 'read',
-        fd: watched.value.fd,
-        maxBytes: 16 * 1024 + 9,
+      const emptyPoll = yield* watcherSyscalls.dispatch({
+        op: 'poll',
+        entries: [{ fd: watched.value.fd, read: true }],
+        timeoutMs: 0,
+      });
+      success(emptyPoll);
+      assertCondition(
+        emptyPoll.value.op === 'poll' && emptyPoll.value.entries.length === 0,
+        `an empty watch reported readable events: ${JSON.stringify(emptyPoll)}`
+      );
+      const watchPoll = yield* Effect.fork(watcherSyscalls.dispatch({
+        op: 'poll',
+        entries: [{ fd: watched.value.fd, read: true }],
+        timeoutMs: 1_000,
       }));
+      yield* Effect.yieldNow();
+      assertCondition(
+        Option.isNone(yield* Fiber.poll(watchPoll)),
+        'watch poll returned before a filesystem mutation.'
+      );
       const created = yield* writerSyscalls.dispatch({
         op: 'writeFile',
         path: '/workspace/from-peer.txt',
         bytes: new TextEncoder().encode('one'),
       });
       success(created);
-      const first = yield* Effect.fromFiber(firstRead);
+      const readyPoll = yield* Fiber.join(watchPoll);
+      success(readyPoll);
+      assertCondition(
+        readyPoll.value.op === 'poll' &&
+          readyPoll.value.entries[0]?.read === true,
+        `a filesystem mutation did not wake watch poll: ${JSON.stringify(readyPoll)}`
+      );
+      const first = yield* watcherSyscalls.dispatch({
+        op: 'read',
+        fd: watched.value.fd,
+        maxBytes: 16 * 1024 + 9,
+      });
       success(first);
       assertCondition(first.value.op === 'read', 'watch descriptor did not return bytes.');
       if (first.value.op !== 'read') return;
@@ -154,6 +182,7 @@ async function main(): Promise<void> {
     crossProcessNotifications: true,
     createVsChangeSemantics: true,
     boundedQueueOverflowIsExplicit: true,
+    eventDrivenPollReadiness: true,
     descriptorCloseStopsDelivery: true,
   }, null, 2));
 }

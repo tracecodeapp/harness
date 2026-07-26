@@ -109,16 +109,34 @@ async function main(): Promise<void> {
         backlog: 1,
         capacityChunks: 1,
       });
-      const accepting = yield* Effect.fork(session.acceptTcp(server, listenerFd));
-      yield* Effect.yieldNow();
+      const emptyListener = yield* server.descriptors.readiness(listenerFd, {
+        read: true,
+        write: false,
+      });
       assertCondition(
-        Option.isNone(yield* Fiber.poll(accepting)),
-        'accept() did not block while the listener queue was empty.'
+        !emptyListener.read,
+        'An empty TCP listener reported an accept-ready connection.'
       );
 
       const clientFd = yield* session.createTcpSocket(client);
       const connected = yield* session.connectTcp(client, clientFd, bound);
-      const accepted = yield* Fiber.join(accepting);
+      const readyListener = yield* server.descriptors.readiness(listenerFd, {
+        read: true,
+        write: false,
+      });
+      assertCondition(
+        readyListener.read,
+        'A queued TCP connection did not make the listener readable.'
+      );
+      const accepted = yield* session.acceptTcp(server, listenerFd);
+      const drainedListener = yield* server.descriptors.readiness(listenerFd, {
+        read: true,
+        write: false,
+      });
+      assertCondition(
+        !drainedListener.read,
+        'A drained listener remained spuriously readable.'
+      );
       assertCondition(
         connected.remoteAddress.port === bound.port &&
           accepted.localAddress.port === bound.port &&
@@ -132,7 +150,26 @@ async function main(): Promise<void> {
         'accept() did not install a process-owned socket descriptor.'
       );
 
+      const initiallyReadable = yield* server.descriptors.readiness(
+        accepted.fd,
+        { read: true, write: false }
+      );
+      assertCondition(
+        !initiallyReadable.read,
+        'An empty connected TCP stream reported readable data.'
+      );
+      const waitingForData = yield* Effect.fork(
+        server.descriptors.awaitReadiness(
+          accepted.fd,
+          { read: true, write: false }
+        )
+      );
       yield* client.write(clientFd, encoder.encode('abcdef'));
+      const dataReady = yield* Fiber.join(waitingForData);
+      assertCondition(
+        dataReady.read,
+        'TCP data did not wake descriptor readiness.'
+      );
       assertCondition(
         decoder.decode(yield* server.read(accepted.fd, 2)) === 'ab' &&
           decoder.decode(yield* server.read(accepted.fd, 8)) === 'cdef',
@@ -173,6 +210,14 @@ async function main(): Promise<void> {
       assertCondition(
         (yield* Fiber.join(waitingForFin)).byteLength === 0,
         'Peer write shutdown did not produce EOF.'
+      );
+      const peerFinReady = yield* server.descriptors.readiness(
+        accepted.fd,
+        { read: true, write: false }
+      );
+      assertCondition(
+        peerFinReady.read && peerFinReady.hangup,
+        'TCP peer FIN did not remain level-ready as readable HUP.'
       );
       yield* server.write(accepted.fd, encoder.encode('after-fin'));
       assertCondition(
@@ -250,6 +295,8 @@ async function main(): Promise<void> {
     sessionLocalPortOwnership: true,
     sessionNamespacesAreIsolated: true,
     blockingAcceptAndConnect: true,
+    listenerAndStreamReadiness: true,
+    peerFinReportsReadableHangup: true,
     bidirectionalFragmentedStreams: true,
     boundedBackpressure: true,
     writeHalfClosePreservesReverseStream: true,
