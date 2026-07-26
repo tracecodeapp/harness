@@ -473,6 +473,7 @@ export class TraceKernelSession {
     TraceKernelSessionClosedError |
       TraceKernelProcessLimitError |
       TraceKernelProcessStateError |
+      TraceKernelInvalidArgumentError |
       TraceKernelDescriptorInheritanceError
   > {
     return this.spawnPrepared(spec);
@@ -485,9 +486,10 @@ export class TraceKernelSession {
     ) => Effect.Effect<void, PreparationError>
   ): Effect.Effect<
     TraceKernelProcess,
-    TraceKernelSessionClosedError |
+      TraceKernelSessionClosedError |
       TraceKernelProcessLimitError |
       TraceKernelProcessStateError |
+      TraceKernelInvalidArgumentError |
       TraceKernelDescriptorInheritanceError |
       PreparationError
   > {
@@ -498,7 +500,8 @@ export class TraceKernelSession {
         catch: (error) =>
           error instanceof TraceKernelSessionClosedError ||
           error instanceof TraceKernelProcessLimitError ||
-          error instanceof TraceKernelProcessStateError
+          error instanceof TraceKernelProcessStateError ||
+          error instanceof TraceKernelInvalidArgumentError
           ? error
           : new TraceKernelSessionClosedError({
               sessionId: this.id,
@@ -568,9 +571,10 @@ export class TraceKernelSession {
     >
   ): Effect.Effect<
     TraceKernelProcess,
-    TraceKernelSessionClosedError |
+      TraceKernelSessionClosedError |
       TraceKernelProcessLimitError |
       TraceKernelProcessStateError |
+      TraceKernelInvalidArgumentError |
       TraceKernelDescriptorInheritanceError
   > {
     return Effect.gen(this, function* () {
@@ -699,9 +703,10 @@ export class TraceKernelSession {
     spec: TraceKernelProcessSpec
   ): Effect.Effect<
     TraceKernelProcessSnapshot,
-    TraceKernelSessionClosedError |
+      TraceKernelSessionClosedError |
       TraceKernelProcessLimitError |
       TraceKernelProcessStateError |
+      TraceKernelInvalidArgumentError |
       TraceKernelDescriptorInheritanceError
   > {
     return Effect.gen(this, function* () {
@@ -1300,14 +1305,59 @@ export class TraceKernelSession {
         message: `ESRCH: parent process ${ppid} does not exist in session ${this.id}`,
       });
     }
-    const pid = this.nextPid++;
+    const pid = this.nextPid;
     const parentSnapshot = parent?.snapshot();
-    const pgid = spec.processGroupId === 0
+    if (
+      spec.sessionId !== undefined &&
+      (!Number.isSafeInteger(spec.sessionId) || spec.sessionId < 0)
+    ) {
+      throw new TraceKernelInvalidArgumentError({
+        code: 'EINVAL',
+        argument: 'sessionId',
+        message: `EINVAL: invalid session id ${spec.sessionId}`,
+      });
+    }
+    if (
+      spec.processGroupId !== undefined &&
+      (!Number.isSafeInteger(spec.processGroupId) || spec.processGroupId < 0)
+    ) {
+      throw new TraceKernelInvalidArgumentError({
+        code: 'EINVAL',
+        argument: 'processGroupId',
+        message: `EINVAL: invalid process group id ${spec.processGroupId}`,
+      });
+    }
+    const startsNewSession = spec.sessionId === 0;
+    const inheritedSid = parentSnapshot?.sid ?? pid;
+    if (
+      spec.sessionId !== undefined &&
+      !startsNewSession &&
+      spec.sessionId !== inheritedSid
+    ) {
+      throw new TraceKernelInvalidArgumentError({
+        code: 'EINVAL',
+        argument: 'sessionId',
+        message: `EINVAL: child session ${spec.sessionId} does not match parent session ${inheritedSid}`,
+      });
+    }
+    const sid = startsNewSession ? pid : inheritedSid;
+    const pgid = startsNewSession || spec.processGroupId === 0
       ? pid
       : spec.processGroupId ?? parentSnapshot?.pgid ?? pid;
-    const sid = spec.sessionId === 0
-      ? pid
-      : spec.sessionId ?? parentSnapshot?.sid ?? pid;
+    if (
+      pgid !== pid &&
+      ![...this.processes.values()].some((candidate) => {
+        const snapshot = candidate.snapshot();
+        return snapshot.pgid === pgid && snapshot.sid === sid;
+      })
+    ) {
+      throw new TraceKernelInvalidArgumentError({
+        code: 'EINVAL',
+        argument: 'processGroupId',
+        message: `EINVAL: process group ${pgid} does not exist in session ${sid}`,
+      });
+    }
+    this.nextPid += 1;
     const record: MutableProcessRecord = {
       pid,
       ppid,

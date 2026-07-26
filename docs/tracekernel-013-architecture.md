@@ -452,6 +452,12 @@ timed waits, and managed C# exposes `KernelProcess.TryWait`; JavaScript keeps
 its event-driven `ChildProcess` completion path on the same authoritative
 blocking wait.
 
+Process admission validates topology before allocating a PID or runtime lease.
+A child can inherit its parent's session, create a new session (which also
+makes it the process-group leader), or join an existing process group in that
+same session. Foreign sessions, negative identifiers, and nonexistent or
+cross-session groups fail atomically with `EINVAL`.
+
 Descriptor-table entries also carry kernel-owned close-on-exec state.
 `inheritDescriptors: "all"` filters `FD_CLOEXEC` entries in the kernel, while
 explicit mappings remain spawn file actions and can intentionally pass a

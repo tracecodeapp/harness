@@ -70,6 +70,61 @@ async function main(): Promise<void> {
       });
       const syscalls = new TraceKernelSyscallDispatcher(session, process);
       const peerSyscalls = new TraceKernelSyscallDispatcher(session, peer);
+      const processCountBeforeInvalidTopology = session.processSnapshots().length;
+      const invalidGroup = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'invalid-process-group',
+        processGroupId: 999_999,
+      });
+      assertCondition(
+        !invalidGroup.ok &&
+          invalidGroup.error.code === 'EINVAL' &&
+          session.processSnapshots().length === processCountBeforeInvalidTopology,
+        `spawn admitted a nonexistent process group: ${JSON.stringify(invalidGroup)}`
+      );
+      const invalidSession = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'invalid-session',
+        sessionId: process.pid + 999,
+      });
+      assertCondition(
+        !invalidSession.ok &&
+          invalidSession.error.code === 'EINVAL' &&
+          session.processSnapshots().length === processCountBeforeInvalidTopology,
+        `spawn admitted a child into a foreign session: ${JSON.stringify(invalidSession)}`
+      );
+      const newSessionChild = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'new-session-child',
+        sessionId: 0,
+      });
+      success(newSessionChild);
+      if (newSessionChild.value.op !== 'spawn') {
+        throw new Error(`new-session spawn returned ${newSessionChild.value.op}`);
+      }
+      const newSessionPid = newSessionChild.value.pid;
+      assertCondition(
+        session.processSnapshots().some((snapshot) =>
+            snapshot.pid === newSessionPid &&
+            snapshot.sid === snapshot.pid &&
+            snapshot.pgid === snapshot.pid
+          ),
+        `setsid-style spawn did not become both session and group leader: ${JSON.stringify(
+          newSessionChild
+        )}`
+      );
+      success(yield* syscalls.dispatch({
+        op: 'kill',
+        pid: newSessionPid,
+        signal: 'SIGTERM',
+      }));
+      success(yield* syscalls.dispatch({
+        op: 'wait',
+        pid: newSessionPid,
+      }));
 
       const pipe = yield* syscalls.dispatch({
         op: 'pipe',
