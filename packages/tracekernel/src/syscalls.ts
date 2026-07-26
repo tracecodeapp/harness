@@ -24,6 +24,7 @@ import type {
   TraceKernelTcpListenOptions,
   TraceKernelTcpShutdownHow,
 } from './network';
+import type { TraceKernelWatchOptions } from './watch';
 
 export type TraceKernelSpawnStdioMode = 'pipe' | 'inherit' | 'ignore';
 
@@ -48,6 +49,11 @@ export type TraceKernelSyscallRequest =
       readonly options?: {
         readonly capacityChunks?: number;
       };
+    }
+  | {
+      readonly op: 'watch';
+      readonly path: string;
+      readonly options?: TraceKernelWatchOptions;
     }
   | {
       readonly op: 'spawn';
@@ -209,6 +215,7 @@ export type TraceKernelSyscallValue =
       readonly readFd: number;
       readonly writeFd: number;
     }
+  | { readonly op: 'watch'; readonly fd: number }
   | {
       readonly op: 'spawn';
       readonly pid: number;
@@ -274,6 +281,7 @@ export type TraceKernelSyscallErrorCode =
   | 'EBUSY'
   | 'ECHILD'
   | 'ELOOP'
+  | 'ENAMETOOLONG'
   | 'EMFILE'
   | 'EEXIST'
   | 'ECONNREFUSED'
@@ -383,6 +391,14 @@ export class TraceKernelSyscallDispatcher {
             readFd,
             writeFd,
           }))
+        );
+      case 'watch':
+        return this.session.watchFile(
+          this.process,
+          request.path,
+          request.options
+        ).pipe(
+          Effect.map((fd) => ({ op: 'watch' as const, fd }))
         );
       case 'spawn':
         return (

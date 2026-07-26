@@ -29,6 +29,7 @@ import type {
   TraceKernelSyscallResult,
   TraceKernelSyscallValue,
 } from '@tracecode/tracekernel';
+import { decodeTraceKernelWatchEvent } from '@tracecode/tracekernel';
 import {
   RuntimeProjectLiveIoController,
   createRuntimeProjectIoBridge,
@@ -6043,6 +6044,7 @@ export async function runBrowserJavaScriptProjectRequest(
       path: string;
       recursive: boolean;
       closed: boolean;
+      kernelFd?: number;
       listeners: Map<string, Array<(...args: unknown[]) => void>>;
     };
     type BrowserFileStat = {
@@ -6357,6 +6359,7 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const notifyFsWatchers = (eventType: 'change' | 'rename', path: string): void => {
       for (const watcher of fsWatchers) {
+        if (watcher.kernelFd !== undefined) continue;
         const filename = watchedFilename(watcher, path);
         if (filename !== null) queueMicrotask(() => emitFsWatch(watcher, eventType, filename));
       }
@@ -7601,6 +7604,65 @@ export async function runBrowserJavaScriptProjectRequest(
           closed: false,
           listeners,
         };
+        if (executionState.kernelSyscalls && executionState.kernelNetwork) {
+          const watched = executionState.kernelSyscalls.dispatchSync({
+            op: 'watch',
+            path: normalized,
+            options: {
+              recursive: watcher.recursive,
+            },
+          });
+          if (!watched.ok || watched.value.op !== 'watch') {
+            const failure = watched.ok
+              ? { code: 'EPROTO', message: 'EPROTO: invalid watch syscall response' }
+              : watched.error;
+            throw Object.assign(new Error(failure.message), {
+              code: failure.code,
+            });
+          }
+          watcher.kernelFd = watched.value.fd;
+          void eventLoopApi.track((async () => {
+            try {
+              while (!watcher.closed) {
+                const read = await dispatchBrowserNetworkSyscall(
+                  executionState.kernelNetwork,
+                  {
+                    op: 'read',
+                    fd: watcher.kernelFd!,
+                    maxBytes: 16 * 1024 + 9,
+                  }
+                );
+                if (read.bytes.byteLength === 0) break;
+                const event = decodeTraceKernelWatchEvent(read.bytes);
+                if (event.eventType === 'overflow') {
+                  const error = Object.assign(
+                    new Error('ENOSPC: TraceKernel filesystem watch queue overflow'),
+                    { code: 'ENOSPC' }
+                  );
+                  for (const errorListener of listeners.get('error') ?? []) {
+                    errorListener(error);
+                  }
+                  continue;
+                }
+                const changedPath = workspaceRelativeFromAbsolutePath(
+                  event.path,
+                  workspacePathContext
+                ) ?? event.path;
+                const filename = watchedFilename(watcher, changedPath);
+                if (filename !== null) {
+                  emitFsWatch(watcher, event.eventType, filename);
+                  notifyWatchFileWatchers(changedPath);
+                }
+              }
+            } catch (error) {
+              if (!watcher.closed) {
+                const errorListeners = listeners.get('error') ?? [];
+                if (errorListeners.length === 0) throw error;
+                for (const errorListener of errorListeners) errorListener(error);
+              }
+            }
+          })());
+        }
         const initialListener = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
         if (initialListener) on('change', initialListener as (...args: unknown[]) => void);
         fsWatchers.add(watcher);
@@ -7619,8 +7681,15 @@ export async function runBrowserJavaScriptProjectRequest(
             return api;
           },
           close: () => {
+            if (watcher.closed) return;
             watcher.closed = true;
             fsWatchers.delete(watcher);
+            if (watcher.kernelFd !== undefined && executionState.kernelSyscalls) {
+              executionState.kernelSyscalls.dispatchSync({
+                op: 'close',
+                fd: watcher.kernelFd,
+              });
+            }
             for (const closeListener of listeners.get('close') ?? []) closeListener();
           },
         };

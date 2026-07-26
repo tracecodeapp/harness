@@ -1,5 +1,6 @@
 import * as Effect from 'effect/Effect';
 import type { TraceKernelDescriptor } from './descriptors';
+import type { TraceKernelFileSystemMutation } from './watch';
 import {
   TraceKernelFileSystemError,
   type TraceKernelFileSystemErrorCode,
@@ -137,6 +138,8 @@ export class TraceKernelFileSystem {
   private nextInode = 1;
   private nextGeneration = 1;
   private generationBuffer?: SharedArrayBuffer;
+  private readonly mutationWatchers =
+    new Set<(mutation: TraceKernelFileSystemMutation) => void>();
 
   private constructor(private readonly mutex: Effect.Semaphore) {
     this.installInitialDirectory('/');
@@ -169,6 +172,15 @@ export class TraceKernelFileSystem {
       Atomics.store(new Int32Array(this.generationBuffer), 0, this.cacheGeneration);
     }
     return this.generationBuffer;
+  }
+
+  watchMutations(
+    listener: (mutation: TraceKernelFileSystemMutation) => void
+  ): () => void {
+    this.mutationWatchers.add(listener);
+    return () => {
+      this.mutationWatchers.delete(listener);
+    };
   }
 
   resolve(path: string, cwd = '/workspace'): Effect.Effect<string, TraceKernelFileSystemError> {
@@ -301,6 +313,7 @@ export class TraceKernelFileSystem {
             ));
           }
           this.touchDirectory(cursor, generation, timestamp);
+          this.notifyMutation(generation, 'rename', missing);
           return Effect.void;
         })
       ))
@@ -323,6 +336,7 @@ export class TraceKernelFileSystem {
           this.nodes.delete(directoryPath);
           const generation = this.beginMutation();
           this.touchDirectory(parentPath(directoryPath), generation, Date.now());
+          this.notifyMutation(generation, 'rename', [directoryPath]);
           return Effect.void;
         })
       ))
@@ -391,6 +405,7 @@ export class TraceKernelFileSystem {
             ));
             this.touchNode(parent, generation, timestamp, true);
           }
+          this.notifyMutation(generation, existing ? 'change' : 'rename', [filePath]);
           return Effect.void;
         })
       ))
@@ -430,6 +445,7 @@ export class TraceKernelFileSystem {
           const timestamp = Date.now();
           this.touchNode(existing, generation, timestamp, false);
           this.touchNode(parent, generation, timestamp, true);
+          this.notifyMutation(generation, 'rename', [newResult]);
           return Effect.void;
         })
       ))
@@ -467,6 +483,7 @@ export class TraceKernelFileSystem {
           const timestamp = Date.now();
           this.nodes.set(linkResult, this.makeSymlink(target, generation, timestamp));
           this.touchNode(parent, generation, timestamp, true);
+          this.notifyMutation(generation, 'rename', [linkResult]);
           return Effect.void;
         })
       ))
@@ -501,6 +518,7 @@ export class TraceKernelFileSystem {
           this.nodes.delete(entryPath);
           const generation = this.beginMutation();
           this.touchDirectory(parentPath(entryPath), generation, Date.now());
+          this.notifyMutation(generation, 'rename', [entryPath]);
           return Effect.void;
         })
       ))
@@ -578,6 +596,7 @@ export class TraceKernelFileSystem {
           this.touchNode(sourceNode, generation, timestamp, false);
           this.touchDirectory(parentPath(source), generation, timestamp);
           this.touchNode(destinationParent, generation, timestamp, true);
+          this.notifyMutation(generation, 'rename', [source, destination]);
           return Effect.void;
         })
       ))
@@ -615,6 +634,7 @@ export class TraceKernelFileSystem {
             const file = this.makeFile(new Uint8Array(0), 0o666, generation, timestamp);
             this.nodes.set(filePath, file);
             this.touchNode(parent, generation, timestamp, true);
+            this.notifyMutation(generation, 'rename', [filePath]);
             return Effect.succeed(new TraceKernelOpenFileNode(filePath, file));
           }
           if (existing.kind === 'directory') {
@@ -633,6 +653,7 @@ export class TraceKernelFileSystem {
             existing.contents = new Uint8Array(0);
             const generation = this.beginMutation();
             this.touchNode(existing, generation, Date.now(), true);
+            this.notifyMutation(generation, 'change', this.pathsForNode(existing));
           }
           return Effect.succeed(new TraceKernelOpenFileNode(filePath, existing));
         })
@@ -667,7 +688,9 @@ export class TraceKernelFileSystem {
         const next = new Uint8Array(nextLength);
         next.set(file.node.contents.slice(0, nextLength));
         file.node.contents = next;
-        this.touchNode(file.node, this.beginMutation(), Date.now(), true);
+        const generation = this.beginMutation();
+        this.touchNode(file.node, generation, Date.now(), true);
+        this.notifyMutation(generation, 'change', this.pathsForNode(file.node));
       })
     );
   }
@@ -688,7 +711,9 @@ export class TraceKernelFileSystem {
         next.set(bytes, writeOffset);
         node.contents = next;
         if (bytes.byteLength > 0) {
-          this.touchNode(node, this.beginMutation(), Date.now(), true);
+          const generation = this.beginMutation();
+          this.touchNode(node, generation, Date.now(), true);
+          this.notifyMutation(generation, 'change', this.pathsForNode(node));
         }
         return writeOffset + bytes.byteLength;
       })
@@ -707,7 +732,13 @@ export class TraceKernelFileSystem {
   }
 
   clear(): void {
-    if (this.nodes.size > 0) this.beginMutation();
+    if (this.nodes.size > 0) {
+      const paths = [...this.nodes.keys()];
+      const generation = this.beginMutation();
+      this.nodes.clear();
+      this.notifyMutation(generation, 'rename', paths);
+      return;
+    }
     this.nodes.clear();
   }
 
@@ -794,6 +825,12 @@ export class TraceKernelFileSystem {
     return count;
   }
 
+  private pathsForNode(node: TraceKernelNode): readonly string[] {
+    return [...this.nodes.entries()]
+      .filter(([, candidate]) => candidate === node)
+      .map(([path]) => path);
+  }
+
   /**
    * Resolve symbolic links while the namespace semaphore is held.
    *
@@ -878,6 +915,26 @@ export class TraceKernelFileSystem {
       Atomics.notify(sharedGeneration, 0);
     }
     return generation;
+  }
+
+  private notifyMutation(
+    generation: number,
+    eventType: TraceKernelFileSystemMutation['eventType'],
+    paths: readonly string[]
+  ): void {
+    if (paths.length === 0) return;
+    const mutation = Object.freeze({
+      generation,
+      eventType,
+      paths: Object.freeze([...new Set(paths)]),
+    });
+    for (const watcher of this.mutationWatchers) {
+      try {
+        watcher(mutation);
+      } catch {
+        // Notifications are observational and cannot roll back committed VFS state.
+      }
+    }
   }
 
   private touchDirectory(path: string, generation: number, timestamp: number): void {

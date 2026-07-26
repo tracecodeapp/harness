@@ -611,6 +611,14 @@ export interface RuntimeFileSystemBeforeMutation {
   readFile(path: string): Promise<Uint8Array>;
 }
 
+export interface RuntimeFileSystemMutation {
+  readonly revision: number;
+  readonly generation: number;
+  readonly kind: RuntimeFileSystemMutationKind;
+  readonly paths: readonly string[];
+  readonly pid?: number;
+}
+
 export type RuntimeFileSystemBeforeMutationObserver = (
   mutation: RuntimeFileSystemBeforeMutation
 ) => Promise<void> | void;
@@ -1686,7 +1694,8 @@ export class KernelObservedFileSystem implements IFileSystem {
   private nextInode = 10_000;
   private readonly generations = new Map<string, number>();
   private readonly inodes = new Map<string, number>();
-  private readonly mutationWatchers = new Set<(revision: number) => void>();
+  private readonly mutationWatchers =
+    new Set<(revision: number, mutation: RuntimeFileSystemMutation) => void>();
   private readonly beforeMutationObservers =
     new Set<RuntimeFileSystemBeforeMutationObserver>();
   private liveFileChangeBudgetPid: number | undefined;
@@ -1732,7 +1741,9 @@ export class KernelObservedFileSystem implements IFileSystem {
     return this.mutationCounter;
   }
 
-  watchMutations(listener: (revision: number) => void): () => void {
+  watchMutations(
+    listener: (revision: number, mutation: RuntimeFileSystemMutation) => void
+  ): () => void {
     this.mutationWatchers.add(listener);
     return () => {
       this.mutationWatchers.delete(listener);
@@ -2308,9 +2319,18 @@ export class KernelObservedFileSystem implements IFileSystem {
       this.generations.set(path, generation);
     }
     this.recordCommandMutation(context, generationPaths);
+    const mutation = Object.freeze({
+      revision: this.mutationCounter,
+      generation,
+      kind,
+      paths: Object.freeze(
+        [...new Set(paths.map((path) => normalizeFsLockPath(this.mapPath(path))))]
+      ),
+      ...(context?.process.pid === undefined ? {} : { pid: context.process.pid }),
+    });
     for (const watcher of this.mutationWatchers) {
       try {
-        watcher(this.mutationCounter);
+        watcher(this.mutationCounter, mutation);
       } catch {
         // Mutation observers are diagnostic/durability hooks and must not roll
         // back an already committed filesystem operation.

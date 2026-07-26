@@ -7,3 +7,4 @@ export * from './http1';
 export * from './syscalls';
 export * from './transport';
 export * from './vfs';
+export * from './watch';

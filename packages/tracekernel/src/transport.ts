@@ -47,6 +47,7 @@ const OP_CODES = {
   spawn: 32,
   wait: 33,
   kill: 34,
+  watch: 35,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -70,6 +71,7 @@ const SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'EBUSY',
   'ECHILD',
   'ELOOP',
+  'ENAMETOOLONG',
   'EMFILE',
   'EEXIST',
   'ECONNREFUSED',
@@ -321,6 +323,11 @@ export function encodeTraceKernelSyscallRequest(
     case 'pipe':
       writer.u32(request.options?.capacityChunks ?? 0);
       break;
+    case 'watch':
+      writer.string(request.path);
+      writer.u8(request.options?.recursive === true ? 1 : 0);
+      writer.u32(request.options?.capacityEvents ?? 0);
+      break;
     case 'spawn': {
       writer.string(request.runtime);
       writer.string(request.command);
@@ -499,6 +506,30 @@ export function decodeTraceKernelSyscallRequest(
         ...(capacityChunks === 0
           ? {}
           : { options: { capacityChunks } }),
+      };
+      break;
+    }
+    case 'watch': {
+      const path = reader.string();
+      const recursive = reader.u8();
+      if (recursive > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid watch recursive flag ${recursive}`
+        );
+      }
+      const capacityEvents = reader.u32();
+      request = {
+        op: 'watch',
+        path,
+        ...(!recursive && capacityEvents === 0
+          ? {}
+          : {
+              options: {
+                ...(recursive ? { recursive: true } : {}),
+                ...(capacityEvents === 0 ? {} : { capacityEvents }),
+              },
+            }),
       };
       break;
     }
@@ -840,6 +871,9 @@ export function encodeTraceKernelSyscallResult(
       writer.i32(value.readFd);
       writer.i32(value.writeFd);
       break;
+    case 'watch':
+      writer.i32(value.fd);
+      break;
     case 'spawn':
       writer.i32(value.pid);
       writer.u8(value.stdio?.stdinFd === undefined ? 0 : 1);
@@ -978,6 +1012,9 @@ export function decodeTraceKernelSyscallResult(
         readFd: reader.i32(),
         writeFd: reader.i32(),
       };
+      break;
+    case 'watch':
+      value = { op: 'watch', fd: reader.i32() };
       break;
     case 'spawn': {
       const pid = reader.i32();

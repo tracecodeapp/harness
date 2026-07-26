@@ -169,6 +169,11 @@ async function main(): Promise<void> {
   const requests: readonly TraceKernelSyscallRequest[] = [
     { op: 'pipe', options: { capacityChunks: 4 } },
     {
+      op: 'watch',
+      path: '/workspace/src',
+      options: { recursive: true, capacityEvents: 32 },
+    },
+    {
       op: 'spawn',
       runtime: 'javascript',
       command: 'node',
@@ -237,6 +242,7 @@ async function main(): Promise<void> {
 
   const results: readonly TraceKernelSyscallResult[] = [
     { ok: true, value: { op: 'pipe', readFd: 3, writeFd: 4 } },
+    { ok: true, value: { op: 'watch', fd: 5 } },
     {
       ok: true,
       value: {

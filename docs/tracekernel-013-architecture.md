@@ -405,8 +405,20 @@ copy-on-write to hard-link paths, so the transitional handler performs a
 locked, rollback-capable update of every pathname bound to a TraceKernel inode.
 That compatibility rule disappears when TKFS becomes the backing store.
 
-Device and proc descriptors, descriptor metadata mutation, and watchers remain
-on the command-local compatibility surface. They should move only with their
+Filesystem watches are now session resources exposed through process-owned
+descriptors. `watch(path)` installs an `fs-watch` descriptor; ordinary
+descriptor `read` blocks for a bounded binary event frame, and `close` or
+process exit interrupts that read and unregisters the watch. Notifications are
+published only after the authoritative namespace mutation commits, so host,
+editor, sibling-process, and self mutations share one ordering source.
+Directory watches may be recursive, queues are bounded, and dropped events
+produce an explicit overflow record instead of silently presenting a complete
+history. Browser JavaScript `fs.watch` and `fs.promises.watch` consume this
+descriptor asynchronously while synchronous filesystem mutations continue to
+use the SharedArrayBuffer syscall path.
+
+Device and proc descriptors and descriptor metadata mutation remain on the
+command-local compatibility surface. They should move only with their
 corresponding kernel resource or namespace model.
 
 ## Implemented foundation
@@ -425,6 +437,8 @@ The initial 0.13 branch now establishes:
 - explicit all-or-selected child descriptor inheritance with stable fd numbers,
   shared open descriptions, and atomic failure rollback;
 - session-owned pipe resources;
+- session-owned bounded filesystem-watch resources with descriptor lifecycle,
+  cross-process and host mutation delivery, and explicit overflow;
 - fragmented pipe reads, bounded chunk backpressure, EOF on final-writer close,
   and blocked-read wakeup when the reader process exits;
 - an authoritative session regular-file store with mutation generations;

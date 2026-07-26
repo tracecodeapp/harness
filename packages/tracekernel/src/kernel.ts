@@ -63,6 +63,10 @@ import type {
   TraceKernelSpawnParentStdio,
   TraceKernelSpawnStdio,
 } from './syscalls';
+import {
+  TraceKernelWatchRegistry,
+  type TraceKernelWatchOptions,
+} from './watch';
 
 const SYSTEM_PRINCIPAL: TraceKernelPrincipal = Object.freeze({
   id: 'system',
@@ -411,6 +415,8 @@ export class TraceKernelSession {
   private readonly processes = new Map<number, TraceKernelProcess>();
   private readonly exitedChildren = new Map<number, TraceKernelProcess>();
   private readonly waitingChildren = new Set<number>();
+  private readonly watchRegistry = new TraceKernelWatchRegistry();
+  private readonly stopWatchingFileSystemMutations: () => void;
   private readonly resources = new Map<
     string,
     TraceKernelPipe | TraceKernelOpenFileDescription
@@ -430,7 +436,11 @@ export class TraceKernelSession {
     readonly maxDescriptorsPerProcess: number,
     readonly maxProcesses: number,
     readonly signalGracePeriodMs: number
-  ) {}
+  ) {
+    this.stopWatchingFileSystemMutations = fileSystem.watchMutations((mutation) => {
+      Effect.runSync(this.watchRegistry.publish(mutation));
+    });
+  }
 
   spawn(
     spec: TraceKernelProcessSpec
@@ -951,6 +961,24 @@ export class TraceKernelSession {
     });
   }
 
+  watchFile(
+    process: TraceKernelProcess,
+    path: string,
+    options: TraceKernelWatchOptions = {}
+  ): Effect.Effect<number, Error> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const resolved = yield* this.fileSystem.resolve(path, process.snapshot().cwd);
+      const stat = yield* this.fileSystem.stat(resolved, '/');
+      const descriptor = yield* this.watchRegistry.create(
+        resolved,
+        stat.kind === 'directory',
+        options
+      );
+      return yield* this.installDescriptor(process, descriptor);
+    });
+  }
+
   readFile(path: string): Effect.Effect<Uint8Array, Error> {
     return this.fileSystem.readFile(path, this.cwd);
   }
@@ -1032,6 +1060,7 @@ export class TraceKernelSession {
         Effect.andThen(this.networkNamespace.dispose()),
         Effect.andThen(Scope.close(this.scope, Exit.void)),
         Effect.ensuring(Effect.sync(() => {
+          this.stopWatchingFileSystemMutations();
           this.processes.clear();
           this.exitedChildren.clear();
           this.waitingChildren.clear();

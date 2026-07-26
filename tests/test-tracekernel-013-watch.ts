@@ -1,0 +1,164 @@
+#!/usr/bin/env npx tsx
+
+import * as Effect from 'effect/Effect';
+import {
+  decodeTraceKernelWatchEvent,
+  makeTraceKernelHost,
+  TraceKernelSyscallDispatcher,
+  type TraceKernelRuntimeProvider,
+  type TraceKernelSyscallResult,
+} from '@tracecode/tracekernel';
+
+function assertCondition(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+function success(result: TraceKernelSyscallResult): asserts result is Extract<
+  TraceKernelSyscallResult,
+  { readonly ok: true }
+> {
+  assertCondition(result.ok, `Syscall failed: ${JSON.stringify(result)}`);
+}
+
+async function main(): Promise<void> {
+  const provider: TraceKernelRuntimeProvider = {
+    runtime: 'watch-test',
+    initialize: Effect.succeed({
+      acquire: (process) =>
+        Effect.acquireRelease(
+          Effect.succeed({
+            id: `watch-${process.pid}`,
+            runtime: 'watch-test',
+            execute: () => Effect.never,
+          }),
+          () => Effect.void
+        ),
+    }),
+  };
+
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const host = yield* makeTraceKernelHost({ providers: [provider] });
+      const session = yield* host.openSession();
+      const watcher = yield* session.spawn({
+        runtime: 'watch-test',
+        command: 'watcher',
+      });
+      const writer = yield* session.spawn({
+        runtime: 'watch-test',
+        command: 'writer',
+      });
+      yield* Effect.all([watcher.awaitStarted(), writer.awaitStarted()], {
+        concurrency: 'unbounded',
+        discard: true,
+      });
+      const watcherSyscalls = new TraceKernelSyscallDispatcher(session, watcher);
+      const writerSyscalls = new TraceKernelSyscallDispatcher(session, writer);
+
+      const watched = yield* watcherSyscalls.dispatch({
+        op: 'watch',
+        path: '/workspace',
+        options: { recursive: true, capacityEvents: 8 },
+      });
+      success(watched);
+      assertCondition(watched.value.op === 'watch', 'watch returned the wrong response variant.');
+      if (watched.value.op !== 'watch') return;
+
+      const firstRead = yield* Effect.fork(watcherSyscalls.dispatch({
+        op: 'read',
+        fd: watched.value.fd,
+        maxBytes: 16 * 1024 + 9,
+      }));
+      const created = yield* writerSyscalls.dispatch({
+        op: 'writeFile',
+        path: '/workspace/from-peer.txt',
+        bytes: new TextEncoder().encode('one'),
+      });
+      success(created);
+      const first = yield* Effect.fromFiber(firstRead);
+      success(first);
+      assertCondition(first.value.op === 'read', 'watch descriptor did not return bytes.');
+      if (first.value.op !== 'read') return;
+      const createEvent = decodeTraceKernelWatchEvent(first.value.bytes);
+      assertCondition(
+        createEvent.eventType === 'rename' &&
+          createEvent.path === '/workspace/from-peer.txt',
+        `watch did not report peer creation: ${JSON.stringify(createEvent)}`
+      );
+
+      success(yield* writerSyscalls.dispatch({
+        op: 'writeFile',
+        path: '/workspace/from-peer.txt',
+        bytes: new TextEncoder().encode('two'),
+      }));
+      const changed = yield* watcherSyscalls.dispatch({
+        op: 'read',
+        fd: watched.value.fd,
+        maxBytes: 16 * 1024 + 9,
+      });
+      success(changed);
+      assertCondition(
+        changed.value.op === 'read' &&
+          decodeTraceKernelWatchEvent(changed.value.bytes).eventType === 'change',
+        `watch did not distinguish content mutation: ${JSON.stringify(changed)}`
+      );
+
+      const constrained = yield* watcherSyscalls.dispatch({
+        op: 'watch',
+        path: '/workspace',
+        options: { recursive: true, capacityEvents: 1 },
+      });
+      success(constrained);
+      assertCondition(constrained.value.op === 'watch', 'bounded watch setup failed.');
+      if (constrained.value.op !== 'watch') return;
+      for (const name of ['overflow-a', 'overflow-b', 'overflow-c']) {
+        success(yield* writerSyscalls.dispatch({
+          op: 'writeFile',
+          path: `/workspace/${name}`,
+          bytes: new TextEncoder().encode(name),
+        }));
+      }
+      const retained = yield* watcherSyscalls.dispatch({
+        op: 'read',
+        fd: constrained.value.fd,
+        maxBytes: 16 * 1024 + 9,
+      });
+      const overflow = yield* watcherSyscalls.dispatch({
+        op: 'read',
+        fd: constrained.value.fd,
+        maxBytes: 16 * 1024 + 9,
+      });
+      success(retained);
+      success(overflow);
+      assertCondition(
+        overflow.value.op === 'read' &&
+          decodeTraceKernelWatchEvent(overflow.value.bytes).eventType === 'overflow',
+        `bounded watch queue did not report overflow: ${JSON.stringify({
+          retained,
+          overflow,
+        })}`
+      );
+
+      success(yield* watcherSyscalls.dispatch({ op: 'close', fd: watched.value.fd }));
+      success(yield* watcherSyscalls.dispatch({ op: 'close', fd: constrained.value.fd }));
+      yield* Effect.all([
+        watcher.signal('SIGTERM'),
+        writer.signal('SIGTERM'),
+      ], { concurrency: 'unbounded', discard: true });
+    })
+  ));
+
+  console.log(JSON.stringify({
+    schema: 'tracekernel-013-watch-v1',
+    processOwnedWatchDescriptors: true,
+    crossProcessNotifications: true,
+    createVsChangeSemantics: true,
+    boundedQueueOverflowIsExplicit: true,
+    descriptorCloseStopsDelivery: true,
+  }, null, 2));
+}
+
+void main().catch((error) => {
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  process.exitCode = 1;
+});

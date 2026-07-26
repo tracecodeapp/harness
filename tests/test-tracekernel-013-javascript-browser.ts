@@ -589,6 +589,34 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            { path: 'kernel-watch/.keep', contents: '' },
+            {
+              path: 'kernel-watch-reader.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const observed = new Set();',
+                'const watcher = fs.watch("kernel-watch", { recursive: true }, (eventType, filename) => {',
+                '  if (filename === "from-host.txt" || filename === "from-peer.txt") {',
+                '    observed.add(`${eventType}:${filename}`);',
+                '  }',
+                '  if ([...observed].some((entry) => entry.endsWith(":from-host.txt")) &&',
+                '      [...observed].some((entry) => entry.endsWith(":from-peer.txt"))) {',
+                '    watcher.close();',
+                '    console.log("kernel-watch:" + [...observed].sort().join("|"));',
+                '  }',
+                '});',
+                'watcher.on("error", (error) => { throw error; });',
+                'console.log("kernel-watch:ready");',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'kernel-watch-writer.js',
+              contents: [
+                'require("node:fs").writeFileSync("kernel-watch/from-peer.txt", "peer");',
+                '',
+              ].join('\n'),
+            },
             { path: 'isolation-private.txt', contents: 'parent-descriptor' },
             {
               path: 'isolation-child.js',
@@ -857,6 +885,33 @@ async function main(): Promise<void> {
           const hostCycleReaderResult = await hostCycleReader;
           const spawnedChild = await workspace.runCommand('node spawn-parent.js');
           const pipedChild = await workspace.runCommand('node stdio-parent.js');
+          let markKernelWatchReady!: () => void;
+          const kernelWatchReady = new Promise<void>((resolvePromise) => {
+            markKernelWatchReady = resolvePromise;
+          });
+          const kernelWatchReader = workspace.runCommand('node kernel-watch-reader.js', {
+            onEvent(event: { type: string; stream?: string; data?: string }) {
+              if (
+                event.type === 'output' &&
+                event.stream === 'stdout' &&
+                event.data?.includes('kernel-watch:ready')
+              ) {
+                markKernelWatchReady();
+              }
+            },
+          });
+          await Promise.race([
+            kernelWatchReady,
+            kernelWatchReader.then((command: unknown) => {
+              throw new Error(`Kernel watch reader exited before startup: ${JSON.stringify(command)}`);
+            }),
+            new Promise<never>((_resolve, reject) => {
+              setTimeout(() => reject(new Error('Kernel watch reader did not start')), 10_000);
+            }),
+          ]);
+          await workspace.writeFile('kernel-watch/from-host.txt', 'host');
+          const kernelWatchWriter = await workspace.runCommand('node kernel-watch-writer.js');
+          const kernelWatchReaderResult = await kernelWatchReader;
           const processIsolation = await workspace.runCommand('node isolation-parent.js');
           const javascript = await workspace.runCommand('node conformance.js');
           const descriptors = await workspace.runCommand('node descriptor-conformance.js');
@@ -906,6 +961,8 @@ async function main(): Promise<void> {
             hostCycleReader: hostCycleReaderResult,
             spawnedChild,
             pipedChild,
+            kernelWatchReader: kernelWatchReaderResult,
+            kernelWatchWriter,
             processIsolation,
             javascript,
             descriptors,
@@ -964,6 +1021,13 @@ async function main(): Promise<void> {
           result.pipedChild.stdout.includes('"stdoutHex":"00ff01fe"') &&
           result.pipedChild.stdout.includes('child-stderr:98314'),
         `node:child_process stdio did not preserve bytes, EOF, and backpressure: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.kernelWatchReader.exitCode === 0 &&
+          result.kernelWatchWriter.exitCode === 0 &&
+          result.kernelWatchReader.stdout.includes('rename:from-host.txt') &&
+          result.kernelWatchReader.stdout.includes('rename:from-peer.txt'),
+        `node:fs watch did not receive authoritative host and peer mutations: ${JSON.stringify(result)}`
       );
       assertCondition(
         result.processIsolation.exitCode === 0 &&
@@ -1100,6 +1164,8 @@ async function main(): Promise<void> {
           'child-wait-and-reap',
           'kernel-piped-stdin-stdout-stderr',
           'pipe-eof-and-backpressure',
+          'kernel-fs-watch-descriptor',
+          'host-and-peer-watch-delivery',
           'heap-and-global-isolation',
           'environment-copy-on-spawn',
           'descriptor-non-inheritance',

@@ -4,6 +4,39 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// packages/tracekernel/src/watch.ts
+var WATCH_FRAME_MAGIC = Uint8Array.from([84, 75, 87, 49]);
+var WATCH_FRAME_HEADER_BYTES = 9;
+var WATCH_MAX_PATH_BYTES = 16 * 1024;
+function decodeTraceKernelWatchEvent(frame) {
+  if (frame.byteLength < WATCH_FRAME_HEADER_BYTES || WATCH_FRAME_MAGIC.some((byte, index) => frame[index] !== byte)) {
+    throw Object.assign(new Error("EPROTO: invalid TraceKernel watch frame"), {
+      code: "EPROTO"
+    });
+  }
+  const type = frame[4];
+  if (type !== 1 && type !== 2 && type !== 3) {
+    throw Object.assign(
+      new Error(`EPROTO: invalid TraceKernel watch event type ${type}`),
+      { code: "EPROTO" }
+    );
+  }
+  const pathLength = new DataView(
+    frame.buffer,
+    frame.byteOffset,
+    frame.byteLength
+  ).getUint32(5, true);
+  if (pathLength > WATCH_MAX_PATH_BYTES || frame.byteLength !== WATCH_FRAME_HEADER_BYTES + pathLength) {
+    throw Object.assign(new Error("EPROTO: invalid TraceKernel watch frame length"), {
+      code: "EPROTO"
+    });
+  }
+  return Object.freeze({
+    eventType: type === 1 ? "change" : type === 2 ? "rename" : "overflow",
+    path: new TextDecoder().decode(frame.subarray(WATCH_FRAME_HEADER_BYTES))
+  });
+}
+
 // packages/tracekernel/src/transport.ts
 var FRAME_MAGIC = 1414222593;
 var FRAME_REQUEST = 1;
@@ -42,7 +75,8 @@ var OP_CODES = {
   pipe: 31,
   spawn: 32,
   wait: 33,
-  kill: 34
+  kill: 34,
+  watch: 35
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -62,6 +96,7 @@ var SYSCALL_ERROR_CODES = /* @__PURE__ */ new Set([
   "EBUSY",
   "ECHILD",
   "ELOOP",
+  "ENAMETOOLONG",
   "EMFILE",
   "EEXIST",
   "ECONNREFUSED",
@@ -233,6 +268,11 @@ function encodeTraceKernelSyscallRequest(request) {
   switch (request.op) {
     case "pipe":
       writer.u32(request.options?.capacityChunks ?? 0);
+      break;
+    case "watch":
+      writer.string(request.path);
+      writer.u8(request.options?.recursive === true ? 1 : 0);
+      writer.u32(request.options?.capacityEvents ?? 0);
       break;
     case "spawn": {
       writer.string(request.runtime);
@@ -424,6 +464,9 @@ function decodeTraceKernelSyscallResult(bytes) {
         readFd: reader.i32(),
         writeFd: reader.i32()
       };
+      break;
+    case "watch":
+      value = { op: "watch", fd: reader.i32() };
       break;
     case "spawn": {
       const pid = reader.i32();
@@ -1144,7 +1187,7 @@ var package_default = {
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
     "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
-    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
+    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
     "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
@@ -9730,6 +9773,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   };
   const notifyFsWatchers = (eventType, path) => {
     for (const watcher of fsWatchers) {
+      if (watcher.kernelFd !== void 0) continue;
       const filename = watchedFilename(watcher, path);
       if (filename !== null) queueMicrotask(() => emitFsWatch(watcher, eventType, filename));
     }
@@ -10892,6 +10936,63 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         closed: false,
         listeners
       };
+      if (executionState.kernelSyscalls && executionState.kernelNetwork) {
+        const watched = executionState.kernelSyscalls.dispatchSync({
+          op: "watch",
+          path: normalized,
+          options: {
+            recursive: watcher.recursive
+          }
+        });
+        if (!watched.ok || watched.value.op !== "watch") {
+          const failure = watched.ok ? { code: "EPROTO", message: "EPROTO: invalid watch syscall response" } : watched.error;
+          throw Object.assign(new Error(failure.message), {
+            code: failure.code
+          });
+        }
+        watcher.kernelFd = watched.value.fd;
+        void eventLoopApi.track((async () => {
+          try {
+            while (!watcher.closed) {
+              const read = await dispatchBrowserNetworkSyscall(
+                executionState.kernelNetwork,
+                {
+                  op: "read",
+                  fd: watcher.kernelFd,
+                  maxBytes: 16 * 1024 + 9
+                }
+              );
+              if (read.bytes.byteLength === 0) break;
+              const event = decodeTraceKernelWatchEvent(read.bytes);
+              if (event.eventType === "overflow") {
+                const error = Object.assign(
+                  new Error("ENOSPC: TraceKernel filesystem watch queue overflow"),
+                  { code: "ENOSPC" }
+                );
+                for (const errorListener of listeners.get("error") ?? []) {
+                  errorListener(error);
+                }
+                continue;
+              }
+              const changedPath = workspaceRelativeFromAbsolutePath(
+                event.path,
+                workspacePathContext
+              ) ?? event.path;
+              const filename = watchedFilename(watcher, changedPath);
+              if (filename !== null) {
+                emitFsWatch(watcher, event.eventType, filename);
+                notifyWatchFileWatchers(changedPath);
+              }
+            }
+          } catch (error) {
+            if (!watcher.closed) {
+              const errorListeners = listeners.get("error") ?? [];
+              if (errorListeners.length === 0) throw error;
+              for (const errorListener of errorListeners) errorListener(error);
+            }
+          }
+        })());
+      }
       const initialListener = typeof optionsOrListener === "function" ? optionsOrListener : listener;
       if (initialListener) on("change", initialListener);
       fsWatchers.add(watcher);
@@ -10910,8 +11011,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           return api;
         },
         close: () => {
+          if (watcher.closed) return;
           watcher.closed = true;
           fsWatchers.delete(watcher);
+          if (watcher.kernelFd !== void 0 && executionState.kernelSyscalls) {
+            executionState.kernelSyscalls.dispatchSync({
+              op: "close",
+              fd: watcher.kernelFd
+            });
+          }
           for (const closeListener of listeners.get("close") ?? []) closeListener();
         }
       };

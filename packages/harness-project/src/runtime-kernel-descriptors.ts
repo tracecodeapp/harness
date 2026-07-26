@@ -1,10 +1,12 @@
 import {
   TraceKernelDescriptorTable,
   TraceKernelPipe,
+  TraceKernelWatchRegistry,
   type TraceKernelDescriptor,
   type TraceKernelOpenFileOptions,
   type TraceKernelPipeOptions,
   type TraceKernelStat,
+  type TraceKernelWatchOptions,
 } from '@tracecode/tracekernel';
 import * as Effect from 'effect/Effect';
 import type {
@@ -65,6 +67,8 @@ export class RuntimeKernelDescriptorManager {
   private readonly nodes = new Map<number, RuntimeKernelOpenFileNode>();
   private readonly pipes = new Map<string, TraceKernelPipe>();
   private readonly stopSnapshotting: () => void;
+  private readonly stopWatchingMutations: () => void;
+  private readonly watchRegistry = new TraceKernelWatchRegistry();
   private openTail: Promise<void> = Promise.resolve();
   private nextPipeId = 1;
 
@@ -72,6 +76,13 @@ export class RuntimeKernelDescriptorManager {
     this.stopSnapshotting = fs.watchBeforeMutations((mutation) =>
       this.snapshotAffectedNodes(mutation)
     );
+    this.stopWatchingMutations = fs.watchMutations((_revision, mutation) => {
+      Effect.runSync(this.watchRegistry.publish({
+        generation: mutation.generation,
+        eventType: mutation.kind === 'file-write' ? 'change' : 'rename',
+        paths: mutation.paths,
+      }));
+    });
   }
 
   open(
@@ -354,6 +365,24 @@ export class RuntimeKernelDescriptorManager {
     }
   }
 
+  async watch(
+    pid: number,
+    context: RuntimeCommandExecutionContext | undefined,
+    path: string,
+    options: TraceKernelWatchOptions = {}
+  ): Promise<number> {
+    const stat = await this.fs.statWithContext(context, path);
+    const descriptor = await Effect.runPromise(
+      this.watchRegistry.create(path, stat.isDirectory, options)
+    );
+    try {
+      return this.install(pid, descriptor);
+    } catch (error) {
+      await Effect.runPromise(descriptor.close());
+      throw error;
+    }
+  }
+
   /**
    * Create one session-owned pipe with its endpoints installed into two
    * process tables. Explicit descriptor numbers are reserved for launch-time
@@ -422,6 +451,7 @@ export class RuntimeKernelDescriptorManager {
 
   async dispose(): Promise<void> {
     this.stopSnapshotting();
+    this.stopWatchingMutations();
     await Promise.all([...this.tables.keys()].map((pid) => this.closeProcess(pid)));
     await Promise.all(
       [...this.pipes.values()].map((pipe) =>

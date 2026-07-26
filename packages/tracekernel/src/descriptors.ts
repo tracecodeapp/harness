@@ -14,6 +14,7 @@ export type TraceKernelDescriptorKind =
   | 'file'
   | 'pipe-reader'
   | 'pipe-writer'
+  | 'fs-watch'
   | 'tcp-socket';
 
 export interface TraceKernelDescriptorSnapshot {

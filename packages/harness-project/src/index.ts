@@ -611,6 +611,7 @@ const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> 
   'ECONNREFUSED',
   'EDESTADDRREQ',
   'ELOOP',
+  'ENAMETOOLONG',
   'EMFILE',
   'EEXIST',
   'EISDIR',
@@ -1494,6 +1495,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     try {
       switch (request.op) {
+        case 'watch': {
+          const process = this.runtimeSyscallProcess(context);
+          this.assertActorFileCapability(actor, 'read', request.path);
+          const fd = await this.kernelDescriptors.watch(
+            process.pid,
+            context,
+            workspacePath(request.path),
+            request.options
+          );
+          return { ok: true, value: { op: 'watch', fd } };
+        }
         case 'pipe': {
           const process = this.runtimeSyscallProcess(context);
           const pipe = await this.kernelDescriptors.createPipe(
