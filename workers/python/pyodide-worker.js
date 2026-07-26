@@ -3432,12 +3432,12 @@ function installPyodideTraceKernelPipeFactory(pyodideInstance, kernelClient) {
       };
     },
   };
-  let nextPipeNodeId = 1;
+  let nextDescriptorNodeId = 1;
 
-  const createStream = (kernelFd, readable) => {
+  const createStream = (kernelFd, flags, kind = 'pipe') => {
     const node = fs.createNode(
       null,
-      `tracekernel-pipe-${nextPipeNodeId++}`,
+      `tracekernel-${kind}-${nextDescriptorNodeId++}`,
       fifoMode,
       0
     );
@@ -3451,8 +3451,8 @@ function installPyodideTraceKernelPipeFactory(pyodideInstance, kernelClient) {
     return fs.createStream({
       shared,
       node,
-      path: `pipe:[${kernelFd}]`,
-      flags: readable ? 0 : 1,
+      path: `${kind}:[${kernelFd}]`,
+      flags,
       seekable: false,
       position: 0,
       stream_ops: streamOperations,
@@ -3476,8 +3476,8 @@ function installPyodideTraceKernelPipeFactory(pyodideInstance, kernelClient) {
           nonblocking: nonblocking === true,
         },
       });
-      readStream = createStream(pair.readFd, true);
-      writeStream = createStream(pair.writeFd, false);
+      readStream = createStream(pair.readFd, 0);
+      writeStream = createStream(pair.writeFd, 1);
       return JSON.stringify([readStream.fd, writeStream.fd]);
     } catch (error) {
       if (writeStream) {
@@ -3506,6 +3506,13 @@ function installPyodideTraceKernelPipeFactory(pyodideInstance, kernelClient) {
           // The process descriptor table remains the final cleanup boundary.
         }
       }
+      return throwErrno(error);
+    }
+  };
+  self.__tracecodeInstallKernelSocket = (kernelFd) => {
+    try {
+      return createStream(Number(kernelFd), 2, 'socket').fd;
+    } catch (error) {
       return throwErrno(error);
     }
   };
@@ -4845,9 +4852,21 @@ class _TraceKernelSocket:
         self.family = family
         self.type = type
         self.proto = proto
-        self._fd = int(_fd) if _fd is not None else int(
+        self._kernel_fd = int(_fd) if _fd is not None else int(
             self._call({"op": "socket"})["fd"]
         )
+        try:
+            self._fd = int(
+                getattr(_js_self, "__tracecodeInstallKernelSocket")(
+                    self._kernel_fd
+                )
+            )
+        except BaseException:
+            try:
+                self._call({"op": "close", "fd": self._kernel_fd})
+            except BaseException:
+                pass
+            raise
         self._closed = False
         self._timeout = None
 
@@ -4857,19 +4876,19 @@ class _TraceKernelSocket:
     def bind(self, address):
         self._call({
             "op": "bind",
-            "fd": self._fd,
+            "fd": self._kernel_fd,
             "address": self._address(address),
         })
 
     def listen(self, backlog=128):
         self._call({
             "op": "listen",
-            "fd": self._fd,
+            "fd": self._kernel_fd,
             "backlog": max(0, int(backlog)),
         })
 
     def accept(self):
-        _value = self._call({"op": "accept", "fd": self._fd})
+        _value = self._call({"op": "accept", "fd": self._kernel_fd})
         return (
             _TraceKernelSocket(
                 self.family,
@@ -4886,7 +4905,7 @@ class _TraceKernelSocket:
     def connect(self, address):
         self._call({
             "op": "connect",
-            "fd": self._fd,
+            "fd": self._kernel_fd,
             "address": self._address(address),
         })
 
@@ -4903,7 +4922,7 @@ class _TraceKernelSocket:
         _bytes = bytes(data)
         return int(self._call({
             "op": "send",
-            "fd": self._fd,
+            "fd": self._kernel_fd,
             "bytes": base64.b64encode(_bytes).decode("ascii"),
         })["bytesWritten"])
 
@@ -4924,7 +4943,7 @@ class _TraceKernelSocket:
             raise ValueError("negative buffersize in recv")
         _value = self._call({
             "op": "recv",
-            "fd": self._fd,
+            "fd": self._kernel_fd,
             "maxBytes": int(bufsize),
         })
         return base64.b64decode(_value["bytes"])
@@ -4942,21 +4961,21 @@ class _TraceKernelSocket:
             raise ValueError(f"invalid shutdown mode: {how}")
         self._call({
             "op": "shutdown",
-            "fd": self._fd,
+            "fd": self._kernel_fd,
             "how": _mode,
         })
 
     def getsockname(self):
         _address = self._call({
             "op": "getsockname",
-            "fd": self._fd,
+            "fd": self._kernel_fd,
         })["address"]
         return (_address["host"], int(_address["port"]))
 
     def getpeername(self):
         _address = self._call({
             "op": "getpeername",
-            "fd": self._fd,
+            "fd": self._kernel_fd,
         })["address"]
         return (_address["host"], int(_address["port"]))
 
@@ -5000,15 +5019,19 @@ class _TraceKernelSocket:
     def close(self):
         if not self._closed:
             try:
-                self._call({"op": "close", "fd": self._fd})
+                os.close(self._fd)
             finally:
                 self._closed = True
+                self._fd = -1
+                self._kernel_fd = -1
 
     def detach(self):
         if self._closed:
             return -1
         _fd = self._fd
         self._closed = True
+        self._fd = -1
+        self._kernel_fd = -1
         return _fd
 
     def __enter__(self):
@@ -5197,13 +5220,13 @@ def _install_tracekernel_select_module():
 
     def _descriptor(value):
         if isinstance(value, _TraceKernelSocket):
-            return int(value.fileno()), True
+            return int(value.fileno()), False
         if isinstance(value, int):
             return int(value), False
         _fileno = getattr(value, "fileno", None)
         if not callable(_fileno):
             raise TypeError("argument must be an int, or have a fileno() method")
-        return int(_fileno()), isinstance(value, _TraceKernelSocket)
+        return int(_fileno()), False
 
     class poll:
         def __init__(self):
@@ -8475,6 +8498,7 @@ json.dumps({
     delete self.__tracecodeKernelProcess;
     delete self.__tracecodeKernelSocket;
     delete self.__tracecodeCreateKernelPipe;
+    delete self.__tracecodeInstallKernelSocket;
     kernelClient?.close();
     activeProjectHttpBridges.delete(messageId);
   }
