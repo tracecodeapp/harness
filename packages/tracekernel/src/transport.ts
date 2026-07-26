@@ -57,6 +57,7 @@ const OP_CODES = {
   dup3: 41,
   poll: 42,
   getsockopt: 43,
+  identity: 44,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -424,6 +425,8 @@ export function encodeTraceKernelSyscallRequest(
     case 'wait':
       writer.i32(request.pid);
       writer.u8(request.noHang ? 1 : 0);
+      break;
+    case 'identity':
       break;
     case 'kill':
       writer.i32(request.pid);
@@ -840,6 +843,9 @@ export function decodeTraceKernelSyscallRequest(
     case 'setpgid':
       request = { op: 'setpgid', pid: reader.i32(), pgid: reader.i32() };
       break;
+    case 'identity':
+      request = { op: 'identity' };
+      break;
     case 'socket':
       request = { op: 'socket' };
       break;
@@ -1223,6 +1229,12 @@ export function encodeTraceKernelSyscallResult(
         writer.string(value.termination.message);
       }
       break;
+    case 'identity':
+      writer.i32(value.pid);
+      writer.i32(value.ppid);
+      writer.i32(value.pgid);
+      writer.i32(value.sid);
+      break;
     case 'socket':
     case 'open':
     case 'dup':
@@ -1552,6 +1564,15 @@ export function decodeTraceKernelSyscallResult(
       break;
     case 'setpgid':
       value = { op: 'setpgid', pgid: reader.i32() };
+      break;
+    case 'identity':
+      value = {
+        op: 'identity',
+        pid: reader.i32(),
+        ppid: reader.i32(),
+        pgid: reader.i32(),
+        sid: reader.i32(),
+      };
       break;
     case 'bind':
       value = { op: 'bind', address: readAddress(reader) };
@@ -2037,6 +2058,13 @@ export class TraceKernelRuntimeFileClient {
 
   get cacheMisses(): number {
     return this.cacheMissCount;
+  }
+
+  identity(): Extract<TraceKernelSyscallValue, { op: 'identity' }> {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: 'identity' }),
+      'identity'
+    );
   }
 
   socket(): number {

@@ -211,6 +211,7 @@ async function main(): Promise<void> {
     },
     { op: 'wait', pid: 101 },
     { op: 'wait', pid: 101, noHang: true },
+    { op: 'identity' },
     { op: 'kill', pid: 102, signal: 'SIGTERM' },
     { op: 'setsid' },
     { op: 'setpgid', pid: 0, pgid: 0 },
@@ -323,6 +324,10 @@ async function main(): Promise<void> {
       },
     },
     { ok: true, value: { op: 'wait', pid: 101 } },
+    {
+      ok: true,
+      value: { op: 'identity', pid: 100, ppid: 1, pgid: 100, sid: 1 },
+    },
     {
       ok: true,
       value: {

@@ -97,6 +97,20 @@ async function main(): Promise<void> {
         session,
         mutableTopologyChild
       );
+      const initialIdentity = yield* childTopologySyscalls.dispatch({
+        op: 'identity',
+      });
+      success(initialIdentity);
+      assertCondition(
+        initialIdentity.value.op === 'identity' &&
+          initialIdentity.value.pid === mutableTopologyChild.pid &&
+          initialIdentity.value.ppid === process.pid &&
+          initialIdentity.value.pgid === process.snapshot().pgid &&
+          initialIdentity.value.sid === process.snapshot().sid,
+        `identity did not reflect the authoritative process record: ${JSON.stringify(
+          initialIdentity
+        )}`
+      );
       const createdSession = yield* childTopologySyscalls.dispatch({ op: 'setsid' });
       success(createdSession);
       assertCondition(
@@ -979,6 +993,7 @@ async function main(): Promise<void> {
     namespaceOperationsShareTheWireContract: true,
     tcpOperationsShareTheWireContract: true,
     processAndPipeOperationsShareTheWireContract: true,
+    processIdentityUsesAuthoritativeRecord: true,
     unixProcessGroupSignalSelectors: true,
     childStdioUsesProcessOwnedDescriptors: true,
     childWriterCloseProducesEof: true,
