@@ -656,7 +656,7 @@ public sealed class KernelProcess
             op = "wait",
             pid = Pid,
         });
-        termination = ParseTermination(value.GetProperty("termination"));
+        termination = ParseTermination(Pid, value.GetProperty("termination"));
         return termination;
     }
 
@@ -678,19 +678,58 @@ public sealed class KernelProcess
             result = null;
             return false;
         }
-        termination = ParseTermination(raw);
+        termination = ParseTermination(Pid, raw);
         result = termination;
         return true;
     }
 
-    private ProcessTermination ParseTermination(JsonElement raw)
+    public static ProcessTermination WaitChild(int processSelector = -1)
+    {
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "wait",
+            pid = processSelector,
+        });
+        return ParseTermination(
+            value.GetProperty("pid").GetInt32(),
+            value.GetProperty("termination")
+        );
+    }
+
+    public static bool TryWaitChild(
+        int processSelector,
+        out ProcessTermination? result
+    )
+    {
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "wait",
+            pid = processSelector,
+            noHang = true,
+        });
+        if (!value.TryGetProperty("termination", out JsonElement raw))
+        {
+            result = null;
+            return false;
+        }
+        result = ParseTermination(
+            value.GetProperty("pid").GetInt32(),
+            raw
+        );
+        return true;
+    }
+
+    private static ProcessTermination ParseTermination(
+        int pid,
+        JsonElement raw
+    )
     {
         string kind = raw.GetProperty("kind").GetString() ?? "failure";
         string? signal = raw.TryGetProperty("signal", out JsonElement signalValue)
             ? signalValue.GetString()
             : null;
         return new ProcessTermination(
-            Pid,
+            pid,
             kind,
             raw.GetProperty("exitCode").GetInt32(),
             signal switch
