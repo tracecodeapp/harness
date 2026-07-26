@@ -163,6 +163,12 @@ async function main(): Promise<void> {
                 'using System;',
                 'using System.IO;',
                 '',
+                'var armed = TraceKernel.Watchdog.Arm(',
+                '    30000,',
+                '    TraceKernel.KernelSignal.Kill',
+                ');',
+                'var petted = TraceKernel.Watchdog.Pet();',
+                'var disarmed = TraceKernel.Watchdog.Disarm();',
                 'string host = File.ReadAllText("host-shared.txt");',
                 'Directory.CreateDirectory("csharp-kernel");',
                 'using (var stream = new FileStream(',
@@ -180,6 +186,10 @@ async function main(): Promise<void> {
                 'File.Move("csharp-kernel/value.bin", "csharp-kernel/final.bin");',
                 'byte[] value = File.ReadAllBytes("csharp-kernel/final.bin");',
                 'bool valid = host == "host-authoritative\\n"',
+                '    && armed.Armed',
+                '    && armed.Signal == TraceKernel.KernelSignal.Kill',
+                '    && petted.Armed',
+                '    && !disarmed.Armed',
                 '    && value.Length == 5',
                 '    && value[0] == 0',
                 '    && value[1] == 1',
@@ -227,6 +237,7 @@ async function main(): Promise<void> {
         synchronousSyscallTransport: true,
         systemIoTkfsMount: true,
         descriptorIo: true,
+        managedWatchdog: true,
       }));
     } finally {
       await browser.close();

@@ -498,7 +498,9 @@ The initial 0.13 branch now establishes:
   ordinary managed `System.IO` path and regular-file descriptor operations
   with authoritative TKFS; the mount preserves kernel-owned open-file offsets,
   truncate/rename behavior, cross-process visibility, and process-exit cleanup;
-  managed process, watchdog, and socket surfaces remain the next C# slices;
+  the public managed `TraceKernel.Watchdog` surface arms, pets, inspects, and
+  disarms the process-owned kernel watchdog; managed process and socket
+  surfaces remain the next C# slices;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic

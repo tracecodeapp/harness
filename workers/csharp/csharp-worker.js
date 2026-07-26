@@ -10,6 +10,7 @@ let trustedRuntimeUserAuthorityLockdown = null;
 let runtimeModule = null;
 let runtimeFsHooksInstalled = false;
 let activeProjectIo = null;
+let activeTraceKernelClient = null;
 const activeProtocolTokens = new Map();
 const pendingCompilerArtifactCacheRequests = new Map();
 let materializedKernelVirtualFilePaths = new Set();
@@ -170,6 +171,7 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   fstat: 14,
   ftruncate: 15,
   lstat: 19,
+  watchdog: 36,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -441,6 +443,26 @@ class CSharpTraceKernelSyncClient {
         writer.string(request.sourcePath);
         writer.string(request.destinationPath);
         break;
+      case 'watchdog':
+        writer.u8(
+          request.action === 'arm'
+            ? 1
+            : request.action === 'pet'
+              ? 2
+              : request.action === 'disarm'
+                ? 3
+                : 4
+        );
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.u32(request.timeoutMs);
+        writer.u8(
+          request.signal === undefined
+            ? 0
+            : request.signal === 'SIGTERM'
+              ? 1
+              : 2
+        );
+        break;
     }
     return writer.finish();
   }
@@ -474,7 +496,35 @@ class CSharpTraceKernelSyncClient {
       );
     }
     let value;
-    if (operation === 'open') {
+    if (operation === 'watchdog') {
+      const armed = reader.u8();
+      if (armed > 1) {
+        throw new CSharpTraceKernelSyscallError(
+          'EPROTO',
+          `invalid watchdog armed flag ${armed}`
+        );
+      }
+      if (!armed) {
+        value = { op: operation, armed: false };
+      } else {
+        const timeoutMs = reader.u32();
+        const deadlineAt = reader.f64();
+        const signalCode = reader.u8();
+        if (signalCode !== 1 && signalCode !== 2) {
+          throw new CSharpTraceKernelSyscallError(
+            'EPROTO',
+            `invalid watchdog signal ${signalCode}`
+          );
+        }
+        value = {
+          op: operation,
+          armed: true,
+          timeoutMs,
+          deadlineAt,
+          signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
+        };
+      }
+    } else if (operation === 'open') {
       value = { op: operation, fd: reader.i32() };
     } else if (operation === 'read') {
       value = { op: operation, bytes: reader.bytesValue() };
@@ -958,6 +1008,33 @@ function encodeUtf8(value) {
 
 function decodeUtf8(value, options) {
   return new TextDecoder('utf-8', options).decode(value);
+}
+
+function invokeCSharpTraceKernelSyscall(requestJson) {
+  if (!activeTraceKernelClient) {
+    return JSON.stringify({
+      ok: false,
+      error: {
+        code: 'ENOSYS',
+        message: 'TraceKernel syscalls are unavailable outside a kernel-backed project process.',
+      },
+    });
+  }
+  try {
+    const request = JSON.parse(String(requestJson));
+    return JSON.stringify({
+      ok: true,
+      value: activeTraceKernelClient.request(request),
+    });
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      error: {
+        code: typeof error?.code === 'string' ? error.code : 'EIO',
+        message: formatCSharpWorkerError(error),
+      },
+    });
+  }
 }
 
 function projectUtf8Bytes(value) {
@@ -2544,6 +2621,7 @@ async function loadRuntime(assetBaseUrl) {
       runtime.setModuleImports('tracecode', {
         emitProjectEvent: emitProjectEventJson,
         readProjectInputByte: () => readProjectInputByte('/dev/stdin') ?? -1,
+        kernelSyscall: invokeCSharpTraceKernelSyscall,
       });
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;
@@ -3668,6 +3746,7 @@ async function handleMessage(message) {
         throw new Error(`C# project device setup failed: ${formatCSharpWorkerError(error)}`);
       }
       activeProjectIo = projectIo;
+      activeTraceKernelClient = kernelClient;
       try {
         result = await withCSharpUserAuthorityLockdown(
           () => JSON.parse(executeProjectExport(JSON.stringify({
@@ -3693,6 +3772,7 @@ async function handleMessage(message) {
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
       activeProjectIo = null;
+      activeTraceKernelClient = null;
       restoreTraceKernelMount();
       kernelClient?.close();
     }
