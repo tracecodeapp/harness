@@ -25,6 +25,10 @@ class TestProcessDescriptorRegistry implements RuntimeKernelDescriptorRegistry {
     return Effect.runPromise(this.table(pid).lookup(fd));
   }
 
+  getNonblocking(pid: number, fd: number): Promise<boolean> {
+    return Effect.runPromise(this.table(pid).getNonblocking(fd));
+  }
+
   closeProcess(pid: number): Promise<void> {
     const table = this.tables.get(pid);
     this.tables.delete(pid);

@@ -8,11 +8,24 @@ import * as Option from 'effect/Option';
 import {
   makeTraceKernelHost,
   TraceKernelNetworkError,
+  TraceKernelWouldBlockError,
   type TraceKernelRuntimeProvider,
 } from '@tracecode/tracekernel';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
+}
+
+function assertWouldBlock(exit: Exit.Exit<unknown, Error>, operation: string): void {
+  assertCondition(Exit.isFailure(exit), `${operation} unexpectedly succeeded.`);
+  if (Exit.isSuccess(exit)) return;
+  const failure = Cause.failureOption(exit.cause);
+  assertCondition(
+    Option.isSome(failure) &&
+      failure.value instanceof TraceKernelWouldBlockError &&
+      failure.value.code === 'EAGAIN',
+    `${operation} did not return EAGAIN: ${Cause.pretty(exit.cause)}`
+  );
 }
 
 function assertNetworkError(
@@ -117,6 +130,12 @@ async function main(): Promise<void> {
         !emptyListener.read,
         'An empty TCP listener reported an accept-ready connection.'
       );
+      yield* server.descriptors.setNonblocking(listenerFd, true);
+      assertWouldBlock(
+        yield* Effect.exit(session.acceptTcp(server, listenerFd)),
+        'nonblocking accept on an empty listener'
+      );
+      yield* server.descriptors.setNonblocking(listenerFd, false);
 
       const clientFd = yield* session.createTcpSocket(client);
       const connected = yield* session.connectTcp(client, clientFd, bound);
@@ -158,6 +177,23 @@ async function main(): Promise<void> {
         !initiallyReadable.read,
         'An empty connected TCP stream reported readable data.'
       );
+      yield* server.descriptors.setNonblocking(accepted.fd, true);
+      assertWouldBlock(
+        yield* Effect.exit(server.read(accepted.fd, 16)),
+        'nonblocking recv on an empty stream'
+      );
+      yield* server.descriptors.setNonblocking(accepted.fd, false);
+      yield* client.descriptors.setNonblocking(clientFd, true);
+      yield* client.write(clientFd, encoder.encode('nonblocking-one'));
+      assertWouldBlock(
+        yield* Effect.exit(client.write(clientFd, encoder.encode('nonblocking-two'))),
+        'nonblocking send under stream backpressure'
+      );
+      assertCondition(
+        decoder.decode(yield* server.read(accepted.fd, 64)) === 'nonblocking-one',
+        'Nonblocking TCP send changed the queued payload.'
+      );
+      yield* client.descriptors.setNonblocking(clientFd, false);
       const waitingForData = yield* Effect.fork(
         server.descriptors.awaitReadiness(
           accepted.fd,
@@ -299,6 +335,7 @@ async function main(): Promise<void> {
     peerFinReportsReadableHangup: true,
     bidirectionalFragmentedStreams: true,
     boundedBackpressure: true,
+    nonblockingAcceptRecvAndSend: true,
     writeHalfClosePreservesReverseStream: true,
     listenerCloseWakesAccept: true,
     backlogAppliesConnectBackpressure: true,

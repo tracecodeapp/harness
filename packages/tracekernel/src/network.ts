@@ -10,6 +10,7 @@ import {
 } from './descriptors';
 import {
   TraceKernelNetworkError,
+  TraceKernelWouldBlockError,
   type TraceKernelNetworkErrorCode,
 } from './errors';
 
@@ -114,7 +115,9 @@ export class TraceKernelTcpSocket {
       resourceId: this.id,
       resource: this,
       read: (maxBytes) => this.read(maxBytes),
+      readNonblocking: (maxBytes) => this.readNonblocking(maxBytes),
       write: (bytes) => this.write(bytes),
+      writeNonblocking: (bytes) => this.writeNonblocking(bytes),
       readiness: (events) => this.readiness(events),
       awaitReadiness: (events) => this.awaitReadiness(events),
       duplicate: () => this.duplicate(),
@@ -190,17 +193,32 @@ export class TraceKernelTcpSocket {
         )
       ).pipe(
         Effect.tap(() => this.notifyReadiness()),
-        Effect.flatMap((socket) => Effect.all({
-          localAddress: socket.localAddress(),
-          remoteAddress: socket.remoteAddress(),
-        }).pipe(
-          Effect.map(({ localAddress, remoteAddress }) => Object.freeze({
-            socket,
-            localAddress,
-            remoteAddress,
-          }))
-        ))
+        Effect.flatMap((socket) => this.acceptedResult(socket))
       );
+    });
+  }
+
+  acceptNonblocking(): Effect.Effect<
+    TraceKernelTcpAcceptResult,
+    TraceKernelNetworkError | TraceKernelWouldBlockError
+  > {
+    return Effect.suspend(() => {
+      const listener = this.listener;
+      if (this.state !== 'listening' || !listener) {
+        return Effect.fail(networkError('EINVAL', 'socket is not listening'));
+      }
+      return Effect.gen(this, function* () {
+        const socket = yield* Queue.poll(listener.queue);
+        if (Option.isNone(socket)) {
+          return yield* Effect.fail(new TraceKernelWouldBlockError({
+            code: 'EAGAIN',
+            operation: 'accept',
+            message: 'EAGAIN: no connection is ready to accept',
+          }));
+        }
+        yield* this.notifyReadiness();
+        return yield* this.acceptedResult(socket.value);
+      });
     });
   }
 
@@ -357,6 +375,43 @@ export class TraceKernelTcpSocket {
     }
     return this.endpoint.writer.write?.(bytes)
       ?? Effect.fail(networkError('EBADF', 'socket is not writable'));
+  }
+
+  private readNonblocking(maxBytes: number): Effect.Effect<Uint8Array, Error> {
+    if (this.state !== 'connected' || !this.endpoint) {
+      return Effect.fail(networkError('ENOTCONN', 'socket is not connected'));
+    }
+    if (this.readShutdown) {
+      return Effect.fail(networkError('EBADF', 'socket read side is shut down'));
+    }
+    return this.endpoint.reader.readNonblocking?.(maxBytes)
+      ?? Effect.fail(networkError('EBADF', 'socket is not nonblocking-readable'));
+  }
+
+  private writeNonblocking(bytes: Uint8Array): Effect.Effect<number, Error> {
+    if (this.state !== 'connected' || !this.endpoint) {
+      return Effect.fail(networkError('ENOTCONN', 'socket is not connected'));
+    }
+    if (this.writeShutdown) {
+      return Effect.fail(networkError('EBADF', 'socket write side is shut down'));
+    }
+    return this.endpoint.writer.writeNonblocking?.(bytes)
+      ?? Effect.fail(networkError('EBADF', 'socket is not nonblocking-writable'));
+  }
+
+  private acceptedResult(
+    socket: TraceKernelTcpSocket
+  ): Effect.Effect<TraceKernelTcpAcceptResult, TraceKernelNetworkError> {
+    return Effect.all({
+      localAddress: socket.localAddress(),
+      remoteAddress: socket.remoteAddress(),
+    }).pipe(
+      Effect.map(({ localAddress, remoteAddress }) => Object.freeze({
+        socket,
+        localAddress,
+        remoteAddress,
+      }))
+    );
   }
 
   private readiness(

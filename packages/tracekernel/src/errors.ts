@@ -89,7 +89,7 @@ export class TraceKernelWouldBlockError extends Data.TaggedError(
   'TraceKernelWouldBlockError'
 )<{
   readonly code: 'EAGAIN';
-  readonly operation: 'read' | 'write';
+  readonly operation: 'read' | 'write' | 'accept';
   readonly message: string;
 }> {}
 

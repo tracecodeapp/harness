@@ -1215,8 +1215,13 @@ export class TraceKernelSession {
     readonly localAddress: TraceKernelTcpAddress;
     readonly remoteAddress: TraceKernelTcpAddress;
   }, Error> {
-    return this.tcpSocketFor(process, fd).pipe(
-      Effect.flatMap((socket) => socket.accept()),
+    return Effect.all({
+      socket: this.tcpSocketFor(process, fd),
+      nonblocking: process.descriptors.getNonblocking(fd),
+    }).pipe(
+      Effect.flatMap(({ socket, nonblocking }) =>
+        nonblocking ? socket.acceptNonblocking() : socket.accept()
+      ),
       Effect.flatMap((accepted: TraceKernelTcpAcceptResult) =>
         this.installDescriptor(process, accepted.socket.descriptor()).pipe(
           Effect.map((fd) => Object.freeze({

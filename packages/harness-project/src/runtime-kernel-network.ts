@@ -17,6 +17,7 @@ export interface RuntimeKernelDescriptorRegistry {
     fd: number,
     operation: string
   ): Promise<TraceKernelDescriptor>;
+  getNonblocking(pid: number, fd: number): Promise<boolean>;
 }
 
 /**
@@ -72,7 +73,10 @@ export class RuntimeKernelNetworkManager {
     fd: number
   ): Promise<TraceKernelTcpAcceptResult & { readonly fd: number }> {
     const listener = await this.socketFor(pid, fd, 'accept');
-    const accepted = await Effect.runPromise(listener.accept());
+    const nonblocking = await this.descriptors.getNonblocking(pid, fd);
+    const accepted = await Effect.runPromise(
+      nonblocking ? listener.acceptNonblocking() : listener.accept()
+    );
     const descriptor = accepted.socket.descriptor();
     let acceptedFd: number;
     try {
