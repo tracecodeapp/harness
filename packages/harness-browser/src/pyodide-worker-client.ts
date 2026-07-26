@@ -200,7 +200,14 @@ export class PythonWorkerClient {
           await this.options.runtimeAssetPreflight?.();
         }
       },
-      onCommandMessage: (commandId, type, payload) => {
+      onCommandMessage: (commandId, type, payload, pending) => {
+        if (type === 'kernel-syscall') {
+          if (!pending.kernelSyscalls) return true;
+          void pending.kernelSyscalls.service().catch(() => {
+            pending.kernelSyscalls?.close();
+          });
+          return true;
+        }
         if (!KERNEL_HTTP_MESSAGE_TYPES.has(type)) return false;
         handleAsyncKernelHttpProtocolMessage(this.kernelHttpHost, commandId, type, payload);
         return true;
@@ -431,7 +438,13 @@ export class PythonWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     signal: AbortSignal | undefined = request.signal
   ): Promise<PythonProjectCommandResult> {
-    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+    const {
+      signal: _signal,
+      onEvent: _requestOnEvent,
+      kernelHttp,
+      kernelSyscalls,
+      ...workerRequest
+    } = request;
 
     const program = this.warmupEffect().pipe(
       Effect.andThen(
@@ -446,7 +459,9 @@ export class PythonWorkerClient {
             },
             null,
             onEvent,
-            kernelHttp
+            kernelHttp,
+            undefined,
+            kernelSyscalls
           ),
           timeoutMs
         )
