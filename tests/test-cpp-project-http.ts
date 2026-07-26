@@ -726,6 +726,22 @@ async function main(): Promise<void> {
           ].join('\n'),
         },
         {
+          path: 'js-spawn-cpp.js',
+          contents: [
+            'const fs = require("node:fs");',
+            'const { spawn } = require("node:child_process");',
+            'try { fs.unlinkSync("cpp-child-process.txt"); } catch (error) {',
+            '  if (error.code !== "ENOENT") throw error;',
+            '}',
+            'const child = spawn("./cpp-child.out", [], { stdio: "inherit" });',
+            'child.on("close", (code) => {',
+            '  const contents = fs.readFileSync("cpp-child-process.txt", "utf8");',
+            '  console.log(`js-cpp-spawn:${code}:${contents}:${process.pid}:${child.pid}`);',
+            '});',
+            '',
+          ].join('\n'),
+        },
+        {
           path: 'js-writer.js',
           contents: [
             'const fs = require("node:fs");',
@@ -939,6 +955,55 @@ async function main(): Promise<void> {
         `TraceKernel should own nested C++ hierarchy and reap: ${JSON.stringify({
           cppParentStart,
           cppChildStart,
+        })}`
+      );
+
+      const javascriptSpawnedCpp = await crossLanguageWorkspace.runCommand(
+        'node js-spawn-cpp.js'
+      );
+      const javascriptCppIdentity =
+        /^js-cpp-spawn:0:from-cpp-child:(\d+):(\d+)\n$/.exec(javascriptSpawnedCpp.stdout);
+      assertCondition(
+        javascriptSpawnedCpp.exitCode === 0 &&
+          javascriptCppIdentity !== null &&
+          javascriptCppIdentity[1] !== javascriptCppIdentity[2],
+        `JavaScript should spawn and wait for C++ through TraceKernel: ${JSON.stringify(
+          javascriptSpawnedCpp
+        )}`
+      );
+      const reverseEvents = await crossLanguageWorkspace.readFile('/proc/tracekernel/events');
+      const reverseRows = reverseEvents.trim().split('\n').slice(1).map((line) => {
+        const [, , type, pid, detail] = line.split('\t');
+        return {
+          type,
+          pid: Number(pid),
+          detail: detail ? JSON.parse(detail) as { command?: string; ppid?: number } : {},
+        };
+      });
+      const javascriptParentStart = reverseRows.find(
+        (event) =>
+          event.type === 'process-start' &&
+          event.detail.command === 'node js-spawn-cpp.js' &&
+          event.pid === Number(javascriptCppIdentity[1])
+      );
+      const reverseCppChildStart = reverseRows.find(
+        (event) =>
+          event.type === 'process-start' &&
+          event.detail.command === './cpp-child.out' &&
+          event.pid === Number(javascriptCppIdentity[2])
+      );
+      assertCondition(
+        javascriptParentStart !== undefined &&
+          reverseCppChildStart !== undefined &&
+          reverseCppChildStart.detail.ppid === javascriptParentStart.pid &&
+          reverseRows.some(
+            (event) =>
+              event.type === 'process-reap' &&
+              event.pid === reverseCppChildStart.pid
+          ),
+        `TraceKernel should own the JavaScript-created C++ hierarchy through reap: ${JSON.stringify({
+          javascriptParentStart,
+          reverseCppChildStart,
         })}`
       );
     } finally {
