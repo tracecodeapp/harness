@@ -201,6 +201,38 @@ public sealed class KernelDescriptor : IDisposable
         return new KernelDescriptor(value.GetProperty("fd").GetInt32());
     }
 
+    public bool CloseOnExec
+    {
+        get
+        {
+            ThrowIfClosed();
+            JsonElement value = KernelInterop.Call(new
+            {
+                op = "fcntl",
+                fd = Number,
+                action = "get-close-on-exec",
+            });
+            return value.GetProperty("closeOnExec").GetBoolean();
+        }
+        set
+        {
+            ThrowIfClosed();
+            KernelInterop.Call(new
+            {
+                op = "fcntl",
+                fd = Number,
+                action = "set-close-on-exec",
+                closeOnExec = value,
+            });
+        }
+    }
+
+    public bool Inheritable
+    {
+        get => !CloseOnExec;
+        set => CloseOnExec = !value;
+    }
+
     public void Close()
     {
         if (closed)

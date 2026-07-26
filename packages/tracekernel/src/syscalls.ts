@@ -164,6 +164,12 @@ export type TraceKernelSyscallRequest =
       readonly targetFd: number;
     }
   | {
+      readonly op: 'fcntl';
+      readonly fd: number;
+      readonly action: 'get-close-on-exec' | 'set-close-on-exec';
+      readonly closeOnExec?: boolean;
+    }
+  | {
       readonly op: 'fstat';
       readonly fd: number;
     }
@@ -280,6 +286,7 @@ export type TraceKernelSyscallValue =
   | { readonly op: 'close' }
   | { readonly op: 'dup'; readonly fd: number }
   | { readonly op: 'dup2'; readonly fd: number }
+  | { readonly op: 'fcntl'; readonly closeOnExec: boolean }
   | { readonly op: 'fstat'; readonly stat: TraceKernelStat }
   | { readonly op: 'ftruncate' }
   | { readonly op: 'stat'; readonly stat: TraceKernelStat }
@@ -587,6 +594,23 @@ export class TraceKernelSyscallDispatcher {
         return this.process.dup2(request.fd, request.targetFd).pipe(
           Effect.map((fd) => ({ op: 'dup2' as const, fd }))
         );
+      case 'fcntl':
+        return request.action === 'get-close-on-exec'
+          ? this.process.descriptors.getCloseOnExec(request.fd).pipe(
+              Effect.map((closeOnExec) => ({
+                op: 'fcntl' as const,
+                closeOnExec,
+              }))
+            )
+          : this.process.descriptors.setCloseOnExec(
+              request.fd,
+              request.closeOnExec === true
+            ).pipe(
+              Effect.as({
+                op: 'fcntl' as const,
+                closeOnExec: request.closeOnExec === true,
+              })
+            );
       case 'fstat':
         return this.process.fstat(request.fd).pipe(
           Effect.map((stat) => ({ op: 'fstat' as const, stat }))

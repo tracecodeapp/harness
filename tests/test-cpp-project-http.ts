@@ -292,6 +292,8 @@ const CPP_POSIX_DESCRIPTOR_ACTION_PROGRAM = [
   'int main() {',
   '  const int output = open("cpp-posix-fd.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);',
   '  if (output < 0 || output == 9) return 10;',
+  '  if (fcntl(output, F_SETFD, FD_CLOEXEC) != 0) return 17;',
+  '  if ((fcntl(output, F_GETFD) & FD_CLOEXEC) == 0) return 18;',
   '  posix_spawn_file_actions_t actions {};',
   '  if (posix_spawn_file_actions_init(&actions) != 0) return 11;',
   '  if (posix_spawn_file_actions_adddup2(&actions, output, 9) != 0) return 12;',

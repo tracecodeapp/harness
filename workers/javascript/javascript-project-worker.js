@@ -78,7 +78,8 @@ var OP_CODES = {
   kill: 34,
   watch: 35,
   watchdog: 36,
-  dup2: 37
+  dup2: 37,
+  fcntl: 38
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -400,6 +401,13 @@ function encodeTraceKernelSyscallRequest(request) {
       writer.i32(request.fd);
       writer.i32(request.targetFd);
       break;
+    case "fcntl":
+      writer.i32(request.fd);
+      writer.u8(request.action === "get-close-on-exec" ? 1 : 2);
+      if (request.action === "set-close-on-exec") {
+        writer.u8(request.closeOnExec ? 1 : 0);
+      }
+      break;
     case "ftruncate":
       writer.i32(request.fd);
       writer.f64(request.length);
@@ -618,6 +626,17 @@ function decodeTraceKernelSyscallResult(bytes) {
     case "dup2":
       value = { op: operation, fd: reader.i32() };
       break;
+    case "fcntl": {
+      const closeOnExec = reader.u8();
+      if (closeOnExec > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid close-on-exec result ${closeOnExec}`
+        );
+      }
+      value = { op: "fcntl", closeOnExec: closeOnExec === 1 };
+      break;
+    }
     case "bind":
       value = { op: "bind", address: readAddress(reader) };
       break;
@@ -971,6 +990,27 @@ var TraceKernelRuntimeFileClient = class {
       this.transport.dispatchSync({ op: "dup2", fd: fd2, targetFd }),
       "dup2"
     ).fd;
+  }
+  getCloseOnExec(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "fcntl",
+        fd: fd2,
+        action: "get-close-on-exec"
+      }),
+      "fcntl"
+    ).closeOnExec;
+  }
+  setCloseOnExec(fd2, closeOnExec) {
+    this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "fcntl",
+        fd: fd2,
+        action: "set-close-on-exec",
+        closeOnExec
+      }),
+      "fcntl"
+    );
   }
   fstat(fd2) {
     return this.expectSuccess(
@@ -10554,6 +10594,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     O_EXCL: 128,
     O_TRUNC: 512,
     O_APPEND: 1024,
+    O_CLOEXEC: 524288,
     S_IFMT: 61440,
     S_IFREG: 32768,
     S_IFDIR: 16384,
@@ -11332,6 +11373,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           ...parsed.truncate ? { truncate: true } : {},
           ...parsed.append ? { append: true } : {}
         });
+        executionState.kernelFileSystem.setCloseOnExec(kernelFd, true);
         fileDescriptors.set(fd2, {
           kind: "kernel",
           kernelFd,

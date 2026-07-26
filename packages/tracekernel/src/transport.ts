@@ -50,6 +50,7 @@ const OP_CODES = {
   watch: 35,
   watchdog: 36,
   dup2: 37,
+  fcntl: 38,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -485,6 +486,13 @@ export function encodeTraceKernelSyscallRequest(
       writer.i32(request.fd);
       writer.i32(request.targetFd);
       break;
+    case 'fcntl':
+      writer.i32(request.fd);
+      writer.u8(request.action === 'get-close-on-exec' ? 1 : 2);
+      if (request.action === 'set-close-on-exec') {
+        writer.u8(request.closeOnExec ? 1 : 0);
+      }
+      break;
     case 'ftruncate':
       writer.i32(request.fd);
       writer.f64(request.length);
@@ -866,6 +874,30 @@ export function decodeTraceKernelSyscallRequest(
     case 'dup2':
       request = { op: 'dup2', fd: reader.i32(), targetFd: reader.i32() };
       break;
+    case 'fcntl': {
+      const fd = reader.i32();
+      const action = reader.u8();
+      if (action === 1) {
+        request = { op: 'fcntl', fd, action: 'get-close-on-exec' };
+      } else if (action === 2) {
+        const closeOnExec = reader.u8();
+        if (closeOnExec > 1) {
+          throw new TraceKernelTransportError(
+            'EPROTO',
+            `invalid close-on-exec flag ${closeOnExec}`
+          );
+        }
+        request = {
+          op: 'fcntl',
+          fd,
+          action: 'set-close-on-exec',
+          closeOnExec: closeOnExec === 1,
+        };
+      } else {
+        throw new TraceKernelTransportError('EPROTO', `invalid fcntl action ${action}`);
+      }
+      break;
+    }
     case 'fstat':
       request = { op: 'fstat', fd: reader.i32() };
       break;
@@ -1040,6 +1072,9 @@ export function encodeTraceKernelSyscallResult(
     case 'dup':
     case 'dup2':
       writer.i32(value.fd);
+      break;
+    case 'fcntl':
+      writer.u8(value.closeOnExec ? 1 : 0);
       break;
     case 'bind':
       writeAddress(writer, value.address);
@@ -1275,6 +1310,17 @@ export function decodeTraceKernelSyscallResult(
     case 'dup2':
       value = { op: operation, fd: reader.i32() };
       break;
+    case 'fcntl': {
+      const closeOnExec = reader.u8();
+      if (closeOnExec > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid close-on-exec result ${closeOnExec}`
+        );
+      }
+      value = { op: 'fcntl', closeOnExec: closeOnExec === 1 };
+      break;
+    }
     case 'bind':
       value = { op: 'bind', address: readAddress(reader) };
       break;
@@ -1878,6 +1924,29 @@ export class TraceKernelRuntimeFileClient {
       this.transport.dispatchSync({ op: 'dup2', fd, targetFd }),
       'dup2'
     ).fd;
+  }
+
+  getCloseOnExec(fd: number): boolean {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: 'fcntl',
+        fd,
+        action: 'get-close-on-exec',
+      }),
+      'fcntl'
+    ).closeOnExec;
+  }
+
+  setCloseOnExec(fd: number, closeOnExec: boolean): void {
+    this.expectSuccess(
+      this.transport.dispatchSync({
+        op: 'fcntl',
+        fd,
+        action: 'set-close-on-exec',
+        closeOnExec,
+      }),
+      'fcntl'
+    );
   }
 
   fstat(fd: number): TraceKernelStat {

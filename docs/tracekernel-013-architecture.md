@@ -456,8 +456,11 @@ Descriptor-table entries also carry kernel-owned close-on-exec state.
 `inheritDescriptors: "all"` filters `FD_CLOEXEC` entries in the kernel, while
 explicit mappings remain spawn file actions and can intentionally pass a
 flagged descriptor. `dup` and `dup2` create inheritable targets, matching the
-traditional descriptor-flag rule. Runtime `fcntl`/inheritable APIs are the
-next adapter surface over this foundation.
+traditional descriptor-flag rule. The binary syscall contract exposes the
+flag through `fcntl`; C++ maps `F_GETFD`/`F_SETFD`, Python maps
+`os.get_inheritable`, `os.set_inheritable`, and the `fcntl` module, JavaScript
+marks Node-opened files close-on-exec, and managed C# exposes
+`KernelDescriptor.CloseOnExec`/`Inheritable`.
 
 The C/C++ WASI process compatibility slice is intentionally smaller than a
 complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,

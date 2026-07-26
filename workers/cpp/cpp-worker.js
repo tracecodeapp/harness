@@ -353,6 +353,7 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   kill: 34,
   watchdog: 36,
   dup2: 37,
+  fcntl: 38,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -721,6 +722,13 @@ class CppTraceKernelSyncClient {
         writer.i32(request.fd);
         writer.i32(request.targetFd);
         break;
+      case 'fcntl':
+        writer.i32(request.fd);
+        writer.u8(request.action === 'get-close-on-exec' ? 1 : 2);
+        if (request.action === 'set-close-on-exec') {
+          writer.u8(request.closeOnExec ? 1 : 0);
+        }
+        break;
       case 'ftruncate':
         writer.i32(request.fd);
         writer.f64(request.length);
@@ -912,6 +920,9 @@ class CppTraceKernelSyncClient {
       case 'dup':
       case 'dup2':
         value = { op: operation, fd: reader.i32() };
+        break;
+      case 'fcntl':
+        value = { op: operation, closeOnExec: reader.u8() === 1 };
         break;
       case 'bind':
         value = { op: operation, address: readCppTraceKernelAddress(reader) };
@@ -2619,12 +2630,37 @@ class WasiProcess {
           const argv = readArgv(argvPtr);
           const requestedEnv = readEnvp(envpPtr);
           const descriptorActions = readSpawnDescriptorActions(actionsPtr);
+          const actionSourceFds = new Set(
+            descriptorActions
+              .filter((action) => action.op === 'dup2')
+              .map((action) => action.fd)
+          );
+          const closeOnExecFds = new Set();
           const descriptorMappings = [...this.fds.entries()]
-            .filter(([, entry]) => entry.kernelFd !== undefined)
+            .filter(([childFd, entry]) => {
+              if (entry.kernelFd === undefined) return false;
+              const closeOnExec = this.kernelClient.call({
+                op: 'fcntl',
+                fd: entry.kernelFd,
+                action: 'get-close-on-exec',
+              }).closeOnExec;
+              if (closeOnExec) closeOnExecFds.add(childFd);
+              return !closeOnExec || actionSourceFds.has(childFd);
+            })
             .map(([childFd, entry]) => ({
               parentFd: entry.kernelFd,
               childFd,
             }));
+          for (const fd of closeOnExecFds) {
+            if (
+              actionSourceFds.has(fd) &&
+              !descriptorActions.some((action) =>
+                action.op === 'close' && action.fd === fd
+              )
+            ) {
+              descriptorActions.push({ op: 'close', fd });
+            }
+          }
           const startsNewSession = (flags & 2) !== 0;
           const setsProcessGroup = (flags & 1) !== 0;
           const spawned = this.kernelClient.call({
@@ -2697,6 +2733,24 @@ class WasiProcess {
         if (kind === 3) return this.process.pgid | 0;
         if (kind === 4) return this.process.sid | 0;
         return -EINVAL;
+      },
+      proc_fcntl: (fd, action, value) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        const entry = this.fds.get(fd | 0);
+        if (!entry || entry.kernelFd === undefined) return -EBADF;
+        try {
+          const result = this.kernelClient.call({
+            op: 'fcntl',
+            fd: entry.kernelFd,
+            action: action === 1
+              ? 'get-close-on-exec'
+              : 'set-close-on-exec',
+            ...(action === 1 ? {} : { closeOnExec: value !== 0 }),
+          });
+          return result.closeOnExec ? 1 : 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
       },
       proc_watchdog: (action, timeoutMs, signalNumber, statusPtr) => {
         if (!this.kernelClient) return -ENOTSUP;
@@ -11436,6 +11490,7 @@ pid_t getsid(pid_t pid);
 `;
 
 const CPP_KERNEL_PROCESS_SHIM_SOURCE = String.raw`#include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdlib.h>
@@ -11443,6 +11498,7 @@ const CPP_KERNEL_PROCESS_SHIM_SOURCE = String.raw`#include <errno.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <stdarg.h>
 
 __attribute__((import_module("tracecode_kernel"), import_name("proc_system")))
 int __tracecode_proc_system(const char* command, unsigned int length);
@@ -11454,6 +11510,28 @@ __attribute__((import_module("tracecode_kernel"), import_name("proc_kill")))
 int __tracecode_proc_kill(int pid, int signal);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_identity")))
 int __tracecode_proc_identity(int kind);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_fcntl")))
+int __tracecode_proc_fcntl(int fd, int action, int value);
+
+int fcntl(int fd, int command, ...) {
+  int result;
+  int value = 0;
+  if (command == F_SETFD) {
+    va_list arguments;
+    va_start(arguments, command);
+    value = va_arg(arguments, int);
+    va_end(arguments);
+  } else if (command != F_GETFD) {
+    errno = ENOSYS;
+    return -1;
+  }
+  result = __tracecode_proc_fcntl(fd, command == F_GETFD ? 1 : 2, value & FD_CLOEXEC);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return command == F_GETFD ? (result ? FD_CLOEXEC : 0) : 0;
+}
 
 int system(const char* command) {
   int result;

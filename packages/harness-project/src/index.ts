@@ -1768,6 +1768,23 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           );
           return { ok: true, value: { op: 'dup2', fd } };
         }
+        case 'fcntl': {
+          const pid = context?.process.pid ?? 0;
+          const closeOnExec = request.action === 'get-close-on-exec'
+            ? await this.kernelDescriptors.getCloseOnExec(pid, request.fd)
+            : request.closeOnExec === true;
+          if (request.action === 'set-close-on-exec') {
+            await this.kernelDescriptors.setCloseOnExec(
+              pid,
+              request.fd,
+              closeOnExec
+            );
+          }
+          return {
+            ok: true,
+            value: { op: 'fcntl', closeOnExec },
+          };
+        }
         case 'fstat': {
           const stat = await this.kernelDescriptors.fstat(
             context?.process.pid ?? 0,

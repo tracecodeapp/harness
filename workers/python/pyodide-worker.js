@@ -2080,6 +2080,7 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   kill: 34,
   watchdog: 36,
   dup2: 37,
+  fcntl: 38,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
   Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
@@ -2456,6 +2457,13 @@ class PythonTraceKernelSyncClient {
       case 'dup2':
         writer.i32(request.fd);
         writer.i32(request.targetFd);
+        break;
+      case 'fcntl':
+        writer.i32(request.fd);
+        writer.u8(request.action === 'get-close-on-exec' ? 1 : 2);
+        if (request.action === 'set-close-on-exec') {
+          writer.u8(request.closeOnExec ? 1 : 0);
+        }
         break;
       case 'ftruncate':
         writer.i32(request.fd);
@@ -2838,6 +2846,8 @@ class PythonTraceKernelSyncClient {
       operation === 'dup2'
     ) {
       value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'fcntl') {
+      value = { op: operation, closeOnExec: reader.u8() === 1 };
     } else if (
       operation === 'read'
     ) {
@@ -3184,6 +3194,12 @@ function installPyodideTraceKernelMount(
           });
           stream.shared.tracekernelFd = opened.fd;
           stream.shared.tracekernelRefcount = 1;
+          kernelClient.request({
+            op: 'fcntl',
+            fd: opened.fd,
+            action: 'set-close-on-exec',
+            closeOnExec: true,
+          });
         });
       },
 
@@ -3634,10 +3650,17 @@ async function executeProjectPythonUserCall(
             for (let localFd = 0; localFd < pyodide.FS.streams.length; localFd += 1) {
               const kernelFd = pyodide.FS.streams[localFd]?.shared?.tracekernelFd;
               if (Number.isSafeInteger(kernelFd) && kernelFd >= 0) {
-                mappingsByChildFd.set(localFd, {
-                  parentFd: kernelFd,
-                  childFd: localFd,
+                const flags = kernelClient.request({
+                  op: 'fcntl',
+                  fd: kernelFd,
+                  action: 'get-close-on-exec',
                 });
+                if (!flags.closeOnExec) {
+                  mappingsByChildFd.set(localFd, {
+                    parentFd: kernelFd,
+                    childFd: localFd,
+                  });
+                }
               }
             }
           }
@@ -3721,6 +3744,17 @@ async function executeProjectPythonUserCall(
           };
         case 'close':
           return { op: 'close', fd: Number(input.fd) };
+        case 'fcntl':
+          return {
+            op: 'fcntl',
+            fd: kernelFdForLocalFd(input.fd),
+            action: input.action === 'get-close-on-exec'
+              ? 'get-close-on-exec'
+              : 'set-close-on-exec',
+            ...(input.action === 'get-close-on-exec'
+              ? {}
+              : { closeOnExec: input.closeOnExec === true }),
+          };
         default:
           throw new PythonTraceKernelSyscallError(
             'ENOSYS',
@@ -4659,6 +4693,39 @@ os.killpg = lambda pgid, signal: _tracekernel_module.process.kill(
     -abs(int(pgid)),
     signal,
 )
+
+def _tracekernel_get_inheritable(fd):
+    _value = _TraceKernelProcessApi._call({
+        "op": "fcntl",
+        "fd": int(fd),
+        "action": "get-close-on-exec",
+    })
+    return not bool(_value.get("closeOnExec"))
+
+def _tracekernel_set_inheritable(fd, inheritable):
+    _TraceKernelProcessApi._call({
+        "op": "fcntl",
+        "fd": int(fd),
+        "action": "set-close-on-exec",
+        "closeOnExec": not bool(inheritable),
+    })
+
+os.get_inheritable = _tracekernel_get_inheritable
+os.set_inheritable = _tracekernel_set_inheritable
+
+_fcntl_module = types.ModuleType("fcntl")
+_fcntl_module.F_GETFD = 1
+_fcntl_module.F_SETFD = 2
+_fcntl_module.FD_CLOEXEC = 1
+def _tracekernel_fcntl(fd, command, argument=0):
+    if int(command) == _fcntl_module.F_GETFD:
+        return 0 if os.get_inheritable(fd) else _fcntl_module.FD_CLOEXEC
+    if int(command) == _fcntl_module.F_SETFD:
+        os.set_inheritable(fd, not bool(int(argument) & _fcntl_module.FD_CLOEXEC))
+        return 0
+    raise NotImplementedError("TraceKernel fcntl supports F_GETFD and F_SETFD")
+_fcntl_module.fcntl = _tracekernel_fcntl
+sys.modules["fcntl"] = _fcntl_module
 
 def _install_tracekernel_subprocess_module():
     _module = types.ModuleType("subprocess")
@@ -7355,6 +7422,7 @@ def _install_virtual_workspace_paths():
             _workspace_file_descriptors[_new_fd] = _workspace_file_descriptors[_fd]
         if _fd in _open_file_descriptors:
             _open_file_descriptors[_new_fd] = _open_file_descriptors[_fd]
+        os.set_inheritable(_new_fd, False)
         return _new_fd
 
     def _patched_os_dup2(_fd, _fd2, _inheritable=True):
@@ -7376,6 +7444,7 @@ def _install_virtual_workspace_paths():
             _workspace_file_descriptors[_new_fd] = _workspace_file_descriptors[_fd]
         if _fd in _open_file_descriptors:
             _open_file_descriptors[_new_fd] = _open_file_descriptors[_fd]
+        os.set_inheritable(_new_fd, bool(_inheritable))
         return _new_fd
 
     def _patched_os_truncate(_path, _length):

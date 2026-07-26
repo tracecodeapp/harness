@@ -235,6 +235,13 @@ async function main(): Promise<void> {
     { op: 'close', fd: 11 },
     { op: 'dup', fd: 12 },
     { op: 'dup2', fd: 12, targetFd: 19 },
+    { op: 'fcntl', fd: 19, action: 'get-close-on-exec' },
+    {
+      op: 'fcntl',
+      fd: 19,
+      action: 'set-close-on-exec',
+      closeOnExec: true,
+    },
     { op: 'fstat', fd: 13 },
     { op: 'ftruncate', fd: 14, length: 4096 },
     { op: 'stat', path: '/workspace/a' },
@@ -368,6 +375,8 @@ async function main(): Promise<void> {
     { ok: true, value: { op: 'close' } },
     { ok: true, value: { op: 'dup', fd: 4 } },
     { ok: true, value: { op: 'dup2', fd: 19 } },
+    { ok: true, value: { op: 'fcntl', closeOnExec: false } },
+    { ok: true, value: { op: 'fcntl', closeOnExec: true } },
     {
       ok: true,
       value: {

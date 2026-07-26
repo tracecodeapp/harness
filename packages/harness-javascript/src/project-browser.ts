@@ -305,6 +305,8 @@ export interface BrowserTraceKernelFileSystem {
   write(fd: number, bytes: Uint8Array, position?: number): number;
   closeDescriptor(fd: number): void;
   dup(fd: number): number;
+  getCloseOnExec(fd: number): boolean;
+  setCloseOnExec(fd: number, closeOnExec: boolean): void;
   fstat(fd: number): TraceKernelStat;
   ftruncate(fd: number, length: number): void;
   readFile(path: string): Uint8Array;
@@ -7152,6 +7154,7 @@ export async function runBrowserJavaScriptProjectRequest(
       O_EXCL: 0o200,
       O_TRUNC: 0o1000,
       O_APPEND: 0o2000,
+      O_CLOEXEC: 0o2000000,
       S_IFMT: 0o170000,
       S_IFREG: 0o100000,
       S_IFDIR: 0o040000,
@@ -7993,6 +7996,7 @@ export async function runBrowserJavaScriptProjectRequest(
             ...(parsed.truncate ? { truncate: true } : {}),
             ...(parsed.append ? { append: true } : {}),
           });
+          executionState.kernelFileSystem.setCloseOnExec(kernelFd, true);
           fileDescriptors.set(fd, {
             kind: 'kernel',
             kernelFd,

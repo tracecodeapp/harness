@@ -473,6 +473,18 @@ export class RuntimeKernelDescriptorManager {
     if (table.snapshots().length === 0) this.tables.delete(pid);
   }
 
+  getCloseOnExec(pid: number, fd: number): Promise<boolean> {
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'fcntl').getCloseOnExec(fd)
+    );
+  }
+
+  setCloseOnExec(pid: number, fd: number, closeOnExec: boolean): Promise<void> {
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'fcntl').setCloseOnExec(fd, closeOnExec)
+    );
+  }
+
   async closeProcess(pid: number): Promise<void> {
     const table = this.tables.get(pid);
     if (!table) return;

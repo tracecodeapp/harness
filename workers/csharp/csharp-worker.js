@@ -193,6 +193,7 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   watch: 35,
   watchdog: 36,
   dup2: 37,
+  fcntl: 38,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -495,6 +496,13 @@ class CSharpTraceKernelSyncClient {
       case 'dup2':
         writer.i32(request.fd);
         writer.i32(request.targetFd);
+        break;
+      case 'fcntl':
+        writer.i32(request.fd);
+        writer.u8(request.action === 'get-close-on-exec' ? 1 : 2);
+        if (request.action === 'set-close-on-exec') {
+          writer.u8(request.closeOnExec ? 1 : 0);
+        }
         break;
       case 'ftruncate':
         writer.i32(request.fd);
@@ -825,6 +833,8 @@ class CSharpTraceKernelSyncClient {
       operation === 'dup2'
     ) {
       value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'fcntl') {
+      value = { op: operation, closeOnExec: reader.u8() === 1 };
     } else if (operation === 'read') {
       value = { op: operation, bytes: reader.bytesValue() };
     } else if (operation === 'write') {

@@ -78,6 +78,24 @@ async function main(): Promise<void> {
       success(pipe);
       assertCondition(pipe.value.op === 'pipe', 'pipe returned the wrong response variant.');
       if (pipe.value.op !== 'pipe') return;
+      const setCloseOnExec = yield* syscalls.dispatch({
+        op: 'fcntl',
+        fd: pipe.value.readFd,
+        action: 'set-close-on-exec',
+        closeOnExec: true,
+      });
+      success(setCloseOnExec);
+      const getCloseOnExec = yield* syscalls.dispatch({
+        op: 'fcntl',
+        fd: pipe.value.readFd,
+        action: 'get-close-on-exec',
+      });
+      success(getCloseOnExec);
+      assertCondition(
+        getCloseOnExec.value.op === 'fcntl' &&
+          getCloseOnExec.value.closeOnExec,
+        `fcntl did not preserve FD_CLOEXEC: ${JSON.stringify(getCloseOnExec)}`
+      );
       const pipeWrite = yield* syscalls.dispatch({
         op: 'write',
         fd: pipe.value.writeFd,
