@@ -475,6 +475,9 @@ The initial 0.13 branch now establishes:
 - a browser JavaScript/TypeScript path adapter using the real binary syscall
   transport, with cross-worker live data and namespace visibility plus browser
   conformance coverage;
+- a browser C/C++ adapter using that same binary transport for TKFS, BSD TCP,
+  `system()` child processes, and process watchdog controls exposed through
+  the injected `tracekernel.h` compatibility boundary;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic

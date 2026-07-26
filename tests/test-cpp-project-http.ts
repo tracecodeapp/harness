@@ -83,6 +83,40 @@ const CPP_TK_TCP_PROGRAM = [
   '',
 ].join('\n');
 
+const CPP_WATCHDOG_CONTROL_PROGRAM = [
+  '#include "tracekernel.h"',
+  '#include <cstdio>',
+  'int main() {',
+  '  tracekernel_watchdog_status first {};',
+  '  tracekernel_watchdog_status petted {};',
+  '  tracekernel_watchdog_status disarmed {};',
+  '  if (tracekernel_watchdog_arm(5000, TRACEKERNEL_WATCHDOG_SIGKILL) != 0) return 1;',
+  '  if (tracekernel_watchdog_get_status(&first) != 0) return 2;',
+  '  if (tracekernel_watchdog_pet() != 0) return 3;',
+  '  if (tracekernel_watchdog_get_status(&petted) != 0) return 4;',
+  '  if (tracekernel_watchdog_disarm() != 0) return 5;',
+  '  if (tracekernel_watchdog_get_status(&disarmed) != 0) return 6;',
+  '  const bool valid = first.armed == 1 && first.timeout_ms == 5000 &&',
+  '    first.signal == TRACEKERNEL_WATCHDOG_SIGKILL && first.deadline_at_ms > 0 &&',
+  '    petted.armed == 1 && petted.deadline_at_ms >= first.deadline_at_ms &&',
+  '    disarmed.armed == 0;',
+  '  std::printf("watchdog:%s\\n", valid ? "pass" : "fail");',
+  '  return valid ? 0 : 7;',
+  '}',
+  '',
+].join('\n');
+
+const CPP_WATCHDOG_EXPIRY_PROGRAM = [
+  '#include "tracekernel.h"',
+  '#include <cstdint>',
+  'int main() {',
+  '  if (tracekernel_watchdog_arm(40, TRACEKERNEL_WATCHDOG_SIGKILL) != 0) return 1;',
+  '  volatile std::uint64_t counter = 0;',
+  '  for (;;) ++counter;',
+  '}',
+  '',
+].join('\n');
+
 const CPP_CROSS_LANGUAGE_FS_PROGRAM = [
   '#include <fcntl.h>',
   '#include <sys/stat.h>',
@@ -723,6 +757,8 @@ async function main(): Promise<void> {
         { path: 'spawn-javascript.cpp', contents: CPP_SPAWN_JAVASCRIPT_PROGRAM },
         { path: 'cpp-child.cpp', contents: CPP_CHILD_PROGRAM },
         { path: 'spawn-cpp.cpp', contents: CPP_SPAWN_CPP_PROGRAM },
+        { path: 'watchdog-control.cpp', contents: CPP_WATCHDOG_CONTROL_PROGRAM },
+        { path: 'watchdog-expiry.cpp', contents: CPP_WATCHDOG_EXPIRY_PROGRAM },
         { path: 'cpp-watches.txt', contents: 'before-js' },
         { path: 'js-watches.txt', contents: 'before-cpp' },
         {
@@ -1014,11 +1050,57 @@ async function main(): Promise<void> {
           reverseCppChildStart,
         })}`
       );
+
+      const watchdogControlCompile = await crossLanguageWorkspace.runCommand(
+        'clang++ watchdog-control.cpp -o a.out'
+      );
+      assertCondition(
+        watchdogControlCompile.exitCode === 0,
+        `C++ TraceKernel watchdog controls should compile: ${JSON.stringify(watchdogControlCompile)}`
+      );
+      const watchdogExecutable = (await crossLanguageWorkspace.snapshot()).files.find(
+        (file) => file.path === 'a.out'
+      );
+      assertCondition(watchdogExecutable !== undefined, 'C++ watchdog fixture should emit a.out');
+      const watchdogExecutableBytes = watchdogExecutable.encoding === 'base64'
+        ? Buffer.from(watchdogExecutable.contents, 'base64')
+        : Buffer.from(watchdogExecutable.contents, 'utf8');
+      const watchdogImports = WebAssembly.Module.imports(
+        await WebAssembly.compile(watchdogExecutableBytes)
+      );
+      assertCondition(
+        watchdogImports.some(
+          (item) =>
+            item.module === 'tracecode_kernel' &&
+            item.name === 'proc_watchdog'
+        ),
+        `C++ watchdog controls should import the TraceKernel ABI: ${JSON.stringify(watchdogImports)}`
+      );
+      const watchdogControl = await crossLanguageWorkspace.runCommand('./a.out');
+      assertCondition(
+        watchdogControl.exitCode === 0 &&
+          watchdogControl.stdout === 'watchdog:pass\n',
+        `C++ watchdog arm, status, pet, and disarm should stay kernel-owned: ${JSON.stringify(watchdogControl)}`
+      );
+
+      const watchdogExpiryCompile = await crossLanguageWorkspace.runCommand(
+        'clang++ watchdog-expiry.cpp -o a.out'
+      );
+      assertCondition(
+        watchdogExpiryCompile.exitCode === 0,
+        `C++ watchdog expiry fixture should compile: ${JSON.stringify(watchdogExpiryCompile)}`
+      );
+      const watchdogExpiry = await crossLanguageWorkspace.runCommand('./a.out');
+      assertCondition(
+        watchdogExpiry.exitCode === 137 &&
+          watchdogExpiry.error?.detail?.signal === 'SIGKILL',
+        `C++ watchdog expiry should terminate the process through TraceKernel: ${JSON.stringify(watchdogExpiry)}`
+      );
     } finally {
       crossLanguageWorkspace.dispose();
       javascriptRunner.dispose?.();
     }
-    console.log('PASS: C++ spawns JavaScript and C++ on isolated workers through TraceKernel');
+    console.log('PASS: C++ process, isolation, and watchdog controls use TraceKernel');
 
     const tcpWorkspace = await createRuntimeWorkspace({
       files: [{ path: 'tcp.cpp', contents: CPP_TK_TCP_PROGRAM }],

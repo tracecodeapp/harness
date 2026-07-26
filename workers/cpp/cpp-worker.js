@@ -347,6 +347,7 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   spawn: 32,
   wait: 33,
   kill: 34,
+  watchdog: 36,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -553,6 +554,26 @@ class CppTraceKernelSyncClient {
       case 'pipe':
         writer.u32(request.options?.capacityChunks ?? 0);
         break;
+      case 'watchdog':
+        writer.u8(
+          request.action === 'arm'
+            ? 1
+            : request.action === 'pet'
+              ? 2
+              : request.action === 'disarm'
+                ? 3
+                : 4
+        );
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.u32(request.timeoutMs);
+        writer.u8(
+          request.signal === undefined
+            ? 0
+            : request.signal === 'SIGTERM'
+              ? 1
+              : 2
+        );
+        break;
       case 'spawn': {
         writer.string(request.runtime);
         writer.string(request.command);
@@ -584,6 +605,18 @@ class CppTraceKernelSyncClient {
         if (request.processGroupId !== undefined) writer.i32(request.processGroupId);
         writer.u8(request.sessionId === undefined ? 0 : 1);
         if (request.sessionId !== undefined) writer.i32(request.sessionId);
+        const writeStdioMode = (mode) => writer.u8(
+          mode === undefined
+            ? 0
+            : mode === 'pipe'
+              ? 1
+              : mode === 'inherit'
+                ? 2
+                : 3
+        );
+        writeStdioMode(request.stdio?.stdin);
+        writeStdioMode(request.stdio?.stdout);
+        writeStdioMode(request.stdio?.stderr);
         break;
       }
       case 'wait':
@@ -738,9 +771,67 @@ class CppTraceKernelSyncClient {
           writeFd: reader.i32(),
         };
         break;
-      case 'spawn':
-        value = { op: operation, pid: reader.i32() };
+      case 'watchdog': {
+        const armed = reader.u8();
+        if (armed > 1) {
+          throw new CppTraceKernelSyscallError(
+            'EPROTO',
+            `invalid watchdog armed flag ${armed}`
+          );
+        }
+        if (!armed) {
+          value = { op: operation, armed: false };
+          break;
+        }
+        const timeoutMs = reader.u32();
+        const deadlineAt = reader.f64();
+        const signalCode = reader.u8();
+        if (signalCode !== 1 && signalCode !== 2) {
+          throw new CppTraceKernelSyscallError(
+            'EPROTO',
+            `invalid watchdog response signal ${signalCode}`
+          );
+        }
+        value = {
+          op: operation,
+          armed: true,
+          timeoutMs,
+          deadlineAt,
+          signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
+        };
         break;
+      }
+      case 'spawn': {
+        const pid = reader.i32();
+        const readOptionalFd = (name) => {
+          const present = reader.u8();
+          if (present > 1) {
+            throw new CppTraceKernelSyscallError(
+              'EPROTO',
+              `invalid spawn ${name} fd flag ${present}`
+            );
+          }
+          return present ? reader.i32() : undefined;
+        };
+        const stdinFd = readOptionalFd('stdin');
+        const stdoutFd = readOptionalFd('stdout');
+        const stderrFd = readOptionalFd('stderr');
+        const stdio = stdinFd === undefined &&
+          stdoutFd === undefined &&
+          stderrFd === undefined
+          ? undefined
+          : {
+              ...(stdinFd === undefined ? {} : { stdinFd }),
+              ...(stdoutFd === undefined ? {} : { stdoutFd }),
+              ...(stderrFd === undefined ? {} : { stderrFd }),
+            };
+        value = {
+          op: operation,
+          pid,
+          ...(stdio ? { stdio } : {}),
+        };
+        break;
+      }
       case 'wait': {
         const pid = reader.i32();
         const terminationCode = reader.u8();
@@ -2389,6 +2480,58 @@ class WasiProcess {
           });
           const waited = this.kernelClient.call({ op: 'wait', pid: spawned.pid });
           return waited.termination.exitCode;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_watchdog: (action, timeoutMs, signalNumber, statusPtr) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        const actionName = action === 1
+          ? 'arm'
+          : action === 2
+            ? 'pet'
+            : action === 3
+              ? 'disarm'
+              : action === 4
+                ? 'status'
+                : null;
+        if (!actionName) return -EINVAL;
+        if (
+          actionName === 'arm' &&
+          signalNumber !== 0 &&
+          signalNumber !== 9 &&
+          signalNumber !== 15
+        ) {
+          return -EINVAL;
+        }
+        try {
+          const status = this.kernelClient.call({
+            op: 'watchdog',
+            action: actionName,
+            ...(actionName === 'arm'
+              ? {
+                  timeoutMs: timeoutMs >>> 0,
+                  signal: signalNumber === 9 ? 'SIGKILL' : 'SIGTERM',
+                }
+              : {}),
+          });
+          if (statusPtr) {
+            this.mem.writeU32(statusPtr, status.armed ? 1 : 0);
+            this.mem.writeU32(statusPtr + 4, status.timeoutMs ?? 0);
+            this.mem.writeU64(
+              statusPtr + 8,
+              Math.max(0, Math.floor(status.deadlineAt ?? 0))
+            );
+            this.mem.writeU32(
+              statusPtr + 16,
+              status.signal === 'SIGKILL'
+                ? 9
+                : status.signal === 'SIGTERM'
+                  ? 15
+                  : 0
+            );
+          }
+          return 0;
         } catch (error) {
           return -cppTraceKernelErrno(error);
         }
@@ -10731,6 +10874,8 @@ const CPP_KERNEL_SOCKET_HEADER_FILENAME = 'tracecode_socket.h';
 const CPP_KERNEL_SOCKET_SHIM_FILENAME = 'tracecode_socket.c';
 const CPP_KERNEL_NETDB_HEADER_FILENAME = 'netdb.h';
 const CPP_KERNEL_PROCESS_SHIM_FILENAME = 'tracecode_process.c';
+const CPP_KERNEL_CONTROL_HEADER_FILENAME = 'tracekernel.h';
+const CPP_KERNEL_CONTROL_SHIM_FILENAME = 'tracekernel.c';
 
 // Declarations wasi-libc's <sys/socket.h> is missing; force-included into
 // every project TU so standard POSIX code compiles unchanged.
@@ -10999,6 +11144,89 @@ int system(const char* command) {
 }
 `;
 
+const CPP_KERNEL_CONTROL_HEADER_SOURCE = String.raw`#ifndef TRACEKERNEL_H
+#define TRACEKERNEL_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define TRACEKERNEL_WATCHDOG_SIGTERM 15
+#define TRACEKERNEL_WATCHDOG_SIGKILL 9
+
+struct tracekernel_watchdog_status {
+  uint32_t armed;
+  uint32_t timeout_ms;
+  uint64_t deadline_at_ms;
+  int32_t signal;
+};
+
+int tracekernel_watchdog_arm(uint32_t timeout_ms, int signal);
+int tracekernel_watchdog_pet(void);
+int tracekernel_watchdog_disarm(void);
+int tracekernel_watchdog_get_status(struct tracekernel_watchdog_status* status);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
+const CPP_KERNEL_CONTROL_SHIM_SOURCE = String.raw`#include <errno.h>
+#include <stdint.h>
+#include "tracekernel.h"
+
+__attribute__((import_module("tracecode_kernel"), import_name("proc_watchdog")))
+int __tracecode_proc_watchdog(
+  int action,
+  uint32_t timeout_ms,
+  int signal,
+  struct tracekernel_watchdog_status* status
+);
+
+static int tracekernel_watchdog_call(
+  int action,
+  uint32_t timeout_ms,
+  int signal,
+  struct tracekernel_watchdog_status* status
+) {
+  int result = __tracecode_proc_watchdog(
+    action,
+    timeout_ms,
+    signal,
+    status
+  );
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+
+int tracekernel_watchdog_arm(uint32_t timeout_ms, int signal) {
+  return tracekernel_watchdog_call(1, timeout_ms, signal, 0);
+}
+
+int tracekernel_watchdog_pet(void) {
+  return tracekernel_watchdog_call(2, 0, 0, 0);
+}
+
+int tracekernel_watchdog_disarm(void) {
+  return tracekernel_watchdog_call(3, 0, 0, 0);
+}
+
+int tracekernel_watchdog_get_status(struct tracekernel_watchdog_status* status) {
+  if (status == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  return tracekernel_watchdog_call(4, 0, 0, status);
+}
+`;
+
 function cppProjectHasFileNamed(files, filename) {
   return files.some((file) => {
     const path = String(file?.path || '').replace(/\\/g, '/');
@@ -11006,7 +11234,7 @@ function cppProjectHasFileNamed(files, filename) {
   });
 }
 
-function projectWithCppKernelNetworkShims(project) {
+function projectWithCppKernelShims(project) {
   const files = Array.isArray(project?.files) ? project.files : [];
   const additions = [];
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_HEADER_FILENAME)) {
@@ -11021,6 +11249,12 @@ function projectWithCppKernelNetworkShims(project) {
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_SHIM_FILENAME)) {
     additions.push({ path: CPP_KERNEL_PROCESS_SHIM_FILENAME, contents: CPP_KERNEL_PROCESS_SHIM_SOURCE });
   }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_CONTROL_HEADER_FILENAME, contents: CPP_KERNEL_CONTROL_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_SHIM_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_CONTROL_SHIM_FILENAME, contents: CPP_KERNEL_CONTROL_SHIM_SOURCE });
+  }
   if (additions.length === 0) return project;
   return {
     ...(project && typeof project === 'object' ? project : {}),
@@ -11028,7 +11262,7 @@ function projectWithCppKernelNetworkShims(project) {
   };
 }
 
-function cppProjectArgsWithKernelNetwork(args, project) {
+function cppProjectArgsWithKernelShims(args, project) {
   const files = Array.isArray(project?.files) ? project.files : [];
   const injected = [];
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_HEADER_FILENAME)) {
@@ -11042,15 +11276,18 @@ function cppProjectArgsWithKernelNetwork(args, project) {
   if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_SHIM_FILENAME)) {
     injected.push(CPP_KERNEL_PROCESS_SHIM_FILENAME);
   }
+  if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_SHIM_FILENAME)) {
+    injected.push(CPP_KERNEL_CONTROL_SHIM_FILENAME);
+  }
   return [...injected, ...args];
 }
 
 function compileProjectOutsideMainWorker(request) {
   const payload = {
     assets: configuredAssets,
-    project: projectWithCppKernelNetworkShims(request.project),
+    project: projectWithCppKernelShims(request.project),
     cwd: requestCwdRelative(request),
-    args: cppProjectArgsWithKernelNetwork(projectCompileArgs(request), request.project),
+    args: cppProjectArgsWithKernelShims(projectCompileArgs(request), request.project),
     compilerCommand: projectCompilerCommand(request),
     sourceInput: request?.code || '',
     includePaths: projectCompileIncludePaths(request),
