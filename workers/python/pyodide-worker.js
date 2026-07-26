@@ -2044,12 +2044,148 @@ const PYTHON_TK_SHARED_STATE_REQUEST = 1;
 const PYTHON_TK_SHARED_STATE_RESPONSE = 3;
 const PYTHON_TK_SHARED_STATE_CLOSED = 4;
 const PYTHON_TK_SHARED_STATE_WRITING = 5;
+const PYTHON_TK_OP_CODES = Object.freeze({
+  stat: 6,
+  readdir: 7,
+  mkdir: 8,
+  rmdir: 9,
+  unlink: 10,
+  rename: 11,
+  readFile: 12,
+  writeFile: 13,
+  lstat: 19,
+  realpath: 20,
+  watchdog: 36,
+});
+const PYTHON_TK_OPS_BY_CODE = new Map(
+  Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
+    code,
+    operation,
+  ])
+);
 
 class PythonTraceKernelSyscallError extends Error {
   constructor(code, message) {
     super(message);
     this.name = 'PythonTraceKernelSyscallError';
     this.code = code;
+  }
+}
+
+class PythonTraceKernelFrameWriter {
+  constructor() {
+    this.bytes = new Uint8Array(256);
+    this.view = new DataView(this.bytes.buffer);
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    const required = this.offset + length;
+    if (required <= this.bytes.byteLength) return;
+    let capacity = this.bytes.byteLength;
+    while (capacity < required) capacity *= 2;
+    const next = new Uint8Array(capacity);
+    next.set(this.bytes);
+    this.bytes = next;
+    this.view = new DataView(next.buffer);
+  }
+
+  u8(value) {
+    this.ensure(1);
+    this.view.setUint8(this.offset, value);
+    this.offset += 1;
+  }
+
+  u32(value) {
+    this.ensure(4);
+    this.view.setUint32(this.offset, value >>> 0, true);
+    this.offset += 4;
+  }
+
+  bytesValue(value) {
+    const bytes = value instanceof Uint8Array
+      ? value
+      : new Uint8Array(value);
+    this.u32(bytes.byteLength);
+    this.ensure(bytes.byteLength);
+    this.bytes.set(bytes, this.offset);
+    this.offset += bytes.byteLength;
+  }
+
+  string(value) {
+    this.bytesValue(new TextEncoder().encode(String(value)));
+  }
+
+  finish() {
+    return this.bytes.slice(0, this.offset);
+  }
+}
+
+class PythonTraceKernelFrameReader {
+  constructor(bytes) {
+    this.bytes = bytes;
+    this.view = new DataView(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength
+    );
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    if (this.offset + length > this.bytes.byteLength) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'truncated syscall response'
+      );
+    }
+  }
+
+  u8() {
+    this.ensure(1);
+    return this.view.getUint8(this.offset++);
+  }
+
+  u32() {
+    this.ensure(4);
+    const value = this.view.getUint32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  i32() {
+    this.ensure(4);
+    const value = this.view.getInt32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  f64() {
+    this.ensure(8);
+    const value = this.view.getFloat64(this.offset, true);
+    this.offset += 8;
+    return value;
+  }
+
+  bytesValue() {
+    const length = this.u32();
+    this.ensure(length);
+    const value = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return value;
+  }
+
+  string() {
+    return new TextDecoder().decode(this.bytesValue());
+  }
+
+  done() {
+    if (this.offset !== this.bytes.byteLength) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'syscall response has trailing bytes'
+      );
+    }
   }
 }
 
@@ -2083,45 +2219,89 @@ class PythonTraceKernelSyncClient {
   }
 
   watchdog(action, timeoutMs, signal) {
+    return this.request({
+      op: 'watchdog',
+      action,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+  }
+
+  request(request) {
     if (this.closed) {
       throw new PythonTraceKernelSyscallError(
         'ECLOSED',
         'shared syscall channel is closed'
       );
     }
-    const frame = new Uint8Array(
-      4 + 1 + 1 + 1 + 1 + (timeoutMs === undefined ? 0 : 4) + 1
-    );
-    const view = new DataView(frame.buffer);
-    view.setUint32(0, PYTHON_TK_SYSCALL_FRAME_MAGIC, true);
-    frame[4] = 1;
-    frame[5] = 36;
-    frame[6] = action === 'arm'
-      ? 1
-      : action === 'pet'
-        ? 2
-        : action === 'disarm'
-          ? 3
-          : 4;
-    frame[7] = timeoutMs === undefined ? 0 : 1;
-    let offset = 8;
-    if (timeoutMs !== undefined) {
-      view.setUint32(offset, timeoutMs >>> 0, true);
-      offset += 4;
+    const writer = new PythonTraceKernelFrameWriter();
+    writer.u32(PYTHON_TK_SYSCALL_FRAME_MAGIC);
+    writer.u8(1);
+    const operationCode = PYTHON_TK_OP_CODES[request.op];
+    if (!operationCode) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        `unsupported Python TraceKernel syscall ${request.op}`
+      );
     }
-    frame[offset] = signal === undefined
-      ? 0
-      : signal === 'SIGTERM'
-        ? 1
-        : 2;
-    return this.call(frame);
+    writer.u8(operationCode);
+    switch (request.op) {
+      case 'watchdog':
+        writer.u8(
+          request.action === 'arm'
+            ? 1
+            : request.action === 'pet'
+              ? 2
+              : request.action === 'disarm'
+                ? 3
+                : 4
+        );
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.u32(request.timeoutMs);
+        writer.u8(
+          request.signal === undefined
+            ? 0
+            : request.signal === 'SIGTERM'
+              ? 1
+              : 2
+        );
+        break;
+      case 'stat':
+      case 'lstat':
+      case 'realpath':
+      case 'readdir':
+      case 'rmdir':
+      case 'unlink':
+      case 'readFile':
+        writer.string(request.path);
+        break;
+      case 'mkdir':
+        writer.string(request.path);
+        writer.u8(
+          (request.options?.recursive ? 1 : 0) |
+            (request.options?.mode === undefined ? 0 : 2)
+        );
+        if (request.options?.mode !== undefined) {
+          writer.u32(request.options.mode);
+        }
+        break;
+      case 'rename':
+        writer.string(request.sourcePath);
+        writer.string(request.destinationPath);
+        break;
+      case 'writeFile':
+        writer.string(request.path);
+        writer.bytesValue(request.bytes);
+        break;
+    }
+    return this.call(writer.finish());
   }
 
   call(frame) {
     if (frame.byteLength > this.payload.byteLength) {
       throw new PythonTraceKernelSyscallError(
         'E2BIG',
-        'watchdog syscall frame exceeds the shared channel'
+        'syscall frame exceeds the shared channel'
       );
     }
     if (
@@ -2178,7 +2358,7 @@ class PythonTraceKernelSyncClient {
       if (remaining <= 0) {
         throw new PythonTraceKernelSyscallError(
           'ETIMEDOUT',
-          'shared watchdog syscall timed out'
+          'shared syscall timed out'
         );
       }
       Atomics.wait(
@@ -2211,100 +2391,127 @@ class PythonTraceKernelSyncClient {
       PYTHON_TK_SHARED_STATE_IDLE
     );
     Atomics.notify(this.header, PYTHON_TK_SHARED_STATE_INDEX);
-    return this.decodeWatchdog(response);
+    return this.decodeResult(response);
   }
 
-  decodeWatchdog(frame) {
-    const view = new DataView(
-      frame.buffer,
-      frame.byteOffset,
-      frame.byteLength
-    );
-    let offset = 0;
-    const ensure = (length) => {
-      if (offset + length > frame.byteLength) {
-        throw new PythonTraceKernelSyscallError(
-          'EPROTO',
-          'truncated watchdog response'
-        );
-      }
-    };
-    const u8 = () => {
-      ensure(1);
-      return frame[offset++];
-    };
-    const u32 = () => {
-      ensure(4);
-      const value = view.getUint32(offset, true);
-      offset += 4;
-      return value;
-    };
-    const f64 = () => {
-      ensure(8);
-      const value = view.getFloat64(offset, true);
-      offset += 8;
-      return value;
-    };
-    const string = () => {
-      const length = u32();
-      ensure(length);
-      const value = new TextDecoder().decode(
-        frame.subarray(offset, offset + length)
-      );
-      offset += length;
-      return value;
-    };
-
+  decodeResult(frame) {
+    const reader = new PythonTraceKernelFrameReader(frame);
     if (
-      u32() !== PYTHON_TK_SYSCALL_FRAME_MAGIC ||
-      u8() !== 2
+      reader.u32() !== PYTHON_TK_SYSCALL_FRAME_MAGIC ||
+      reader.u8() !== 2
     ) {
       throw new PythonTraceKernelSyscallError(
         'EPROTO',
-        'invalid watchdog response header'
+        'invalid syscall response header'
       );
     }
-    const success = u8();
+    const success = reader.u8();
     if (success === 0) {
-      const code = string();
-      const message = string();
+      const code = reader.string();
+      const message = reader.string();
       throw new PythonTraceKernelSyscallError(code, message);
     }
-    if (success !== 1 || u8() !== 36) {
+    if (success !== 1) {
       throw new PythonTraceKernelSyscallError(
         'EPROTO',
-        'invalid watchdog response operation'
+        'invalid syscall response status'
       );
     }
-    const armed = u8();
-    if (armed > 1) {
+    const operationCode = reader.u8();
+    const operation = PYTHON_TK_OPS_BY_CODE.get(operationCode);
+    if (!operation) {
       throw new PythonTraceKernelSyscallError(
         'EPROTO',
-        `invalid watchdog armed flag ${armed}`
+        `unknown syscall response operation ${operationCode}`
       );
     }
-    if (!armed) return { armed: false };
-    const timeoutMs = u32();
-    const deadlineAt = f64();
-    const signalCode = u8();
-    if (signalCode !== 1 && signalCode !== 2) {
-      throw new PythonTraceKernelSyscallError(
-        'EPROTO',
-        `invalid watchdog signal ${signalCode}`
-      );
+    let value;
+    if (operation === 'watchdog') {
+      const armed = reader.u8();
+      if (armed > 1) {
+        throw new PythonTraceKernelSyscallError(
+          'EPROTO',
+          `invalid watchdog armed flag ${armed}`
+        );
+      }
+      if (!armed) {
+        value = { op: operation, armed: false };
+      } else {
+        const timeoutMs = reader.u32();
+        const deadlineAt = reader.f64();
+        const signalCode = reader.u8();
+        if (signalCode !== 1 && signalCode !== 2) {
+          throw new PythonTraceKernelSyscallError(
+            'EPROTO',
+            `invalid watchdog signal ${signalCode}`
+          );
+        }
+        value = {
+          op: operation,
+          armed: true,
+          timeoutMs,
+          deadlineAt,
+          signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
+        };
+      }
+    } else if (operation === 'stat' || operation === 'lstat') {
+      const path = reader.string();
+      const kindCode = reader.u8();
+      if (kindCode < 1 || kindCode > 3) {
+        throw new PythonTraceKernelSyscallError(
+          'EPROTO',
+          `invalid TKFS stat kind ${kindCode}`
+        );
+      }
+      value = {
+        op: operation,
+        stat: {
+          path,
+          kind: kindCode === 1
+            ? 'file'
+            : kindCode === 2
+              ? 'directory'
+              : 'symlink',
+          inode: reader.f64(),
+          nlink: reader.f64(),
+          mode: reader.u32(),
+          size: reader.f64(),
+          generation: reader.f64(),
+          createdAt: reader.f64(),
+          modifiedAt: reader.f64(),
+          changedAt: reader.f64(),
+        },
+      };
+    } else if (operation === 'readdir') {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const name = reader.string();
+        const kindCode = reader.u8();
+        entries.push({
+          name,
+          kind: kindCode === 1
+            ? 'file'
+            : kindCode === 2
+              ? 'directory'
+              : 'symlink',
+          inode: reader.f64(),
+        });
+      }
+      value = { op: operation, entries };
+    } else if (operation === 'readFile') {
+      value = {
+        op: operation,
+        cacheGeneration: reader.i32(),
+        bytes: reader.bytesValue(),
+      };
+    } else if (operation === 'realpath') {
+      value = { op: operation, path: reader.string() };
+    } else {
+      value = { op: operation };
     }
-    if (offset !== frame.byteLength) {
-      throw new PythonTraceKernelSyscallError(
-        'EPROTO',
-        'watchdog response has trailing bytes'
-      );
-    }
-    return {
-      armed: true,
-      timeoutMs,
-      deadlineAt,
-      signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
-    };
+    reader.done();
+    return value;
   }
 
   close() {
@@ -2557,6 +2764,80 @@ async function executeProjectPythonUserCall(
       signal === undefined || signal === null ? undefined : String(signal)
     ));
   };
+  self.__tracecodeKernelFileSystem = (requestJson) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel filesystem controls are unavailable'
+      );
+    }
+    const input = typeof requestJson === 'string'
+      ? JSON.parse(requestJson)
+      : requestJson ?? {};
+    const bytesToBase64 = (bytes) => {
+      let binary = '';
+      for (let index = 0; index < bytes.length; index += 0x8000) {
+        binary += String.fromCharCode(
+          ...bytes.subarray(index, index + 0x8000)
+        );
+      }
+      return btoa(binary);
+    };
+    const base64ToBytes = (value) => {
+      const binary = atob(String(value ?? ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    };
+    const syscallRequest = (() => {
+      switch (String(input.op ?? '')) {
+        case 'readFile':
+        case 'stat':
+        case 'lstat':
+        case 'readdir':
+        case 'rmdir':
+        case 'unlink':
+        case 'realpath':
+          return { op: input.op, path: String(input.path) };
+        case 'writeFile':
+          return {
+            op: 'writeFile',
+            path: String(input.path),
+            bytes: base64ToBytes(input.bytes),
+          };
+        case 'mkdir':
+          return {
+            op: 'mkdir',
+            path: String(input.path),
+            options: {
+              recursive: Boolean(input.recursive),
+              ...(input.mode === undefined || input.mode === null
+                ? {}
+                : { mode: Number(input.mode) }),
+            },
+          };
+        case 'rename':
+          return {
+            op: 'rename',
+            sourcePath: String(input.sourcePath),
+            destinationPath: String(input.destinationPath),
+          };
+        default:
+          throw new PythonTraceKernelSyscallError(
+            'ENOSYS',
+            `unsupported Python TraceKernel filesystem operation ${input.op}`
+          );
+      }
+    })();
+    const result = kernelClient.request(syscallRequest);
+    return JSON.stringify(
+      result.op === 'readFile'
+        ? { ...result, bytes: bytesToBase64(result.bytes) }
+        : result
+    );
+  };
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
     request?.stdinPipe
@@ -2645,9 +2926,118 @@ class _TraceKernelWatchdog:
     def status(self):
         return self._call("status")
 
+class _TraceKernelFileSystem:
+    @staticmethod
+    def _path(_value):
+        _path = os.fspath(_value).replace("\\\\", "/")
+        if not _path:
+            raise ValueError("TraceKernel filesystem path must not be empty")
+        if _path.startswith("/"):
+            return os.path.normpath(_path).replace(os.sep, "/")
+        return os.path.normpath(os.path.join(_workspace_root, _path)).replace(os.sep, "/")
+
+    @staticmethod
+    def _call(_request):
+        try:
+            _raw = getattr(_js_self, "__tracecodeKernelFileSystem")(
+                json.dumps(_request)
+            )
+        except BaseException as _error:
+            _code = getattr(_error, "code", None) or "EIO"
+            raise OSError(_code, str(_error)) from None
+        return json.loads(str(_raw))
+
+    def read_bytes(self, path):
+        _value = self._call({
+            "op": "readFile",
+            "path": self._path(path),
+        })
+        return base64.b64decode(_value["bytes"])
+
+    def read_text(self, path, encoding="utf-8", errors="strict"):
+        return self.read_bytes(path).decode(encoding, errors)
+
+    def write_bytes(self, path, contents):
+        _bytes = bytes(contents)
+        self._call({
+            "op": "writeFile",
+            "path": self._path(path),
+            "bytes": base64.b64encode(_bytes).decode("ascii"),
+        })
+        return len(_bytes)
+
+    def write_text(self, path, contents, encoding="utf-8", errors="strict"):
+        return self.write_bytes(
+            path,
+            str(contents).encode(encoding, errors),
+        )
+
+    @staticmethod
+    def _stat_value(_value):
+        return types.SimpleNamespace(**_value["stat"])
+
+    def stat(self, path):
+        return self._stat_value(self._call({
+            "op": "stat",
+            "path": self._path(path),
+        }))
+
+    def lstat(self, path):
+        return self._stat_value(self._call({
+            "op": "lstat",
+            "path": self._path(path),
+        }))
+
+    def readdir(self, path="."):
+        _value = self._call({
+            "op": "readdir",
+            "path": self._path(path),
+        })
+        return [types.SimpleNamespace(**_entry) for _entry in _value["entries"]]
+
+    def listdir(self, path="."):
+        return [_entry.name for _entry in self.readdir(path)]
+
+    def mkdir(self, path, mode=0o777, *, parents=False, exist_ok=False):
+        _path = self._path(path)
+        if exist_ok:
+            try:
+                _info = self.stat(_path)
+                if _info.kind == "directory":
+                    return None
+            except OSError:
+                pass
+        self._call({
+            "op": "mkdir",
+            "path": _path,
+            "mode": int(mode),
+            "recursive": bool(parents),
+        })
+        return None
+
+    def rmdir(self, path):
+        self._call({"op": "rmdir", "path": self._path(path)})
+
+    def unlink(self, path):
+        self._call({"op": "unlink", "path": self._path(path)})
+
+    def rename(self, source, destination):
+        self._call({
+            "op": "rename",
+            "sourcePath": self._path(source),
+            "destinationPath": self._path(destination),
+        })
+
+    def realpath(self, path):
+        return self._call({
+            "op": "realpath",
+            "path": self._path(path),
+        })["path"]
+
 _tracekernel_module = types.ModuleType("tracekernel")
 _tracekernel_module.WatchdogStatus = _TraceKernelWatchdogStatus
 _tracekernel_module.watchdog = _TraceKernelWatchdog()
+_tracekernel_module.fs = _TraceKernelFileSystem()
 sys.modules["tracekernel"] = _tracekernel_module
 
 def _project_utf8_len(_value):
@@ -5533,6 +5923,7 @@ json.dumps({
     delete self.__tracecodeKernelHttpListen;
     delete self.__tracecodeKernelHttpDispatch;
     delete self.__tracecodeKernelWatchdog;
+    delete self.__tracecodeKernelFileSystem;
     kernelClient?.close();
     activeProjectHttpBridges.delete(messageId);
   }

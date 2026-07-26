@@ -174,10 +174,41 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'kernel-fs.py',
+              contents: [
+                'from tracekernel import fs',
+                'host_value = fs.read_text("host-shared.txt")',
+                'fs.mkdir("python-kernel-dir")',
+                'written = fs.write_bytes("python-kernel-dir/value.bin", b"\\x00python\\xff")',
+                'info = fs.stat("python-kernel-dir/value.bin")',
+                'entries = fs.listdir("python-kernel-dir")',
+                'fs.rename("python-kernel-dir/value.bin", "python-kernel-dir/final.bin")',
+                'valid = (',
+                '    host_value == "host-authoritative\\n"',
+                '    and written == 8',
+                '    and info.kind == "file" and info.size == 8',
+                '    and entries == ["value.bin"]',
+                '    and fs.read_bytes("python-kernel-dir/final.bin") == b"\\x00python\\xff"',
+                ')',
+                'print(f"tkfs:{str(valid).lower()}")',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'host-shared.txt',
+              contents: 'host-authoritative\n',
+            },
           ],
         });
         try {
+          const fsControl = await workspace.runCommand('python kernel-fs.py');
           return {
+            fsControl,
+            fsResult: await workspace.readFile(
+              'python-kernel-dir/final.bin',
+              'base64'
+            ),
             control: await workspace.runCommand('python watchdog-control.py'),
             expiry: await workspace.runCommand('python watchdog-expire.py'),
           };
@@ -186,6 +217,12 @@ async function main(): Promise<void> {
         }
       });
 
+      assertCondition(
+        result.fsControl.exitCode === 0 &&
+          result.fsControl.stdout === 'tkfs:true\n' &&
+          result.fsResult === 'AHB5dGhvbv8=',
+        `Python filesystem controls did not use authoritative TKFS: ${JSON.stringify(result.fsControl)} ${JSON.stringify(result.fsResult)}`
+      );
       assertCondition(
         result.control.exitCode === 0 &&
           result.control.stdout === 'watchdog:true\n',
@@ -203,6 +240,7 @@ async function main(): Promise<void> {
       console.log(JSON.stringify({
         schema: 'tracekernel-013-python-conformance-v1',
         synchronousSyscallTransport: true,
+        explicitTkfsControls: true,
         watchdogControls: true,
         watchdogExpirySignal: 'SIGKILL',
       }));
