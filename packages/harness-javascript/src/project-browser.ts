@@ -2314,7 +2314,9 @@ function createChildProcessApi(
           .filter(([, value]) => value !== undefined)
           .map(([name, value]) => [name, String(value)])
       ),
-      ...(invocation.options.detached ? { processGroupId: 0 } : {}),
+      ...(invocation.options.detached
+        ? { processGroupId: 0, sessionId: 0 }
+        : {}),
       stdio: {
         stdin: stdioMode,
         stdout: stdioMode,
@@ -2383,7 +2385,9 @@ function createChildProcessApi(
           .filter(([, value]) => value !== undefined)
           .map(([name, value]) => [name, String(value)])
       ),
-      ...(invocation.options.detached ? { processGroupId: 0 } : {}),
+      ...(invocation.options.detached
+        ? { processGroupId: 0, sessionId: 0 }
+        : {}),
       stdio: {
         stdin: stdioMode,
         stdout: stdioMode,

@@ -2122,8 +2122,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         initialize: async (child, context) => {
           childContext = context;
           try {
+            const startsNewSession = request.sessionId === 0;
             if (
               request.sessionId !== undefined &&
+              !startsNewSession &&
               request.sessionId !== parent.sid
             ) {
               throw Object.assign(
@@ -2133,7 +2135,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                 { code: 'EINVAL' }
               );
             }
-            const requestedProcessGroup = request.processGroupId === 0
+            const requestedProcessGroup = startsNewSession
+              ? child.pid
+              : request.processGroupId === 0
               ? child.pid
               : request.processGroupId ?? parent.pgid;
             if (
@@ -2151,7 +2155,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               );
             }
             child.pgid = requestedProcessGroup;
-            child.sid = parent.sid;
+            child.sid = startsNewSession ? child.pid : parent.sid;
             if (request.inheritDescriptors !== undefined) {
               const replacedStdioFds = new Set<number>(
                 ([

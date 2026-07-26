@@ -425,10 +425,13 @@ That compatibility rule disappears when TKFS becomes the backing store.
 Runtime-spawned workspace children inherit the parent's PGID and SID through
 the transitional product bridge as well as the extracted kernel. Node
 `child_process.spawn({ detached: true })` requests a child-led process group,
-and `process.kill` accepts the same positive, zero, negative-PGID, and `-1`
-selectors as the kernel syscall. Browser conformance creates a detached
-JavaScript leader with its own JavaScript descendant and proves one negative
-PGID signal terminates both without reaching the parent.
+creates a child-led session, and `process.kill` accepts the same positive,
+zero, negative-PGID, and `-1` selectors as the kernel syscall. Python maps
+`subprocess.Popen(start_new_session=True)`, `process_group`, `os.kill`, and
+`os.killpg` onto the same mechanism. Browser conformance creates detached
+JavaScript leaders with JavaScript descendants from both Node and Python
+parents and proves one negative PGID signal terminates each tree without
+reaching its parent.
 
 Filesystem watches are now session resources exposed through process-owned
 descriptors. `watch(path)` installs an `fs-watch` descriptor; ordinary

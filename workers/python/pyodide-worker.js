@@ -3603,6 +3603,13 @@ async function executeProjectPythonUserCall(
                 String(value),
               ])
             ),
+            ...(input.processGroupId === undefined ||
+                input.processGroupId === null
+              ? {}
+              : { processGroupId: Number(input.processGroupId) }),
+            ...(input.sessionId === undefined || input.sessionId === null
+              ? {}
+              : { sessionId: Number(input.sessionId) }),
             stdio: {
               stdin: input.stdio?.stdin ?? 'inherit',
               stdout: input.stdio?.stdout ?? 'inherit',
@@ -4179,8 +4186,14 @@ class _TraceKernelProcessApi:
         text=False,
         encoding=None,
         errors=None,
+        process_group=None,
+        start_new_session=False,
     ):
         _command = os.fspath(command)
+        if start_new_session and process_group not in (None, 0):
+            raise ValueError(
+                "process_group must be unset or zero when start_new_session is true"
+            )
         _value = self._call({
             "op": "spawn",
             "runtime": runtime or self.runtime_for_command(_command),
@@ -4191,6 +4204,15 @@ class _TraceKernelProcessApi:
                 str(_name): str(_value)
                 for _name, _value in (env if env is not None else os.environ).items()
             },
+            **(
+                {"processGroupId": 0, "sessionId": 0}
+                if start_new_session
+                else (
+                    {"processGroupId": int(process_group)}
+                    if process_group is not None
+                    else {}
+                )
+            ),
             "stdio": {
                 "stdin": str(stdin),
                 "stdout": str(stdout),
@@ -4203,6 +4225,18 @@ class _TraceKernelProcessApi:
             encoding=encoding,
             errors=errors,
         )
+
+    def kill(self, pid, signal="SIGTERM"):
+        _name = signal
+        if isinstance(signal, int):
+            _name = {2: "SIGINT", 9: "SIGKILL", 15: "SIGTERM"}.get(signal)
+        if _name not in ("SIGINT", "SIGTERM", "SIGKILL"):
+            raise ValueError(f"Unsupported TraceKernel signal: {signal}")
+        self._call({
+            "op": "kill",
+            "pid": int(pid),
+            "signal": _name,
+        })
 
 class _TraceKernelSocketFile:
     def __init__(self, socket, mode="r", encoding=None, errors=None, newline=None):
@@ -4484,6 +4518,12 @@ _tracekernel_module.process = _TraceKernelProcessApi()
 _tracekernel_module.socket = _TraceKernelSocket
 sys.modules["tracekernel"] = _tracekernel_module
 
+os.kill = lambda pid, signal: _tracekernel_module.process.kill(pid, signal)
+os.killpg = lambda pgid, signal: _tracekernel_module.process.kill(
+    -abs(int(pgid)),
+    signal,
+)
+
 def _install_tracekernel_subprocess_module():
     _module = types.ModuleType("subprocess")
     _module.PIPE = -1
@@ -4550,6 +4590,8 @@ def _install_tracekernel_subprocess_module():
             text=None,
             encoding=None,
             errors=None,
+            start_new_session=False,
+            process_group=None,
             **_kwargs,
         ):
             if shell or executable is not None or preexec_fn is not None:
@@ -4571,6 +4613,8 @@ def _install_tracekernel_subprocess_module():
                 text=_text,
                 encoding=encoding,
                 errors=errors,
+                start_new_session=start_new_session,
+                process_group=process_group,
             )
             self.__dict__.update(_child.__dict__)
             self.args = args

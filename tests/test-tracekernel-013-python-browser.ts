@@ -289,6 +289,57 @@ async function main(): Promise<void> {
               ].join('\n'),
             },
             {
+              path: 'group-grandchild.js',
+              contents: [
+                'setTimeout(() => {',
+                '  require("node:fs").writeFileSync("python-group-survived.txt", "escaped");',
+                '}, 500);',
+                'setInterval(() => {}, 1000);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'group-leader.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const { spawn } = require("node:child_process");',
+                'const child = spawn("node", ["group-grandchild.js"], { stdio: "inherit" });',
+                'child.on("error", (error) => { throw error; });',
+                'fs.writeFileSync("python-group-ready.txt", `${process.pid}:${child.pid}`);',
+                'setInterval(() => {}, 1000);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'group-parent.py',
+              contents: [
+                'import os',
+                'import signal',
+                'import subprocess',
+                'import time',
+                'from pathlib import Path',
+                'leader = subprocess.Popen(',
+                '    ["node", "group-leader.js"],',
+                '    start_new_session=True,',
+                ')',
+                'deadline = time.monotonic() + 5',
+                'ready = Path("python-group-ready.txt")',
+                'while not ready.exists() and time.monotonic() < deadline:',
+                '    time.sleep(0.01)',
+                'if not ready.exists():',
+                '    raise RuntimeError("detached JavaScript group did not start")',
+                'leader_pid, child_pid = map(int, ready.read_text().split(":"))',
+                'if leader_pid != leader.pid or child_pid == leader.pid:',
+                '    raise RuntimeError("invalid group process identities")',
+                'os.killpg(leader.pid, signal.SIGKILL)',
+                'returncode = leader.wait()',
+                'time.sleep(0.65)',
+                'valid = returncode == -signal.SIGKILL and not Path("python-group-survived.txt").exists()',
+                'print(f"group:{str(valid).lower()}")',
+                '',
+              ].join('\n'),
+            },
+            {
               path: 'socket-child.js',
               contents: [
                 'const net = require("node:net");',
@@ -354,6 +405,9 @@ async function main(): Promise<void> {
           const spawnControl = await workspace.runCommand(
             'python spawn-parent.py'
           );
+          const processGroupControl = await workspace.runCommand(
+            'python group-parent.py'
+          );
           const socketControl = await workspace.runCommand(
             'python socket-parent.py'
           );
@@ -367,6 +421,7 @@ async function main(): Promise<void> {
                 )
               : null,
             spawnControl,
+            processGroupControl,
             socketControl,
             spawnJsResult: spawnControl.exitCode === 0
               ? await workspace.readFile('spawn-js-child.txt')
@@ -401,6 +456,11 @@ async function main(): Promise<void> {
         `Python child processes did not share kernel FS and stdio: ${JSON.stringify(result.spawnControl)}`
       );
       assertCondition(
+        result.processGroupControl.exitCode === 0 &&
+          result.processGroupControl.stdout === 'group:true\n',
+        `Python os.killpg/start_new_session did not control a cross-language process tree: ${JSON.stringify(result.processGroupControl)}`
+      );
+      assertCondition(
         result.nativeFsControl.exitCode === 0 &&
           result.nativeFsControl.stdout === 'native-tkfs:true\n' &&
           result.nativeFsResult === 'YWJjZGU=',
@@ -432,6 +492,7 @@ async function main(): Promise<void> {
         explicitTkfsControls: true,
         nativeTkfsMount: true,
         childProcesses: ['javascript', 'python'],
+        processGroups: ['start_new_session', 'os.kill', 'os.killpg'],
         tcpPeers: ['python', 'javascript'],
         watchdogControls: true,
         watchdogExpirySignal: 'SIGKILL',
