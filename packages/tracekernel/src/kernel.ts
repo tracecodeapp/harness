@@ -443,6 +443,8 @@ export class TraceKernelSession {
   private readonly processes = new Map<number, TraceKernelProcess>();
   private readonly exitedChildren = new Map<number, TraceKernelProcess>();
   private readonly waitingChildren = new Set<number>();
+  private readonly reapedBeforeUnregister = new Set<number>();
+  private readonly childWaiters = new Set<Deferred.Deferred<void>>();
   private readonly watchRegistry = new TraceKernelWatchRegistry();
   private readonly stopWatchingFileSystemMutations: () => void;
   private readonly processWatchdogs = new Map<
@@ -684,33 +686,98 @@ export class TraceKernelSession {
     TraceKernelProcessSnapshot | undefined,
     TraceKernelProcessStateError | TraceKernelChildProcessError
   > {
-    return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(parent);
-      const child = this.processes.get(pid) ?? this.exitedChildren.get(pid);
-      if (
-        !child ||
-        child.snapshot().ppid !== parent.pid ||
-        this.waitingChildren.has(pid)
-      ) {
-        return yield* Effect.fail(new TraceKernelChildProcessError({
+    return Effect.suspend(() => {
+      const selector = Math.trunc(pid);
+      if (!Number.isSafeInteger(pid)) {
+        return Effect.fail(new TraceKernelChildProcessError({
           code: 'ECHILD',
-          pid,
-          message: `ECHILD: process ${pid} is not an unreaped child of process ${parent.pid}`,
+          pid: selector,
+          message: `ECHILD: invalid child selector ${pid}`,
         }));
       }
-      if (options.noHang && child.snapshot().phase !== 'exited') {
+      return this.waitChildSelection(parent, selector, options);
+    });
+  }
+
+  private waitChildSelection(
+    parent: TraceKernelProcess,
+    selector: number,
+    options: { readonly noHang?: boolean }
+  ): Effect.Effect<
+    TraceKernelProcessSnapshot | undefined,
+    TraceKernelProcessStateError | TraceKernelChildProcessError
+  > {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(parent);
+      const changed = yield* Deferred.make<void>();
+      this.childWaiters.add(changed);
+      const candidates = this.waitableChildren(parent, selector);
+      if (candidates.length === 0) {
+        this.childWaiters.delete(changed);
+        return yield* Effect.fail(new TraceKernelChildProcessError({
+          code: 'ECHILD',
+          pid: selector,
+          message: `ECHILD: selector ${selector} has no unreaped children of process ${parent.pid}`,
+        }));
+      }
+      const child = candidates.find(
+        (candidate) => candidate.snapshot().phase === 'exited'
+      );
+      if (!child && options.noHang) {
+        this.childWaiters.delete(changed);
         return undefined;
       }
-      this.waitingChildren.add(pid);
+      if (!child) {
+        yield* Deferred.await(changed).pipe(
+          Effect.ensuring(Effect.sync(() => {
+            this.childWaiters.delete(changed);
+          }))
+        );
+        return yield* this.waitChildSelection(parent, selector, options);
+      }
+      this.childWaiters.delete(changed);
+      this.waitingChildren.add(child.pid);
+      if (this.processes.has(child.pid)) {
+        this.reapedBeforeUnregister.add(child.pid);
+      }
       return yield* child.wait().pipe(
         Effect.tap(() => Effect.sync(() => {
-          this.exitedChildren.delete(pid);
+          this.exitedChildren.delete(child.pid);
         })),
         Effect.ensuring(Effect.sync(() => {
-          this.waitingChildren.delete(pid);
+          this.waitingChildren.delete(child.pid);
         }))
       );
     });
+  }
+
+  private waitableChildren(
+    parent: TraceKernelProcess,
+    selector: number
+  ): readonly TraceKernelProcess[] {
+    const parentSnapshot = parent.snapshot();
+    const children = new Map<number, TraceKernelProcess>([
+      ...this.processes,
+      ...this.exitedChildren,
+    ]);
+    return [...children.values()]
+      .filter((child) => {
+        const snapshot = child.snapshot();
+        if (
+          snapshot.ppid !== parent.pid ||
+          this.waitingChildren.has(snapshot.pid) ||
+          this.reapedBeforeUnregister.has(snapshot.pid)
+        ) {
+          return false;
+        }
+        if (selector > 0) return snapshot.pid === selector;
+        if (selector === -1) return true;
+        const processGroupId = selector === 0
+          ? parentSnapshot.pgid
+          : -selector;
+        return snapshot.pgid === processGroupId;
+      })
+      .sort((left, right) => left.pid - right.pid);
   }
 
   execute(
@@ -763,6 +830,7 @@ export class TraceKernelSession {
         }));
       }
       process.setTopology(process.pid, process.pid);
+      yield* this.notifyChildWaiters();
       return process.pid;
     });
   }
@@ -833,6 +901,7 @@ export class TraceKernelSession {
         }));
       }
       target.setTopology(pgid, snapshot.sid);
+      yield* this.notifyChildWaiters();
       return pgid;
     });
   }
@@ -1412,6 +1481,8 @@ export class TraceKernelSession {
           this.processes.clear();
           this.exitedChildren.clear();
           this.waitingChildren.clear();
+          this.reapedBeforeUnregister.clear();
+          this.childWaiters.clear();
           this.processWatchdogs.clear();
           this.resources.clear();
           this.fileSystem.clear();
@@ -1529,9 +1600,10 @@ export class TraceKernelSession {
   private unregisterProcess(pid: number): void {
     const exited = this.processes.get(pid);
     this.processes.delete(pid);
+    const alreadyReaped = this.reapedBeforeUnregister.delete(pid);
     if (exited) {
       const snapshot = exited.snapshot();
-      if (snapshot.ppid !== 1) {
+      if (snapshot.ppid !== 1 && !alreadyReaped) {
         this.exitedChildren.set(pid, exited);
       }
     }
@@ -1545,6 +1617,15 @@ export class TraceKernelSession {
         this.exitedChildren.delete(childPid);
       }
     }
+    Effect.runSync(this.notifyChildWaiters());
+  }
+
+  private notifyChildWaiters(): Effect.Effect<void> {
+    return Effect.forEach(
+      [...this.childWaiters],
+      (waiter) => Deferred.succeed(waiter, undefined),
+      { concurrency: 'unbounded', discard: true }
+    );
   }
 
   private inheritProcessDescriptors(

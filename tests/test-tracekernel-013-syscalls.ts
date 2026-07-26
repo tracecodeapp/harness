@@ -41,7 +41,23 @@ async function main(): Promise<void> {
                         : 'child-exit\n',
                       ...(process.command === 'syscall-stdio-child'
                         ? { stderr: 'stdio-error\n' }
-                        : {}),
+                      : {}),
+                    })
+                  )
+                : process.command.startsWith('wait-selector-')
+                ? Effect.sleep(
+                    process.command === 'wait-selector-group'
+                      ? 100
+                      : process.command === 'wait-selector-any'
+                        ? 150
+                        : 200
+                  ).pipe(
+                    Effect.as({
+                      exitCode: process.command === 'wait-selector-group'
+                        ? 31
+                        : process.command === 'wait-selector-any'
+                          ? 32
+                          : 33,
                     })
                   )
                 : Effect.never,
@@ -310,6 +326,137 @@ async function main(): Promise<void> {
       assertCondition(
         !reaped.ok && reaped.error.code === 'ECHILD',
         `waiting twice did not return ECHILD: ${JSON.stringify(reaped)}`
+      );
+      const waitGroupChild = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'wait-selector-group',
+        processGroupId: 0,
+      });
+      const waitAnyChild = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'wait-selector-any',
+      });
+      const waitExactChild = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'wait-selector-exact',
+      });
+      success(waitGroupChild);
+      success(waitAnyChild);
+      success(waitExactChild);
+      if (
+        waitGroupChild.value.op !== 'spawn' ||
+        waitAnyChild.value.op !== 'spawn' ||
+        waitExactChild.value.op !== 'spawn'
+      ) return;
+      const noCompletedChild = yield* syscalls.dispatch({
+        op: 'wait',
+        pid: -1,
+        noHang: true,
+      });
+      success(noCompletedChild);
+      assertCondition(
+        noCompletedChild.value.op === 'wait' &&
+          noCompletedChild.value.pid === -1 &&
+          noCompletedChild.value.termination === undefined,
+        `waitpid(-1, WNOHANG) did not report no completed child: ${JSON.stringify(
+          noCompletedChild
+        )}`
+      );
+      const waitedParentGroup = yield* syscalls.dispatch({
+        op: 'wait',
+        pid: 0,
+      });
+      success(waitedParentGroup);
+      assertCondition(
+        waitedParentGroup.value.op === 'wait' &&
+          waitedParentGroup.value.pid === waitAnyChild.value.pid &&
+          waitedParentGroup.value.termination?.kind === 'exit' &&
+          waitedParentGroup.value.termination.exitCode === 32,
+        `waitpid(0) selected a child outside the caller's process group: ${JSON.stringify(
+          waitedParentGroup
+        )}`
+      );
+      const waitedNamedGroup = yield* syscalls.dispatch({
+        op: 'wait',
+        pid: -waitGroupChild.value.pid,
+      });
+      success(waitedNamedGroup);
+      assertCondition(
+        waitedNamedGroup.value.op === 'wait' &&
+          waitedNamedGroup.value.pid === waitGroupChild.value.pid &&
+          waitedNamedGroup.value.termination?.kind === 'exit' &&
+          waitedNamedGroup.value.termination.exitCode === 31,
+        `waitpid(-pgid) selected the wrong child: ${JSON.stringify(
+          waitedNamedGroup
+        )}`
+      );
+      const waitedAnyChild = yield* syscalls.dispatch({
+        op: 'wait',
+        pid: -1,
+      });
+      success(waitedAnyChild);
+      assertCondition(
+        waitedAnyChild.value.op === 'wait' &&
+          waitedAnyChild.value.pid === waitExactChild.value.pid &&
+          waitedAnyChild.value.termination?.kind === 'exit' &&
+          waitedAnyChild.value.termination.exitCode === 33,
+        `waitpid(-1) did not reap the remaining child: ${JSON.stringify(
+          waitedAnyChild
+        )}`
+      );
+      const concurrentChildA = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'wait-selector-concurrent-a',
+      });
+      const concurrentChildB = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'wait-selector-concurrent-b',
+      });
+      success(concurrentChildA);
+      success(concurrentChildB);
+      if (
+        concurrentChildA.value.op !== 'spawn' ||
+        concurrentChildB.value.op !== 'spawn'
+      ) return;
+      const concurrentWaitA = yield* Effect.fork(syscalls.dispatch({
+        op: 'wait',
+        pid: -1,
+      }));
+      const concurrentWaitB = yield* Effect.fork(syscalls.dispatch({
+        op: 'wait',
+        pid: -1,
+      }));
+      const concurrentWaitResults = yield* Effect.all([
+        Fiber.join(concurrentWaitA),
+        Fiber.join(concurrentWaitB),
+      ], { concurrency: 'unbounded' });
+      const concurrentlyReapedPids = concurrentWaitResults.flatMap((result) => {
+        success(result);
+        return result.value.op === 'wait' ? [result.value.pid] : [];
+      });
+      assertCondition(
+        new Set(concurrentlyReapedPids).size === 2 &&
+          concurrentlyReapedPids.includes(concurrentChildA.value.pid) &&
+          concurrentlyReapedPids.includes(concurrentChildB.value.pid),
+        `concurrent waitpid(-1) callers reaped the same child: ${JSON.stringify(
+          concurrentWaitResults
+        )}`
+      );
+      const noChildrenRemain = yield* syscalls.dispatch({
+        op: 'wait',
+        pid: -1,
+        noHang: true,
+      });
+      assertCondition(
+        !noChildrenRemain.ok && noChildrenRemain.error.code === 'ECHILD',
+        `waitpid(-1) did not report ECHILD after all children were reaped: ${JSON.stringify(
+          noChildrenRemain
+        )}`
       );
       success(yield* syscalls.dispatch({ op: 'close', fd: pipe.value.writeFd }));
       const hungUpPipePoll = yield* syscalls.dispatch({
@@ -837,6 +984,8 @@ async function main(): Promise<void> {
     childWriterCloseProducesEof: true,
     nonblockingWaitDoesNotReap: true,
     childWaitReapsExactlyOnce: true,
+    waitpidSelectors: ['exact', 'any', 'caller-pgid', 'named-pgid'],
+    concurrentWaitersReapDistinctChildren: true,
     typedErrorsMappedToPosixWireErrors: true,
     descriptorLimitsCrossWireAsEmfile: true,
     effectDoesNotCrossRuntimeBoundary: true,
