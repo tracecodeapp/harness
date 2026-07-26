@@ -11059,7 +11059,11 @@ function compileProjectOutsideMainWorker(request) {
     stackSize: CPP_PROGRAM_STACK_SIZE,
   };
   if (canUseExternalCompilerHost()) {
-    return requestExternalCompilePayload(payload);
+    return requestExternalCompilePayload(payload).then((result) => (
+      result?.success === true && !result.outputPath
+        ? { ...result, outputPath: payload.workspaceOutputPath }
+        : result
+    ));
   }
   return runCompilerWorkerPayload(payload);
 }

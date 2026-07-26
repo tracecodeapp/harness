@@ -151,6 +151,32 @@ const CPP_SPAWN_JAVASCRIPT_PROGRAM = [
   '',
 ].join('\n');
 
+const CPP_CHILD_PROGRAM = [
+  '#include <fstream>',
+  'int main() {',
+  '  std::ofstream output("cpp-child-process.txt", std::ios::binary | std::ios::trunc);',
+  '  output << "from-cpp-child";',
+  '  return output.good() ? 0 : 1;',
+  '}',
+  '',
+].join('\n');
+
+const CPP_SPAWN_CPP_PROGRAM = [
+  '#include <cstdlib>',
+  '#include <fstream>',
+  '#include <iostream>',
+  '#include <iterator>',
+  '#include <string>',
+  'int main() {',
+  '  const int status = std::system("./cpp-child.out");',
+  '  std::ifstream input("cpp-child-process.txt", std::ios::binary);',
+  '  std::string child((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());',
+  '  std::cout << "cpp-spawn:" << status << ":" << child << "\\n";',
+  '  return status == 0 && child == "from-cpp-child" ? 0 : 1;',
+  '}',
+  '',
+].join('\n');
+
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
@@ -585,7 +611,7 @@ async function main(): Promise<void> {
     return originalFetch(input as never, init);
   }) as typeof fetch;
 
-  const client = new CppWorkerClient({
+  const cppClientOptions = {
     workerUrl: 'cpp-worker.js',
     debug: false,
     clangWasmUrl: 'file:///missing/clang.wasm',
@@ -594,7 +620,30 @@ async function main(): Promise<void> {
     runtimeHeaderUrl: pathToFileURL(join(process.cwd(), 'workers/cpp/tracecode_runtime.hpp')).href,
     compilerBundleUrl: pathToFileURL(join(process.cwd(), 'node_modules/@yowasp/clang/gen/bundle.js')).href,
     externalCompilerUrl: EXTERNAL_COMPILER_URL,
-  });
+  };
+  const client = new CppWorkerClient(cppClientOptions);
+  const nestedCppClient = new CppWorkerClient(cppClientOptions);
+  const cppClientLeases = [client, nestedCppClient].map((workerClient) => ({
+    workerClient,
+    active: false,
+  }));
+  const pooledCppClient = {
+    async executeProjectCpp(
+      request: Parameters<CppWorkerClient['executeProjectCpp']>[0],
+      timeoutMs?: number,
+      onEvent?: Parameters<CppWorkerClient['executeProjectCpp']>[2],
+      signal?: AbortSignal
+    ) {
+      const lease = cppClientLeases.find((candidate) => !candidate.active);
+      assertCondition(lease !== undefined, 'C++ test worker pool exhausted');
+      lease.active = true;
+      try {
+        return await lease.workerClient.executeProjectCpp(request, timeoutMs, onEvent, signal);
+      } finally {
+        lease.active = false;
+      }
+    },
+  };
 
   try {
     const projectFiles = [{ path: 'main.cpp', contents: CPP_HTTP_PROGRAM }];
@@ -664,6 +713,8 @@ async function main(): Promise<void> {
       files: [
         { path: 'cross-language.cpp', contents: CPP_CROSS_LANGUAGE_FS_PROGRAM },
         { path: 'spawn-javascript.cpp', contents: CPP_SPAWN_JAVASCRIPT_PROGRAM },
+        { path: 'cpp-child.cpp', contents: CPP_CHILD_PROGRAM },
+        { path: 'spawn-cpp.cpp', contents: CPP_SPAWN_CPP_PROGRAM },
         { path: 'cpp-watches.txt', contents: 'before-js' },
         { path: 'js-watches.txt', contents: 'before-cpp' },
         {
@@ -704,7 +755,7 @@ async function main(): Promise<void> {
           ].join('\n'),
         },
       ],
-      cppRunner: createBrowserCppProjectRunner(client, { timeoutMs: 120_000 }),
+      cppRunner: createBrowserCppProjectRunner(pooledCppClient, { timeoutMs: 120_000 }),
       nodeRunner: javascriptRunner,
     });
     try {
@@ -832,11 +883,69 @@ async function main(): Promise<void> {
           events: eventRows.filter((event) => event.pid === childStart?.pid),
         })}`
       );
+
+      const cppChildCompile = await crossLanguageWorkspace.runCommand(
+        'clang++ cpp-child.cpp -o cpp-child.out'
+      );
+      assertCondition(
+        cppChildCompile.exitCode === 0,
+        `nested C++ child should compile: ${JSON.stringify(cppChildCompile)}`
+      );
+      const cppParentCompile = await crossLanguageWorkspace.runCommand(
+        'clang++ spawn-cpp.cpp -o a.out'
+      );
+      assertCondition(
+        cppParentCompile.exitCode === 0,
+        `nested C++ parent should compile: ${JSON.stringify(cppParentCompile)}`
+      );
+      const spawnedCpp = await crossLanguageWorkspace.runCommand('./a.out');
+      const cppSpawnSnapshot = await crossLanguageWorkspace.snapshot();
+      const cppSpawnKernelEvents = await crossLanguageWorkspace.readFile('/proc/tracekernel/events');
+      assertCondition(
+        spawnedCpp.exitCode === 0 &&
+          spawnedCpp.stdout === 'cpp-spawn:0:from-cpp-child\n' &&
+          await crossLanguageWorkspace.readFile('cpp-child-process.txt') === 'from-cpp-child',
+        `C++ should spawn and wait for C++ on a separate worker lease: ${JSON.stringify({
+          result: spawnedCpp,
+          files: cppSpawnSnapshot.files.map((file) => file.path),
+          events: cppSpawnKernelEvents,
+        })}`
+      );
+      const cppSpawnEvents = cppSpawnKernelEvents;
+      const cppEventRows = cppSpawnEvents.trim().split('\n').slice(1).map((line) => {
+        const [, , type, pid, detail] = line.split('\t');
+        return {
+          type,
+          pid: Number(pid),
+          detail: detail ? JSON.parse(detail) as { command?: string; ppid?: number } : {},
+        };
+      });
+      const cppChildStart = cppEventRows.find(
+        (event) => event.type === 'process-start' && event.detail.command === './cpp-child.out'
+      );
+      const cppParentStart = cppEventRows.find(
+        (event) =>
+          event.type === 'process-start' &&
+          event.detail.command === './a.out' &&
+          cppChildStart?.detail.ppid === event.pid
+      );
+      assertCondition(
+        cppParentStart !== undefined &&
+          cppChildStart !== undefined &&
+          cppChildStart.pid !== cppParentStart.pid &&
+          cppEventRows.some(
+            (event) => event.type === 'process-reap' && event.pid === cppChildStart.pid
+          ),
+        `TraceKernel should own nested C++ hierarchy and reap: ${JSON.stringify({
+          cppParentStart,
+          cppChildStart,
+        })}`
+      );
     } finally {
       crossLanguageWorkspace.dispose();
       javascriptRunner.dispose?.();
     }
-    console.log('PASS: C++ and JavaScript share files and C++ can spawn/reap JavaScript through TraceKernel');
+    console.log('PASS: C++ spawns JavaScript and C++ on isolated workers through TraceKernel');
 
     const tcpWorkspace = await createRuntimeWorkspace({
       files: [{ path: 'tcp.cpp', contents: CPP_TK_TCP_PROGRAM }],
@@ -990,6 +1099,7 @@ async function main(): Promise<void> {
     console.log('PASS: hand-rolled C++ socket server serves sequential requests over the sync bridge');
   } finally {
     client.terminate();
+    nestedCppClient.terminate();
     globalThis.fetch = originalFetch;
     if (previousWorker === undefined) {
       delete (globalThis as { Worker?: unknown }).Worker;
