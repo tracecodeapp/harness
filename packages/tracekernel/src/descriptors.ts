@@ -21,6 +21,7 @@ export interface TraceKernelDescriptorSnapshot {
   readonly fd: number;
   readonly kind: TraceKernelDescriptorKind;
   readonly resourceId: string;
+  readonly closeOnExec: boolean;
 }
 
 export interface TraceKernelDescriptor {
@@ -72,6 +73,7 @@ export type TraceKernelDescriptorInheritanceError =
 
 export class TraceKernelDescriptorTable {
   private readonly descriptors = new Map<number, TraceKernelDescriptor>();
+  private readonly closeOnExecDescriptors = new Set<number>();
   private nextFd = 3;
   readonly maxDescriptors: number;
 
@@ -82,7 +84,10 @@ export class TraceKernelDescriptorTable {
       : 1024;
   }
 
-  install(descriptor: TraceKernelDescriptor): number {
+  install(
+    descriptor: TraceKernelDescriptor,
+    options: { readonly closeOnExec?: boolean } = {}
+  ): number {
     if (this.descriptors.size >= this.maxDescriptors) {
       throw new TraceKernelDescriptorLimitError({
         code: 'EMFILE',
@@ -93,6 +98,7 @@ export class TraceKernelDescriptorTable {
     let fd = this.nextFd;
     while (this.descriptors.has(fd)) fd += 1;
     this.descriptors.set(fd, descriptor);
+    if (options.closeOnExec) this.closeOnExecDescriptors.add(fd);
     this.nextFd = fd + 1;
     return fd;
   }
@@ -104,7 +110,11 @@ export class TraceKernelDescriptorTable {
    * to establish fd 0/1/2 before a runtime lease starts, while ordinary
    * runtime opens continue to allocate from fd 3 upward.
    */
-  installAt(fd: number, descriptor: TraceKernelDescriptor): number {
+  installAt(
+    fd: number,
+    descriptor: TraceKernelDescriptor,
+    options: { readonly closeOnExec?: boolean } = {}
+  ): number {
     const targetFd = Math.floor(fd);
     if (!Number.isSafeInteger(fd) || targetFd < 0) {
       throw new TraceKernelBadFileDescriptorError({
@@ -128,6 +138,7 @@ export class TraceKernelDescriptorTable {
       });
     }
     this.descriptors.set(targetFd, descriptor);
+    if (options.closeOnExec) this.closeOnExecDescriptors.add(targetFd);
     if (targetFd === this.nextFd) this.resetNextFd();
     return targetFd;
   }
@@ -138,6 +149,7 @@ export class TraceKernelDescriptorTable {
         fd,
         kind: descriptor.kind,
         resourceId: descriptor.resourceId,
+        closeOnExec: this.closeOnExecDescriptors.has(fd),
       }))
       .sort((left, right) => left.fd - right.fd);
   }
@@ -151,6 +163,34 @@ export class TraceKernelDescriptorTable {
           operation: 'stat',
           message: `EBADF: bad file descriptor ${fd}`,
         }));
+  }
+
+  getCloseOnExec(
+    fd: number
+  ): Effect.Effect<boolean, TraceKernelBadFileDescriptorError> {
+    return this.descriptors.has(fd)
+      ? Effect.succeed(this.closeOnExecDescriptors.has(fd))
+      : Effect.fail(new TraceKernelBadFileDescriptorError({
+          fd,
+          operation: 'fcntl',
+          message: `EBADF: bad file descriptor, fcntl ${fd}`,
+        }));
+  }
+
+  setCloseOnExec(
+    fd: number,
+    closeOnExec: boolean
+  ): Effect.Effect<void, TraceKernelBadFileDescriptorError> {
+    if (!this.descriptors.has(fd)) {
+      return Effect.fail(new TraceKernelBadFileDescriptorError({
+        fd,
+        operation: 'fcntl',
+        message: `EBADF: bad file descriptor, fcntl ${fd}`,
+      }));
+    }
+    if (closeOnExec) this.closeOnExecDescriptors.add(fd);
+    else this.closeOnExecDescriptors.delete(fd);
+    return Effect.void;
   }
 
   read(
@@ -319,6 +359,7 @@ export class TraceKernelDescriptorTable {
       Effect.flatMap((duplicate) =>
         Effect.sync(() => {
           this.descriptors.set(target, duplicate);
+          this.closeOnExecDescriptors.delete(target);
           this.resetNextFd();
         }).pipe(
           Effect.andThen(replaced ? replaced.close() : Effect.void),
@@ -343,7 +384,9 @@ export class TraceKernelDescriptorTable {
     return Effect.try({
       try: () => {
         const selectedFds = fds === undefined
-          ? [...source.descriptors.keys()].sort((left, right) => left - right)
+          ? [...source.descriptors.keys()]
+              .filter((fd) => !source.closeOnExecDescriptors.has(fd))
+              .sort((left, right) => left - right)
           : [...new Set(fds.map((fd) => Math.floor(fd)))].sort((left, right) => left - right);
         return selectedFds.map((fd) => {
           const descriptor = source.descriptors.get(fd);
@@ -485,6 +528,7 @@ export class TraceKernelDescriptorTable {
       }));
     }
     this.descriptors.delete(fd);
+    this.closeOnExecDescriptors.delete(fd);
     if (fd < this.nextFd) this.nextFd = fd;
     return descriptor.close();
   }
@@ -493,6 +537,7 @@ export class TraceKernelDescriptorTable {
     return Effect.suspend(() => {
       const descriptors = [...this.descriptors.values()];
       this.descriptors.clear();
+      this.closeOnExecDescriptors.clear();
       this.nextFd = 3;
       return Effect.forEach(
         descriptors,

@@ -248,6 +248,30 @@ async function main(): Promise<void> {
         access: 'read-write',
       });
       yield* parent.write(sharedFd, encoder.encode('parent-'));
+      yield* parent.descriptors.setCloseOnExec(privateFd, true);
+      assertCondition(
+        (yield* parent.descriptors.getCloseOnExec(privateFd)) &&
+          parent.snapshot().descriptors.find(({ fd }) => fd === privateFd)?.closeOnExec === true,
+        'Kernel descriptor flags did not preserve FD_CLOEXEC state.'
+      );
+
+      const execStyleChild = yield* inheritanceSession.spawn({
+        runtime: 'blocking-test',
+        command: 'descriptor-exec-style-child',
+        parentPid: parent.pid,
+        inheritDescriptors: 'all',
+      });
+      yield* execStyleChild.awaitStarted();
+      assertCondition(
+        !execStyleChild.snapshot().descriptors.some(({ fd }) => fd === privateFd) &&
+          execStyleChild.snapshot().descriptors.some(({ fd }) => fd === sharedFd),
+        `inherit-all copied a close-on-exec descriptor: ${JSON.stringify(
+          execStyleChild.snapshot().descriptors
+        )}`
+      );
+      yield* execStyleChild.close(sharedFd);
+      yield* execStyleChild.signal('SIGTERM');
+      yield* inheritanceSession.waitChild(parent, execStyleChild.pid);
 
       const isolatedChild = yield* inheritanceSession.spawn({
         runtime: 'blocking-test',
@@ -348,8 +372,8 @@ async function main(): Promise<void> {
     })
   ));
 
-  assertCondition(leaseAcquireCount === 6, `Expected six runtime leases, acquired ${leaseAcquireCount}.`);
-  assertCondition(leaseReleaseCount === 6, `Expected six runtime lease releases, observed ${leaseReleaseCount}.`);
+  assertCondition(leaseAcquireCount === 7, `Expected seven runtime leases, acquired ${leaseAcquireCount}.`);
+  assertCondition(leaseReleaseCount === 7, `Expected seven runtime lease releases, observed ${leaseReleaseCount}.`);
 
   console.log(JSON.stringify({
     schema: 'tracekernel-013-descriptors-v1',
@@ -364,6 +388,7 @@ async function main(): Promise<void> {
     atomicDup2Replacement: true,
     failedInstallsReleaseResources: true,
     defaultDescriptorNonInheritance: true,
+    closeOnExecDescriptorFiltering: true,
     selectiveDescriptorInheritance: true,
     atomicCrossIdentityDescriptorMapping: true,
     orderedSpawnDescriptorActions: true,

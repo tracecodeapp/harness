@@ -452,6 +452,13 @@ timed waits, and managed C# exposes `KernelProcess.TryWait`; JavaScript keeps
 its event-driven `ChildProcess` completion path on the same authoritative
 blocking wait.
 
+Descriptor-table entries also carry kernel-owned close-on-exec state.
+`inheritDescriptors: "all"` filters `FD_CLOEXEC` entries in the kernel, while
+explicit mappings remain spawn file actions and can intentionally pass a
+flagged descriptor. `dup` and `dup2` create inheritable targets, matching the
+traditional descriptor-flag rule. Runtime `fcntl`/inheritable APIs are the
+next adapter surface over this foundation.
+
 The C/C++ WASI process compatibility slice is intentionally smaller than a
 complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,
 `SIGTERM`, and `SIGKILL`, and maps `posix_spawnp` through TraceKernel's runtime
