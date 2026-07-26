@@ -428,8 +428,10 @@ the transitional product bridge as well as the extracted kernel. Node
 creates a child-led session, and `process.kill` accepts the same positive,
 zero, negative-PGID, and `-1` selectors as the kernel syscall. Python maps
 `subprocess.Popen(start_new_session=True)`, `process_group`, `os.kill`, and
-`os.killpg` onto the same mechanism. Browser conformance creates detached
-JavaScript leaders with JavaScript descendants from both Node and Python
+`os.killpg` onto the same mechanism. Managed C# exposes
+`SpawnOptions.StartNewSession`, `KernelProcess.Signal`, and
+`KernelProcess.SignalProcessGroup`. Browser conformance creates detached
+JavaScript leaders with JavaScript descendants from Node, Python, and C#
 parents and proves one negative PGID signal terminates each tree without
 reaching its parent.
 

@@ -789,7 +789,7 @@ export const config = /*json-start*/{
       {
         "virtualPath": "TraceCode.CSharpHost.wasm",
         "name": "TraceCode.CSharpHost.wasm",
-        "hash": "sha256-DzwgGGEd+RLesT6WbgnpPq79WoXLqB9K91/ziqH1OeA="
+        "hash": "sha256-07urXce+3eUe89sD4dYDKU/sJApLZU4Cl/6A75R8k9I="
       },
       {
         "virtualPath": "WindowsBase.wasm",
@@ -959,7 +959,7 @@ export const config = /*json-start*/{
       {
         "virtualPath": "/tracecode-refs/TraceCode.CSharpHost.dll",
         "name": "supportFiles/0_TraceCode.CSharpHost.dll",
-        "hash": "sha256-in8ke082gJfnO2fsCD9NlUbbjCGNrNa7IgqMmbHgM4A="
+        "hash": "sha256-NMShHWXEPvRRaTRf8kSn3IyYg0WvA1gZ9x6cDcr6D+g="
       },
       {
         "virtualPath": "/tracecode-refs/Microsoft.CSharp.dll",

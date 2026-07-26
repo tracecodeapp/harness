@@ -238,6 +238,7 @@ public sealed class SpawnOptions
 {
     public string? Cwd { get; init; }
     public IReadOnlyDictionary<string, string>? Environment { get; init; }
+    public bool StartNewSession { get; init; }
     public bool InheritAllDescriptors { get; init; }
     public IReadOnlyList<int>? InheritDescriptors { get; init; }
     public int? ProcessGroupId { get; init; }
@@ -300,6 +301,16 @@ public sealed class KernelProcess
                 nameof(options)
             );
         }
+        if (
+            options.StartNewSession &&
+            (options.ProcessGroupId is not null || options.SessionId is not null)
+        )
+        {
+            throw new ArgumentException(
+                "StartNewSession cannot be combined with explicit process-group or session identifiers.",
+                nameof(options)
+            );
+        }
         object? inheritedDescriptors = options.InheritAllDescriptors
             ? "all"
             : options.InheritDescriptors;
@@ -329,6 +340,11 @@ public sealed class KernelProcess
         if (options.SessionId is not null)
         {
             request["sessionId"] = options.SessionId;
+        }
+        if (options.StartNewSession)
+        {
+            request["processGroupId"] = 0;
+            request["sessionId"] = 0;
         }
         if (
             options.StandardInput is not null ||
@@ -393,11 +409,17 @@ public sealed class KernelProcess
     }
 
     public void Kill(KernelSignal signal = KernelSignal.Terminate)
+        => Signal(Pid, signal);
+
+    public static void Signal(
+        int processSelector,
+        KernelSignal signal = KernelSignal.Terminate
+    )
     {
         KernelInterop.Call(new
         {
             op = "kill",
-            pid = Pid,
+            pid = processSelector,
             signal = signal switch
             {
                 KernelSignal.Interrupt => "SIGINT",
@@ -405,6 +427,21 @@ public sealed class KernelProcess
                 _ => "SIGTERM",
             },
         });
+    }
+
+    public static void SignalProcessGroup(
+        int processGroupId,
+        KernelSignal signal = KernelSignal.Terminate
+    )
+    {
+        if (processGroupId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(processGroupId),
+                "A process-group identifier must be positive."
+            );
+        }
+        Signal(-processGroupId, signal);
     }
 
     private static KernelDescriptor? ReadDescriptor(
