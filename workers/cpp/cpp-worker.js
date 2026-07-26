@@ -362,6 +362,7 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   dup3: 41,
   poll: 42,
   getsockopt: 43,
+  identity: 44,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -768,6 +769,7 @@ class CppTraceKernelSyncClient {
         if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
         break;
       case 'setsid':
+      case 'identity':
         break;
       case 'setpgid':
         writer.i32(request.pid);
@@ -1002,6 +1004,15 @@ class CppTraceKernelSyncClient {
         break;
       case 'setpgid':
         value = { op: operation, pgid: reader.i32() };
+        break;
+      case 'identity':
+        value = {
+          op: operation,
+          pid: reader.i32(),
+          ppid: reader.i32(),
+          pgid: reader.i32(),
+          sid: reader.i32(),
+        };
         break;
       case 'bind':
         value = { op: operation, address: readCppTraceKernelAddress(reader) };
@@ -2817,11 +2828,17 @@ class WasiProcess {
         }
       },
       proc_identity: (kind) => {
-        if (kind === 1) return this.process.pid | 0;
-        if (kind === 2) return this.process.ppid | 0;
-        if (kind === 3) return this.process.pgid | 0;
-        if (kind === 4) return this.process.sid | 0;
-        return -EINVAL;
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const identity = this.kernelClient.call({ op: 'identity' });
+          if (kind === 1) return identity.pid | 0;
+          if (kind === 2) return identity.ppid | 0;
+          if (kind === 3) return identity.pgid | 0;
+          if (kind === 4) return identity.sid | 0;
+          return -EINVAL;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
       },
       proc_fcntl: (fd, action, value) => {
         if (!this.kernelClient) return -ENOTSUP;

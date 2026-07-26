@@ -2087,6 +2087,7 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   dup3: 41,
   poll: 42,
   getsockopt: 43,
+  identity: 44,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
   Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
@@ -2505,6 +2506,7 @@ class PythonTraceKernelSyncClient {
         if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
         break;
       case 'setsid':
+      case 'identity':
         break;
       case 'setpgid':
         writer.i32(request.pid);
@@ -2935,6 +2937,14 @@ class PythonTraceKernelSyncClient {
       value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
     } else if (operation === 'setpgid') {
       value = { op: operation, pgid: reader.i32() };
+    } else if (operation === 'identity') {
+      value = {
+        op: operation,
+        pid: reader.i32(),
+        ppid: reader.i32(),
+        pgid: reader.i32(),
+        sid: reader.i32(),
+      };
     } else if (
       operation === 'read'
     ) {
@@ -3849,15 +3859,6 @@ async function executeProjectPythonUserCall(
         : result
     );
   };
-  const runtimeKernelProcessIdentity = {
-    pid: Number(request.process?.pid ?? 0),
-    ppid: Number(request.process?.ppid ?? 0),
-    pgid: Number(request.process?.pgid ?? 0),
-    sid: Number(request.process?.sid ?? 0),
-  };
-  self.__tracecodeKernelProcessIdentity = () => JSON.stringify({
-    ...runtimeKernelProcessIdentity,
-  });
   self.__tracecodeKernelProcess = (requestJson) => {
     if (!kernelClient) {
       throw new PythonTraceKernelSyscallError(
@@ -3980,6 +3981,8 @@ async function executeProjectPythonUserCall(
             pid: Number(input.pid),
             ...(input.noHang === true ? { noHang: true } : {}),
           };
+        case 'identity':
+          return { op: 'identity' };
         case 'kill':
           return {
             op: 'kill',
@@ -4071,16 +4074,6 @@ async function executeProjectPythonUserCall(
     })();
     try {
       const result = kernelClient.request(syscallRequest);
-      if (result.op === 'setsid') {
-        runtimeKernelProcessIdentity.sid = result.sid;
-        runtimeKernelProcessIdentity.pgid = result.pgid;
-      } else if (
-        result.op === 'setpgid' &&
-        (Number(input.pid ?? 0) === 0 ||
-          Number(input.pid ?? 0) === runtimeKernelProcessIdentity.pid)
-      ) {
-        runtimeKernelProcessIdentity.pgid = result.pgid;
-      }
       const serializableResult = result.op === 'read'
         ? { ...result, bytes: bytesToBase64(result.bytes) }
         : result.op === 'poll' && pollMappings
@@ -5224,9 +5217,7 @@ os.killpg = lambda pgid, signal: _tracekernel_module.process.kill(
     signal,
 )
 def _tracekernel_process_identity():
-    return json.loads(str(
-        getattr(_js_self, "__tracecodeKernelProcessIdentity")()
-    ))
+    return _TraceKernelProcessApi._call({"op": "identity"})
 os.getpid = lambda: int(_tracekernel_process_identity()["pid"])
 os.getppid = lambda: int(_tracekernel_process_identity()["ppid"])
 os.getpgrp = lambda: int(_tracekernel_process_identity()["pgid"])

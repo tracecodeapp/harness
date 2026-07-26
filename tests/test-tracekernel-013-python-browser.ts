@@ -606,6 +606,39 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'orphan-parent.py',
+              contents: [
+                'import subprocess',
+                'subprocess.Popen(["python", "orphan-python-child.py"])',
+                'subprocess.Popen(["node", "orphan-js-child.js"])',
+                'print("orphan-parent")',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'orphan-python-child.py',
+              contents: [
+                'import os',
+                'import time',
+                'from pathlib import Path',
+                'time.sleep(0.1)',
+                'Path("orphan-python-identity.txt").write_text(str(os.getppid()))',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'orphan-js-child.js',
+              contents: [
+                'setTimeout(() => {',
+                '  require("node:fs").writeFileSync(',
+                '    "orphan-js-identity.txt",',
+                '    String(process.ppid)',
+                '  );',
+                '}, 100);',
+                '',
+              ].join('\n'),
+            },
           ],
         });
         try {
@@ -625,6 +658,31 @@ async function main(): Promise<void> {
           const descriptorInheritance = await workspace.runCommand(
             'python python-fd-parent.py'
           );
+          const orphanParent = await workspace.runCommand(
+            'python orphan-parent.py'
+          );
+          let orphanPythonParent: string | null = null;
+          let orphanJavaScriptParent: string | null = null;
+          for (let attempt = 0; attempt < 500; attempt += 1) {
+            try {
+              orphanPythonParent = await workspace.readFile(
+                'orphan-python-identity.txt'
+              );
+              orphanJavaScriptParent = await workspace.readFile(
+                'orphan-js-identity.txt'
+              );
+              if (
+                (orphanPythonParent?.length ?? 0) > 0 &&
+                (orphanJavaScriptParent?.length ?? 0) > 0
+              ) {
+                break;
+              }
+            } catch {
+              await new Promise((resolvePromise) =>
+                setTimeout(resolvePromise, 10)
+              );
+            }
+          }
           return {
             fsControl,
             nativeFsControl,
@@ -638,6 +696,9 @@ async function main(): Promise<void> {
             processGroupControl,
             socketControl,
             descriptorInheritance,
+            orphanParent,
+            orphanPythonParent,
+            orphanJavaScriptParent,
             spawnJsResult: spawnControl.exitCode === 0
               ? await workspace.readFile('spawn-js-child.txt')
               : null,
@@ -658,6 +719,17 @@ async function main(): Promise<void> {
         }
       });
 
+      assertCondition(
+        result.orphanParent.exitCode === 0 &&
+          result.orphanParent.stdout === 'orphan-parent\n' &&
+          result.orphanPythonParent === '1' &&
+          result.orphanJavaScriptParent === '1',
+        `orphaned runtime children did not observe kernel reparenting: ${JSON.stringify({
+          parent: result.orphanParent,
+          python: result.orphanPythonParent,
+          javascript: result.orphanJavaScriptParent,
+        })}`
+      );
       assertCondition(
         result.socketControl.exitCode === 0 &&
           result.socketControl.stdout === 'socket:true\n',
@@ -714,6 +786,7 @@ async function main(): Promise<void> {
         explicitTkfsControls: true,
         nativeTkfsMount: true,
         childProcesses: ['javascript', 'python'],
+        dynamicProcessIdentity: ['python', 'javascript', 'orphan-reparenting'],
         processGroups: [
           'start_new_session',
           'os.setsid',

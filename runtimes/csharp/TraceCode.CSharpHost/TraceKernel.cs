@@ -476,6 +476,13 @@ public sealed record ProcessTermination(
     string? Message
 );
 
+public sealed record ProcessIdentity(
+    int ProcessId,
+    int ParentProcessId,
+    int ProcessGroupId,
+    int SessionId
+);
+
 [SupportedOSPlatform("browser")]
 public sealed class KernelProcess
 {
@@ -693,6 +700,17 @@ public sealed class KernelProcess
         return ParseTermination(
             value.GetProperty("pid").GetInt32(),
             value.GetProperty("termination")
+        );
+    }
+
+    public static ProcessIdentity GetCurrentIdentity()
+    {
+        JsonElement value = KernelInterop.Call(new { op = "identity" });
+        return new ProcessIdentity(
+            value.GetProperty("pid").GetInt32(),
+            value.GetProperty("ppid").GetInt32(),
+            value.GetProperty("pgid").GetInt32(),
+            value.GetProperty("sid").GetInt32()
         );
     }
 

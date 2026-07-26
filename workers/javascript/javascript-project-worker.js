@@ -84,7 +84,8 @@ var OP_CODES = {
   setpgid: 40,
   dup3: 41,
   poll: 42,
-  getsockopt: 43
+  getsockopt: 43,
+  identity: 44
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -352,6 +353,8 @@ function encodeTraceKernelSyscallRequest(request) {
     case "wait":
       writer.i32(request.pid);
       writer.u8(request.noHang ? 1 : 0);
+      break;
+    case "identity":
       break;
     case "kill":
       writer.i32(request.pid);
@@ -734,6 +737,15 @@ function decodeTraceKernelSyscallResult(bytes) {
     case "setpgid":
       value = { op: "setpgid", pgid: reader.i32() };
       break;
+    case "identity":
+      value = {
+        op: "identity",
+        pid: reader.i32(),
+        ppid: reader.i32(),
+        pgid: reader.i32(),
+        sid: reader.i32()
+      };
+      break;
     case "bind":
       value = { op: "bind", address: readAddress(reader) };
       break;
@@ -998,6 +1010,12 @@ var TraceKernelRuntimeFileClient = class {
   }
   get cacheMisses() {
     return this.cacheMissCount;
+  }
+  identity() {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "identity" }),
+      "identity"
+    );
   }
   socket() {
     return this.expectSuccess(
@@ -9805,7 +9823,26 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     platform: "tracekernel",
     arch: "x64",
     pid: request.process?.pid ?? 1,
-    ppid: request.process?.ppid ?? 0,
+    get ppid() {
+      if (!executionState.kernelSyscalls) {
+        return request.process?.ppid ?? 0;
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: "identity"
+      });
+      if (result.ok === false) {
+        throw Object.assign(new Error(result.error.message), {
+          code: result.error.code
+        });
+      }
+      if (result.value.op !== "identity") {
+        throw Object.assign(
+          new Error("EPROTO: identity syscall returned the wrong result"),
+          { code: "EPROTO" }
+        );
+      }
+      return result.value.ppid;
+    },
     title: "node",
     exitCode: void 0,
     cwd: () => request.cwd,

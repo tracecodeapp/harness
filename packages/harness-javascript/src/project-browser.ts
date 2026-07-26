@@ -6122,7 +6122,26 @@ export async function runBrowserJavaScriptProjectRequest(
       platform: 'tracekernel',
       arch: 'x64',
       pid: request.process?.pid ?? 1,
-      ppid: request.process?.ppid ?? 0,
+      get ppid(): number {
+        if (!executionState.kernelSyscalls) {
+          return request.process?.ppid ?? 0;
+        }
+        const result = executionState.kernelSyscalls.dispatchSync({
+          op: 'identity',
+        });
+        if (result.ok === false) {
+          throw Object.assign(new Error(result.error.message), {
+            code: result.error.code,
+          });
+        }
+        if (result.value.op !== 'identity') {
+          throw Object.assign(
+            new Error('EPROTO: identity syscall returned the wrong result'),
+            { code: 'EPROTO' }
+          );
+        }
+        return result.value.ppid;
+      },
       title: 'node',
       exitCode: undefined as number | undefined,
       cwd: () => request.cwd,

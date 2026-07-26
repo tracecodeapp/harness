@@ -199,6 +199,7 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   dup3: 41,
   poll: 42,
   getsockopt: 43,
+  identity: 44,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -540,6 +541,7 @@ class CSharpTraceKernelSyncClient {
         if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
         break;
       case 'setsid':
+      case 'identity':
         break;
       case 'setpgid':
         writer.i32(request.pid);
@@ -912,6 +914,14 @@ class CSharpTraceKernelSyncClient {
       value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
     } else if (operation === 'setpgid') {
       value = { op: operation, pgid: reader.i32() };
+    } else if (operation === 'identity') {
+      value = {
+        op: operation,
+        pid: reader.i32(),
+        ppid: reader.i32(),
+        pgid: reader.i32(),
+        sid: reader.i32(),
+      };
     } else if (operation === 'read') {
       value = { op: operation, bytes: reader.bytesValue() };
     } else if (operation === 'write') {

@@ -686,7 +686,7 @@ type RuntimeKernelTtyName = RuntimeKernelDevicePath | '?';
 
 interface RuntimeKernelProcessRecord {
   readonly pid: number;
-  readonly ppid: number;
+  ppid: number;
   pgid: number;
   sid: number;
   readonly fds: readonly RuntimeKernelFileDescriptorRecord[];
@@ -1609,6 +1609,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                     kind: 'exit',
                     exitCode,
                   },
+            },
+          };
+        }
+        case 'identity': {
+          const process = this.runtimeSyscallProcess(context);
+          return {
+            ok: true,
+            value: {
+              op: 'identity',
+              pid: process.pid,
+              ppid: process.ppid,
+              pgid: process.pgid,
+              sid: process.sid,
             },
           };
         }
@@ -4379,6 +4392,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private findProcessRecord(pid: number): RuntimeKernelProcessRecord | undefined {
     this.purgeZombieProcessTable();
     return this.processTable.get(pid) ?? this.zombieProcessTable.get(pid)?.process;
+  }
+
+  private reparentRuntimeChildren(exitedPid: number): void {
+    for (const child of this.activeProcessRecords()) {
+      if (child.ppid !== exitedPid) continue;
+      child.ppid = 1;
+      this.recordKernelEvent('process-reparent', child.pid, {
+        exitedParentPid: exitedPid,
+        parentPid: 1,
+      });
+    }
   }
 
   private activeProcessRecords(): RuntimeKernelProcessRecord[] {
@@ -8635,6 +8659,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       process.exitCode = processExitCode;
       process.endedAt = new Date().toISOString();
       this.processTable.delete(process.pid);
+      this.reparentRuntimeChildren(process.pid);
       if (retainProcessOnExit) {
         this.zombieProcessTable.set(process.pid, { process, expiresAtMs: Date.now() + TRACEKERNEL_ZOMBIE_RETENTION_MS });
         this.recordKernelEvent('process-zombie', process.pid, {
@@ -9464,6 +9489,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         void this.kernelDescriptors.closeProcess(process.pid);
         this.processTable.delete(process.pid);
+        this.reparentRuntimeChildren(process.pid);
         process.state = 'exited';
         process.exitCode = 0;
         process.endedAt = new Date().toISOString();
