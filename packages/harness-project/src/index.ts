@@ -8158,19 +8158,44 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const scriptPath = request.executable.startsWith('./')
       ? request.executable.slice(2)
       : request.executable;
-    const result = await this.cppRunner({
-      code: '',
-      source: 'run',
-      scriptPath,
-      args: request.args,
-      cwd: request.cwd,
-      env: request.env,
-      ...(request.stdinPipe ? { stdinPipe: { buffer: request.stdinPipe.buffer } } : {}),
-      project: await this.snapshotForCommand(request.commandContext.includeHiddenFiles === true),
-      onEvent: (event) => {
-        this.handleRuntimeCommandEvent(event, request.commandContext);
-      },
-    });
+    const kernelSyscalls = this.createKernelSyscallBridge(request.commandContext);
+    const signal = request.commandContext.process.abortController?.signal;
+    let result: RuntimeCommandResult;
+    try {
+      result = await this.cppRunner({
+        code: '',
+        source: 'run',
+        scriptPath,
+        args: request.args,
+        cwd: request.cwd,
+        env: request.env,
+        process: {
+          pid: request.commandContext.process.pid,
+          ppid: request.commandContext.process.ppid,
+          pgid: request.commandContext.process.pgid,
+          sid: request.commandContext.process.sid,
+        },
+        ...(request.stdinPipe ? { stdinPipe: { buffer: request.stdinPipe.buffer } } : {}),
+        ...(request.commandContext.terminal
+          ? { terminal: request.commandContext.terminal }
+          : {}),
+        signal,
+        project: await this.snapshotForCommand(request.commandContext.includeHiddenFiles === true),
+        kernelHttp: this.createKernelHttpBridge(request.commandContext),
+        ...(kernelSyscalls ? { kernelSyscalls } : {}),
+        onEvent: (event) => {
+          this.handleRuntimeCommandEvent(event, request.commandContext);
+        },
+      });
+    } finally {
+      kernelSyscalls?.close();
+    }
+    if (result.handledSignal) {
+      request.commandContext.handledSignal = result.handledSignal;
+    }
+    if (result.error && !request.commandContext.kernelError) {
+      request.commandContext.kernelError = result.error;
+    }
     await this.flushRuntimeEventQueue(request.commandContext);
     return applyWorkspaceCommandResultFiles(
       this,

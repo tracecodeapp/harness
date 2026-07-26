@@ -18,6 +18,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { Worker as NodeWorker } from 'node:worker_threads';
 import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
+import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/project-browser';
+import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpHandler,
@@ -26,6 +28,59 @@ import type {
 } from '../packages/harness-core/src/runtime-project';
 
 const EXTERNAL_COMPILER_URL = 'http://tracecode-cpp-test.invalid/compile';
+
+const CPP_TKFS_PROGRAM = [
+  '#include <fstream>',
+  '#include <iostream>',
+  '#include <iterator>',
+  '#include <string>',
+  'int main() {',
+  '  std::ifstream input("seed.txt", std::ios::binary);',
+  '  std::string seed((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());',
+  '  std::ofstream output("generated.txt", std::ios::binary | std::ios::trunc);',
+  '  output << "kernel-write";',
+  '  output.close();',
+  '  std::cout << seed;',
+  '  return 0;',
+  '}',
+  '',
+].join('\n');
+
+const CPP_TK_TCP_PROGRAM = [
+  '#include <arpa/inet.h>',
+  '#include <netinet/in.h>',
+  '#include <sys/socket.h>',
+  '#include <unistd.h>',
+  '#include <cerrno>',
+  '#include <cstdio>',
+  '#include <cstring>',
+  'int main() {',
+  '  int server = socket(AF_INET, SOCK_STREAM, 0);',
+  '  sockaddr_in address {};',
+  '  address.sin_family = AF_INET;',
+  '  address.sin_port = htons(41234);',
+  '  address.sin_addr.s_addr = inet_addr("127.0.0.1");',
+  '  int bindResult = bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address));',
+  '  int bindErrno = errno;',
+  '  int listenResult = bindResult == 0 ? listen(server, 4) : -1;',
+  '  int listenErrno = errno;',
+  '  if (bindResult != 0 || listenResult != 0) { std::printf("bind:%d:%d listen:%d:%d\\n", bindResult, bindErrno, listenResult, listenErrno); return 1; }',
+  '  int client = socket(AF_INET, SOCK_STREAM, 0);',
+  '  if (connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) return 2;',
+  '  int peer = accept(server, nullptr, nullptr);',
+  '  if (peer < 0) return 3;',
+  '  if (send(client, "ping", 4, 0) != 4) return 4;',
+  '  char request[5] = {};',
+  '  if (recv(peer, request, 4, 0) != 4) return 5;',
+  '  if (send(peer, "pong", 4, 0) != 4) return 6;',
+  '  char response[5] = {};',
+  '  if (recv(client, response, 4, 0) != 4) return 7;',
+  '  std::printf("%s:%s\\n", request, response);',
+  '  close(peer); close(client); close(server);',
+  '  return 0;',
+  '}',
+  '',
+].join('\n');
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -464,6 +519,58 @@ async function main(): Promise<void> {
       `C++ socket compile should emit a.out: ${JSON.stringify(compiledFiles.map((file) => file.path))}`
     );
     console.log('PASS: plain POSIX socket code compiles in C++ project mode without any TraceCode API');
+
+    const tkfsWorkspace = await createRuntimeWorkspace({
+      files: [
+        { path: 'tkfs.cpp', contents: CPP_TKFS_PROGRAM },
+        { path: 'seed.txt', contents: 'kernel-read\n' },
+      ],
+      cppRunner: createBrowserCppProjectRunner(client, { timeoutMs: 120_000 }),
+    });
+    try {
+      const tkfsCompile = await tkfsWorkspace.runCommand('clang++ tkfs.cpp -o a.out');
+      assertCondition(
+        tkfsCompile.exitCode === 0,
+        `C++ TKFS fixture should compile: ${JSON.stringify(tkfsCompile)}`
+      );
+      const tkfsRun = await tkfsWorkspace.runCommand('./a.out');
+      assertCondition(
+        tkfsRun.exitCode === 0 &&
+          tkfsRun.stdout === 'kernel-read\n' &&
+          await tkfsWorkspace.readFile('generated.txt') === 'kernel-write',
+        `C++ WASI should read and write the authoritative TraceKernel filesystem: ${JSON.stringify({
+          run: tkfsRun,
+          snapshot: await tkfsWorkspace.snapshot(),
+        })}`
+      );
+      assertCondition(
+        (tkfsRun.files ?? []).length === 0,
+        `kernel-backed C++ mutations should not be replayed as snapshot diffs: ${JSON.stringify(tkfsRun.files)}`
+      );
+    } finally {
+      tkfsWorkspace.dispose();
+    }
+    console.log('PASS: C++ WASI filesystem calls use TraceKernel-owned descriptors');
+
+    const tcpWorkspace = await createRuntimeWorkspace({
+      files: [{ path: 'tcp.cpp', contents: CPP_TK_TCP_PROGRAM }],
+      cppRunner: createBrowserCppProjectRunner(client, { timeoutMs: 120_000 }),
+    });
+    try {
+      const tcpCompile = await tcpWorkspace.runCommand('clang++ tcp.cpp -o a.out');
+      assertCondition(
+        tcpCompile.exitCode === 0,
+        `C++ TraceKernel TCP fixture should compile: ${JSON.stringify(tcpCompile)}`
+      );
+      const tcpRun = await tcpWorkspace.runCommand('./a.out');
+      assertCondition(
+        tcpRun.exitCode === 0 && tcpRun.stdout === 'ping:pong\n',
+        `C++ BSD sockets should use TraceKernel TCP byte streams: ${JSON.stringify(tcpRun)}`
+      );
+    } finally {
+      tcpWorkspace.dispose();
+    }
+    console.log('PASS: C++ BSD sockets use TraceKernel TCP descriptors');
 
     const dispatched: Array<RuntimeKernelHttpRequest & { timeoutMs?: number }> = [];
     let listenerHandler: RuntimeKernelHttpHandler | undefined;

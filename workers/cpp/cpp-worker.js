@@ -309,6 +309,532 @@ function concatBytes(chunks) {
   return out;
 }
 
+const TK_SYSCALL_FRAME_MAGIC = 0x544b5301;
+const TK_SYSCALL_FRAME_REQUEST = 1;
+const TK_SYSCALL_FRAME_RESPONSE = 2;
+const TK_SYSCALL_OP_CODES = Object.freeze({
+  open: 1,
+  read: 2,
+  write: 3,
+  close: 4,
+  dup: 5,
+  stat: 6,
+  readdir: 7,
+  mkdir: 8,
+  rmdir: 9,
+  unlink: 10,
+  rename: 11,
+  readFile: 12,
+  writeFile: 13,
+  fstat: 14,
+  ftruncate: 15,
+  link: 16,
+  symlink: 17,
+  readlink: 18,
+  lstat: 19,
+  realpath: 20,
+  socket: 21,
+  bind: 22,
+  listen: 23,
+  accept: 24,
+  connect: 25,
+  send: 26,
+  recv: 27,
+  shutdown: 28,
+  getsockname: 29,
+  getpeername: 30,
+});
+const TK_SYSCALL_OPS_BY_CODE = new Map(
+  Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
+);
+const TK_SHARED_HEADER_INTS = 8;
+const TK_SHARED_HEADER_BYTES = TK_SHARED_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const TK_SHARED_STATE_INDEX = 0;
+const TK_SHARED_REQUEST_LENGTH_INDEX = 1;
+const TK_SHARED_RESPONSE_LENGTH_INDEX = 2;
+const TK_SHARED_SEQUENCE_INDEX = 3;
+const TK_SHARED_STATE_IDLE = 0;
+const TK_SHARED_STATE_REQUEST = 1;
+const TK_SHARED_STATE_RESPONSE = 3;
+const TK_SHARED_STATE_CLOSED = 4;
+const TK_SHARED_STATE_WRITING = 5;
+
+class CppTraceKernelSyscallError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'CppTraceKernelSyscallError';
+    this.code = code;
+  }
+}
+
+class CppTraceKernelFrameWriter {
+  constructor() {
+    this.bytes = new Uint8Array(256);
+    this.view = new DataView(this.bytes.buffer);
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    const required = this.offset + length;
+    if (required <= this.bytes.byteLength) return;
+    let capacity = this.bytes.byteLength;
+    while (capacity < required) capacity *= 2;
+    const next = new Uint8Array(capacity);
+    next.set(this.bytes);
+    this.bytes = next;
+    this.view = new DataView(next.buffer);
+  }
+
+  u8(value) {
+    this.ensure(1);
+    this.view.setUint8(this.offset, value);
+    this.offset += 1;
+  }
+
+  u32(value) {
+    this.ensure(4);
+    this.view.setUint32(this.offset, value >>> 0, true);
+    this.offset += 4;
+  }
+
+  i32(value) {
+    this.ensure(4);
+    this.view.setInt32(this.offset, value | 0, true);
+    this.offset += 4;
+  }
+
+  f64(value) {
+    this.ensure(8);
+    this.view.setFloat64(this.offset, Number(value), true);
+    this.offset += 8;
+  }
+
+  bytesValue(value) {
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+    this.u32(bytes.byteLength);
+    this.ensure(bytes.byteLength);
+    this.bytes.set(bytes, this.offset);
+    this.offset += bytes.byteLength;
+  }
+
+  string(value) {
+    this.bytesValue(encodeUtf8(String(value)));
+  }
+
+  finish() {
+    return this.bytes.slice(0, this.offset);
+  }
+}
+
+class CppTraceKernelFrameReader {
+  constructor(bytes) {
+    this.bytes = bytes;
+    this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    if (length < 0 || this.offset + length > this.bytes.byteLength) {
+      throw new CppTraceKernelSyscallError('EPROTO', 'truncated binary syscall frame');
+    }
+  }
+
+  u8() {
+    this.ensure(1);
+    const value = this.view.getUint8(this.offset);
+    this.offset += 1;
+    return value;
+  }
+
+  u32() {
+    this.ensure(4);
+    const value = this.view.getUint32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  i32() {
+    this.ensure(4);
+    const value = this.view.getInt32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  f64() {
+    this.ensure(8);
+    const value = this.view.getFloat64(this.offset, true);
+    this.offset += 8;
+    return value;
+  }
+
+  bytesValue() {
+    const length = this.u32();
+    this.ensure(length);
+    const value = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return value;
+  }
+
+  string() {
+    return decodeUtf8(this.bytesValue());
+  }
+
+  done() {
+    if (this.offset !== this.bytes.byteLength) {
+      throw new CppTraceKernelSyscallError(
+        'EPROTO',
+        `binary syscall frame contains ${this.bytes.byteLength - this.offset} trailing bytes`
+      );
+    }
+  }
+}
+
+function writeCppTraceKernelAddress(writer, address) {
+  writer.string(address.host);
+  writer.u32(address.port);
+}
+
+function readCppTraceKernelAddress(reader) {
+  return { host: reader.string(), port: reader.u32() };
+}
+
+function readCppTraceKernelStat(reader) {
+  const path = reader.string();
+  const kind = reader.u8();
+  if (kind < 1 || kind > 3) {
+    throw new CppTraceKernelSyscallError('EPROTO', `invalid TKFS stat kind ${kind}`);
+  }
+  return {
+    path,
+    kind: kind === 1 ? 'file' : kind === 2 ? 'directory' : 'symlink',
+    inode: reader.f64(),
+    nlink: reader.f64(),
+    mode: reader.u32(),
+    size: reader.f64(),
+    generation: reader.f64(),
+    createdAt: reader.f64(),
+    modifiedAt: reader.f64(),
+    changedAt: reader.f64(),
+  };
+}
+
+class CppTraceKernelSyncClient {
+  constructor(channel, signalHost, options = {}) {
+    if (
+      typeof SharedArrayBuffer === 'undefined' ||
+      !(channel?.buffer instanceof SharedArrayBuffer) ||
+      !Number.isSafeInteger(channel.byteCapacity) ||
+      channel.byteCapacity < 256 ||
+      channel.buffer.byteLength !== TK_SHARED_HEADER_BYTES + channel.byteCapacity
+    ) {
+      throw new CppTraceKernelSyscallError('EPROTO', 'invalid shared syscall channel');
+    }
+    this.header = new Int32Array(channel.buffer, 0, TK_SHARED_HEADER_INTS);
+    this.payload = new Uint8Array(channel.buffer, TK_SHARED_HEADER_BYTES);
+    this.signalHost = signalHost;
+    this.timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? 20_000));
+    this.closed = false;
+  }
+
+  encodeRequest(request) {
+    const writer = new CppTraceKernelFrameWriter();
+    writer.u32(TK_SYSCALL_FRAME_MAGIC);
+    writer.u8(TK_SYSCALL_FRAME_REQUEST);
+    const operationCode = TK_SYSCALL_OP_CODES[request.op];
+    if (!operationCode) {
+      throw new CppTraceKernelSyscallError('EPROTO', `unsupported syscall ${request.op}`);
+    }
+    writer.u8(operationCode);
+    switch (request.op) {
+      case 'socket':
+        break;
+      case 'bind':
+      case 'connect':
+        writer.i32(request.fd);
+        writeCppTraceKernelAddress(writer, request.address);
+        break;
+      case 'listen':
+        writer.i32(request.fd);
+        writer.u8(
+          (request.options?.backlog === undefined ? 0 : 1) |
+            (request.options?.capacityChunks === undefined ? 0 : 2)
+        );
+        if (request.options?.backlog !== undefined) writer.u32(request.options.backlog);
+        if (request.options?.capacityChunks !== undefined) writer.u32(request.options.capacityChunks);
+        break;
+      case 'accept':
+      case 'getsockname':
+      case 'getpeername':
+        writer.i32(request.fd);
+        break;
+      case 'send':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        break;
+      case 'recv':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        break;
+      case 'shutdown':
+        writer.i32(request.fd);
+        writer.u8(request.how === 'read' ? 1 : request.how === 'write' ? 2 : 3);
+        break;
+      case 'open': {
+        writer.string(request.path);
+        const access = request.options?.access === 'write'
+          ? 2
+          : request.options?.access === 'read-write'
+            ? 3
+            : request.options?.access === 'read'
+              ? 1
+              : 0;
+        writer.u8(access);
+        writer.u8(
+          (request.options?.create ? 1 : 0) |
+            (request.options?.exclusive ? 2 : 0) |
+            (request.options?.truncate ? 4 : 0) |
+            (request.options?.append ? 8 : 0)
+        );
+        break;
+      }
+      case 'read':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'write':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'close':
+      case 'dup':
+      case 'fstat':
+        writer.i32(request.fd);
+        break;
+      case 'ftruncate':
+        writer.i32(request.fd);
+        writer.f64(request.length);
+        break;
+      case 'stat':
+      case 'lstat':
+      case 'realpath':
+      case 'readdir':
+      case 'rmdir':
+      case 'unlink':
+      case 'readFile':
+      case 'readlink':
+        writer.string(request.path);
+        break;
+      case 'mkdir':
+        writer.string(request.path);
+        writer.u8(
+          (request.options?.recursive ? 1 : 0) |
+            (request.options?.mode === undefined ? 0 : 2)
+        );
+        if (request.options?.mode !== undefined) writer.u32(request.options.mode);
+        break;
+      case 'rename':
+        writer.string(request.sourcePath);
+        writer.string(request.destinationPath);
+        break;
+      case 'link':
+        writer.string(request.existingPath);
+        writer.string(request.newPath);
+        break;
+      case 'symlink':
+        writer.string(request.target);
+        writer.string(request.linkPath);
+        break;
+      case 'writeFile':
+        writer.string(request.path);
+        writer.bytesValue(request.bytes);
+        break;
+    }
+    return writer.finish();
+  }
+
+  decodeResult(bytes) {
+    const reader = new CppTraceKernelFrameReader(bytes);
+    if (reader.u32() !== TK_SYSCALL_FRAME_MAGIC || reader.u8() !== TK_SYSCALL_FRAME_RESPONSE) {
+      throw new CppTraceKernelSyscallError('EPROTO', 'invalid binary syscall response header');
+    }
+    const success = reader.u8();
+    if (success === 0) {
+      const code = reader.string();
+      const message = reader.string();
+      reader.done();
+      throw new CppTraceKernelSyscallError(code, message);
+    }
+    if (success !== 1) {
+      throw new CppTraceKernelSyscallError('EPROTO', `invalid syscall response status ${success}`);
+    }
+    const operationCode = reader.u8();
+    const operation = TK_SYSCALL_OPS_BY_CODE.get(operationCode);
+    if (!operation) {
+      throw new CppTraceKernelSyscallError('EPROTO', `unknown syscall response code ${operationCode}`);
+    }
+    let value;
+    switch (operation) {
+      case 'socket':
+      case 'open':
+      case 'dup':
+        value = { op: operation, fd: reader.i32() };
+        break;
+      case 'bind':
+        value = { op: operation, address: readCppTraceKernelAddress(reader) };
+        break;
+      case 'accept':
+        value = {
+          op: operation,
+          fd: reader.i32(),
+          localAddress: readCppTraceKernelAddress(reader),
+          remoteAddress: readCppTraceKernelAddress(reader),
+        };
+        break;
+      case 'connect':
+        value = {
+          op: operation,
+          localAddress: readCppTraceKernelAddress(reader),
+          remoteAddress: readCppTraceKernelAddress(reader),
+        };
+        break;
+      case 'send':
+      case 'write':
+        value = { op: operation, bytesWritten: reader.u32() };
+        break;
+      case 'recv':
+      case 'read':
+        value = { op: operation, bytes: reader.bytesValue() };
+        break;
+      case 'getsockname':
+      case 'getpeername':
+        value = { op: operation, address: readCppTraceKernelAddress(reader) };
+        break;
+      case 'stat':
+      case 'lstat':
+      case 'fstat':
+        value = { op: operation, stat: readCppTraceKernelStat(reader) };
+        break;
+      case 'realpath':
+        value = { op: operation, path: reader.string() };
+        break;
+      case 'readlink':
+        value = { op: operation, target: reader.string() };
+        break;
+      case 'readdir': {
+        const length = reader.u32();
+        const entries = [];
+        for (let index = 0; index < length; index += 1) {
+          const name = reader.string();
+          const kind = reader.u8();
+          if (kind < 1 || kind > 3) {
+            throw new CppTraceKernelSyscallError('EPROTO', `invalid directory entry kind ${kind}`);
+          }
+          entries.push({
+            name,
+            kind: kind === 1 ? 'file' : kind === 2 ? 'directory' : 'symlink',
+            inode: reader.f64(),
+          });
+        }
+        value = { op: operation, entries };
+        break;
+      }
+      case 'readFile':
+        value = {
+          op: operation,
+          cacheGeneration: reader.i32(),
+          bytes: reader.bytesValue(),
+        };
+        break;
+      default:
+        value = { op: operation };
+        break;
+    }
+    reader.done();
+    return value;
+  }
+
+  call(request) {
+    if (this.closed) {
+      throw new CppTraceKernelSyscallError('ECLOSED', 'shared syscall channel is closed');
+    }
+    const frame = this.encodeRequest(request);
+    if (frame.byteLength > this.payload.byteLength) {
+      throw new CppTraceKernelSyscallError(
+        'E2BIG',
+        `request requires ${frame.byteLength} bytes; capacity is ${this.payload.byteLength}`
+      );
+    }
+    if (
+      Atomics.compareExchange(
+        this.header,
+        TK_SHARED_STATE_INDEX,
+        TK_SHARED_STATE_IDLE,
+        TK_SHARED_STATE_WRITING
+      ) !== TK_SHARED_STATE_IDLE
+    ) {
+      throw new CppTraceKernelSyscallError('EBUSY', 'shared syscall channel already has an active call');
+    }
+    this.payload.set(frame);
+    Atomics.store(this.header, TK_SHARED_REQUEST_LENGTH_INDEX, frame.byteLength);
+    Atomics.store(this.header, TK_SHARED_RESPONSE_LENGTH_INDEX, 0);
+    Atomics.add(this.header, TK_SHARED_SEQUENCE_INDEX, 1);
+    Atomics.store(this.header, TK_SHARED_STATE_INDEX, TK_SHARED_STATE_REQUEST);
+    try {
+      this.signalHost();
+    } catch (error) {
+      Atomics.store(this.header, TK_SHARED_STATE_INDEX, TK_SHARED_STATE_IDLE);
+      throw error;
+    }
+    const startedAt = Date.now();
+    while (true) {
+      const state = Atomics.load(this.header, TK_SHARED_STATE_INDEX);
+      if (state === TK_SHARED_STATE_RESPONSE) break;
+      if (state === TK_SHARED_STATE_CLOSED) {
+        this.closed = true;
+        throw new CppTraceKernelSyscallError('ECLOSED', 'shared syscall channel closed while waiting');
+      }
+      const remaining = this.timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        this.close();
+        throw new CppTraceKernelSyscallError('ETIMEDOUT', 'synchronous syscall timed out');
+      }
+      try {
+        Atomics.wait(this.header, TK_SHARED_STATE_INDEX, state, remaining);
+      } catch {
+        this.close();
+        throw new CppTraceKernelSyscallError(
+          'ENOSYS',
+          'synchronous Atomics.wait requires a dedicated worker'
+        );
+      }
+    }
+    const responseLength = Atomics.load(this.header, TK_SHARED_RESPONSE_LENGTH_INDEX);
+    if (responseLength < 0 || responseLength > this.payload.byteLength) {
+      this.close();
+      throw new CppTraceKernelSyscallError('EPROTO', 'host returned an invalid syscall response length');
+    }
+    try {
+      return this.decodeResult(this.payload.slice(0, responseLength));
+    } finally {
+      Atomics.store(this.header, TK_SHARED_REQUEST_LENGTH_INDEX, 0);
+      Atomics.store(this.header, TK_SHARED_RESPONSE_LENGTH_INDEX, 0);
+      Atomics.store(this.header, TK_SHARED_STATE_INDEX, TK_SHARED_STATE_IDLE);
+      Atomics.notify(this.header, TK_SHARED_STATE_INDEX);
+    }
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    Atomics.store(this.header, TK_SHARED_STATE_INDEX, TK_SHARED_STATE_CLOSED);
+    Atomics.notify(this.header, TK_SHARED_STATE_INDEX);
+  }
+}
+
 function projectUtf8Bytes(value) {
   return encodeUtf8(String(value ?? '')).byteLength;
 }
@@ -1258,6 +1784,252 @@ class InMemoryFileSystem {
   }
 }
 
+const CPP_TRACEKERNEL_ERRNO = Object.freeze({
+  EACCES,
+  EADDRINUSE,
+  EAFNOSUPPORT,
+  EBADF,
+  ECONNREFUSED,
+  EEXIST,
+  EINVAL,
+  EIO,
+  EISDIR,
+  EISCONN,
+  ELOOP,
+  ENOENT,
+  ENOTCONN,
+  ENOTDIR,
+  ENOTEMPTY,
+  ENOTSUP,
+  EROFS,
+});
+
+function cppTraceKernelErrno(error, fallback = EIO) {
+  if (!error || typeof error !== 'object') return fallback;
+  const code = String(error.code || '');
+  if (code === 'EOPNOTSUPP' || code === 'ENOSYS') return ENOTSUP;
+  if (code === 'EPERM') return EACCES;
+  return CPP_TRACEKERNEL_ERRNO[code] ?? fallback;
+}
+
+/**
+ * Path-level WASI compatibility over the authoritative TraceKernel namespace.
+ *
+ * Open file descriptions are installed separately by WasiProcess so fd
+ * reads/writes retain kernel ownership. This adapter covers path operations,
+ * directory enumeration, symlinks, and the stat data expected by WASI.
+ */
+class CppTraceKernelFileSystem {
+  constructor(client, options = {}) {
+    this.client = client;
+    this.readOnlyFiles = new Set(options.readOnlyFiles || []);
+    this.workspaceRoot = normalizePath(options.workspaceRoot || '/workspace');
+  }
+
+  call(request) {
+    return this.client.call(request);
+  }
+
+  kernelPath(pathname) {
+    const normalized = normalizePath(pathname);
+    if (
+      normalized === this.workspaceRoot ||
+      normalized.startsWith(`${this.workspaceRoot}/`) ||
+      normalized === '/dev' ||
+      normalized.startsWith('/dev/') ||
+      normalized === '/proc' ||
+      normalized.startsWith('/proc/') ||
+      normalized === '/etc' ||
+      normalized.startsWith('/etc/')
+    ) {
+      return normalized;
+    }
+    return normalized === '/'
+      ? this.workspaceRoot
+      : `${this.workspaceRoot}${normalized}`;
+  }
+
+  addDirectory(pathname) {
+    const normalized = normalizePath(pathname);
+    if (normalized === '/') return;
+    try {
+      this.call({ op: 'mkdir', path: this.kernelPath(normalized), options: { recursive: true } });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+  }
+
+  addSymlink(pathname, target) {
+    this.call({
+      op: 'symlink',
+      target: String(target),
+      linkPath: this.kernelPath(pathname),
+    });
+  }
+
+  isReadOnly() {
+    // TraceKernel is authoritative for capability and read-only enforcement.
+    return false;
+  }
+
+  lexists(pathname) {
+    try {
+      this.call({ op: 'lstat', path: this.kernelPath(pathname) });
+      return true;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  exists(pathname) {
+    try {
+      this.call({ op: 'stat', path: this.kernelPath(pathname) });
+      return true;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  isSymlink(pathname) {
+    try {
+      return this.call({ op: 'lstat', path: this.kernelPath(pathname) }).stat.kind === 'symlink';
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  isDirectory(pathname) {
+    try {
+      return this.call({ op: 'stat', path: this.kernelPath(pathname) }).stat.kind === 'directory';
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  isFile(pathname) {
+    try {
+      return this.call({ op: 'stat', path: this.kernelPath(pathname) }).stat.kind === 'file';
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  resolvePath(pathname) {
+    // Individual kernel operations resolve symlinks authoritatively. Keeping
+    // lexical normalization here also permits O_CREAT on a missing leaf.
+    return normalizePath(pathname);
+  }
+
+  lpath(pathname) {
+    return normalizePath(pathname);
+  }
+
+  readlink(pathname) {
+    return this.call({ op: 'readlink', path: this.kernelPath(pathname) }).target;
+  }
+
+  readFile(pathname) {
+    return this.call({ op: 'readFile', path: this.kernelPath(pathname) }).bytes;
+  }
+
+  writeFile(pathname, contents) {
+    this.call({
+      op: 'writeFile',
+      path: this.kernelPath(pathname),
+      bytes: contents instanceof Uint8Array ? contents : encodeUtf8(String(contents)),
+    });
+  }
+
+  resizeFile(pathname, size) {
+    const fd = this.call({
+      op: 'open',
+      path: this.kernelPath(pathname),
+      options: { access: 'write' },
+    }).fd;
+    try {
+      this.call({ op: 'ftruncate', fd, length: Number(size) });
+    } finally {
+      this.call({ op: 'close', fd });
+    }
+  }
+
+  getMetadata(pathname, followFinal = true) {
+    const result = this.call({
+      op: followFinal ? 'stat' : 'lstat',
+      path: this.kernelPath(pathname),
+    }).stat;
+    return {
+      mode: result.mode,
+      atimeMs: result.modifiedAt,
+      mtimeMs: result.modifiedAt,
+    };
+  }
+
+  setMetadata() {
+    // TraceKernel does not yet expose chmod/utimens syscalls. WASI validates
+    // the request, while the authoritative stat timestamps remain kernel-owned.
+  }
+
+  emitPathSnapshot() {
+    // KernelObservedFileSystem emits the live mutation itself.
+  }
+
+  listDirectory(pathname) {
+    return this.call({ op: 'readdir', path: this.kernelPath(pathname) })
+      .entries
+      .map((entry) => entry.name);
+  }
+
+  link(oldPathname, newPathname) {
+    try {
+      this.call({
+        op: 'link',
+        existingPath: this.kernelPath(oldPathname),
+        newPath: this.kernelPath(newPathname),
+      });
+      return ESUCCESS;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+  }
+
+  unlink(pathname) {
+    try {
+      this.call({ op: 'unlink', path: this.kernelPath(pathname) });
+      return ESUCCESS;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+  }
+
+  removeDirectory(pathname) {
+    try {
+      this.call({ op: 'rmdir', path: this.kernelPath(pathname) });
+      return ESUCCESS;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+  }
+
+  rename(oldPathname, newPathname) {
+    try {
+      this.call({
+        op: 'rename',
+        sourcePath: this.kernelPath(oldPathname),
+        destinationPath: this.kernelPath(newPathname),
+      });
+      return ESUCCESS;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+  }
+}
+
 class MemoryView {
   constructor(memory) {
     this.memory = memory;
@@ -1384,6 +2156,7 @@ class WasiProcess {
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
     this.kernelHttp = options.kernelHttp || null;
+    this.kernelClient = options.kernelClient || null;
     this.socketHostsByToken = new Map();
     this.nextSocketHostToken = 1;
     this.kernelDevices = wasiKernelDevices(options);
@@ -1427,6 +2200,21 @@ class WasiProcess {
     return {
       sock_open: (domain, _type) => {
         if (domain !== 1 && domain !== 2) return -EAFNOSUPPORT;
+        if (this.kernelClient) {
+          try {
+            const kernelFd = this.kernelClient.call({ op: 'socket' }).fd;
+            return this.allocateFd({
+              kind: 'socket',
+              readable: true,
+              writable: true,
+              offset: 0,
+              kernelFd,
+              socket: { role: 'kernel' },
+            });
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         const fd = this.nextFd++;
         this.fds.set(fd, {
           kind: 'socket',
@@ -1440,6 +2228,20 @@ class WasiProcess {
       sock_connect: (fd, ipValue, port) => {
         const entry = this.fds.get(fd);
         if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd !== undefined && this.kernelClient) {
+          const host = this.socketHostForIp(ipValue >>> 0);
+          if (host === null) return -ECONNREFUSED;
+          try {
+            this.kernelClient.call({
+              op: 'connect',
+              fd: entry.kernelFd,
+              address: { host, port: port & 0xffff },
+            });
+            return 0;
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         if (entry.socket.role !== 'tcp') return -EISCONN;
         if (!this.kernelHttp) return -ECONNREFUSED;
         const host = this.socketHostForIp(ipValue >>> 0);
@@ -1458,6 +2260,21 @@ class WasiProcess {
       sock_bind: (fd, ipValue, port) => {
         const entry = this.fds.get(fd);
         if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd !== undefined && this.kernelClient) {
+          const ip = ipValue >>> 0;
+          const host = ip === 0 ? '127.0.0.1' : this.socketHostForIp(ip);
+          if (host === null) return -EAFNOSUPPORT;
+          try {
+            this.kernelClient.call({
+              op: 'bind',
+              fd: entry.kernelFd,
+              address: { host, port: port & 0xffff },
+            });
+            return 0;
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         if (entry.socket.role !== 'tcp') return -EINVAL;
         const ip = ipValue >>> 0;
         const host = ip === 0 ? '127.0.0.1' : this.socketHostForIp(ip);
@@ -1468,6 +2285,18 @@ class WasiProcess {
       sock_listen: (fd, _backlog) => {
         const entry = this.fds.get(fd);
         if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd !== undefined && this.kernelClient) {
+          try {
+            this.kernelClient.call({
+              op: 'listen',
+              fd: entry.kernelFd,
+              options: { backlog: Math.max(1, Number(_backlog) || 1) },
+            });
+            return 0;
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         if (entry.socket.role === 'listener') return 0;
         if (entry.socket.role !== 'tcp') return -EINVAL;
         if (!this.kernelHttp) return -EAFNOSUPPORT;
@@ -1487,6 +2316,16 @@ class WasiProcess {
       sock_port: (fd) => {
         const entry = this.fds.get(fd);
         if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd !== undefined && this.kernelClient) {
+          try {
+            return this.kernelClient.call({
+              op: 'getsockname',
+              fd: entry.kernelFd,
+            }).address.port;
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         if (entry.socket.role === 'listener') return entry.socket.port;
         if (entry.socket.role === 'client') return entry.socket.port;
         if (entry.socket.bind) return entry.socket.bind.port;
@@ -1523,6 +2362,17 @@ class WasiProcess {
   // response for reading; server sockets answer their accepted request once
   // the written response is complete.
   socketWrite(entry, bytes) {
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        return this.kernelClient.call({
+          op: 'send',
+          fd: entry.kernelFd,
+          bytes,
+        }).bytesWritten;
+      } catch (error) {
+        return -cppTraceKernelErrno(error);
+      }
+    }
     const socket = entry.socket;
     if (socket.role === 'client') {
       socket.sendBytes = concatBytes([socket.sendBytes, bytes]);
@@ -1577,6 +2427,18 @@ class WasiProcess {
   }
 
   socketRead(entry, maxLength) {
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        return this.kernelClient.call({
+          op: 'recv',
+          fd: entry.kernelFd,
+          maxBytes: maxLength,
+        }).bytes;
+      } catch (error) {
+        entry.kernelError = cppTraceKernelErrno(error);
+        return null;
+      }
+    }
     const socket = entry.socket;
     if (socket.role === 'client') {
       const available = socket.recvBytes.length - socket.recvOffset;
@@ -1602,6 +2464,14 @@ class WasiProcess {
   }
 
   closeSocket(entry) {
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        this.kernelClient.call({ op: 'close', fd: entry.kernelFd });
+      } catch {
+        // fd_close is idempotent at the WASI boundary after local removal.
+      }
+      return;
+    }
     const socket = entry.socket;
     if (socket.role === 'server') {
       this.trySocketServerRespond(socket, true);
@@ -1615,6 +2485,30 @@ class WasiProcess {
   sock_accept(fd, _flags, fdOut) {
     const entry = this.socketEntry(fd);
     if (!entry) return EBADF;
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        const accepted = this.kernelClient.call({
+          op: 'accept',
+          fd: entry.kernelFd,
+        });
+        const connFd = this.allocateFd({
+          kind: 'socket',
+          readable: true,
+          writable: true,
+          offset: 0,
+          kernelFd: accepted.fd,
+          socket: {
+            role: 'kernel',
+            localAddress: accepted.localAddress,
+            remoteAddress: accepted.remoteAddress,
+          },
+        });
+        this.mem.writeU32(fdOut, connFd);
+        return ESUCCESS;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
     if (entry.socket.role !== 'listener') return EINVAL;
     if (!this.kernelHttp) return ENOTSUP;
     const result = this.kernelHttp.nextRequest(entry.socket.serverId, 0);
@@ -1647,7 +2541,7 @@ class WasiProcess {
       const ptr = this.mem.readU32(riDataPtr + index * 8);
       const len = this.mem.readU32(riDataPtr + index * 8 + 4);
       const chunk = this.socketRead(entry, len);
-      if (chunk === null) return ENOTCONN;
+      if (chunk === null) return entry.kernelError || ENOTCONN;
       this.mem.writeBytes(ptr, chunk);
       total += chunk.length;
       if (chunk.length < len) break;
@@ -1675,6 +2569,18 @@ class WasiProcess {
   sock_shutdown(fd, how) {
     const entry = this.socketEntry(fd);
     if (!entry) return EBADF;
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        this.kernelClient.call({
+          op: 'shutdown',
+          fd: entry.kernelFd,
+          how: how === 1 ? 'read' : how === 2 ? 'write' : 'both',
+        });
+        return ESUCCESS;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
     // sdflags: 1 = RD, 2 = WR. Shutting down the write side finalizes a
     // pending server response.
     if ((how & 2) !== 0 && entry.socket.role === 'server') {
@@ -1822,6 +2728,41 @@ class WasiProcess {
       return this.allocateFd({ kind: 'dir', path: normalized, offset: 0, readable: true, writable: false });
     }
 
+    if (this.kernelClient && this.fs instanceof CppTraceKernelFileSystem) {
+      try {
+        const access = options.write
+          ? options.read
+            ? 'read-write'
+            : 'write'
+          : 'read';
+        const kernelFd = this.kernelClient.call({
+          op: 'open',
+          path: this.fs.kernelPath(normalized),
+          options: {
+            access,
+            create: Boolean(options.create),
+            exclusive: Boolean(options.exclusive),
+            truncate: Boolean(options.truncate),
+            append: Boolean(options.append),
+          },
+        }).fd;
+        const offset = options.append
+          ? this.kernelClient.call({ op: 'fstat', fd: kernelFd }).stat.size
+          : 0;
+        return this.allocateFd({
+          kind: 'file',
+          path: normalized,
+          offset,
+          readable: access !== 'write',
+          writable: access !== 'read',
+          append: Boolean(options.append),
+          kernelFd,
+        });
+      } catch (error) {
+        return -cppTraceKernelErrno(error);
+      }
+    }
+
     if (!this.fs.exists(normalized)) {
       if (!options.create) return -ENOENT;
       const parentErrno = this.parentDirectoryErrno(normalized);
@@ -1848,6 +2789,32 @@ class WasiProcess {
     const fd = this.nextFd++;
     this.fds.set(fd, entry);
     return fd;
+  }
+
+  writeKernelFilestat(stat, outPtr) {
+    const filetype = stat.kind === 'directory'
+      ? FILETYPE_DIRECTORY
+      : stat.kind === 'symlink'
+        ? FILETYPE_SYMBOLIC_LINK
+        : FILETYPE_REGULAR_FILE;
+    const size = stat.kind === 'file' ? Math.max(0, Number(stat.size) || 0) : 0;
+    const createdAtNs = BigInt(Math.max(0, Math.trunc(Number(stat.createdAt || 0) * 1_000_000)));
+    const modifiedAtNs = BigInt(Math.max(0, Math.trunc(Number(stat.modifiedAt || 0) * 1_000_000)));
+    const changedAtNs = BigInt(Math.max(0, Math.trunc(Number(stat.changedAt || 0) * 1_000_000)));
+    this.mem.writeU64(outPtr, 1);
+    this.mem.writeU64(outPtr + 8, BigInt(Math.max(1, Math.trunc(Number(stat.inode) || 1))));
+    this.mem.writeU8(outPtr + 16, filetype);
+    this.mem.writeU64(
+      outPtr + 24,
+      this.filestatSizeOffset === 24
+        ? BigInt(size)
+        : BigInt(Math.max(1, Math.trunc(Number(stat.nlink) || 1)))
+    );
+    this.mem.writeU64(outPtr + 32, BigInt(size));
+    this.mem.writeU64(outPtr + 40, createdAtNs);
+    this.mem.writeU64(outPtr + 48, modifiedAtNs);
+    this.mem.writeU64(outPtr + 56, changedAtNs);
+    return ESUCCESS;
   }
 
   writeFilestat(pathname, outPtr, followFinal = true) {
@@ -1999,6 +2966,25 @@ class WasiProcess {
       if (outputChunks.length > 0) {
         this.onOutput?.(stream, decodeUtf8(concatBytes(outputChunks)), entry.device, entry.outputDevice);
       }
+    } else if (entry.kind === 'file' && entry.kernelFd !== undefined && this.kernelClient) {
+      let writtenTotal = 0;
+      try {
+        for (const chunk of chunks) {
+          const written = this.kernelClient.call({
+            op: 'write',
+            fd: entry.kernelFd,
+            bytes: chunk,
+            ...(entry.append ? {} : { position: entry.offset }),
+          }).bytesWritten;
+          entry.offset += written;
+          writtenTotal += written;
+          if (written < chunk.byteLength) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nwrittenOut, writtenTotal);
+      return ESUCCESS;
     } else if (entry.kind === 'file') {
       const current = this.fs.exists(entry.path) ? this.fs.readFile(entry.path) : new Uint8Array();
       const offset = entry.append ? current.length : entry.offset;
@@ -2026,7 +3012,7 @@ class WasiProcess {
         const ptr = this.mem.readU32(iovs + index * 8);
         const len = this.mem.readU32(iovs + index * 8 + 4);
         const chunk = this.socketRead(entry, len);
-        if (chunk === null) return ENOTCONN;
+        if (chunk === null) return entry.kernelError || ENOTCONN;
         this.mem.writeBytes(ptr, chunk);
         total += chunk.length;
         if (chunk.length < len) break;
@@ -2036,6 +3022,29 @@ class WasiProcess {
     }
     if (entry.kind === 'stdio' && entry.inputDevice && entry.inputDevice !== '/dev/null' && this.stdinPipe) {
       return this.fd_read_stdin_pipe(iovs, iovsLen, nreadOut);
+    }
+    if (entry.kind === 'file' && entry.kernelFd !== undefined && this.kernelClient) {
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.kernelClient.call({
+            op: 'read',
+            fd: entry.kernelFd,
+            maxBytes: len,
+            position: entry.offset,
+          }).bytes;
+          this.mem.writeBytes(ptr, chunk);
+          entry.offset += chunk.length;
+          total += chunk.length;
+          if (chunk.length < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nreadOut, total);
+      return ESUCCESS;
     }
     const source = entry.kind === 'stdio' && entry.inputDevice && entry.inputDevice !== '/dev/null'
       ? this.stdinBytes
@@ -2108,6 +3117,30 @@ class WasiProcess {
     if (!entry || entry.kind !== 'file') return EBADF;
     if (!entry.writable) return EBADF;
     if (this.fs.isReadOnly(entry.path)) return EROFS;
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      let position = Number(offset);
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.mem.readBytes(ptr, len);
+          const written = this.kernelClient.call({
+            op: 'write',
+            fd: entry.kernelFd,
+            bytes: chunk,
+            position,
+          }).bytesWritten;
+          position += written;
+          total += written;
+          if (written < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nwrittenOut, total);
+      return ESUCCESS;
+    }
     const oldOffset = entry.offset;
     entry.offset = Number(offset);
     const result = this.fd_write(fd, iovs, iovsLen, nwrittenOut);
@@ -2118,6 +3151,30 @@ class WasiProcess {
   fd_pread(fd, iovs, iovsLen, offset, nreadOut) {
     const entry = this.fds.get(fd);
     if (!entry || entry.kind !== 'file') return EBADF;
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      let position = Number(offset);
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.kernelClient.call({
+            op: 'read',
+            fd: entry.kernelFd,
+            maxBytes: len,
+            position,
+          }).bytes;
+          this.mem.writeBytes(ptr, chunk);
+          position += chunk.length;
+          total += chunk.length;
+          if (chunk.length < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nreadOut, total);
+      return ESUCCESS;
+    }
     const oldOffset = entry.offset;
     entry.offset = Number(offset);
     const result = this.fd_read(fd, iovs, iovsLen, nreadOut);
@@ -2129,7 +3186,18 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
     if (entry.kind === 'socket') return ESPIPE;
-    const fileSize = entry.kind === 'file' && this.fs.exists(entry.path) ? this.fs.readFile(entry.path).length : 0;
+    let fileSize = 0;
+    if (entry.kind === 'file') {
+      try {
+        fileSize = entry.kernelFd !== undefined && this.kernelClient
+          ? this.kernelClient.call({ op: 'fstat', fd: entry.kernelFd }).stat.size
+          : this.fs.exists(entry.path)
+            ? this.fs.readFile(entry.path).length
+            : 0;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
     const currentOffset = entry.kind === 'stdio' && entry.inputDevice
       ? this.inputDeviceOffsets.get(entry.inputDevice) ?? entry.offset ?? 0
       : entry.offset;
@@ -2161,6 +3229,14 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
     if (entry.kind === 'socket') this.closeSocket(entry);
+    if (entry.kind === 'file' && entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        this.kernelClient.call({ op: 'close', fd: entry.kernelFd });
+      } catch (error) {
+        this.fds.delete(fd);
+        return cppTraceKernelErrno(error);
+      }
+    }
     this.fds.delete(fd);
     return ESUCCESS;
   }
@@ -2201,6 +3277,16 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
     if (entry.kind === 'stdio') return this.writeFilestat(entry.device, outPtr);
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        return this.writeKernelFilestat(
+          this.kernelClient.call({ op: 'fstat', fd: entry.kernelFd }).stat,
+          outPtr
+        );
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
     return this.writeFilestat(entry.path, outPtr);
   }
 
@@ -2209,7 +3295,19 @@ class WasiProcess {
     if (!entry || entry.kind !== 'file') return EBADF;
     if (!entry.writable) return EBADF;
     if (this.fs.isReadOnly(entry.path)) return EROFS;
-    this.fs.resizeFile(entry.path, Number(size));
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        this.kernelClient.call({
+          op: 'ftruncate',
+          fd: entry.kernelFd,
+          length: Number(size),
+        });
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    } else {
+      this.fs.resizeFile(entry.path, Number(size));
+    }
     return ESUCCESS;
   }
 
@@ -2229,8 +3327,27 @@ class WasiProcess {
     if (this.fs.isReadOnly(entry.path)) return EROFS;
     const end = Number(offset) + Number(length);
     if (!Number.isFinite(end) || end < 0) return EINVAL;
-    const currentSize = this.fs.exists(entry.path) ? this.fs.readFile(entry.path).length : 0;
-    if (end > currentSize) this.fs.resizeFile(entry.path, end);
+    let currentSize;
+    try {
+      currentSize = entry.kernelFd !== undefined && this.kernelClient
+        ? this.kernelClient.call({ op: 'fstat', fd: entry.kernelFd }).stat.size
+        : this.fs.exists(entry.path)
+          ? this.fs.readFile(entry.path).length
+          : 0;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+    if (end > currentSize) {
+      if (entry.kernelFd !== undefined && this.kernelClient) {
+        try {
+          this.kernelClient.call({ op: 'ftruncate', fd: entry.kernelFd, length: end });
+        } catch (error) {
+          return cppTraceKernelErrno(error);
+        }
+      } else {
+        this.fs.resizeFile(entry.path, end);
+      }
+    }
     return ESUCCESS;
   }
 
@@ -3008,6 +4125,7 @@ async function runWasi(module, args, fs, options = {}) {
     env: options.env || { USER: 'tracecode' },
     kernelDevices: options.kernelDevices,
     kernelHttp: options.kernelHttp,
+    kernelClient: options.kernelClient,
     filestatSizeOffset: options.filestatSizeOffset,
     outputBudget: options.outputBudget,
     onOutput: options.onOutput,
@@ -10303,7 +11421,7 @@ function emitProjectResultOutputEvents(events, result) {
   events.applyResultOutputBudget?.(result);
 }
 
-async function handleProjectCpp(request, messageId) {
+async function handleProjectCpp(request, messageId, kernelSyscallChannel) {
   const events = createProjectEventBridge(messageId, (stream, data) =>
     stream === 'stderr' ? sanitizeCppProjectDiagnostics(data, request) : data
   );
@@ -10339,9 +11457,9 @@ async function handleProjectCpp(request, messageId) {
     return result;
   }
 
-  const fs = createProjectRuntimeFs(request?.project);
-  const before = snapshotProjectFs(fs);
-  fs.setFileChangeObserver((change) => {
+  const snapshotFs = createProjectRuntimeFs(request?.project);
+  const before = snapshotProjectFs(snapshotFs);
+  snapshotFs.setFileChangeObserver((change) => {
     const relativePath = relativeProjectPath(change.path, request?.project);
     if (!relativePath) return;
     if (change.symlink) {
@@ -10364,7 +11482,7 @@ async function handleProjectCpp(request, messageId) {
     events.fileBytesChange(relativePath, change.bytes, change.metadata);
   });
   const executablePath = `/${resolveProjectRequestPath(request, request?.scriptPath || './a.out', 'a.out')}`;
-  if (!fs.isFile(executablePath)) {
+  if (!snapshotFs.isFile(executablePath)) {
     return {
       stdout: '',
       stderr: `${request?.scriptPath || './a.out'}: executable not found\n`,
@@ -10372,27 +11490,48 @@ async function handleProjectCpp(request, messageId) {
     };
   }
   const startedAt = now();
-  const module = await WebAssembly.compile(fs.readFile(executablePath));
+  const module = await WebAssembly.compile(snapshotFs.readFile(executablePath));
   const kernelHttp = new CppKernelHttpSyncBridge(messageId);
+  const kernelClient = kernelSyscallChannel
+    ? new CppTraceKernelSyncClient(
+        kernelSyscallChannel,
+        () => trustedCppWorkerPostMessage({
+          id: messageId,
+          type: 'kernel-syscall',
+          payload: {},
+          ...(activeRequestProtocolToken
+            ? { protocolToken: activeRequestProtocolToken }
+            : {}),
+        })
+      )
+    : null;
+  const runtimeFs = kernelClient
+    ? new CppTraceKernelFileSystem(kernelClient, {
+        workspaceRoot: projectWorkspaceRoots(request)[0] || '/workspace',
+        readOnlyFiles: snapshotFs.readOnlyFiles,
+      })
+    : snapshotFs;
   let program;
   try {
-    program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], fs, {
+    program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], runtimeFs, {
       cwd: `/${requestCwdRelative(request)}`,
       stdinPipe: request?.stdinPipe,
       env: request?.env || { USER: 'tracecode' },
       kernelDevices: projectKernelDevices(request?.project),
       kernelHttp,
+      kernelClient,
       outputBudget: createProjectOutputByteBudget(),
       onOutput: (stream, data, device, outputDevice) => events.output(stream, data, device, outputDevice),
     });
   } finally {
     kernelHttp.closeAll();
+    kernelClient?.close();
   }
   const result = {
     stdout: program.stdout,
     stderr: sanitizeCppProjectDiagnostics(program.stderr, request),
     exitCode: program.exitCode,
-    files: diffProjectFs(before, fs),
+    files: kernelClient ? [] : diffProjectFs(before, snapshotFs),
     timings: {
       runMs: elapsedMs(startedAt),
       totalMs: elapsedMs(startedAt),
@@ -11565,7 +12704,14 @@ async function handleExecuteWithTracing(payload) {
 
 
 self.onmessage = (event) => {
-  const { id, type, payload, requestId, protocolToken } = event.data || {};
+  const {
+    id,
+    type,
+    payload,
+    requestId,
+    protocolToken,
+    kernelSyscallChannel,
+  } = event.data || {};
   if (type === 'compile-response') {
     const pending = pendingExternalCompiles.get(String(requestId || ''));
     if (!pending) return;
@@ -11613,7 +12759,7 @@ self.onmessage = (event) => {
               ? await handleCompileRunBatch(payload)
               : type === 'execute-project-cpp'
                 ? await withRuntimeUserAuthorityLockdown(
-                    () => handleProjectCpp(payload, id),
+                    () => handleProjectCpp(payload, id, kernelSyscallChannel),
                     {
                       scope: self,
                       mode: payload?.projectUserAuthorityMode ?? 'temporary',
