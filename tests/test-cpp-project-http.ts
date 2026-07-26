@@ -19,6 +19,7 @@ import vm from 'node:vm';
 import { Worker as NodeWorker } from 'node:worker_threads';
 import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
 import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/project-browser';
+import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 import type {
   RuntimeKernelHttpBridge,
@@ -78,6 +79,58 @@ const CPP_TK_TCP_PROGRAM = [
   '  std::printf("%s:%s\\n", request, response);',
   '  close(peer); close(client); close(server);',
   '  return 0;',
+  '}',
+  '',
+].join('\n');
+
+const CPP_CROSS_LANGUAGE_FS_PROGRAM = [
+  '#include <fcntl.h>',
+  '#include <sys/stat.h>',
+  '#include <unistd.h>',
+  '#include <chrono>',
+  '#include <cstdio>',
+  '#include <cstring>',
+  '#include <string>',
+  '',
+  'static bool wait_for(const char* path) {',
+  '  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);',
+  '  struct stat info {};',
+  '  while (std::chrono::steady_clock::now() < deadline) {',
+  '    if (stat(path, &info) == 0) return true;',
+  '  }',
+  '  return false;',
+  '}',
+  '',
+  'static bool write_all(const char* path, const char* value) {',
+  '  const int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
+  '  if (fd < 0) return false;',
+  '  const size_t length = std::strlen(value);',
+  '  const bool ok = write(fd, value, length) == static_cast<ssize_t>(length);',
+  '  close(fd);',
+  '  return ok;',
+  '}',
+  '',
+  'int main(int argc, char** argv) {',
+  '  const std::string mode = argc > 1 ? argv[1] : "";',
+  '  if (mode == "watch-js") {',
+  '    const int fd = open("cpp-watches.txt", O_RDONLY);',
+  '    if (fd < 0 || !write_all("cpp-ready.txt", "ready")) return 10;',
+  '    if (!wait_for("js-done.txt")) return 11;',
+  '    char buffer[64] = {};',
+  '    const ssize_t count = pread(fd, buffer, sizeof(buffer) - 1, 0);',
+  '    close(fd);',
+  '    if (count < 0) return 12;',
+  '    std::printf("cpp-observed:%s\\n", buffer);',
+  '    return 0;',
+  '  }',
+  '  if (mode == "write-js") {',
+  '    if (!wait_for("js-ready.txt")) return 20;',
+  '    if (!write_all("js-watches.txt", "from-cpp")) return 21;',
+  '    if (!write_all("cpp-done.txt", "done")) return 22;',
+  '    std::printf("cpp-wrote\\n");',
+  '    return 0;',
+  '  }',
+  '  return 2;',
   '}',
   '',
 ].join('\n');
@@ -188,6 +241,29 @@ await script.runInContext(context);
 parentPort.on('message', (message) => {
   sandbox.onmessage?.({ data: message });
 });
+`;
+
+const JAVASCRIPT_WORKER_BOOTSTRAP = String.raw`
+import { parentPort, workerData } from 'node:worker_threads';
+import { pathToFileURL } from 'node:url';
+
+globalThis.self = globalThis;
+globalThis.postMessage = (message, transfer) => parentPort.postMessage(message, transfer);
+self.postMessage = globalThis.postMessage;
+
+const queued = [];
+parentPort.on('message', (message) => {
+  if (typeof self.onmessage === 'function') {
+    self.onmessage({ data: message });
+  } else {
+    queued.push(message);
+  }
+});
+
+await import(pathToFileURL(workerData.workerPath).href);
+for (const message of queued.splice(0)) {
+  self.onmessage?.({ data: message });
+}
 `;
 
 interface CompileHost {
@@ -433,7 +509,9 @@ async function main(): Promise<void> {
 
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-cpp-http-'));
   const bootstrapPath = join(tempRoot, 'cpp-worker-thread.mjs');
+  const javascriptBootstrapPath = join(tempRoot, 'javascript-worker-thread.mjs');
   await writeFile(bootstrapPath, WORKER_BOOTSTRAP, 'utf8');
+  await writeFile(javascriptBootstrapPath, JAVASCRIPT_WORKER_BOOTSTRAP, 'utf8');
 
   const compileHost = await createCompileHost();
   const originalFetch = globalThis.fetch;
@@ -444,8 +522,16 @@ async function main(): Promise<void> {
     onerror: ((event: { message?: string }) => void) | null = null;
     private readonly worker: NodeWorker;
 
-    constructor(_url: string | URL, _options?: unknown) {
-      this.worker = new NodeWorker(bootstrapPath, { workerData: { repoRoot: process.cwd() } });
+    constructor(url: string | URL, _options?: unknown) {
+      const isJavaScriptWorker = String(url).includes('javascript-project-worker');
+      this.worker = new NodeWorker(
+        isJavaScriptWorker ? javascriptBootstrapPath : bootstrapPath,
+        {
+          workerData: isJavaScriptWorker
+            ? { workerPath: join(process.cwd(), 'workers/javascript/javascript-project-worker.js') }
+            : { repoRoot: process.cwd() },
+        }
+      );
       nodeWorkers.push(this.worker);
       this.worker.on('message', (data) => this.onmessage?.({ data }));
       this.worker.on('error', (error) => {
@@ -453,8 +539,8 @@ async function main(): Promise<void> {
       });
     }
 
-    postMessage(message: unknown): void {
-      this.worker.postMessage(message);
+    postMessage(message: unknown, transfer?: Transferable[]): void {
+      this.worker.postMessage(message, transfer as import('node:worker_threads').TransferListItem[]);
     }
 
     terminate(): void {
@@ -551,6 +637,110 @@ async function main(): Promise<void> {
       tkfsWorkspace.dispose();
     }
     console.log('PASS: C++ WASI filesystem calls use TraceKernel-owned descriptors');
+
+    const javascriptRunner = createBrowserJavaScriptProjectRunner({
+      workerUrl: 'javascript-project-worker.js',
+      workerFactory: (url, options) => new WorkerShim(url, options),
+      workerIsolation: 'per-command',
+      timeoutMs: 120_000,
+    });
+    const crossLanguageWorkspace = await createRuntimeWorkspace({
+      files: [
+        { path: 'cross-language.cpp', contents: CPP_CROSS_LANGUAGE_FS_PROGRAM },
+        { path: 'cpp-watches.txt', contents: 'before-js' },
+        { path: 'js-watches.txt', contents: 'before-cpp' },
+        {
+          path: 'js-writer.js',
+          contents: [
+            'const fs = require("node:fs");',
+            'const deadline = Date.now() + 20_000;',
+            'while (!fs.existsSync("cpp-ready.txt") && Date.now() < deadline) {}',
+            'if (!fs.existsSync("cpp-ready.txt")) throw new Error("C++ reader did not become ready");',
+            'fs.writeFileSync("cpp-watches.txt", "from-js");',
+            'fs.writeFileSync("js-done.txt", "done");',
+            'console.log("js-wrote");',
+            '',
+          ].join('\n'),
+        },
+        {
+          path: 'js-watcher.js',
+          contents: [
+            'const fs = require("node:fs");',
+            'const fd = fs.openSync("js-watches.txt", "r");',
+            'fs.writeFileSync("js-ready.txt", "ready");',
+            'const deadline = Date.now() + 20_000;',
+            'while (!fs.existsSync("cpp-done.txt") && Date.now() < deadline) {}',
+            'if (!fs.existsSync("cpp-done.txt")) throw new Error("C++ writer did not finish");',
+            'const buffer = Buffer.alloc(64);',
+            'const count = fs.readSync(fd, buffer, 0, buffer.length, 0);',
+            'fs.closeSync(fd);',
+            'console.log(`js-observed:${buffer.subarray(0, count).toString("utf8")}`);',
+            '',
+          ].join('\n'),
+        },
+      ],
+      cppRunner: createBrowserCppProjectRunner(client, { timeoutMs: 120_000 }),
+      nodeRunner: javascriptRunner,
+    });
+    try {
+      const crossLanguageCompile = await crossLanguageWorkspace.runCommand(
+        'clang++ cross-language.cpp -o a.out'
+      );
+      assertCondition(
+        crossLanguageCompile.exitCode === 0,
+        `cross-language C++ fixture should compile: ${JSON.stringify(crossLanguageCompile)}`
+      );
+
+      const [cppWatching, javascriptWriting] = await Promise.all([
+        crossLanguageWorkspace.runCommand('./a.out watch-js'),
+        crossLanguageWorkspace.runCommand('node js-writer.js'),
+      ]);
+      assertCondition(
+        cppWatching.exitCode === 0 &&
+          cppWatching.stdout === 'cpp-observed:from-js\n' &&
+          javascriptWriting.exitCode === 0 &&
+          javascriptWriting.stdout === 'js-wrote\n',
+        `an already-open C++ descriptor should observe a JavaScript mutation: ${JSON.stringify({
+          cppWatching,
+          javascriptWriting,
+        })}`
+      );
+
+      const [javascriptWatching, cppWriting] = await Promise.all([
+        crossLanguageWorkspace.runCommand('node js-watcher.js'),
+        crossLanguageWorkspace.runCommand('./a.out write-js'),
+      ]);
+      assertCondition(
+        javascriptWatching.exitCode === 0 &&
+          javascriptWatching.stdout === 'js-observed:from-cpp\n' &&
+          cppWriting.exitCode === 0 &&
+          cppWriting.stdout === 'cpp-wrote\n',
+        `an already-open JavaScript descriptor should observe a C++ mutation: ${JSON.stringify({
+          javascriptWatching,
+          cppWriting,
+        })}`
+      );
+
+      const kernelEvents = await crossLanguageWorkspace.readFile('/proc/tracekernel/events');
+      assertCondition(
+        kernelEvents.includes('./a.out watch-js') &&
+          kernelEvents.includes('node js-writer.js') &&
+          kernelEvents.includes('node js-watcher.js') &&
+          kernelEvents.includes('./a.out write-js'),
+        `the shared kernel should own all four process lifecycles: ${JSON.stringify(kernelEvents)}`
+      );
+      assertCondition(
+        (cppWatching.files ?? []).length === 0 &&
+          (javascriptWriting.files ?? []).length === 0 &&
+          (javascriptWatching.files ?? []).length === 0 &&
+          (cppWriting.files ?? []).length === 0,
+        'cross-language mutations should be authoritative syscalls, not returned snapshot diffs'
+      );
+    } finally {
+      crossLanguageWorkspace.dispose();
+      javascriptRunner.dispose?.();
+    }
+    console.log('PASS: C++ and JavaScript observe each other through one TraceKernel filesystem');
 
     const tcpWorkspace = await createRuntimeWorkspace({
       files: [{ path: 'tcp.cpp', contents: CPP_TK_TCP_PROGRAM }],

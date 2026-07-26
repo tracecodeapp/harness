@@ -1459,6 +1459,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<TraceKernelSyscallResult> {
     const actor = context?.actor ?? SYSTEM_ACTOR;
     const workspacePath = (path: string): string => this.toWorkspacePath(path);
+    if (context) {
+      context.liveKernelSyscallDepth = (context.liveKernelSyscallDepth ?? 0) + 1;
+    }
     try {
       switch (request.op) {
         case 'socket': {
@@ -1857,6 +1860,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       };
     } catch (error) {
       return this.runtimeKernelSyscallFailure(error);
+    } finally {
+      if (context) {
+        context.liveKernelSyscallDepth = Math.max(
+          0,
+          (context.liveKernelSyscallDepth ?? 1) - 1
+        );
+      }
     }
   }
 

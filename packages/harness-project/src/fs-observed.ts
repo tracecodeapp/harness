@@ -174,6 +174,13 @@ export interface RuntimeCommandExecutionContext {
   readonly runtimeIo: RuntimeProjectLiveIoController;
   readonly generationBaseline: RuntimeFileSystemGenerationSnapshot;
   readonly mutatedGenerationPaths: Set<string>;
+  /**
+   * Positive while a runtime syscall is operating directly on the live
+   * kernel namespace. These operations are serialized by filesystem locks and
+   * must not inherit the optimistic snapshot-conflict policy used for final
+   * provider diffs.
+   */
+  liveKernelSyscallDepth?: number;
   kernelError?: RuntimeCommandError;
   executableTransformCwd?: string;
   deviceStdout: string;
@@ -2336,6 +2343,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     paths: readonly string[],
     kind: RuntimeFileSystemMutationKind
   ): void {
+    if ((context?.liveKernelSyscallDepth ?? 0) > 0) return;
     const generationContext = this.commandGenerationContextFor(context);
     if (!generationContext) return;
     const generationPaths = [...new Set(this.mutationGenerationPaths(paths, kind))];
