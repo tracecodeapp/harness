@@ -358,6 +358,7 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   setsid: 39,
   setpgid: 40,
   dup3: 41,
+  poll: 42,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -750,6 +751,15 @@ class CppTraceKernelSyncClient {
           writer.u8(request.nonblocking ? 1 : 0);
         }
         break;
+      case 'poll':
+        writer.u32(request.entries.length);
+        for (const entry of request.entries) {
+          writer.i32(entry.fd);
+          writer.u8((entry.read ? 1 : 0) | (entry.write ? 2 : 0));
+        }
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
+        break;
       case 'setsid':
         break;
       case 'setpgid':
@@ -962,6 +972,24 @@ class CppTraceKernelSyncClient {
           nonblocking: reader.u8() === 1,
         };
         break;
+      case 'poll': {
+        const length = reader.u32();
+        const entries = [];
+        for (let index = 0; index < length; index += 1) {
+          const fd = reader.i32();
+          const events = reader.u8();
+          entries.push({
+            fd,
+            read: (events & 1) !== 0,
+            write: (events & 2) !== 0,
+            hangup: (events & 4) !== 0,
+            error: (events & 8) !== 0,
+            invalid: (events & 16) !== 0,
+          });
+        }
+        value = { op: operation, entries };
+        break;
+      }
       case 'setsid':
         value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
         break;
@@ -2817,6 +2845,8 @@ class WasiProcess {
           (flags & 1) !== 0,
           allowSame !== 0
         ),
+      proc_poll: (fdsPtr, count, timeout) =>
+        this.pollKernelDescriptors(fdsPtr, count, timeout),
       proc_setsid: () => {
         if (!this.kernelClient) return -ENOTSUP;
         try {
@@ -3595,6 +3625,87 @@ class WasiProcess {
       });
       if (target >= this.nextFd) this.nextFd = target + 1;
       return target;
+    } catch (error) {
+      return -cppTraceKernelErrno(error);
+    }
+  }
+
+  pollKernelDescriptors(fdsPtr, count, timeout) {
+    const descriptorCount = count >>> 0;
+    if (descriptorCount > 0 && !fdsPtr) return -EINVAL;
+    if ((timeout | 0) < -1) return -EINVAL;
+
+    const POLLIN = 0x0001;
+    // wasi-libc's public poll ABI uses 0x0002 for POLLOUT.
+    const POLLOUT = 0x0002;
+    const POLLERR = 0x1000;
+    const POLLHUP = 0x2000;
+    const POLLNVAL = 0x4000;
+    const kernelEntriesByFd = new Map();
+    const localEntriesByKernelFd = new Map();
+    let readyCount = 0;
+
+    for (let index = 0; index < descriptorCount; index += 1) {
+      const pointer = (fdsPtr >>> 0) + index * 8;
+      const fd = this.mem.readU32(pointer) | 0;
+      const events = this.mem.readU16(pointer + 4);
+      this.mem.writeU16(pointer + 6, 0);
+      if (fd < 0) continue;
+
+      const entry = this.fds.get(fd);
+      if (!entry) {
+        this.mem.writeU16(pointer + 6, POLLNVAL);
+        readyCount += 1;
+        continue;
+      }
+      if (entry.kernelFd === undefined) {
+        const revents =
+          (entry.readable && (events & POLLIN) !== 0 ? POLLIN : 0) |
+          (entry.writable && (events & POLLOUT) !== 0 ? POLLOUT : 0);
+        this.mem.writeU16(pointer + 6, revents);
+        if (revents !== 0) readyCount += 1;
+        continue;
+      }
+
+      const requested = kernelEntriesByFd.get(entry.kernelFd) || {
+        fd: entry.kernelFd,
+        read: false,
+        write: false,
+      };
+      requested.read ||= (events & POLLIN) !== 0;
+      requested.write ||= (events & POLLOUT) !== 0;
+      kernelEntriesByFd.set(entry.kernelFd, requested);
+      const localEntries = localEntriesByKernelFd.get(entry.kernelFd) || [];
+      localEntries.push({ pointer, events });
+      localEntriesByKernelFd.set(entry.kernelFd, localEntries);
+    }
+
+    if (!this.kernelClient) return readyCount;
+
+    try {
+      const result = this.kernelClient.call({
+        op: 'poll',
+        entries: [...kernelEntriesByFd.values()],
+        ...(readyCount > 0
+          ? { timeoutMs: 0 }
+          : (timeout | 0) < 0
+            ? {}
+            : { timeoutMs: timeout | 0 }),
+      });
+      for (const readiness of result.entries) {
+        const localEntries = localEntriesByKernelFd.get(readiness.fd) || [];
+        for (const { pointer, events } of localEntries) {
+          const revents =
+            (readiness.read && (events & POLLIN) !== 0 ? POLLIN : 0) |
+            (readiness.write && (events & POLLOUT) !== 0 ? POLLOUT : 0) |
+            (readiness.error ? POLLERR : 0) |
+            (readiness.hangup ? POLLHUP : 0) |
+            (readiness.invalid ? POLLNVAL : 0);
+          this.mem.writeU16(pointer + 6, revents);
+          if (revents !== 0) readyCount += 1;
+        }
+      }
+      return readyCount;
     } catch (error) {
       return -cppTraceKernelErrno(error);
     }
@@ -11385,6 +11496,7 @@ const CPP_KERNEL_SOCKET_SHIM_FILENAME = 'tracecode_socket.c';
 const CPP_KERNEL_NETDB_HEADER_FILENAME = 'netdb.h';
 const CPP_KERNEL_PROCESS_SHIM_FILENAME = 'tracecode_process.c';
 const CPP_KERNEL_PROCESS_HEADER_FILENAME = 'tracecode_process.h';
+const CPP_KERNEL_POLL_HEADER_FILENAME = 'poll.h';
 const CPP_KERNEL_SPAWN_HEADER_FILENAME = 'spawn.h';
 const CPP_KERNEL_WAIT_HEADER_FILENAME = 'sys/wait.h';
 const CPP_KERNEL_CONTROL_HEADER_FILENAME = 'tracekernel.h';
@@ -11747,8 +11859,39 @@ int setpgid(pid_t pid, pid_t pgroup);
 #endif
 `;
 
+const CPP_KERNEL_POLL_HEADER_SOURCE = String.raw`#ifndef _POLL_H
+#define _POLL_H
+
+#include <sys/types.h>
+
+typedef unsigned long nfds_t;
+
+struct pollfd {
+  int fd;
+  short events;
+  short revents;
+};
+
+#define POLLIN 0x0001
+#define POLLOUT 0x0002
+#define POLLERR 0x1000
+#define POLLHUP 0x2000
+#define POLLNVAL 0x4000
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+int poll(struct pollfd* descriptors, nfds_t count, int timeout);
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
 const CPP_KERNEL_PROCESS_SHIM_SOURCE = String.raw`#include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdlib.h>
@@ -11776,6 +11919,8 @@ __attribute__((import_module("tracecode_kernel"), import_name("proc_dup")))
 int __tracecode_proc_dup(int fd);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_dup3")))
 int __tracecode_proc_dup3(int fd, int target_fd, int flags, int allow_same);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_poll")))
+int __tracecode_proc_poll(struct pollfd* descriptors, unsigned int count, int timeout);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_setsid")))
 int __tracecode_proc_setsid(void);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_setpgid")))
@@ -11859,6 +12004,24 @@ int dup3(int fd, int target_fd, int flags) {
     return -1;
   }
   result = __tracecode_proc_dup3(fd, target_fd, supported, 0);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return result;
+}
+
+int poll(struct pollfd* descriptors, nfds_t count, int timeout) {
+  int result;
+  if (count > 0 && descriptors == 0) {
+    errno = EFAULT;
+    return -1;
+  }
+  if (timeout < -1) {
+    errno = EINVAL;
+    return -1;
+  }
+  result = __tracecode_proc_poll(descriptors, (unsigned int)count, timeout);
   if (result < 0) {
     errno = -result;
     return -1;
@@ -12141,6 +12304,9 @@ function projectWithCppKernelShims(project) {
   }
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_HEADER_FILENAME)) {
     additions.push({ path: CPP_KERNEL_PROCESS_HEADER_FILENAME, contents: CPP_KERNEL_PROCESS_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_POLL_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_POLL_HEADER_FILENAME, contents: CPP_KERNEL_POLL_HEADER_SOURCE });
   }
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_SPAWN_HEADER_FILENAME)) {
     additions.push({ path: CPP_KERNEL_SPAWN_HEADER_FILENAME, contents: CPP_KERNEL_SPAWN_HEADER_SOURCE });

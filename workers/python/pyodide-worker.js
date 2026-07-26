@@ -2085,6 +2085,7 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   setsid: 39,
   setpgid: 40,
   dup3: 41,
+  poll: 42,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
   Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
@@ -2488,6 +2489,15 @@ class PythonTraceKernelSyncClient {
         } else if (request.action === 'set-nonblocking') {
           writer.u8(request.nonblocking ? 1 : 0);
         }
+        break;
+      case 'poll':
+        writer.u32(request.entries.length);
+        for (const entry of request.entries) {
+          writer.i32(entry.fd);
+          writer.u8((entry.read ? 1 : 0) | (entry.write ? 2 : 0));
+        }
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
         break;
       case 'setsid':
         break;
@@ -2894,6 +2904,22 @@ class PythonTraceKernelSyncClient {
         closeOnExec: reader.u8() === 1,
         nonblocking: reader.u8() === 1,
       };
+    } else if (operation === 'poll') {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const fd = reader.i32();
+        const events = reader.u8();
+        entries.push({
+          fd,
+          read: (events & 1) !== 0,
+          write: (events & 2) !== 0,
+          hangup: (events & 4) !== 0,
+          error: (events & 8) !== 0,
+          invalid: (events & 16) !== 0,
+        });
+      }
+      value = { op: operation, entries };
     } else if (operation === 'setsid') {
       value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
     } else if (operation === 'setpgid') {
@@ -3853,6 +3879,7 @@ async function executeProjectPythonUserCall(
       }
       return kernelFd;
     };
+    let pollMappings = null;
     const syscallRequest = (() => {
       switch (String(input.op ?? '')) {
         case 'spawn': {
@@ -3966,6 +3993,49 @@ async function executeProjectPythonUserCall(
                 ? { nonblocking: input.nonblocking === true }
                 : {}),
           };
+        case 'poll': {
+          pollMappings = (Array.isArray(input.entries) ? input.entries : []).map(
+            (entry) => {
+              let kernelFd = null;
+              if (entry.kernel === true) {
+                kernelFd = Number(entry.fd);
+              } else {
+                try {
+                  kernelFd = kernelFdForLocalFd(entry.fd);
+                } catch (error) {
+                  if (error?.code !== 'EBADF') throw error;
+                }
+              }
+              return {
+                localFd: Number(entry.fd),
+                kernelFd,
+                read: entry.read === true,
+                write: entry.write === true,
+              };
+            }
+          );
+          const entriesByKernelFd = new Map();
+          for (const mapping of pollMappings) {
+            if (mapping.kernelFd === null) continue;
+            const requested = entriesByKernelFd.get(mapping.kernelFd) || {
+              fd: mapping.kernelFd,
+              read: false,
+              write: false,
+            };
+            requested.read ||= mapping.read;
+            requested.write ||= mapping.write;
+            entriesByKernelFd.set(mapping.kernelFd, requested);
+          }
+          return {
+            op: 'poll',
+            entries: [...entriesByKernelFd.values()],
+            ...(pollMappings.some((mapping) => mapping.kernelFd === null)
+              ? { timeoutMs: 0 }
+              : input.timeoutMs === undefined || input.timeoutMs === null
+              ? {}
+              : { timeoutMs: Number(input.timeoutMs) }),
+          };
+        }
         case 'setsid':
           return { op: 'setsid' };
         case 'setpgid':
@@ -3992,11 +4062,38 @@ async function executeProjectPythonUserCall(
     ) {
       runtimeKernelProcessIdentity.pgid = result.pgid;
     }
-    return JSON.stringify(
-      result.op === 'read'
-        ? { ...result, bytes: bytesToBase64(result.bytes) }
-        : result
-    );
+    const serializableResult = result.op === 'read'
+      ? { ...result, bytes: bytesToBase64(result.bytes) }
+      : result.op === 'poll' && pollMappings
+        ? {
+            ...result,
+            entries: pollMappings.flatMap((mapping) => {
+              if (mapping.kernelFd === null) {
+                return [{
+                  fd: mapping.localFd,
+                  read: false,
+                  write: false,
+                  hangup: false,
+                  error: false,
+                  invalid: true,
+                }];
+              }
+              const readiness = result.entries.find(
+                (entry) => entry.fd === mapping.kernelFd
+              );
+              if (!readiness) return [];
+              return [{
+                fd: mapping.localFd,
+                read: mapping.read && readiness.read,
+                write: mapping.write && readiness.write,
+                hangup: readiness.hangup,
+                error: readiness.error,
+                invalid: readiness.invalid,
+              }];
+            }),
+          }
+        : result;
+    return JSON.stringify(serializableResult);
   };
   self.__tracecodeKernelSocket = (requestJson) => {
     if (!kernelClient) {
@@ -5086,6 +5183,140 @@ def _tracekernel_fcntl(fd, command, argument=0):
 _fcntl_module.fcntl = _tracekernel_fcntl
 sys.modules["fcntl"] = _fcntl_module
 
+def _install_tracekernel_select_module():
+    _previous_select = sys.modules.get("select")
+    _previous_selectors = sys.modules.get("selectors")
+    _module = types.ModuleType("select")
+    _module.POLLIN = 0x001
+    _module.POLLPRI = 0x002
+    _module.POLLOUT = 0x004
+    _module.POLLERR = 0x008
+    _module.POLLHUP = 0x010
+    _module.POLLNVAL = 0x020
+    _module.error = OSError
+
+    def _descriptor(value):
+        if isinstance(value, _TraceKernelSocket):
+            return int(value.fileno()), True
+        if isinstance(value, int):
+            return int(value), False
+        _fileno = getattr(value, "fileno", None)
+        if not callable(_fileno):
+            raise TypeError("argument must be an int, or have a fileno() method")
+        return int(_fileno()), isinstance(value, _TraceKernelSocket)
+
+    class poll:
+        def __init__(self):
+            self._registrations = {}
+
+        def register(self, fd, eventmask=_module.POLLIN | _module.POLLPRI | _module.POLLOUT):
+            _fd, _kernel = _descriptor(fd)
+            if _fd < 0:
+                raise ValueError("file descriptor cannot be a negative integer")
+            self._registrations[_fd] = (fd, int(eventmask), _kernel)
+
+        def modify(self, fd, eventmask):
+            _number, _kernel = _descriptor(fd)
+            if _number not in self._registrations:
+                raise FileNotFoundError(_number)
+            _original = self._registrations[_number][0]
+            self._registrations[_number] = (_original, int(eventmask), _kernel)
+
+        def unregister(self, fd):
+            _number, _kernel = _descriptor(fd)
+            if _number not in self._registrations:
+                raise KeyError(_number)
+            del self._registrations[_number]
+
+        def poll(self, timeout=None):
+            _timeout_ms = None if timeout is None else float(timeout)
+            if _timeout_ms is not None and _timeout_ms < 0:
+                _timeout_ms = None
+            _result = _TraceKernelProcessApi._call({
+                "op": "poll",
+                "entries": [
+                    {
+                        "fd": _fd,
+                        "kernel": _kernel,
+                        "read": bool(_events & (_module.POLLIN | _module.POLLPRI)),
+                        "write": bool(_events & _module.POLLOUT),
+                    }
+                    for _fd, (_original, _events, _kernel)
+                    in self._registrations.items()
+                ],
+                "timeoutMs": _timeout_ms,
+            })
+            _ready = []
+            for _entry in _result.get("entries", []):
+                _fd = int(_entry["fd"])
+                _registration = self._registrations.get(_fd)
+                if _registration is None:
+                    continue
+                _events = int(_registration[1])
+                _revents = 0
+                if _entry.get("read") and _events & (_module.POLLIN | _module.POLLPRI):
+                    _revents |= _module.POLLIN
+                if _entry.get("write") and _events & _module.POLLOUT:
+                    _revents |= _module.POLLOUT
+                if _entry.get("error"):
+                    _revents |= _module.POLLERR
+                if _entry.get("hangup"):
+                    _revents |= _module.POLLHUP
+                if _entry.get("invalid"):
+                    _revents |= _module.POLLNVAL
+                if _revents:
+                    _ready.append((_fd, _revents))
+            return _ready
+
+    def select(rlist, wlist, xlist, timeout=None):
+        _poll = poll()
+        _objects = {}
+        _read_fds = set()
+        _write_fds = set()
+        _exception_fds = set()
+        for _objects_list, _event, _target in (
+            (rlist, _module.POLLIN, _read_fds),
+            (wlist, _module.POLLOUT, _write_fds),
+            (xlist, _module.POLLERR, _exception_fds),
+        ):
+            for _object in _objects_list:
+                _fd, _kernel = _descriptor(_object)
+                _objects[_fd] = _object
+                _target.add(_fd)
+                _existing = _poll._registrations.get(_fd)
+                _mask = (_existing[1] if _existing else 0) | _event
+                _poll._registrations[_fd] = (_object, _mask, _kernel)
+        _timeout_ms = None if timeout is None else max(0.0, float(timeout) * 1000.0)
+        _readable = []
+        _writable = []
+        _exceptional = []
+        for _fd, _events in _poll.poll(_timeout_ms):
+            _object = _objects[_fd]
+            if _fd in _read_fds and _events & (_module.POLLIN | _module.POLLHUP):
+                _readable.append(_object)
+            if _fd in _write_fds and _events & _module.POLLOUT:
+                _writable.append(_object)
+            if _fd in _exception_fds and _events & (_module.POLLERR | _module.POLLNVAL):
+                _exceptional.append(_object)
+        return _readable, _writable, _exceptional
+
+    _module.poll = poll
+    _module.select = select
+    sys.modules["select"] = _module
+    sys.modules.pop("selectors", None)
+
+    def _restore():
+        if _previous_select is None:
+            sys.modules.pop("select", None)
+        else:
+            sys.modules["select"] = _previous_select
+        if _previous_selectors is None:
+            sys.modules.pop("selectors", None)
+        else:
+            sys.modules["selectors"] = _previous_selectors
+
+    return _restore
+
 def _install_tracekernel_subprocess_module():
     _module = types.ModuleType("subprocess")
     _module.PIPE = -1
@@ -5520,6 +5751,7 @@ _env = {str(key): str(value) for key, value in _request.get("env", {}).items()}
 _exit_code = 0
 _restore_workspace_paths = lambda: None
 _restore_tracekernel_socket_module = lambda: None
+_restore_tracekernel_select_module = lambda: None
 _active_project_cwd = _root
 _project_original_open = builtins.open
 _project_original_readlink = os.readlink
@@ -8151,6 +8383,7 @@ try:
     _install_tracekernel_asgi_modules()
     if _tracekernel_fs_mounted:
         _restore_tracekernel_socket_module = _install_tracekernel_socket_module()
+        _restore_tracekernel_select_module = _install_tracekernel_select_module()
     sys.argv = _project_argv()
     sys.stdin = _TraceProjectInputStream()
     sys.__stdout__ = _stdout
@@ -8177,6 +8410,7 @@ try:
             traceback.print_exc(file=_stderr)
             _exit_code = 1
 finally:
+    _restore_tracekernel_select_module()
     _restore_tracekernel_socket_module()
     _restore_tracekernel_pipe_module()
     _restore_provider_fs_mutation_events()
