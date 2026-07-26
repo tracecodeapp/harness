@@ -181,7 +181,10 @@ public sealed class KernelDescriptor : IDisposable
         return new KernelDescriptor(value.GetProperty("fd").GetInt32());
     }
 
-    public KernelDescriptor DuplicateTo(int targetNumber)
+    public KernelDescriptor DuplicateTo(
+        int targetNumber,
+        bool closeOnExec = false
+    )
     {
         ThrowIfClosed();
         if (targetNumber < 0)
@@ -190,13 +193,21 @@ public sealed class KernelDescriptor : IDisposable
         }
         if (targetNumber == Number)
         {
+            if (closeOnExec)
+            {
+                throw new ArgumentException(
+                    "dup3 source and target descriptors must differ.",
+                    nameof(targetNumber)
+                );
+            }
             return this;
         }
         JsonElement value = KernelInterop.Call(new
         {
-            op = "dup2",
+            op = closeOnExec ? "dup3" : "dup2",
             fd = Number,
             targetFd = targetNumber,
+            closeOnExec,
         });
         return new KernelDescriptor(value.GetProperty("fd").GetInt32());
     }
@@ -268,7 +279,10 @@ public sealed record KernelPipe(
 )
 {
     [SupportedOSPlatform("browser")]
-    public static KernelPipe Create(int capacityChunks = 16)
+    public static KernelPipe Create(
+        int capacityChunks = 16,
+        bool closeOnExec = false
+    )
     {
         if (capacityChunks <= 0)
         {
@@ -277,7 +291,7 @@ public sealed record KernelPipe(
         JsonElement value = KernelInterop.Call(new
         {
             op = "pipe",
-            options = new { capacityChunks },
+            options = new { capacityChunks, closeOnExec },
         });
         return new KernelPipe(
             new KernelDescriptor(value.GetProperty("readFd").GetInt32()),

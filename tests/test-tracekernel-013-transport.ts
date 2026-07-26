@@ -167,7 +167,7 @@ function makeFixtureWorker(
 
 async function main(): Promise<void> {
   const requests: readonly TraceKernelSyscallRequest[] = [
-    { op: 'pipe', options: { capacityChunks: 4 } },
+    { op: 'pipe', options: { capacityChunks: 4, closeOnExec: true } },
     {
       op: 'watch',
       path: '/workspace/src',
@@ -237,6 +237,7 @@ async function main(): Promise<void> {
     { op: 'close', fd: 11 },
     { op: 'dup', fd: 12 },
     { op: 'dup2', fd: 12, targetFd: 19 },
+    { op: 'dup3', fd: 12, targetFd: 20, closeOnExec: true },
     { op: 'fcntl', fd: 19, action: 'get-close-on-exec' },
     {
       op: 'fcntl',
@@ -379,6 +380,7 @@ async function main(): Promise<void> {
     { ok: true, value: { op: 'close' } },
     { ok: true, value: { op: 'dup', fd: 4 } },
     { ok: true, value: { op: 'dup2', fd: 19 } },
+    { ok: true, value: { op: 'dup3', fd: 20, closeOnExec: true } },
     { ok: true, value: { op: 'fcntl', closeOnExec: false } },
     { ok: true, value: { op: 'fcntl', closeOnExec: true } },
     {

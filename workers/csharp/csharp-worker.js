@@ -196,6 +196,7 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   fcntl: 38,
   setsid: 39,
   setpgid: 40,
+  dup3: 41,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -460,6 +461,7 @@ class CSharpTraceKernelSyncClient {
         break;
       case 'pipe':
         writer.u32(request.options?.capacityChunks ?? 0);
+        writer.u8(request.options?.closeOnExec === true ? 1 : 0);
         break;
       case 'open': {
         writer.string(request.path);
@@ -498,6 +500,11 @@ class CSharpTraceKernelSyncClient {
       case 'dup2':
         writer.i32(request.fd);
         writer.i32(request.targetFd);
+        break;
+      case 'dup3':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
+        writer.u8(request.closeOnExec ? 1 : 0);
         break;
       case 'fcntl':
         writer.i32(request.fd);
@@ -841,6 +848,12 @@ class CSharpTraceKernelSyncClient {
       operation === 'dup2'
     ) {
       value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'dup3') {
+      value = {
+        op: operation,
+        fd: reader.i32(),
+        closeOnExec: reader.u8() === 1,
+      };
     } else if (operation === 'fcntl') {
       value = { op: operation, closeOnExec: reader.u8() === 1 };
     } else if (operation === 'setsid') {

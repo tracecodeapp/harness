@@ -6,6 +6,7 @@ import {
   TraceKernelBadFileDescriptorError,
   TraceKernelBrokenPipeError,
   TraceKernelDescriptorLimitError,
+  TraceKernelInvalidArgumentError,
   TraceKernelInvalidDescriptorOperationError,
 } from './errors';
 import type { TraceKernelStat } from './vfs';
@@ -66,6 +67,10 @@ export interface TraceKernelDescriptorTableOptions {
 export type TraceKernelDescriptorDupError =
   | TraceKernelBadFileDescriptorError
   | TraceKernelDescriptorLimitError;
+
+export type TraceKernelDescriptorDup3Error =
+  | TraceKernelDescriptorDupError
+  | TraceKernelInvalidArgumentError;
 
 export type TraceKernelDescriptorInheritanceError =
   | TraceKernelBadFileDescriptorError
@@ -323,23 +328,60 @@ export class TraceKernelDescriptorTable {
     fd: number,
     targetFd: number
   ): Effect.Effect<number, TraceKernelDescriptorDupError> {
+    return this.duplicateTo(fd, targetFd, false, true);
+  }
+
+  dup3(
+    fd: number,
+    targetFd: number,
+    closeOnExec: boolean
+  ): Effect.Effect<number, TraceKernelDescriptorDup3Error> {
+    return this.duplicateTo(fd, targetFd, closeOnExec, false);
+  }
+
+  private duplicateTo(
+    fd: number,
+    targetFd: number,
+    closeOnExec: boolean,
+    allowSameDescriptor: true
+  ): Effect.Effect<number, TraceKernelDescriptorDupError>;
+  private duplicateTo(
+    fd: number,
+    targetFd: number,
+    closeOnExec: boolean,
+    allowSameDescriptor: false
+  ): Effect.Effect<number, TraceKernelDescriptorDup3Error>;
+  private duplicateTo(
+    fd: number,
+    targetFd: number,
+    closeOnExec: boolean,
+    allowSameDescriptor: boolean
+  ): Effect.Effect<number, TraceKernelDescriptorDup3Error> {
     const descriptor = this.descriptors.get(fd);
     if (!descriptor) {
       return Effect.fail(new TraceKernelBadFileDescriptorError({
         fd,
-        operation: 'dup2',
-        message: `EBADF: bad file descriptor, dup2 ${fd}`,
+        operation: allowSameDescriptor ? 'dup2' : 'dup3',
+        message: `EBADF: bad file descriptor, ${allowSameDescriptor ? 'dup2' : 'dup3'} ${fd}`,
       }));
     }
     const target = Math.floor(targetFd);
     if (!Number.isSafeInteger(targetFd) || target < 0) {
       return Effect.fail(new TraceKernelBadFileDescriptorError({
         fd: target,
-        operation: 'dup2',
+        operation: allowSameDescriptor ? 'dup2' : 'dup3',
         message: `EBADF: invalid target descriptor ${targetFd}`,
       }));
     }
-    if (fd === target) return Effect.succeed(target);
+    if (fd === target) {
+      return allowSameDescriptor
+        ? Effect.succeed(target)
+        : Effect.fail(new TraceKernelInvalidArgumentError({
+            code: 'EINVAL',
+            argument: 'targetFd',
+            message: `EINVAL: dup3 source and target are both ${fd}`,
+          }));
+    }
 
     const replaced = this.descriptors.get(target);
     if (!replaced && this.descriptors.size >= this.maxDescriptors) {
@@ -353,13 +395,14 @@ export class TraceKernelDescriptorTable {
     return descriptor.duplicate().pipe(
       Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
         fd,
-        operation: 'dup2',
+        operation: allowSameDescriptor ? 'dup2' : 'dup3',
         message: error.message,
       })),
       Effect.flatMap((duplicate) =>
         Effect.sync(() => {
           this.descriptors.set(target, duplicate);
-          this.closeOnExecDescriptors.delete(target);
+          if (closeOnExec) this.closeOnExecDescriptors.add(target);
+          else this.closeOnExecDescriptors.delete(target);
           this.resetNextFd();
         }).pipe(
           Effect.andThen(replaced ? replaced.close() : Effect.void),
@@ -577,6 +620,8 @@ type PipeReadEvent =
 
 export interface TraceKernelPipeOptions {
   readonly capacityChunks?: number;
+  /** Install both endpoint descriptors with FD_CLOEXEC. */
+  readonly closeOnExec?: boolean;
 }
 
 /**

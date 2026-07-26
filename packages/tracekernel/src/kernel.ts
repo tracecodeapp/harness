@@ -7,6 +7,7 @@ import {
   TraceKernelDescriptorTable,
   TraceKernelPipe,
   type TraceKernelDescriptor,
+  type TraceKernelDescriptorDup3Error,
   type TraceKernelDescriptorDupError,
   type TraceKernelDescriptorInheritanceError,
   type TraceKernelDescriptorReadError,
@@ -230,6 +231,14 @@ export class TraceKernelProcess {
 
   dup2(fd: number, targetFd: number): Effect.Effect<number, TraceKernelDescriptorDupError> {
     return this.descriptors.dup2(fd, targetFd);
+  }
+
+  dup3(
+    fd: number,
+    targetFd: number,
+    closeOnExec: boolean
+  ): Effect.Effect<number, TraceKernelDescriptorDup3Error> {
+    return this.descriptors.dup3(fd, targetFd, closeOnExec);
   }
 
   fstat(fd: number): Effect.Effect<TraceKernelStat, TraceKernelBadFileDescriptorError> {
@@ -1051,8 +1060,19 @@ export class TraceKernelSession {
       );
       this.resources.set(resourceId, pipe);
       return yield* Effect.gen(this, function* () {
-        const readFd = yield* this.installDescriptor(reader, pipe.reader(), readerFd);
-        const writeFd = yield* this.installDescriptor(writer, pipe.writer(), writerFd).pipe(
+        const descriptorOptions = { closeOnExec: options.closeOnExec === true };
+        const readFd = yield* this.installDescriptor(
+          reader,
+          pipe.reader(),
+          readerFd,
+          descriptorOptions
+        );
+        const writeFd = yield* this.installDescriptor(
+          writer,
+          pipe.writer(),
+          writerFd,
+          descriptorOptions
+        ).pipe(
           Effect.tapError(() =>
             reader.descriptors.close(readFd).pipe(Effect.catchAll(() => Effect.void))
           )
@@ -1601,12 +1621,13 @@ export class TraceKernelSession {
   private installDescriptor(
     process: TraceKernelProcess,
     descriptor: TraceKernelDescriptor,
-    fd?: number
+    fd?: number,
+    options: { readonly closeOnExec?: boolean } = {}
   ): Effect.Effect<number, TraceKernelDescriptorLimitError> {
     return Effect.try({
       try: () => fd === undefined
-        ? process.descriptors.install(descriptor)
-        : process.descriptors.installAt(fd, descriptor),
+        ? process.descriptors.install(descriptor, options)
+        : process.descriptors.installAt(fd, descriptor, options),
       catch: (error) => error instanceof TraceKernelDescriptorLimitError
         ? error
         : new TraceKernelDescriptorLimitError({

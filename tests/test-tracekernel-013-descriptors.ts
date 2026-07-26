@@ -62,18 +62,25 @@ async function main(): Promise<void> {
         discard: true,
       });
 
-      const firstPipe = yield* session.createPipe(reader, writer, { capacityChunks: 1 });
+      const firstPipe = yield* session.createPipe(reader, writer, {
+        capacityChunks: 1,
+        closeOnExec: true,
+      });
       assertCondition(
         reader.snapshot().descriptors.some((descriptor) =>
-          descriptor.fd === firstPipe.readFd && descriptor.kind === 'pipe-reader'
+          descriptor.fd === firstPipe.readFd &&
+          descriptor.kind === 'pipe-reader' &&
+          descriptor.closeOnExec
         ),
-        'Reader process did not own the read descriptor.'
+        'pipe2-style creation did not install a close-on-exec reader.'
       );
       assertCondition(
         writer.snapshot().descriptors.some((descriptor) =>
-          descriptor.fd === firstPipe.writeFd && descriptor.kind === 'pipe-writer'
+          descriptor.fd === firstPipe.writeFd &&
+          descriptor.kind === 'pipe-writer' &&
+          descriptor.closeOnExec
         ),
-        'Writer process did not own the write descriptor.'
+        'pipe2-style creation did not install a close-on-exec writer.'
       );
 
       yield* writer.write(firstPipe.writeFd, encoder.encode('abcdef'));
@@ -197,6 +204,23 @@ async function main(): Promise<void> {
       assertCondition(
         (yield* limited.dup2(secondSocket, reusedSocket)) === reusedSocket,
         'dup2() did not preserve the requested target descriptor number.'
+      );
+      assertCondition(
+        (yield* limited.dup3(secondSocket, reusedSocket, true)) === reusedSocket &&
+          (yield* limited.descriptors.getCloseOnExec(reusedSocket)),
+        'dup3(O_CLOEXEC) did not atomically replace and flag its target.'
+      );
+      const invalidDup3 = yield* Effect.exit(
+        limited.dup3(secondSocket, secondSocket, true)
+      );
+      assertCondition(
+        Exit.isFailure(invalidDup3),
+        'dup3(fd, fd) did not reject identical descriptors.'
+      );
+      yield* limited.dup2(secondSocket, reusedSocket);
+      assertCondition(
+        !(yield* limited.descriptors.getCloseOnExec(reusedSocket)),
+        'dup2() did not clear a displaced target descriptor flag.'
       );
       assertCondition(
         limited.snapshot().descriptors.length === 2 &&
@@ -386,6 +410,8 @@ async function main(): Promise<void> {
     descriptorCeilingReturnsEmfile: true,
     lowestAvailableFdReused: true,
     atomicDup2Replacement: true,
+    atomicDup3CloseOnExec: true,
+    closeOnExecPipeCreation: true,
     failedInstallsReleaseResources: true,
     defaultDescriptorNonInheritance: true,
     closeOnExecDescriptorFiltering: true,

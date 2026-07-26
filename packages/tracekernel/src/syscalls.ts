@@ -55,6 +55,7 @@ export type TraceKernelSyscallRequest =
       readonly op: 'pipe';
       readonly options?: {
         readonly capacityChunks?: number;
+        readonly closeOnExec?: boolean;
       };
     }
   | {
@@ -168,6 +169,12 @@ export type TraceKernelSyscallRequest =
       readonly op: 'dup2';
       readonly fd: number;
       readonly targetFd: number;
+    }
+  | {
+      readonly op: 'dup3';
+      readonly fd: number;
+      readonly targetFd: number;
+      readonly closeOnExec: boolean;
     }
   | {
       readonly op: 'fcntl';
@@ -294,6 +301,7 @@ export type TraceKernelSyscallValue =
   | { readonly op: 'close' }
   | { readonly op: 'dup'; readonly fd: number }
   | { readonly op: 'dup2'; readonly fd: number }
+  | { readonly op: 'dup3'; readonly fd: number; readonly closeOnExec: boolean }
   | { readonly op: 'fcntl'; readonly closeOnExec: boolean }
   | { readonly op: 'fstat'; readonly stat: TraceKernelStat }
   | { readonly op: 'ftruncate' }
@@ -613,6 +621,18 @@ export class TraceKernelSyscallDispatcher {
       case 'dup2':
         return this.process.dup2(request.fd, request.targetFd).pipe(
           Effect.map((fd) => ({ op: 'dup2' as const, fd }))
+        );
+      case 'dup3':
+        return this.process.dup3(
+          request.fd,
+          request.targetFd,
+          request.closeOnExec
+        ).pipe(
+          Effect.map((fd) => ({
+            op: 'dup3' as const,
+            fd,
+            closeOnExec: request.closeOnExec,
+          }))
         );
       case 'fcntl':
         return request.action === 'get-close-on-exec'

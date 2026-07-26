@@ -343,6 +343,17 @@ export class RuntimeKernelDescriptorManager {
     return Effect.runPromise(this.existingTable(pid, fd, 'dup2').dup2(fd, targetFd));
   }
 
+  dup3(
+    pid: number,
+    fd: number,
+    targetFd: number,
+    closeOnExec: boolean
+  ): Promise<number> {
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'dup3').dup3(fd, targetFd, closeOnExec)
+    );
+  }
+
   async createPipe(
     pid: number,
     options: TraceKernelPipeOptions = {}
@@ -356,8 +367,14 @@ export class RuntimeKernelDescriptorManager {
     this.pipes.set(pipeId, pipe);
     let readFd: number | undefined;
     try {
-      readFd = this.install(pid, pipe.reader());
-      const writeFd = this.install(pid, pipe.writer());
+      const descriptorOptions = { closeOnExec: options.closeOnExec === true };
+      readFd = this.installDescriptor(pid, pipe.reader(), undefined, descriptorOptions);
+      const writeFd = this.installDescriptor(
+        pid,
+        pipe.writer(),
+        undefined,
+        descriptorOptions
+      );
       return Object.freeze({ readFd, writeFd });
     } catch (error) {
       if (readFd !== undefined) {
@@ -406,8 +423,19 @@ export class RuntimeKernelDescriptorManager {
     this.pipes.set(pipeId, pipe);
     let readFd: number | undefined;
     try {
-      readFd = this.installDescriptor(reader.pid, pipe.reader(), reader.fd);
-      const writeFd = this.installDescriptor(writer.pid, pipe.writer(), writer.fd);
+      const descriptorOptions = { closeOnExec: options.closeOnExec === true };
+      readFd = this.installDescriptor(
+        reader.pid,
+        pipe.reader(),
+        reader.fd,
+        descriptorOptions
+      );
+      const writeFd = this.installDescriptor(
+        writer.pid,
+        pipe.writer(),
+        writer.fd,
+        descriptorOptions
+      );
       return Object.freeze({ readFd, writeFd });
     } catch (error) {
       if (readFd !== undefined) {
@@ -525,11 +553,12 @@ export class RuntimeKernelDescriptorManager {
   private installDescriptor(
     pid: number,
     descriptor: TraceKernelDescriptor,
-    fd?: number
+    fd?: number,
+    options: { readonly closeOnExec?: boolean } = {}
   ): number {
     return fd === undefined
-      ? this.tableForProcess(pid).install(descriptor)
-      : this.tableForProcess(pid).installAt(fd, descriptor);
+      ? this.tableForProcess(pid).install(descriptor, options)
+      : this.tableForProcess(pid).installAt(fd, descriptor, options);
   }
 
   descriptor(

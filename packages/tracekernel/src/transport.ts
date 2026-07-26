@@ -53,6 +53,7 @@ const OP_CODES = {
   fcntl: 38,
   setsid: 39,
   setpgid: 40,
+  dup3: 41,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -327,6 +328,7 @@ export function encodeTraceKernelSyscallRequest(
   switch (request.op) {
     case 'pipe':
       writer.u32(request.options?.capacityChunks ?? 0);
+      writer.u8(request.options?.closeOnExec === true ? 1 : 0);
       break;
     case 'watch':
       writer.string(request.path);
@@ -494,6 +496,11 @@ export function encodeTraceKernelSyscallRequest(
       writer.i32(request.fd);
       writer.i32(request.targetFd);
       break;
+    case 'dup3':
+      writer.i32(request.fd);
+      writer.i32(request.targetFd);
+      writer.u8(request.closeOnExec ? 1 : 0);
+      break;
     case 'fcntl':
       writer.i32(request.fd);
       writer.u8(request.action === 'get-close-on-exec' ? 1 : 2);
@@ -555,11 +562,23 @@ export function decodeTraceKernelSyscallRequest(
   switch (operation) {
     case 'pipe': {
       const capacityChunks = reader.u32();
+      const closeOnExec = reader.u8();
+      if (closeOnExec > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          'Invalid pipe close-on-exec flag'
+        );
+      }
       request = {
         op: 'pipe',
-        ...(capacityChunks === 0
+        ...(capacityChunks === 0 && closeOnExec === 0
           ? {}
-          : { options: { capacityChunks } }),
+          : {
+              options: {
+                ...(capacityChunks === 0 ? {} : { capacityChunks }),
+                ...(closeOnExec === 1 ? { closeOnExec: true } : {}),
+              },
+            }),
       };
       break;
     }
@@ -888,6 +907,19 @@ export function decodeTraceKernelSyscallRequest(
     case 'dup2':
       request = { op: 'dup2', fd: reader.i32(), targetFd: reader.i32() };
       break;
+    case 'dup3': {
+      const fd = reader.i32();
+      const targetFd = reader.i32();
+      const closeOnExec = reader.u8();
+      if (closeOnExec > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          'Invalid dup3 close-on-exec flag'
+        );
+      }
+      request = { op: 'dup3', fd, targetFd, closeOnExec: closeOnExec === 1 };
+      break;
+    }
     case 'fcntl': {
       const fd = reader.i32();
       const action = reader.u8();
@@ -1086,6 +1118,10 @@ export function encodeTraceKernelSyscallResult(
     case 'dup':
     case 'dup2':
       writer.i32(value.fd);
+      break;
+    case 'dup3':
+      writer.i32(value.fd);
+      writer.u8(value.closeOnExec ? 1 : 0);
       break;
     case 'fcntl':
       writer.u8(value.closeOnExec ? 1 : 0);
@@ -1331,6 +1367,18 @@ export function decodeTraceKernelSyscallResult(
     case 'dup2':
       value = { op: operation, fd: reader.i32() };
       break;
+    case 'dup3': {
+      const fd = reader.i32();
+      const closeOnExec = reader.u8();
+      if (closeOnExec > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          'Invalid dup3 close-on-exec result'
+        );
+      }
+      value = { op: 'dup3', fd, closeOnExec: closeOnExec === 1 };
+      break;
+    }
     case 'fcntl': {
       const closeOnExec = reader.u8();
       if (closeOnExec > 1) {

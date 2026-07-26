@@ -476,6 +476,16 @@ flag through `fcntl`; C++ maps `F_GETFD`/`F_SETFD`, Python maps
 marks Node-opened files close-on-exec, and managed C# exposes
 `KernelDescriptor.CloseOnExec`/`Inheritable`.
 
+`pipe2(O_CLOEXEC)` publishes both pipe endpoints with their descriptor flags
+already set, and `dup3(..., O_CLOEXEC)` atomically replaces and flags its
+target. The kernel rejects identical `dup3` source and target descriptors with
+`EINVAL`; ordinary `dup2` retains its validated no-op and clears the target's
+close-on-exec bit. C/C++ maps these through its forced WASI compatibility
+header (including a nonzero `O_CLOEXEC` value), while managed C# exposes the
+same atomic choices through `KernelPipe.Create` and
+`KernelDescriptor.DuplicateTo`. `O_NONBLOCK` remains unsupported until
+readiness, polling, and open-file-description status flags land together.
+
 The C/C++ WASI process compatibility slice is intentionally smaller than a
 complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,
 `SIGTERM`, and `SIGKILL`, and maps `posix_spawnp` through TraceKernel's runtime
@@ -520,6 +530,8 @@ The initial 0.13 branch now establishes:
 - process-owned descriptor tables;
 - atomic `dup2` replacement with validated self-duplication, descriptor-ceiling
   replacement, displaced-resource close, and failure rollback;
+- atomic `dup3` replacement plus close-on-exec pipe creation, with C/C++ and
+  managed C# runtime conformance;
 - explicit all-or-selected child descriptor inheritance plus atomic
   parent-fd-to-child-fd mappings, with shared open descriptions and failure
   rollback;

@@ -81,7 +81,8 @@ var OP_CODES = {
   dup2: 37,
   fcntl: 38,
   setsid: 39,
-  setpgid: 40
+  setpgid: 40,
+  dup3: 41
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -273,6 +274,7 @@ function encodeTraceKernelSyscallRequest(request) {
   switch (request.op) {
     case "pipe":
       writer.u32(request.options?.capacityChunks ?? 0);
+      writer.u8(request.options?.closeOnExec === true ? 1 : 0);
       break;
     case "watch":
       writer.string(request.path);
@@ -408,6 +410,11 @@ function encodeTraceKernelSyscallRequest(request) {
     case "dup2":
       writer.i32(request.fd);
       writer.i32(request.targetFd);
+      break;
+    case "dup3":
+      writer.i32(request.fd);
+      writer.i32(request.targetFd);
+      writer.u8(request.closeOnExec ? 1 : 0);
       break;
     case "fcntl":
       writer.i32(request.fd);
@@ -633,6 +640,13 @@ function decodeTraceKernelSyscallResult(bytes) {
     case "dup":
     case "dup2":
       value = { op: operation, fd: reader.i32() };
+      break;
+    case "dup3":
+      value = {
+        op: operation,
+        fd: reader.i32(),
+        closeOnExec: reader.u8() === 1
+      };
       break;
     case "fcntl": {
       const closeOnExec = reader.u8();

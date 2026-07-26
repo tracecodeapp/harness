@@ -1829,6 +1829,22 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           );
           return { ok: true, value: { op: 'dup2', fd } };
         }
+        case 'dup3': {
+          const fd = await this.kernelDescriptors.dup3(
+            context?.process.pid ?? 0,
+            request.fd,
+            request.targetFd,
+            request.closeOnExec
+          );
+          return {
+            ok: true,
+            value: {
+              op: 'dup3',
+              fd,
+              closeOnExec: request.closeOnExec,
+            },
+          };
+        }
         case 'fcntl': {
           const pid = context?.process.pid ?? 0;
           const closeOnExec = request.action === 'get-close-on-exec'

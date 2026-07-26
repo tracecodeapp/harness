@@ -357,6 +357,7 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   fcntl: 38,
   setsid: 39,
   setpgid: 40,
+  dup3: 41,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -562,6 +563,7 @@ class CppTraceKernelSyncClient {
     switch (request.op) {
       case 'pipe':
         writer.u32(request.options?.capacityChunks ?? 0);
+        writer.u8(request.options?.closeOnExec === true ? 1 : 0);
         break;
       case 'watchdog':
         writer.u8(
@@ -724,6 +726,11 @@ class CppTraceKernelSyncClient {
       case 'dup2':
         writer.i32(request.fd);
         writer.i32(request.targetFd);
+        break;
+      case 'dup3':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
+        writer.u8(request.closeOnExec ? 1 : 0);
         break;
       case 'fcntl':
         writer.i32(request.fd);
@@ -929,6 +936,13 @@ class CppTraceKernelSyncClient {
       case 'dup':
       case 'dup2':
         value = { op: operation, fd: reader.i32() };
+        break;
+      case 'dup3':
+        value = {
+          op: operation,
+          fd: reader.i32(),
+          closeOnExec: reader.u8() === 1,
+        };
         break;
       case 'fcntl':
         value = { op: operation, closeOnExec: reader.u8() === 1 };
@@ -2767,6 +2781,17 @@ class WasiProcess {
           return -cppTraceKernelErrno(error);
         }
       },
+      proc_pipe: (fdsPtr, flags) =>
+        this.createKernelPipe(fdsPtr, flags),
+      proc_dup: (fd) =>
+        this.duplicateKernelDescriptor(fd, undefined, false, true),
+      proc_dup3: (fd, targetFd, flags, allowSame) =>
+        this.duplicateKernelDescriptor(
+          fd,
+          targetFd,
+          (flags & 1) !== 0,
+          allowSame !== 0
+        ),
       proc_setsid: () => {
         if (!this.kernelClient) return -ENOTSUP;
         try {
@@ -3434,9 +3459,117 @@ class WasiProcess {
   }
 
   allocateFd(entry) {
-    const fd = this.nextFd++;
+    let fd = 3;
+    while (this.fds.has(fd)) fd += 1;
+    this.nextFd = Math.max(this.nextFd, fd + 1);
     this.fds.set(fd, entry);
     return fd;
+  }
+
+  createKernelPipe(fdsPtr, flags) {
+    if (!this.kernelClient) return -ENOTSUP;
+    if (!fdsPtr) return -EINVAL;
+    if ((flags & ~1) !== 0) return -ENOTSUP;
+    try {
+      const result = this.kernelClient.call({
+        op: 'pipe',
+        options: { closeOnExec: (flags & 1) !== 0 },
+      });
+      const readFd = this.allocateFd({
+        kind: 'pipe',
+        readable: true,
+        writable: false,
+        offset: 0,
+        kernelFd: result.readFd,
+      });
+      const writeFd = this.allocateFd({
+        kind: 'pipe',
+        readable: false,
+        writable: true,
+        offset: 0,
+        kernelFd: result.writeFd,
+      });
+      this.mem.writeU32(fdsPtr, readFd);
+      this.mem.writeU32(fdsPtr + 4, writeFd);
+      return 0;
+    } catch (error) {
+      return -cppTraceKernelErrno(error);
+    }
+  }
+
+  duplicateKernelDescriptor(fd, targetFd, closeOnExec, allowSame) {
+    if (!this.kernelClient) return -ENOTSUP;
+    const sourceFd = fd | 0;
+    const source = this.fds.get(sourceFd);
+    if (!source || source.kernelFd === undefined) return -EBADF;
+    if (targetFd === undefined) {
+      try {
+        const duplicate = this.kernelClient.call({
+          op: 'dup',
+          fd: source.kernelFd,
+        });
+        const localFd = this.allocateFd({
+          ...source,
+          kernelFd: duplicate.fd,
+        });
+        return localFd;
+      } catch (error) {
+        return -cppTraceKernelErrno(error);
+      }
+    }
+
+    const target = targetFd | 0;
+    if (target < 0) return -EBADF;
+    if (target === sourceFd) {
+      return allowSame ? target : -EINVAL;
+    }
+    const replaced = this.fds.get(target);
+    try {
+      let duplicateKernelFd;
+      if (replaced?.kernelFd !== undefined) {
+        const duplicate = this.kernelClient.call({
+          op: 'dup3',
+          fd: source.kernelFd,
+          targetFd: replaced.kernelFd,
+          closeOnExec,
+        });
+        duplicateKernelFd = duplicate.fd;
+        this.fds.delete(target);
+      } else {
+        const duplicate = this.kernelClient.call({
+          op: 'dup',
+          fd: source.kernelFd,
+        });
+        duplicateKernelFd = duplicate.fd;
+        if (closeOnExec) {
+          try {
+            this.kernelClient.call({
+              op: 'fcntl',
+              fd: duplicateKernelFd,
+              action: 'set-close-on-exec',
+              closeOnExec: true,
+            });
+          } catch (error) {
+            try {
+              this.kernelClient.call({ op: 'close', fd: duplicateKernelFd });
+            } catch {
+              // Preserve the flagging failure; the kernel still tears down the
+              // process descriptor table on exit.
+            }
+            throw error;
+          }
+        }
+        if (replaced) this.fd_close(target);
+      }
+      this.fds.set(target, {
+        ...source,
+        kernelFd: duplicateKernelFd,
+      });
+      if (target >= this.nextFd) this.nextFd = target + 1;
+      return target;
+    } catch (error) {
+      return -cppTraceKernelErrno(error);
+    }
   }
 
   writeKernelFilestat(stat, outPtr) {
@@ -3601,6 +3734,19 @@ class WasiProcess {
       this.mem.writeU32(nwrittenOut, written);
       return ESUCCESS;
     }
+    if (entry.kind === 'pipe' && entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        const written = this.kernelClient.call({
+          op: 'write',
+          fd: entry.kernelFd,
+          bytes: concatBytes(chunks),
+        }).bytesWritten;
+        this.mem.writeU32(nwrittenOut, written);
+        return ESUCCESS;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
 
     if (entry.kind === 'stdio' && entry.outputDevice) {
       if (entry.outputDevice === '/dev/null') {
@@ -3664,6 +3810,27 @@ class WasiProcess {
         this.mem.writeBytes(ptr, chunk);
         total += chunk.length;
         if (chunk.length < len) break;
+      }
+      this.mem.writeU32(nreadOut, total);
+      return ESUCCESS;
+    }
+    if (entry.kind === 'pipe' && entry.kernelFd !== undefined && this.kernelClient) {
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.kernelClient.call({
+            op: 'read',
+            fd: entry.kernelFd,
+            maxBytes: len,
+          }).bytes;
+          this.mem.writeBytes(ptr, chunk);
+          total += chunk.length;
+          if (chunk.length < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
       }
       this.mem.writeU32(nreadOut, total);
       return ESUCCESS;
@@ -3833,7 +4000,7 @@ class WasiProcess {
   fd_seek(fd, offset, whence, newOffsetOut) {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
-    if (entry.kind === 'socket') return ESPIPE;
+    if (entry.kind === 'socket' || entry.kind === 'pipe') return ESPIPE;
     let fileSize = 0;
     if (entry.kind === 'file') {
       try {
@@ -3877,7 +4044,11 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
     if (entry.kind === 'socket') this.closeSocket(entry);
-    if (entry.kind === 'file' && entry.kernelFd !== undefined && this.kernelClient) {
+    if (
+      entry.kind !== 'socket' &&
+      entry.kernelFd !== undefined &&
+      this.kernelClient
+    ) {
       try {
         this.kernelClient.call({ op: 'close', fd: entry.kernelFd });
       } catch (error) {
@@ -11442,7 +11613,13 @@ const char* gai_strerror(int code) {
 const CPP_KERNEL_SPAWN_HEADER_SOURCE = String.raw`#ifndef _SPAWN_H
 #define _SPAWN_H
 
+#include <fcntl.h>
 #include <sys/types.h>
+
+#if !defined(O_CLOEXEC) || O_CLOEXEC == 0
+#undef O_CLOEXEC
+#define O_CLOEXEC 0x80000
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -11518,6 +11695,11 @@ extern "C" {
 
 int kill(pid_t pid, int signal);
 int killpg(pid_t pgroup, int signal);
+int pipe(int descriptors[2]);
+int pipe2(int descriptors[2], int flags);
+int dup(int fd);
+int dup2(int fd, int target_fd);
+int dup3(int fd, int target_fd, int flags);
 pid_t getpid(void);
 pid_t getppid(void);
 pid_t getpgrp(void);
@@ -11556,6 +11738,12 @@ __attribute__((import_module("tracecode_kernel"), import_name("proc_identity")))
 int __tracecode_proc_identity(int kind);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_fcntl")))
 int __tracecode_proc_fcntl(int fd, int action, int value);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_pipe")))
+int __tracecode_proc_pipe(int descriptors[2], int flags);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_dup")))
+int __tracecode_proc_dup(int fd);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_dup3")))
+int __tracecode_proc_dup3(int fd, int target_fd, int flags, int allow_same);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_setsid")))
 int __tracecode_proc_setsid(void);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_setpgid")))
@@ -11579,6 +11767,64 @@ int fcntl(int fd, int command, ...) {
     return -1;
   }
   return command == F_GETFD ? (result ? FD_CLOEXEC : 0) : 0;
+}
+
+int pipe2(int descriptors[2], int flags) {
+  int supported = 0;
+  int result;
+  if (descriptors == 0) {
+    errno = EFAULT;
+    return -1;
+  }
+  if ((flags & O_CLOEXEC) != 0) supported |= 1;
+  if ((flags & ~O_CLOEXEC) != 0) {
+    errno = ENOTSUP;
+    return -1;
+  }
+  result = __tracecode_proc_pipe(descriptors, supported);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+
+int pipe(int descriptors[2]) {
+  return pipe2(descriptors, 0);
+}
+
+int dup(int fd) {
+  int result = __tracecode_proc_dup(fd);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return result;
+}
+
+int dup2(int fd, int target_fd) {
+  int result = __tracecode_proc_dup3(fd, target_fd, 0, 1);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return result;
+}
+
+int dup3(int fd, int target_fd, int flags) {
+  int supported = 0;
+  int result;
+  if ((flags & O_CLOEXEC) != 0) supported |= 1;
+  if ((flags & ~O_CLOEXEC) != 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  result = __tracecode_proc_dup3(fd, target_fd, supported, 0);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return result;
 }
 
 int system(const char* command) {

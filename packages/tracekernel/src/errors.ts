@@ -70,6 +70,7 @@ export class TraceKernelBadFileDescriptorError extends Data.TaggedError(
     | 'close'
     | 'dup'
     | 'dup2'
+    | 'dup3'
     | 'fcntl'
     | 'inherit'
     | 'stat'
