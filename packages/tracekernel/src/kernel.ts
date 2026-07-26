@@ -18,6 +18,7 @@ import {
   TraceKernelChildProcessError,
   TraceKernelDescriptorLimitError,
   TraceKernelHostClosedError,
+  TraceKernelInvalidArgumentError,
   TraceKernelProcessLimitError,
   TraceKernelProcessPermissionError,
   TraceKernelProcessStateError,
@@ -49,6 +50,8 @@ import type {
   TraceKernelRuntimeResult,
   TraceKernelSessionOptions,
   TraceKernelSignal,
+  TraceKernelWatchdogSignal,
+  TraceKernelWatchdogSnapshot,
 } from './model';
 import {
   TraceKernelFileSystem,
@@ -118,6 +121,7 @@ interface MutableProcessRecord {
   termination?: TraceKernelProcessTermination;
   stdout: string;
   stderr: string;
+  watchdog?: TraceKernelWatchdogSnapshot;
 }
 
 function signalExitCode(signal: TraceKernelSignal): number {
@@ -147,6 +151,7 @@ function immutableSnapshot(record: MutableProcessRecord): TraceKernelProcessSnap
     stdout: record.stdout,
     stderr: record.stderr,
     descriptors: Object.freeze([]),
+    ...(record.watchdog ? { watchdog: Object.freeze({ ...record.watchdog }) } : {}),
   });
 }
 
@@ -174,6 +179,11 @@ export class TraceKernelProcess {
 
   get pid(): number {
     return this.record.pid;
+  }
+
+  setWatchdog(watchdog?: TraceKernelWatchdogSnapshot): void {
+    if (watchdog) this.record.watchdog = Object.freeze({ ...watchdog });
+    else delete this.record.watchdog;
   }
 
   reparent(exitedParentPid: number, replacementPid: number): void {
@@ -417,6 +427,16 @@ export class TraceKernelSession {
   private readonly waitingChildren = new Set<number>();
   private readonly watchRegistry = new TraceKernelWatchRegistry();
   private readonly stopWatchingFileSystemMutations: () => void;
+  private readonly processWatchdogs = new Map<
+    number,
+    {
+      readonly token: symbol;
+      readonly timeoutMs: number;
+      readonly signal: TraceKernelWatchdogSignal;
+      readonly deadlineAt: number;
+      readonly fiber: Fiber.RuntimeFiber<void, never>;
+    }
+  >();
   private readonly resources = new Map<
     string,
     TraceKernelPipe | TraceKernelOpenFileDescription
@@ -518,6 +538,7 @@ export class TraceKernelSession {
           )
         )
       ).pipe(
+        Effect.ensuring(this.clearProcessWatchdog(process)),
         Effect.ensuring(process.descriptors.closeAll()),
         Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
       );
@@ -697,6 +718,94 @@ export class TraceKernelSession {
           pid,
           message: `ESRCH: process ${pid} does not exist in session ${this.id}`,
         }));
+  }
+
+  configureProcessWatchdog(
+    process: TraceKernelProcess,
+    action: 'arm' | 'pet' | 'disarm' | 'status',
+    options: {
+      readonly timeoutMs?: number;
+      readonly signal?: TraceKernelWatchdogSignal;
+    } = {}
+  ): Effect.Effect<TraceKernelWatchdogSnapshot | undefined, Error> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const current = this.processWatchdogs.get(process.pid);
+      if (action === 'status') return current
+        ? Object.freeze({
+            timeoutMs: current.timeoutMs,
+            signal: current.signal,
+            deadlineAt: current.deadlineAt,
+          })
+        : undefined;
+      if (action === 'disarm') {
+        yield* this.clearProcessWatchdog(process);
+        return undefined;
+      }
+      const timeoutMs = action === 'pet'
+        ? current?.timeoutMs
+        : options.timeoutMs;
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs === undefined || timeoutMs <= 0) {
+        return yield* Effect.fail(new TraceKernelInvalidArgumentError({
+          code: 'EINVAL',
+          argument: action === 'pet' ? 'watchdog' : 'timeoutMs',
+          message: action === 'pet'
+            ? 'EINVAL: cannot pet a disarmed watchdog'
+            : 'EINVAL: watchdog timeout must be a positive integer',
+        }));
+      }
+      const signal = action === 'pet'
+        ? current?.signal
+        : options.signal ?? 'SIGTERM';
+      if (!signal) {
+        return yield* Effect.fail(new TraceKernelInvalidArgumentError({
+          code: 'EINVAL',
+          argument: 'watchdog',
+          message: 'EINVAL: cannot pet a disarmed watchdog',
+        }));
+      }
+      yield* this.clearProcessWatchdog(process);
+      const token = Symbol(`watchdog-${process.pid}`);
+      const deadlineAt = Date.now() + timeoutMs;
+      const fiber = yield* Effect.forkIn(
+        Effect.sleep(timeoutMs).pipe(
+          Effect.andThen(Effect.suspend(() => {
+            if (this.processWatchdogs.get(process.pid)?.token !== token) {
+              return Effect.void;
+            }
+            this.processWatchdogs.delete(process.pid);
+            process.setWatchdog(undefined);
+            return process.signal(signal);
+          })),
+          Effect.ensuring(Effect.sync(() => {
+            if (this.processWatchdogs.get(process.pid)?.token === token) {
+              this.processWatchdogs.delete(process.pid);
+              process.setWatchdog(undefined);
+            }
+          }))
+        ),
+        this.scope
+      );
+      const snapshot = Object.freeze({ timeoutMs, signal, deadlineAt });
+      this.processWatchdogs.set(process.pid, {
+        token,
+        timeoutMs,
+        signal,
+        deadlineAt,
+        fiber,
+      });
+      process.setWatchdog(snapshot);
+      return snapshot;
+    });
+  }
+
+  private clearProcessWatchdog(
+    process: TraceKernelProcess
+  ): Effect.Effect<void> {
+    const watchdog = this.processWatchdogs.get(process.pid);
+    this.processWatchdogs.delete(process.pid);
+    process.setWatchdog(undefined);
+    return watchdog ? Fiber.interrupt(watchdog.fiber).pipe(Effect.asVoid) : Effect.void;
   }
 
   createPipe(
@@ -1064,6 +1173,7 @@ export class TraceKernelSession {
           this.processes.clear();
           this.exitedChildren.clear();
           this.waitingChildren.clear();
+          this.processWatchdogs.clear();
           this.resources.clear();
           this.fileSystem.clear();
           this.host.unregisterSession(this.id);

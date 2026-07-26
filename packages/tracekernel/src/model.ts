@@ -12,6 +12,16 @@ export type TraceKernelProcessPhase =
   | 'exited';
 
 export type TraceKernelSignal = 'SIGINT' | 'SIGTERM' | 'SIGKILL';
+export type TraceKernelWatchdogSignal = Extract<
+  TraceKernelSignal,
+  'SIGTERM' | 'SIGKILL'
+>;
+
+export interface TraceKernelWatchdogSnapshot {
+  readonly timeoutMs: number;
+  readonly signal: TraceKernelWatchdogSignal;
+  readonly deadlineAt: number;
+}
 
 export type TraceKernelPrincipalKind = 'user' | 'agent' | 'grader' | 'system';
 
@@ -62,6 +72,7 @@ export interface TraceKernelProcessSnapshot {
   readonly stdout: string;
   readonly stderr: string;
   readonly descriptors: readonly TraceKernelDescriptorSnapshot[];
+  readonly watchdog?: TraceKernelWatchdogSnapshot;
 }
 
 export interface TraceKernelProcessSpec {

@@ -715,6 +715,14 @@ interface RuntimeKernelZombieRecord {
   expiresAtMs: number;
 }
 
+interface RuntimeKernelWatchdogRecord {
+  readonly token: symbol;
+  readonly timeoutMs: number;
+  readonly signal: 'SIGTERM' | 'SIGKILL';
+  readonly deadlineAt: number;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 interface RuntimeKernelProcessLaunchHooks {
   initialize?: (
     process: RuntimeKernelProcessRecord,
@@ -1046,6 +1054,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
   private readonly anyProcessWaiters: Array<(process: RuntimeKernelProcessRecord) => void> = [];
   private readonly runtimeChildWaits = new Set<number>();
+  private readonly processWatchdogs = new Map<number, RuntimeKernelWatchdogRecord>();
   private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
   private readonly kernelJournalLog: KernelJournalRecord[] = [];
   private readonly httpListeners = new Map<string, RuntimeKernelHttpListenerRecord>();
@@ -1505,6 +1514,29 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             request.options
           );
           return { ok: true, value: { op: 'watch', fd } };
+        }
+        case 'watchdog': {
+          const process = this.runtimeSyscallProcess(context);
+          const watchdog = this.configureRuntimeProcessWatchdog(
+            process,
+            request.action,
+            request.timeoutMs,
+            request.signal
+          );
+          return {
+            ok: true,
+            value: {
+              op: 'watchdog',
+              armed: watchdog !== undefined,
+              ...(watchdog
+                ? {
+                    timeoutMs: watchdog.timeoutMs,
+                    signal: watchdog.signal,
+                    deadlineAt: watchdog.deadlineAt,
+                  }
+                : {}),
+            },
+          };
         }
         case 'pipe': {
           const process = this.runtimeSyscallProcess(context);
@@ -4303,6 +4335,91 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       process.abortController?.abort({ signal: signal.name, signalCode: signal.code, pid: process.pid });
     }
     return true;
+  }
+
+  private configureRuntimeProcessWatchdog(
+    process: RuntimeKernelProcessRecord,
+    action: 'arm' | 'pet' | 'disarm' | 'status',
+    timeoutMs?: number,
+    requestedSignal?: 'SIGTERM' | 'SIGKILL'
+  ): RuntimeKernelWatchdogRecord | undefined {
+    const current = this.processWatchdogs.get(process.pid);
+    if (action === 'status') return current;
+    if (action === 'disarm') {
+      this.clearRuntimeProcessWatchdog(process.pid);
+      this.recordKernelEvent('watchdog-disarm', process.pid);
+      return undefined;
+    }
+
+    const effectiveTimeoutMs = action === 'pet' ? current?.timeoutMs : timeoutMs;
+    if (
+      effectiveTimeoutMs === undefined ||
+      !Number.isSafeInteger(effectiveTimeoutMs) ||
+      effectiveTimeoutMs <= 0
+    ) {
+      throw Object.assign(
+        new Error(
+          action === 'pet'
+            ? 'EINVAL: cannot pet a disarmed watchdog'
+            : 'EINVAL: watchdog timeout must be a positive integer'
+        ),
+        { code: 'EINVAL' }
+      );
+    }
+    const signal = action === 'pet'
+      ? current?.signal
+      : requestedSignal ?? 'SIGTERM';
+    if (!signal) {
+      throw Object.assign(
+        new Error('EINVAL: cannot pet a disarmed watchdog'),
+        { code: 'EINVAL' }
+      );
+    }
+
+    this.clearRuntimeProcessWatchdog(process.pid);
+    const token = Symbol(`watchdog-${process.pid}`);
+    const deadlineAt = Date.now() + effectiveTimeoutMs;
+    const timer = setTimeout(() => {
+      if (this.processWatchdogs.get(process.pid)?.token !== token) return;
+      this.processWatchdogs.delete(process.pid);
+      this.recordKernelEvent('watchdog-expire', process.pid, {
+        timeoutMs: effectiveTimeoutMs,
+        signal,
+      });
+      this.signalProcess(process, signal);
+    }, effectiveTimeoutMs);
+    const watchdog = {
+      token,
+      timeoutMs: effectiveTimeoutMs,
+      signal,
+      deadlineAt,
+      timer,
+    } as const;
+    this.processWatchdogs.set(process.pid, watchdog);
+    this.recordKernelEvent(
+      action === 'pet' ? 'watchdog-pet' : 'watchdog-arm',
+      process.pid,
+      {
+        timeoutMs: effectiveTimeoutMs,
+        signal,
+        deadlineAt,
+      }
+    );
+    return watchdog;
+  }
+
+  private clearRuntimeProcessWatchdog(pid: number): void {
+    const watchdog = this.processWatchdogs.get(pid);
+    if (!watchdog) return;
+    this.processWatchdogs.delete(pid);
+    clearTimeout(watchdog.timer);
+  }
+
+  private clearAllRuntimeProcessWatchdogs(): void {
+    for (const watchdog of this.processWatchdogs.values()) {
+      clearTimeout(watchdog.timer);
+    }
+    this.processWatchdogs.clear();
   }
 
   private signalProcessGroup(
@@ -8004,11 +8121,26 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           await this.flushRuntimeEventQueue(commandContext);
           const output = this.captureReturnedOutput(commandContext, directExecutableResult);
           this.emitReturnedOutputEvents(output, commandContext);
+          if (commandContext.handledSignal && process.signal === commandContext.handledSignal) {
+            delete process.signal;
+            delete process.signalCode;
+            process.state = 'running';
+            this.recordKernelEvent('process-signal-handled', process.pid, {
+              signal: commandContext.handledSignal,
+            });
+          }
+          if (process.signal) {
+            const signalResult = this.signalCommandResult(process);
+            processExitCode = signalResult.exitCode;
+            return {
+              ...signalResult,
+              ...output,
+            };
+          }
           processExitCode = directExecutableResult.exitCode;
           return {
             ...directExecutableResult,
             ...output,
-            ...(!directExecutableResult.error && process.signal ? { error: this.signalCommandError(process) } : {}),
           };
         }
 
@@ -8124,7 +8256,22 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         };
       }
       throw error;
+    }).then((result) => {
+      // A runtime can resolve concurrently with host-side signal delivery.
+      // Arbitrate termination once more at the scheduler boundary so the
+      // kernel's unhandled signal owns the exit status, regardless of which
+      // promise continuation won inside the runner.
+      if (!process.signal) return result;
+      const signalResult = this.signalCommandResult(process);
+      processExitCode = signalResult.exitCode;
+      return {
+        ...result,
+        ...signalResult,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      };
     }).finally(async () => {
+      this.clearRuntimeProcessWatchdog(process.pid);
       this.closeHttpListenersForProcess(process.pid);
       try {
         await launchHooks?.beforeDescriptorClose?.(process, commandContext);
@@ -8487,6 +8634,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.kernelSyscallGenerationUnsubscribe = undefined;
     await this.kernelDescriptors.dispose();
     await this.kernelNetwork.dispose();
+    this.clearAllRuntimeProcessWatchdogs();
     this.processTable.clear();
     this.zombieProcessTable.clear();
     this.processWaiters.clear();
@@ -8801,6 +8949,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.eventWatchers.clear();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
+    this.clearAllRuntimeProcessWatchdogs();
     void Promise.all([
       this.kernelDescriptors.dispose(),
       this.kernelNetwork.dispose(),

@@ -5,6 +5,7 @@ import {
   TraceKernelChildProcessError,
   TraceKernelDescriptorLimitError,
   TraceKernelFileSystemError,
+  TraceKernelInvalidArgumentError,
   TraceKernelInvalidDescriptorOperationError,
   TraceKernelNetworkError,
   TraceKernelProcessLimitError,
@@ -12,7 +13,11 @@ import {
   TraceKernelProcessStateError,
 } from './errors';
 import type { TraceKernelProcess, TraceKernelSession } from './kernel';
-import type { TraceKernelProcessTermination, TraceKernelSignal } from './model';
+import type {
+  TraceKernelProcessTermination,
+  TraceKernelSignal,
+  TraceKernelWatchdogSignal,
+} from './model';
 import type {
   TraceKernelDirectoryEntry,
   TraceKernelMkdirOptions,
@@ -54,6 +59,12 @@ export type TraceKernelSyscallRequest =
       readonly op: 'watch';
       readonly path: string;
       readonly options?: TraceKernelWatchOptions;
+    }
+  | {
+      readonly op: 'watchdog';
+      readonly action: 'arm' | 'pet' | 'disarm' | 'status';
+      readonly timeoutMs?: number;
+      readonly signal?: TraceKernelWatchdogSignal;
     }
   | {
       readonly op: 'spawn';
@@ -217,6 +228,13 @@ export type TraceKernelSyscallValue =
     }
   | { readonly op: 'watch'; readonly fd: number }
   | {
+      readonly op: 'watchdog';
+      readonly armed: boolean;
+      readonly timeoutMs?: number;
+      readonly deadlineAt?: number;
+      readonly signal?: TraceKernelWatchdogSignal;
+    }
+  | {
       readonly op: 'spawn';
       readonly pid: number;
       readonly stdio?: TraceKernelSpawnParentStdio;
@@ -342,6 +360,9 @@ function syscallWireError(error: unknown): TraceKernelSyscallWireError {
   if (error instanceof TraceKernelProcessStateError) {
     return Object.freeze({ code: 'ESRCH', message: error.message });
   }
+  if (error instanceof TraceKernelInvalidArgumentError) {
+    return Object.freeze({ code: error.code, message: error.message });
+  }
   return Object.freeze({
     code: 'EIO',
     message: error instanceof Error ? error.message : String(error),
@@ -399,6 +420,21 @@ export class TraceKernelSyscallDispatcher {
           request.options
         ).pipe(
           Effect.map((fd) => ({ op: 'watch' as const, fd }))
+        );
+      case 'watchdog':
+        return this.session.configureProcessWatchdog(
+          this.process,
+          request.action,
+          {
+            timeoutMs: request.timeoutMs,
+            signal: request.signal,
+          }
+        ).pipe(
+          Effect.map((watchdog) => ({
+            op: 'watchdog' as const,
+            armed: watchdog !== undefined,
+            ...(watchdog ?? {}),
+          }))
         );
       case 'spawn':
         return (

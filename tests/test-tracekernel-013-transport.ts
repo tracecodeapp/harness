@@ -174,6 +174,15 @@ async function main(): Promise<void> {
       options: { recursive: true, capacityEvents: 32 },
     },
     {
+      op: 'watchdog',
+      action: 'arm',
+      timeoutMs: 5_000,
+      signal: 'SIGKILL',
+    },
+    { op: 'watchdog', action: 'pet' },
+    { op: 'watchdog', action: 'disarm' },
+    { op: 'watchdog', action: 'status' },
+    {
       op: 'spawn',
       runtime: 'javascript',
       command: 'node',
@@ -243,6 +252,17 @@ async function main(): Promise<void> {
   const results: readonly TraceKernelSyscallResult[] = [
     { ok: true, value: { op: 'pipe', readFd: 3, writeFd: 4 } },
     { ok: true, value: { op: 'watch', fd: 5 } },
+    {
+      ok: true,
+      value: {
+        op: 'watchdog',
+        armed: true,
+        timeoutMs: 5_000,
+        deadlineAt: 1_723_456_789_012,
+        signal: 'SIGKILL',
+      },
+    },
+    { ok: true, value: { op: 'watchdog', armed: false } },
     {
       ok: true,
       value: {

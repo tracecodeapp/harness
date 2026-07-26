@@ -52,6 +52,14 @@ export class TraceKernelChildProcessError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class TraceKernelInvalidArgumentError extends Data.TaggedError(
+  'TraceKernelInvalidArgumentError'
+)<{
+  readonly code: 'EINVAL';
+  readonly argument: string;
+  readonly message: string;
+}> {}
+
 export class TraceKernelBadFileDescriptorError extends Data.TaggedError(
   'TraceKernelBadFileDescriptorError'
 )<{
@@ -129,6 +137,7 @@ export type TraceKernelLifecycleError =
   | TraceKernelProcessLimitError
   | TraceKernelProcessPermissionError
   | TraceKernelChildProcessError
+  | TraceKernelInvalidArgumentError
   | TraceKernelBadFileDescriptorError
   | TraceKernelBrokenPipeError
   | TraceKernelDescriptorLimitError

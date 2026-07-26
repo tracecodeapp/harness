@@ -77,6 +77,15 @@ grace-period expiry force-interrupt the process and record signal termination.
 cleanup, lease release, and process-table removal remain attached to the same
 supervised process fiber in every path.
 
+Each process may own one kernel watchdog. The `watchdog` syscall arms, pets,
+disarms, or inspects it; its monotonic lifetime belongs to the process rather
+than a runtime event loop. Expiry delivers `SIGTERM` or unconditional
+`SIGKILL` through the normal signal path. Re-arming atomically supersedes the
+old timer, stale timers cannot signal after losing ownership, and process or
+session teardown cancels the timer before releasing the process record.
+Runtimes may expose these controls, but cannot implement or extend the deadline
+independently.
+
 Ownership policy is generic kernel metadata. System callers and a protected
 process's owning principal may signal it; foreign non-system principals receive
 `EACCES`. Actor-aware inspection hides an invisible process from foreign
@@ -432,6 +441,8 @@ The initial 0.13 branch now establishes:
 - explicit process lifecycle and termination records;
 - lease-level graceful `SIGINT`/`SIGTERM` delivery with a kernel-owned deadline
   and unconditional `SIGKILL` force interruption;
+- process-owned watchdog arm, pet, status, disarm, expiry, signal delivery, and
+  teardown with a transport-neutral syscall and JavaScript adapter;
 - process environment isolation;
 - process-owned descriptor tables;
 - explicit all-or-selected child descriptor inheritance with stable fd numbers,

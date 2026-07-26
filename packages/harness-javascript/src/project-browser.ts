@@ -1896,6 +1896,79 @@ function createStreamApi() {
   };
 }
 
+function createTraceKernelApi(
+  executionState: BrowserJavaScriptProjectExecutionState
+) {
+  type WatchdogSignal = 'SIGTERM' | 'SIGKILL';
+  type WatchdogStatus = Readonly<{
+    armed: boolean;
+    timeoutMs?: number;
+    signal?: WatchdogSignal;
+    deadlineAt?: number;
+  }>;
+
+  const dispatchWatchdog = (
+    request: Extract<TraceKernelSyscallRequest, { op: 'watchdog' }>
+  ): WatchdogStatus => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error('ENOSYS: TraceKernel process controls are unavailable'),
+        { code: 'ENOSYS' }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code,
+      });
+    }
+    if (result.value.op !== 'watchdog') {
+      throw Object.assign(
+        new Error(`EPROTO: expected watchdog response, received ${result.value.op}`),
+        { code: 'EPROTO' }
+      );
+    }
+    return Object.freeze({
+      armed: result.value.armed,
+      ...(result.value.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: result.value.timeoutMs }),
+      ...(result.value.signal === undefined
+        ? {}
+        : { signal: result.value.signal }),
+      ...(result.value.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: result.value.deadlineAt }),
+    });
+  };
+
+  return Object.freeze({
+    watchdog: Object.freeze({
+      arm: (
+        timeoutMs: number,
+        options: { signal?: WatchdogSignal } = {}
+      ): WatchdogStatus => dispatchWatchdog({
+        op: 'watchdog',
+        action: 'arm',
+        timeoutMs,
+        ...(options.signal ? { signal: options.signal } : {}),
+      }),
+      pet: (): WatchdogStatus => dispatchWatchdog({
+        op: 'watchdog',
+        action: 'pet',
+      }),
+      disarm: (): WatchdogStatus => dispatchWatchdog({
+        op: 'watchdog',
+        action: 'disarm',
+      }),
+      status: (): WatchdogStatus => dispatchWatchdog({
+        op: 'watchdog',
+        action: 'status',
+      }),
+    }),
+  });
+}
+
 function createChildProcessApi(
   executionState: BrowserJavaScriptProjectExecutionState,
   eventLoopApi: ReturnType<typeof createBrowserEventLoopApi>,
@@ -1968,7 +2041,7 @@ function createChildProcessApi(
       );
     }
     const result = executionState.kernelSyscalls.dispatchSync(syscall);
-    if (!result.ok) {
+    if (result.ok === false) {
       throw Object.assign(new Error(result.error.message), {
         code: result.error.code,
       });
@@ -5732,7 +5805,7 @@ export async function runBrowserJavaScriptProjectRequest(
         fd,
         bytes,
       });
-      if (result.ok) {
+      if (result.ok === true) {
         kernelStdioAvailability.set(fd, true);
         return true;
       }
@@ -6030,6 +6103,7 @@ export async function runBrowserJavaScriptProjectRequest(
       eventLoopApi,
       request
     );
+    const traceKernelApi = createTraceKernelApi(executionState);
     const cryptoApi = createCryptoApi();
     const timersPromisesApi = createTimersPromisesApi(eventLoopApi);
     const syncTextModule = (path: string, bytes: Uint8Array): void => {
@@ -7612,8 +7686,8 @@ export async function runBrowserJavaScriptProjectRequest(
               recursive: watcher.recursive,
             },
           });
-          if (!watched.ok || watched.value.op !== 'watch') {
-            const failure = watched.ok
+          if (watched.ok === false || watched.value.op !== 'watch') {
+            const failure = watched.ok === true
               ? { code: 'EPROTO', message: 'EPROTO: invalid watch syscall response' }
               : watched.error;
             throw Object.assign(new Error(failure.message), {
@@ -9682,6 +9756,8 @@ export async function runBrowserJavaScriptProjectRequest(
       ['node:stream', streamApi],
       ['child_process', childProcessApi],
       ['node:child_process', childProcessApi],
+      ['tracekernel', traceKernelApi],
+      ['node:tracekernel', traceKernelApi],
       ['timers/promises', timersPromisesApi],
       ['node:timers/promises', timersPromisesApi],
       ['crypto', cryptoApi],

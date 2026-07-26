@@ -617,6 +617,33 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'watchdog-control.js',
+              contents: [
+                'const { watchdog } = require("node:tracekernel");',
+                'const armed = watchdog.arm(5000, { signal: "SIGKILL" });',
+                'const status = watchdog.status();',
+                'const pauseUntil = performance.now() + 2;',
+                'while (performance.now() < pauseUntil) {}',
+                'const petted = watchdog.pet();',
+                'const disarmed = watchdog.disarm();',
+                'console.log(JSON.stringify({',
+                '  armed: armed.armed,',
+                '  statusMatches: status.armed && status.signal === "SIGKILL" && status.timeoutMs === 5000,',
+                '  petRenewed: petted.armed && petted.deadlineAt > armed.deadlineAt,',
+                '  disarmed: !disarmed.armed && !watchdog.status().armed,',
+                '}));',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'watchdog-expire.js',
+              contents: [
+                'require("tracekernel").watchdog.arm(40, { signal: "SIGKILL" });',
+                'setInterval(() => {}, 1000);',
+                '',
+              ].join('\n'),
+            },
             { path: 'isolation-private.txt', contents: 'parent-descriptor' },
             {
               path: 'isolation-child.js',
@@ -912,6 +939,8 @@ async function main(): Promise<void> {
           await workspace.writeFile('kernel-watch/from-host.txt', 'host');
           const kernelWatchWriter = await workspace.runCommand('node kernel-watch-writer.js');
           const kernelWatchReaderResult = await kernelWatchReader;
+          const watchdogControl = await workspace.runCommand('node watchdog-control.js');
+          const watchdogExpiry = await workspace.runCommand('node watchdog-expire.js');
           const processIsolation = await workspace.runCommand('node isolation-parent.js');
           const javascript = await workspace.runCommand('node conformance.js');
           const descriptors = await workspace.runCommand('node descriptor-conformance.js');
@@ -963,6 +992,8 @@ async function main(): Promise<void> {
             pipedChild,
             kernelWatchReader: kernelWatchReaderResult,
             kernelWatchWriter,
+            watchdogControl,
+            watchdogExpiry,
             processIsolation,
             javascript,
             descriptors,
@@ -1028,6 +1059,16 @@ async function main(): Promise<void> {
           result.kernelWatchReader.stdout.includes('rename:from-host.txt') &&
           result.kernelWatchReader.stdout.includes('rename:from-peer.txt'),
         `node:fs watch did not receive authoritative host and peer mutations: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.watchdogControl.exitCode === 0 &&
+          result.watchdogControl.stdout.includes('"armed":true') &&
+          result.watchdogControl.stdout.includes('"statusMatches":true') &&
+          result.watchdogControl.stdout.includes('"petRenewed":true') &&
+          result.watchdogControl.stdout.includes('"disarmed":true') &&
+          result.watchdogExpiry.exitCode === 137 &&
+          result.watchdogExpiry.error?.detail?.signal === 'SIGKILL',
+        `The JavaScript watchdog API did not preserve controls or kernel-enforced expiry: ${JSON.stringify(result)}`
       );
       assertCondition(
         result.processIsolation.exitCode === 0 &&
@@ -1166,6 +1207,8 @@ async function main(): Promise<void> {
           'pipe-eof-and-backpressure',
           'kernel-fs-watch-descriptor',
           'host-and-peer-watch-delivery',
+          'kernel-watchdog-arm-pet-disarm',
+          'kernel-watchdog-expiry-signal',
           'heap-and-global-isolation',
           'environment-copy-on-spawn',
           'descriptor-non-inheritance',

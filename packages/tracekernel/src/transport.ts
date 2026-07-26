@@ -48,6 +48,7 @@ const OP_CODES = {
   wait: 33,
   kill: 34,
   watch: 35,
+  watchdog: 36,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -328,6 +329,26 @@ export function encodeTraceKernelSyscallRequest(
       writer.u8(request.options?.recursive === true ? 1 : 0);
       writer.u32(request.options?.capacityEvents ?? 0);
       break;
+    case 'watchdog':
+      writer.u8(
+        request.action === 'arm'
+          ? 1
+          : request.action === 'pet'
+            ? 2
+            : request.action === 'disarm'
+              ? 3
+              : 4
+      );
+      writer.u8(request.timeoutMs === undefined ? 0 : 1);
+      if (request.timeoutMs !== undefined) writer.u32(request.timeoutMs);
+      writer.u8(
+        request.signal === undefined
+          ? 0
+          : request.signal === 'SIGTERM'
+            ? 1
+            : 2
+      );
+      break;
     case 'spawn': {
       writer.string(request.runtime);
       writer.string(request.command);
@@ -530,6 +551,45 @@ export function decodeTraceKernelSyscallRequest(
                 ...(capacityEvents === 0 ? {} : { capacityEvents }),
               },
             }),
+      };
+      break;
+    }
+    case 'watchdog': {
+      const actionCode = reader.u8();
+      if (actionCode < 1 || actionCode > 4) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid watchdog action ${actionCode}`
+        );
+      }
+      const hasTimeout = reader.u8();
+      if (hasTimeout > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid watchdog timeout flag ${hasTimeout}`
+        );
+      }
+      const timeoutMs = hasTimeout ? reader.u32() : undefined;
+      const signalCode = reader.u8();
+      if (signalCode > 2) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid watchdog signal ${signalCode}`
+        );
+      }
+      request = {
+        op: 'watchdog',
+        action: actionCode === 1
+          ? 'arm'
+          : actionCode === 2
+            ? 'pet'
+            : actionCode === 3
+              ? 'disarm'
+              : 'status',
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        ...(signalCode === 0
+          ? {}
+          : { signal: signalCode === 1 ? 'SIGTERM' : 'SIGKILL' }),
       };
       break;
     }
@@ -874,6 +934,14 @@ export function encodeTraceKernelSyscallResult(
     case 'watch':
       writer.i32(value.fd);
       break;
+    case 'watchdog':
+      writer.u8(value.armed ? 1 : 0);
+      if (value.armed) {
+        writer.u32(value.timeoutMs!);
+        writer.f64(value.deadlineAt!);
+        writer.u8(value.signal === 'SIGKILL' ? 2 : 1);
+      }
+      break;
     case 'spawn':
       writer.i32(value.pid);
       writer.u8(value.stdio?.stdinFd === undefined ? 0 : 1);
@@ -1016,6 +1084,36 @@ export function decodeTraceKernelSyscallResult(
     case 'watch':
       value = { op: 'watch', fd: reader.i32() };
       break;
+    case 'watchdog': {
+      const armed = reader.u8();
+      if (armed > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid watchdog armed flag ${armed}`
+        );
+      }
+      if (!armed) {
+        value = { op: 'watchdog', armed: false };
+        break;
+      }
+      const timeoutMs = reader.u32();
+      const deadlineAt = reader.f64();
+      const signalCode = reader.u8();
+      if (signalCode !== 1 && signalCode !== 2) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid watchdog response signal ${signalCode}`
+        );
+      }
+      value = {
+        op: 'watchdog',
+        armed: true,
+        timeoutMs,
+        deadlineAt,
+        signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
+      };
+      break;
+    }
     case 'spawn': {
       const pid = reader.i32();
       const hasStdin = reader.u8();

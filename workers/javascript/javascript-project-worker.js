@@ -76,7 +76,8 @@ var OP_CODES = {
   spawn: 32,
   wait: 33,
   kill: 34,
-  watch: 35
+  watch: 35,
+  watchdog: 36
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -274,6 +275,16 @@ function encodeTraceKernelSyscallRequest(request) {
       writer.u8(request.options?.recursive === true ? 1 : 0);
       writer.u32(request.options?.capacityEvents ?? 0);
       break;
+    case "watchdog":
+      writer.u8(
+        request.action === "arm" ? 1 : request.action === "pet" ? 2 : request.action === "disarm" ? 3 : 4
+      );
+      writer.u8(request.timeoutMs === void 0 ? 0 : 1);
+      if (request.timeoutMs !== void 0) writer.u32(request.timeoutMs);
+      writer.u8(
+        request.signal === void 0 ? 0 : request.signal === "SIGTERM" ? 1 : 2
+      );
+      break;
     case "spawn": {
       writer.string(request.runtime);
       writer.string(request.command);
@@ -468,6 +479,36 @@ function decodeTraceKernelSyscallResult(bytes) {
     case "watch":
       value = { op: "watch", fd: reader.i32() };
       break;
+    case "watchdog": {
+      const armed = reader.u8();
+      if (armed > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid watchdog armed flag ${armed}`
+        );
+      }
+      if (!armed) {
+        value = { op: "watchdog", armed: false };
+        break;
+      }
+      const timeoutMs = reader.u32();
+      const deadlineAt = reader.f64();
+      const signalCode = reader.u8();
+      if (signalCode !== 1 && signalCode !== 2) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid watchdog response signal ${signalCode}`
+        );
+      }
+      value = {
+        op: "watchdog",
+        armed: true,
+        timeoutMs,
+        deadlineAt,
+        signal: signalCode === 2 ? "SIGKILL" : "SIGTERM"
+      };
+      break;
+    }
     case "spawn": {
       const pid = reader.i32();
       const hasStdin = reader.u8();
@@ -1187,7 +1228,7 @@ var package_default = {
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
     "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
-    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
+    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
     "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
@@ -6627,6 +6668,56 @@ function createStreamApi() {
     PassThrough
   };
 }
+function createTraceKernelApi(executionState) {
+  const dispatchWatchdog = (request) => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error("ENOSYS: TraceKernel process controls are unavailable"),
+        { code: "ENOSYS" }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    if (result.value.op !== "watchdog") {
+      throw Object.assign(
+        new Error(`EPROTO: expected watchdog response, received ${result.value.op}`),
+        { code: "EPROTO" }
+      );
+    }
+    return Object.freeze({
+      armed: result.value.armed,
+      ...result.value.timeoutMs === void 0 ? {} : { timeoutMs: result.value.timeoutMs },
+      ...result.value.signal === void 0 ? {} : { signal: result.value.signal },
+      ...result.value.deadlineAt === void 0 ? {} : { deadlineAt: result.value.deadlineAt }
+    });
+  };
+  return Object.freeze({
+    watchdog: Object.freeze({
+      arm: (timeoutMs, options = {}) => dispatchWatchdog({
+        op: "watchdog",
+        action: "arm",
+        timeoutMs,
+        ...options.signal ? { signal: options.signal } : {}
+      }),
+      pet: () => dispatchWatchdog({
+        op: "watchdog",
+        action: "pet"
+      }),
+      disarm: () => dispatchWatchdog({
+        op: "watchdog",
+        action: "disarm"
+      }),
+      status: () => dispatchWatchdog({
+        op: "watchdog",
+        action: "status"
+      })
+    })
+  });
+}
 function createChildProcessApi(executionState, eventLoopApi, request) {
   const runtimeForCommand = (command) => {
     const name = command.split("/").at(-1)?.toLowerCase() ?? command.toLowerCase();
@@ -6665,7 +6756,7 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
       );
     }
     const result = executionState.kernelSyscalls.dispatchSync(syscall);
-    if (!result.ok) {
+    if (result.ok === false) {
       throw Object.assign(new Error(result.error.message), {
         code: result.error.code
       });
@@ -9249,7 +9340,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       fd: fd2,
       bytes
     });
-    if (result.ok) {
+    if (result.ok === true) {
       kernelStdioAvailability.set(fd2, true);
       return true;
     }
@@ -9520,6 +9611,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     eventLoopApi,
     request
   );
+  const traceKernelApi = createTraceKernelApi(executionState);
   const cryptoApi = createCryptoApi();
   const timersPromisesApi = createTimersPromisesApi(eventLoopApi);
   const syncTextModule = (path, bytes) => {
@@ -10944,8 +11036,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
             recursive: watcher.recursive
           }
         });
-        if (!watched.ok || watched.value.op !== "watch") {
-          const failure = watched.ok ? { code: "EPROTO", message: "EPROTO: invalid watch syscall response" } : watched.error;
+        if (watched.ok === false || watched.value.op !== "watch") {
+          const failure = watched.ok === true ? { code: "EPROTO", message: "EPROTO: invalid watch syscall response" } : watched.error;
           throw Object.assign(new Error(failure.message), {
             code: failure.code
           });
@@ -12810,6 +12902,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ["node:stream", streamApi],
     ["child_process", childProcessApi],
     ["node:child_process", childProcessApi],
+    ["tracekernel", traceKernelApi],
+    ["node:tracekernel", traceKernelApi],
     ["timers/promises", timersPromisesApi],
     ["node:timers/promises", timersPromisesApi],
     ["crypto", cryptoApi],
