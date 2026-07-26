@@ -212,6 +212,7 @@ async function main(): Promise<void> {
     { op: 'wait', pid: 101 },
     { op: 'wait', pid: 101, noHang: true },
     { op: 'identity' },
+    { op: 'identity', pid: 101 },
     { op: 'kill', pid: 102, signal: 'SIGTERM' },
     { op: 'setsid' },
     { op: 'setpgid', pid: 0, pgid: 0 },

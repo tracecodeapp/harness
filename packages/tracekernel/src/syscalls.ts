@@ -90,7 +90,7 @@ export type TraceKernelSyscallRequest =
       readonly pid: number;
       readonly noHang?: boolean;
     }
-  | { readonly op: 'identity' }
+  | { readonly op: 'identity'; readonly pid?: number }
   | {
       readonly op: 'kill';
       readonly pid: number;
@@ -581,16 +581,16 @@ export class TraceKernelSyscallDispatcher {
                 }))
           )
         );
-      case 'identity': {
-        const snapshot = this.process.snapshot();
-        return Effect.succeed({
-          op: 'identity' as const,
-          pid: snapshot.pid,
-          ppid: snapshot.ppid,
-          pgid: snapshot.pgid,
-          sid: snapshot.sid,
-        });
-      }
+      case 'identity':
+        return this.session.processIdentity(
+          this.process,
+          request.pid
+        ).pipe(
+          Effect.map((identity) => ({
+            op: 'identity' as const,
+            ...identity,
+          }))
+        );
       case 'kill':
         return this.session.signalProcessTarget(
           this.process.snapshot().owner,

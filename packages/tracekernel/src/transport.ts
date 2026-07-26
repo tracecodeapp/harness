@@ -427,6 +427,8 @@ export function encodeTraceKernelSyscallRequest(
       writer.u8(request.noHang ? 1 : 0);
       break;
     case 'identity':
+      writer.u8(request.pid === undefined ? 0 : 1);
+      if (request.pid !== undefined) writer.i32(request.pid);
       break;
     case 'kill':
       writer.i32(request.pid);
@@ -843,9 +845,20 @@ export function decodeTraceKernelSyscallRequest(
     case 'setpgid':
       request = { op: 'setpgid', pid: reader.i32(), pgid: reader.i32() };
       break;
-    case 'identity':
-      request = { op: 'identity' };
+    case 'identity': {
+      const hasPid = reader.u8();
+      if (hasPid > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid identity pid presence flag ${hasPid}`
+        );
+      }
+      request = {
+        op: 'identity',
+        ...(hasPid === 1 ? { pid: reader.i32() } : {}),
+      };
       break;
+    }
     case 'socket':
       request = { op: 'socket' };
       break;

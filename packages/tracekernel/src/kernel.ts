@@ -812,6 +812,63 @@ export class TraceKernelSession {
       .sort((left, right) => left.pid - right.pid);
   }
 
+  processIdentity(
+    caller: TraceKernelProcess,
+    requestedPid?: number
+  ): Effect.Effect<
+    {
+      readonly pid: number;
+      readonly ppid: number;
+      readonly pgid: number;
+      readonly sid: number;
+    },
+    TraceKernelProcessStateError
+  > {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(caller);
+      const pid = requestedPid === undefined || requestedPid === 0
+        ? caller.pid
+        : Math.trunc(requestedPid);
+      if (
+        !Number.isSafeInteger(requestedPid ?? 0) ||
+        pid <= 0
+      ) {
+        return yield* Effect.fail(new TraceKernelProcessStateError({
+          pid,
+          message: `ESRCH: invalid process identity target ${requestedPid}`,
+        }));
+      }
+      const target = this.processes.get(pid) ?? this.exitedChildren.get(pid);
+      if (!target) {
+        return yield* Effect.fail(new TraceKernelProcessStateError({
+          pid,
+          message: `ESRCH: process ${pid} does not exist in session ${this.id}`,
+        }));
+      }
+      const callerOwner = caller.snapshot().owner;
+      const snapshot = target.snapshot();
+      if (
+        !snapshot.visible &&
+        callerOwner.kind !== 'system' &&
+        (
+          callerOwner.id !== snapshot.owner.id ||
+          callerOwner.kind !== snapshot.owner.kind
+        )
+      ) {
+        return yield* Effect.fail(new TraceKernelProcessStateError({
+          pid,
+          message: `ESRCH: process ${pid} does not exist in session ${this.id}`,
+        }));
+      }
+      return {
+        pid: snapshot.pid,
+        ppid: snapshot.ppid,
+        pgid: snapshot.pgid,
+        sid: snapshot.sid,
+      };
+    });
+  }
+
   createProcessSession(
     process: TraceKernelProcess
   ): Effect.Effect<

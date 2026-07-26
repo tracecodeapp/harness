@@ -111,6 +111,19 @@ async function main(): Promise<void> {
           initialIdentity
         )}`
       );
+      const parentIdentity = yield* childTopologySyscalls.dispatch({
+        op: 'identity',
+        pid: process.pid,
+      });
+      success(parentIdentity);
+      assertCondition(
+        parentIdentity.value.op === 'identity' &&
+          parentIdentity.value.pid === process.pid &&
+          parentIdentity.value.ppid === 1,
+        `identity could not inspect another visible process in the session: ${JSON.stringify(
+          parentIdentity
+        )}`
+      );
       const createdSession = yield* childTopologySyscalls.dispatch({ op: 'setsid' });
       success(createdSession);
       assertCondition(
