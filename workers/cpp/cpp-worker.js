@@ -343,6 +343,10 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   shutdown: 28,
   getsockname: 29,
   getpeername: 30,
+  pipe: 31,
+  spawn: 32,
+  wait: 33,
+  kill: 34,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -546,6 +550,55 @@ class CppTraceKernelSyncClient {
     }
     writer.u8(operationCode);
     switch (request.op) {
+      case 'pipe':
+        writer.u32(request.options?.capacityChunks ?? 0);
+        break;
+      case 'spawn': {
+        writer.string(request.runtime);
+        writer.string(request.command);
+        writer.u32(request.args?.length ?? 0);
+        for (const arg of request.args ?? []) writer.string(arg);
+        writer.u8(request.cwd === undefined ? 0 : 1);
+        if (request.cwd !== undefined) writer.string(request.cwd);
+        const environment = Object.entries(request.env ?? {});
+        writer.u32(environment.length);
+        for (const [name, value] of environment) {
+          writer.string(name);
+          writer.string(value);
+        }
+        writer.u8(
+          request.inheritDescriptors === 'all'
+            ? 1
+            : request.inheritDescriptors === undefined
+              ? 0
+              : 2
+        );
+        if (
+          request.inheritDescriptors !== undefined &&
+          request.inheritDescriptors !== 'all'
+        ) {
+          writer.u32(request.inheritDescriptors.length);
+          for (const fd of request.inheritDescriptors) writer.i32(fd);
+        }
+        writer.u8(request.processGroupId === undefined ? 0 : 1);
+        if (request.processGroupId !== undefined) writer.i32(request.processGroupId);
+        writer.u8(request.sessionId === undefined ? 0 : 1);
+        if (request.sessionId !== undefined) writer.i32(request.sessionId);
+        break;
+      }
+      case 'wait':
+        writer.i32(request.pid);
+        break;
+      case 'kill':
+        writer.i32(request.pid);
+        writer.u8(
+          request.signal === 'SIGINT'
+            ? 1
+            : request.signal === 'SIGTERM'
+              ? 2
+              : 3
+        );
+        break;
       case 'socket':
         break;
       case 'bind':
@@ -678,6 +731,59 @@ class CppTraceKernelSyncClient {
     }
     let value;
     switch (operation) {
+      case 'pipe':
+        value = {
+          op: operation,
+          readFd: reader.i32(),
+          writeFd: reader.i32(),
+        };
+        break;
+      case 'spawn':
+        value = { op: operation, pid: reader.i32() };
+        break;
+      case 'wait': {
+        const pid = reader.i32();
+        const terminationCode = reader.u8();
+        const exitCode = reader.i32();
+        if (terminationCode === 1) {
+          value = {
+            op: operation,
+            pid,
+            termination: { kind: 'exit', exitCode },
+          };
+        } else if (terminationCode === 2) {
+          const signalCode = reader.u8();
+          value = {
+            op: operation,
+            pid,
+            termination: {
+              kind: 'signal',
+              signal: signalCode === 1
+                ? 'SIGINT'
+                : signalCode === 2
+                  ? 'SIGTERM'
+                  : 'SIGKILL',
+              exitCode,
+            },
+          };
+        } else if (terminationCode === 3) {
+          value = {
+            op: operation,
+            pid,
+            termination: {
+              kind: 'failure',
+              exitCode,
+              message: reader.string(),
+            },
+          };
+        } else {
+          throw new CppTraceKernelSyscallError(
+            'EPROTO',
+            `invalid process termination code ${terminationCode}`
+          );
+        }
+        break;
+      }
       case 'socket':
       case 'open':
       case 'dup':
@@ -1812,6 +1918,74 @@ function cppTraceKernelErrno(error, fallback = EIO) {
   return CPP_TRACEKERNEL_ERRNO[code] ?? fallback;
 }
 
+function parseCppProcessCommand(commandLine) {
+  const args = [];
+  let current = '';
+  let quote = null;
+  let escaping = false;
+  let started = false;
+  for (const character of String(commandLine)) {
+    if (escaping) {
+      current += character;
+      escaping = false;
+      started = true;
+      continue;
+    }
+    if (character === '\\' && quote !== "'") {
+      escaping = true;
+      started = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) {
+        quote = null;
+      } else {
+        current += character;
+      }
+      started = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (started) {
+        args.push(current);
+        current = '';
+        started = false;
+      }
+      continue;
+    }
+    if (';&|<>()`$'.includes(character)) {
+      throw new CppTraceKernelSyscallError(
+        'ENOTSUP',
+        'shell operators are not supported by the TraceKernel process bridge'
+      );
+    }
+    current += character;
+    started = true;
+  }
+  if (escaping || quote !== null) {
+    throw new CppTraceKernelSyscallError('EINVAL', 'unterminated process command');
+  }
+  if (started) args.push(current);
+  if (args.length === 0 || args[0].length === 0) {
+    throw new CppTraceKernelSyscallError('EINVAL', 'process command is empty');
+  }
+  return args;
+}
+
+function cppRuntimeForCommand(command) {
+  const name = String(command).replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+  if (name === 'node' || name === 'nodejs') return 'javascript';
+  if (name === 'python' || name === 'python3') return 'python';
+  if (name === 'java') return 'java';
+  if (name === 'dotnet') return 'csharp';
+  return 'cpp';
+}
+
 /**
  * Path-level WASI compatibility over the authoritative TraceKernel namespace.
  *
@@ -2143,6 +2317,7 @@ class WasiProcess {
     this.env = options.env || {};
     this.fs = options.fs;
     this.cwd = normalizePath(options.cwd || '/');
+    this.kernelCwd = normalizePath(options.kernelCwd || this.cwd);
     this.fs.addDirectory(this.cwd);
     this.stdinPipe = stdinPipeState(options.stdinPipe);
     this.stdinBytes = options.stdinBytes instanceof Uint8Array
@@ -2192,12 +2367,32 @@ class WasiProcess {
   }
 
   // Host functions imported through the `tracecode_kernel` wasm import module
-  // by the auto-linked tracecode_socket.c shim. Together with the standard
-  // WASI sock_accept/sock_recv/sock_send imports, these back plain BSD-socket
-  // programs: connect/send speak HTTP bytes which the worker converts to
-  // TraceKernel HTTP messages, so user code never sees a TraceCode API.
+  // by auto-linked compatibility shims. Process creation and socket operations
+  // cross the same synchronous syscall channel, so the session kernel owns
+  // child lifecycle and descriptor/network state rather than the WASM worker.
   tracecodeKernelImports() {
     return {
+      proc_system: (commandPtr, commandLen) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const invocation = parseCppProcessCommand(
+            this.mem.readString(commandPtr, commandLen >>> 0)
+          );
+          const command = invocation[0];
+          const spawned = this.kernelClient.call({
+            op: 'spawn',
+            runtime: cppRuntimeForCommand(command),
+            command,
+            args: invocation.slice(1),
+            cwd: this.kernelCwd,
+            env: this.env,
+          });
+          const waited = this.kernelClient.call({ op: 'wait', pid: spawned.pid });
+          return waited.termination.exitCode;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
       sock_open: (domain, _type) => {
         if (domain !== 1 && domain !== 2) return -EAFNOSUPPORT;
         if (this.kernelClient) {
@@ -4119,6 +4314,7 @@ async function runWasi(module, args, fs, options = {}) {
     args,
     fs,
     cwd: options.cwd || '/',
+    kernelCwd: options.kernelCwd,
     stdinPipe: options.stdinPipe,
     stdinBytes: options.stdinBytes,
     stdinText: options.stdinText,
@@ -10534,6 +10730,7 @@ function compileDriverOutsideMainWorker(driverSource) {
 const CPP_KERNEL_SOCKET_HEADER_FILENAME = 'tracecode_socket.h';
 const CPP_KERNEL_SOCKET_SHIM_FILENAME = 'tracecode_socket.c';
 const CPP_KERNEL_NETDB_HEADER_FILENAME = 'netdb.h';
+const CPP_KERNEL_PROCESS_SHIM_FILENAME = 'tracecode_process.c';
 
 // Declarations wasi-libc's <sys/socket.h> is missing; force-included into
 // every project TU so standard POSIX code compiles unchanged.
@@ -10783,6 +10980,25 @@ const char* gai_strerror(int code) {
 #endif
 `;
 
+const CPP_KERNEL_PROCESS_SHIM_SOURCE = String.raw`#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+
+__attribute__((import_module("tracecode_kernel"), import_name("proc_system")))
+int __tracecode_proc_system(const char* command, unsigned int length);
+
+int system(const char* command) {
+  int result;
+  if (command == 0) return 1;
+  result = __tracecode_proc_system(command, (unsigned int)strlen(command));
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return (result & 0xff) << 8;
+}
+`;
+
 function cppProjectHasFileNamed(files, filename) {
   return files.some((file) => {
     const path = String(file?.path || '').replace(/\\/g, '/');
@@ -10802,6 +11018,9 @@ function projectWithCppKernelNetworkShims(project) {
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_NETDB_HEADER_FILENAME)) {
     additions.push({ path: CPP_KERNEL_NETDB_HEADER_FILENAME, contents: CPP_KERNEL_NETDB_HEADER_SOURCE });
   }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_SHIM_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_PROCESS_SHIM_FILENAME, contents: CPP_KERNEL_PROCESS_SHIM_SOURCE });
+  }
   if (additions.length === 0) return project;
   return {
     ...(project && typeof project === 'object' ? project : {}),
@@ -10819,6 +11038,9 @@ function cppProjectArgsWithKernelNetwork(args, project) {
   const linking = !args.some((arg) => arg === '-c' || arg === '-S' || arg === '-E');
   if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_SHIM_FILENAME)) {
     injected.push(CPP_KERNEL_SOCKET_SHIM_FILENAME);
+  }
+  if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_SHIM_FILENAME)) {
+    injected.push(CPP_KERNEL_PROCESS_SHIM_FILENAME);
   }
   return [...injected, ...args];
 }
@@ -11515,6 +11737,7 @@ async function handleProjectCpp(request, messageId, kernelSyscallChannel) {
   try {
     program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], runtimeFs, {
       cwd: `/${requestCwdRelative(request)}`,
+      kernelCwd: request?.cwd || projectWorkspaceRoots(request)[0] || '/workspace',
       stdinPipe: request?.stdinPipe,
       env: request?.env || { USER: 'tracecode' },
       kernelDevices: projectKernelDevices(request?.project),

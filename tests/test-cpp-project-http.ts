@@ -135,6 +135,22 @@ const CPP_CROSS_LANGUAGE_FS_PROGRAM = [
   '',
 ].join('\n');
 
+const CPP_SPAWN_JAVASCRIPT_PROGRAM = [
+  '#include <cstdlib>',
+  '#include <fstream>',
+  '#include <iostream>',
+  '#include <iterator>',
+  '#include <string>',
+  'int main() {',
+  '  const int status = std::system("node cpp-child.js");',
+  '  std::ifstream input("cpp-child-owned.txt", std::ios::binary);',
+  '  std::string child((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());',
+  '  std::cout << "spawn:" << status << ":" << child << "\\n";',
+  '  return status == 0 && !child.empty() ? 0 : 1;',
+  '}',
+  '',
+].join('\n');
+
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
@@ -647,8 +663,17 @@ async function main(): Promise<void> {
     const crossLanguageWorkspace = await createRuntimeWorkspace({
       files: [
         { path: 'cross-language.cpp', contents: CPP_CROSS_LANGUAGE_FS_PROGRAM },
+        { path: 'spawn-javascript.cpp', contents: CPP_SPAWN_JAVASCRIPT_PROGRAM },
         { path: 'cpp-watches.txt', contents: 'before-js' },
         { path: 'js-watches.txt', contents: 'before-cpp' },
+        {
+          path: 'cpp-child.js',
+          contents: [
+            'const fs = require("node:fs");',
+            'fs.writeFileSync("cpp-child-owned.txt", `${process.ppid}:${process.pid}`);',
+            '',
+          ].join('\n'),
+        },
         {
           path: 'js-writer.js',
           contents: [
@@ -736,11 +761,82 @@ async function main(): Promise<void> {
           (cppWriting.files ?? []).length === 0,
         'cross-language mutations should be authoritative syscalls, not returned snapshot diffs'
       );
+
+      const spawnCompile = await crossLanguageWorkspace.runCommand(
+        'clang++ spawn-javascript.cpp -o a.out'
+      );
+      assertCondition(
+        spawnCompile.exitCode === 0,
+        `C++ process fixture should compile with the kernel process shim: ${JSON.stringify(spawnCompile)}`
+      );
+      const spawnExecutable = (await crossLanguageWorkspace.snapshot()).files.find(
+        (file) => file.path === 'a.out'
+      );
+      assertCondition(spawnExecutable !== undefined, 'C++ process fixture should emit a.out');
+      const spawnExecutableBytes = spawnExecutable.encoding === 'base64'
+        ? Buffer.from(spawnExecutable.contents, 'base64')
+        : Buffer.from(spawnExecutable.contents, 'utf8');
+      const spawnImports = WebAssembly.Module.imports(
+        await WebAssembly.compile(spawnExecutableBytes)
+      );
+      assertCondition(
+        spawnImports.some(
+          (item) => item.module === 'tracecode_kernel' && item.name === 'proc_system'
+        ),
+        `C++ process fixture should import TraceKernel proc_system: ${JSON.stringify(spawnImports)}`
+      );
+      const spawnedJavaScript = await crossLanguageWorkspace.runCommand('./a.out');
+      const spawnEventsAfterRun = await crossLanguageWorkspace.readFile('/proc/tracekernel/events');
+      const childIdentity = /^spawn:0:(\d+):(\d+)\n$/.exec(spawnedJavaScript.stdout);
+      assertCondition(
+        spawnedJavaScript.exitCode === 0 &&
+          childIdentity !== null &&
+          childIdentity[1] !== childIdentity[2] &&
+          await crossLanguageWorkspace.readFile('cpp-child-owned.txt') ===
+            `${childIdentity[1]}:${childIdentity[2]}`,
+        `C++ system() should spawn and wait for a distinct JavaScript process over TraceKernel: ${JSON.stringify({
+          result: spawnedJavaScript,
+          events: spawnEventsAfterRun,
+        })}`
+      );
+      const spawnEvents = spawnEventsAfterRun;
+      const eventRows = spawnEvents.trim().split('\n').slice(1).map((line) => {
+        const [seq, time, type, pid, detail] = line.split('\t');
+        return {
+          seq,
+          time,
+          type,
+          pid: Number(pid),
+          detail: detail ? JSON.parse(detail) as { command?: string; ppid?: number } : {},
+        };
+      });
+      const parentStart = eventRows.find(
+        (event) =>
+          event.type === 'process-start' &&
+          event.detail.command === './a.out' &&
+          event.pid === Number(childIdentity[1])
+      );
+      const childStart = eventRows.find(
+        (event) => event.type === 'process-start' && event.detail.command === 'node cpp-child.js'
+      );
+      assertCondition(
+        parentStart !== undefined &&
+          childStart !== undefined &&
+          childStart.detail.ppid === parentStart.pid &&
+          childStart.pid === Number(childIdentity[2]) &&
+          childStart.detail.ppid === Number(childIdentity[1]) &&
+          eventRows.some((event) => event.type === 'process-reap' && event.pid === childStart.pid),
+        `TraceKernel should own the C++-created JavaScript child hierarchy through reap: ${JSON.stringify({
+          parentStart,
+          childStart,
+          events: eventRows.filter((event) => event.pid === childStart?.pid),
+        })}`
+      );
     } finally {
       crossLanguageWorkspace.dispose();
       javascriptRunner.dispose?.();
     }
-    console.log('PASS: C++ and JavaScript observe each other through one TraceKernel filesystem');
+    console.log('PASS: C++ and JavaScript share files and C++ can spawn/reap JavaScript through TraceKernel');
 
     const tcpWorkspace = await createRuntimeWorkspace({
       files: [{ path: 'tcp.cpp', contents: CPP_TK_TCP_PROGRAM }],
