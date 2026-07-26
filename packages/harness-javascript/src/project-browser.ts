@@ -1974,12 +1974,15 @@ function createChildProcessApi(
   eventLoopApi: ReturnType<typeof createBrowserEventLoopApi>,
   request: JavaScriptProjectCommandRequest
 ) {
+  type SpawnRequest = Extract<TraceKernelSyscallRequest, { op: 'spawn' }>;
+  type StdioMode = 'pipe' | 'inherit' | 'ignore';
+  type StdioEntry = StdioMode | number | null | undefined;
   interface SpawnOptions {
     cwd?: string;
     detached?: boolean;
     env?: Record<string, unknown>;
     signal?: AbortSignal;
-    stdio?: 'pipe' | 'inherit' | 'ignore';
+    stdio?: StdioMode | readonly StdioEntry[];
   }
 
   const runtimeForCommand = (command: string): string => {
@@ -2015,12 +2018,15 @@ function createChildProcessApi(
     ) as SpawnOptions | undefined;
     if (
       options?.stdio !== undefined &&
+      !Array.isArray(options.stdio) &&
       options.stdio !== 'pipe' &&
       options.stdio !== 'inherit' &&
       options.stdio !== 'ignore'
     ) {
       throw Object.assign(
-        new TypeError('The "stdio" option must be "pipe", "inherit", or "ignore"'),
+        new TypeError(
+          'The "stdio" option must be "pipe", "inherit", "ignore", or an array'
+        ),
         { code: 'ERR_INVALID_ARG_VALUE' }
       );
     }
@@ -2029,6 +2035,60 @@ function createChildProcessApi(
       args,
       options: options ?? {},
     };
+  };
+  const stdioPlan = (
+    stdio: SpawnOptions['stdio'],
+    fallback: StdioMode
+  ): {
+    readonly stdio: NonNullable<SpawnRequest['stdio']>;
+    readonly descriptorMappings: NonNullable<SpawnRequest['descriptorMappings']>;
+    readonly hasPipe: boolean;
+  } => {
+    if (!Array.isArray(stdio)) {
+      const mode = (stdio ?? fallback) as StdioMode;
+      return {
+        stdio: { stdin: mode, stdout: mode, stderr: mode },
+        descriptorMappings: [],
+        hasPipe: mode === 'pipe',
+      };
+    }
+    const modes: {
+      stdin?: StdioMode;
+      stdout?: StdioMode;
+      stderr?: StdioMode;
+    } = {};
+    const descriptorMappings: Array<
+      NonNullable<SpawnRequest['descriptorMappings']>[number]
+    > = [];
+    let hasPipe = false;
+    const length = Math.max(3, stdio.length);
+    for (let childFd = 0; childFd < length; childFd += 1) {
+      const entry = stdio[childFd] ?? (childFd < 3 ? 'pipe' : 'ignore');
+      if (typeof entry === 'number' && Number.isSafeInteger(entry) && entry >= 0) {
+        descriptorMappings.push({ parentFd: entry, childFd });
+        continue;
+      }
+      if (entry !== 'pipe' && entry !== 'inherit' && entry !== 'ignore') {
+        throw Object.assign(
+          new TypeError(`Unsupported stdio entry at index ${childFd}`),
+          { code: entry === 'ipc' ? 'ENOSYS' : 'ERR_INVALID_ARG_VALUE' }
+        );
+      }
+      if (childFd < 3) {
+        modes[
+          childFd === 0 ? 'stdin' : childFd === 1 ? 'stdout' : 'stderr'
+        ] = entry;
+      } else if (entry === 'inherit') {
+        descriptorMappings.push({ parentFd: childFd, childFd });
+      } else if (entry === 'pipe') {
+        throw Object.assign(
+          new Error('ENOSYS: piped stdio descriptors above fd 2 are not implemented'),
+          { code: 'ENOSYS' }
+        );
+      }
+      if (entry === 'pipe') hasPipe = true;
+    }
+    return { stdio: modes, descriptorMappings, hasPipe };
   };
   const syncDispatch = <
     Operation extends TraceKernelSyscallValue['op']
@@ -2302,7 +2362,7 @@ function createChildProcessApi(
     maybeOptions?: unknown
   ): BrowserChildProcess => {
     const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
-    const stdioMode = invocation.options.stdio ?? 'pipe';
+    const plan = stdioPlan(invocation.options.stdio, 'pipe');
     const spawned = syncDispatch({
       op: 'spawn',
       runtime: runtimeForCommand(invocation.command),
@@ -2317,11 +2377,10 @@ function createChildProcessApi(
       ...(invocation.options.detached
         ? { processGroupId: 0, sessionId: 0 }
         : {}),
-      stdio: {
-        stdin: stdioMode,
-        stdout: stdioMode,
-        stderr: stdioMode,
-      },
+      ...(plan.descriptorMappings.length > 0
+        ? { descriptorMappings: plan.descriptorMappings }
+        : {}),
+      stdio: plan.stdio,
     });
     const child = new BrowserChildProcess(
       spawned.pid,
@@ -2367,13 +2426,13 @@ function createChildProcessApi(
     maybeOptions?: unknown
   ) => {
     const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
-    if ((invocation.options.stdio ?? 'pipe') === 'pipe') {
+    const plan = stdioPlan(invocation.options.stdio, 'ignore');
+    if (plan.hasPipe) {
       throw Object.assign(
         new Error('ENOSYS: synchronous piped child stdio requires a nonblocking host capture path'),
         { code: 'ENOSYS' }
       );
     }
-    const stdioMode = invocation.options.stdio ?? 'ignore';
     const spawned = syncDispatch({
       op: 'spawn',
       runtime: runtimeForCommand(invocation.command),
@@ -2388,11 +2447,10 @@ function createChildProcessApi(
       ...(invocation.options.detached
         ? { processGroupId: 0, sessionId: 0 }
         : {}),
-      stdio: {
-        stdin: stdioMode,
-        stdout: stdioMode,
-        stderr: stdioMode,
-      },
+      ...(plan.descriptorMappings.length > 0
+        ? { descriptorMappings: plan.descriptorMappings }
+        : {}),
+      stdio: plan.stdio,
     });
     const waited = syncDispatch({ op: 'wait', pid: spawned.pid });
     return {

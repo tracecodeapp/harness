@@ -754,6 +754,30 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'fd-remap-child.js',
+              contents: [
+                'require("node:fs").writeSync(9, "javascript-inherited-fd");',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'fd-remap-parent.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const { spawn } = require("node:child_process");',
+                'const fd = fs.openSync("javascript-inherited-fd.txt", "w");',
+                'const stdio = Array(10).fill("ignore");',
+                'stdio[9] = fd;',
+                'const child = spawn("node", ["fd-remap-child.js"], { stdio });',
+                'child.on("error", (error) => { throw error; });',
+                'child.on("close", (code) => {',
+                '  fs.closeSync(fd);',
+                '  console.log(`fd-remap:${code}:${fs.readFileSync("javascript-inherited-fd.txt", "utf8")}`);',
+                '});',
+                '',
+              ].join('\n'),
+            },
             { path: 'conformance.js', contents: javascriptSource },
             { path: 'descriptor-conformance.js', contents: descriptorSource },
             { path: 'conformance.ts', contents: typescriptSource },
@@ -960,6 +984,7 @@ async function main(): Promise<void> {
           const spawnedChild = await workspace.runCommand('node spawn-parent.js');
           const processGroup = await workspace.runCommand('node group-parent.js');
           const pipedChild = await workspace.runCommand('node stdio-parent.js');
+          const remappedDescriptor = await workspace.runCommand('node fd-remap-parent.js');
           let markKernelWatchReady!: () => void;
           const kernelWatchReady = new Promise<void>((resolvePromise) => {
             markKernelWatchReady = resolvePromise;
@@ -1039,6 +1064,7 @@ async function main(): Promise<void> {
             spawnedChild,
             processGroup,
             pipedChild,
+            remappedDescriptor,
             kernelWatchReader: kernelWatchReaderResult,
             kernelWatchWriter,
             watchdogControl,
@@ -1106,6 +1132,15 @@ async function main(): Promise<void> {
           result.pipedChild.stdout.includes('"stdoutHex":"00ff01fe"') &&
           result.pipedChild.stdout.includes('child-stderr:98314'),
         `node:child_process stdio did not preserve bytes, EOF, and backpressure: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.remappedDescriptor.exitCode === 0 &&
+          result.remappedDescriptor.stdout.includes(
+            'fd-remap:0:javascript-inherited-fd'
+          ),
+        `node:child_process numeric stdio did not map a parent fd into the child: ${JSON.stringify(
+          result
+        )}`
       );
       assertCondition(
         result.kernelWatchReader.exitCode === 0 &&
@@ -1268,6 +1303,7 @@ async function main(): Promise<void> {
           'heap-and-global-isolation',
           'environment-copy-on-spawn',
           'descriptor-non-inheritance',
+          'numeric-stdio-descriptor-mapping',
         ],
         adapters: ['javascript', 'typescript-emitted-javascript'],
         hostCapabilityEnforcement: true,

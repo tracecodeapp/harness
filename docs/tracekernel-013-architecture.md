@@ -435,6 +435,13 @@ JavaScript leaders with JavaScript descendants from Node, Python, and C#
 parents and proves one negative PGID signal terminates each tree without
 reaching its parent.
 
+Node `child_process` also accepts numeric entries in the `stdio` array. The
+adapter converts each parent-fd/child-index pair into an atomic kernel
+descriptor mapping, including descriptors above stderr, while string
+`pipe`/`inherit`/`ignore` modes retain their structured behavior. Arbitrary
+extra piped descriptors and IPC channels return `ENOSYS` until the spawn
+response can return a variable set of parent pipe endpoints.
+
 The C/C++ WASI process compatibility slice is intentionally smaller than a
 complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,
 `SIGTERM`, and `SIGKILL`, and maps `posix_spawnp` through TraceKernel's runtime
