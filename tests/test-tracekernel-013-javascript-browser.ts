@@ -547,6 +547,69 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            { path: 'isolation-private.txt', contents: 'parent-descriptor' },
+            {
+              path: 'isolation-child.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const inheritedNumber = Number(process.argv[2]);',
+                'const report = {',
+                '  inheritedEnv: process.env.TRACEKERNEL_ISOLATION,',
+                '  inheritedPrototype: Array.prototype.tracekernelIsolation ?? null,',
+                '  inheritedGlobal: globalThis.tracekernelIsolation ?? null,',
+                '  parentDescriptorRead: null,',
+                '};',
+                'try {',
+                '  const bytes = Buffer.alloc(32);',
+                '  const count = fs.readSync(inheritedNumber, bytes, 0, bytes.length, 0);',
+                '  report.parentDescriptorRead = bytes.subarray(0, count).toString("utf8");',
+                '} catch (error) {',
+                '  report.parentDescriptorRead = error.code;',
+                '}',
+                'process.env.TRACEKERNEL_ISOLATION = "child-env";',
+                'Array.prototype.tracekernelIsolation = "child-prototype";',
+                'globalThis.tracekernelIsolation = { owner: "child" };',
+                'fs.writeFileSync("isolation-report.json", JSON.stringify(report));',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'isolation-parent.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const { spawn } = require("node:child_process");',
+                'const memory = Buffer.from("parent-memory");',
+                'const state = { owner: "parent", count: 7 };',
+                'globalThis.tracekernelIsolation = state;',
+                'Array.prototype.tracekernelIsolation = "parent-prototype";',
+                'process.env.TRACEKERNEL_ISOLATION = "parent-env";',
+                'const fd = fs.openSync("isolation-private.txt", "r");',
+                'const child = spawn("node", ["isolation-child.js", String(fd)], { stdio: "inherit" });',
+                'child.on("error", (error) => { throw error; });',
+                'child.on("close", (code) => {',
+                '  const bytes = Buffer.alloc(32);',
+                '  const count = fs.readSync(fd, bytes, 0, bytes.length, 0);',
+                '  fs.closeSync(fd);',
+                '  const report = JSON.parse(fs.readFileSync("isolation-report.json", "utf8"));',
+                '  const isolated = code === 0 &&',
+                '    memory.toString("utf8") === "parent-memory" &&',
+                '    state.owner === "parent" && state.count === 7 &&',
+                '    globalThis.tracekernelIsolation === state &&',
+                '    Array.prototype.tracekernelIsolation === "parent-prototype" &&',
+                '    process.env.TRACEKERNEL_ISOLATION === "parent-env" &&',
+                '    bytes.subarray(0, count).toString("utf8") === "parent-descriptor" &&',
+                '    report.inheritedEnv === "parent-env" &&',
+                '    report.inheritedPrototype === null &&',
+                '    report.inheritedGlobal === null &&',
+                '    report.parentDescriptorRead === "EBADF";',
+                '  delete Array.prototype.tracekernelIsolation;',
+                '  delete globalThis.tracekernelIsolation;',
+                '  delete process.env.TRACEKERNEL_ISOLATION;',
+                '  console.log(`isolation:${isolated}:${child.pid !== process.pid}`);',
+                '});',
+                '',
+              ].join('\n'),
+            },
             { path: 'conformance.js', contents: javascriptSource },
             { path: 'descriptor-conformance.js', contents: descriptorSource },
             { path: 'conformance.ts', contents: typescriptSource },
@@ -751,6 +814,7 @@ async function main(): Promise<void> {
           await workspace.writeFile('host-cycle-ready.txt', 'ready');
           const hostCycleReaderResult = await hostCycleReader;
           const spawnedChild = await workspace.runCommand('node spawn-parent.js');
+          const processIsolation = await workspace.runCommand('node isolation-parent.js');
           const javascript = await workspace.runCommand('node conformance.js');
           const descriptors = await workspace.runCommand('node descriptor-conformance.js');
           const compile = await workspace.runCommand('tsc --project tsconfig.json');
@@ -798,6 +862,7 @@ async function main(): Promise<void> {
             nodeHttpClient,
             hostCycleReader: hostCycleReaderResult,
             spawnedChild,
+            processIsolation,
             javascript,
             descriptors,
             compile,
@@ -808,6 +873,7 @@ async function main(): Promise<void> {
             shared: await workspace.readFile('shared.txt'),
             hostCycle: await workspace.readFile('host-cycle.txt'),
             spawnChild: await workspace.readFile('spawn-child.txt'),
+            isolationReport: JSON.parse(await workspace.readFile('isolation-report.json')),
             javascriptMarker: javascript.exitCode === 0
               ? await workspace.readFile('conformance-javascript.txt')
               : null,
@@ -844,6 +910,15 @@ async function main(): Promise<void> {
           result.spawnedChild.stdout.includes('spawn:0:null:true:true') &&
           /^[0-9]+:[0-9]+$/.test(result.spawnChild),
         `node:child_process did not acquire and reap a distinct worker process: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.processIsolation.exitCode === 0 &&
+          result.processIsolation.stdout.includes('isolation:true:true') &&
+          result.isolationReport.inheritedEnv === 'parent-env' &&
+          result.isolationReport.inheritedPrototype === null &&
+          result.isolationReport.inheritedGlobal === null &&
+          result.isolationReport.parentDescriptorRead === 'EBADF',
+        `A child process mutated or acquired parent-private process state: ${JSON.stringify(result)}`
       );
       assertCondition(
         result.descriptorWriter.exitCode === 0 &&
@@ -969,6 +1044,9 @@ async function main(): Promise<void> {
           'distinct-child-pid',
           'parent-pid-topology',
           'child-wait-and-reap',
+          'heap-and-global-isolation',
+          'environment-copy-on-spawn',
+          'descriptor-non-inheritance',
         ],
         adapters: ['javascript', 'typescript-emitted-javascript'],
         hostCapabilityEnforcement: true,

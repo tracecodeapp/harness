@@ -221,6 +221,39 @@ async function main(): Promise<void> {
       });
       yield* parent.write(sharedFd, encoder.encode('parent-'));
 
+      const isolatedChild = yield* inheritanceSession.spawn({
+        runtime: 'blocking-test',
+        command: 'descriptor-isolated-child',
+        parentPid: parent.pid,
+      });
+      yield* isolatedChild.awaitStarted();
+      assertCondition(
+        isolatedChild.snapshot().descriptors.length === 0,
+        `Default child spawn leaked parent descriptors: ${JSON.stringify(
+          isolatedChild.snapshot().descriptors
+        )}`
+      );
+      const isolatedRead = yield* Effect.exit(isolatedChild.read(privateFd, 32));
+      assertCondition(
+        Exit.isFailure(isolatedRead),
+        'A child read a parent descriptor that was not explicitly inherited.'
+      );
+      if (Exit.isFailure(isolatedRead)) {
+        const failure = Cause.failureOption(isolatedRead.cause);
+        assertCondition(
+          Option.isSome(failure) &&
+            failure.value instanceof TraceKernelBadFileDescriptorError,
+          `Non-inherited descriptor access did not return EBADF: ${Cause.pretty(
+            isolatedRead.cause
+          )}`
+        );
+      }
+      const parentPrivate = yield* parent.read(privateFd, 32, 0);
+      assertCondition(
+        decoder.decode(parentPrivate) === 'private',
+        'Rejected child descriptor access changed the parent descriptor state.'
+      );
+
       const child = yield* inheritanceSession.spawn({
         runtime: 'blocking-test',
         command: 'descriptor-child',
@@ -263,7 +296,7 @@ async function main(): Promise<void> {
         assertCondition(
           Option.isSome(failure) &&
             failure.value instanceof TraceKernelBadFileDescriptorError &&
-            inheritanceSession.processSnapshots().length === 2,
+            inheritanceSession.processSnapshots().length === 3,
           `Failed inheritance was not rolled back atomically: ${Cause.pretty(invalidInheritance.cause)}`
         );
       }
@@ -274,6 +307,7 @@ async function main(): Promise<void> {
       yield* Effect.all([
         parent.signal('SIGTERM'),
         child.signal('SIGTERM'),
+        isolatedChild.signal('SIGTERM'),
       ], { concurrency: 'unbounded', discard: true });
       assertCondition(
         inheritanceSession.resourceIds().length === 0,
@@ -282,8 +316,8 @@ async function main(): Promise<void> {
     })
   ));
 
-  assertCondition(leaseAcquireCount === 5, `Expected five runtime leases, acquired ${leaseAcquireCount}.`);
-  assertCondition(leaseReleaseCount === 5, `Expected five runtime lease releases, observed ${leaseReleaseCount}.`);
+  assertCondition(leaseAcquireCount === 6, `Expected six runtime leases, acquired ${leaseAcquireCount}.`);
+  assertCondition(leaseReleaseCount === 6, `Expected six runtime lease releases, observed ${leaseReleaseCount}.`);
 
   console.log(JSON.stringify({
     schema: 'tracekernel-013-descriptors-v1',
@@ -296,6 +330,7 @@ async function main(): Promise<void> {
     descriptorCeilingReturnsEmfile: true,
     lowestAvailableFdReused: true,
     failedInstallsReleaseResources: true,
+    defaultDescriptorNonInheritance: true,
     selectiveDescriptorInheritance: true,
     inheritedOpenDescriptionShared: true,
     failedInheritanceRollsBack: true,
