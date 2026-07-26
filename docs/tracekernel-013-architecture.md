@@ -58,6 +58,14 @@ overrides them. When a parent exits before its child, the child remains alive
 and is reparented to the session's logical init PID 1; nonexistent parents fail
 with `ESRCH` before process admission.
 
+The process-bound `kill` syscall applies UNIX PID selectors inside the virtual
+session: a positive PID addresses one process, `0` addresses the caller's
+process group, a negative value below `-1` addresses that PGID, and `-1`
+addresses every other signalable process. Group delivery never crosses a
+TraceKernel session. An empty selection returns `ESRCH`; if every selected
+member is protected from the caller it returns `EACCES`; partial permission is
+successful when at least one member accepts delivery.
+
 The lifecycle phase is:
 
 ```text

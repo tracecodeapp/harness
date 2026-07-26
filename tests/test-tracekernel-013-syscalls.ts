@@ -523,6 +523,67 @@ async function main(): Promise<void> {
       yield* peerSyscalls.dispatch({ op: 'close', fd: clientSocket.value.fd });
       yield* syscalls.dispatch({ op: 'close', fd: acceptedSocket.value.fd });
       yield* syscalls.dispatch({ op: 'close', fd: listener.value.fd });
+
+      const groupLeader = yield* session.spawn({
+        runtime: 'syscall-test',
+        command: 'syscall-group-leader',
+        owner: process.snapshot().owner,
+      });
+      yield* groupLeader.awaitStarted();
+      const [groupChildA, groupChildB] = yield* Effect.all([
+        session.spawn({
+          runtime: 'syscall-test',
+          command: 'syscall-group-child-a',
+          parentPid: groupLeader.pid,
+          owner: process.snapshot().owner,
+        }),
+        session.spawn({
+          runtime: 'syscall-test',
+          command: 'syscall-group-child-b',
+          parentPid: groupLeader.pid,
+          owner: process.snapshot().owner,
+        }),
+      ], { concurrency: 'unbounded' });
+      yield* Effect.all([
+        groupChildA.awaitStarted(),
+        groupChildB.awaitStarted(),
+      ], { concurrency: 'unbounded', discard: true });
+      const processGroupId = groupLeader.snapshot().pgid;
+      assertCondition(
+        groupChildA.snapshot().pgid === processGroupId &&
+          groupChildB.snapshot().pgid === processGroupId,
+        'Child processes did not retain their inherited process group.'
+      );
+      const groupKill = yield* syscalls.dispatch({
+        op: 'kill',
+        pid: -processGroupId,
+        signal: 'SIGTERM',
+      });
+      success(groupKill);
+      const groupTerminations = yield* Effect.all([
+        groupLeader.wait(),
+        groupChildA.wait(),
+        groupChildB.wait(),
+      ], { concurrency: 'unbounded' });
+      assertCondition(
+        groupTerminations.every((snapshot) =>
+          snapshot.termination?.kind === 'signal' &&
+          snapshot.termination.signal === 'SIGTERM'
+        ) &&
+          process.snapshot().phase === 'running' &&
+          peer.snapshot().phase === 'running',
+        `Process-group kill escaped its PGID or missed a member: ${JSON.stringify(groupTerminations)}`
+      );
+      const missingGroup = yield* syscalls.dispatch({
+        op: 'kill',
+        pid: -999_999,
+        signal: 'SIGTERM',
+      });
+      assertCondition(
+        !missingGroup.ok && missingGroup.error.code === 'ESRCH',
+        `Missing process-group kill did not return ESRCH: ${JSON.stringify(missingGroup)}`
+      );
+
       yield* peer.signal('SIGTERM');
       yield* process.signal('SIGTERM');
 
@@ -564,6 +625,7 @@ async function main(): Promise<void> {
     namespaceOperationsShareTheWireContract: true,
     tcpOperationsShareTheWireContract: true,
     processAndPipeOperationsShareTheWireContract: true,
+    unixProcessGroupSignalSelectors: true,
     childStdioUsesProcessOwnedDescriptors: true,
     childWriterCloseProducesEof: true,
     childWaitReapsExactlyOnce: true,

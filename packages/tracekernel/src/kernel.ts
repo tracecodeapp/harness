@@ -720,6 +720,76 @@ export class TraceKernelSession {
         }));
   }
 
+  /**
+   * Apply the POSIX kill(2) PID selector rules inside this session.
+   *
+   * A positive value selects one process, zero selects the caller's process
+   * group, a value below -1 selects that process group, and -1 selects every
+   * other process the requester may signal. Group delivery succeeds when at
+   * least one member accepts the signal; an entirely protected target set
+   * reports EACCES, while an empty selector reports ESRCH.
+   */
+  signalProcessTarget(
+    requester: TraceKernelPrincipal,
+    caller: TraceKernelProcess,
+    targetPid: number,
+    signal: TraceKernelSignal
+  ): Effect.Effect<
+    void,
+    TraceKernelProcessStateError | TraceKernelProcessPermissionError
+  > {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(caller);
+      const selector = Math.trunc(targetPid);
+      if (!Number.isSafeInteger(targetPid)) {
+        return yield* Effect.fail(new TraceKernelProcessStateError({
+          pid: selector,
+          message: `ESRCH: invalid process selector ${targetPid}`,
+        }));
+      }
+      if (selector > 0) {
+        return yield* this.signalProcess(requester, selector, signal);
+      }
+
+      const callerSnapshot = caller.snapshot();
+      const candidates = [...this.processes.values()].filter((process) => {
+        const snapshot = process.snapshot();
+        if (selector === -1) return snapshot.pid !== caller.pid;
+        const processGroupId = selector === 0
+          ? callerSnapshot.pgid
+          : -selector;
+        return snapshot.pgid === processGroupId;
+      });
+      if (candidates.length === 0) {
+        return yield* Effect.fail(new TraceKernelProcessStateError({
+          pid: selector,
+          message: selector === -1
+            ? `ESRCH: no other processes exist in session ${this.id}`
+            : `ESRCH: process group ${selector === 0 ? callerSnapshot.pgid : -selector} does not exist in session ${this.id}`,
+        }));
+      }
+
+      const deliveries = yield* Effect.forEach(
+        candidates,
+        (process) => process.signal(signal, requester).pipe(
+          Effect.match({
+            onFailure: (error) => ({ delivered: false as const, error }),
+            onSuccess: () => ({ delivered: true as const }),
+          })
+        ),
+        { concurrency: 'unbounded' }
+      );
+      if (deliveries.some((delivery) => delivery.delivered)) return;
+      const denied = deliveries.find(
+        (delivery): delivery is {
+          readonly delivered: false;
+          readonly error: TraceKernelProcessPermissionError;
+        } => !delivery.delivered
+      );
+      if (denied) return yield* Effect.fail(denied.error);
+    });
+  }
+
   configureProcessWatchdog(
     process: TraceKernelProcess,
     action: 'arm' | 'pet' | 'disarm' | 'status',

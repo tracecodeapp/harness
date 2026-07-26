@@ -484,8 +484,9 @@ export class TraceKernelSyscallDispatcher {
           )
         );
       case 'kill':
-        return this.session.signalProcess(
+        return this.session.signalProcessTarget(
           this.process.snapshot().owner,
+          this.process,
           request.pid,
           request.signal
         ).pipe(
