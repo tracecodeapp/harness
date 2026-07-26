@@ -327,6 +327,113 @@ public sealed record KernelPipe(
     }
 }
 
+[Flags]
+public enum KernelPollEvents
+{
+    None = 0,
+    Read = 1,
+    Write = 2,
+    Hangup = 4,
+    Error = 8,
+    Invalid = 16,
+}
+
+public sealed record KernelPollRequest(
+    int Descriptor,
+    KernelPollEvents Events
+);
+
+public sealed record KernelPollResult(
+    int Descriptor,
+    KernelPollEvents Events
+);
+
+[SupportedOSPlatform("browser")]
+public static class KernelPoll
+{
+    private const KernelPollEvents RequestedEvents =
+        KernelPollEvents.Read | KernelPollEvents.Write;
+
+    public static IReadOnlyList<KernelPollResult> Wait(
+        IEnumerable<KernelPollRequest> requests,
+        int timeoutMs = -1
+    )
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        if (timeoutMs < -1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(timeoutMs),
+                "Poll timeout must be -1 (infinite) or non-negative."
+            );
+        }
+        KernelPollRequest[] entries = requests.ToArray();
+        foreach (KernelPollRequest entry in entries)
+        {
+            if (entry.Descriptor < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(requests),
+                    "Poll descriptors must be non-negative."
+                );
+            }
+            if ((entry.Events & ~RequestedEvents) != 0)
+            {
+                throw new ArgumentException(
+                    "Poll requests support only Read and Write events.",
+                    nameof(requests)
+                );
+            }
+        }
+        Dictionary<string, object?> request = new()
+        {
+            ["op"] = "poll",
+            ["entries"] = entries.Select(entry => new
+            {
+                fd = entry.Descriptor,
+                read = (entry.Events & KernelPollEvents.Read) != 0,
+                write = (entry.Events & KernelPollEvents.Write) != 0,
+            }).ToArray(),
+        };
+        if (timeoutMs >= 0)
+        {
+            request["timeoutMs"] = timeoutMs;
+        }
+        JsonElement value = KernelInterop.Call(request);
+        return value.GetProperty("entries")
+            .EnumerateArray()
+            .Select(entry =>
+            {
+                KernelPollEvents events = KernelPollEvents.None;
+                if (entry.GetProperty("read").GetBoolean())
+                {
+                    events |= KernelPollEvents.Read;
+                }
+                if (entry.GetProperty("write").GetBoolean())
+                {
+                    events |= KernelPollEvents.Write;
+                }
+                if (entry.GetProperty("hangup").GetBoolean())
+                {
+                    events |= KernelPollEvents.Hangup;
+                }
+                if (entry.GetProperty("error").GetBoolean())
+                {
+                    events |= KernelPollEvents.Error;
+                }
+                if (entry.GetProperty("invalid").GetBoolean())
+                {
+                    events |= KernelPollEvents.Invalid;
+                }
+                return new KernelPollResult(
+                    entry.GetProperty("fd").GetInt32(),
+                    events
+                );
+            })
+            .ToArray();
+    }
+}
+
 public sealed record DescriptorMapping(
     int ParentDescriptor,
     int ChildDescriptor
