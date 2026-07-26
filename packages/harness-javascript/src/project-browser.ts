@@ -1199,7 +1199,7 @@ function createReadableStdinDevice(
     }
     const requested = typeof size === 'number' && size >= 0 ? Math.floor(size) : undefined;
     const chunk = BrowserBuffer.from(readBytes(requested));
-    if (remainingBytes() <= 0) ended = true;
+    if (remainingBytes() <= 0) ended = isClosed();
     return formatChunk(chunk);
   };
   const scheduleFlow = (): void => {
@@ -1904,7 +1904,7 @@ function createChildProcessApi(
     cwd?: string;
     env?: Record<string, unknown>;
     signal?: AbortSignal;
-    stdio?: 'inherit' | 'ignore';
+    stdio?: 'pipe' | 'inherit' | 'ignore';
   }
 
   const runtimeForCommand = (command: string): string => {
@@ -1940,12 +1940,13 @@ function createChildProcessApi(
     ) as SpawnOptions | undefined;
     if (
       options?.stdio !== undefined &&
+      options.stdio !== 'pipe' &&
       options.stdio !== 'inherit' &&
       options.stdio !== 'ignore'
     ) {
       throw Object.assign(
-        new Error('ENOSYS: piped child stdio is not available yet'),
-        { code: 'ENOSYS' }
+        new TypeError('The "stdio" option must be "pipe", "inherit", or "ignore"'),
+        { code: 'ERR_INVALID_ARG_VALUE' }
       );
     }
     return {
@@ -1983,12 +1984,190 @@ function createChildProcessApi(
       syscall
     );
 
+  class BrowserChildReadable extends BrowserEventEmitter {
+    readonly readable = true;
+    private encoding: string | undefined;
+    private closed = false;
+    readonly completion: Promise<void>;
+
+    constructor(private readonly fd: number) {
+      super();
+      this.completion = eventLoopApi.track(this.pump());
+      void this.completion.catch((error) => {
+        if (!this.closed) this.emit('error', error);
+      });
+    }
+
+    setEncoding(encoding: string): this {
+      this.encoding = encoding;
+      return this;
+    }
+
+    pipe(destination: { write(chunk: unknown): unknown; end?: () => unknown }): typeof destination {
+      this.on('data', (chunk) => destination.write(chunk));
+      this.on('end', () => destination.end?.());
+      return destination;
+    }
+
+    pause(): this {
+      return this;
+    }
+
+    resume(): this {
+      return this;
+    }
+
+    destroy(): this {
+      if (this.closed) return this;
+      this.closed = true;
+      void eventLoopApi.track(
+        asyncDispatch({ op: 'close', fd: this.fd }).catch(() => undefined)
+      );
+      return this;
+    }
+
+    private async pump(): Promise<void> {
+      try {
+        while (!this.closed) {
+          const result = await asyncDispatch({
+            op: 'read',
+            fd: this.fd,
+            maxBytes: 16 * 1024,
+          });
+          if (result.bytes.byteLength === 0) break;
+          const chunk = BrowserBuffer.from(result.bytes);
+          this.emit(
+            'data',
+            this.encoding ? chunk.toString(this.encoding) : chunk
+          );
+        }
+        if (!this.closed) this.emit('end');
+      } finally {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: 'close', fd: this.fd }).catch(() => undefined);
+          this.emit('close');
+        }
+      }
+    }
+  }
+
+  class BrowserChildWritable extends BrowserEventEmitter {
+    readonly writable = true;
+    private ended = false;
+    private closed = false;
+    private queuedBytes = 0;
+    private tail = Promise.resolve();
+
+    constructor(private readonly fd: number) {
+      super();
+    }
+
+    write(
+      chunk: unknown,
+      encodingOrCallback?: string | ((error?: Error | null) => void),
+      callback?: (error?: Error | null) => void
+    ): boolean {
+      const completion = typeof encodingOrCallback === 'function'
+        ? encodingOrCallback
+        : callback;
+      if (this.ended) {
+        const error = Object.assign(new Error('write after end'), {
+          code: 'ERR_STREAM_WRITE_AFTER_END',
+        });
+        globalThis.queueMicrotask(() => {
+          completion?.(error);
+          this.emit('error', error);
+        });
+        return false;
+      }
+      const bytes = BrowserBuffer.isBuffer(chunk)
+        ? Uint8Array.from(chunk)
+        : typeof chunk === 'string'
+          ? BrowserBuffer.from(chunk, typeof encodingOrCallback === 'string' ? encodingOrCallback : undefined)
+          : Uint8Array.from(bytesFromNodeValue(chunk));
+      this.queuedBytes += bytes.byteLength;
+      const belowHighWaterMark = this.queuedBytes < 64 * 1024;
+      this.tail = this.tail.then(async () => {
+        try {
+          await asyncDispatch({ op: 'write', fd: this.fd, bytes });
+          completion?.(null);
+        } catch (error) {
+          completion?.(error instanceof Error ? error : new Error(String(error)));
+          this.emit('error', error);
+        } finally {
+          const wasBackpressured = this.queuedBytes >= 64 * 1024;
+          this.queuedBytes = Math.max(0, this.queuedBytes - bytes.byteLength);
+          if (wasBackpressured && this.queuedBytes < 64 * 1024) {
+            this.emit('drain');
+          }
+        }
+      });
+      void eventLoopApi.track(this.tail.catch(() => undefined));
+      return belowHighWaterMark;
+    }
+
+    end(
+      chunkOrCallback?: unknown,
+      encodingOrCallback?: string | (() => void),
+      callback?: () => void
+    ): this {
+      const chunk = typeof chunkOrCallback === 'function'
+        ? undefined
+        : chunkOrCallback;
+      const completion = typeof chunkOrCallback === 'function'
+        ? chunkOrCallback as () => void
+        : typeof encodingOrCallback === 'function'
+          ? encodingOrCallback
+          : callback;
+      if (chunk !== undefined) {
+        this.write(
+          chunk,
+          typeof encodingOrCallback === 'string' ? encodingOrCallback : undefined
+        );
+      }
+      if (this.ended) return this;
+      this.ended = true;
+      const closing = this.tail.then(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: 'close', fd: this.fd }).catch(() => undefined);
+        }
+        this.emit('finish');
+        this.emit('close');
+        completion?.();
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
+    }
+
+    destroy(): this {
+      if (this.closed) return this;
+      this.ended = true;
+      const closing = this.tail.finally(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: 'close', fd: this.fd }).catch(() => undefined);
+          this.emit('close');
+        }
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
+    }
+  }
+
   class BrowserChildProcess extends BrowserEventEmitter {
     readonly pid: number;
-    readonly stdin = null;
-    readonly stdout = null;
-    readonly stderr = null;
-    readonly stdio = [null, null, null] as const;
+    readonly stdin: BrowserChildWritable | null;
+    readonly stdout: BrowserChildReadable | null;
+    readonly stderr: BrowserChildReadable | null;
+    readonly stdio: readonly [
+      BrowserChildWritable | null,
+      BrowserChildReadable | null,
+      BrowserChildReadable | null,
+    ];
     connected = false;
     exitCode: number | null = null;
     signalCode: string | null = null;
@@ -1996,10 +2175,25 @@ function createChildProcessApi(
 
     constructor(
       pid: number,
+      stdio: {
+        readonly stdinFd?: number;
+        readonly stdoutFd?: number;
+        readonly stderrFd?: number;
+      } | undefined,
       signal?: AbortSignal
     ) {
       super();
       this.pid = pid;
+      this.stdin = stdio?.stdinFd === undefined
+        ? null
+        : new BrowserChildWritable(stdio.stdinFd);
+      this.stdout = stdio?.stdoutFd === undefined
+        ? null
+        : new BrowserChildReadable(stdio.stdoutFd);
+      this.stderr = stdio?.stderrFd === undefined
+        ? null
+        : new BrowserChildReadable(stdio.stderrFd);
+      this.stdio = [this.stdin, this.stdout, this.stderr] as const;
       if (signal) {
         const abort = () => this.kill('SIGTERM');
         if (signal.aborted) abort();
@@ -2033,6 +2227,7 @@ function createChildProcessApi(
     maybeOptions?: unknown
   ): BrowserChildProcess => {
     const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const stdioMode = invocation.options.stdio ?? 'pipe';
     const spawned = syncDispatch({
       op: 'spawn',
       runtime: runtimeForCommand(invocation.command),
@@ -2044,15 +2239,21 @@ function createChildProcessApi(
           .filter(([, value]) => value !== undefined)
           .map(([name, value]) => [name, String(value)])
       ),
+      stdio: {
+        stdin: stdioMode,
+        stdout: stdioMode,
+        stderr: stdioMode,
+      },
     });
     const child = new BrowserChildProcess(
       spawned.pid,
+      spawned.stdio,
       invocation.options.signal
     );
     globalThis.queueMicrotask(() => child.emit('spawn'));
     void eventLoopApi.track(
       asyncDispatch({ op: 'wait', pid: spawned.pid }).then(
-        (waited) => {
+        async (waited) => {
           if (waited.termination.kind === 'signal') {
             child.signalCode = waited.termination.signal;
           } else {
@@ -2063,6 +2264,10 @@ function createChildProcessApi(
             child.exitCode,
             child.signalCode
           );
+          await Promise.all([
+            child.stdout?.completion,
+            child.stderr?.completion,
+          ]);
           child.emit(
             'close',
             child.exitCode,
@@ -2084,6 +2289,13 @@ function createChildProcessApi(
     maybeOptions?: unknown
   ) => {
     const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    if ((invocation.options.stdio ?? 'pipe') === 'pipe') {
+      throw Object.assign(
+        new Error('ENOSYS: synchronous piped child stdio requires a nonblocking host capture path'),
+        { code: 'ENOSYS' }
+      );
+    }
+    const stdioMode = invocation.options.stdio ?? 'ignore';
     const spawned = syncDispatch({
       op: 'spawn',
       runtime: runtimeForCommand(invocation.command),
@@ -2095,6 +2307,11 @@ function createChildProcessApi(
           .filter(([, value]) => value !== undefined)
           .map(([name, value]) => [name, String(value)])
       ),
+      stdio: {
+        stdin: stdioMode,
+        stdout: stdioMode,
+        stderr: stdioMode,
+      },
     });
     const waited = syncDispatch({ op: 'wait', pid: spawned.pid });
     return {
@@ -5503,6 +5720,29 @@ export async function runBrowserJavaScriptProjectRequest(
       }
     };
     let mainModule: ModuleRecord | undefined;
+    const kernelStdioAvailability = new Map<number, boolean>();
+
+    const tryWriteKernelStdio = (fd: 1 | 2, bytes: Uint8Array): boolean => {
+      if (kernelStdioAvailability.get(fd) === false || !executionState.kernelSyscalls) {
+        return false;
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: 'write',
+        fd,
+        bytes,
+      });
+      if (result.ok) {
+        kernelStdioAvailability.set(fd, true);
+        return true;
+      }
+      if (result.error.code === 'EBADF') {
+        kernelStdioAvailability.set(fd, false);
+        return false;
+      }
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code,
+      });
+    };
 
     const emitOutput = (
       stream: 'stdout' | 'stderr',
@@ -5524,6 +5764,12 @@ export async function runBrowserJavaScriptProjectRequest(
         if (runtimeKernelDeviceOutputTarget(kernelDevices, device) === '/dev/null') return;
         throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
       }
+      if (
+        tryWriteKernelStdio(
+          route.stream === 'stdout' ? 1 : 2,
+          new TextEncoder().encode(data)
+        )
+      ) return;
       emitOutput(route.stream, data, route.outputDevice, route.sourceDevice);
     };
 
@@ -5551,10 +5797,10 @@ export async function runBrowserJavaScriptProjectRequest(
 
     const consoleApi = {
       log: (...values: unknown[]) => {
-        emitOutput('stdout', `${formatConsoleValues(values)}\n`);
+        writeDevice('/dev/stdout', `${formatConsoleValues(values)}\n`);
       },
       error: (...values: unknown[]) => {
-        emitOutput('stderr', `${formatConsoleValues(values)}\n`);
+        writeDevice('/dev/stderr', `${formatConsoleValues(values)}\n`);
       },
     };
 
@@ -5608,8 +5854,9 @@ export async function runBrowserJavaScriptProjectRequest(
         },
         write: (value: unknown, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
           const bytes = bytesFromFsWriteValue(value, typeof encoding === 'string' ? encoding : undefined);
-          const data = textFromBytes(bytes);
-          writeDevice(device, data);
+          if (!tryWriteKernelStdio(fd === 1 ? 1 : 2, bytes)) {
+            writeDevice(device, textFromBytes(bytes));
+          }
           bytesWritten += bytes.byteLength;
           const done = typeof encoding === 'function' ? encoding : callback;
           done?.(null);

@@ -25,6 +25,23 @@ import type {
   TraceKernelTcpShutdownHow,
 } from './network';
 
+export type TraceKernelSpawnStdioMode = 'pipe' | 'inherit' | 'ignore';
+
+export interface TraceKernelSpawnStdio {
+  readonly stdin?: TraceKernelSpawnStdioMode;
+  readonly stdout?: TraceKernelSpawnStdioMode;
+  readonly stderr?: TraceKernelSpawnStdioMode;
+}
+
+export interface TraceKernelSpawnParentStdio {
+  /** Parent-owned writer connected to the child's fd 0. */
+  readonly stdinFd?: number;
+  /** Parent-owned reader connected to the child's fd 1. */
+  readonly stdoutFd?: number;
+  /** Parent-owned reader connected to the child's fd 2. */
+  readonly stderrFd?: number;
+}
+
 export type TraceKernelSyscallRequest =
   | {
       readonly op: 'pipe';
@@ -40,6 +57,7 @@ export type TraceKernelSyscallRequest =
       readonly cwd?: string;
       readonly env?: Readonly<Record<string, string>>;
       readonly inheritDescriptors?: 'all' | readonly number[];
+      readonly stdio?: TraceKernelSpawnStdio;
       readonly processGroupId?: number;
       readonly sessionId?: number;
     }
@@ -191,7 +209,11 @@ export type TraceKernelSyscallValue =
       readonly readFd: number;
       readonly writeFd: number;
     }
-  | { readonly op: 'spawn'; readonly pid: number }
+  | {
+      readonly op: 'spawn';
+      readonly pid: number;
+      readonly stdio?: TraceKernelSpawnParentStdio;
+    }
   | {
       readonly op: 'wait';
       readonly pid: number;
@@ -363,17 +385,36 @@ export class TraceKernelSyscallDispatcher {
           }))
         );
       case 'spawn':
-        return this.session.spawnChild(this.process, {
-          runtime: request.runtime,
-          command: request.command,
-          args: request.args,
-          cwd: request.cwd,
-          env: request.env,
-          inheritDescriptors: request.inheritDescriptors,
-          processGroupId: request.processGroupId,
-          sessionId: request.sessionId,
-        }).pipe(
-          Effect.map((child) => ({ op: 'spawn' as const, pid: child.pid }))
+        return (
+          request.stdio
+            ? this.session.spawnChildWithStdio(this.process, {
+                runtime: request.runtime,
+                command: request.command,
+                args: request.args,
+                cwd: request.cwd,
+                env: request.env,
+                inheritDescriptors: request.inheritDescriptors,
+                processGroupId: request.processGroupId,
+                sessionId: request.sessionId,
+              }, request.stdio)
+            : this.session.spawnChild(this.process, {
+                runtime: request.runtime,
+                command: request.command,
+                args: request.args,
+                cwd: request.cwd,
+                env: request.env,
+                inheritDescriptors: request.inheritDescriptors,
+                processGroupId: request.processGroupId,
+                sessionId: request.sessionId,
+              }).pipe(
+                Effect.map((process) => ({ process }))
+              )
+        ).pipe(
+          Effect.map(({ process, stdio }) => ({
+            op: 'spawn' as const,
+            pid: process.pid,
+            ...(stdio ? { stdio } : {}),
+          }))
         );
       case 'wait':
         return this.session.waitChild(this.process, request.pid).pipe(

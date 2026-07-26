@@ -862,7 +862,64 @@ export function readRuntimeCommandStdinPipeBytes(
     out.set(state.bytes.subarray(0, length - firstLength), firstLength);
   }
   Atomics.store(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
+  Atomics.notify(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
   return out;
+}
+
+/**
+ * Backpressure-aware binary writer used by kernel pipe adapters.
+ *
+ * Interactive terminal writes intentionally retain their immediate
+ * fail-when-full API. A process pipe instead suspends until the runtime has
+ * consumed space so a slow child cannot cause snapshotting or dropped bytes.
+ */
+export async function writeRuntimeCommandStdinPipeBytes(
+  pipe: RuntimeCommandStdinPipe,
+  data: Uint8Array
+): Promise<void> {
+  const state = runtimeCommandStdinPipeState(pipe);
+  let offset = 0;
+  while (offset < data.byteLength) {
+    if (Atomics.load(state.header, RUNTIME_STDIN_PIPE_CLOSED_INDEX) !== 0) {
+      throw Object.assign(
+        new Error('EPIPE: cannot write to closed live stdin pipe'),
+        { code: 'EPIPE' }
+      );
+    }
+    const readIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
+    const writeIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+    const capacity = state.bytes.byteLength;
+    const available = readIndex <= writeIndex
+      ? capacity - (writeIndex - readIndex) - 1
+      : readIndex - writeIndex - 1;
+    if (available === 0) {
+      const waitAsync = (
+        Atomics as typeof Atomics & {
+          waitAsync?: (
+            array: Int32Array,
+            index: number,
+            value: number
+          ) => { readonly value: Promise<unknown> | string };
+        }
+      ).waitAsync;
+      if (waitAsync) {
+        const waiting = waitAsync(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, readIndex).value;
+        if (typeof waiting !== 'string') await waiting;
+      } else {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      }
+      continue;
+    }
+    const length = Math.min(available, data.byteLength - offset);
+    let nextWriteIndex = writeIndex;
+    for (let index = 0; index < length; index += 1) {
+      state.bytes[nextWriteIndex] = data[offset + index]!;
+      nextWriteIndex = (nextWriteIndex + 1) % capacity;
+    }
+    offset += length;
+    Atomics.store(state.header, RUNTIME_STDIN_PIPE_WRITE_INDEX, nextWriteIndex);
+    Atomics.notify(state.header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+  }
 }
 
 export interface RuntimeCommandResult {

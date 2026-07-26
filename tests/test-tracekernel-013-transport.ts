@@ -178,6 +178,11 @@ async function main(): Promise<void> {
       inheritDescriptors: [0, 1, 2, 7],
       processGroupId: 100,
       sessionId: 100,
+      stdio: {
+        stdin: 'pipe',
+        stdout: 'inherit',
+        stderr: 'ignore',
+      },
     },
     { op: 'wait', pid: 101 },
     { op: 'kill', pid: 102, signal: 'SIGTERM' },
@@ -232,7 +237,18 @@ async function main(): Promise<void> {
 
   const results: readonly TraceKernelSyscallResult[] = [
     { ok: true, value: { op: 'pipe', readFd: 3, writeFd: 4 } },
-    { ok: true, value: { op: 'spawn', pid: 101 } },
+    {
+      ok: true,
+      value: {
+        op: 'spawn',
+        pid: 101,
+        stdio: {
+          stdinFd: 8,
+          stdoutFd: 9,
+          stderrFd: 10,
+        },
+      },
+    },
     {
       ok: true,
       value: {

@@ -59,6 +59,10 @@ import {
   type TraceKernelOpenFileOptions,
   type TraceKernelStat,
 } from './vfs';
+import type {
+  TraceKernelSpawnParentStdio,
+  TraceKernelSpawnStdio,
+} from './syscalls';
 
 const SYSTEM_PRINCIPAL: TraceKernelPrincipal = Object.freeze({
   id: 'system',
@@ -437,6 +441,22 @@ export class TraceKernelSession {
       TraceKernelProcessStateError |
       TraceKernelDescriptorInheritanceError
   > {
+    return this.spawnPrepared(spec);
+  }
+
+  private spawnPrepared<PreparationError extends Error = never>(
+    spec: TraceKernelProcessSpec,
+    prepare?: (
+      process: TraceKernelProcess
+    ) => Effect.Effect<void, PreparationError>
+  ): Effect.Effect<
+    TraceKernelProcess,
+    TraceKernelSessionClosedError |
+      TraceKernelProcessLimitError |
+      TraceKernelProcessStateError |
+      TraceKernelDescriptorInheritanceError |
+      PreparationError
+  > {
     return Effect.gen(this, function* () {
       const started = yield* Deferred.make<void, TraceKernelProcessStateError>();
       const process = yield* Effect.try({
@@ -458,6 +478,15 @@ export class TraceKernelSession {
           )
         )
       );
+      if (prepare) {
+        yield* prepare(process).pipe(
+          Effect.tapError(() =>
+            process.descriptors.closeAll().pipe(
+              Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
+            )
+          )
+        );
+      }
       process.markStarting();
 
       const program = Effect.scoped(
@@ -469,6 +498,12 @@ export class TraceKernelSession {
           Effect.catchAll((error) =>
             process.failBeforeExecution(error).pipe(
               Effect.map(() => process.snapshot())
+            )
+          ),
+          Effect.flatMap((snapshot) =>
+            this.flushProcessStandardOutput(process, snapshot).pipe(
+              Effect.catchAll(() => Effect.void),
+              Effect.as(snapshot)
             )
           )
         )
@@ -510,6 +545,65 @@ export class TraceKernelSession {
           ...parentSnapshot.env,
           ...(spec.env ?? {}),
         }),
+      });
+    });
+  }
+
+  spawnChildWithStdio(
+    parent: TraceKernelProcess,
+    spec: Omit<
+      TraceKernelProcessSpec,
+      'parentPid' | 'owner' | 'protected' | 'visible'
+    >,
+    stdio: TraceKernelSpawnStdio
+  ): Effect.Effect<
+    {
+      readonly process: TraceKernelProcess;
+      readonly stdio?: TraceKernelSpawnParentStdio;
+    },
+    Error
+  > {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(parent);
+      const parentSnapshot = parent.snapshot();
+      const replacedStdioFds = new Set<number>(
+        ([
+          [0, stdio.stdin],
+          [1, stdio.stdout],
+          [2, stdio.stderr],
+        ] as const)
+          .filter(([, mode]) => mode === 'pipe' || mode === 'ignore')
+          .map(([fd]) => fd)
+      );
+      const inheritDescriptors = spec.inheritDescriptors === 'all'
+        ? parentSnapshot.descriptors
+            .map(({ fd }) => fd)
+            .filter((fd) => !replacedStdioFds.has(fd))
+        : spec.inheritDescriptors?.filter((fd) => !replacedStdioFds.has(fd));
+      let parentStdio: TraceKernelSpawnParentStdio | undefined;
+      const process = yield* this.spawnPrepared({
+        ...spec,
+        ...(inheritDescriptors === undefined ? {} : { inheritDescriptors }),
+        parentPid: parent.pid,
+        owner: parentSnapshot.owner,
+        protected: parentSnapshot.protected,
+        visible: parentSnapshot.visible,
+        cwd: spec.cwd ?? parentSnapshot.cwd,
+        env: Object.freeze({
+          ...parentSnapshot.env,
+          ...(spec.env ?? {}),
+        }),
+      }, (child) =>
+        this.configureChildStdio(parent, child, stdio).pipe(
+          Effect.tap((configured) => Effect.sync(() => {
+            parentStdio = configured;
+          })),
+          Effect.asVoid
+        )
+      );
+      return Object.freeze({
+        process,
+        ...(parentStdio ? { stdio: parentStdio } : {}),
       });
     });
   }
@@ -604,6 +698,34 @@ export class TraceKernelSession {
     readonly readFd: number;
     readonly writeFd: number;
   }, TraceKernelProcessStateError | TraceKernelDescriptorLimitError> {
+    return this.createPipeAt(reader, writer, options).pipe(
+      Effect.mapError((error) =>
+        error instanceof TraceKernelProcessStateError ||
+        error instanceof TraceKernelDescriptorLimitError
+          ? error
+          : new TraceKernelDescriptorLimitError({
+              code: 'EMFILE',
+              maxDescriptors: Math.min(
+                reader.descriptors.maxDescriptors,
+                writer.descriptors.maxDescriptors
+              ),
+              message: error.message,
+            })
+      )
+    );
+  }
+
+  private createPipeAt(
+    reader: TraceKernelProcess,
+    writer: TraceKernelProcess,
+    options: TraceKernelPipeOptions = {},
+    readerFd?: number,
+    writerFd?: number
+  ): Effect.Effect<{
+    readonly resourceId: string;
+    readonly readFd: number;
+    readonly writeFd: number;
+  }, Error> {
     return Effect.gen(this, function* () {
       yield* this.assertOwnedProcess(reader);
       yield* this.assertOwnedProcess(writer);
@@ -615,8 +737,8 @@ export class TraceKernelSession {
       );
       this.resources.set(resourceId, pipe);
       return yield* Effect.gen(this, function* () {
-        const readFd = yield* this.installDescriptor(reader, pipe.reader());
-        const writeFd = yield* this.installDescriptor(writer, pipe.writer()).pipe(
+        const readFd = yield* this.installDescriptor(reader, pipe.reader(), readerFd);
+        const writeFd = yield* this.installDescriptor(writer, pipe.writer(), writerFd).pipe(
           Effect.tapError(() =>
             reader.descriptors.close(readFd).pipe(Effect.catchAll(() => Effect.void))
           )
@@ -625,6 +747,84 @@ export class TraceKernelSession {
       }).pipe(
         Effect.onError(() => pipe.dispose())
       );
+    });
+  }
+
+  private configureChildStdio(
+    parent: TraceKernelProcess,
+    child: TraceKernelProcess,
+    stdio: TraceKernelSpawnStdio
+  ): Effect.Effect<TraceKernelSpawnParentStdio | undefined, Error> {
+    return Effect.gen(this, function* () {
+      const parentDescriptors: number[] = [];
+      const configured: {
+        stdinFd?: number;
+        stdoutFd?: number;
+        stderrFd?: number;
+      } = {};
+      return yield* Effect.gen(this, function* () {
+        for (const [fd, mode] of [
+          [0, stdio.stdin],
+          [1, stdio.stdout],
+          [2, stdio.stderr],
+        ] as const) {
+          if (
+            mode === 'inherit' &&
+            !child.descriptors.snapshots().some((snapshot) => snapshot.fd === fd)
+          ) {
+            yield* child.descriptors.inherit(parent.descriptors, [fd]);
+          }
+        }
+        if (stdio.stdin === 'pipe') {
+          const pipe = yield* this.createPipeAt(child, parent, {}, 0);
+          configured.stdinFd = pipe.writeFd;
+          parentDescriptors.push(pipe.writeFd);
+        }
+        if (stdio.stdout === 'pipe') {
+          const pipe = yield* this.createPipeAt(parent, child, {}, undefined, 1);
+          configured.stdoutFd = pipe.readFd;
+          parentDescriptors.push(pipe.readFd);
+        }
+        if (stdio.stderr === 'pipe') {
+          const pipe = yield* this.createPipeAt(parent, child, {}, undefined, 2);
+          configured.stderrFd = pipe.readFd;
+          parentDescriptors.push(pipe.readFd);
+        }
+        return Object.keys(configured).length === 0
+          ? undefined
+          : Object.freeze({ ...configured });
+      }).pipe(
+        Effect.onError(() =>
+          Effect.forEach(
+            parentDescriptors,
+            (fd) => parent.close(fd).pipe(Effect.catchAll(() => Effect.void)),
+            { concurrency: 'unbounded', discard: true }
+          )
+        )
+      );
+    });
+  }
+
+  private flushProcessStandardOutput(
+    process: TraceKernelProcess,
+    snapshot: TraceKernelProcessSnapshot
+  ): Effect.Effect<void, Error> {
+    const writes: Effect.Effect<unknown, Error>[] = [];
+    if (
+      snapshot.stdout.length > 0 &&
+      process.descriptors.snapshots().some(({ fd }) => fd === 1)
+    ) {
+      writes.push(process.write(1, new TextEncoder().encode(snapshot.stdout)));
+    }
+    if (
+      snapshot.stderr.length > 0 &&
+      process.descriptors.snapshots().some(({ fd }) => fd === 2)
+    ) {
+      writes.push(process.write(2, new TextEncoder().encode(snapshot.stderr)));
+    }
+    return Effect.forEach(writes, (write) => write, {
+      concurrency: 1,
+      discard: true,
     });
   }
 
@@ -986,10 +1186,13 @@ export class TraceKernelSession {
 
   private installDescriptor(
     process: TraceKernelProcess,
-    descriptor: TraceKernelDescriptor
+    descriptor: TraceKernelDescriptor,
+    fd?: number
   ): Effect.Effect<number, TraceKernelDescriptorLimitError> {
     return Effect.try({
-      try: () => process.descriptors.install(descriptor),
+      try: () => fd === undefined
+        ? process.descriptors.install(descriptor)
+        : process.descriptors.installAt(fd, descriptor),
       catch: (error) => error instanceof TraceKernelDescriptorLimitError
         ? error
         : new TraceKernelDescriptorLimitError({

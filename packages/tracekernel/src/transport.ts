@@ -277,6 +277,40 @@ function readAddress(
   });
 }
 
+function writeSpawnStdioMode(
+  writer: BinaryFrameWriter,
+  mode: 'pipe' | 'inherit' | 'ignore' | undefined
+): void {
+  writer.u8(
+    mode === undefined
+      ? 0
+      : mode === 'pipe'
+        ? 1
+        : mode === 'inherit'
+          ? 2
+          : 3
+  );
+}
+
+function readSpawnStdioMode(
+  reader: BinaryFrameReader
+): 'pipe' | 'inherit' | 'ignore' | undefined {
+  const encoded = reader.u8();
+  if (encoded > 3) {
+    throw new TraceKernelTransportError(
+      'EPROTO',
+      `invalid spawn stdio mode ${encoded}`
+    );
+  }
+  return encoded === 0
+    ? undefined
+    : encoded === 1
+      ? 'pipe'
+      : encoded === 2
+        ? 'inherit'
+        : 'ignore';
+}
+
 export function encodeTraceKernelSyscallRequest(
   request: TraceKernelSyscallRequest
 ): Uint8Array {
@@ -318,6 +352,9 @@ export function encodeTraceKernelSyscallRequest(
       if (request.processGroupId !== undefined) writer.i32(request.processGroupId);
       writer.u8(request.sessionId === undefined ? 0 : 1);
       if (request.sessionId !== undefined) writer.i32(request.sessionId);
+      writeSpawnStdioMode(writer, request.stdio?.stdin);
+      writeSpawnStdioMode(writer, request.stdio?.stdout);
+      writeSpawnStdioMode(writer, request.stdio?.stderr);
       break;
     }
     case 'wait':
@@ -517,6 +554,16 @@ export function decodeTraceKernelSyscallRequest(
         );
       }
       const sessionId = hasSessionId ? reader.i32() : undefined;
+      const stdin = readSpawnStdioMode(reader);
+      const stdout = readSpawnStdioMode(reader);
+      const stderr = readSpawnStdioMode(reader);
+      const stdio = stdin === undefined && stdout === undefined && stderr === undefined
+        ? undefined
+        : Object.freeze({
+            ...(stdin === undefined ? {} : { stdin }),
+            ...(stdout === undefined ? {} : { stdout }),
+            ...(stderr === undefined ? {} : { stderr }),
+          });
       request = {
         op: 'spawn',
         runtime,
@@ -527,6 +574,7 @@ export function decodeTraceKernelSyscallRequest(
         ...(inheritDescriptors === undefined ? {} : { inheritDescriptors }),
         ...(processGroupId === undefined ? {} : { processGroupId }),
         ...(sessionId === undefined ? {} : { sessionId }),
+        ...(stdio === undefined ? {} : { stdio }),
       };
       break;
     }
@@ -794,6 +842,12 @@ export function encodeTraceKernelSyscallResult(
       break;
     case 'spawn':
       writer.i32(value.pid);
+      writer.u8(value.stdio?.stdinFd === undefined ? 0 : 1);
+      if (value.stdio?.stdinFd !== undefined) writer.i32(value.stdio.stdinFd);
+      writer.u8(value.stdio?.stdoutFd === undefined ? 0 : 1);
+      if (value.stdio?.stdoutFd !== undefined) writer.i32(value.stdio.stdoutFd);
+      writer.u8(value.stdio?.stderrFd === undefined ? 0 : 1);
+      if (value.stdio?.stderrFd !== undefined) writer.i32(value.stdio.stderrFd);
       break;
     case 'wait':
       writer.i32(value.pid);
@@ -925,9 +979,37 @@ export function decodeTraceKernelSyscallResult(
         writeFd: reader.i32(),
       };
       break;
-    case 'spawn':
-      value = { op: 'spawn', pid: reader.i32() };
+    case 'spawn': {
+      const pid = reader.i32();
+      const hasStdin = reader.u8();
+      if (hasStdin > 1) {
+        throw new TraceKernelTransportError('EPROTO', `invalid spawn stdin fd flag ${hasStdin}`);
+      }
+      const stdinFd = hasStdin ? reader.i32() : undefined;
+      const hasStdout = reader.u8();
+      if (hasStdout > 1) {
+        throw new TraceKernelTransportError('EPROTO', `invalid spawn stdout fd flag ${hasStdout}`);
+      }
+      const stdoutFd = hasStdout ? reader.i32() : undefined;
+      const hasStderr = reader.u8();
+      if (hasStderr > 1) {
+        throw new TraceKernelTransportError('EPROTO', `invalid spawn stderr fd flag ${hasStderr}`);
+      }
+      const stderrFd = hasStderr ? reader.i32() : undefined;
+      const stdio = stdinFd === undefined && stdoutFd === undefined && stderrFd === undefined
+        ? undefined
+        : Object.freeze({
+            ...(stdinFd === undefined ? {} : { stdinFd }),
+            ...(stdoutFd === undefined ? {} : { stdoutFd }),
+            ...(stderrFd === undefined ? {} : { stderrFd }),
+          });
+      value = {
+        op: 'spawn',
+        pid,
+        ...(stdio === undefined ? {} : { stdio }),
+      };
       break;
+    }
     case 'wait': {
       const pid = reader.i32();
       const terminationCode = reader.u8();

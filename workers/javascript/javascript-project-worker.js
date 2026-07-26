@@ -221,6 +221,11 @@ function readAddress(reader) {
     port: reader.u32()
   });
 }
+function writeSpawnStdioMode(writer, mode) {
+  writer.u8(
+    mode === void 0 ? 0 : mode === "pipe" ? 1 : mode === "inherit" ? 2 : 3
+  );
+}
 function encodeTraceKernelSyscallRequest(request) {
   const writer = new BinaryFrameWriter();
   writeFramePrefix(writer, FRAME_REQUEST);
@@ -253,6 +258,9 @@ function encodeTraceKernelSyscallRequest(request) {
       if (request.processGroupId !== void 0) writer.i32(request.processGroupId);
       writer.u8(request.sessionId === void 0 ? 0 : 1);
       if (request.sessionId !== void 0) writer.i32(request.sessionId);
+      writeSpawnStdioMode(writer, request.stdio?.stdin);
+      writeSpawnStdioMode(writer, request.stdio?.stdout);
+      writeSpawnStdioMode(writer, request.stdio?.stderr);
       break;
     }
     case "wait":
@@ -417,9 +425,35 @@ function decodeTraceKernelSyscallResult(bytes) {
         writeFd: reader.i32()
       };
       break;
-    case "spawn":
-      value = { op: "spawn", pid: reader.i32() };
+    case "spawn": {
+      const pid = reader.i32();
+      const hasStdin = reader.u8();
+      if (hasStdin > 1) {
+        throw new TraceKernelTransportError("EPROTO", `invalid spawn stdin fd flag ${hasStdin}`);
+      }
+      const stdinFd = hasStdin ? reader.i32() : void 0;
+      const hasStdout = reader.u8();
+      if (hasStdout > 1) {
+        throw new TraceKernelTransportError("EPROTO", `invalid spawn stdout fd flag ${hasStdout}`);
+      }
+      const stdoutFd = hasStdout ? reader.i32() : void 0;
+      const hasStderr = reader.u8();
+      if (hasStderr > 1) {
+        throw new TraceKernelTransportError("EPROTO", `invalid spawn stderr fd flag ${hasStderr}`);
+      }
+      const stderrFd = hasStderr ? reader.i32() : void 0;
+      const stdio = stdinFd === void 0 && stdoutFd === void 0 && stderrFd === void 0 ? void 0 : Object.freeze({
+        ...stdinFd === void 0 ? {} : { stdinFd },
+        ...stdoutFd === void 0 ? {} : { stdoutFd },
+        ...stderrFd === void 0 ? {} : { stderrFd }
+      });
+      value = {
+        op: "spawn",
+        pid,
+        ...stdio === void 0 ? {} : { stdio }
+      };
       break;
+    }
     case "wait": {
       const pid = reader.i32();
       const terminationCode = reader.u8();
@@ -1641,6 +1675,7 @@ function readRuntimeCommandStdinPipeBytes(pipe, maxLength = RUNTIME_STDIN_PIPE_D
     out.set(state.bytes.subarray(0, length - firstLength), firstLength);
   }
   Atomics.store(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
+  Atomics.notify(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
   return out;
 }
 var RUNTIME_SIGNAL_EXIT_CODES = /* @__PURE__ */ new Map([
@@ -5907,7 +5942,7 @@ function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => t
     }
     const requested = typeof size === "number" && size >= 0 ? Math.floor(size) : void 0;
     const chunk = BrowserBuffer.from(readBytes(requested));
-    if (remainingBytes() <= 0) ended = true;
+    if (remainingBytes() <= 0) ended = isClosed();
     return formatChunk(chunk);
   };
   const scheduleFlow = () => {
@@ -6567,10 +6602,10 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
     }
     const args = Array.isArray(argsOrOptions) ? argsOrOptions.map((arg) => String(arg)) : [];
     const options = Array.isArray(argsOrOptions) ? maybeOptions : argsOrOptions;
-    if (options?.stdio !== void 0 && options.stdio !== "inherit" && options.stdio !== "ignore") {
+    if (options?.stdio !== void 0 && options.stdio !== "pipe" && options.stdio !== "inherit" && options.stdio !== "ignore") {
       throw Object.assign(
-        new Error("ENOSYS: piped child stdio is not available yet"),
-        { code: "ENOSYS" }
+        new TypeError('The "stdio" option must be "pipe", "inherit", or "ignore"'),
+        { code: "ERR_INVALID_ARG_VALUE" }
       );
     }
     return {
@@ -6598,19 +6633,166 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
     executionState.kernelNetwork,
     syscall
   );
+  class BrowserChildReadable extends BrowserEventEmitter {
+    constructor(fd2) {
+      super();
+      this.fd = fd2;
+      this.completion = eventLoopApi.track(this.pump());
+      void this.completion.catch((error) => {
+        if (!this.closed) this.emit("error", error);
+      });
+    }
+    readable = true;
+    encoding;
+    closed = false;
+    completion;
+    setEncoding(encoding) {
+      this.encoding = encoding;
+      return this;
+    }
+    pipe(destination) {
+      this.on("data", (chunk) => destination.write(chunk));
+      this.on("end", () => destination.end?.());
+      return destination;
+    }
+    pause() {
+      return this;
+    }
+    resume() {
+      return this;
+    }
+    destroy() {
+      if (this.closed) return this;
+      this.closed = true;
+      void eventLoopApi.track(
+        asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0)
+      );
+      return this;
+    }
+    async pump() {
+      try {
+        while (!this.closed) {
+          const result = await asyncDispatch({
+            op: "read",
+            fd: this.fd,
+            maxBytes: 16 * 1024
+          });
+          if (result.bytes.byteLength === 0) break;
+          const chunk = BrowserBuffer.from(result.bytes);
+          this.emit(
+            "data",
+            this.encoding ? chunk.toString(this.encoding) : chunk
+          );
+        }
+        if (!this.closed) this.emit("end");
+      } finally {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
+          this.emit("close");
+        }
+      }
+    }
+  }
+  class BrowserChildWritable extends BrowserEventEmitter {
+    constructor(fd2) {
+      super();
+      this.fd = fd2;
+    }
+    writable = true;
+    ended = false;
+    closed = false;
+    queuedBytes = 0;
+    tail = Promise.resolve();
+    write(chunk, encodingOrCallback, callback) {
+      const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      if (this.ended) {
+        const error = Object.assign(new Error("write after end"), {
+          code: "ERR_STREAM_WRITE_AFTER_END"
+        });
+        globalThis.queueMicrotask(() => {
+          completion?.(error);
+          this.emit("error", error);
+        });
+        return false;
+      }
+      const bytes = BrowserBuffer.isBuffer(chunk) ? Uint8Array.from(chunk) : typeof chunk === "string" ? BrowserBuffer.from(chunk, typeof encodingOrCallback === "string" ? encodingOrCallback : void 0) : Uint8Array.from(bytesFromNodeValue(chunk));
+      this.queuedBytes += bytes.byteLength;
+      const belowHighWaterMark = this.queuedBytes < 64 * 1024;
+      this.tail = this.tail.then(async () => {
+        try {
+          await asyncDispatch({ op: "write", fd: this.fd, bytes });
+          completion?.(null);
+        } catch (error) {
+          completion?.(error instanceof Error ? error : new Error(String(error)));
+          this.emit("error", error);
+        } finally {
+          const wasBackpressured = this.queuedBytes >= 64 * 1024;
+          this.queuedBytes = Math.max(0, this.queuedBytes - bytes.byteLength);
+          if (wasBackpressured && this.queuedBytes < 64 * 1024) {
+            this.emit("drain");
+          }
+        }
+      });
+      void eventLoopApi.track(this.tail.catch(() => void 0));
+      return belowHighWaterMark;
+    }
+    end(chunkOrCallback, encodingOrCallback, callback) {
+      const chunk = typeof chunkOrCallback === "function" ? void 0 : chunkOrCallback;
+      const completion = typeof chunkOrCallback === "function" ? chunkOrCallback : typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      if (chunk !== void 0) {
+        this.write(
+          chunk,
+          typeof encodingOrCallback === "string" ? encodingOrCallback : void 0
+        );
+      }
+      if (this.ended) return this;
+      this.ended = true;
+      const closing = this.tail.then(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
+        }
+        this.emit("finish");
+        this.emit("close");
+        completion?.();
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
+    }
+    destroy() {
+      if (this.closed) return this;
+      this.ended = true;
+      const closing = this.tail.finally(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
+          this.emit("close");
+        }
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
+    }
+  }
   class BrowserChildProcess extends BrowserEventEmitter {
     pid;
-    stdin = null;
-    stdout = null;
-    stderr = null;
-    stdio = [null, null, null];
+    stdin;
+    stdout;
+    stderr;
+    stdio;
     connected = false;
     exitCode = null;
     signalCode = null;
     killed = false;
-    constructor(pid, signal) {
+    constructor(pid, stdio, signal) {
       super();
       this.pid = pid;
+      this.stdin = stdio?.stdinFd === void 0 ? null : new BrowserChildWritable(stdio.stdinFd);
+      this.stdout = stdio?.stdoutFd === void 0 ? null : new BrowserChildReadable(stdio.stdoutFd);
+      this.stderr = stdio?.stderrFd === void 0 ? null : new BrowserChildReadable(stdio.stderrFd);
+      this.stdio = [this.stdin, this.stdout, this.stderr];
       if (signal) {
         const abort = () => this.kill("SIGTERM");
         if (signal.aborted) abort();
@@ -6636,6 +6818,7 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
   }
   const spawn = (command, argsOrOptions, maybeOptions) => {
     const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const stdioMode = invocation.options.stdio ?? "pipe";
     const spawned = syncDispatch({
       op: "spawn",
       runtime: runtimeForCommand(invocation.command),
@@ -6644,16 +6827,22 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
       cwd: invocation.options.cwd ?? request.cwd,
       env: Object.fromEntries(
         Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
-      )
+      ),
+      stdio: {
+        stdin: stdioMode,
+        stdout: stdioMode,
+        stderr: stdioMode
+      }
     });
     const child = new BrowserChildProcess(
       spawned.pid,
+      spawned.stdio,
       invocation.options.signal
     );
     globalThis.queueMicrotask(() => child.emit("spawn"));
     void eventLoopApi.track(
       asyncDispatch({ op: "wait", pid: spawned.pid }).then(
-        (waited) => {
+        async (waited) => {
           if (waited.termination.kind === "signal") {
             child.signalCode = waited.termination.signal;
           } else {
@@ -6664,6 +6853,10 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
             child.exitCode,
             child.signalCode
           );
+          await Promise.all([
+            child.stdout?.completion,
+            child.stderr?.completion
+          ]);
           child.emit(
             "close",
             child.exitCode,
@@ -6680,6 +6873,13 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
   };
   const spawnSync = (command, argsOrOptions, maybeOptions) => {
     const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    if ((invocation.options.stdio ?? "pipe") === "pipe") {
+      throw Object.assign(
+        new Error("ENOSYS: synchronous piped child stdio requires a nonblocking host capture path"),
+        { code: "ENOSYS" }
+      );
+    }
+    const stdioMode = invocation.options.stdio ?? "ignore";
     const spawned = syncDispatch({
       op: "spawn",
       runtime: runtimeForCommand(invocation.command),
@@ -6688,7 +6888,12 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
       cwd: invocation.options.cwd ?? request.cwd,
       env: Object.fromEntries(
         Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
-      )
+      ),
+      stdio: {
+        stdin: stdioMode,
+        stdout: stdioMode,
+        stderr: stdioMode
+      }
     });
     const waited = syncDispatch({ op: "wait", pid: spawned.pid });
     return {
@@ -8991,6 +9196,28 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
   };
   let mainModule;
+  const kernelStdioAvailability = /* @__PURE__ */ new Map();
+  const tryWriteKernelStdio = (fd2, bytes) => {
+    if (kernelStdioAvailability.get(fd2) === false || !executionState.kernelSyscalls) {
+      return false;
+    }
+    const result = executionState.kernelSyscalls.dispatchSync({
+      op: "write",
+      fd: fd2,
+      bytes
+    });
+    if (result.ok) {
+      kernelStdioAvailability.set(fd2, true);
+      return true;
+    }
+    if (result.error.code === "EBADF") {
+      kernelStdioAvailability.set(fd2, false);
+      return false;
+    }
+    throw Object.assign(new Error(result.error.message), {
+      code: result.error.code
+    });
+  };
   const emitOutput = (stream, data, device, sourceDevice) => {
     if (stream === "stdout") {
       stdout.push(data);
@@ -9005,6 +9232,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       if (runtimeKernelDeviceOutputTarget(kernelDevices, device) === "/dev/null") return;
       throw Object.assign(new Error("EBADF: bad file descriptor, write"), { code: "EBADF" });
     }
+    if (tryWriteKernelStdio(
+      route.stream === "stdout" ? 1 : 2,
+      new TextEncoder().encode(data)
+    )) return;
     emitOutput(route.stream, data, route.outputDevice, route.sourceDevice);
   };
   const readDeviceBytes = (device, size) => {
@@ -9020,11 +9251,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const readDevice = (device) => textFromBytes(readDeviceBytes(device));
   const consoleApi = {
     log: (...values) => {
-      emitOutput("stdout", `${formatConsoleValues(values)}
+      writeDevice("/dev/stdout", `${formatConsoleValues(values)}
 `);
     },
     error: (...values) => {
-      emitOutput("stderr", `${formatConsoleValues(values)}
+      writeDevice("/dev/stderr", `${formatConsoleValues(values)}
 `);
     }
   };
@@ -9072,8 +9303,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       },
       write: (value, encoding, callback) => {
         const bytes = bytesFromFsWriteValue(value, typeof encoding === "string" ? encoding : void 0);
-        const data = textFromBytes(bytes);
-        writeDevice(device, data);
+        if (!tryWriteKernelStdio(fd2 === 1 ? 1 : 2, bytes)) {
+          writeDevice(device, textFromBytes(bytes));
+        }
         bytesWritten += bytes.byteLength;
         const done = typeof encoding === "function" ? encoding : callback;
         done?.(null);

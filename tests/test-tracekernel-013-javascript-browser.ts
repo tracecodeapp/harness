@@ -547,6 +547,48 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'stdio-child.js',
+              contents: [
+                'let input = "";',
+                'process.stdin.setEncoding("utf8");',
+                'process.stdin.on("data", (chunk) => { input += chunk; });',
+                'process.stdin.on("end", () => {',
+                '  const summary = Buffer.from(`child-stdout:${input.length}:${input.slice(0, 5)}:${input.slice(-5)}`);',
+                '  process.stdout.write(Buffer.concat([summary, Buffer.from([0, 255, 1, 254])]));',
+                '  process.stderr.write(`child-stderr:${input.length}`);',
+                '});',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'stdio-parent.js',
+              contents: [
+                'const { spawn } = require("node:child_process");',
+                'const child = spawn("node", ["stdio-child.js"]);',
+                'const stdoutChunks = [];',
+                'let stderr = "";',
+                'let drained = false;',
+                'child.stderr.setEncoding("utf8");',
+                'child.stdout.on("data", (chunk) => { stdoutChunks.push(chunk); });',
+                'child.stderr.on("data", (chunk) => { stderr += chunk; });',
+                'child.stdin.on("drain", () => { drained = true; });',
+                'const input = "alpha" + "x".repeat(96 * 1024) + "omega";',
+                'const accepted = child.stdin.write(input);',
+                'child.stdin.end();',
+                'child.on("error", (error) => { throw error; });',
+                'child.on("close", (code, signal) => {',
+                '  const stdout = Buffer.concat(stdoutChunks);',
+                '  console.log(JSON.stringify({',
+                '    code, signal, accepted, drained,',
+                '    stdout: stdout.subarray(0, -4).toString("utf8"),',
+                '    stdoutHex: stdout.subarray(-4).toString("hex"),',
+                '    stderr,',
+                '  }));',
+                '});',
+                '',
+              ].join('\n'),
+            },
             { path: 'isolation-private.txt', contents: 'parent-descriptor' },
             {
               path: 'isolation-child.js',
@@ -814,6 +856,7 @@ async function main(): Promise<void> {
           await workspace.writeFile('host-cycle-ready.txt', 'ready');
           const hostCycleReaderResult = await hostCycleReader;
           const spawnedChild = await workspace.runCommand('node spawn-parent.js');
+          const pipedChild = await workspace.runCommand('node stdio-parent.js');
           const processIsolation = await workspace.runCommand('node isolation-parent.js');
           const javascript = await workspace.runCommand('node conformance.js');
           const descriptors = await workspace.runCommand('node descriptor-conformance.js');
@@ -862,6 +905,7 @@ async function main(): Promise<void> {
             nodeHttpClient,
             hostCycleReader: hostCycleReaderResult,
             spawnedChild,
+            pipedChild,
             processIsolation,
             javascript,
             descriptors,
@@ -910,6 +954,16 @@ async function main(): Promise<void> {
           result.spawnedChild.stdout.includes('spawn:0:null:true:true') &&
           /^[0-9]+:[0-9]+$/.test(result.spawnChild),
         `node:child_process did not acquire and reap a distinct worker process: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.pipedChild.exitCode === 0 &&
+          result.pipedChild.stdout.includes('"code":0') &&
+          result.pipedChild.stdout.includes('"accepted":false') &&
+          result.pipedChild.stdout.includes('"drained":true') &&
+          result.pipedChild.stdout.includes('child-stdout:98314:alpha:omega') &&
+          result.pipedChild.stdout.includes('"stdoutHex":"00ff01fe"') &&
+          result.pipedChild.stdout.includes('child-stderr:98314'),
+        `node:child_process stdio did not preserve bytes, EOF, and backpressure: ${JSON.stringify(result)}`
       );
       assertCondition(
         result.processIsolation.exitCode === 0 &&
@@ -1044,6 +1098,8 @@ async function main(): Promise<void> {
           'distinct-child-pid',
           'parent-pid-topology',
           'child-wait-and-reap',
+          'kernel-piped-stdin-stdout-stderr',
+          'pipe-eof-and-backpressure',
           'heap-and-global-isolation',
           'environment-copy-on-spawn',
           'descriptor-non-inheritance',

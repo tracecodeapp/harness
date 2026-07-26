@@ -354,6 +354,38 @@ export class RuntimeKernelDescriptorManager {
     }
   }
 
+  /**
+   * Create one session-owned pipe with its endpoints installed into two
+   * process tables. Explicit descriptor numbers are reserved for launch-time
+   * fd 0/1/2 wiring; omitted numbers use the normal fd >= 3 allocator.
+   */
+  async createPipeBetween(
+    reader: { readonly pid: number; readonly fd?: number },
+    writer: { readonly pid: number; readonly fd?: number },
+    options: TraceKernelPipeOptions = {}
+  ): Promise<{ readonly readFd: number; readonly writeFd: number }> {
+    const pipeId = `workspace-pipe-${this.nextPipeId++}`;
+    const pipe = await Effect.runPromise(TraceKernelPipe.make(
+      pipeId,
+      options,
+      (closedId) => this.pipes.delete(closedId)
+    ));
+    this.pipes.set(pipeId, pipe);
+    let readFd: number | undefined;
+    try {
+      readFd = this.installDescriptor(reader.pid, pipe.reader(), reader.fd);
+      const writeFd = this.installDescriptor(writer.pid, pipe.writer(), writer.fd);
+      return Object.freeze({ readFd, writeFd });
+    } catch (error) {
+      if (readFd !== undefined) {
+        await this.close(reader.pid, readFd).catch(() => undefined);
+      }
+      await Effect.runPromise(pipe.dispose());
+      this.pipes.delete(pipeId);
+      throw error;
+    }
+  }
+
   inherit(
     childPid: number,
     parentPid: number,
@@ -409,8 +441,22 @@ export class RuntimeKernelDescriptorManager {
     return table;
   }
 
+  descriptorNumbers(pid: number): readonly number[] {
+    return this.tables.get(pid)?.snapshots().map((snapshot) => snapshot.fd) ?? [];
+  }
+
   install(pid: number, descriptor: TraceKernelDescriptor): number {
     return this.tableForProcess(pid).install(descriptor);
+  }
+
+  private installDescriptor(
+    pid: number,
+    descriptor: TraceKernelDescriptor,
+    fd?: number
+  ): number {
+    return fd === undefined
+      ? this.tableForProcess(pid).install(descriptor)
+      : this.tableForProcess(pid).installAt(fd, descriptor);
   }
 
   descriptor(

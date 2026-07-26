@@ -96,6 +96,41 @@ export class TraceKernelDescriptorTable {
     return fd;
   }
 
+  /**
+   * Install a descriptor at a kernel-selected numeric identity.
+   *
+   * This is intentionally separate from dup/inherit: process launch uses it
+   * to establish fd 0/1/2 before a runtime lease starts, while ordinary
+   * runtime opens continue to allocate from fd 3 upward.
+   */
+  installAt(fd: number, descriptor: TraceKernelDescriptor): number {
+    const targetFd = Math.floor(fd);
+    if (!Number.isSafeInteger(fd) || targetFd < 0) {
+      throw new TraceKernelBadFileDescriptorError({
+        fd: targetFd,
+        operation: 'inherit',
+        message: `EBADF: invalid target descriptor ${fd}`,
+      });
+    }
+    if (this.descriptors.size >= this.maxDescriptors) {
+      throw new TraceKernelDescriptorLimitError({
+        code: 'EMFILE',
+        maxDescriptors: this.maxDescriptors,
+        message: `EMFILE: process descriptor limit ${this.maxDescriptors} reached`,
+      });
+    }
+    if (this.descriptors.has(targetFd)) {
+      throw new TraceKernelDescriptorLimitError({
+        code: 'EMFILE',
+        maxDescriptors: this.maxDescriptors,
+        message: `EMFILE: target descriptor ${targetFd} is already occupied`,
+      });
+    }
+    this.descriptors.set(targetFd, descriptor);
+    if (targetFd === this.nextFd) this.resetNextFd();
+    return targetFd;
+  }
+
   snapshots(): readonly TraceKernelDescriptorSnapshot[] {
     return [...this.descriptors.entries()]
       .map(([fd, descriptor]) => Object.freeze({

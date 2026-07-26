@@ -30,11 +30,17 @@ async function main(): Promise<void> {
             id: `syscall-lease-${process.pid}`,
             runtime: 'syscall-test',
             execute: () =>
-              process.command === 'syscall-child'
+              process.command === 'syscall-child' ||
+              process.command === 'syscall-stdio-child'
                 ? Effect.sleep(5).pipe(
                     Effect.as({
                       exitCode: 7,
-                      stdout: 'child-exit\n',
+                      stdout: process.command === 'syscall-stdio-child'
+                        ? 'stdio-out\n'
+                        : 'child-exit\n',
+                      ...(process.command === 'syscall-stdio-child'
+                        ? { stderr: 'stdio-error\n' }
+                        : {}),
                     })
                   )
                 : Effect.never,
@@ -135,6 +141,84 @@ async function main(): Promise<void> {
       );
       success(yield* syscalls.dispatch({ op: 'close', fd: pipe.value.readFd }));
       success(yield* syscalls.dispatch({ op: 'close', fd: pipe.value.writeFd }));
+
+      const stdioChild = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'syscall-stdio-child',
+        stdio: {
+          stdin: 'pipe',
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      });
+      success(stdioChild);
+      assertCondition(
+        stdioChild.value.op === 'spawn' &&
+          stdioChild.value.stdio?.stdinFd !== undefined &&
+          stdioChild.value.stdio.stdoutFd !== undefined &&
+          stdioChild.value.stdio.stderrFd !== undefined,
+        `spawn did not return parent-owned stdio descriptors: ${JSON.stringify(stdioChild)}`
+      );
+      if (stdioChild.value.op !== 'spawn' || !stdioChild.value.stdio) return;
+      const stdioSnapshot = session.processSnapshots().find(
+        ({ pid }) => pid === stdioChild.value.pid
+      );
+      assertCondition(
+        [0, 1, 2].every((fd) =>
+          stdioSnapshot?.descriptors.some((descriptor) => descriptor.fd === fd)
+        ),
+        `child stdio endpoints were not installed before execution: ${JSON.stringify(stdioSnapshot)}`
+      );
+      success(yield* syscalls.dispatch({
+        op: 'write',
+        fd: stdioChild.value.stdio.stdinFd!,
+        bytes: new TextEncoder().encode('stdio-input'),
+      }));
+      success(yield* syscalls.dispatch({
+        op: 'close',
+        fd: stdioChild.value.stdio.stdinFd!,
+      }));
+      const [stdioOut, stdioError] = yield* Effect.all([
+        syscalls.dispatch({
+          op: 'read',
+          fd: stdioChild.value.stdio.stdoutFd!,
+          maxBytes: 64,
+        }),
+        syscalls.dispatch({
+          op: 'read',
+          fd: stdioChild.value.stdio.stderrFd!,
+          maxBytes: 64,
+        }),
+      ], { concurrency: 'unbounded' });
+      success(stdioOut);
+      success(stdioError);
+      assertCondition(
+        stdioOut.value.op === 'read' &&
+          stdioError.value.op === 'read' &&
+          new TextDecoder().decode(stdioOut.value.bytes) === 'stdio-out\n' &&
+          new TextDecoder().decode(stdioError.value.bytes) === 'stdio-error\n',
+        `child output did not cross process-owned stdio pipes: ${JSON.stringify({
+          stdioOut,
+          stdioError,
+        })}`
+      );
+      success(yield* syscalls.dispatch({
+        op: 'wait',
+        pid: stdioChild.value.pid,
+      }));
+      for (const fd of [
+        stdioChild.value.stdio.stdoutFd!,
+        stdioChild.value.stdio.stderrFd!,
+      ]) {
+        const eof = yield* syscalls.dispatch({ op: 'read', fd, maxBytes: 1 });
+        success(eof);
+        assertCondition(
+          eof.value.op === 'read' && eof.value.bytes.byteLength === 0,
+          `closed child stdio writer did not produce EOF: ${JSON.stringify(eof)}`
+        );
+        success(yield* syscalls.dispatch({ op: 'close', fd }));
+      }
 
       const blockedChild = yield* syscalls.dispatch({
         op: 'spawn',
@@ -476,6 +560,8 @@ async function main(): Promise<void> {
     namespaceOperationsShareTheWireContract: true,
     tcpOperationsShareTheWireContract: true,
     processAndPipeOperationsShareTheWireContract: true,
+    childStdioUsesProcessOwnedDescriptors: true,
+    childWriterCloseProducesEof: true,
     childWaitReapsExactlyOnce: true,
     typedErrorsMappedToPosixWireErrors: true,
     descriptorLimitsCrossWireAsEmfile: true,

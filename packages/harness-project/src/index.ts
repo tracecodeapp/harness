@@ -28,6 +28,7 @@ import {
   runtimeWorkspaceHttpCapabilitiesPreset,
   runtimeCommandStdinPipeClosed,
   runtimeProjectTruncateUtf8,
+  writeRuntimeCommandStdinPipeBytes,
   runtimeProjectUtf8Bytes,
   RuntimeProjectLiveIoController,
   runtimeFileChangePath,
@@ -719,6 +720,23 @@ interface RuntimeKernelProcessLaunchHooks {
     context: RuntimeCommandExecutionContext
   ) => Promise<void>;
   ready?: (process: RuntimeKernelProcessRecord) => void;
+  beforeDescriptorClose?: (
+    process: RuntimeKernelProcessRecord,
+    context: RuntimeCommandExecutionContext
+  ) => Promise<void>;
+  afterDescriptorClose?: (
+    process: RuntimeKernelProcessRecord,
+    context: RuntimeCommandExecutionContext
+  ) => Promise<void>;
+}
+
+interface RuntimeKernelSpawnedChild {
+  readonly process: RuntimeKernelProcessRecord;
+  readonly stdio?: {
+    readonly stdinFd?: number;
+    readonly stdoutFd?: number;
+    readonly stderrFd?: number;
+  };
 }
 
 interface RuntimeKernelEventRecord {
@@ -1493,11 +1511,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         case 'spawn': {
           const process = this.runtimeSyscallProcess(context);
-          const child = await this.spawnRuntimeSyscallChild(
+          const spawned = await this.spawnRuntimeSyscallChild(
             process,
-            request
+            request,
+            context
           );
-          return { ok: true, value: { op: 'spawn', pid: child.pid } };
+          return {
+            ok: true,
+            value: {
+              op: 'spawn',
+              pid: spawned.process.pid,
+              ...(spawned.stdio ? { stdio: spawned.stdio } : {}),
+            },
+          };
         }
         case 'wait': {
           const process = this.runtimeSyscallProcess(context);
@@ -1986,8 +2012,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private async spawnRuntimeSyscallChild(
     parent: RuntimeKernelProcessRecord,
-    request: Extract<TraceKernelSyscallRequest, { op: 'spawn' }>
-  ): Promise<RuntimeKernelProcessRecord> {
+    request: Extract<TraceKernelSyscallRequest, { op: 'spawn' }>,
+    parentContext?: RuntimeCommandExecutionContext
+  ): Promise<RuntimeKernelSpawnedChild> {
     const command = [request.command, ...(request.args ?? [])]
       .map(shellQuote)
       .join(' ');
@@ -1995,12 +2022,56 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (admissionError) throw admissionError;
 
     let created = false;
-    let resolveCreated!: (process: RuntimeKernelProcessRecord) => void;
+    let resolveCreated!: (process: RuntimeKernelSpawnedChild) => void;
     let rejectCreated!: (error: unknown) => void;
-    const childCreated = new Promise<RuntimeKernelProcessRecord>((resolve, reject) => {
+    const childCreated = new Promise<RuntimeKernelSpawnedChild>((resolve, reject) => {
       resolveCreated = resolve;
       rejectCreated = reject;
     });
+    const stdinPipe = request.stdio?.stdin === 'pipe'
+      ? createRuntimeCommandStdinPipe()
+      : request.stdio?.stdin === 'inherit'
+        ? parentContext?.stdinPipe
+        : undefined;
+    const parentStdio: {
+      stdinFd?: number;
+      stdoutFd?: number;
+      stderrFd?: number;
+    } = {};
+    let childContext: RuntimeCommandExecutionContext | undefined;
+    let stdinPump: Promise<void> | undefined;
+    let outputTail = Promise.resolve();
+    const routeOutput = (
+      stream: 'stdout' | 'stderr',
+      data: string
+    ): void => {
+      const mode = request.stdio?.[stream];
+      if (mode === 'inherit') {
+        parentContext?.runtimeIo.handleRuntimeEvent({
+          type: 'output',
+          stream,
+          device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr',
+          data,
+        });
+        return;
+      }
+      if (mode !== 'pipe' || !childContext) return;
+      const fd = stream === 'stdout' ? 1 : 2;
+      const bytes = new TextEncoder().encode(data);
+      outputTail = outputTail.then(async () => {
+        try {
+          await this.kernelDescriptors.write(
+            childContext!.process.pid,
+            childContext,
+            fd,
+            bytes
+          );
+        } catch (error) {
+          const code = (error as { code?: unknown } | null)?.code;
+          if (code !== 'EPIPE' && code !== 'EBADF') throw error;
+        }
+      });
+    };
     const completion = this.runCommandAs(
       command,
       {
@@ -2009,22 +2080,105 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           ...parent.env,
           ...(request.env ?? {}),
         },
+        ...(stdinPipe ? { stdinPipe } : {}),
         retainOnExit: true,
+        onEvent: (event) => {
+          if (event.type === 'output') routeOutput(event.stream, event.data);
+        },
       },
       parent,
       {
-        initialize: async (child) => {
-          if (request.inheritDescriptors !== undefined) {
-            await this.kernelDescriptors.inherit(
-              child.pid,
-              parent.pid,
-              request.inheritDescriptors
+        initialize: async (child, context) => {
+          childContext = context;
+          try {
+            if (request.inheritDescriptors !== undefined) {
+              const replacedStdioFds = new Set<number>(
+                ([
+                  [0, request.stdio?.stdin],
+                  [1, request.stdio?.stdout],
+                  [2, request.stdio?.stderr],
+                ] as const)
+                  .filter(([, mode]) => mode === 'pipe' || mode === 'ignore')
+                  .map(([fd]) => fd)
+              );
+              const inherited = (
+                request.inheritDescriptors === 'all'
+                  ? this.kernelDescriptors.descriptorNumbers(parent.pid)
+                  : request.inheritDescriptors
+              ).filter((fd) => !replacedStdioFds.has(fd));
+              await this.kernelDescriptors.inherit(
+                child.pid,
+                parent.pid,
+                inherited
+              );
+            }
+            if (request.stdio?.stdin === 'pipe' && stdinPipe) {
+              const pipe = await this.kernelDescriptors.createPipeBetween(
+                { pid: child.pid, fd: 0 },
+                { pid: parent.pid },
+                { capacityChunks: 16 }
+              );
+              parentStdio.stdinFd = pipe.writeFd;
+              stdinPump = (async () => {
+                try {
+                  while (true) {
+                    const bytes = await this.kernelDescriptors.read(
+                      child.pid,
+                      context,
+                      0,
+                      16 * 1024
+                    );
+                    if (bytes.byteLength === 0) break;
+                    await writeRuntimeCommandStdinPipeBytes(stdinPipe, bytes);
+                  }
+                } catch (error) {
+                  const code = (error as { code?: unknown } | null)?.code;
+                  if (code !== 'EBADF') throw error;
+                } finally {
+                  stdinPipe.close();
+                }
+              })();
+              void stdinPump.catch(() => undefined);
+            }
+            if (request.stdio?.stdout === 'pipe') {
+              const pipe = await this.kernelDescriptors.createPipeBetween(
+                { pid: parent.pid },
+                { pid: child.pid, fd: 1 },
+                { capacityChunks: 16 }
+              );
+              parentStdio.stdoutFd = pipe.readFd;
+            }
+            if (request.stdio?.stderr === 'pipe') {
+              const pipe = await this.kernelDescriptors.createPipeBetween(
+                { pid: parent.pid },
+                { pid: child.pid, fd: 2 },
+                { capacityChunks: 16 }
+              );
+              parentStdio.stderrFd = pipe.readFd;
+            }
+          } catch (error) {
+            await Promise.all(
+              Object.values(parentStdio).map((fd) =>
+                this.kernelDescriptors.close(parent.pid, fd).catch(() => undefined)
+              )
             );
+            throw error;
           }
         },
         ready: (child) => {
           created = true;
-          resolveCreated(child);
+          resolveCreated({
+            process: child,
+            ...(Object.keys(parentStdio).length > 0
+              ? { stdio: Object.freeze({ ...parentStdio }) }
+              : {}),
+          });
+        },
+        beforeDescriptorClose: async () => {
+          await outputTail;
+        },
+        afterDescriptorClose: async () => {
+          await stdinPump?.catch(() => undefined);
         },
       }
     );
@@ -7960,7 +8114,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       throw error;
     }).finally(async () => {
       this.closeHttpListenersForProcess(process.pid);
-      await this.kernelDescriptors.closeProcess(process.pid);
+      try {
+        await launchHooks?.beforeDescriptorClose?.(process, commandContext);
+      } finally {
+        await this.kernelDescriptors.closeProcess(process.pid);
+      }
+      await launchHooks?.afterDescriptorClose?.(process, commandContext);
       cleanupExternalSignal?.();
       const retainProcessOnExit = process.signal || options.retainOnExit === true;
       process.state = retainProcessOnExit ? 'zombie' : 'exited';
