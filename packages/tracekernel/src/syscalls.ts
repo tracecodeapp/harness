@@ -11,6 +11,7 @@ import {
   TraceKernelProcessLimitError,
   TraceKernelProcessPermissionError,
   TraceKernelProcessStateError,
+  TraceKernelWouldBlockError,
 } from './errors';
 import type { TraceKernelProcess, TraceKernelSession } from './kernel';
 import type {
@@ -56,6 +57,7 @@ export type TraceKernelSyscallRequest =
       readonly options?: {
         readonly capacityChunks?: number;
         readonly closeOnExec?: boolean;
+        readonly nonblocking?: boolean;
       };
     }
   | {
@@ -179,8 +181,13 @@ export type TraceKernelSyscallRequest =
   | {
       readonly op: 'fcntl';
       readonly fd: number;
-      readonly action: 'get-close-on-exec' | 'set-close-on-exec';
+      readonly action:
+        | 'get-close-on-exec'
+        | 'set-close-on-exec'
+        | 'get-nonblocking'
+        | 'set-nonblocking';
       readonly closeOnExec?: boolean;
+      readonly nonblocking?: boolean;
     }
   | {
       readonly op: 'fstat';
@@ -302,7 +309,11 @@ export type TraceKernelSyscallValue =
   | { readonly op: 'dup'; readonly fd: number }
   | { readonly op: 'dup2'; readonly fd: number }
   | { readonly op: 'dup3'; readonly fd: number; readonly closeOnExec: boolean }
-  | { readonly op: 'fcntl'; readonly closeOnExec: boolean }
+  | {
+      readonly op: 'fcntl';
+      readonly closeOnExec: boolean;
+      readonly nonblocking: boolean;
+    }
   | { readonly op: 'fstat'; readonly stat: TraceKernelStat }
   | { readonly op: 'ftruncate' }
   | { readonly op: 'stat'; readonly stat: TraceKernelStat }
@@ -383,6 +394,9 @@ function syscallWireError(error: unknown): TraceKernelSyscallWireError {
     return Object.freeze({ code: 'EMFILE', message: error.message });
   }
   if (error instanceof TraceKernelProcessLimitError) {
+    return Object.freeze({ code: 'EAGAIN', message: error.message });
+  }
+  if (error instanceof TraceKernelWouldBlockError) {
     return Object.freeze({ code: 'EAGAIN', message: error.message });
   }
   if (error instanceof TraceKernelChildProcessError) {
@@ -635,22 +649,26 @@ export class TraceKernelSyscallDispatcher {
           }))
         );
       case 'fcntl':
-        return request.action === 'get-close-on-exec'
-          ? this.process.descriptors.getCloseOnExec(request.fd).pipe(
-              Effect.map((closeOnExec) => ({
-                op: 'fcntl' as const,
-                closeOnExec,
-              }))
-            )
-          : this.process.descriptors.setCloseOnExec(
+        return Effect.gen(this, function* () {
+          if (request.action === 'set-close-on-exec') {
+            yield* this.process.descriptors.setCloseOnExec(
               request.fd,
               request.closeOnExec === true
-            ).pipe(
-              Effect.as({
-                op: 'fcntl' as const,
-                closeOnExec: request.closeOnExec === true,
-              })
             );
+          } else if (request.action === 'set-nonblocking') {
+            yield* this.process.descriptors.setNonblocking(
+              request.fd,
+              request.nonblocking === true
+            );
+          }
+          const closeOnExec = yield* this.process.descriptors.getCloseOnExec(
+            request.fd
+          );
+          const nonblocking = yield* this.process.descriptors.getNonblocking(
+            request.fd
+          );
+          return { op: 'fcntl' as const, closeOnExec, nonblocking };
+        });
       case 'fstat':
         return this.process.fstat(request.fd).pipe(
           Effect.map((stat) => ({ op: 'fstat' as const, stat }))

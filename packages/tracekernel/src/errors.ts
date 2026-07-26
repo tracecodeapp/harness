@@ -84,6 +84,14 @@ export class TraceKernelBrokenPipeError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class TraceKernelWouldBlockError extends Data.TaggedError(
+  'TraceKernelWouldBlockError'
+)<{
+  readonly code: 'EAGAIN';
+  readonly operation: 'read' | 'write';
+  readonly message: string;
+}> {}
+
 export class TraceKernelDescriptorLimitError extends Data.TaggedError(
   'TraceKernelDescriptorLimitError'
 )<{

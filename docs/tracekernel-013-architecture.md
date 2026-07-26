@@ -483,15 +483,25 @@ target. The kernel rejects identical `dup3` source and target descriptors with
 close-on-exec bit. C/C++ maps these through its forced WASI compatibility
 header (including a nonzero `O_CLOEXEC` value), while managed C# exposes the
 same atomic choices through `KernelPipe.Create` and
-`KernelDescriptor.DuplicateTo`. `O_NONBLOCK` remains unsupported until
-readiness, polling, and open-file-description status flags land together.
+`KernelDescriptor.DuplicateTo`.
+
+`O_NONBLOCK` is an open-description status flag, so a change through any
+duplicated or inherited descriptor is immediately visible through every other
+reference to that description. Nonblocking empty pipe reads and full pipe
+writes return `EAGAIN`; queued data and final-writer EOF retain their normal
+distinct results. `pipe2(O_NONBLOCK)` publishes both endpoint descriptions
+with the flag already set, and `fcntl` can inspect or mutate it afterward.
+C/C++ maps `F_GETFL`/`F_SETFL`, Python maps `os.get_blocking`,
+`os.set_blocking`, and `fcntl`, and managed C# exposes
+`KernelDescriptor.Nonblocking`. Poll/readiness multiplexing and nonblocking
+socket state remain later slices.
 Python `os.pipe` and `os.pipe2` install ordinary Pyodide descriptor identities
 whose stream operations reference the kernel endpoints. Consequently
 `os.read`/`write`/`close`, `dup`, inheritable flags, `pass_fds`, and
 cross-language child mappings do not require a parallel Python-only pipe
 registry. Python's `os.pipe` follows PEP 446 and defaults both endpoints to
-close-on-exec; `os.pipe2(0)` and `os.pipe2(O_CLOEXEC)` retain their explicit
-POSIX flag behavior.
+close-on-exec; `os.pipe2` retains explicit `O_CLOEXEC` and `O_NONBLOCK`
+behavior.
 
 The C/C++ WASI process compatibility slice is intentionally smaller than a
 complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,
@@ -539,6 +549,9 @@ The initial 0.13 branch now establishes:
   replacement, displaced-resource close, and failure rollback;
 - atomic `dup3` replacement plus close-on-exec pipe creation, with C/C++ and
   managed C# runtime conformance;
+- open-description `O_NONBLOCK` state shared across descriptor duplication
+  and inheritance, with typed pipe `EAGAIN` behavior and C++, Python, and C#
+  runtime conformance;
 - explicit all-or-selected child descriptor inheritance plus atomic
   parent-fd-to-child-fd mappings, with shared open descriptions and failure
   rollback;

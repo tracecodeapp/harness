@@ -329,6 +329,7 @@ export function encodeTraceKernelSyscallRequest(
     case 'pipe':
       writer.u32(request.options?.capacityChunks ?? 0);
       writer.u8(request.options?.closeOnExec === true ? 1 : 0);
+      writer.u8(request.options?.nonblocking === true ? 1 : 0);
       break;
     case 'watch':
       writer.string(request.path);
@@ -503,9 +504,19 @@ export function encodeTraceKernelSyscallRequest(
       break;
     case 'fcntl':
       writer.i32(request.fd);
-      writer.u8(request.action === 'get-close-on-exec' ? 1 : 2);
+      writer.u8(
+        request.action === 'get-close-on-exec'
+          ? 1
+          : request.action === 'set-close-on-exec'
+            ? 2
+            : request.action === 'get-nonblocking'
+              ? 3
+              : 4
+      );
       if (request.action === 'set-close-on-exec') {
         writer.u8(request.closeOnExec ? 1 : 0);
+      } else if (request.action === 'set-nonblocking') {
+        writer.u8(request.nonblocking ? 1 : 0);
       }
       break;
     case 'ftruncate':
@@ -563,20 +574,28 @@ export function decodeTraceKernelSyscallRequest(
     case 'pipe': {
       const capacityChunks = reader.u32();
       const closeOnExec = reader.u8();
+      const nonblocking = reader.u8();
       if (closeOnExec > 1) {
         throw new TraceKernelTransportError(
           'EPROTO',
           'Invalid pipe close-on-exec flag'
         );
       }
+      if (nonblocking > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          'Invalid pipe nonblocking flag'
+        );
+      }
       request = {
         op: 'pipe',
-        ...(capacityChunks === 0 && closeOnExec === 0
+        ...(capacityChunks === 0 && closeOnExec === 0 && nonblocking === 0
           ? {}
           : {
               options: {
                 ...(capacityChunks === 0 ? {} : { capacityChunks }),
                 ...(closeOnExec === 1 ? { closeOnExec: true } : {}),
+                ...(nonblocking === 1 ? { nonblocking: true } : {}),
               },
             }),
       };
@@ -939,6 +958,22 @@ export function decodeTraceKernelSyscallRequest(
           action: 'set-close-on-exec',
           closeOnExec: closeOnExec === 1,
         };
+      } else if (action === 3) {
+        request = { op: 'fcntl', fd, action: 'get-nonblocking' };
+      } else if (action === 4) {
+        const nonblocking = reader.u8();
+        if (nonblocking > 1) {
+          throw new TraceKernelTransportError(
+            'EPROTO',
+            `invalid nonblocking flag ${nonblocking}`
+          );
+        }
+        request = {
+          op: 'fcntl',
+          fd,
+          action: 'set-nonblocking',
+          nonblocking: nonblocking === 1,
+        };
       } else {
         throw new TraceKernelTransportError('EPROTO', `invalid fcntl action ${action}`);
       }
@@ -1125,6 +1160,7 @@ export function encodeTraceKernelSyscallResult(
       break;
     case 'fcntl':
       writer.u8(value.closeOnExec ? 1 : 0);
+      writer.u8(value.nonblocking ? 1 : 0);
       break;
     case 'setsid':
       writer.i32(value.sid);
@@ -1381,13 +1417,18 @@ export function decodeTraceKernelSyscallResult(
     }
     case 'fcntl': {
       const closeOnExec = reader.u8();
-      if (closeOnExec > 1) {
+      const nonblocking = reader.u8();
+      if (closeOnExec > 1 || nonblocking > 1) {
         throw new TraceKernelTransportError(
           'EPROTO',
-          `invalid close-on-exec result ${closeOnExec}`
+          `invalid descriptor flag result ${closeOnExec}:${nonblocking}`
         );
       }
-      value = { op: 'fcntl', closeOnExec: closeOnExec === 1 };
+      value = {
+        op: 'fcntl',
+        closeOnExec: closeOnExec === 1,
+        nonblocking: nonblocking === 1,
+      };
       break;
     }
     case 'setsid':

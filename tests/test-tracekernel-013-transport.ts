@@ -167,7 +167,10 @@ function makeFixtureWorker(
 
 async function main(): Promise<void> {
   const requests: readonly TraceKernelSyscallRequest[] = [
-    { op: 'pipe', options: { capacityChunks: 4, closeOnExec: true } },
+    {
+      op: 'pipe',
+      options: { capacityChunks: 4, closeOnExec: true, nonblocking: true },
+    },
     {
       op: 'watch',
       path: '/workspace/src',
@@ -244,6 +247,13 @@ async function main(): Promise<void> {
       fd: 19,
       action: 'set-close-on-exec',
       closeOnExec: true,
+    },
+    { op: 'fcntl', fd: 19, action: 'get-nonblocking' },
+    {
+      op: 'fcntl',
+      fd: 19,
+      action: 'set-nonblocking',
+      nonblocking: true,
     },
     { op: 'fstat', fd: 13 },
     { op: 'ftruncate', fd: 14, length: 4096 },
@@ -381,8 +391,18 @@ async function main(): Promise<void> {
     { ok: true, value: { op: 'dup', fd: 4 } },
     { ok: true, value: { op: 'dup2', fd: 19 } },
     { ok: true, value: { op: 'dup3', fd: 20, closeOnExec: true } },
-    { ok: true, value: { op: 'fcntl', closeOnExec: false } },
-    { ok: true, value: { op: 'fcntl', closeOnExec: true } },
+    {
+      ok: true,
+      value: { op: 'fcntl', closeOnExec: false, nonblocking: false },
+    },
+    {
+      ok: true,
+      value: { op: 'fcntl', closeOnExec: true, nonblocking: false },
+    },
+    {
+      ok: true,
+      value: { op: 'fcntl', closeOnExec: true, nonblocking: true },
+    },
     {
       ok: true,
       value: {

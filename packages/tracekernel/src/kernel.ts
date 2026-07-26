@@ -1060,7 +1060,10 @@ export class TraceKernelSession {
       );
       this.resources.set(resourceId, pipe);
       return yield* Effect.gen(this, function* () {
-        const descriptorOptions = { closeOnExec: options.closeOnExec === true };
+        const descriptorOptions = {
+          closeOnExec: options.closeOnExec === true,
+          nonblocking: options.nonblocking === true,
+        };
         const readFd = yield* this.installDescriptor(
           reader,
           pipe.reader(),
@@ -1622,7 +1625,10 @@ export class TraceKernelSession {
     process: TraceKernelProcess,
     descriptor: TraceKernelDescriptor,
     fd?: number,
-    options: { readonly closeOnExec?: boolean } = {}
+    options: {
+      readonly closeOnExec?: boolean;
+      readonly nonblocking?: boolean;
+    } = {}
   ): Effect.Effect<number, TraceKernelDescriptorLimitError> {
     return Effect.try({
       try: () => fd === undefined

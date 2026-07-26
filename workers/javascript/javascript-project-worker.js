@@ -275,6 +275,7 @@ function encodeTraceKernelSyscallRequest(request) {
     case "pipe":
       writer.u32(request.options?.capacityChunks ?? 0);
       writer.u8(request.options?.closeOnExec === true ? 1 : 0);
+      writer.u8(request.options?.nonblocking === true ? 1 : 0);
       break;
     case "watch":
       writer.string(request.path);
@@ -418,9 +419,13 @@ function encodeTraceKernelSyscallRequest(request) {
       break;
     case "fcntl":
       writer.i32(request.fd);
-      writer.u8(request.action === "get-close-on-exec" ? 1 : 2);
+      writer.u8(
+        request.action === "get-close-on-exec" ? 1 : request.action === "set-close-on-exec" ? 2 : request.action === "get-nonblocking" ? 3 : 4
+      );
       if (request.action === "set-close-on-exec") {
         writer.u8(request.closeOnExec ? 1 : 0);
+      } else if (request.action === "set-nonblocking") {
+        writer.u8(request.nonblocking ? 1 : 0);
       }
       break;
     case "ftruncate":
@@ -650,13 +655,18 @@ function decodeTraceKernelSyscallResult(bytes) {
       break;
     case "fcntl": {
       const closeOnExec = reader.u8();
-      if (closeOnExec > 1) {
+      const nonblocking = reader.u8();
+      if (closeOnExec > 1 || nonblocking > 1) {
         throw new TraceKernelTransportError(
           "EPROTO",
-          `invalid close-on-exec result ${closeOnExec}`
+          `invalid descriptor flag result ${closeOnExec}:${nonblocking}`
         );
       }
-      value = { op: "fcntl", closeOnExec: closeOnExec === 1 };
+      value = {
+        op: "fcntl",
+        closeOnExec: closeOnExec === 1,
+        nonblocking: nonblocking === 1
+      };
       break;
     }
     case "setsid":

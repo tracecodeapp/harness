@@ -8,6 +8,7 @@ import {
   TraceKernelDescriptorLimitError,
   TraceKernelInvalidArgumentError,
   TraceKernelInvalidDescriptorOperationError,
+  TraceKernelWouldBlockError,
 } from './errors';
 import type { TraceKernelStat } from './vfs';
 
@@ -23,6 +24,7 @@ export interface TraceKernelDescriptorSnapshot {
   readonly kind: TraceKernelDescriptorKind;
   readonly resourceId: string;
   readonly closeOnExec: boolean;
+  readonly nonblocking: boolean;
 }
 
 export interface TraceKernelDescriptor {
@@ -34,7 +36,9 @@ export interface TraceKernelDescriptor {
    */
   readonly resource?: unknown;
   read?(maxBytes: number, position?: number): Effect.Effect<Uint8Array, Error>;
+  readNonblocking?(maxBytes: number, position?: number): Effect.Effect<Uint8Array, Error>;
   write?(bytes: Uint8Array, position?: number): Effect.Effect<number, Error>;
+  writeNonblocking?(bytes: Uint8Array, position?: number): Effect.Effect<number, Error>;
   stat?(): Effect.Effect<TraceKernelStat, Error>;
   truncate?(length: number): Effect.Effect<void, Error>;
   duplicate(): Effect.Effect<TraceKernelDescriptor, Error>;
@@ -53,15 +57,45 @@ export interface TraceKernelWritableDescriptor extends TraceKernelDescriptor {
 
 export type TraceKernelDescriptorReadError =
   | TraceKernelBadFileDescriptorError
-  | TraceKernelInvalidDescriptorOperationError;
+  | TraceKernelInvalidDescriptorOperationError
+  | TraceKernelWouldBlockError;
 
 export type TraceKernelDescriptorWriteError =
   | TraceKernelBadFileDescriptorError
   | TraceKernelInvalidDescriptorOperationError
-  | TraceKernelBrokenPipeError;
+  | TraceKernelBrokenPipeError
+  | TraceKernelWouldBlockError;
 
 export interface TraceKernelDescriptorTableOptions {
   readonly maxDescriptors?: number;
+}
+
+interface TraceKernelOpenDescriptionStatus {
+  nonblocking: boolean;
+}
+
+const openDescriptionStatuses = new WeakMap<
+  TraceKernelDescriptor,
+  TraceKernelOpenDescriptionStatus
+>();
+
+function statusFor(
+  descriptor: TraceKernelDescriptor
+): TraceKernelOpenDescriptionStatus {
+  let status = openDescriptionStatuses.get(descriptor);
+  if (!status) {
+    status = { nonblocking: false };
+    openDescriptionStatuses.set(descriptor, status);
+  }
+  return status;
+}
+
+function shareStatus(
+  source: TraceKernelDescriptor,
+  duplicate: TraceKernelDescriptor
+): TraceKernelDescriptor {
+  openDescriptionStatuses.set(duplicate, statusFor(source));
+  return duplicate;
 }
 
 export type TraceKernelDescriptorDupError =
@@ -91,7 +125,10 @@ export class TraceKernelDescriptorTable {
 
   install(
     descriptor: TraceKernelDescriptor,
-    options: { readonly closeOnExec?: boolean } = {}
+    options: {
+      readonly closeOnExec?: boolean;
+      readonly nonblocking?: boolean;
+    } = {}
   ): number {
     if (this.descriptors.size >= this.maxDescriptors) {
       throw new TraceKernelDescriptorLimitError({
@@ -103,6 +140,7 @@ export class TraceKernelDescriptorTable {
     let fd = this.nextFd;
     while (this.descriptors.has(fd)) fd += 1;
     this.descriptors.set(fd, descriptor);
+    if (options.nonblocking) statusFor(descriptor).nonblocking = true;
     if (options.closeOnExec) this.closeOnExecDescriptors.add(fd);
     this.nextFd = fd + 1;
     return fd;
@@ -118,7 +156,10 @@ export class TraceKernelDescriptorTable {
   installAt(
     fd: number,
     descriptor: TraceKernelDescriptor,
-    options: { readonly closeOnExec?: boolean } = {}
+    options: {
+      readonly closeOnExec?: boolean;
+      readonly nonblocking?: boolean;
+    } = {}
   ): number {
     const targetFd = Math.floor(fd);
     if (!Number.isSafeInteger(fd) || targetFd < 0) {
@@ -143,6 +184,7 @@ export class TraceKernelDescriptorTable {
       });
     }
     this.descriptors.set(targetFd, descriptor);
+    if (options.nonblocking) statusFor(descriptor).nonblocking = true;
     if (options.closeOnExec) this.closeOnExecDescriptors.add(targetFd);
     if (targetFd === this.nextFd) this.resetNextFd();
     return targetFd;
@@ -155,6 +197,7 @@ export class TraceKernelDescriptorTable {
         kind: descriptor.kind,
         resourceId: descriptor.resourceId,
         closeOnExec: this.closeOnExecDescriptors.has(fd),
+        nonblocking: statusFor(descriptor).nonblocking,
       }))
       .sort((left, right) => left.fd - right.fd);
   }
@@ -198,6 +241,35 @@ export class TraceKernelDescriptorTable {
     return Effect.void;
   }
 
+  getNonblocking(
+    fd: number
+  ): Effect.Effect<boolean, TraceKernelBadFileDescriptorError> {
+    const descriptor = this.descriptors.get(fd);
+    return descriptor
+      ? Effect.succeed(statusFor(descriptor).nonblocking)
+      : Effect.fail(new TraceKernelBadFileDescriptorError({
+          fd,
+          operation: 'fcntl',
+          message: `EBADF: bad file descriptor, fcntl ${fd}`,
+        }));
+  }
+
+  setNonblocking(
+    fd: number,
+    nonblocking: boolean
+  ): Effect.Effect<void, TraceKernelBadFileDescriptorError> {
+    const descriptor = this.descriptors.get(fd);
+    if (!descriptor) {
+      return Effect.fail(new TraceKernelBadFileDescriptorError({
+        fd,
+        operation: 'fcntl',
+        message: `EBADF: bad file descriptor, fcntl ${fd}`,
+      }));
+    }
+    statusFor(descriptor).nonblocking = nonblocking;
+    return Effect.void;
+  }
+
   read(
     fd: number,
     maxBytes: number,
@@ -218,11 +290,16 @@ export class TraceKernelDescriptorTable {
         message: `EBADF: descriptor ${fd} is not readable`,
       }));
     }
-    return descriptor.read(
+    const read = statusFor(descriptor).nonblocking && descriptor.readNonblocking
+      ? descriptor.readNonblocking
+      : descriptor.read;
+    return read(
       Math.max(0, Math.floor(maxBytes)),
       position === undefined ? undefined : Math.max(0, Math.floor(position))
     ).pipe(
-      Effect.mapError((error) => error instanceof TraceKernelBadFileDescriptorError
+      Effect.mapError((error) =>
+        error instanceof TraceKernelBadFileDescriptorError ||
+        error instanceof TraceKernelWouldBlockError
         ? error
         : new TraceKernelBadFileDescriptorError({
             fd,
@@ -252,11 +329,16 @@ export class TraceKernelDescriptorTable {
         message: `EBADF: descriptor ${fd} is not writable`,
       }));
     }
-    return descriptor.write(
+    const write = statusFor(descriptor).nonblocking && descriptor.writeNonblocking
+      ? descriptor.writeNonblocking
+      : descriptor.write;
+    return write(
       Uint8Array.from(bytes),
       position === undefined ? undefined : Math.max(0, Math.floor(position))
     ).pipe(
-      Effect.mapError((error) => error instanceof TraceKernelBrokenPipeError
+      Effect.mapError((error) =>
+        error instanceof TraceKernelBrokenPipeError ||
+        error instanceof TraceKernelWouldBlockError
         ? error
         : new TraceKernelBadFileDescriptorError({
             fd,
@@ -315,6 +397,7 @@ export class TraceKernelDescriptorTable {
       }));
     }
     return descriptor.duplicate().pipe(
+      Effect.map((duplicate) => shareStatus(descriptor, duplicate)),
       Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: 'dup',
@@ -393,6 +476,7 @@ export class TraceKernelDescriptorTable {
     }
 
     return descriptor.duplicate().pipe(
+      Effect.map((duplicate) => shareStatus(descriptor, duplicate)),
       Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: allowSameDescriptor ? 'dup2' : 'dup3',
@@ -524,6 +608,7 @@ export class TraceKernelDescriptorTable {
       yield* Effect.forEach(
         selected,
         ([fd, descriptor]) => descriptor.duplicate().pipe(
+          Effect.map((duplicate) => shareStatus(descriptor, duplicate)),
           Effect.tap((duplicate) => Effect.sync(() => {
             duplicates.push([fd, duplicate]);
           })),
@@ -622,6 +707,8 @@ export interface TraceKernelPipeOptions {
   readonly capacityChunks?: number;
   /** Install both endpoint descriptors with FD_CLOEXEC. */
   readonly closeOnExec?: boolean;
+  /** Install both endpoint open descriptions with O_NONBLOCK. */
+  readonly nonblocking?: boolean;
 }
 
 /**
@@ -675,6 +762,7 @@ export class TraceKernelPipe {
       kind: 'pipe-reader',
       resourceId: this.id,
       read: (maxBytes) => this.read(maxBytes),
+      readNonblocking: (maxBytes) => this.readNonblocking(maxBytes),
       duplicate: () => this.duplicateReader(),
       close: () => this.closeReader(),
     };
@@ -685,6 +773,7 @@ export class TraceKernelPipe {
       kind: 'pipe-writer',
       resourceId: this.id,
       write: (bytes) => this.write(bytes),
+      writeNonblocking: (bytes) => this.writeNonblocking(bytes),
       duplicate: () => this.duplicateWriter(),
       close: () => this.closeWriter(),
     };
@@ -709,6 +798,39 @@ export class TraceKernelPipe {
           Effect.flatMap((available) => Option.isSome(available)
             ? Effect.succeed(this.takeBytes(available.value, maxBytes))
             : this.awaitReadEvent(maxBytes))
+        );
+      })
+    );
+  }
+
+  private readNonblocking(
+    maxBytes: number
+  ): Effect.Effect<
+    Uint8Array,
+    TraceKernelBadFileDescriptorError | TraceKernelWouldBlockError
+  > {
+    if (maxBytes === 0) return Effect.succeed(new Uint8Array(0));
+    return this.readMutex.withPermits(1)(
+      Effect.suspend((): Effect.Effect<
+        Uint8Array,
+        TraceKernelBadFileDescriptorError | TraceKernelWouldBlockError
+      > => {
+        if (this.readerIsClosed) return this.readerClosedError();
+        if (this.remainder.byteLength > 0) {
+          return Effect.succeed(this.takeRemainder(maxBytes));
+        }
+        return Queue.poll(this.chunks).pipe(
+          Effect.flatMap((available) => {
+            if (Option.isSome(available)) {
+              return Effect.succeed(this.takeBytes(available.value, maxBytes));
+            }
+            if (this.writerIsClosed) return Effect.succeed(new Uint8Array(0));
+            return Effect.fail(new TraceKernelWouldBlockError({
+              code: 'EAGAIN',
+              operation: 'read',
+              message: 'EAGAIN: nonblocking pipe read would block',
+            }));
+          })
         );
       })
     );
@@ -754,6 +876,29 @@ export class TraceKernelPipe {
         Deferred.await(this.readerClosed).pipe(
           Effect.andThen(this.brokenPipeError())
         )
+      );
+    });
+  }
+
+  private writeNonblocking(
+    bytes: Uint8Array
+  ): Effect.Effect<number, TraceKernelBrokenPipeError | TraceKernelWouldBlockError> {
+    return Effect.suspend((): Effect.Effect<
+      number,
+      TraceKernelBrokenPipeError | TraceKernelWouldBlockError
+    > => {
+      if (this.writerIsClosed || this.readerIsClosed) return this.brokenPipeError();
+      if (bytes.byteLength === 0) return Effect.succeed(0);
+      return Queue.isFull(this.chunks).pipe(
+        Effect.flatMap((full) => full
+          ? Effect.fail(new TraceKernelWouldBlockError({
+              code: 'EAGAIN',
+              operation: 'write',
+              message: 'EAGAIN: nonblocking pipe write would block',
+            }))
+          : Queue.offer(this.chunks, Uint8Array.from(bytes)).pipe(
+              Effect.as(bytes.byteLength)
+            ))
       );
     });
   }

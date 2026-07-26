@@ -244,6 +244,32 @@ public sealed class KernelDescriptor : IDisposable
         set => CloseOnExec = !value;
     }
 
+    public bool Nonblocking
+    {
+        get
+        {
+            ThrowIfClosed();
+            JsonElement value = KernelInterop.Call(new
+            {
+                op = "fcntl",
+                fd = Number,
+                action = "get-nonblocking",
+            });
+            return value.GetProperty("nonblocking").GetBoolean();
+        }
+        set
+        {
+            ThrowIfClosed();
+            KernelInterop.Call(new
+            {
+                op = "fcntl",
+                fd = Number,
+                action = "set-nonblocking",
+                nonblocking = value,
+            });
+        }
+    }
+
     public void Close()
     {
         if (closed)
@@ -281,7 +307,8 @@ public sealed record KernelPipe(
     [SupportedOSPlatform("browser")]
     public static KernelPipe Create(
         int capacityChunks = 16,
-        bool closeOnExec = false
+        bool closeOnExec = false,
+        bool nonblocking = false
     )
     {
         if (capacityChunks <= 0)
@@ -291,7 +318,7 @@ public sealed record KernelPipe(
         JsonElement value = KernelInterop.Call(new
         {
             op = "pipe",
-            options = new { capacityChunks, closeOnExec },
+            options = new { capacityChunks, closeOnExec, nonblocking },
         });
         return new KernelPipe(
             new KernelDescriptor(value.GetProperty("readFd").GetInt32()),

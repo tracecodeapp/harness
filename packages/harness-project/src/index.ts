@@ -1847,19 +1847,30 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         case 'fcntl': {
           const pid = context?.process.pid ?? 0;
-          const closeOnExec = request.action === 'get-close-on-exec'
-            ? await this.kernelDescriptors.getCloseOnExec(pid, request.fd)
-            : request.closeOnExec === true;
           if (request.action === 'set-close-on-exec') {
             await this.kernelDescriptors.setCloseOnExec(
               pid,
               request.fd,
-              closeOnExec
+              request.closeOnExec === true
+            );
+          } else if (request.action === 'set-nonblocking') {
+            await this.kernelDescriptors.setNonblocking(
+              pid,
+              request.fd,
+              request.nonblocking === true
             );
           }
+          const closeOnExec = await this.kernelDescriptors.getCloseOnExec(
+            pid,
+            request.fd
+          );
+          const nonblocking = await this.kernelDescriptors.getNonblocking(
+            pid,
+            request.fd
+          );
           return {
             ok: true,
-            value: { op: 'fcntl', closeOnExec },
+            value: { op: 'fcntl', closeOnExec, nonblocking },
           };
         }
         case 'fstat': {

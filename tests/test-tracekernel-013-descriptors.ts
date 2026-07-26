@@ -9,6 +9,7 @@ import {
   makeTraceKernelHost,
   TraceKernelBadFileDescriptorError,
   TraceKernelDescriptorLimitError,
+  TraceKernelWouldBlockError,
   type TraceKernelRuntimeProvider,
 } from '@tracecode/tracekernel';
 
@@ -112,6 +113,63 @@ async function main(): Promise<void> {
       assertCondition(eof.byteLength === 0, 'Closing the final writer did not produce EOF.');
       yield* reader.close(firstPipe.readFd);
       assertCondition(session.resourceIds().length === 0, 'Fully closed pipe remained in the resource registry.');
+
+      const nonblockingPipe = yield* session.createPipe(reader, writer, {
+        capacityChunks: 1,
+        nonblocking: true,
+      });
+      assertCondition(
+        reader.snapshot().descriptors.find(
+          ({ fd }) => fd === nonblockingPipe.readFd
+        )?.nonblocking === true &&
+          writer.snapshot().descriptors.find(
+            ({ fd }) => fd === nonblockingPipe.writeFd
+          )?.nonblocking === true,
+        'pipe2-style O_NONBLOCK state was not installed on both open descriptions.'
+      );
+      const emptyNonblockingRead = yield* Effect.exit(
+        reader.read(nonblockingPipe.readFd, 16)
+      );
+      const emptyReadFailure = Exit.isFailure(emptyNonblockingRead)
+        ? Cause.failureOption(emptyNonblockingRead.cause)
+        : Option.none();
+      assertCondition(
+        Exit.isFailure(emptyNonblockingRead) &&
+          Option.isSome(emptyReadFailure) &&
+          emptyReadFailure.value instanceof TraceKernelWouldBlockError,
+        'An empty nonblocking pipe read did not return EAGAIN.'
+      );
+      yield* writer.write(nonblockingPipe.writeFd, encoder.encode('queued'));
+      const fullNonblockingWrite = yield* Effect.exit(
+        writer.write(nonblockingPipe.writeFd, encoder.encode('blocked'))
+      );
+      const fullWriteFailure = Exit.isFailure(fullNonblockingWrite)
+        ? Cause.failureOption(fullNonblockingWrite.cause)
+        : Option.none();
+      assertCondition(
+        Exit.isFailure(fullNonblockingWrite) &&
+          Option.isSome(fullWriteFailure) &&
+          fullWriteFailure.value instanceof TraceKernelWouldBlockError,
+        'A full nonblocking pipe write did not return EAGAIN.'
+      );
+      const duplicateReader = yield* reader.dup(nonblockingPipe.readFd);
+      yield* reader.descriptors.setNonblocking(duplicateReader, false);
+      assertCondition(
+        !(yield* reader.descriptors.getNonblocking(nonblockingPipe.readFd)),
+        'Changing O_NONBLOCK through dup did not update the shared open description.'
+      );
+      yield* reader.descriptors.setNonblocking(nonblockingPipe.readFd, true);
+      yield* reader.close(duplicateReader);
+      assertCondition(
+        decoder.decode(yield* reader.read(nonblockingPipe.readFd, 16)) === 'queued',
+        'A ready nonblocking pipe read lost queued data.'
+      );
+      yield* writer.close(nonblockingPipe.writeFd);
+      assertCondition(
+        (yield* reader.read(nonblockingPipe.readFd, 16)).byteLength === 0,
+        'A nonblocking pipe did not report EOF after final writer close.'
+      );
+      yield* reader.close(nonblockingPipe.readFd);
 
       const teardownPipe = yield* session.createPipe(reader, writer, { capacityChunks: 1 });
       const blockedRead = yield* Effect.fork(reader.read(teardownPipe.readFd, 16));
@@ -404,6 +462,8 @@ async function main(): Promise<void> {
     processOwnedDescriptors: true,
     fragmentedReads: true,
     boundedBackpressure: true,
+    nonblockingPipeEagain: true,
+    openDescriptionFlagsSharedAcrossDup: true,
     writerCloseProducesEof: true,
     blockedReadInterruptedOnProcessExit: true,
     resourcesReleasedOnFinalDescriptorClose: true,

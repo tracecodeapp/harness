@@ -184,12 +184,9 @@ export class RuntimeKernelDescriptorManager {
     maxBytes: number,
     position?: number
   ): Promise<Uint8Array> {
-    return this.descriptor(pid, fd, 'read').then((descriptor) => {
-      if (!descriptor.read) {
-        throw descriptorError('EBADF', `descriptor ${fd} is not readable`);
-      }
-      return Effect.runPromise(descriptor.read(maxBytes, position));
-    });
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'read').read(fd, maxBytes, position)
+    );
   }
 
   private readDescription(
@@ -222,12 +219,9 @@ export class RuntimeKernelDescriptorManager {
     bytes: Uint8Array,
     position?: number
   ): Promise<number> {
-    return this.descriptor(pid, fd, 'write').then((descriptor) => {
-      if (!descriptor.write) {
-        throw descriptorError('EBADF', `descriptor ${fd} is not writable`);
-      }
-      return Effect.runPromise(descriptor.write(bytes, position));
-    });
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'write').write(fd, bytes, position)
+    );
   }
 
   private writeDescription(
@@ -367,7 +361,10 @@ export class RuntimeKernelDescriptorManager {
     this.pipes.set(pipeId, pipe);
     let readFd: number | undefined;
     try {
-      const descriptorOptions = { closeOnExec: options.closeOnExec === true };
+      const descriptorOptions = {
+        closeOnExec: options.closeOnExec === true,
+        nonblocking: options.nonblocking === true,
+      };
       readFd = this.installDescriptor(pid, pipe.reader(), undefined, descriptorOptions);
       const writeFd = this.installDescriptor(
         pid,
@@ -423,7 +420,10 @@ export class RuntimeKernelDescriptorManager {
     this.pipes.set(pipeId, pipe);
     let readFd: number | undefined;
     try {
-      const descriptorOptions = { closeOnExec: options.closeOnExec === true };
+      const descriptorOptions = {
+        closeOnExec: options.closeOnExec === true,
+        nonblocking: options.nonblocking === true,
+      };
       readFd = this.installDescriptor(
         reader.pid,
         pipe.reader(),
@@ -513,6 +513,18 @@ export class RuntimeKernelDescriptorManager {
     );
   }
 
+  getNonblocking(pid: number, fd: number): Promise<boolean> {
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'fcntl').getNonblocking(fd)
+    );
+  }
+
+  setNonblocking(pid: number, fd: number, nonblocking: boolean): Promise<void> {
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'fcntl').setNonblocking(fd, nonblocking)
+    );
+  }
+
   async closeProcess(pid: number): Promise<void> {
     const table = this.tables.get(pid);
     if (!table) return;
@@ -554,7 +566,10 @@ export class RuntimeKernelDescriptorManager {
     pid: number,
     descriptor: TraceKernelDescriptor,
     fd?: number,
-    options: { readonly closeOnExec?: boolean } = {}
+    options: {
+      readonly closeOnExec?: boolean;
+      readonly nonblocking?: boolean;
+    } = {}
   ): number {
     return fd === undefined
       ? this.tableForProcess(pid).install(descriptor, options)

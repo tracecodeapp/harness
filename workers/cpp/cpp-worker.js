@@ -564,6 +564,7 @@ class CppTraceKernelSyncClient {
       case 'pipe':
         writer.u32(request.options?.capacityChunks ?? 0);
         writer.u8(request.options?.closeOnExec === true ? 1 : 0);
+        writer.u8(request.options?.nonblocking === true ? 1 : 0);
         break;
       case 'watchdog':
         writer.u8(
@@ -734,9 +735,19 @@ class CppTraceKernelSyncClient {
         break;
       case 'fcntl':
         writer.i32(request.fd);
-        writer.u8(request.action === 'get-close-on-exec' ? 1 : 2);
+        writer.u8(
+          request.action === 'get-close-on-exec'
+            ? 1
+            : request.action === 'set-close-on-exec'
+              ? 2
+              : request.action === 'get-nonblocking'
+                ? 3
+                : 4
+        );
         if (request.action === 'set-close-on-exec') {
           writer.u8(request.closeOnExec ? 1 : 0);
+        } else if (request.action === 'set-nonblocking') {
+          writer.u8(request.nonblocking ? 1 : 0);
         }
         break;
       case 'setsid':
@@ -945,7 +956,11 @@ class CppTraceKernelSyncClient {
         };
         break;
       case 'fcntl':
-        value = { op: operation, closeOnExec: reader.u8() === 1 };
+        value = {
+          op: operation,
+          closeOnExec: reader.u8() === 1,
+          nonblocking: reader.u8() === 1,
+        };
         break;
       case 'setsid':
         value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
@@ -2773,10 +2788,20 @@ class WasiProcess {
             fd: entry.kernelFd,
             action: action === 1
               ? 'get-close-on-exec'
-              : 'set-close-on-exec',
-            ...(action === 1 ? {} : { closeOnExec: value !== 0 }),
+              : action === 2
+                ? 'set-close-on-exec'
+                : action === 3
+                  ? 'get-nonblocking'
+                  : 'set-nonblocking',
+            ...(action === 2
+              ? { closeOnExec: value !== 0 }
+              : action === 4
+                ? { nonblocking: value !== 0 }
+                : {}),
           });
-          return result.closeOnExec ? 1 : 0;
+          return action <= 2
+            ? (result.closeOnExec ? 1 : 0)
+            : (result.nonblocking ? 1 : 0);
         } catch (error) {
           return -cppTraceKernelErrno(error);
         }
@@ -3469,11 +3494,14 @@ class WasiProcess {
   createKernelPipe(fdsPtr, flags) {
     if (!this.kernelClient) return -ENOTSUP;
     if (!fdsPtr) return -EINVAL;
-    if ((flags & ~1) !== 0) return -ENOTSUP;
+    if ((flags & ~3) !== 0) return -ENOTSUP;
     try {
       const result = this.kernelClient.call({
         op: 'pipe',
-        options: { closeOnExec: (flags & 1) !== 0 },
+        options: {
+          closeOnExec: (flags & 1) !== 0,
+          nonblocking: (flags & 2) !== 0,
+        },
       });
       const readFd = this.allocateFd({
         kind: 'pipe',
@@ -11620,6 +11648,10 @@ const CPP_KERNEL_SPAWN_HEADER_SOURCE = String.raw`#ifndef _SPAWN_H
 #undef O_CLOEXEC
 #define O_CLOEXEC 0x80000
 #endif
+#if !defined(O_NONBLOCK) || O_NONBLOCK == 0
+#undef O_NONBLOCK
+#define O_NONBLOCK 0x800
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -11752,21 +11784,27 @@ int __tracecode_proc_setpgid(int pid, int pgroup);
 int fcntl(int fd, int command, ...) {
   int result;
   int value = 0;
-  if (command == F_SETFD) {
+  if (command == F_SETFD || command == F_SETFL) {
     va_list arguments;
     va_start(arguments, command);
     value = va_arg(arguments, int);
     va_end(arguments);
-  } else if (command != F_GETFD) {
+  } else if (command != F_GETFD && command != F_GETFL) {
     errno = ENOSYS;
     return -1;
   }
-  result = __tracecode_proc_fcntl(fd, command == F_GETFD ? 1 : 2, value & FD_CLOEXEC);
+  result = __tracecode_proc_fcntl(
+    fd,
+    command == F_GETFD ? 1 : command == F_SETFD ? 2 : command == F_GETFL ? 3 : 4,
+    command == F_SETFD ? (value & FD_CLOEXEC) : (value & O_NONBLOCK)
+  );
   if (result < 0) {
     errno = -result;
     return -1;
   }
-  return command == F_GETFD ? (result ? FD_CLOEXEC : 0) : 0;
+  if (command == F_GETFD) return result ? FD_CLOEXEC : 0;
+  if (command == F_GETFL) return result ? O_NONBLOCK : 0;
+  return 0;
 }
 
 int pipe2(int descriptors[2], int flags) {
@@ -11777,7 +11815,8 @@ int pipe2(int descriptors[2], int flags) {
     return -1;
   }
   if ((flags & O_CLOEXEC) != 0) supported |= 1;
-  if ((flags & ~O_CLOEXEC) != 0) {
+  if ((flags & O_NONBLOCK) != 0) supported |= 2;
+  if ((flags & ~(O_CLOEXEC | O_NONBLOCK)) != 0) {
     errno = ENOTSUP;
     return -1;
   }

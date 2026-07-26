@@ -2290,6 +2290,7 @@ class PythonTraceKernelSyncClient {
       case 'pipe':
         writer.u32(request.options?.capacityChunks ?? 0);
         writer.u8(request.options?.closeOnExec === true ? 1 : 0);
+        writer.u8(request.options?.nonblocking === true ? 1 : 0);
         break;
       case 'watchdog':
         writer.u8(
@@ -2473,9 +2474,19 @@ class PythonTraceKernelSyncClient {
         break;
       case 'fcntl':
         writer.i32(request.fd);
-        writer.u8(request.action === 'get-close-on-exec' ? 1 : 2);
+        writer.u8(
+          request.action === 'get-close-on-exec'
+            ? 1
+            : request.action === 'set-close-on-exec'
+              ? 2
+              : request.action === 'get-nonblocking'
+                ? 3
+                : 4
+        );
         if (request.action === 'set-close-on-exec') {
           writer.u8(request.closeOnExec ? 1 : 0);
+        } else if (request.action === 'set-nonblocking') {
+          writer.u8(request.nonblocking ? 1 : 0);
         }
         break;
       case 'setsid':
@@ -2878,7 +2889,11 @@ class PythonTraceKernelSyncClient {
         closeOnExec: reader.u8() === 1,
       };
     } else if (operation === 'fcntl') {
-      value = { op: operation, closeOnExec: reader.u8() === 1 };
+      value = {
+        op: operation,
+        closeOnExec: reader.u8() === 1,
+        nonblocking: reader.u8() === 1,
+      };
     } else if (operation === 'setsid') {
       value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
     } else if (operation === 'setpgid') {
@@ -2903,6 +2918,7 @@ class PythonTraceKernelSyncClient {
 
 const PYTHON_TK_ERRNO = Object.freeze({
   EACCES: 2,
+  EAGAIN: 6,
   EBADF: 8,
   EEXIST: 20,
   EFBIG: 22,
@@ -3419,14 +3435,20 @@ function installPyodideTraceKernelPipeFactory(pyodideInstance, kernelClient) {
     });
   };
 
-  self.__tracecodeCreateKernelPipe = (closeOnExec = true) => {
+  self.__tracecodeCreateKernelPipe = (
+    closeOnExec = true,
+    nonblocking = false
+  ) => {
     let readStream;
     let writeStream;
     let pair;
     try {
       pair = kernelClient.request({
         op: 'pipe',
-        options: { closeOnExec: closeOnExec !== false },
+        options: {
+          closeOnExec: closeOnExec !== false,
+          nonblocking: nonblocking === true,
+        },
       });
       readStream = createStream(pair.readFd, true);
       writeStream = createStream(pair.writeFd, false);
@@ -3937,12 +3959,12 @@ async function executeProjectPythonUserCall(
           return {
             op: 'fcntl',
             fd: kernelFdForLocalFd(input.fd),
-            action: input.action === 'get-close-on-exec'
-              ? 'get-close-on-exec'
-              : 'set-close-on-exec',
-            ...(input.action === 'get-close-on-exec'
-              ? {}
-              : { closeOnExec: input.closeOnExec === true }),
+            action: String(input.action),
+            ...(input.action === 'set-close-on-exec'
+              ? { closeOnExec: input.closeOnExec === true }
+              : input.action === 'set-nonblocking'
+                ? { nonblocking: input.nonblocking === true }
+                : {}),
           };
         case 'setsid':
           return { op: 'setsid' };
@@ -4908,25 +4930,26 @@ sys.modules["tracekernel"] = _tracekernel_module
 
 _original_tracekernel_os_pipe = getattr(os, "pipe", None)
 _original_tracekernel_os_pipe2 = getattr(os, "pipe2", None)
+_original_tracekernel_os_get_blocking = getattr(os, "get_blocking", None)
+_original_tracekernel_os_set_blocking = getattr(os, "set_blocking", None)
 _original_tracekernel_o_cloexec = getattr(os, "O_CLOEXEC", None)
+_original_tracekernel_o_nonblock = getattr(os, "O_NONBLOCK", None)
 _tracekernel_o_cloexec = int(_original_tracekernel_o_cloexec or 0x80000)
+_tracekernel_o_nonblock = int(_original_tracekernel_o_nonblock or 0x800)
 os.O_CLOEXEC = _tracekernel_o_cloexec
+os.O_NONBLOCK = _tracekernel_o_nonblock
 def _tracekernel_os_pipe():
     return tuple(json.loads(str(
-        getattr(_js_self, "__tracecodeCreateKernelPipe")(True)
+        getattr(_js_self, "__tracecodeCreateKernelPipe")(True, False)
     )))
 def _tracekernel_os_pipe2(flags):
     _flags = int(flags)
-    _nonblocking = int(getattr(os, "O_NONBLOCK", 0))
-    if _nonblocking and (_flags & _nonblocking):
-        raise NotImplementedError(
-            "TraceKernel O_NONBLOCK requires kernel readiness and poll semantics"
-        )
-    if _flags & ~_tracekernel_o_cloexec:
+    if _flags & ~(_tracekernel_o_cloexec | _tracekernel_o_nonblock):
         raise OSError(errno.EINVAL, "Unsupported TraceKernel pipe2 flags")
     return tuple(json.loads(str(
         getattr(_js_self, "__tracecodeCreateKernelPipe")(
-            bool(_flags & _tracekernel_o_cloexec)
+            bool(_flags & _tracekernel_o_cloexec),
+            bool(_flags & _tracekernel_o_nonblock),
         )
     )))
 os.pipe = _tracekernel_os_pipe
@@ -4946,6 +4969,20 @@ def _restore_tracekernel_pipe_module():
             pass
     else:
         os.pipe2 = _original_tracekernel_os_pipe2
+    if _original_tracekernel_os_get_blocking is None:
+        try:
+            delattr(os, "get_blocking")
+        except AttributeError:
+            pass
+    else:
+        os.get_blocking = _original_tracekernel_os_get_blocking
+    if _original_tracekernel_os_set_blocking is None:
+        try:
+            delattr(os, "set_blocking")
+        except AttributeError:
+            pass
+    else:
+        os.set_blocking = _original_tracekernel_os_set_blocking
     if _original_tracekernel_o_cloexec is None:
         try:
             delattr(os, "O_CLOEXEC")
@@ -4953,6 +4990,13 @@ def _restore_tracekernel_pipe_module():
             pass
     else:
         os.O_CLOEXEC = _original_tracekernel_o_cloexec
+    if _original_tracekernel_o_nonblock is None:
+        try:
+            delattr(os, "O_NONBLOCK")
+        except AttributeError:
+            pass
+    else:
+        os.O_NONBLOCK = _original_tracekernel_o_nonblock
 
 os.kill = lambda pid, signal: _tracekernel_module.process.kill(pid, signal)
 os.killpg = lambda pgid, signal: _tracekernel_module.process.kill(
@@ -5001,18 +5045,44 @@ def _tracekernel_set_inheritable(fd, inheritable):
 
 os.get_inheritable = _tracekernel_get_inheritable
 os.set_inheritable = _tracekernel_set_inheritable
+def _tracekernel_get_blocking(fd):
+    _value = _TraceKernelProcessApi._call({
+        "op": "fcntl",
+        "fd": int(fd),
+        "action": "get-nonblocking",
+    })
+    return not bool(_value.get("nonblocking"))
+def _tracekernel_set_blocking(fd, blocking):
+    _TraceKernelProcessApi._call({
+        "op": "fcntl",
+        "fd": int(fd),
+        "action": "set-nonblocking",
+        "nonblocking": not bool(blocking),
+    })
+os.get_blocking = _tracekernel_get_blocking
+os.set_blocking = _tracekernel_set_blocking
 
 _fcntl_module = types.ModuleType("fcntl")
 _fcntl_module.F_GETFD = 1
 _fcntl_module.F_SETFD = 2
+_fcntl_module.F_GETFL = 3
+_fcntl_module.F_SETFL = 4
 _fcntl_module.FD_CLOEXEC = 1
+_fcntl_module.O_NONBLOCK = _tracekernel_o_nonblock
 def _tracekernel_fcntl(fd, command, argument=0):
     if int(command) == _fcntl_module.F_GETFD:
         return 0 if os.get_inheritable(fd) else _fcntl_module.FD_CLOEXEC
     if int(command) == _fcntl_module.F_SETFD:
         os.set_inheritable(fd, not bool(int(argument) & _fcntl_module.FD_CLOEXEC))
         return 0
-    raise NotImplementedError("TraceKernel fcntl supports F_GETFD and F_SETFD")
+    if int(command) == _fcntl_module.F_GETFL:
+        return 0 if os.get_blocking(fd) else _fcntl_module.O_NONBLOCK
+    if int(command) == _fcntl_module.F_SETFL:
+        os.set_blocking(fd, not bool(int(argument) & _fcntl_module.O_NONBLOCK))
+        return 0
+    raise NotImplementedError(
+        "TraceKernel fcntl supports descriptor and nonblocking status flags"
+    )
 _fcntl_module.fcntl = _tracekernel_fcntl
 sys.modules["fcntl"] = _fcntl_module
 

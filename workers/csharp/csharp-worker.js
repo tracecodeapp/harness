@@ -462,6 +462,7 @@ class CSharpTraceKernelSyncClient {
       case 'pipe':
         writer.u32(request.options?.capacityChunks ?? 0);
         writer.u8(request.options?.closeOnExec === true ? 1 : 0);
+        writer.u8(request.options?.nonblocking === true ? 1 : 0);
         break;
       case 'open': {
         writer.string(request.path);
@@ -508,9 +509,19 @@ class CSharpTraceKernelSyncClient {
         break;
       case 'fcntl':
         writer.i32(request.fd);
-        writer.u8(request.action === 'get-close-on-exec' ? 1 : 2);
+        writer.u8(
+          request.action === 'get-close-on-exec'
+            ? 1
+            : request.action === 'set-close-on-exec'
+              ? 2
+              : request.action === 'get-nonblocking'
+                ? 3
+                : 4
+        );
         if (request.action === 'set-close-on-exec') {
           writer.u8(request.closeOnExec ? 1 : 0);
+        } else if (request.action === 'set-nonblocking') {
+          writer.u8(request.nonblocking ? 1 : 0);
         }
         break;
       case 'setsid':
@@ -855,7 +866,11 @@ class CSharpTraceKernelSyncClient {
         closeOnExec: reader.u8() === 1,
       };
     } else if (operation === 'fcntl') {
-      value = { op: operation, closeOnExec: reader.u8() === 1 };
+      value = {
+        op: operation,
+        closeOnExec: reader.u8() === 1,
+        nonblocking: reader.u8() === 1,
+      };
     } else if (operation === 'setsid') {
       value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
     } else if (operation === 'setpgid') {
