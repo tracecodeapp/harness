@@ -2031,6 +2031,287 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
   };
 }
 
+const PYTHON_TK_SYSCALL_FRAME_MAGIC = 0x544b5301;
+const PYTHON_TK_SHARED_HEADER_INTS = 8;
+const PYTHON_TK_SHARED_HEADER_BYTES =
+  PYTHON_TK_SHARED_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const PYTHON_TK_SHARED_STATE_INDEX = 0;
+const PYTHON_TK_SHARED_REQUEST_LENGTH_INDEX = 1;
+const PYTHON_TK_SHARED_RESPONSE_LENGTH_INDEX = 2;
+const PYTHON_TK_SHARED_SEQUENCE_INDEX = 3;
+const PYTHON_TK_SHARED_STATE_IDLE = 0;
+const PYTHON_TK_SHARED_STATE_REQUEST = 1;
+const PYTHON_TK_SHARED_STATE_RESPONSE = 3;
+const PYTHON_TK_SHARED_STATE_CLOSED = 4;
+const PYTHON_TK_SHARED_STATE_WRITING = 5;
+
+class PythonTraceKernelSyscallError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'PythonTraceKernelSyscallError';
+    this.code = code;
+  }
+}
+
+class PythonTraceKernelSyncClient {
+  constructor(channel, signalHost, timeoutMs = 20_000) {
+    if (
+      typeof SharedArrayBuffer === 'undefined' ||
+      !(channel?.buffer instanceof SharedArrayBuffer) ||
+      !Number.isSafeInteger(channel.byteCapacity) ||
+      channel.byteCapacity < 256 ||
+      channel.buffer.byteLength !==
+        PYTHON_TK_SHARED_HEADER_BYTES + channel.byteCapacity
+    ) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'invalid shared syscall channel'
+      );
+    }
+    this.header = new Int32Array(
+      channel.buffer,
+      0,
+      PYTHON_TK_SHARED_HEADER_INTS
+    );
+    this.payload = new Uint8Array(
+      channel.buffer,
+      PYTHON_TK_SHARED_HEADER_BYTES
+    );
+    this.signalHost = signalHost;
+    this.timeoutMs = timeoutMs;
+    this.closed = false;
+  }
+
+  watchdog(action, timeoutMs, signal) {
+    if (this.closed) {
+      throw new PythonTraceKernelSyscallError(
+        'ECLOSED',
+        'shared syscall channel is closed'
+      );
+    }
+    const frame = new Uint8Array(
+      4 + 1 + 1 + 1 + 1 + (timeoutMs === undefined ? 0 : 4) + 1
+    );
+    const view = new DataView(frame.buffer);
+    view.setUint32(0, PYTHON_TK_SYSCALL_FRAME_MAGIC, true);
+    frame[4] = 1;
+    frame[5] = 36;
+    frame[6] = action === 'arm'
+      ? 1
+      : action === 'pet'
+        ? 2
+        : action === 'disarm'
+          ? 3
+          : 4;
+    frame[7] = timeoutMs === undefined ? 0 : 1;
+    let offset = 8;
+    if (timeoutMs !== undefined) {
+      view.setUint32(offset, timeoutMs >>> 0, true);
+      offset += 4;
+    }
+    frame[offset] = signal === undefined
+      ? 0
+      : signal === 'SIGTERM'
+        ? 1
+        : 2;
+    return this.call(frame);
+  }
+
+  call(frame) {
+    if (frame.byteLength > this.payload.byteLength) {
+      throw new PythonTraceKernelSyscallError(
+        'E2BIG',
+        'watchdog syscall frame exceeds the shared channel'
+      );
+    }
+    if (
+      Atomics.compareExchange(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX,
+        PYTHON_TK_SHARED_STATE_IDLE,
+        PYTHON_TK_SHARED_STATE_WRITING
+      ) !== PYTHON_TK_SHARED_STATE_IDLE
+    ) {
+      throw new PythonTraceKernelSyscallError(
+        'EBUSY',
+        'shared syscall channel already has an active call'
+      );
+    }
+    this.payload.set(frame);
+    Atomics.store(
+      this.header,
+      PYTHON_TK_SHARED_REQUEST_LENGTH_INDEX,
+      frame.byteLength
+    );
+    Atomics.store(this.header, PYTHON_TK_SHARED_RESPONSE_LENGTH_INDEX, 0);
+    Atomics.add(this.header, PYTHON_TK_SHARED_SEQUENCE_INDEX, 1);
+    Atomics.store(
+      this.header,
+      PYTHON_TK_SHARED_STATE_INDEX,
+      PYTHON_TK_SHARED_STATE_REQUEST
+    );
+    try {
+      this.signalHost();
+    } catch (error) {
+      Atomics.store(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX,
+        PYTHON_TK_SHARED_STATE_IDLE
+      );
+      throw error;
+    }
+
+    const startedAt = Date.now();
+    while (true) {
+      const state = Atomics.load(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX
+      );
+      if (state === PYTHON_TK_SHARED_STATE_RESPONSE) break;
+      if (state === PYTHON_TK_SHARED_STATE_CLOSED) {
+        throw new PythonTraceKernelSyscallError(
+          'ECLOSED',
+          'shared syscall channel closed while waiting'
+        );
+      }
+      const remaining = this.timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        throw new PythonTraceKernelSyscallError(
+          'ETIMEDOUT',
+          'shared watchdog syscall timed out'
+        );
+      }
+      Atomics.wait(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX,
+        state,
+        remaining
+      );
+    }
+
+    const responseLength = Atomics.load(
+      this.header,
+      PYTHON_TK_SHARED_RESPONSE_LENGTH_INDEX
+    );
+    if (responseLength <= 0 || responseLength > this.payload.byteLength) {
+      Atomics.store(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX,
+        PYTHON_TK_SHARED_STATE_IDLE
+      );
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'invalid shared syscall response length'
+      );
+    }
+    const response = this.payload.slice(0, responseLength);
+    Atomics.store(
+      this.header,
+      PYTHON_TK_SHARED_STATE_INDEX,
+      PYTHON_TK_SHARED_STATE_IDLE
+    );
+    Atomics.notify(this.header, PYTHON_TK_SHARED_STATE_INDEX);
+    return this.decodeWatchdog(response);
+  }
+
+  decodeWatchdog(frame) {
+    const view = new DataView(
+      frame.buffer,
+      frame.byteOffset,
+      frame.byteLength
+    );
+    let offset = 0;
+    const ensure = (length) => {
+      if (offset + length > frame.byteLength) {
+        throw new PythonTraceKernelSyscallError(
+          'EPROTO',
+          'truncated watchdog response'
+        );
+      }
+    };
+    const u8 = () => {
+      ensure(1);
+      return frame[offset++];
+    };
+    const u32 = () => {
+      ensure(4);
+      const value = view.getUint32(offset, true);
+      offset += 4;
+      return value;
+    };
+    const f64 = () => {
+      ensure(8);
+      const value = view.getFloat64(offset, true);
+      offset += 8;
+      return value;
+    };
+    const string = () => {
+      const length = u32();
+      ensure(length);
+      const value = new TextDecoder().decode(
+        frame.subarray(offset, offset + length)
+      );
+      offset += length;
+      return value;
+    };
+
+    if (
+      u32() !== PYTHON_TK_SYSCALL_FRAME_MAGIC ||
+      u8() !== 2
+    ) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'invalid watchdog response header'
+      );
+    }
+    const success = u8();
+    if (success === 0) {
+      const code = string();
+      const message = string();
+      throw new PythonTraceKernelSyscallError(code, message);
+    }
+    if (success !== 1 || u8() !== 36) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'invalid watchdog response operation'
+      );
+    }
+    const armed = u8();
+    if (armed > 1) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        `invalid watchdog armed flag ${armed}`
+      );
+    }
+    if (!armed) return { armed: false };
+    const timeoutMs = u32();
+    const deadlineAt = f64();
+    const signalCode = u8();
+    if (signalCode !== 1 && signalCode !== 2) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        `invalid watchdog signal ${signalCode}`
+      );
+    }
+    if (offset !== frame.byteLength) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'watchdog response has trailing bytes'
+      );
+    }
+    return {
+      armed: true,
+      timeoutMs,
+      deadlineAt,
+      signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
+    };
+  }
+
+  close() {
+    this.closed = true;
+  }
+}
+
 class TraceKernelHttpBridge {
   constructor(messageId, protocolToken) {
     this.messageId = messageId;
@@ -2192,9 +2473,25 @@ class TraceKernelHttpBridge {
 
 const activeProjectHttpBridges = new Map();
 
-async function executeProjectPythonUserCall(request, messageId, protocolToken) {
+async function executeProjectPythonUserCall(
+  request,
+  messageId,
+  protocolToken,
+  kernelSyscallChannel
+) {
   const requestJson = JSON.stringify(request ?? {});
   const httpBridge = new TraceKernelHttpBridge(messageId, protocolToken);
+  const kernelClient = kernelSyscallChannel
+    ? new PythonTraceKernelSyncClient(
+        kernelSyscallChannel,
+        () => trustedPythonWorkerPostMessage({
+          id: messageId,
+          type: 'kernel-syscall',
+          payload: {},
+          protocolToken,
+        })
+      )
+    : null;
   activeProjectHttpBridges.set(messageId, httpBridge);
   const projectEventBudget = createProjectEventBudget();
   const projectOutputEvents = [];
@@ -2245,6 +2542,21 @@ async function executeProjectPythonUserCall(request, messageId, protocolToken) {
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
   self.__tracecodeKernelHttpListen = (optionsJson, handler) => httpBridge.listen(optionsJson, handler);
   self.__tracecodeKernelHttpDispatch = (requestJson, optionsJson) => httpBridge.dispatch(requestJson, optionsJson);
+  self.__tracecodeKernelWatchdog = (action, timeoutMs, signal) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel process controls are unavailable'
+      );
+    }
+    return JSON.stringify(kernelClient.watchdog(
+      String(action),
+      timeoutMs === undefined || timeoutMs === null
+        ? undefined
+        : Number(timeoutMs),
+      signal === undefined || signal === null ? undefined : String(signal)
+    ));
+  };
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
     request?.stdinPipe
@@ -2263,6 +2575,7 @@ import shutil
 import stat
 import sys
 import traceback
+import types
 from js import self as _js_self
 
 _request = json.loads(${JSON.stringify(requestJson)})
@@ -2291,6 +2604,51 @@ _PROJECT_MAX_LIVE_FILE_CHANGES = ${PROJECT_MAX_LIVE_FILE_CHANGES}
 _PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = ${PROJECT_MAX_LIVE_FILE_CHANGE_BYTES}
 _project_live_file_change_count = 0
 _project_live_file_change_bytes = 0
+
+class _TraceKernelWatchdogStatus:
+    def __init__(self, _value):
+        self.armed = bool(_value.get("armed", False))
+        self.timeout_ms = _value.get("timeoutMs")
+        self.deadline_at = _value.get("deadlineAt")
+        self.signal = _value.get("signal")
+
+    def __repr__(self):
+        return (
+            "TraceKernelWatchdogStatus("
+            f"armed={self.armed!r}, timeout_ms={self.timeout_ms!r}, "
+            f"deadline_at={self.deadline_at!r}, signal={self.signal!r})"
+        )
+
+class _TraceKernelWatchdog:
+    @staticmethod
+    def _call(_action, _timeout_ms=None, _signal=None):
+        try:
+            _raw = getattr(_js_self, "__tracecodeKernelWatchdog")(
+                _action,
+                _timeout_ms,
+                _signal,
+            )
+        except BaseException as _error:
+            _code = getattr(_error, "code", None) or "EIO"
+            raise OSError(_code, str(_error)) from None
+        return _TraceKernelWatchdogStatus(json.loads(str(_raw)))
+
+    def arm(self, timeout_ms, *, signal="SIGTERM"):
+        return self._call("arm", int(timeout_ms), str(signal))
+
+    def pet(self):
+        return self._call("pet")
+
+    def disarm(self):
+        return self._call("disarm")
+
+    def status(self):
+        return self._call("status")
+
+_tracekernel_module = types.ModuleType("tracekernel")
+_tracekernel_module.WatchdogStatus = _TraceKernelWatchdogStatus
+_tracekernel_module.watchdog = _TraceKernelWatchdog()
+sys.modules["tracekernel"] = _tracekernel_module
 
 def _project_utf8_len(_value):
     return len(str(_value).encode("utf-8", "replace"))
@@ -5174,14 +5532,26 @@ json.dumps({
     delete self.__tracecodeInstallProjectFsMutationEvents;
     delete self.__tracecodeKernelHttpListen;
     delete self.__tracecodeKernelHttpDispatch;
+    delete self.__tracecodeKernelWatchdog;
+    kernelClient?.close();
     activeProjectHttpBridges.delete(messageId);
   }
 }
 
-async function executeProjectPython(request, messageId, protocolToken) {
+async function executeProjectPython(
+  request,
+  messageId,
+  protocolToken,
+  kernelSyscallChannel
+) {
   await loadPyodideInstance();
   return withPythonUserAuthorityLockdown(
-    () => executeProjectPythonUserCall(request, messageId, protocolToken),
+    () => executeProjectPythonUserCall(
+      request,
+      messageId,
+      protocolToken,
+      kernelSyscallChannel
+    ),
     request?.projectUserAuthorityMode ?? 'temporary'
   );
 }
@@ -5201,7 +5571,13 @@ async function executeCodeBatch(code, functionName, inputBatch, executionStyle =
 }
 
 async function processMessage(data) {
-  const { id, type, payload, protocolToken } = data;
+  const {
+    id,
+    type,
+    payload,
+    protocolToken,
+    kernelSyscallChannel,
+  } = data;
   try {
     if (id && typeof protocolToken !== 'string') {
       trustedPythonWorkerPostMessage({ id, type: 'error', payload: { error: 'Missing Python worker protocol token.' } });
@@ -5264,7 +5640,12 @@ async function processMessage(data) {
       }
 
       case 'execute-project-python': {
-        const result = await executeProjectPython(payload, id, protocolToken);
+        const result = await executeProjectPython(
+          payload,
+          id,
+          protocolToken,
+          kernelSyscallChannel
+        );
         analyzerInitialized = false;
         trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;

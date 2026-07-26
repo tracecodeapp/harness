@@ -478,6 +478,10 @@ The initial 0.13 branch now establishes:
 - a browser C/C++ adapter using that same binary transport for TKFS, BSD TCP,
   `system()` child processes, and process watchdog controls exposed through
   the injected `tracekernel.h` compatibility boundary;
+- the first browser Python/Pyodide process-control adapter using the same
+  synchronous binary syscall channel, with `tracekernel.watchdog` controls and
+  kernel-enforced expiry; Python TKFS, subprocess, and raw-socket adaptation
+  remain subsequent adapter milestones;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic
