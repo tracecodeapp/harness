@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
 using System.Text;
@@ -492,6 +493,120 @@ public static class KernelFileSystem
                 parameterName
             );
         }
+    }
+}
+
+public sealed record KernelFileWatchEvent(string EventType, string Path);
+
+[SupportedOSPlatform("browser")]
+public sealed class KernelFileWatcher : IDisposable
+{
+    private static readonly byte[] FrameMagic = [0x54, 0x4b, 0x57, 0x31];
+    private const int HeaderBytes = 9;
+    private const int MaxPathBytes = 16 * 1024;
+    private readonly KernelDescriptor descriptor;
+
+    private KernelFileWatcher(KernelDescriptor descriptor)
+    {
+        this.descriptor = descriptor;
+    }
+
+    public int Descriptor => descriptor.Number;
+    public bool IsClosed => descriptor.IsClosed;
+
+    public static KernelFileWatcher Create(
+        string path,
+        bool recursive = false,
+        int capacityEvents = 1024
+    )
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException(
+                "Watch path must not be empty.",
+                nameof(path)
+            );
+        }
+        if (capacityEvents <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capacityEvents));
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "watch",
+            path,
+            options = new { recursive, capacityEvents },
+        });
+        return new KernelFileWatcher(
+            new KernelDescriptor(value.GetProperty("fd").GetInt32())
+        );
+    }
+
+    public KernelFileWatchEvent ReadEvent()
+    {
+        byte[] header = ReadExact(HeaderBytes);
+        if (!header.AsSpan(0, 4).SequenceEqual(FrameMagic))
+        {
+            throw new TraceKernelException(
+                "EPROTO",
+                "Invalid TraceKernel filesystem-watch frame."
+            );
+        }
+        byte eventCode = header[4];
+        if (eventCode is < 1 or > 3)
+        {
+            throw new TraceKernelException(
+                "EPROTO",
+                $"Invalid TraceKernel filesystem-watch event {eventCode}."
+            );
+        }
+        int pathLength = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(
+            header.AsSpan(5, 4)
+        ));
+        if (pathLength < 0 || pathLength > MaxPathBytes)
+        {
+            throw new TraceKernelException(
+                "EPROTO",
+                "Invalid TraceKernel filesystem-watch path length."
+            );
+        }
+        string path = pathLength == 0
+            ? string.Empty
+            : Encoding.UTF8.GetString(ReadExact(pathLength));
+        return new KernelFileWatchEvent(
+            eventCode == 1
+                ? "change"
+                : eventCode == 2
+                    ? "rename"
+                    : "overflow",
+            path
+        );
+    }
+
+    public void Dispose()
+    {
+        descriptor.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
+    private byte[] ReadExact(int length)
+    {
+        byte[] output = new byte[length];
+        int offset = 0;
+        while (offset < length)
+        {
+            byte[] bytes = descriptor.Read(length - offset);
+            if (bytes.Length == 0)
+            {
+                throw new TraceKernelException(
+                    "EPROTO",
+                    "TraceKernel filesystem-watch frame ended early."
+                );
+            }
+            bytes.CopyTo(output, offset);
+            offset += bytes.Length;
+        }
+        return output;
     }
 }
 

@@ -519,6 +519,10 @@ The initial 0.13 branch now establishes:
   creation, and target inspection backed by TKFS, plus managed hard-link,
   `readlink`, and `realpath` operations that preserve inode identity and raw
   link text; the legacy non-kernel runner continues to reject link snapshots;
+- managed C# `KernelFileWatcher` descriptors with bounded recursive queues,
+  fragmented frame reconstruction, explicit rename/change/overflow events, and
+  close-on-dispose/process-exit; cross-language conformance observes a
+  JavaScript child mutation through the C# parent watcher;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic

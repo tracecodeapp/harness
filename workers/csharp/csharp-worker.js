@@ -190,6 +190,7 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   spawn: 32,
   wait: 33,
   kill: 34,
+  watch: 35,
   watchdog: 36,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
@@ -404,6 +405,11 @@ class CSharpTraceKernelSyncClient {
     }
     writer.u8(operationCode);
     switch (request.op) {
+      case 'watch':
+        writer.string(request.path);
+        writer.u8(request.options?.recursive === true ? 1 : 0);
+        writer.u32(request.options?.capacityEvents ?? 0);
+        break;
       case 'socket':
         break;
       case 'bind':
@@ -635,7 +641,9 @@ class CSharpTraceKernelSyncClient {
       );
     }
     let value;
-    if (operation === 'socket') {
+    if (operation === 'watch') {
+      value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'socket') {
       value = { op: operation, fd: reader.i32() };
     } else if (operation === 'bind') {
       value = {
