@@ -1614,6 +1614,67 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           this.signalRuntimeProcessSelector(process, request.pid, request.signal);
           return { ok: true, value: { op: 'kill' } };
         }
+        case 'setsid': {
+          const process = this.runtimeSyscallProcess(context);
+          if (process.pgid === process.pid) {
+            throw Object.assign(
+              new Error(
+                `EPERM: process ${process.pid} is already a process-group leader`
+              ),
+              { code: 'EPERM' }
+            );
+          }
+          process.sid = process.pid;
+          process.pgid = process.pid;
+          return {
+            ok: true,
+            value: { op: 'setsid', sid: process.sid, pgid: process.pgid },
+          };
+        }
+        case 'setpgid': {
+          const process = this.runtimeSyscallProcess(context);
+          const targetPid = Math.trunc(request.pid);
+          const requestedGroup = Math.trunc(request.pgid);
+          if (
+            !Number.isSafeInteger(request.pid) ||
+            !Number.isSafeInteger(request.pgid) ||
+            targetPid < 0 ||
+            requestedGroup < 0
+          ) {
+            throw Object.assign(
+              new Error(`EINVAL: invalid setpgid(${request.pid}, ${request.pgid})`),
+              { code: 'EINVAL' }
+            );
+          }
+          if (targetPid !== 0 && targetPid !== process.pid) {
+            throw Object.assign(
+              new Error('EPERM: a running process may only change its own process group'),
+              { code: 'EPERM' }
+            );
+          }
+          if (process.sid === process.pid) {
+            throw Object.assign(
+              new Error(`EPERM: session leader ${process.pid} cannot change process group`),
+              { code: 'EPERM' }
+            );
+          }
+          const pgid = requestedGroup === 0 ? process.pid : requestedGroup;
+          if (
+            pgid !== process.pid &&
+            !this.activeProcessRecords().some((candidate) =>
+              candidate.pgid === pgid && candidate.sid === process.sid
+            )
+          ) {
+            throw Object.assign(
+              new Error(
+                `EINVAL: process group ${pgid} does not exist in session ${process.sid}`
+              ),
+              { code: 'EINVAL' }
+            );
+          }
+          process.pgid = pgid;
+          return { ok: true, value: { op: 'setpgid', pgid } };
+        }
         case 'socket': {
           const fd = await this.kernelNetwork.socket(
             context?.process.pid ?? 0

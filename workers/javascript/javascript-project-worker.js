@@ -79,7 +79,9 @@ var OP_CODES = {
   watch: 35,
   watchdog: 36,
   dup2: 37,
-  fcntl: 38
+  fcntl: 38,
+  setsid: 39,
+  setpgid: 40
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -336,6 +338,12 @@ function encodeTraceKernelSyscallRequest(request) {
       writer.u8(
         request.signal === "SIGINT" ? 1 : request.signal === "SIGTERM" ? 2 : 3
       );
+      break;
+    case "setsid":
+      break;
+    case "setpgid":
+      writer.i32(request.pid);
+      writer.i32(request.pgid);
       break;
     case "socket":
       break;
@@ -637,6 +645,12 @@ function decodeTraceKernelSyscallResult(bytes) {
       value = { op: "fcntl", closeOnExec: closeOnExec === 1 };
       break;
     }
+    case "setsid":
+      value = { op: "setsid", sid: reader.i32(), pgid: reader.i32() };
+      break;
+    case "setpgid":
+      value = { op: "setpgid", pgid: reader.i32() };
+      break;
     case "bind":
       value = { op: "bind", address: readAddress(reader) };
       break;

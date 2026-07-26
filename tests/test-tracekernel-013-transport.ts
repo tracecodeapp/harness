@@ -209,6 +209,8 @@ async function main(): Promise<void> {
     { op: 'wait', pid: 101 },
     { op: 'wait', pid: 101, noHang: true },
     { op: 'kill', pid: 102, signal: 'SIGTERM' },
+    { op: 'setsid' },
+    { op: 'setpgid', pid: 0, pgid: 0 },
     { op: 'socket' },
     { op: 'bind', fd: 3, address: { host: '127.0.0.1', port: 8080 } },
     { op: 'listen', fd: 3, options: { backlog: 8, capacityChunks: 4 } },
@@ -326,6 +328,8 @@ async function main(): Promise<void> {
       },
     },
     { ok: true, value: { op: 'kill' } },
+    { ok: true, value: { op: 'setsid', sid: 101, pgid: 101 } },
+    { ok: true, value: { op: 'setpgid', pgid: 102 } },
     { ok: true, value: { op: 'socket', fd: 3 } },
     {
       ok: true,

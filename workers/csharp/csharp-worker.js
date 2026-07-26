@@ -194,6 +194,8 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   watchdog: 36,
   dup2: 37,
   fcntl: 38,
+  setsid: 39,
+  setpgid: 40,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -503,6 +505,12 @@ class CSharpTraceKernelSyncClient {
         if (request.action === 'set-close-on-exec') {
           writer.u8(request.closeOnExec ? 1 : 0);
         }
+        break;
+      case 'setsid':
+        break;
+      case 'setpgid':
+        writer.i32(request.pid);
+        writer.i32(request.pgid);
         break;
       case 'ftruncate':
         writer.i32(request.fd);
@@ -835,6 +843,10 @@ class CSharpTraceKernelSyncClient {
       value = { op: operation, fd: reader.i32() };
     } else if (operation === 'fcntl') {
       value = { op: operation, closeOnExec: reader.u8() === 1 };
+    } else if (operation === 'setsid') {
+      value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
+    } else if (operation === 'setpgid') {
+      value = { op: operation, pgid: reader.i32() };
     } else if (operation === 'read') {
       value = { op: operation, bytes: reader.bytesValue() };
     } else if (operation === 'write') {

@@ -51,6 +51,8 @@ const OP_CODES = {
   watchdog: 36,
   dup2: 37,
   fcntl: 38,
+  setsid: 39,
+  setpgid: 40,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -412,6 +414,12 @@ export function encodeTraceKernelSyscallRequest(
             : 3
       );
       break;
+    case 'setsid':
+      break;
+    case 'setpgid':
+      writer.i32(request.pid);
+      writer.i32(request.pgid);
+      break;
     case 'socket':
       break;
     case 'bind':
@@ -757,6 +765,12 @@ export function decodeTraceKernelSyscallRequest(
       };
       break;
     }
+    case 'setsid':
+      request = { op: 'setsid' };
+      break;
+    case 'setpgid':
+      request = { op: 'setpgid', pid: reader.i32(), pgid: reader.i32() };
+      break;
     case 'socket':
       request = { op: 'socket' };
       break;
@@ -1076,6 +1090,13 @@ export function encodeTraceKernelSyscallResult(
     case 'fcntl':
       writer.u8(value.closeOnExec ? 1 : 0);
       break;
+    case 'setsid':
+      writer.i32(value.sid);
+      writer.i32(value.pgid);
+      break;
+    case 'setpgid':
+      writer.i32(value.pgid);
+      break;
     case 'bind':
       writeAddress(writer, value.address);
       break;
@@ -1321,6 +1342,12 @@ export function decodeTraceKernelSyscallResult(
       value = { op: 'fcntl', closeOnExec: closeOnExec === 1 };
       break;
     }
+    case 'setsid':
+      value = { op: 'setsid', sid: reader.i32(), pgid: reader.i32() };
+      break;
+    case 'setpgid':
+      value = { op: 'setpgid', pgid: reader.i32() };
+      break;
     case 'bind':
       value = { op: 'bind', address: readAddress(reader) };
       break;

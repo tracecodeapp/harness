@@ -92,6 +92,12 @@ export type TraceKernelSyscallRequest =
       readonly pid: number;
       readonly signal: TraceKernelSignal;
     }
+  | { readonly op: 'setsid' }
+  | {
+      readonly op: 'setpgid';
+      readonly pid: number;
+      readonly pgid: number;
+    }
   | {
       readonly op: 'socket';
     }
@@ -261,6 +267,8 @@ export type TraceKernelSyscallValue =
       readonly termination?: TraceKernelProcessTermination;
     }
   | { readonly op: 'kill' }
+  | { readonly op: 'setsid'; readonly sid: number; readonly pgid: number }
+  | { readonly op: 'setpgid'; readonly pgid: number }
   | { readonly op: 'socket'; readonly fd: number }
   | { readonly op: 'bind'; readonly address: TraceKernelTcpAddress }
   | { readonly op: 'listen' }
@@ -373,7 +381,7 @@ function syscallWireError(error: unknown): TraceKernelSyscallWireError {
     return Object.freeze({ code: 'ECHILD', message: error.message });
   }
   if (error instanceof TraceKernelProcessPermissionError) {
-    return Object.freeze({ code: 'EACCES', message: error.message });
+    return Object.freeze({ code: error.code, message: error.message });
   }
   if (error instanceof TraceKernelProcessStateError) {
     return Object.freeze({ code: 'ESRCH', message: error.message });
@@ -520,6 +528,18 @@ export class TraceKernelSyscallDispatcher {
           request.signal
         ).pipe(
           Effect.as({ op: 'kill' as const })
+        );
+      case 'setsid':
+        return this.session.createProcessSession(this.process).pipe(
+          Effect.map((sid) => ({ op: 'setsid' as const, sid, pgid: sid }))
+        );
+      case 'setpgid':
+        return this.session.setProcessGroup(
+          this.process,
+          request.pid,
+          request.pgid
+        ).pipe(
+          Effect.map((pgid) => ({ op: 'setpgid' as const, pgid }))
         );
       case 'socket':
         return this.session.createTcpSocket(this.process).pipe(

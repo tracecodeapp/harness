@@ -594,6 +594,27 @@ public sealed class KernelProcess
         Signal(-processGroupId, signal);
     }
 
+    public static int CreateSession()
+    {
+        JsonElement value = KernelInterop.Call(new { op = "setsid" });
+        return value.GetProperty("sid").GetInt32();
+    }
+
+    public static int SetCurrentProcessGroup(int processGroupId = 0)
+    {
+        if (processGroupId < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(processGroupId));
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "setpgid",
+            pid = 0,
+            pgid = processGroupId,
+        });
+        return value.GetProperty("pgid").GetInt32();
+    }
+
     private static KernelDescriptor? ReadDescriptor(
         JsonElement stdio,
         string name

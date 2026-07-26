@@ -458,6 +458,14 @@ makes it the process-group leader), or join an existing process group in that
 same session. Foreign sessions, negative identifiers, and nonexistent or
 cross-session groups fail atomically with `EINVAL`.
 
+Running processes can mutate their own topology through kernel-owned
+`setsid`/`setpgid` syscalls. The kernel rejects `setsid` for an existing group
+leader, rejects process-group changes by session leaders, and permits group
+joins only when the target group exists in the caller's session. C++ maps the
+POSIX functions, Python maps `os.setsid`/`os.setpgid` plus identity queries,
+and managed C# exposes caller-scoped session/group controls; JavaScript keeps
+using its native `child_process` detached-spawn surface.
+
 Descriptor-table entries also carry kernel-owned close-on-exec state.
 `inheritDescriptors: "all"` filters `FD_CLOEXEC` entries in the kernel, while
 explicit mappings remain spawn file actions and can intentionally pass a

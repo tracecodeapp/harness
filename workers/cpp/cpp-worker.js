@@ -59,6 +59,7 @@ const ENOTCONN = 53;
 const ENOTDIR = 54;
 const ENOTEMPTY = 55;
 const ENOTSUP = 58;
+const EPERM = 63;
 const EROFS = 69;
 const ESRCH = 71;
 const ESPIPE = 70;
@@ -354,6 +355,8 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   watchdog: 36,
   dup2: 37,
   fcntl: 38,
+  setsid: 39,
+  setpgid: 40,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -729,6 +732,12 @@ class CppTraceKernelSyncClient {
           writer.u8(request.closeOnExec ? 1 : 0);
         }
         break;
+      case 'setsid':
+        break;
+      case 'setpgid':
+        writer.i32(request.pid);
+        writer.i32(request.pgid);
+        break;
       case 'ftruncate':
         writer.i32(request.fd);
         writer.f64(request.length);
@@ -923,6 +932,12 @@ class CppTraceKernelSyncClient {
         break;
       case 'fcntl':
         value = { op: operation, closeOnExec: reader.u8() === 1 };
+        break;
+      case 'setsid':
+        value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
+        break;
+      case 'setpgid':
+        value = { op: operation, pgid: reader.i32() };
         break;
       case 'bind':
         value = { op: operation, address: readCppTraceKernelAddress(reader) };
@@ -2045,6 +2060,7 @@ const CPP_TRACEKERNEL_ERRNO = Object.freeze({
   ENOTDIR,
   ENOTEMPTY,
   ENOTSUP,
+  EPERM,
   EROFS,
   ESRCH,
 });
@@ -2053,7 +2069,6 @@ function cppTraceKernelErrno(error, fallback = EIO) {
   if (!error || typeof error !== 'object') return fallback;
   const code = String(error.code || '');
   if (code === 'EOPNOTSUPP' || code === 'ENOSYS') return ENOTSUP;
-  if (code === 'EPERM') return EACCES;
   return CPP_TRACEKERNEL_ERRNO[code] ?? fallback;
 }
 
@@ -2748,6 +2763,33 @@ class WasiProcess {
             ...(action === 1 ? {} : { closeOnExec: value !== 0 }),
           });
           return result.closeOnExec ? 1 : 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_setsid: () => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const result = this.kernelClient.call({ op: 'setsid' });
+          this.process.sid = result.sid;
+          this.process.pgid = result.pgid;
+          return result.sid | 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_setpgid: (pid, pgid) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const result = this.kernelClient.call({
+            op: 'setpgid',
+            pid: pid | 0,
+            pgid: pgid | 0,
+          });
+          if ((pid | 0) === 0 || (pid | 0) === (this.process.pid | 0)) {
+            this.process.pgid = result.pgid;
+          }
+          return 0;
         } catch (error) {
           return -cppTraceKernelErrno(error);
         }
@@ -11481,6 +11523,8 @@ pid_t getppid(void);
 pid_t getpgrp(void);
 pid_t getpgid(pid_t pid);
 pid_t getsid(pid_t pid);
+pid_t setsid(void);
+int setpgid(pid_t pid, pid_t pgroup);
 
 #ifdef __cplusplus
 }
@@ -11512,6 +11556,10 @@ __attribute__((import_module("tracecode_kernel"), import_name("proc_identity")))
 int __tracecode_proc_identity(int kind);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_fcntl")))
 int __tracecode_proc_fcntl(int fd, int action, int value);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_setsid")))
+int __tracecode_proc_setsid(void);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_setpgid")))
+int __tracecode_proc_setpgid(int pid, int pgroup);
 
 int fcntl(int fd, int command, ...) {
   int result;
@@ -11682,6 +11730,22 @@ pid_t getsid(pid_t pid) {
     return (pid_t)-1;
   }
   return (pid_t)__tracecode_proc_identity(4);
+}
+pid_t setsid(void) {
+  int result = __tracecode_proc_setsid();
+  if (result < 0) {
+    errno = -result;
+    return (pid_t)-1;
+  }
+  return (pid_t)result;
+}
+int setpgid(pid_t pid, pid_t pgroup) {
+  int result = __tracecode_proc_setpgid((int)pid, (int)pgroup);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
 }
 `;
 

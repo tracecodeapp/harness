@@ -2081,6 +2081,8 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   watchdog: 36,
   dup2: 37,
   fcntl: 38,
+  setsid: 39,
+  setpgid: 40,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
   Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
@@ -2465,6 +2467,12 @@ class PythonTraceKernelSyncClient {
           writer.u8(request.closeOnExec ? 1 : 0);
         }
         break;
+      case 'setsid':
+        break;
+      case 'setpgid':
+        writer.i32(request.pid);
+        writer.i32(request.pgid);
+        break;
       case 'ftruncate':
         writer.i32(request.fd);
         writer.f64(request.length);
@@ -2848,6 +2856,10 @@ class PythonTraceKernelSyncClient {
       value = { op: operation, fd: reader.i32() };
     } else if (operation === 'fcntl') {
       value = { op: operation, closeOnExec: reader.u8() === 1 };
+    } else if (operation === 'setsid') {
+      value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
+    } else if (operation === 'setpgid') {
+      value = { op: operation, pgid: reader.i32() };
     } else if (
       operation === 'read'
     ) {
@@ -3603,6 +3615,15 @@ async function executeProjectPythonUserCall(
         : result
     );
   };
+  const runtimeKernelProcessIdentity = {
+    pid: Number(request.process?.pid ?? 0),
+    ppid: Number(request.process?.ppid ?? 0),
+    pgid: Number(request.process?.pgid ?? 0),
+    sid: Number(request.process?.sid ?? 0),
+  };
+  self.__tracecodeKernelProcessIdentity = () => JSON.stringify({
+    ...runtimeKernelProcessIdentity,
+  });
   self.__tracecodeKernelProcess = (requestJson) => {
     if (!kernelClient) {
       throw new PythonTraceKernelSyscallError(
@@ -3755,6 +3776,14 @@ async function executeProjectPythonUserCall(
               ? {}
               : { closeOnExec: input.closeOnExec === true }),
           };
+        case 'setsid':
+          return { op: 'setsid' };
+        case 'setpgid':
+          return {
+            op: 'setpgid',
+            pid: Number(input.pid ?? 0),
+            pgid: Number(input.pgid ?? 0),
+          };
         default:
           throw new PythonTraceKernelSyscallError(
             'ENOSYS',
@@ -3763,6 +3792,16 @@ async function executeProjectPythonUserCall(
       }
     })();
     const result = kernelClient.request(syscallRequest);
+    if (result.op === 'setsid') {
+      runtimeKernelProcessIdentity.sid = result.sid;
+      runtimeKernelProcessIdentity.pgid = result.pgid;
+    } else if (
+      result.op === 'setpgid' &&
+      (Number(input.pid ?? 0) === 0 ||
+        Number(input.pid ?? 0) === runtimeKernelProcessIdentity.pid)
+    ) {
+      runtimeKernelProcessIdentity.pgid = result.pgid;
+    }
     return JSON.stringify(
       result.op === 'read'
         ? { ...result, bytes: bytesToBase64(result.bytes) }
@@ -4408,6 +4447,16 @@ class _TraceKernelProcessApi:
             "signal": _name,
         })
 
+    def setsid(self):
+        return int(self._call({"op": "setsid"})["sid"])
+
+    def setpgid(self, pid, pgid):
+        self._call({
+            "op": "setpgid",
+            "pid": int(pid),
+            "pgid": int(pgid),
+        })
+
 class _TraceKernelSocketFile:
     def __init__(self, socket, mode="r", encoding=None, errors=None, newline=None):
         self._socket = socket
@@ -4693,6 +4742,29 @@ os.killpg = lambda pgid, signal: _tracekernel_module.process.kill(
     -abs(int(pgid)),
     signal,
 )
+def _tracekernel_process_identity():
+    return json.loads(str(
+        getattr(_js_self, "__tracecodeKernelProcessIdentity")()
+    ))
+os.getpid = lambda: int(_tracekernel_process_identity()["pid"])
+os.getppid = lambda: int(_tracekernel_process_identity()["ppid"])
+os.getpgrp = lambda: int(_tracekernel_process_identity()["pgid"])
+def _tracekernel_getpgid(pid=0):
+    if int(pid) not in (0, os.getpid()):
+        raise NotImplementedError(
+            "TraceKernel getpgid currently supports only the calling process"
+        )
+    return int(_tracekernel_process_identity()["pgid"])
+def _tracekernel_getsid(pid=0):
+    if int(pid) not in (0, os.getpid()):
+        raise NotImplementedError(
+            "TraceKernel getsid currently supports only the calling process"
+        )
+    return int(_tracekernel_process_identity()["sid"])
+os.getpgid = _tracekernel_getpgid
+os.getsid = _tracekernel_getsid
+os.setsid = lambda: _tracekernel_module.process.setsid()
+os.setpgid = lambda pid, pgid: _tracekernel_module.process.setpgid(pid, pgid)
 
 def _tracekernel_get_inheritable(fd):
     _value = _TraceKernelProcessApi._call({

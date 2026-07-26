@@ -70,6 +70,48 @@ async function main(): Promise<void> {
       });
       const syscalls = new TraceKernelSyscallDispatcher(session, process);
       const peerSyscalls = new TraceKernelSyscallDispatcher(session, peer);
+      const mutableTopologyChild = yield* session.spawn({
+        runtime: 'syscall-test',
+        command: 'mutable-topology-child',
+        parentPid: process.pid,
+      });
+      yield* mutableTopologyChild.awaitStarted();
+      const childTopologySyscalls = new TraceKernelSyscallDispatcher(
+        session,
+        mutableTopologyChild
+      );
+      const createdSession = yield* childTopologySyscalls.dispatch({ op: 'setsid' });
+      success(createdSession);
+      assertCondition(
+        createdSession.value.op === 'setsid' &&
+          createdSession.value.sid === mutableTopologyChild.pid &&
+          mutableTopologyChild.snapshot().sid === mutableTopologyChild.pid &&
+          mutableTopologyChild.snapshot().pgid === mutableTopologyChild.pid,
+        `setsid did not atomically create a session and process group: ${JSON.stringify(
+          createdSession
+        )}`
+      );
+      const sessionLeaderGroupChange = yield* childTopologySyscalls.dispatch({
+        op: 'setpgid',
+        pid: 0,
+        pgid: 0,
+      });
+      assertCondition(
+        !sessionLeaderGroupChange.ok &&
+          sessionLeaderGroupChange.error.code === 'EPERM',
+        `setpgid allowed a session leader to change process group: ${JSON.stringify(
+          sessionLeaderGroupChange
+        )}`
+      );
+      success(yield* syscalls.dispatch({
+        op: 'kill',
+        pid: mutableTopologyChild.pid,
+        signal: 'SIGTERM',
+      }));
+      success(yield* syscalls.dispatch({
+        op: 'wait',
+        pid: mutableTopologyChild.pid,
+      }));
       const processCountBeforeInvalidTopology = session.processSnapshots().length;
       const invalidGroup = yield* syscalls.dispatch({
         op: 'spawn',

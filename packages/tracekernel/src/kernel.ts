@@ -192,6 +192,11 @@ export class TraceKernelProcess {
     }
   }
 
+  setTopology(pgid: number, sid: number): void {
+    this.record.pgid = pgid;
+    this.record.sid = sid;
+  }
+
   snapshot(): TraceKernelProcessSnapshot {
     return Object.freeze({
       ...immutableSnapshot(this.record),
@@ -729,6 +734,98 @@ export class TraceKernelSession {
         )
       )
       .sort((left, right) => left.pid - right.pid);
+  }
+
+  createProcessSession(
+    process: TraceKernelProcess
+  ): Effect.Effect<
+    number,
+    TraceKernelProcessStateError | TraceKernelProcessPermissionError
+  > {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const snapshot = process.snapshot();
+      if (snapshot.pgid === snapshot.pid) {
+        return yield* Effect.fail(new TraceKernelProcessPermissionError({
+          code: 'EPERM',
+          pid: process.pid,
+          requesterId: snapshot.owner.id,
+          message: `EPERM: process ${process.pid} is already a process-group leader`,
+        }));
+      }
+      process.setTopology(process.pid, process.pid);
+      return process.pid;
+    });
+  }
+
+  setProcessGroup(
+    caller: TraceKernelProcess,
+    targetPid: number,
+    processGroupId: number
+  ): Effect.Effect<
+    number,
+    TraceKernelProcessStateError |
+      TraceKernelProcessPermissionError |
+      TraceKernelInvalidArgumentError
+  > {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(caller);
+      const requestedPid = Math.trunc(targetPid);
+      const requestedGroup = Math.trunc(processGroupId);
+      if (
+        !Number.isSafeInteger(targetPid) ||
+        !Number.isSafeInteger(processGroupId) ||
+        requestedPid < 0 ||
+        requestedGroup < 0
+      ) {
+        return yield* Effect.fail(new TraceKernelInvalidArgumentError({
+          code: 'EINVAL',
+          argument: 'setpgid',
+          message: `EINVAL: invalid setpgid(${targetPid}, ${processGroupId})`,
+        }));
+      }
+      const target = requestedPid === 0 ? caller : this.processes.get(requestedPid);
+      if (!target) {
+        return yield* Effect.fail(new TraceKernelProcessStateError({
+          pid: requestedPid,
+          message: `ESRCH: process ${requestedPid} does not exist in session ${this.id}`,
+        }));
+      }
+      if (target !== caller) {
+        return yield* Effect.fail(new TraceKernelProcessPermissionError({
+          code: 'EPERM',
+          pid: target.pid,
+          requesterId: caller.snapshot().owner.id,
+          message: `EPERM: a running process may only change its own process group`,
+        }));
+      }
+      const snapshot = target.snapshot();
+      if (snapshot.sid === snapshot.pid) {
+        return yield* Effect.fail(new TraceKernelProcessPermissionError({
+          code: 'EPERM',
+          pid: target.pid,
+          requesterId: snapshot.owner.id,
+          message: `EPERM: session leader ${target.pid} cannot change process group`,
+        }));
+      }
+      const pgid = requestedGroup === 0 ? target.pid : requestedGroup;
+      if (
+        pgid !== target.pid &&
+        ![...this.processes.values()].some((candidate) => {
+          const candidateSnapshot = candidate.snapshot();
+          return candidateSnapshot.pgid === pgid &&
+            candidateSnapshot.sid === snapshot.sid;
+        })
+      ) {
+        return yield* Effect.fail(new TraceKernelInvalidArgumentError({
+          code: 'EINVAL',
+          argument: 'processGroupId',
+          message: `EINVAL: process group ${pgid} does not exist in session ${snapshot.sid}`,
+        }));
+      }
+      target.setTopology(pgid, snapshot.sid);
+      return pgid;
+    });
   }
 
   signalProcess(

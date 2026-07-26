@@ -38,7 +38,7 @@ export class TraceKernelProcessLimitError extends Data.TaggedError(
 export class TraceKernelProcessPermissionError extends Data.TaggedError(
   'TraceKernelProcessPermissionError'
 )<{
-  readonly code: 'EACCES';
+  readonly code: 'EACCES' | 'EPERM';
   readonly pid: number;
   readonly requesterId: string;
   readonly message: string;
