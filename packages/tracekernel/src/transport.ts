@@ -399,6 +399,7 @@ export function encodeTraceKernelSyscallRequest(
     }
     case 'wait':
       writer.i32(request.pid);
+      writer.u8(request.noHang ? 1 : 0);
       break;
     case 'kill':
       writer.i32(request.pid);
@@ -719,9 +720,15 @@ export function decodeTraceKernelSyscallRequest(
       };
       break;
     }
-    case 'wait':
-      request = { op: 'wait', pid: reader.i32() };
+    case 'wait': {
+      const pid = reader.i32();
+      const noHang = reader.u8();
+      if (noHang > 1) {
+        throw new TraceKernelTransportError('EPROTO', `invalid wait no-hang flag ${noHang}`);
+      }
+      request = { op: 'wait', pid, ...(noHang ? { noHang: true } : {}) };
       break;
+    }
     case 'kill': {
       const pid = reader.i32();
       const signalCode = reader.u8();
@@ -1006,6 +1013,8 @@ export function encodeTraceKernelSyscallResult(
       break;
     case 'wait':
       writer.i32(value.pid);
+      writer.u8(value.termination === undefined ? 0 : 1);
+      if (value.termination === undefined) break;
       writer.u8(
         value.termination.kind === 'exit'
           ? 1
@@ -1201,6 +1210,17 @@ export function decodeTraceKernelSyscallResult(
     }
     case 'wait': {
       const pid = reader.i32();
+      const completed = reader.u8();
+      if (completed > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid wait completion flag ${completed}`
+        );
+      }
+      if (!completed) {
+        value = { op: 'wait', pid };
+        break;
+      }
       const terminationCode = reader.u8();
       if (terminationCode < 1 || terminationCode > 3) {
         throw new TraceKernelTransportError(

@@ -2362,6 +2362,7 @@ class PythonTraceKernelSyncClient {
       }
       case 'wait':
         writer.i32(request.pid);
+        writer.u8(request.noHang ? 1 : 0);
         break;
       case 'kill':
         writer.i32(request.pid);
@@ -2721,6 +2722,18 @@ class PythonTraceKernelSyncClient {
       };
     } else if (operation === 'wait') {
       const pid = reader.i32();
+      const completed = reader.u8();
+      if (completed > 1) {
+        throw new PythonTraceKernelSyscallError(
+          'EPROTO',
+          `invalid wait completion flag ${completed}`
+        );
+      }
+      if (!completed) {
+        value = { op: operation, pid };
+        reader.done();
+        return value;
+      }
       const terminationCode = reader.u8();
       const exitCode = reader.i32();
       if (terminationCode === 1) {
@@ -3683,7 +3696,11 @@ async function executeProjectPythonUserCall(
           };
         }
         case 'wait':
-          return { op: 'wait', pid: Number(input.pid) };
+          return {
+            op: 'wait',
+            pid: Number(input.pid),
+            ...(input.noHang === true ? { noHang: true } : {}),
+          };
         case 'kill':
           return {
             op: 'kill',
@@ -4096,6 +4113,15 @@ class _TraceKernelProcessPipe:
     def __exit__(self, *_args):
         self.close()
 
+class TimeoutExpired(Exception):
+    def __init__(self, cmd, timeout, output=None, stderr=None):
+        super().__init__(f"Command {cmd!r} timed out after {timeout} seconds")
+        self.cmd = cmd
+        self.timeout = timeout
+        self.output = output
+        self.stdout = output
+        self.stderr = stderr
+
 class _TraceKernelChildProcess:
     def __init__(
         self,
@@ -4144,20 +4170,38 @@ class _TraceKernelChildProcess:
         )
 
     def poll(self):
-        return self.returncode
-
-    def wait(self, timeout=None):
-        if timeout is not None:
-            raise NotImplementedError(
-                "TraceKernel child wait timeouts require a nonblocking wait syscall"
-            )
         if self.returncode is not None:
             return self.returncode
         _value = _TraceKernelProcessApi._call({
             "op": "wait",
             "pid": self.pid,
+            "noHang": True,
         })
-        _termination = _value["termination"]
+        if _value.get("termination") is not None:
+            self._apply_termination(_value["termination"])
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is not None:
+            return self.returncode
+        if timeout is not None:
+            import time as _time
+            _deadline = _time.monotonic() + max(0.0, float(timeout))
+            while True:
+                _result = self.poll()
+                if _result is not None:
+                    return _result
+                if _time.monotonic() >= _deadline:
+                    raise TimeoutExpired(self.pid, timeout)
+                _time.sleep(min(0.01, max(0.0, _deadline - _time.monotonic())))
+        _value = _TraceKernelProcessApi._call({
+            "op": "wait",
+            "pid": self.pid,
+        })
+        self._apply_termination(_value["termination"])
+        return self.returncode
+
+    def _apply_termination(self, _termination):
         self.signal = _termination.get("signal")
         if _termination["kind"] == "signal":
             self.returncode = -{
@@ -4167,7 +4211,6 @@ class _TraceKernelChildProcess:
             }.get(self.signal, 1)
         else:
             self.returncode = int(_termination.get("exitCode", 1))
-        return self.returncode
 
     def communicate(self, input=None, timeout=None):
         if timeout is not None:
@@ -4622,6 +4665,7 @@ def _install_tracekernel_subprocess_module():
     _module.PIPE = -1
     _module.STDOUT = -2
     _module.DEVNULL = -3
+    _module.TimeoutExpired = TimeoutExpired
 
     class CalledProcessError(Exception):
         def __init__(self, returncode, cmd, output=None, stderr=None):

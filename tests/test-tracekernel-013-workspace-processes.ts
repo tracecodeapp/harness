@@ -135,7 +135,7 @@ async function main(): Promise<void> {
     assertCondition(
       waited.ok &&
         waited.value.op === 'wait' &&
-        waited.value.termination.kind === 'exit' &&
+        waited.value.termination?.kind === 'exit' &&
         waited.value.termination.exitCode === 7,
       `parent did not receive its child's exit status: ${JSON.stringify(waited)}`
     );
@@ -164,7 +164,7 @@ async function main(): Promise<void> {
           ? new TextDecoder().decode(childFile.value.bytes)
           : '',
         `child-exit:${waited.ok && waited.value.op === 'wait'
-          ? waited.value.termination.exitCode
+          ? waited.value.termination?.exitCode ?? -1
           : -1}`,
         '',
       ].join('\n'),

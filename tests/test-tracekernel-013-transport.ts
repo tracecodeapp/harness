@@ -207,6 +207,7 @@ async function main(): Promise<void> {
       },
     },
     { op: 'wait', pid: 101 },
+    { op: 'wait', pid: 101, noHang: true },
     { op: 'kill', pid: 102, signal: 'SIGTERM' },
     { op: 'socket' },
     { op: 'bind', fd: 3, address: { host: '127.0.0.1', port: 8080 } },
@@ -292,6 +293,7 @@ async function main(): Promise<void> {
         termination: { kind: 'exit', exitCode: 7 },
       },
     },
+    { ok: true, value: { op: 'wait', pid: 101 } },
     {
       ok: true,
       value: {

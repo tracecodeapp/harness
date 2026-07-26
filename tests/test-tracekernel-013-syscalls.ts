@@ -32,7 +32,7 @@ async function main(): Promise<void> {
             execute: () =>
               process.command === 'syscall-child' ||
               process.command === 'syscall-stdio-child'
-                ? Effect.sleep(5).pipe(
+                ? Effect.sleep(50).pipe(
                     Effect.as({
                       exitCode: 7,
                       stdout: process.command === 'syscall-stdio-child'
@@ -109,6 +109,18 @@ async function main(): Promise<void> {
       assertCondition(spawned.value.op === 'spawn', 'spawn returned the wrong response variant.');
       if (spawned.value.op !== 'spawn') return;
       const childPid = spawned.value.pid;
+      const pending = yield* syscalls.dispatch({
+        op: 'wait',
+        pid: childPid,
+        noHang: true,
+      });
+      success(pending);
+      assertCondition(
+        pending.value.op === 'wait' &&
+          pending.value.pid === childPid &&
+          pending.value.termination === undefined,
+        `nonblocking wait reaped or blocked on a running child: ${JSON.stringify(pending)}`
+      );
       const pipeReadFd = pipe.value.readFd;
       const pipeWriteFd = pipe.value.writeFd;
       const childSnapshot = session.processSnapshots().find(
@@ -130,7 +142,7 @@ async function main(): Promise<void> {
       assertCondition(
         waited.value.op === 'wait' &&
           waited.value.pid === childPid &&
-          waited.value.termination.kind === 'exit' &&
+          waited.value.termination?.kind === 'exit' &&
           waited.value.termination.exitCode === 7,
         `wait returned the wrong child termination: ${JSON.stringify(waited)}`
       );
@@ -247,7 +259,7 @@ async function main(): Promise<void> {
       success(killedChild);
       assertCondition(
         killedChild.value.op === 'wait' &&
-          killedChild.value.termination.kind === 'signal' &&
+          killedChild.value.termination?.kind === 'signal' &&
           killedChild.value.termination.signal === 'SIGTERM' &&
           killedChild.value.termination.exitCode === 143,
         `kernel kill/wait lost child signal status: ${JSON.stringify(killedChild)}`
@@ -628,6 +640,7 @@ async function main(): Promise<void> {
     unixProcessGroupSignalSelectors: true,
     childStdioUsesProcessOwnedDescriptors: true,
     childWriterCloseProducesEof: true,
+    nonblockingWaitDoesNotReap: true,
     childWaitReapsExactlyOnce: true,
     typedErrorsMappedToPosixWireErrors: true,
     descriptorLimitsCrossWireAsEmfile: true,

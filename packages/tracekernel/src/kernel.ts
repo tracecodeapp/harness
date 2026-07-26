@@ -660,9 +660,10 @@ export class TraceKernelSession {
 
   waitChild(
     parent: TraceKernelProcess,
-    pid: number
+    pid: number,
+    options: { readonly noHang?: boolean } = {}
   ): Effect.Effect<
-    TraceKernelProcessSnapshot,
+    TraceKernelProcessSnapshot | undefined,
     TraceKernelProcessStateError | TraceKernelChildProcessError
   > {
     return Effect.gen(this, function* () {
@@ -678,6 +679,9 @@ export class TraceKernelSession {
           pid,
           message: `ECHILD: process ${pid} is not an unreaped child of process ${parent.pid}`,
         }));
+      }
+      if (options.noHang && child.snapshot().phase !== 'exited') {
+        return undefined;
       }
       this.waitingChildren.add(pid);
       return yield* child.wait().pipe(

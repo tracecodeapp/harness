@@ -444,6 +444,14 @@ descriptor mapping, including descriptors above stderr, while string
 extra piped descriptors and IPC channels return `ENOSYS` until the spawn
 response can return a variable set of parent pipe endpoints.
 
+Kernel wait/reap now has an explicit nonblocking mode. It returns a running
+state without reserving or reaping the child, while an exited child is still
+reaped exactly once and subsequent or competing waits return `ECHILD`. C++
+maps this to `waitpid(..., WNOHANG)`, Python uses it for `Popen.poll()` and
+timed waits, and managed C# exposes `KernelProcess.TryWait`; JavaScript keeps
+its event-driven `ChildProcess` completion path on the same authoritative
+blocking wait.
+
 The C/C++ WASI process compatibility slice is intentionally smaller than a
 complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,
 `SIGTERM`, and `SIGKILL`, and maps `posix_spawnp` through TraceKernel's runtime

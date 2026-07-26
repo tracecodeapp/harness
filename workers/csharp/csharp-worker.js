@@ -613,6 +613,7 @@ class CSharpTraceKernelSyncClient {
       }
       case 'wait':
         writer.i32(request.pid);
+        writer.u8(request.noHang ? 1 : 0);
         break;
       case 'kill':
         writer.i32(request.pid);
@@ -761,6 +762,18 @@ class CSharpTraceKernelSyncClient {
       };
     } else if (operation === 'wait') {
       const pid = reader.i32();
+      const completed = reader.u8();
+      if (completed > 1) {
+        throw new CSharpTraceKernelSyscallError(
+          'EPROTO',
+          `invalid wait completion flag ${completed}`
+        );
+      }
+      if (!completed) {
+        value = { op: operation, pid };
+        reader.done();
+        return value;
+      }
       const terminationCode = reader.u8();
       const exitCode = reader.i32();
       if (terminationCode === 1) {

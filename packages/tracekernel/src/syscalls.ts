@@ -85,6 +85,7 @@ export type TraceKernelSyscallRequest =
   | {
       readonly op: 'wait';
       readonly pid: number;
+      readonly noHang?: boolean;
     }
   | {
       readonly op: 'kill';
@@ -251,7 +252,7 @@ export type TraceKernelSyscallValue =
   | {
       readonly op: 'wait';
       readonly pid: number;
-      readonly termination: TraceKernelProcessTermination;
+      readonly termination?: TraceKernelProcessTermination;
     }
   | { readonly op: 'kill' }
   | { readonly op: 'socket'; readonly fd: number }
@@ -483,9 +484,16 @@ export class TraceKernelSyscallDispatcher {
           }))
         );
       case 'wait':
-        return this.session.waitChild(this.process, request.pid).pipe(
+        return this.session.waitChild(this.process, request.pid, {
+          noHang: request.noHang,
+        }).pipe(
           Effect.flatMap((snapshot) =>
-            snapshot.termination
+            snapshot === undefined
+              ? Effect.succeed({
+                  op: 'wait' as const,
+                  pid: request.pid,
+                })
+              : snapshot.termination
               ? Effect.succeed({
                   op: 'wait' as const,
                   pid: snapshot.pid,

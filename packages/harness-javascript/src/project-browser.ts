@@ -2391,10 +2391,17 @@ function createChildProcessApi(
     void eventLoopApi.track(
       asyncDispatch({ op: 'wait', pid: spawned.pid }).then(
         async (waited) => {
-          if (waited.termination.kind === 'signal') {
-            child.signalCode = waited.termination.signal;
+          const termination = waited.termination;
+          if (!termination) {
+            throw Object.assign(
+              new Error('EPROTO: blocking child wait returned a running process'),
+              { code: 'EPROTO' }
+            );
+          }
+          if (termination.kind === 'signal') {
+            child.signalCode = termination.signal;
           } else {
-            child.exitCode = waited.termination.exitCode;
+            child.exitCode = termination.exitCode;
           }
           child.emit(
             'exit',
@@ -2453,16 +2460,23 @@ function createChildProcessApi(
       stdio: plan.stdio,
     });
     const waited = syncDispatch({ op: 'wait', pid: spawned.pid });
+    const termination = waited.termination;
+    if (!termination) {
+      throw Object.assign(
+        new Error('EPROTO: blocking child wait returned a running process'),
+        { code: 'EPROTO' }
+      );
+    }
     return {
       pid: spawned.pid,
       output: [null, BrowserBuffer.alloc(0), BrowserBuffer.alloc(0)],
       stdout: BrowserBuffer.alloc(0),
       stderr: BrowserBuffer.alloc(0),
-      status: waited.termination.kind === 'signal'
+      status: termination.kind === 'signal'
         ? null
-        : waited.termination.exitCode,
-      signal: waited.termination.kind === 'signal'
-        ? waited.termination.signal
+        : termination.exitCode,
+      signal: termination.kind === 'signal'
+        ? termination.signal
         : null,
     };
   };

@@ -637,6 +637,7 @@ class CppTraceKernelSyncClient {
       }
       case 'wait':
         writer.i32(request.pid);
+        writer.u8(request.noHang ? 1 : 0);
         break;
       case 'kill':
         writer.i32(request.pid);
@@ -854,6 +855,17 @@ class CppTraceKernelSyncClient {
       }
       case 'wait': {
         const pid = reader.i32();
+        const completed = reader.u8();
+        if (completed !== 0 && completed !== 1) {
+          throw new CppTraceKernelSyscallError(
+            'EPROTO',
+            `invalid wait completion flag ${completed}`
+          );
+        }
+        if (!completed) {
+          value = { op: operation, pid };
+          break;
+        }
         const terminationCode = reader.u8();
         const exitCode = reader.i32();
         if (terminationCode === 1) {
@@ -2642,9 +2654,14 @@ class WasiProcess {
       },
       proc_wait: (pid, statusPtr, options) => {
         if (!this.kernelClient) return -ENOTSUP;
-        if (options !== 0) return -ENOTSUP;
+        if ((options & ~1) !== 0) return -ENOTSUP;
         try {
-          const waited = this.kernelClient.call({ op: 'wait', pid: pid | 0 });
+          const waited = this.kernelClient.call({
+            op: 'wait',
+            pid: pid | 0,
+            ...((options & 1) !== 0 ? { noHang: true } : {}),
+          });
+          if (!waited.termination) return 0;
           const termination = waited.termination;
           const status = termination.kind === 'signal'
             ? termination.signal === 'SIGINT'

@@ -1576,8 +1576,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           const process = this.runtimeSyscallProcess(context);
           const child = await this.waitRuntimeSyscallChild(
             process,
-            request.pid
+            request.pid,
+            request.noHang === true
           );
+          if (!child) {
+            return {
+              ok: true,
+              value: { op: 'wait', pid: request.pid },
+            };
+          }
           const exitCode = child.exitCode ?? 1;
           const signal = child.signal === 'SIGINT' ||
             child.signal === 'SIGTERM' ||
@@ -2294,8 +2301,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private async waitRuntimeSyscallChild(
     parent: RuntimeKernelProcessRecord,
-    pid: number
-  ): Promise<RuntimeKernelProcessRecord> {
+    pid: number,
+    noHang = false
+  ): Promise<RuntimeKernelProcessRecord | undefined> {
     const child = this.findProcessRecord(pid);
     if (
       !child ||
@@ -2309,6 +2317,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         { code: 'ECHILD' }
       );
     }
+    if (noHang && !this.zombieProcessTable.has(pid)) return undefined;
     this.runtimeChildWaits.add(pid);
     try {
       const zombie = await this.waitForZombieProcess(pid, parent.pid);

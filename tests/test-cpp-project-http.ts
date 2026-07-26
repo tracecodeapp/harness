@@ -252,6 +252,8 @@ const CPP_POSIX_PROCESS_GROUP_PROGRAM = [
   '  const int spawn_result = posix_spawn(&child, command, nullptr, &attributes, child_argv, child_envp);',
   '  posix_spawnattr_destroy(&attributes);',
   '  if (spawn_result != 0 || child <= 0 || child == getpid()) return 12;',
+  '  int pending_status = -1;',
+  '  if (waitpid(child, &pending_status, WNOHANG) != 0 || pending_status != -1) return 18;',
   '  if (!wait_for("cpp-group-ready.txt", 20000)) return 13;',
   '  std::ifstream ready("cpp-group-ready.txt");',
   '  pid_t leader = -1;',

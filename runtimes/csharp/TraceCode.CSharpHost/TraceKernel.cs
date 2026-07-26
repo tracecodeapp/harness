@@ -476,12 +476,40 @@ public sealed class KernelProcess
             op = "wait",
             pid = Pid,
         });
-        JsonElement raw = value.GetProperty("termination");
+        termination = ParseTermination(value.GetProperty("termination"));
+        return termination;
+    }
+
+    public bool TryWait(out ProcessTermination? result)
+    {
+        if (termination is not null)
+        {
+            result = termination;
+            return true;
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "wait",
+            pid = Pid,
+            noHang = true,
+        });
+        if (!value.TryGetProperty("termination", out JsonElement raw))
+        {
+            result = null;
+            return false;
+        }
+        termination = ParseTermination(raw);
+        result = termination;
+        return true;
+    }
+
+    private ProcessTermination ParseTermination(JsonElement raw)
+    {
         string kind = raw.GetProperty("kind").GetString() ?? "failure";
         string? signal = raw.TryGetProperty("signal", out JsonElement signalValue)
             ? signalValue.GetString()
             : null;
-        termination = new ProcessTermination(
+        return new ProcessTermination(
             Pid,
             kind,
             raw.GetProperty("exitCode").GetInt32(),
@@ -496,7 +524,6 @@ public sealed class KernelProcess
                 ? message.GetString()
                 : null
         );
-        return termination;
     }
 
     public void Kill(KernelSignal signal = KernelSignal.Terminate)
