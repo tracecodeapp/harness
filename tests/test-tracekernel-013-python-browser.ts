@@ -37,7 +37,7 @@ async function syncPythonAssets(targetDirectory: string): Promise<void> {
       'sync-assets',
       targetDirectory,
       '--languages',
-      'python',
+      'python,javascript',
     ], { cwd: process.cwd(), stdio: 'inherit' });
     child.once('error', rejectPromise);
     child.once('exit', (code, signal) => {
@@ -142,7 +142,7 @@ async function main(): Promise<void> {
         const { createBrowserProjectWorkspace } = await import('/project-harness.mjs');
         const workspace = await createBrowserProjectWorkspace({
           assetBaseUrl: '/workers',
-          providers: ['python'],
+          providers: ['python', 'javascript'],
           projectWorkerIsolation: 'per-command',
           pythonProjectTimeoutMs: 120_000,
           files: [
@@ -231,12 +231,72 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'spawn-child.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const parent = fs.readFileSync("spawn-parent.txt", "utf8");',
+                'fs.writeFileSync("spawn-js-child.txt", `${parent.trim()}:js\\n`);',
+                'process.stdout.write("js-child:ok\\n");',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'spawn-child.py',
+              contents: [
+                'import builtins',
+                'from pathlib import Path',
+                'isolated = not hasattr(builtins, "tracekernel_parent_secret")',
+                'builtins.tracekernel_parent_secret = "child"',
+                'pipe_value = input().strip()',
+                'parent = Path("spawn-parent.txt").read_text().strip()',
+                'Path("spawn-python-child.txt").write_text(f"{parent}:python\\n")',
+                'print(f"python-child:{str(isolated).lower()}:{pipe_value}")',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'spawn-parent.py',
+              contents: [
+                'import builtins',
+                'from pathlib import Path',
+                'import subprocess',
+                'builtins.tracekernel_parent_secret = "parent"',
+                'Path("spawn-parent.txt").write_text("parent\\n")',
+                'js = subprocess.run(',
+                '    ["node", "spawn-child.js"],',
+                '    capture_output=True,',
+                '    text=True,',
+                '    check=True,',
+                ')',
+                'python = subprocess.run(',
+                '    ["python", "spawn-child.py"],',
+                '    input="through-kernel-pipe\\n",',
+                '    capture_output=True,',
+                '    text=True,',
+                '    check=True,',
+                ')',
+                'valid = (',
+                '    js.stdout == "js-child:ok\\n" and js.stderr == ""',
+                '    and python.stdout == "python-child:true:through-kernel-pipe\\n"',
+                '    and python.stderr == ""',
+                '    and builtins.tracekernel_parent_secret == "parent"',
+                '    and Path("spawn-js-child.txt").read_text() == "parent:js\\n"',
+                '    and Path("spawn-python-child.txt").read_text() == "parent:python\\n"',
+                ')',
+                'print(f"spawn:{str(valid).lower()}")',
+                '',
+              ].join('\n'),
+            },
           ],
         });
         try {
           const fsControl = await workspace.runCommand('python kernel-fs.py');
           const nativeFsControl = await workspace.runCommand(
             'python kernel-native-fs.py'
+          );
+          const spawnControl = await workspace.runCommand(
+            'python spawn-parent.py'
           );
           return {
             fsControl,
@@ -246,6 +306,13 @@ async function main(): Promise<void> {
                   'python-native/final.bin',
                   'base64'
                 )
+              : null,
+            spawnControl,
+            spawnJsResult: spawnControl.exitCode === 0
+              ? await workspace.readFile('spawn-js-child.txt')
+              : null,
+            spawnPythonResult: spawnControl.exitCode === 0
+              ? await workspace.readFile('spawn-python-child.txt')
               : null,
             fsResult: fsControl.exitCode === 0
               ? await workspace.readFile(
@@ -261,6 +328,13 @@ async function main(): Promise<void> {
         }
       });
 
+      assertCondition(
+        result.spawnControl.exitCode === 0 &&
+          result.spawnControl.stdout === 'spawn:true\n' &&
+          result.spawnJsResult === 'parent:js\n' &&
+          result.spawnPythonResult === 'parent:python\n',
+        `Python child processes did not share kernel FS and stdio: ${JSON.stringify(result.spawnControl)}`
+      );
       assertCondition(
         result.nativeFsControl.exitCode === 0 &&
           result.nativeFsControl.stdout === 'native-tkfs:true\n' &&
@@ -292,6 +366,7 @@ async function main(): Promise<void> {
         synchronousSyscallTransport: true,
         explicitTkfsControls: true,
         nativeTkfsMount: true,
+        childProcesses: ['javascript', 'python'],
         watchdogControls: true,
         watchdogExpirySignal: 'SIGKILL',
       }));

@@ -2065,6 +2065,9 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   readlink: 18,
   lstat: 19,
   realpath: 20,
+  spawn: 32,
+  wait: 33,
+  kill: 34,
   watchdog: 36,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
@@ -2286,6 +2289,66 @@ class PythonTraceKernelSyncClient {
             : request.signal === 'SIGTERM'
               ? 1
               : 2
+        );
+        break;
+      case 'spawn': {
+        writer.string(request.runtime);
+        writer.string(request.command);
+        writer.u32(request.args?.length ?? 0);
+        for (const argument of request.args ?? []) writer.string(argument);
+        writer.u8(request.cwd === undefined ? 0 : 1);
+        if (request.cwd !== undefined) writer.string(request.cwd);
+        const environment = Object.entries(request.env ?? {});
+        writer.u32(environment.length);
+        for (const [name, value] of environment) {
+          writer.string(name);
+          writer.string(value);
+        }
+        writer.u8(
+          request.inheritDescriptors === 'all'
+            ? 1
+            : request.inheritDescriptors === undefined
+              ? 0
+              : 2
+        );
+        if (
+          request.inheritDescriptors !== undefined &&
+          request.inheritDescriptors !== 'all'
+        ) {
+          writer.u32(request.inheritDescriptors.length);
+          for (const fd of request.inheritDescriptors) writer.i32(fd);
+        }
+        writer.u8(request.processGroupId === undefined ? 0 : 1);
+        if (request.processGroupId !== undefined) {
+          writer.i32(request.processGroupId);
+        }
+        writer.u8(request.sessionId === undefined ? 0 : 1);
+        if (request.sessionId !== undefined) writer.i32(request.sessionId);
+        const writeStdioMode = (mode) => writer.u8(
+          mode === undefined
+            ? 0
+            : mode === 'pipe'
+              ? 1
+              : mode === 'inherit'
+                ? 2
+                : 3
+        );
+        writeStdioMode(request.stdio?.stdin);
+        writeStdioMode(request.stdio?.stdout);
+        writeStdioMode(request.stdio?.stderr);
+        break;
+      }
+      case 'wait':
+        writer.i32(request.pid);
+        break;
+      case 'kill':
+        writer.i32(request.pid);
+        writer.u8(
+          request.signal === 'SIGINT'
+            ? 1
+            : request.signal === 'SIGTERM'
+              ? 2
+              : 3
         );
         break;
       case 'open': {
@@ -2523,6 +2586,77 @@ class PythonTraceKernelSyncClient {
           deadlineAt,
           signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
         };
+      }
+    } else if (operation === 'spawn') {
+      const pid = reader.i32();
+      const readOptionalFd = (name) => {
+        const present = reader.u8();
+        if (present > 1) {
+          throw new PythonTraceKernelSyscallError(
+            'EPROTO',
+            `invalid spawn ${name} fd flag ${present}`
+          );
+        }
+        return present ? reader.i32() : undefined;
+      };
+      const stdinFd = readOptionalFd('stdin');
+      const stdoutFd = readOptionalFd('stdout');
+      const stderrFd = readOptionalFd('stderr');
+      value = {
+        op: operation,
+        pid,
+        ...(stdinFd === undefined &&
+          stdoutFd === undefined &&
+          stderrFd === undefined
+          ? {}
+          : {
+              stdio: {
+                ...(stdinFd === undefined ? {} : { stdinFd }),
+                ...(stdoutFd === undefined ? {} : { stdoutFd }),
+                ...(stderrFd === undefined ? {} : { stderrFd }),
+              },
+            }),
+      };
+    } else if (operation === 'wait') {
+      const pid = reader.i32();
+      const terminationCode = reader.u8();
+      const exitCode = reader.i32();
+      if (terminationCode === 1) {
+        value = {
+          op: operation,
+          pid,
+          termination: { kind: 'exit', exitCode },
+        };
+      } else if (terminationCode === 2) {
+        const signalCode = reader.u8();
+        value = {
+          op: operation,
+          pid,
+          termination: {
+            kind: 'signal',
+            signal: signalCode === 1
+              ? 'SIGINT'
+              : signalCode === 2
+                ? 'SIGTERM'
+                : 'SIGKILL',
+            exitCode,
+          },
+        };
+      } else if (terminationCode === 3) {
+        value = {
+          op: operation,
+          pid,
+          termination: {
+            kind: 'failure',
+            exitCode,
+            message: reader.string(),
+          },
+        };
+      } else {
+        throw new PythonTraceKernelSyscallError(
+          'EPROTO',
+          `invalid process termination code ${terminationCode}`
+        );
       }
     } else if (
       operation === 'stat' ||
@@ -3337,6 +3471,94 @@ async function executeProjectPythonUserCall(
         : result
     );
   };
+  self.__tracecodeKernelProcess = (requestJson) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel process controls are unavailable'
+      );
+    }
+    const input = typeof requestJson === 'string'
+      ? JSON.parse(requestJson)
+      : requestJson ?? {};
+    const base64ToBytes = (value) => {
+      const binary = atob(String(value ?? ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    };
+    const bytesToBase64 = (bytes) => {
+      let binary = '';
+      for (let index = 0; index < bytes.length; index += 0x8000) {
+        binary += String.fromCharCode(
+          ...bytes.subarray(index, index + 0x8000)
+        );
+      }
+      return btoa(binary);
+    };
+    const syscallRequest = (() => {
+      switch (String(input.op ?? '')) {
+        case 'spawn':
+          return {
+            op: 'spawn',
+            runtime: String(input.runtime),
+            command: String(input.command),
+            args: Array.isArray(input.args)
+              ? input.args.map((argument) => String(argument))
+              : [],
+            ...(input.cwd === undefined || input.cwd === null
+              ? {}
+              : { cwd: String(input.cwd) }),
+            env: Object.fromEntries(
+              Object.entries(input.env ?? {}).map(([name, value]) => [
+                name,
+                String(value),
+              ])
+            ),
+            stdio: {
+              stdin: input.stdio?.stdin ?? 'inherit',
+              stdout: input.stdio?.stdout ?? 'inherit',
+              stderr: input.stdio?.stderr ?? 'inherit',
+            },
+          };
+        case 'wait':
+          return { op: 'wait', pid: Number(input.pid) };
+        case 'kill':
+          return {
+            op: 'kill',
+            pid: Number(input.pid),
+            signal: String(input.signal ?? 'SIGTERM'),
+          };
+        case 'read':
+          return {
+            op: 'read',
+            fd: Number(input.fd),
+            maxBytes: Number(input.maxBytes ?? 16 * 1024),
+          };
+        case 'write':
+          return {
+            op: 'write',
+            fd: Number(input.fd),
+            bytes: base64ToBytes(input.bytes),
+          };
+        case 'close':
+          return { op: 'close', fd: Number(input.fd) };
+        default:
+          throw new PythonTraceKernelSyscallError(
+            'ENOSYS',
+            `unsupported Python TraceKernel process operation ${input.op}`
+          );
+      }
+    })();
+    const result = kernelClient.request(syscallRequest);
+    return JSON.stringify(
+      result.op === 'read'
+        ? { ...result, bytes: bytesToBase64(result.bytes) }
+        : result
+    );
+  };
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
     request?.stdinPipe
@@ -3535,11 +3757,423 @@ class _TraceKernelFileSystem:
             "path": self._path(path),
         })["path"]
 
+class _TraceKernelProcessPipe:
+    def __init__(self, fd, mode, *, text=False, encoding=None, errors=None):
+        self.fd = int(fd)
+        self.mode = str(mode)
+        self.text = bool(text)
+        self.encoding = encoding or "utf-8"
+        self.errors = errors or "strict"
+        self.closed = False
+
+    def readable(self):
+        return "r" in self.mode
+
+    def writable(self):
+        return "w" in self.mode
+
+    def fileno(self):
+        return self.fd
+
+    def read(self, size=-1):
+        if self.closed:
+            raise ValueError("I/O operation on closed TraceKernel pipe")
+        if not self.readable():
+            raise OSError("TraceKernel pipe is not readable")
+        _remaining = int(size)
+        _chunks = []
+        while _remaining != 0:
+            _limit = 16 * 1024 if _remaining < 0 else min(_remaining, 16 * 1024)
+            _value = _TraceKernelProcessApi._call({
+                "op": "read",
+                "fd": self.fd,
+                "maxBytes": _limit,
+            })
+            _chunk = base64.b64decode(_value["bytes"])
+            if not _chunk:
+                break
+            _chunks.append(_chunk)
+            if _remaining > 0:
+                _remaining -= len(_chunk)
+        _bytes = b"".join(_chunks)
+        return _bytes.decode(self.encoding, self.errors) if self.text else _bytes
+
+    def readline(self, size=-1):
+        _limit = int(size)
+        _chunks = []
+        while _limit != 0:
+            _chunk = self.read(1)
+            if not _chunk:
+                break
+            _chunks.append(_chunk)
+            if _chunk == ("\\n" if self.text else b"\\n"):
+                break
+            if _limit > 0:
+                _limit -= 1
+        return ("" if self.text else b"").join(_chunks)
+
+    def write(self, value):
+        if self.closed:
+            raise ValueError("I/O operation on closed TraceKernel pipe")
+        if not self.writable():
+            raise OSError("TraceKernel pipe is not writable")
+        _bytes = (
+            str(value).encode(self.encoding, self.errors)
+            if self.text
+            else bytes(value)
+        )
+        _value = _TraceKernelProcessApi._call({
+            "op": "write",
+            "fd": self.fd,
+            "bytes": base64.b64encode(_bytes).decode("ascii"),
+        })
+        return int(_value["bytesWritten"])
+
+    def flush(self):
+        return None
+
+    def close(self):
+        if not self.closed:
+            try:
+                _TraceKernelProcessApi._call({
+                    "op": "close",
+                    "fd": self.fd,
+                })
+            finally:
+                self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+class _TraceKernelChildProcess:
+    def __init__(
+        self,
+        _value,
+        *,
+        text=False,
+        encoding=None,
+        errors=None,
+    ):
+        self.pid = int(_value["pid"])
+        self.returncode = None
+        self.signal = None
+        _stdio = _value.get("stdio") or {}
+        self.stdin = (
+            _TraceKernelProcessPipe(
+                _stdio["stdinFd"],
+                "w",
+                text=text,
+                encoding=encoding,
+                errors=errors,
+            )
+            if "stdinFd" in _stdio
+            else None
+        )
+        self.stdout = (
+            _TraceKernelProcessPipe(
+                _stdio["stdoutFd"],
+                "r",
+                text=text,
+                encoding=encoding,
+                errors=errors,
+            )
+            if "stdoutFd" in _stdio
+            else None
+        )
+        self.stderr = (
+            _TraceKernelProcessPipe(
+                _stdio["stderrFd"],
+                "r",
+                text=text,
+                encoding=encoding,
+                errors=errors,
+            )
+            if "stderrFd" in _stdio
+            else None
+        )
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if timeout is not None:
+            raise NotImplementedError(
+                "TraceKernel child wait timeouts require a nonblocking wait syscall"
+            )
+        if self.returncode is not None:
+            return self.returncode
+        _value = _TraceKernelProcessApi._call({
+            "op": "wait",
+            "pid": self.pid,
+        })
+        _termination = _value["termination"]
+        self.signal = _termination.get("signal")
+        if _termination["kind"] == "signal":
+            self.returncode = -{
+                "SIGINT": 2,
+                "SIGTERM": 15,
+                "SIGKILL": 9,
+            }.get(self.signal, 1)
+        else:
+            self.returncode = int(_termination.get("exitCode", 1))
+        return self.returncode
+
+    def communicate(self, input=None, timeout=None):
+        if timeout is not None:
+            raise NotImplementedError(
+                "TraceKernel child communicate timeouts require a nonblocking wait syscall"
+            )
+        if input is not None:
+            if self.stdin is None:
+                raise ValueError("stdin is not a pipe")
+            self.stdin.write(input)
+        if self.stdin is not None:
+            self.stdin.close()
+        _stdout = self.stdout.read() if self.stdout is not None else None
+        _stderr = self.stderr.read() if self.stderr is not None else None
+        self.wait()
+        return _stdout, _stderr
+
+    def send_signal(self, signal):
+        _name = signal
+        if isinstance(signal, int):
+            _name = {2: "SIGINT", 9: "SIGKILL", 15: "SIGTERM"}.get(signal)
+        if _name not in ("SIGINT", "SIGTERM", "SIGKILL"):
+            raise ValueError(f"Unsupported TraceKernel signal: {signal}")
+        _TraceKernelProcessApi._call({
+            "op": "kill",
+            "pid": self.pid,
+            "signal": _name,
+        })
+
+    def terminate(self):
+        self.send_signal("SIGTERM")
+
+    def kill(self):
+        self.send_signal("SIGKILL")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        for _stream in (self.stdin, self.stdout, self.stderr):
+            if _stream is not None:
+                _stream.close()
+        if self.returncode is None:
+            self.wait()
+
+class _TraceKernelProcessApi:
+    @staticmethod
+    def _call(_request):
+        try:
+            _raw = getattr(_js_self, "__tracecodeKernelProcess")(
+                json.dumps(_request)
+            )
+        except BaseException as _error:
+            _code = getattr(_error, "code", None) or "EIO"
+            raise OSError(_code, str(_error)) from None
+        return json.loads(str(_raw))
+
+    @staticmethod
+    def runtime_for_command(command):
+        _name = os.path.basename(str(command)).lower()
+        if _name in ("node", "nodejs", "js", "javascript"):
+            return "javascript"
+        if _name in ("python", "python3", "py"):
+            return "python"
+        if _name == "java":
+            return "java"
+        if _name in ("dotnet", "csharp"):
+            return "csharp"
+        return "cpp"
+
+    def spawn(
+        self,
+        command,
+        args=(),
+        *,
+        runtime=None,
+        cwd=None,
+        env=None,
+        stdin="inherit",
+        stdout="inherit",
+        stderr="inherit",
+        text=False,
+        encoding=None,
+        errors=None,
+    ):
+        _command = os.fspath(command)
+        _value = self._call({
+            "op": "spawn",
+            "runtime": runtime or self.runtime_for_command(_command),
+            "command": _command,
+            "args": [str(_argument) for _argument in args],
+            "cwd": str(cwd if cwd is not None else os.getcwd()),
+            "env": {
+                str(_name): str(_value)
+                for _name, _value in (env if env is not None else os.environ).items()
+            },
+            "stdio": {
+                "stdin": str(stdin),
+                "stdout": str(stdout),
+                "stderr": str(stderr),
+            },
+        })
+        return _TraceKernelChildProcess(
+            _value,
+            text=text,
+            encoding=encoding,
+            errors=errors,
+        )
+
 _tracekernel_module = types.ModuleType("tracekernel")
 _tracekernel_module.WatchdogStatus = _TraceKernelWatchdogStatus
 _tracekernel_module.watchdog = _TraceKernelWatchdog()
 _tracekernel_module.fs = _TraceKernelFileSystem()
+_tracekernel_module.process = _TraceKernelProcessApi()
 sys.modules["tracekernel"] = _tracekernel_module
+
+def _install_tracekernel_subprocess_module():
+    _module = types.ModuleType("subprocess")
+    _module.PIPE = -1
+    _module.STDOUT = -2
+    _module.DEVNULL = -3
+
+    class CalledProcessError(Exception):
+        def __init__(self, returncode, cmd, output=None, stderr=None):
+            super().__init__(
+                f"Command {cmd!r} returned non-zero exit status {returncode}."
+            )
+            self.returncode = returncode
+            self.cmd = cmd
+            self.output = output
+            self.stdout = output
+            self.stderr = stderr
+
+    class CompletedProcess:
+        def __init__(self, args, returncode, stdout=None, stderr=None):
+            self.args = args
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+        def check_returncode(self):
+            if self.returncode:
+                raise CalledProcessError(
+                    self.returncode,
+                    self.args,
+                    self.stdout,
+                    self.stderr,
+                )
+
+    def _stdio_mode(_value, _name):
+        if _value is None:
+            return "inherit"
+        if _value == _module.PIPE:
+            return "pipe"
+        if _value == _module.DEVNULL:
+            return "ignore"
+        if _value == _module.STDOUT and _name == "stderr":
+            raise NotImplementedError(
+                "TraceKernel stderr=STDOUT requires descriptor remapping"
+            )
+        raise NotImplementedError(
+            "TraceKernel subprocess supports inherit, PIPE, and DEVNULL stdio"
+        )
+
+    class Popen(_TraceKernelChildProcess):
+        def __init__(
+            self,
+            args,
+            bufsize=-1,
+            executable=None,
+            stdin=None,
+            stdout=None,
+            stderr=None,
+            preexec_fn=None,
+            close_fds=True,
+            shell=False,
+            cwd=None,
+            env=None,
+            universal_newlines=None,
+            text=None,
+            encoding=None,
+            errors=None,
+            **_kwargs,
+        ):
+            if shell or executable is not None or preexec_fn is not None:
+                raise NotImplementedError(
+                    "TraceKernel subprocess does not emulate a host shell or preexec_fn"
+                )
+            _argv = [args] if isinstance(args, (str, bytes, os.PathLike)) else list(args)
+            if not _argv:
+                raise ValueError("subprocess args must not be empty")
+            _text = bool(text or universal_newlines or encoding)
+            _child = _tracekernel_module.process.spawn(
+                os.fspath(_argv[0]),
+                [str(_value) for _value in _argv[1:]],
+                cwd=cwd,
+                env=env,
+                stdin=_stdio_mode(stdin, "stdin"),
+                stdout=_stdio_mode(stdout, "stdout"),
+                stderr=_stdio_mode(stderr, "stderr"),
+                text=_text,
+                encoding=encoding,
+                errors=errors,
+            )
+            self.__dict__.update(_child.__dict__)
+            self.args = args
+
+    def run(
+        args,
+        *,
+        input=None,
+        capture_output=False,
+        timeout=None,
+        check=False,
+        **kwargs,
+    ):
+        if capture_output:
+            if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+                raise ValueError(
+                    "stdout and stderr arguments may not be used with capture_output"
+                )
+            kwargs["stdout"] = _module.PIPE
+            kwargs["stderr"] = _module.PIPE
+        if input is not None:
+            if kwargs.get("stdin") is not None:
+                raise ValueError("stdin and input arguments may not both be used")
+            kwargs["stdin"] = _module.PIPE
+        _process = Popen(args, **kwargs)
+        _stdout, _stderr = _process.communicate(input, timeout=timeout)
+        _completed = CompletedProcess(
+            args,
+            _process.returncode,
+            _stdout,
+            _stderr,
+        )
+        if check:
+            _completed.check_returncode()
+        return _completed
+
+    _module.CalledProcessError = CalledProcessError
+    _module.CompletedProcess = CompletedProcess
+    _module.Popen = Popen
+    _module.run = run
+    _module.call = lambda args, **kwargs: run(args, **kwargs).returncode
+    _module.check_call = lambda args, **kwargs: (
+        run(args, check=True, **kwargs).returncode
+    )
+    _module.check_output = lambda args, **kwargs: (
+        run(args, stdout=_module.PIPE, check=True, **kwargs).stdout
+    )
+    sys.modules["subprocess"] = _module
+
+if _tracekernel_fs_mounted:
+    _install_tracekernel_subprocess_module()
 
 def _project_utf8_len(_value):
     return len(str(_value).encode("utf-8", "replace"))
@@ -6448,6 +7082,7 @@ json.dumps({
     delete self.__tracecodeKernelHttpDispatch;
     delete self.__tracecodeKernelWatchdog;
     delete self.__tracecodeKernelFileSystem;
+    delete self.__tracecodeKernelProcess;
     kernelClient?.close();
     activeProjectHttpBridges.delete(messageId);
   }

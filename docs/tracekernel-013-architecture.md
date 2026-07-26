@@ -484,8 +484,12 @@ The initial 0.13 branch now establishes:
 - a Pyodide filesystem mount that backs ordinary Python `open`, `os`, and
   `pathlib` path and regular-file descriptor operations with TKFS, including
   positioned I/O, truncate, rename, symlink traversal, and kernel-owned
-  descriptor cleanup; Python subprocess and raw-socket adaptation remain
-  subsequent milestones;
+  descriptor cleanup;
+- Python `tracekernel.process` and `subprocess` adapters for kernel-supervised
+  JavaScript and Python children, including process-owned piped stdio,
+  synchronous wait/reap, signal delivery, shared TKFS visibility, and
+  separate-worker interpreter isolation; Python raw-socket adaptation remains
+  a subsequent milestone;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic
