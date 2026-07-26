@@ -1230,6 +1230,8 @@ var package_default = {
     "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
     "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
     "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
+    "test:tracekernel-013-python-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-python-browser.ts",
+    "test:tracekernel-013-csharp-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-csharp-browser.ts",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
@@ -10593,6 +10595,23 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     [1, stdioDescriptor("/dev/stdout", true)],
     [2, stdioDescriptor("/dev/stderr", true)]
   ]);
+  for (const inheritedFd of request.process?.descriptors ?? []) {
+    const fd2 = Math.floor(Number(inheritedFd));
+    if (!Number.isSafeInteger(fd2) || fd2 < 3 || fileDescriptors.has(fd2)) {
+      continue;
+    }
+    fileDescriptors.set(fd2, {
+      kind: "kernel",
+      kernelFd: fd2,
+      offset: 0,
+      // The descriptor table remains authoritative for access mode and
+      // operation support. The compatibility map must not guess a narrower
+      // capability and reject an inherited pipe/socket/file before syscall.
+      readable: true,
+      writable: true,
+      append: false
+    });
+  }
   let nextFd = 3;
   const workspaceFileDescriptorRecords = () => [...fileDescriptors.values()].filter((entry) => entry.kind === "file");
   const detachOpenFileDescriptorsForPath = (path) => {

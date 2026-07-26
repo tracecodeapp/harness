@@ -162,6 +162,7 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   read: 2,
   write: 3,
   close: 4,
+  dup: 5,
   stat: 6,
   readdir: 7,
   mkdir: 8,
@@ -171,6 +172,10 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   fstat: 14,
   ftruncate: 15,
   lstat: 19,
+  pipe: 31,
+  spawn: 32,
+  wait: 33,
+  kill: 34,
   watchdog: 36,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
@@ -385,6 +390,9 @@ class CSharpTraceKernelSyncClient {
     }
     writer.u8(operationCode);
     switch (request.op) {
+      case 'pipe':
+        writer.u32(request.options?.capacityChunks ?? 0);
+        break;
       case 'open': {
         writer.string(request.path);
         writer.u8(
@@ -415,6 +423,7 @@ class CSharpTraceKernelSyncClient {
         if (request.position !== undefined) writer.f64(request.position);
         break;
       case 'close':
+      case 'dup':
       case 'fstat':
         writer.i32(request.fd);
         break;
@@ -463,6 +472,68 @@ class CSharpTraceKernelSyncClient {
               : 2
         );
         break;
+      case 'spawn': {
+        writer.string(request.runtime);
+        writer.string(request.command);
+        writer.u32(request.args?.length ?? 0);
+        for (const argument of request.args ?? []) {
+          writer.string(argument);
+        }
+        writer.u8(request.cwd === undefined ? 0 : 1);
+        if (request.cwd !== undefined) writer.string(request.cwd);
+        const environment = Object.entries(request.env ?? {});
+        writer.u32(environment.length);
+        for (const [name, value] of environment) {
+          writer.string(name);
+          writer.string(value);
+        }
+        writer.u8(
+          request.inheritDescriptors === 'all'
+            ? 1
+            : request.inheritDescriptors == null
+              ? 0
+              : 2
+        );
+        if (
+          request.inheritDescriptors != null &&
+          request.inheritDescriptors !== 'all'
+        ) {
+          writer.u32(request.inheritDescriptors.length);
+          for (const fd of request.inheritDescriptors) writer.i32(fd);
+        }
+        writer.u8(request.processGroupId === undefined ? 0 : 1);
+        if (request.processGroupId !== undefined) {
+          writer.i32(request.processGroupId);
+        }
+        writer.u8(request.sessionId === undefined ? 0 : 1);
+        if (request.sessionId !== undefined) writer.i32(request.sessionId);
+        const writeStdioMode = (mode) => writer.u8(
+          mode === undefined
+            ? 0
+            : mode === 'pipe'
+              ? 1
+              : mode === 'inherit'
+                ? 2
+                : 3
+        );
+        writeStdioMode(request.stdio?.stdin);
+        writeStdioMode(request.stdio?.stdout);
+        writeStdioMode(request.stdio?.stderr);
+        break;
+      }
+      case 'wait':
+        writer.i32(request.pid);
+        break;
+      case 'kill':
+        writer.i32(request.pid);
+        writer.u8(
+          request.signal === 'SIGINT'
+            ? 1
+            : request.signal === 'SIGTERM'
+              ? 2
+              : 3
+        );
+        break;
     }
     return writer.finish();
   }
@@ -496,7 +567,13 @@ class CSharpTraceKernelSyncClient {
       );
     }
     let value;
-    if (operation === 'watchdog') {
+    if (operation === 'pipe') {
+      value = {
+        op: operation,
+        readFd: reader.i32(),
+        writeFd: reader.i32(),
+      };
+    } else if (operation === 'watchdog') {
       const armed = reader.u8();
       if (armed > 1) {
         throw new CSharpTraceKernelSyscallError(
@@ -524,7 +601,84 @@ class CSharpTraceKernelSyncClient {
           signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
         };
       }
-    } else if (operation === 'open') {
+    } else if (operation === 'spawn') {
+      const pid = reader.i32();
+      const readOptionalFd = (name) => {
+        const present = reader.u8();
+        if (present > 1) {
+          throw new CSharpTraceKernelSyscallError(
+            'EPROTO',
+            `invalid spawn ${name} fd flag ${present}`
+          );
+        }
+        return present ? reader.i32() : undefined;
+      };
+      const stdinFd = readOptionalFd('stdin');
+      const stdoutFd = readOptionalFd('stdout');
+      const stderrFd = readOptionalFd('stderr');
+      value = {
+        op: operation,
+        pid,
+        ...(stdinFd === undefined &&
+          stdoutFd === undefined &&
+          stderrFd === undefined
+          ? {}
+          : {
+              stdio: {
+                ...(stdinFd === undefined ? {} : { stdinFd }),
+                ...(stdoutFd === undefined ? {} : { stdoutFd }),
+                ...(stderrFd === undefined ? {} : { stderrFd }),
+              },
+            }),
+      };
+    } else if (operation === 'wait') {
+      const pid = reader.i32();
+      const terminationCode = reader.u8();
+      const exitCode = reader.i32();
+      if (terminationCode === 1) {
+        value = {
+          op: operation,
+          pid,
+          termination: { kind: 'exit', exitCode },
+        };
+      } else if (terminationCode === 2) {
+        const signalCode = reader.u8();
+        if (signalCode < 1 || signalCode > 3) {
+          throw new CSharpTraceKernelSyscallError(
+            'EPROTO',
+            `invalid termination signal ${signalCode}`
+          );
+        }
+        value = {
+          op: operation,
+          pid,
+          termination: {
+            kind: 'signal',
+            signal: signalCode === 1
+              ? 'SIGINT'
+              : signalCode === 2
+                ? 'SIGTERM'
+                : 'SIGKILL',
+            exitCode,
+          },
+        };
+      } else if (terminationCode === 3) {
+        value = {
+          op: operation,
+          pid,
+          termination: {
+            kind: 'failure',
+            exitCode,
+            message: reader.string(),
+          },
+        };
+      } else {
+        throw new CSharpTraceKernelSyscallError(
+          'EPROTO',
+          `invalid process termination code ${terminationCode}`
+        );
+      }
+    } else if (operation === 'open' || operation === 'dup') {
       value = { op: operation, fd: reader.i32() };
     } else if (operation === 'read') {
       value = { op: operation, bytes: reader.bytesValue() };
@@ -1021,10 +1175,22 @@ function invokeCSharpTraceKernelSyscall(requestJson) {
     });
   }
   try {
-    const request = JSON.parse(String(requestJson));
+    const parsed = JSON.parse(String(requestJson));
+    const request = parsed?.op === 'write' && typeof parsed.bytes === 'string'
+      ? {
+          ...parsed,
+          bytes: Uint8Array.from(
+            atob(parsed.bytes),
+            (character) => character.charCodeAt(0)
+          ),
+        }
+      : parsed;
+    const result = activeTraceKernelClient.request(request);
     return JSON.stringify({
       ok: true,
-      value: activeTraceKernelClient.request(request),
+      value: result?.op === 'read'
+        ? { ...result, bytes: encodeBase64(result.bytes) }
+        : result,
     });
   } catch (error) {
     return JSON.stringify({

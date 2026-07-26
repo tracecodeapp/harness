@@ -1155,6 +1155,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                     ppid: commandContext.process.ppid,
                     pgid: commandContext.process.pgid,
                     sid: commandContext.process.sid,
+                    descriptors: this.kernelDescriptors.descriptorNumbers(
+                      commandContext.process.pid
+                    ),
                   },
                 }
               : {}),

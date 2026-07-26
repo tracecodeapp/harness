@@ -499,8 +499,17 @@ The initial 0.13 branch now establishes:
   with authoritative TKFS; the mount preserves kernel-owned open-file offsets,
   truncate/rename behavior, cross-process visibility, and process-exit cleanup;
   the public managed `TraceKernel.Watchdog` surface arms, pets, inspects, and
-  disarms the process-owned kernel watchdog; managed process and socket
-  surfaces remain the next C# slices;
+  disarms the process-owned kernel watchdog;
+- managed C# `KernelProcess`, `KernelDescriptor`, and `KernelPipe` surfaces for
+  spawn, selected/all descriptor inheritance, piped stdio, raw descriptor I/O,
+  signal delivery, synchronous wait/reap, and descriptor duplication/close;
+  real browser conformance covers C# parents spawning both JavaScript and C#
+  children, same-language worker/static-state isolation, shared TKFS mutation,
+  and a JavaScript child writing through a selected inherited C# pipe fd;
+- runtime process leases now declare preinstalled descriptor identities, and
+  the JavaScript/Node adapter seeds those identities as direct kernel-backed
+  descriptors so inherited file, pipe, and socket numbers remain usable without
+  a runtime-local reopen; managed C# sockets remain the next C# slice;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic

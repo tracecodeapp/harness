@@ -1955,6 +1955,8 @@ export interface RuntimeProjectProcessInfo {
   ppid: number;
   pgid: number;
   sid: number;
+  /** Kernel descriptor identities inherited or installed before the runtime lease starts. */
+  descriptors?: readonly number[];
 }
 
 export interface RuntimeProjectCommandRequest<

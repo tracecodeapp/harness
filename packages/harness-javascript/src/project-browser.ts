@@ -7217,6 +7217,23 @@ export async function runBrowserJavaScriptProjectRequest(
       [1, stdioDescriptor('/dev/stdout', true)],
       [2, stdioDescriptor('/dev/stderr', true)],
     ]);
+    for (const inheritedFd of request.process?.descriptors ?? []) {
+      const fd = Math.floor(Number(inheritedFd));
+      if (!Number.isSafeInteger(fd) || fd < 3 || fileDescriptors.has(fd)) {
+        continue;
+      }
+      fileDescriptors.set(fd, {
+        kind: 'kernel',
+        kernelFd: fd,
+        offset: 0,
+        // The descriptor table remains authoritative for access mode and
+        // operation support. The compatibility map must not guess a narrower
+        // capability and reject an inherited pipe/socket/file before syscall.
+        readable: true,
+        writable: true,
+        append: false,
+      });
+    }
     let nextFd = 3;
     const workspaceFileDescriptorRecords = (): BrowserFileDescriptor[] =>
       [...fileDescriptors.values()].filter((entry) => entry.kind === 'file');

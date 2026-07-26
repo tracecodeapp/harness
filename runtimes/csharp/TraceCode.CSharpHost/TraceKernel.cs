@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -18,8 +19,16 @@ public sealed class TraceKernelException : IOException
 
 public enum KernelSignal
 {
+    Interrupt,
     Terminate,
     Kill,
+}
+
+public enum StdioMode
+{
+    Pipe,
+    Inherit,
+    Ignore,
 }
 
 public sealed record WatchdogStatus(
@@ -89,6 +98,328 @@ public static class Watchdog
             signal == "SIGKILL" ? KernelSignal.Kill : KernelSignal.Terminate
         );
     }
+}
+
+[SupportedOSPlatform("browser")]
+public sealed class KernelDescriptor : IDisposable
+{
+    private bool closed;
+
+    internal KernelDescriptor(int number)
+    {
+        if (number < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(number));
+        }
+        Number = number;
+    }
+
+    public int Number { get; }
+    public bool IsClosed => closed;
+
+    public byte[] Read(int maxBytes = 16 * 1024)
+    {
+        ThrowIfClosed();
+        if (maxBytes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxBytes));
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "read",
+            fd = Number,
+            maxBytes,
+        });
+        return Convert.FromBase64String(
+            value.GetProperty("bytes").GetString() ?? string.Empty
+        );
+    }
+
+    public byte[] ReadToEnd(int chunkBytes = 16 * 1024)
+    {
+        using MemoryStream output = new();
+        while (true)
+        {
+            byte[] bytes = Read(chunkBytes);
+            if (bytes.Length == 0)
+            {
+                return output.ToArray();
+            }
+            output.Write(bytes);
+        }
+    }
+
+    public string ReadToEndText(
+        Encoding? encoding = null,
+        int chunkBytes = 16 * 1024
+    ) => (encoding ?? Encoding.UTF8).GetString(ReadToEnd(chunkBytes));
+
+    public int Write(ReadOnlySpan<byte> bytes)
+    {
+        ThrowIfClosed();
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "write",
+            fd = Number,
+            bytes = Convert.ToBase64String(bytes),
+        });
+        return value.GetProperty("bytesWritten").GetInt32();
+    }
+
+    public int WriteText(string text, Encoding? encoding = null) =>
+        Write((encoding ?? Encoding.UTF8).GetBytes(text));
+
+    public KernelDescriptor Duplicate()
+    {
+        ThrowIfClosed();
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "dup",
+            fd = Number,
+        });
+        return new KernelDescriptor(value.GetProperty("fd").GetInt32());
+    }
+
+    public void Close()
+    {
+        if (closed)
+        {
+            return;
+        }
+        KernelInterop.Call(new
+        {
+            op = "close",
+            fd = Number,
+        });
+        closed = true;
+    }
+
+    public void Dispose()
+    {
+        Close();
+        GC.SuppressFinalize(this);
+    }
+
+    private void ThrowIfClosed()
+    {
+        if (closed)
+        {
+            throw new ObjectDisposedException(nameof(KernelDescriptor));
+        }
+    }
+}
+
+public sealed record KernelPipe(
+    KernelDescriptor ReadEnd,
+    KernelDescriptor WriteEnd
+)
+{
+    [SupportedOSPlatform("browser")]
+    public static KernelPipe Create(int capacityChunks = 16)
+    {
+        if (capacityChunks <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capacityChunks));
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "pipe",
+            options = new { capacityChunks },
+        });
+        return new KernelPipe(
+            new KernelDescriptor(value.GetProperty("readFd").GetInt32()),
+            new KernelDescriptor(value.GetProperty("writeFd").GetInt32())
+        );
+    }
+}
+
+public sealed class SpawnOptions
+{
+    public string? Cwd { get; init; }
+    public IReadOnlyDictionary<string, string>? Environment { get; init; }
+    public bool InheritAllDescriptors { get; init; }
+    public IReadOnlyList<int>? InheritDescriptors { get; init; }
+    public int? ProcessGroupId { get; init; }
+    public int? SessionId { get; init; }
+    public StdioMode? StandardInput { get; init; }
+    public StdioMode? StandardOutput { get; init; }
+    public StdioMode? StandardError { get; init; }
+}
+
+public sealed record ProcessTermination(
+    int Pid,
+    string Kind,
+    int ExitCode,
+    KernelSignal? Signal,
+    string? Message
+);
+
+[SupportedOSPlatform("browser")]
+public sealed class KernelProcess
+{
+    private ProcessTermination? termination;
+
+    private KernelProcess(
+        int pid,
+        KernelDescriptor? standardInput,
+        KernelDescriptor? standardOutput,
+        KernelDescriptor? standardError
+    )
+    {
+        Pid = pid;
+        StandardInput = standardInput;
+        StandardOutput = standardOutput;
+        StandardError = standardError;
+    }
+
+    public int Pid { get; }
+    public KernelDescriptor? StandardInput { get; }
+    public KernelDescriptor? StandardOutput { get; }
+    public KernelDescriptor? StandardError { get; }
+    public bool HasExited => termination is not null;
+    public ProcessTermination? Termination => termination;
+
+    public static KernelProcess Start(
+        string runtime,
+        string command,
+        IEnumerable<string>? arguments = null,
+        SpawnOptions? options = null
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runtime);
+        ArgumentException.ThrowIfNullOrWhiteSpace(command);
+        options ??= new SpawnOptions();
+        if (
+            options.InheritAllDescriptors &&
+            options.InheritDescriptors is not null
+        )
+        {
+            throw new ArgumentException(
+                "Select either all descriptors or an explicit descriptor list.",
+                nameof(options)
+            );
+        }
+        object? inheritedDescriptors = options.InheritAllDescriptors
+            ? "all"
+            : options.InheritDescriptors;
+        Dictionary<string, object?> request = new()
+        {
+            ["op"] = "spawn",
+            ["runtime"] = runtime,
+            ["command"] = command,
+            ["args"] = arguments?.ToArray() ?? Array.Empty<string>(),
+        };
+        if (options.Cwd is not null)
+        {
+            request["cwd"] = options.Cwd;
+        }
+        if (options.Environment is not null)
+        {
+            request["env"] = options.Environment;
+        }
+        if (inheritedDescriptors is not null)
+        {
+            request["inheritDescriptors"] = inheritedDescriptors;
+        }
+        if (options.ProcessGroupId is not null)
+        {
+            request["processGroupId"] = options.ProcessGroupId;
+        }
+        if (options.SessionId is not null)
+        {
+            request["sessionId"] = options.SessionId;
+        }
+        if (
+            options.StandardInput is not null ||
+            options.StandardOutput is not null ||
+            options.StandardError is not null
+        )
+        {
+            request["stdio"] = new
+            {
+                stdin = StdioName(options.StandardInput),
+                stdout = StdioName(options.StandardOutput),
+                stderr = StdioName(options.StandardError),
+            };
+        }
+        JsonElement value = KernelInterop.Call(request);
+        int pid = value.GetProperty("pid").GetInt32();
+        JsonElement stdio;
+        if (!value.TryGetProperty("stdio", out stdio))
+        {
+            return new KernelProcess(pid, null, null, null);
+        }
+        return new KernelProcess(
+            pid,
+            ReadDescriptor(stdio, "stdinFd"),
+            ReadDescriptor(stdio, "stdoutFd"),
+            ReadDescriptor(stdio, "stderrFd")
+        );
+    }
+
+    public ProcessTermination Wait()
+    {
+        if (termination is not null)
+        {
+            return termination;
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "wait",
+            pid = Pid,
+        });
+        JsonElement raw = value.GetProperty("termination");
+        string kind = raw.GetProperty("kind").GetString() ?? "failure";
+        string? signal = raw.TryGetProperty("signal", out JsonElement signalValue)
+            ? signalValue.GetString()
+            : null;
+        termination = new ProcessTermination(
+            Pid,
+            kind,
+            raw.GetProperty("exitCode").GetInt32(),
+            signal switch
+            {
+                "SIGINT" => KernelSignal.Interrupt,
+                "SIGTERM" => KernelSignal.Terminate,
+                "SIGKILL" => KernelSignal.Kill,
+                _ => null,
+            },
+            raw.TryGetProperty("message", out JsonElement message)
+                ? message.GetString()
+                : null
+        );
+        return termination;
+    }
+
+    public void Kill(KernelSignal signal = KernelSignal.Terminate)
+    {
+        KernelInterop.Call(new
+        {
+            op = "kill",
+            pid = Pid,
+            signal = signal switch
+            {
+                KernelSignal.Interrupt => "SIGINT",
+                KernelSignal.Kill => "SIGKILL",
+                _ => "SIGTERM",
+            },
+        });
+    }
+
+    private static KernelDescriptor? ReadDescriptor(
+        JsonElement stdio,
+        string name
+    ) => stdio.TryGetProperty(name, out JsonElement value)
+        ? new KernelDescriptor(value.GetInt32())
+        : null;
+
+    private static string? StdioName(StdioMode? mode) => mode switch
+    {
+        StdioMode.Pipe => "pipe",
+        StdioMode.Inherit => "inherit",
+        StdioMode.Ignore => "ignore",
+        _ => null,
+    };
 }
 
 internal static partial class KernelInterop
