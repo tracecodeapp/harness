@@ -340,33 +340,83 @@ export class TraceKernelDescriptorTable {
     source: TraceKernelDescriptorTable,
     fds?: readonly number[]
   ): Effect.Effect<void, TraceKernelDescriptorInheritanceError> {
-    return Effect.gen(this, function* () {
-      const selected = yield* Effect.try({
-        try: () => {
-          const selectedFds = fds === undefined
-            ? [...source.descriptors.keys()].sort((left, right) => left - right)
-            : [...new Set(fds.map((fd) => Math.floor(fd)))].sort((left, right) => left - right);
-          return selectedFds.map((fd) => {
-            const descriptor = source.descriptors.get(fd);
-            if (!descriptor) {
-              throw new TraceKernelBadFileDescriptorError({
-                fd,
-                operation: 'inherit',
-                message: `EBADF: bad file descriptor, inherit ${fd}`,
-              });
-            }
-            return [fd, descriptor] as const;
-          });
-        },
-        catch: (error) => error instanceof TraceKernelBadFileDescriptorError
-          ? error
-          : new TraceKernelBadFileDescriptorError({
-              fd: -1,
+    return Effect.try({
+      try: () => {
+        const selectedFds = fds === undefined
+          ? [...source.descriptors.keys()].sort((left, right) => left - right)
+          : [...new Set(fds.map((fd) => Math.floor(fd)))].sort((left, right) => left - right);
+        return selectedFds.map((fd) => {
+          const descriptor = source.descriptors.get(fd);
+          if (!descriptor) {
+            throw new TraceKernelBadFileDescriptorError({
+              fd,
               operation: 'inherit',
-              message: error instanceof Error ? error.message : String(error),
-            }),
-      });
+              message: `EBADF: bad file descriptor, inherit ${fd}`,
+            });
+          }
+          return [fd, descriptor] as const;
+        });
+      },
+      catch: (error) => this.inheritanceError(error),
+    }).pipe(
+      Effect.flatMap((selected) => this.inheritSelected(selected))
+    );
+  }
 
+  inheritMapped(
+    source: TraceKernelDescriptorTable,
+    mappings: readonly {
+      readonly sourceFd: number;
+      readonly targetFd: number;
+    }[]
+  ): Effect.Effect<void, TraceKernelDescriptorInheritanceError> {
+    return Effect.try({
+      try: () => {
+        const targets = new Set<number>();
+        return mappings.map(({ sourceFd, targetFd }) => {
+          const sourceNumber = Math.floor(sourceFd);
+          const targetNumber = Math.floor(targetFd);
+          if (
+            !Number.isSafeInteger(sourceFd) ||
+            !Number.isSafeInteger(targetFd) ||
+            sourceNumber < 0 ||
+            targetNumber < 0
+          ) {
+            throw new TraceKernelBadFileDescriptorError({
+              fd: targetNumber,
+              operation: 'inherit',
+              message: `EBADF: invalid descriptor mapping ${sourceFd} -> ${targetFd}`,
+            });
+          }
+          if (targets.has(targetNumber)) {
+            throw new TraceKernelBadFileDescriptorError({
+              fd: targetNumber,
+              operation: 'inherit',
+              message: `EBADF: duplicate child descriptor mapping ${targetNumber}`,
+            });
+          }
+          targets.add(targetNumber);
+          const descriptor = source.descriptors.get(sourceNumber);
+          if (!descriptor) {
+            throw new TraceKernelBadFileDescriptorError({
+              fd: sourceNumber,
+              operation: 'inherit',
+              message: `EBADF: bad parent descriptor, inherit ${sourceNumber}`,
+            });
+          }
+          return [targetNumber, descriptor] as const;
+        });
+      },
+      catch: (error) => this.inheritanceError(error),
+    }).pipe(
+      Effect.flatMap((selected) => this.inheritSelected(selected))
+    );
+  }
+
+  private inheritSelected(
+    selected: readonly (readonly [number, TraceKernelDescriptor])[]
+  ): Effect.Effect<void, TraceKernelDescriptorInheritanceError> {
+    return Effect.gen(this, function* () {
       if (this.descriptors.size + selected.length > this.maxDescriptors) {
         return yield* Effect.fail(new TraceKernelDescriptorLimitError({
           code: 'EMFILE',
@@ -413,6 +463,16 @@ export class TraceKernelDescriptorTable {
       }
       this.resetNextFd();
     });
+  }
+
+  private inheritanceError(error: unknown): TraceKernelBadFileDescriptorError {
+    return error instanceof TraceKernelBadFileDescriptorError
+      ? error
+      : new TraceKernelBadFileDescriptorError({
+          fd: -1,
+          operation: 'inherit',
+          message: error instanceof Error ? error.message : String(error),
+        });
   }
 
   close(fd: number): Effect.Effect<void, TraceKernelBadFileDescriptorError> {

@@ -14,8 +14,10 @@ import {
 } from './errors';
 import type { TraceKernelProcess, TraceKernelSession } from './kernel';
 import type {
+  TraceKernelDescriptorMapping,
   TraceKernelProcessTermination,
   TraceKernelSignal,
+  TraceKernelSpawnDescriptorAction,
   TraceKernelWatchdogSignal,
 } from './model';
 import type {
@@ -74,6 +76,8 @@ export type TraceKernelSyscallRequest =
       readonly cwd?: string;
       readonly env?: Readonly<Record<string, string>>;
       readonly inheritDescriptors?: 'all' | readonly number[];
+      readonly descriptorMappings?: readonly TraceKernelDescriptorMapping[];
+      readonly descriptorActions?: readonly TraceKernelSpawnDescriptorAction[];
       readonly stdio?: TraceKernelSpawnStdio;
       readonly processGroupId?: number;
       readonly sessionId?: number;
@@ -452,6 +456,8 @@ export class TraceKernelSyscallDispatcher {
                 cwd: request.cwd,
                 env: request.env,
                 inheritDescriptors: request.inheritDescriptors,
+                descriptorMappings: request.descriptorMappings,
+                descriptorActions: request.descriptorActions,
                 processGroupId: request.processGroupId,
                 sessionId: request.sessionId,
               }, request.stdio)
@@ -462,6 +468,8 @@ export class TraceKernelSyscallDispatcher {
                 cwd: request.cwd,
                 env: request.env,
                 inheritDescriptors: request.inheritDescriptors,
+                descriptorMappings: request.descriptorMappings,
+                descriptorActions: request.descriptorActions,
                 processGroupId: request.processGroupId,
                 sessionId: request.sessionId,
               }).pipe(

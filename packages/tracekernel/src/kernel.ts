@@ -521,6 +521,13 @@ export class TraceKernelSession {
           )
         );
       }
+      yield* this.applyProcessDescriptorActions(process, spec).pipe(
+        Effect.tapError(() =>
+          process.descriptors.closeAll().pipe(
+            Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
+          )
+        )
+      );
       process.markStarting();
 
       const program = Effect.scoped(
@@ -634,6 +641,14 @@ export class TraceKernelSession {
             parentStdio = configured;
           })),
           Effect.asVoid
+        )
+      ).pipe(
+        Effect.tapError(() =>
+          Effect.forEach(
+            Object.values(parentStdio ?? {}),
+            (fd) => parent.close(fd).pipe(Effect.catchAll(() => Effect.void)),
+            { concurrency: 'unbounded', discard: true }
+          )
         )
       );
       return Object.freeze({
@@ -1341,7 +1356,12 @@ export class TraceKernelSession {
     process: TraceKernelProcess,
     spec: TraceKernelProcessSpec
   ): Effect.Effect<void, TraceKernelProcessStateError | TraceKernelDescriptorInheritanceError> {
-    if (spec.inheritDescriptors === undefined) return Effect.void;
+    if (
+      spec.inheritDescriptors === undefined &&
+      (spec.descriptorMappings?.length ?? 0) === 0
+    ) {
+      return Effect.void;
+    }
     const parentPid = spec.parentPid ?? 1;
     const parent = this.processes.get(parentPid);
     if (!parent || parent === process) {
@@ -1350,9 +1370,35 @@ export class TraceKernelSession {
         message: `ESRCH: descriptor inheritance requires a live parent process in session ${this.id}`,
       }));
     }
-    return process.descriptors.inherit(
-      parent.descriptors,
-      spec.inheritDescriptors === 'all' ? undefined : spec.inheritDescriptors
+    return Effect.gen(function* () {
+      if (spec.inheritDescriptors !== undefined) {
+        yield* process.descriptors.inherit(
+          parent.descriptors,
+          spec.inheritDescriptors === 'all' ? undefined : spec.inheritDescriptors
+        );
+      }
+      if (spec.descriptorMappings && spec.descriptorMappings.length > 0) {
+        yield* process.descriptors.inheritMapped(
+          parent.descriptors,
+          spec.descriptorMappings.map(({ parentFd, childFd }) => ({
+            sourceFd: parentFd,
+            targetFd: childFd,
+          }))
+        );
+      }
+    });
+  }
+
+  private applyProcessDescriptorActions(
+    process: TraceKernelProcess,
+    spec: TraceKernelProcessSpec
+  ): Effect.Effect<void, TraceKernelDescriptorInheritanceError> {
+    return Effect.forEach(
+      spec.descriptorActions ?? [],
+      (action) => action.op === 'dup2'
+        ? process.dup2(action.fd, action.targetFd).pipe(Effect.asVoid)
+        : process.close(action.fd),
+      { concurrency: 1, discard: true }
     );
   }
 

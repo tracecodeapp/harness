@@ -190,6 +190,14 @@ async function main(): Promise<void> {
       cwd: '/workspace/child',
       env: { CHILD_VALUE: 'yes' },
       inheritDescriptors: [0, 1, 2, 7],
+      descriptorActions: [
+        { op: 'dup2', fd: 7, targetFd: 1 },
+        { op: 'close', fd: 7 },
+      ],
+      descriptorMappings: [
+        { parentFd: 12, childFd: 40 },
+        { parentFd: 13, childFd: 41 },
+      ],
       processGroupId: 100,
       sessionId: 100,
       stdio: {

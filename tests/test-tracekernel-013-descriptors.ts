@@ -286,19 +286,23 @@ async function main(): Promise<void> {
         runtime: 'blocking-test',
         command: 'descriptor-child',
         parentPid: parent.pid,
-        inheritDescriptors: [sharedFd],
+        descriptorMappings: [{ parentFd: sharedFd, childFd: 41 }],
+        descriptorActions: [
+          { op: 'dup2', fd: 41, targetFd: 42 },
+          { op: 'close', fd: 41 },
+        ],
       });
       yield* child.awaitStarted();
       assertCondition(
         child.snapshot().descriptors.length === 1 &&
-          child.snapshot().descriptors[0]?.fd === sharedFd &&
+          child.snapshot().descriptors[0]?.fd === 42 &&
           child.snapshot().descriptors[0]?.resourceId ===
             parent.snapshot().descriptors.find((descriptor) => descriptor.fd === sharedFd)?.resourceId,
-        `Child descriptor inheritance did not preserve fd and open-description identity: ${JSON.stringify(child.snapshot().descriptors)}`
+        `Child descriptor actions did not preserve open-description identity at the remapped fd: ${JSON.stringify(child.snapshot().descriptors)}`
       );
 
       yield* parent.close(sharedFd);
-      yield* child.write(sharedFd, encoder.encode('child'));
+      yield* child.write(42, encoder.encode('child'));
       assertCondition(
         decoder.decode(yield* inheritanceSession.readFile('/inherited.txt')) === 'parent-child',
         'Inherited file descriptor did not retain the shared offset after parent close.'
@@ -329,7 +333,7 @@ async function main(): Promise<void> {
         );
       }
 
-      yield* child.close(sharedFd);
+      yield* child.close(42);
       yield* child.close(childSocket);
       yield* parent.close(privateFd);
       yield* Effect.all([
@@ -361,6 +365,8 @@ async function main(): Promise<void> {
     failedInstallsReleaseResources: true,
     defaultDescriptorNonInheritance: true,
     selectiveDescriptorInheritance: true,
+    atomicCrossIdentityDescriptorMapping: true,
+    orderedSpawnDescriptorActions: true,
     inheritedOpenDescriptionShared: true,
     failedInheritanceRollsBack: true,
   }, null, 2));

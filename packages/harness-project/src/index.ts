@@ -2185,6 +2185,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                 inherited
               );
             }
+            if (request.descriptorMappings && request.descriptorMappings.length > 0) {
+              await this.kernelDescriptors.inheritMapped(
+                child.pid,
+                parent.pid,
+                request.descriptorMappings
+              );
+            }
             if (request.stdio?.stdin === 'pipe' && stdinPipe) {
               const pipe = await this.kernelDescriptors.createPipeBetween(
                 { pid: child.pid, fd: 0 },
@@ -2228,6 +2235,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                 { capacityChunks: 16 }
               );
               parentStdio.stderrFd = pipe.readFd;
+            }
+            for (const action of request.descriptorActions ?? []) {
+              if (action.op === 'dup2') {
+                await this.kernelDescriptors.dup2(
+                  child.pid,
+                  action.fd,
+                  action.targetFd
+                );
+              } else {
+                await this.kernelDescriptors.close(child.pid, action.fd);
+              }
             }
           } catch (error) {
             await Promise.all(

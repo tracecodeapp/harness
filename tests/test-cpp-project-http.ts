@@ -278,6 +278,40 @@ const CPP_POSIX_PROCESS_GROUP_PROGRAM = [
   '',
 ].join('\n');
 
+const CPP_POSIX_DESCRIPTOR_ACTION_PROGRAM = [
+  '#include <fcntl.h>',
+  '#include <spawn.h>',
+  '#include <sys/wait.h>',
+  '#include <unistd.h>',
+  '#include <fstream>',
+  '#include <iostream>',
+  '#include <iterator>',
+  '#include <string>',
+  'int main() {',
+  '  const int output = open("cpp-posix-fd.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);',
+  '  if (output < 0 || output == 9) return 10;',
+  '  posix_spawn_file_actions_t actions {};',
+  '  if (posix_spawn_file_actions_init(&actions) != 0) return 11;',
+  '  if (posix_spawn_file_actions_adddup2(&actions, output, 9) != 0) return 12;',
+  '  if (posix_spawn_file_actions_addclose(&actions, output) != 0) return 13;',
+  '  char command[] = "node";',
+  '  char script[] = "cpp-fd-child.js";',
+  '  char* child_argv[] = { command, script, nullptr };',
+  '  pid_t child = -1;',
+  '  const int spawn_result = posix_spawn(&child, command, &actions, nullptr, child_argv, nullptr);',
+  '  posix_spawn_file_actions_destroy(&actions);',
+  '  if (spawn_result != 0 || child <= 0) return 14;',
+  '  int status = 0;',
+  '  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return 15;',
+  '  close(output);',
+  '  std::ifstream input("cpp-posix-fd.txt", std::ios::binary);',
+  '  std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());',
+  '  std::cout << "posix-fd:" << contents << "\\n";',
+  '  return contents == "through-inherited-fd" ? 0 : 16;',
+  '}',
+  '',
+].join('\n');
+
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
@@ -817,6 +851,7 @@ async function main(): Promise<void> {
         { path: 'cpp-child.cpp', contents: CPP_CHILD_PROGRAM },
         { path: 'spawn-cpp.cpp', contents: CPP_SPAWN_CPP_PROGRAM },
         { path: 'posix-process-group.cpp', contents: CPP_POSIX_PROCESS_GROUP_PROGRAM },
+        { path: 'posix-descriptor-action.cpp', contents: CPP_POSIX_DESCRIPTOR_ACTION_PROGRAM },
         { path: 'watchdog-control.cpp', contents: CPP_WATCHDOG_CONTROL_PROGRAM },
         { path: 'watchdog-expiry.cpp', contents: CPP_WATCHDOG_EXPIRY_PROGRAM },
         { path: 'cpp-watches.txt', contents: 'before-js' },
@@ -826,6 +861,15 @@ async function main(): Promise<void> {
           contents: [
             'const fs = require("node:fs");',
             'fs.writeFileSync("cpp-child-owned.txt", `${process.ppid}:${process.pid}`);',
+            '',
+          ].join('\n'),
+        },
+        {
+          path: 'cpp-fd-child.js',
+          contents: [
+            'const fs = require("node:fs");',
+            'fs.writeSync(9, "through-inherited-fd");',
+            'fs.closeSync(9);',
             '',
           ].join('\n'),
         },
@@ -1176,6 +1220,26 @@ async function main(): Promise<void> {
           (file) => file.path === 'cpp-group-survived.txt'
         ),
         'one C++ killpg call should terminate the JavaScript leader and descendant'
+      );
+
+      const posixDescriptorCompile = await crossLanguageWorkspace.runCommand(
+        'clang++ posix-descriptor-action.cpp -o a.out'
+      );
+      assertCondition(
+        posixDescriptorCompile.exitCode === 0,
+        `C++ POSIX descriptor-action fixture should compile: ${JSON.stringify(
+          posixDescriptorCompile
+        )}`
+      );
+      const posixDescriptorRun = await crossLanguageWorkspace.runCommand('./a.out');
+      assertCondition(
+        posixDescriptorRun.exitCode === 0 &&
+          posixDescriptorRun.stdout === 'posix-fd:through-inherited-fd\n' &&
+          await crossLanguageWorkspace.readFile('cpp-posix-fd.txt') ===
+            'through-inherited-fd',
+        `C++ posix_spawn file actions should remap a kernel fd into a JavaScript child: ${JSON.stringify(
+          posixDescriptorRun
+        )}`
       );
 
       const watchdogControlCompile = await crossLanguageWorkspace.runCommand(

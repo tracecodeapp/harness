@@ -2347,6 +2347,17 @@ class PythonTraceKernelSyncClient {
         writeStdioMode(request.stdio?.stdin);
         writeStdioMode(request.stdio?.stdout);
         writeStdioMode(request.stdio?.stderr);
+        writer.u32(request.descriptorActions?.length ?? 0);
+        for (const action of request.descriptorActions ?? []) {
+          writer.u8(action.op === 'dup2' ? 1 : 2);
+          writer.i32(action.fd);
+          if (action.op === 'dup2') writer.i32(action.targetFd);
+        }
+        writer.u32(request.descriptorMappings?.length ?? 0);
+        for (const mapping of request.descriptorMappings ?? []) {
+          writer.i32(mapping.parentFd);
+          writer.i32(mapping.childFd);
+        }
         break;
       }
       case 'wait':

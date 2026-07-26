@@ -439,10 +439,12 @@ The C/C++ WASI process compatibility slice is intentionally smaller than a
 complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,
 `SIGTERM`, and `SIGKILL`, and maps `posix_spawnp` through TraceKernel's runtime
 command resolver. An explicit `envp` is forwarded as child environment
-overrides; a null `envp` inherits the parent environment. Nonblocking and
-selector-based waits, arbitrary signal handlers, PATH-compatible executable
-search, and `posix_spawn` file actions remain explicit later slices rather
-than silently falling back to WASI placeholders.
+overrides; a null `envp` inherits the parent environment. Ordered
+`posix_spawn_file_actions_adddup2` and `addclose` operations run against the
+child descriptor table after inheritance and structured stdio setup.
+Nonblocking and selector-based waits, arbitrary signal handlers,
+PATH-compatible executable search, and `addopen` remain explicit later slices
+rather than silently falling back to WASI placeholders.
 
 Filesystem watches are now session resources exposed through process-owned
 descriptors. `watch(path)` installs an `fs-watch` descriptor; ordinary
@@ -477,8 +479,11 @@ The initial 0.13 branch now establishes:
 - process-owned descriptor tables;
 - atomic `dup2` replacement with validated self-duplication, descriptor-ceiling
   replacement, displaced-resource close, and failure rollback;
-- explicit all-or-selected child descriptor inheritance with stable fd numbers,
-  shared open descriptions, and atomic failure rollback;
+- explicit all-or-selected child descriptor inheritance plus atomic
+  parent-fd-to-child-fd mappings, with shared open descriptions and failure
+  rollback;
+- ordered spawn-time descriptor `dup2` and close actions with whole-child
+  rollback on failure;
 - session-owned pipe resources;
 - session-owned bounded filesystem-watch resources with descriptor lifecycle,
   cross-process and host mutation delivery, and explicit overflow;
@@ -511,8 +516,9 @@ The initial 0.13 branch now establishes:
   process watchdog controls, and kernel-supervised child processes; in
   addition to `system()`, the injected WASI compatibility layer provides
   `posix_spawn`/`posix_spawnp`, spawn attributes for process groups and new
-  sessions, `waitpid`, `kill`/`killpg`, and process identity calls, with real
-  cross-language process-group conformance;
+  sessions, `waitpid`, `kill`/`killpg`, process identity calls, and descriptor
+  remapping actions, with real cross-language process-group and inherited-fd
+  conformance;
 - the browser Python/Pyodide adapter's first general synchronous binary
   syscall client, with `tracekernel.watchdog` process controls and an explicit
   `tracekernel.fs` path-operation surface backed by authoritative TKFS;

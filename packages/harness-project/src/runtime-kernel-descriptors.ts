@@ -440,6 +440,33 @@ export class RuntimeKernelDescriptorManager {
     );
   }
 
+  inheritMapped(
+    childPid: number,
+    parentPid: number,
+    mappings: readonly {
+      readonly parentFd: number;
+      readonly childFd: number;
+    }[]
+  ): Promise<void> {
+    if (mappings.length === 0) return Promise.resolve();
+    const parent = this.tables.get(parentPid);
+    if (!parent) {
+      return Promise.reject(descriptorError(
+        'EBADF',
+        `parent process ${parentPid} has no inheritable descriptors`
+      ));
+    }
+    return Effect.runPromise(
+      this.tableForProcess(childPid).inheritMapped(
+        parent,
+        mappings.map(({ parentFd, childFd }) => ({
+          sourceFd: parentFd,
+          targetFd: childFd,
+        }))
+      )
+    );
+  }
+
   async close(pid: number, fd: number): Promise<void> {
     const table = this.existingTable(pid, fd, 'close');
     await Effect.runPromise(table.close(fd));

@@ -75,6 +75,22 @@ export interface TraceKernelProcessSnapshot {
   readonly watchdog?: TraceKernelWatchdogSnapshot;
 }
 
+export type TraceKernelSpawnDescriptorAction =
+  | {
+      readonly op: 'dup2';
+      readonly fd: number;
+      readonly targetFd: number;
+    }
+  | {
+      readonly op: 'close';
+      readonly fd: number;
+    };
+
+export interface TraceKernelDescriptorMapping {
+  readonly parentFd: number;
+  readonly childFd: number;
+}
+
 export interface TraceKernelProcessSpec {
   readonly runtime: TraceKernelRuntimeName;
   readonly command: string;
@@ -88,6 +104,16 @@ export interface TraceKernelProcessSpec {
    * description. Omitted means no inheritance.
    */
   readonly inheritDescriptors?: 'all' | readonly number[];
+  /**
+   * Parent descriptors to duplicate into explicit child fd identities.
+   * Mappings are acquired atomically before the child table is mutated.
+   */
+  readonly descriptorMappings?: readonly TraceKernelDescriptorMapping[];
+  /**
+   * Ordered child-table mutations applied after descriptor inheritance and
+   * before the runtime lease starts.
+   */
+  readonly descriptorActions?: readonly TraceKernelSpawnDescriptorAction[];
   readonly processGroupId?: number;
   readonly sessionId?: number;
   readonly owner?: TraceKernelPrincipal;

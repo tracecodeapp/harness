@@ -384,6 +384,17 @@ export function encodeTraceKernelSyscallRequest(
       writeSpawnStdioMode(writer, request.stdio?.stdin);
       writeSpawnStdioMode(writer, request.stdio?.stdout);
       writeSpawnStdioMode(writer, request.stdio?.stderr);
+      writer.u32(request.descriptorActions?.length ?? 0);
+      for (const action of request.descriptorActions ?? []) {
+        writer.u8(action.op === 'dup2' ? 1 : 2);
+        writer.i32(action.fd);
+        if (action.op === 'dup2') writer.i32(action.targetFd);
+      }
+      writer.u32(request.descriptorMappings?.length ?? 0);
+      for (const mapping of request.descriptorMappings ?? []) {
+        writer.i32(mapping.parentFd);
+        writer.i32(mapping.childFd);
+      }
       break;
     }
     case 'wait':
@@ -660,6 +671,34 @@ export function decodeTraceKernelSyscallRequest(
             ...(stdout === undefined ? {} : { stdout }),
             ...(stderr === undefined ? {} : { stderr }),
           });
+      const descriptorActionCount = reader.u32();
+      const descriptorActions: Array<
+        NonNullable<Extract<TraceKernelSyscallRequest, { op: 'spawn' }>['descriptorActions']>[number]
+      > = [];
+      for (let index = 0; index < descriptorActionCount; index += 1) {
+        const action = reader.u8();
+        const fd = reader.i32();
+        if (action === 1) {
+          descriptorActions.push({ op: 'dup2', fd, targetFd: reader.i32() });
+        } else if (action === 2) {
+          descriptorActions.push({ op: 'close', fd });
+        } else {
+          throw new TraceKernelTransportError(
+            'EPROTO',
+            `invalid spawn descriptor action ${action}`
+          );
+        }
+      }
+      const descriptorMappingCount = reader.u32();
+      const descriptorMappings: Array<
+        NonNullable<Extract<TraceKernelSyscallRequest, { op: 'spawn' }>['descriptorMappings']>[number]
+      > = [];
+      for (let index = 0; index < descriptorMappingCount; index += 1) {
+        descriptorMappings.push({
+          parentFd: reader.i32(),
+          childFd: reader.i32(),
+        });
+      }
       request = {
         op: 'spawn',
         runtime,
@@ -671,6 +710,12 @@ export function decodeTraceKernelSyscallRequest(
         ...(processGroupId === undefined ? {} : { processGroupId }),
         ...(sessionId === undefined ? {} : { sessionId }),
         ...(stdio === undefined ? {} : { stdio }),
+        ...(descriptorActions.length === 0
+          ? {}
+          : { descriptorActions: Object.freeze(descriptorActions) }),
+        ...(descriptorMappings.length === 0
+          ? {}
+          : { descriptorMappings: Object.freeze(descriptorMappings) }),
       };
       break;
     }

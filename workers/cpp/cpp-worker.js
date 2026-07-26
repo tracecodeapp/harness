@@ -622,6 +622,17 @@ class CppTraceKernelSyncClient {
         writeStdioMode(request.stdio?.stdin);
         writeStdioMode(request.stdio?.stdout);
         writeStdioMode(request.stdio?.stderr);
+        writer.u32(request.descriptorActions?.length ?? 0);
+        for (const action of request.descriptorActions ?? []) {
+          writer.u8(action.op === 'dup2' ? 1 : 2);
+          writer.i32(action.fd);
+          if (action.op === 'dup2') writer.i32(action.targetFd);
+        }
+        writer.u32(request.descriptorMappings?.length ?? 0);
+        for (const mapping of request.descriptorMappings ?? []) {
+          writer.i32(mapping.parentFd);
+          writer.i32(mapping.childFd);
+        }
         break;
       }
       case 'wait':
@@ -2539,6 +2550,34 @@ class WasiProcess {
         'process environment exceeds 4096 entries'
       );
     };
+    const readSpawnDescriptorActions = (actionsPtr) => {
+      if ((actionsPtr >>> 0) === 0) return [];
+      const count = this.mem.readU32(actionsPtr >>> 0);
+      if (count > 64) {
+        throw new CppTraceKernelSyscallError(
+          'E2BIG',
+          'posix_spawn file actions exceed 64 entries'
+        );
+      }
+      const actions = [];
+      for (let index = 0; index < count; index += 1) {
+        const offset = (actionsPtr >>> 0) + 4 + index * 12;
+        const operation = this.mem.readU32(offset);
+        const fd = this.mem.readU32(offset + 4);
+        const targetFd = this.mem.readU32(offset + 8);
+        if (operation === 1) {
+          actions.push({ op: 'dup2', fd, targetFd });
+        } else if (operation === 2) {
+          actions.push({ op: 'close', fd });
+        } else {
+          throw new CppTraceKernelSyscallError(
+            'EINVAL',
+            `invalid posix_spawn file action ${operation}`
+          );
+        }
+      }
+      return actions;
+    };
     return {
       proc_system: (commandPtr, commandLen) => {
         if (!this.kernelClient) return -ENOTSUP;
@@ -2561,12 +2600,19 @@ class WasiProcess {
           return -cppTraceKernelErrno(error);
         }
       },
-      proc_spawn: (pathPtr, argvPtr, envpPtr, flags, processGroupId) => {
+      proc_spawn: (pathPtr, argvPtr, envpPtr, actionsPtr, flags, processGroupId) => {
         if (!this.kernelClient) return -ENOTSUP;
         try {
           const command = this.mem.readCString(pathPtr);
           const argv = readArgv(argvPtr);
           const requestedEnv = readEnvp(envpPtr);
+          const descriptorActions = readSpawnDescriptorActions(actionsPtr);
+          const descriptorMappings = [...this.fds.entries()]
+            .filter(([, entry]) => entry.kernelFd !== undefined)
+            .map(([childFd, entry]) => ({
+              parentFd: entry.kernelFd,
+              childFd,
+            }));
           const startsNewSession = (flags & 2) !== 0;
           const setsProcessGroup = (flags & 1) !== 0;
           const spawned = this.kernelClient.call({
@@ -2576,6 +2622,8 @@ class WasiProcess {
             args: argv.length > 0 ? argv.slice(1) : [],
             cwd: this.kernelCwd,
             env: requestedEnv ?? this.env,
+            ...(descriptorMappings.length > 0 ? { descriptorMappings } : {}),
+            ...(descriptorActions.length > 0 ? { descriptorActions } : {}),
             stdio: {
               stdin: 'inherit',
               stdout: 'inherit',
@@ -11296,7 +11344,12 @@ typedef struct {
 } posix_spawnattr_t;
 
 typedef struct {
-  int __unsupported;
+  unsigned int __count;
+  struct {
+    int __operation;
+    int __fd;
+    int __target_fd;
+  } __actions[64];
 } posix_spawn_file_actions_t;
 
 int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* actions, const posix_spawnattr_t* attributes, char* const argv[], char* const envp[]);
@@ -11309,6 +11362,8 @@ int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes, pid_t* pgroup
 int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t pgroup);
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* actions);
 int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* actions);
+int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t* actions, int fd);
+int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t* actions, int fd, int newfd);
 
 #ifdef __cplusplus
 }
@@ -11375,7 +11430,7 @@ const CPP_KERNEL_PROCESS_SHIM_SOURCE = String.raw`#include <errno.h>
 __attribute__((import_module("tracecode_kernel"), import_name("proc_system")))
 int __tracecode_proc_system(const char* command, unsigned int length);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_spawn")))
-int __tracecode_proc_spawn(const char* path, char* const argv[], char* const envp[], int flags, int pgroup);
+int __tracecode_proc_spawn(const char* path, char* const argv[], char* const envp[], const posix_spawn_file_actions_t* actions, int flags, int pgroup);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_wait")))
 int __tracecode_proc_wait(int pid, int* status, int options);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_kill")))
@@ -11404,11 +11459,11 @@ int posix_spawn(
 ) {
   int result;
   if (pid == 0 || path == 0 || argv == 0) return EINVAL;
-  if (actions != 0) return ENOTSUP;
   result = __tracecode_proc_spawn(
     path,
     argv,
     envp,
+    actions,
     attributes == 0 ? 0 : attributes->__flags,
     attributes == 0 ? 0 : attributes->__pgroup
   );
@@ -11464,12 +11519,34 @@ int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t pgroup) {
 
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* actions) {
   if (actions == 0) return EINVAL;
-  actions->__unsupported = 0;
+  memset(actions, 0, sizeof(*actions));
   return 0;
 }
 
 int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* actions) {
   return actions == 0 ? EINVAL : 0;
+}
+
+int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t* actions, int fd) {
+  unsigned int index;
+  if (actions == 0 || fd < 0) return EINVAL;
+  if (actions->__count >= 64) return E2BIG;
+  index = actions->__count++;
+  actions->__actions[index].__operation = 2;
+  actions->__actions[index].__fd = fd;
+  actions->__actions[index].__target_fd = 0;
+  return 0;
+}
+
+int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t* actions, int fd, int newfd) {
+  unsigned int index;
+  if (actions == 0 || fd < 0 || newfd < 0) return EINVAL;
+  if (actions->__count >= 64) return E2BIG;
+  index = actions->__count++;
+  actions->__actions[index].__operation = 1;
+  actions->__actions[index].__fd = fd;
+  actions->__actions[index].__target_fd = newfd;
+  return 0;
 }
 
 pid_t waitpid(pid_t pid, int* status, int options) {
