@@ -82,7 +82,8 @@ var OP_CODES = {
   fcntl: 38,
   setsid: 39,
   setpgid: 40,
-  dup3: 41
+  dup3: 41,
+  poll: 42
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -428,6 +429,15 @@ function encodeTraceKernelSyscallRequest(request) {
         writer.u8(request.nonblocking ? 1 : 0);
       }
       break;
+    case "poll":
+      writer.u32(request.entries.length);
+      for (const entry of request.entries) {
+        writer.i32(entry.fd);
+        writer.u8((entry.read ? 1 : 0) | (entry.write ? 2 : 0));
+      }
+      writer.u8(request.timeoutMs === void 0 ? 0 : 1);
+      if (request.timeoutMs !== void 0) writer.f64(request.timeoutMs);
+      break;
     case "ftruncate":
       writer.i32(request.fd);
       writer.f64(request.length);
@@ -667,6 +677,24 @@ function decodeTraceKernelSyscallResult(bytes) {
         closeOnExec: closeOnExec === 1,
         nonblocking: nonblocking === 1
       };
+      break;
+    }
+    case "poll": {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const fd = reader.i32();
+        const events = reader.u8();
+        entries.push({
+          fd,
+          read: (events & 1) !== 0,
+          write: (events & 2) !== 0,
+          hangup: (events & 4) !== 0,
+          error: (events & 8) !== 0,
+          invalid: (events & 16) !== 0
+        });
+      }
+      value = { op: "poll", entries };
       break;
     }
     case "setsid":
