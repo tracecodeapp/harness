@@ -481,8 +481,11 @@ The initial 0.13 branch now establishes:
 - the browser Python/Pyodide adapter's first general synchronous binary
   syscall client, with `tracekernel.watchdog` process controls and an explicit
   `tracekernel.fs` path-operation surface backed by authoritative TKFS;
-  mounting TKFS beneath ordinary `open`/`os`/`pathlib`, process descriptors,
-  subprocess, and raw-socket adaptation remain subsequent milestones;
+- a Pyodide filesystem mount that backs ordinary Python `open`, `os`, and
+  `pathlib` path and regular-file descriptor operations with TKFS, including
+  positioned I/O, truncate, rename, symlink traversal, and kernel-owned
+  descriptor cleanup; Python subprocess and raw-socket adaptation remain
+  subsequent milestones;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic

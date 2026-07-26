@@ -2045,6 +2045,11 @@ const PYTHON_TK_SHARED_STATE_RESPONSE = 3;
 const PYTHON_TK_SHARED_STATE_CLOSED = 4;
 const PYTHON_TK_SHARED_STATE_WRITING = 5;
 const PYTHON_TK_OP_CODES = Object.freeze({
+  open: 1,
+  read: 2,
+  write: 3,
+  close: 4,
+  dup: 5,
   stat: 6,
   readdir: 7,
   mkdir: 8,
@@ -2053,6 +2058,11 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   rename: 11,
   readFile: 12,
   writeFile: 13,
+  fstat: 14,
+  ftruncate: 15,
+  link: 16,
+  symlink: 17,
+  readlink: 18,
   lstat: 19,
   realpath: 20,
   watchdog: 36,
@@ -2100,6 +2110,18 @@ class PythonTraceKernelFrameWriter {
     this.ensure(4);
     this.view.setUint32(this.offset, value >>> 0, true);
     this.offset += 4;
+  }
+
+  i32(value) {
+    this.ensure(4);
+    this.view.setInt32(this.offset, value | 0, true);
+    this.offset += 4;
+  }
+
+  f64(value) {
+    this.ensure(8);
+    this.view.setFloat64(this.offset, Number(value), true);
+    this.offset += 8;
   }
 
   bytesValue(value) {
@@ -2266,6 +2288,45 @@ class PythonTraceKernelSyncClient {
               : 2
         );
         break;
+      case 'open': {
+        writer.string(request.path);
+        const access = request.options?.access === 'write'
+          ? 2
+          : request.options?.access === 'read-write'
+            ? 3
+            : request.options?.access === 'read'
+              ? 1
+              : 0;
+        writer.u8(access);
+        writer.u8(
+          (request.options?.create ? 1 : 0) |
+            (request.options?.exclusive ? 2 : 0) |
+            (request.options?.truncate ? 4 : 0) |
+            (request.options?.append ? 8 : 0)
+        );
+        break;
+      }
+      case 'read':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'write':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'close':
+      case 'dup':
+      case 'fstat':
+        writer.i32(request.fd);
+        break;
+      case 'ftruncate':
+        writer.i32(request.fd);
+        writer.f64(request.length);
+        break;
       case 'stat':
       case 'lstat':
       case 'realpath':
@@ -2273,6 +2334,7 @@ class PythonTraceKernelSyncClient {
       case 'rmdir':
       case 'unlink':
       case 'readFile':
+      case 'readlink':
         writer.string(request.path);
         break;
       case 'mkdir':
@@ -2288,6 +2350,14 @@ class PythonTraceKernelSyncClient {
       case 'rename':
         writer.string(request.sourcePath);
         writer.string(request.destinationPath);
+        break;
+      case 'link':
+        writer.string(request.existingPath);
+        writer.string(request.newPath);
+        break;
+      case 'symlink':
+        writer.string(request.target);
+        writer.string(request.linkPath);
         break;
       case 'writeFile':
         writer.string(request.path);
@@ -2454,7 +2524,11 @@ class PythonTraceKernelSyncClient {
           signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
         };
       }
-    } else if (operation === 'stat' || operation === 'lstat') {
+    } else if (
+      operation === 'stat' ||
+      operation === 'lstat' ||
+      operation === 'fstat'
+    ) {
       const path = reader.string();
       const kindCode = reader.u8();
       if (kindCode < 1 || kindCode > 3) {
@@ -2507,6 +2581,19 @@ class PythonTraceKernelSyncClient {
       };
     } else if (operation === 'realpath') {
       value = { op: operation, path: reader.string() };
+    } else if (operation === 'readlink') {
+      value = { op: operation, target: reader.string() };
+    } else if (
+      operation === 'open' ||
+      operation === 'dup'
+    ) {
+      value = { op: operation, fd: reader.i32() };
+    } else if (
+      operation === 'read'
+    ) {
+      value = { op: operation, bytes: reader.bytesValue() };
+    } else if (operation === 'write') {
+      value = { op: operation, bytesWritten: reader.u32() };
     } else {
       value = { op: operation };
     }
@@ -2517,6 +2604,417 @@ class PythonTraceKernelSyncClient {
   close() {
     this.closed = true;
   }
+}
+
+const PYTHON_TK_ERRNO = Object.freeze({
+  EACCES: 2,
+  EBADF: 8,
+  EEXIST: 20,
+  EFBIG: 22,
+  EINVAL: 28,
+  EIO: 29,
+  EISDIR: 31,
+  ELOOP: 32,
+  ENODEV: 43,
+  ENOENT: 44,
+  ENOSPC: 51,
+  ENOSYS: 52,
+  ENOTDIR: 54,
+  ENOTEMPTY: 55,
+  ENOTSUP: 58,
+  EPERM: 63,
+  EPIPE: 64,
+  EROFS: 69,
+  ESPIPE: 70,
+});
+
+function installPyodideTraceKernelMount(
+  pyodideInstance,
+  kernelClient,
+  workspaceRoot,
+  mountPath = '/tracecode_project'
+) {
+  const fs = pyodideInstance.FS;
+  const fileType = Object.freeze({
+    directory: 0x4000,
+    file: 0x8000,
+    symlink: 0xa000,
+  });
+
+  const throwErrno = (error) => {
+    if (error instanceof fs.ErrnoError) throw error;
+    const code = typeof error?.code === 'string' ? error.code : 'EIO';
+    throw new fs.ErrnoError(PYTHON_TK_ERRNO[code] ?? PYTHON_TK_ERRNO.EIO);
+  };
+  const attempt = (operation) => {
+    try {
+      return operation();
+    } catch (error) {
+      return throwErrno(error);
+    }
+  };
+  const modeForStat = (stat) =>
+    fileType[stat.kind] | (Number(stat.mode) & 0o7777);
+  const pathParts = (node) => {
+    const parts = [];
+    while (node.parent !== node) {
+      parts.push(node.name);
+      node = node.parent;
+    }
+    parts.reverse();
+    return parts;
+  };
+  const kernelPath = (node) => {
+    const suffix = pathParts(node).join('/');
+    return suffix
+      ? `${node.mount.opts.root.replace(/\/+$/, '')}/${suffix}`
+      : node.mount.opts.root;
+  };
+  const kernelPathForChild = (parent, name) => {
+    const root = kernelPath(parent).replace(/\/+$/, '');
+    return `${root}/${String(name)}`;
+  };
+  const mountedPathForTarget = (target) => {
+    const root = String(workspaceRoot).replace(/\/+$/, '');
+    if (target === root) return mountPath;
+    return target.startsWith(`${root}/`)
+      ? `${mountPath}${target.slice(root.length)}`
+      : target;
+  };
+  const kernelTargetForSymlink = (target) => {
+    const value = String(target);
+    if (value === mountPath) return workspaceRoot;
+    return value.startsWith(`${mountPath}/`)
+      ? `${String(workspaceRoot).replace(/\/+$/, '')}${value.slice(mountPath.length)}`
+      : value;
+  };
+  const statAttributes = (node, stat) => ({
+    dev: 1,
+    ino: Number(stat.inode),
+    mode: modeForStat(stat),
+    nlink: Number(stat.nlink),
+    uid: 0,
+    gid: 0,
+    rdev: 0,
+    size: stat.kind === 'directory' ? 4096 : Number(stat.size),
+    atime: new Date(Number(stat.modifiedAt)),
+    mtime: new Date(Number(stat.modifiedAt)),
+    ctime: new Date(Number(stat.changedAt)),
+    blksize: 4096,
+    blocks: Math.ceil(Number(stat.size) / 4096),
+  });
+
+  const backend = {
+    mount(mount) {
+      const stat = attempt(() =>
+        kernelClient.request({ op: 'stat', path: mount.opts.root }).stat
+      );
+      if (stat.kind !== 'directory') {
+        throw new fs.ErrnoError(PYTHON_TK_ERRNO.ENOTDIR);
+      }
+      return backend.createNode(null, '/', modeForStat(stat), 0);
+    },
+
+    createNode(parent, name, mode, dev) {
+      if (!fs.isDir(mode) && !fs.isFile(mode) && !fs.isLink(mode)) {
+        throw new fs.ErrnoError(PYTHON_TK_ERRNO.EINVAL);
+      }
+      const node = fs.createNode(parent, name, mode, dev);
+      node.node_ops = backend.node_ops;
+      node.stream_ops = backend.stream_ops;
+      return node;
+    },
+
+    node_ops: {
+      getattr(node) {
+        return attempt(() => {
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path: kernelPath(node),
+          }).stat;
+          node.mode = modeForStat(stat);
+          return statAttributes(node, stat);
+        });
+      },
+
+      setattr(node, attributes) {
+        attempt(() => {
+          if (attributes.size !== undefined) {
+            const opened = kernelClient.request({
+              op: 'open',
+              path: kernelPath(node),
+              options: { access: 'write' },
+            });
+            try {
+              kernelClient.request({
+                op: 'ftruncate',
+                fd: opened.fd,
+                length: Number(attributes.size),
+              });
+            } finally {
+              kernelClient.request({ op: 'close', fd: opened.fd });
+            }
+          }
+          if (
+            attributes.mode !== undefined
+          ) {
+            node.mode =
+              (node.mode & ~0o7777) |
+              (Number(attributes.mode) & 0o7777);
+          }
+        });
+      },
+
+      lookup(parent, name) {
+        return attempt(() => {
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path: kernelPathForChild(parent, name),
+          }).stat;
+          return backend.createNode(parent, name, modeForStat(stat), 0);
+        });
+      },
+
+      mknod(parent, name, mode, dev) {
+        return attempt(() => {
+          const path = kernelPathForChild(parent, name);
+          if (fs.isDir(mode)) {
+            kernelClient.request({
+              op: 'mkdir',
+              path,
+              options: { mode: mode & 0o7777 },
+            });
+          } else if (fs.isFile(mode)) {
+            const opened = kernelClient.request({
+              op: 'open',
+              path,
+              options: {
+                access: 'write',
+                create: true,
+                exclusive: true,
+              },
+            });
+            kernelClient.request({ op: 'close', fd: opened.fd });
+          } else {
+            throw new PythonTraceKernelSyscallError(
+              'ENOTSUP',
+              'TKFS supports only regular files, directories, and symlinks'
+            );
+          }
+          return backend.createNode(parent, name, mode, dev);
+        });
+      },
+
+      rename(oldNode, newDirectory, newName) {
+        attempt(() => {
+          kernelClient.request({
+            op: 'rename',
+            sourcePath: kernelPath(oldNode),
+            destinationPath: kernelPathForChild(newDirectory, newName),
+          });
+          oldNode.name = newName;
+        });
+      },
+
+      unlink(parent, name) {
+        attempt(() =>
+          kernelClient.request({
+            op: 'unlink',
+            path: kernelPathForChild(parent, name),
+          })
+        );
+      },
+
+      rmdir(parent, name) {
+        attempt(() =>
+          kernelClient.request({
+            op: 'rmdir',
+            path: kernelPathForChild(parent, name),
+          })
+        );
+      },
+
+      readdir(node) {
+        return attempt(() => [
+          '.',
+          '..',
+          ...kernelClient.request({
+            op: 'readdir',
+            path: kernelPath(node),
+          }).entries.map((entry) => entry.name),
+        ]);
+      },
+
+      symlink(parent, name, target) {
+        return attempt(() => {
+          kernelClient.request({
+            op: 'symlink',
+            target: kernelTargetForSymlink(target),
+            linkPath: kernelPathForChild(parent, name),
+          });
+          return backend.createNode(
+            parent,
+            name,
+            fileType.symlink | 0o777,
+            0
+          );
+        });
+      },
+
+      readlink(node) {
+        return attempt(() =>
+          mountedPathForTarget(
+            kernelClient.request({
+              op: 'readlink',
+              path: kernelPath(node),
+            }).target
+          )
+        );
+      },
+    },
+
+    stream_ops: {
+      getattr(stream) {
+        return attempt(() => {
+          const stat = stream.shared.tracekernelFd === undefined
+            ? kernelClient.request({
+                op: 'lstat',
+                path: kernelPath(stream.node),
+              }).stat
+            : kernelClient.request({
+                op: 'fstat',
+                fd: stream.shared.tracekernelFd,
+              }).stat;
+          stream.node.mode = modeForStat(stat);
+          return statAttributes(stream.node, stat);
+        });
+      },
+
+      setattr(stream, attributes) {
+        attempt(() => {
+          if (attributes.size !== undefined) {
+            kernelClient.request({
+              op: 'ftruncate',
+              fd: stream.shared.tracekernelFd,
+              length: Number(attributes.size),
+            });
+          }
+          if (
+            attributes.mode !== undefined
+          ) {
+            stream.node.mode =
+              (stream.node.mode & ~0o7777) |
+              (Number(attributes.mode) & 0o7777);
+          }
+        });
+      },
+
+      open(stream) {
+        attempt(() => {
+          if (fs.isDir(stream.node.mode)) {
+            stream.shared.tracekernelFd = undefined;
+            stream.shared.tracekernelRefcount = 1;
+            return;
+          }
+          const accessMode = stream.flags & 3;
+          const opened = kernelClient.request({
+            op: 'open',
+            path: kernelPath(stream.node),
+            options: {
+              access: accessMode === 1
+                ? 'write'
+                : accessMode === 2
+                  ? 'read-write'
+                  : 'read',
+              create: Boolean(stream.flags & 64),
+              exclusive: Boolean(stream.flags & 128),
+              truncate: Boolean(stream.flags & 512),
+              append: Boolean(stream.flags & 1024),
+            },
+          });
+          stream.shared.tracekernelFd = opened.fd;
+          stream.shared.tracekernelRefcount = 1;
+        });
+      },
+
+      close(stream) {
+        attempt(() => {
+          const remaining = --stream.shared.tracekernelRefcount;
+          if (
+            remaining === 0 &&
+            stream.shared.tracekernelFd !== undefined
+          ) {
+            kernelClient.request({
+              op: 'close',
+              fd: stream.shared.tracekernelFd,
+            });
+          }
+        });
+      },
+
+      dup(stream) {
+        stream.shared.tracekernelRefcount += 1;
+      },
+
+      read(stream, buffer, offset, length, position) {
+        return attempt(() => {
+          const bytes = kernelClient.request({
+            op: 'read',
+            fd: stream.shared.tracekernelFd,
+            maxBytes: length,
+            position,
+          }).bytes;
+          buffer.set(bytes, offset);
+          return bytes.byteLength;
+        });
+      },
+
+      write(stream, buffer, offset, length, position) {
+        return attempt(() =>
+          kernelClient.request({
+            op: 'write',
+            fd: stream.shared.tracekernelFd,
+            bytes: buffer.slice(offset, offset + length),
+            position,
+          }).bytesWritten
+        );
+      },
+
+      llseek(stream, offset, whence) {
+        let position = Number(offset);
+        if (whence === 1) {
+          position += Number(stream.position);
+        } else if (whence === 2) {
+          position += Number(
+            kernelClient.request({
+              op: 'fstat',
+              fd: stream.shared.tracekernelFd,
+            }).stat.size
+          );
+        }
+        if (position < 0) {
+          throw new fs.ErrnoError(PYTHON_TK_ERRNO.EINVAL);
+        }
+        return position;
+      },
+    },
+  };
+
+  try {
+    fs.mkdir(mountPath);
+  } catch (error) {
+    if (!(error instanceof fs.ErrnoError) || error.errno !== PYTHON_TK_ERRNO.EEXIST) {
+      throw error;
+    }
+  }
+  fs.mount(backend, { root: workspaceRoot }, mountPath);
+  return () => {
+    try {
+      fs.unmount(mountPath);
+    } catch {
+      // The worker is discarded after fatal mount failures.
+    }
+  };
 }
 
 class TraceKernelHttpBridge {
@@ -2699,6 +3197,7 @@ async function executeProjectPythonUserCall(
         })
       )
     : null;
+  const traceKernelFileSystemMounted = kernelClient !== null;
   activeProjectHttpBridges.set(messageId, httpBridge);
   const projectEventBudget = createProjectEventBudget();
   const projectOutputEvents = [];
@@ -2873,8 +3372,10 @@ def _normalize_virtual_root(_value, _fallback="/workspace"):
 _workspace_root = _normalize_virtual_root(_project_info.get("workspaceRoot") or _project_info.get("cwd") or "/workspace")
 _workspace_alias_value = _project_info.get("workspaceAlias")
 _workspace_alias = _normalize_virtual_root(_workspace_alias_value) if _workspace_alias_value else None
-shutil.rmtree(_root, ignore_errors=True)
-os.makedirs(_root, exist_ok=True)
+_tracekernel_fs_mounted = ${traceKernelFileSystemMounted ? 'True' : 'False'}
+if not _tracekernel_fs_mounted:
+    shutil.rmtree(_root, ignore_errors=True)
+    os.makedirs(_root, exist_ok=True)
 _original_file_bytes = {}
 _original_file_state = {}
 _original_symlink_targets = {}
@@ -3151,11 +3652,11 @@ def _file_state(_absolute_path):
         "mtimeMs": int(round(float(_info.st_mtime) * 1000)),
     }
 
-for _directory in _request.get("project", {}).get("directories", []):
+for _directory in ([] if _tracekernel_fs_mounted else _request.get("project", {}).get("directories", [])):
     _relative_directory = _safe_project_entry_path(_directory, "directory")
     os.makedirs(os.path.join(_root, _relative_directory), exist_ok=True)
 
-for _file in _request.get("project", {}).get("files", []):
+for _file in ([] if _tracekernel_fs_mounted else _request.get("project", {}).get("files", [])):
     _relative_path = _safe_project_entry_path(_file.get("path", ""), "file")
     _target = os.path.join(_root, _relative_path)
     os.makedirs(os.path.dirname(_target), exist_ok=True)
@@ -3175,7 +3676,7 @@ for _file in _request.get("project", {}).get("files", []):
         os.utime(_target, (_atime, _mtime))
     _original_file_state[_relative_path] = _file_state(_target)
 
-for _symlink in _request.get("project", {}).get("symlinks", []):
+for _symlink in ([] if _tracekernel_fs_mounted else _request.get("project", {}).get("symlinks", [])):
     if not isinstance(_symlink, dict):
         raise ValueError("Project symbolic link entry must be an object")
     _relative_link_path = _safe_project_entry_path(_symlink.get("path", ""), "symbolic link")
@@ -3186,7 +3687,7 @@ for _symlink in _request.get("project", {}).get("symlinks", []):
     _original_symlink_targets[_relative_link_path] = _link_target
     _remembered_symlink_targets[_relative_link_path] = _link_target
 
-for _directory_metadata in _request.get("project", {}).get("directoryMetadata", []):
+for _directory_metadata in ([] if _tracekernel_fs_mounted else _request.get("project", {}).get("directoryMetadata", [])):
     if not isinstance(_directory_metadata, dict):
         raise ValueError("Project directory metadata entry must be an object")
     _relative_directory = _safe_project_entry_path(_directory_metadata.get("path", ""), "directory metadata")
@@ -3201,7 +3702,7 @@ for _directory_metadata in _request.get("project", {}).get("directoryMetadata", 
         _mtime = float(_directory_metadata.get("mtimeMs", _current_state["mtimeMs"])) / 1000
         os.utime(_absolute_directory, (_atime, _mtime))
 
-for _dirpath, _dirnames, _filenames in os.walk(_root, followlinks=False):
+for _dirpath, _dirnames, _filenames in ([] if _tracekernel_fs_mounted else os.walk(_root, followlinks=False)):
     if os.path.islink(_dirpath):
         _dirnames[:] = []
         continue
@@ -3210,14 +3711,15 @@ for _dirpath, _dirnames, _filenames in os.walk(_root, followlinks=False):
         _original_directory_state[_relative_directory] = _directory_state(_dirpath)
 
 _restore_provider_fs_mutation_events = lambda: None
-try:
-    _restore_provider_fs_mutation_events = _js_self.__tracecodeInstallProjectFsMutationEvents(
-        _root,
-        json.dumps(_project_info.get("kernelDevices", [])),
-        _workspace_root,
-    )
-except Exception:
-    _restore_provider_fs_mutation_events = lambda: None
+if not _tracekernel_fs_mounted:
+    try:
+        _restore_provider_fs_mutation_events = _js_self.__tracecodeInstallProjectFsMutationEvents(
+            _root,
+            json.dumps(_project_info.get("kernelDevices", [])),
+            _workspace_root,
+        )
+    except Exception:
+        _restore_provider_fs_mutation_events = lambda: None
 
 _source = _request.get("source")
 _script_path = str(_request.get("scriptPath") or "")
@@ -3261,6 +3763,12 @@ def _read_project_input(_device="/dev/stdin", _size=-1):
 
 def _emit_project_event(_event):
     try:
+        if (
+            _tracekernel_fs_mounted
+            and isinstance(_event, dict)
+            and _event.get("type") == "file-change"
+        ):
+            return
         if (
             isinstance(_event, dict)
             and _event.get("type") == "file-change"
@@ -4597,6 +5105,8 @@ def _project_pythonpath_entries():
     return _entries
 
 def _project_files_after_execution():
+    if _tracekernel_fs_mounted:
+        return []
     _files = []
     _seen_paths = set()
     _seen_dirs = set()
@@ -5900,7 +6410,20 @@ json.dumps({
 })
 `;
 
+  let restoreTraceKernelFileSystemMount = () => {};
   try {
+    if (kernelClient) {
+      const workspaceRoot = String(
+        request?.project?.workspaceRoot ??
+          request?.project?.cwd ??
+          '/workspace'
+      ).replace(/\\/g, '/').replace(/\/+$/, '') || '/workspace';
+      restoreTraceKernelFileSystemMount = installPyodideTraceKernelMount(
+        pyodide,
+        kernelClient,
+        workspaceRoot
+      );
+    }
     const resultJson = await pyodide.runPythonAsync(projectCode);
     const result = JSON.parse(resultJson);
     if (projectOutputEvents.length > 0) {
@@ -5915,6 +6438,7 @@ json.dumps({
     }
     return result;
   } finally {
+    restoreTraceKernelFileSystemMount();
     restoreProviderStdioBridge();
     delete self.__tracecodeProjectEvent;
     delete self.__tracecodeRuntimeKernelOpenTarget;

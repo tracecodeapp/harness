@@ -199,16 +199,60 @@ async function main(): Promise<void> {
               path: 'host-shared.txt',
               contents: 'host-authoritative\n',
             },
+            {
+              path: 'kernel-native-fs.py',
+              contents: [
+                'import os',
+                'from pathlib import Path',
+                'host_value = Path("host-shared.txt").read_text()',
+                'Path("python-native").mkdir()',
+                'path = Path("python-native/value.bin")',
+                'path.write_bytes(b"abcdef")',
+                'with path.open("ab") as handle:',
+                '    handle.write(b"gh")',
+                'fd = os.open(path, os.O_RDWR)',
+                'try:',
+                '    os.lseek(fd, 2, os.SEEK_SET)',
+                '    middle = os.read(fd, 3)',
+                '    os.ftruncate(fd, 5)',
+                'finally:',
+                '    os.close(fd)',
+                'os.rename(path, "python-native/final.bin")',
+                'os.symlink("final.bin", "python-native/link.bin")',
+                'valid = (',
+                '    host_value == "host-authoritative\\n"',
+                '    and middle == b"cde"',
+                '    and Path("python-native/final.bin").read_bytes() == b"abcde"',
+                '    and Path("python-native/link.bin").read_bytes() == b"abcde"',
+                '    and os.readlink("python-native/link.bin") == "final.bin"',
+                '    and sorted(os.listdir("python-native")) == ["final.bin", "link.bin"]',
+                ')',
+                'print(f"native-tkfs:{str(valid).lower()}")',
+                '',
+              ].join('\n'),
+            },
           ],
         });
         try {
           const fsControl = await workspace.runCommand('python kernel-fs.py');
+          const nativeFsControl = await workspace.runCommand(
+            'python kernel-native-fs.py'
+          );
           return {
             fsControl,
-            fsResult: await workspace.readFile(
-              'python-kernel-dir/final.bin',
-              'base64'
-            ),
+            nativeFsControl,
+            nativeFsResult: nativeFsControl.exitCode === 0
+              ? await workspace.readFile(
+                  'python-native/final.bin',
+                  'base64'
+                )
+              : null,
+            fsResult: fsControl.exitCode === 0
+              ? await workspace.readFile(
+                  'python-kernel-dir/final.bin',
+                  'base64'
+                )
+              : null,
             control: await workspace.runCommand('python watchdog-control.py'),
             expiry: await workspace.runCommand('python watchdog-expire.py'),
           };
@@ -217,6 +261,12 @@ async function main(): Promise<void> {
         }
       });
 
+      assertCondition(
+        result.nativeFsControl.exitCode === 0 &&
+          result.nativeFsControl.stdout === 'native-tkfs:true\n' &&
+          result.nativeFsResult === 'YWJjZGU=',
+        `Ordinary Python filesystem APIs did not use authoritative TKFS: ${JSON.stringify(result.nativeFsControl)} ${JSON.stringify(result.nativeFsResult)}`
+      );
       assertCondition(
         result.fsControl.exitCode === 0 &&
           result.fsControl.stdout === 'tkfs:true\n' &&
@@ -241,6 +291,7 @@ async function main(): Promise<void> {
         schema: 'tracekernel-013-python-conformance-v1',
         synchronousSyscallTransport: true,
         explicitTkfsControls: true,
+        nativeTkfsMount: true,
         watchdogControls: true,
         watchdogExpirySignal: 'SIGKILL',
       }));
