@@ -3601,9 +3601,40 @@ async function executeProjectPythonUserCall(
       }
       return btoa(binary);
     };
+    const kernelFdForLocalFd = (fd) => {
+      const localFd = Number(fd);
+      const stream = pyodide.FS.getStream(localFd);
+      const kernelFd = stream?.shared?.tracekernelFd;
+      if (!Number.isSafeInteger(kernelFd) || kernelFd < 0) {
+        throw new PythonTraceKernelSyscallError(
+          'EBADF',
+          `Python descriptor ${fd} is not backed by TraceKernel`
+        );
+      }
+      return kernelFd;
+    };
     const syscallRequest = (() => {
       switch (String(input.op ?? '')) {
-        case 'spawn':
+        case 'spawn': {
+          const mappingsByChildFd = new Map();
+          if (input.inheritAllLocalDescriptors === true) {
+            for (let localFd = 0; localFd < pyodide.FS.streams.length; localFd += 1) {
+              const kernelFd = pyodide.FS.streams[localFd]?.shared?.tracekernelFd;
+              if (Number.isSafeInteger(kernelFd) && kernelFd >= 0) {
+                mappingsByChildFd.set(localFd, {
+                  parentFd: kernelFd,
+                  childFd: localFd,
+                });
+              }
+            }
+          }
+          for (const mapping of input.descriptorMappings ?? []) {
+            const childFd = Number(mapping.childFd);
+            mappingsByChildFd.set(childFd, {
+              parentFd: kernelFdForLocalFd(mapping.parentFd),
+              childFd,
+            });
+          }
           return {
             op: 'spawn',
             runtime: String(input.runtime),
@@ -3627,12 +3658,30 @@ async function executeProjectPythonUserCall(
             ...(input.sessionId === undefined || input.sessionId === null
               ? {}
               : { sessionId: Number(input.sessionId) }),
+            ...(mappingsByChildFd.size === 0
+              ? {}
+              : { descriptorMappings: [...mappingsByChildFd.values()] }),
+            ...(Array.isArray(input.descriptorActions) &&
+                input.descriptorActions.length > 0
+              ? {
+                  descriptorActions: input.descriptorActions.map((action) =>
+                    action.op === 'dup2'
+                      ? {
+                          op: 'dup2',
+                          fd: Number(action.fd),
+                          targetFd: Number(action.targetFd),
+                        }
+                      : { op: 'close', fd: Number(action.fd) }
+                  ),
+                }
+              : {}),
             stdio: {
               stdin: input.stdio?.stdin ?? 'inherit',
               stdout: input.stdio?.stdout ?? 'inherit',
               stderr: input.stdio?.stderr ?? 'inherit',
             },
           };
+        }
         case 'wait':
           return { op: 'wait', pid: Number(input.pid) };
         case 'kill':
@@ -4205,6 +4254,10 @@ class _TraceKernelProcessApi:
         errors=None,
         process_group=None,
         start_new_session=False,
+        pass_fds=(),
+        descriptor_mappings=(),
+        descriptor_actions=(),
+        inherit_all_descriptors=False,
     ):
         _command = os.fspath(command)
         if start_new_session and process_group not in (None, 0):
@@ -4230,6 +4283,29 @@ class _TraceKernelProcessApi:
                     else {}
                 )
             ),
+            "descriptorMappings": [
+                {
+                    "parentFd": int(_mapping[0]),
+                    "childFd": int(_mapping[1]),
+                }
+                for _mapping in (
+                    list(descriptor_mappings)
+                    + [(int(_fd), int(_fd)) for _fd in pass_fds]
+                )
+            ],
+            "descriptorActions": [
+                (
+                    {
+                        "op": "dup2",
+                        "fd": int(_action[1]),
+                        "targetFd": int(_action[2]),
+                    }
+                    if _action[0] == "dup2"
+                    else {"op": "close", "fd": int(_action[1])}
+                )
+                for _action in descriptor_actions
+            ],
+            "inheritAllLocalDescriptors": bool(inherit_all_descriptors),
             "stdio": {
                 "stdin": str(stdin),
                 "stdout": str(stdout),
@@ -4574,7 +4650,7 @@ def _install_tracekernel_subprocess_module():
                     self.stderr,
                 )
 
-    def _stdio_mode(_value, _name):
+    def _stdio_mode(_value, _name, _child_fd, _mappings, _actions):
         if _value is None:
             return "inherit"
         if _value == _module.PIPE:
@@ -4582,11 +4658,13 @@ def _install_tracekernel_subprocess_module():
         if _value == _module.DEVNULL:
             return "ignore"
         if _value == _module.STDOUT and _name == "stderr":
-            raise NotImplementedError(
-                "TraceKernel stderr=STDOUT requires descriptor remapping"
-            )
+            _actions.append(("dup2", 1, 2))
+            return "inherit"
+        if isinstance(_value, int) and _value >= 0:
+            _mappings.append((int(_value), int(_child_fd)))
+            return "inherit"
         raise NotImplementedError(
-            "TraceKernel subprocess supports inherit, PIPE, and DEVNULL stdio"
+            "TraceKernel subprocess supports inherit, PIPE, DEVNULL, STDOUT, and numeric stdio"
         )
 
     class Popen(_TraceKernelChildProcess):
@@ -4600,6 +4678,7 @@ def _install_tracekernel_subprocess_module():
             stderr=None,
             preexec_fn=None,
             close_fds=True,
+            pass_fds=(),
             shell=False,
             cwd=None,
             env=None,
@@ -4619,19 +4698,43 @@ def _install_tracekernel_subprocess_module():
             if not _argv:
                 raise ValueError("subprocess args must not be empty")
             _text = bool(text or universal_newlines or encoding)
+            _descriptor_mappings = []
+            _descriptor_actions = []
             _child = _tracekernel_module.process.spawn(
                 os.fspath(_argv[0]),
                 [str(_value) for _value in _argv[1:]],
                 cwd=cwd,
                 env=env,
-                stdin=_stdio_mode(stdin, "stdin"),
-                stdout=_stdio_mode(stdout, "stdout"),
-                stderr=_stdio_mode(stderr, "stderr"),
+                stdin=_stdio_mode(
+                    stdin,
+                    "stdin",
+                    0,
+                    _descriptor_mappings,
+                    _descriptor_actions,
+                ),
+                stdout=_stdio_mode(
+                    stdout,
+                    "stdout",
+                    1,
+                    _descriptor_mappings,
+                    _descriptor_actions,
+                ),
+                stderr=_stdio_mode(
+                    stderr,
+                    "stderr",
+                    2,
+                    _descriptor_mappings,
+                    _descriptor_actions,
+                ),
                 text=_text,
                 encoding=encoding,
                 errors=errors,
                 start_new_session=start_new_session,
                 process_group=process_group,
+                pass_fds=pass_fds,
+                descriptor_mappings=_descriptor_mappings,
+                descriptor_actions=_descriptor_actions,
+                inherit_all_descriptors=not close_fds,
             )
             self.__dict__.update(_child.__dict__)
             self.args = args

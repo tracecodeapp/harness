@@ -428,7 +428,9 @@ the transitional product bridge as well as the extracted kernel. Node
 creates a child-led session, and `process.kill` accepts the same positive,
 zero, negative-PGID, and `-1` selectors as the kernel syscall. Python maps
 `subprocess.Popen(start_new_session=True)`, `process_group`, `os.kill`, and
-`os.killpg` onto the same mechanism. Managed C# exposes
+`os.killpg` onto the same mechanism. Its subprocess adapter translates
+Pyodide-local descriptors for `pass_fds`, numeric stdio, `close_fds=False`,
+and `stderr=STDOUT` into kernel mappings and ordered child actions. Managed C# exposes
 `SpawnOptions.StartNewSession`, `KernelProcess.Signal`, and
 `KernelProcess.SignalProcessGroup`. Browser conformance creates detached
 JavaScript leaders with JavaScript descendants from Node, Python, and C#
@@ -535,8 +537,9 @@ The initial 0.13 branch now establishes:
   descriptor cleanup;
 - Python `tracekernel.process` and `subprocess` adapters for kernel-supervised
   JavaScript and Python children, including process-owned piped stdio,
-  synchronous wait/reap, signal delivery, shared TKFS visibility, and
-  separate-worker interpreter isolation;
+  synchronous wait/reap, signal delivery, local-to-kernel descriptor
+  inheritance/remapping, shared TKFS visibility, and separate-worker
+  interpreter isolation;
 - a Python `socket` adapter for blocking IPv4 TCP sockets backed by
   process-owned TraceKernel descriptors, with bind/listen/accept/connect,
   fragmented send/recv, half-close, address inspection, and cross-language

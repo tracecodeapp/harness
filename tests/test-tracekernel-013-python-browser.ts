@@ -359,6 +359,61 @@ async function main(): Promise<void> {
               ].join('\n'),
             },
             {
+              path: 'python-fd-child.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const fd = Number(process.argv[2]);',
+                'const value = process.argv[3];',
+                'fs.writeSync(fd, value);',
+                'if (process.argv[4] === "merge") {',
+                '  fs.writeSync(1, "stdout-through-pipe\\n");',
+                '  fs.writeSync(2, "stderr-through-dup2\\n");',
+                '}',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'python-fd-parent.py',
+              contents: [
+                'import os',
+                'from pathlib import Path',
+                'import subprocess',
+                'passed = os.open("python-pass-fd.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)',
+                'try:',
+                '    child = subprocess.Popen(',
+                '        ["node", "python-fd-child.js", str(passed), "through-pass-fds", "merge"],',
+                '        pass_fds=(passed,),',
+                '        stdout=subprocess.PIPE,',
+                '        stderr=subprocess.STDOUT,',
+                '        text=True,',
+                '    )',
+                '    merged, separate = child.communicate()',
+                'finally:',
+                '    os.close(passed)',
+                'inherited = os.open("python-close-fds-false.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)',
+                'try:',
+                '    inherited_child = subprocess.Popen(',
+                '        ["node", "python-fd-child.js", str(inherited), "through-close-fds-false"],',
+                '        close_fds=False,',
+                '        stdout=subprocess.DEVNULL,',
+                '        stderr=subprocess.DEVNULL,',
+                '    )',
+                '    inherited_code = inherited_child.wait()',
+                'finally:',
+                '    os.close(inherited)',
+                'valid = (',
+                '    child.returncode == 0',
+                '    and merged == "stdout-through-pipe\\nstderr-through-dup2\\n"',
+                '    and separate is None',
+                '    and Path("python-pass-fd.txt").read_text() == "through-pass-fds"',
+                '    and inherited_code == 0',
+                '    and Path("python-close-fds-false.txt").read_text() == "through-close-fds-false"',
+                ')',
+                'print(f"fd-inheritance:{str(valid).lower()}")',
+                '',
+              ].join('\n'),
+            },
+            {
               path: 'socket-parent.py',
               contents: [
                 'import socket',
@@ -411,6 +466,9 @@ async function main(): Promise<void> {
           const socketControl = await workspace.runCommand(
             'python socket-parent.py'
           );
+          const descriptorInheritance = await workspace.runCommand(
+            'python python-fd-parent.py'
+          );
           return {
             fsControl,
             nativeFsControl,
@@ -423,6 +481,7 @@ async function main(): Promise<void> {
             spawnControl,
             processGroupControl,
             socketControl,
+            descriptorInheritance,
             spawnJsResult: spawnControl.exitCode === 0
               ? await workspace.readFile('spawn-js-child.txt')
               : null,
@@ -447,6 +506,13 @@ async function main(): Promise<void> {
         result.socketControl.exitCode === 0 &&
           result.socketControl.stdout === 'socket:true\n',
         `Python and JavaScript did not share kernel TCP streams: ${JSON.stringify(result.socketControl)}`
+      );
+      assertCondition(
+        result.descriptorInheritance.exitCode === 0 &&
+          result.descriptorInheritance.stdout === 'fd-inheritance:true\n',
+        `Python subprocess descriptor inheritance/remapping was not kernel-owned: ${JSON.stringify(
+          result.descriptorInheritance
+        )}`
       );
       assertCondition(
         result.spawnControl.exitCode === 0 &&
@@ -493,6 +559,7 @@ async function main(): Promise<void> {
         nativeTkfsMount: true,
         childProcesses: ['javascript', 'python'],
         processGroups: ['start_new_session', 'os.kill', 'os.killpg'],
+        descriptorInheritance: ['pass_fds', 'close_fds=false', 'stderr=STDOUT'],
         tcpPeers: ['python', 'javascript'],
         watchdogControls: true,
         watchdogExpirySignal: 'SIGKILL',
