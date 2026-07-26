@@ -552,11 +552,12 @@ The initial 0.13 branch now establishes:
   the public managed `TraceKernel.Watchdog` surface arms, pets, inspects, and
   disarms the process-owned kernel watchdog;
 - managed C# `KernelProcess`, `KernelDescriptor`, and `KernelPipe` surfaces for
-  spawn, selected/all descriptor inheritance, piped stdio, raw descriptor I/O,
+  spawn, selected/all descriptor inheritance, atomic parent-to-child descriptor
+  mappings, ordered child `dup2`/close actions, piped stdio, raw descriptor I/O,
   signal delivery, synchronous wait/reap, and descriptor duplication/close;
   real browser conformance covers C# parents spawning both JavaScript and C#
   children, same-language worker/static-state isolation, shared TKFS mutation,
-  and a JavaScript child writing through a selected inherited C# pipe fd;
+  and a JavaScript child writing through a remapped inherited C# pipe fd;
 - runtime process leases now declare preinstalled descriptor identities, and
   the JavaScript/Node adapter seeds those identities as direct kernel-backed
   descriptors so inherited file, pipe, and socket numbers remain usable without

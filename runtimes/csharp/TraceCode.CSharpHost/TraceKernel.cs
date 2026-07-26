@@ -181,6 +181,26 @@ public sealed class KernelDescriptor : IDisposable
         return new KernelDescriptor(value.GetProperty("fd").GetInt32());
     }
 
+    public KernelDescriptor DuplicateTo(int targetNumber)
+    {
+        ThrowIfClosed();
+        if (targetNumber < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(targetNumber));
+        }
+        if (targetNumber == Number)
+        {
+            return this;
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "dup2",
+            fd = Number,
+            targetFd = targetNumber,
+        });
+        return new KernelDescriptor(value.GetProperty("fd").GetInt32());
+    }
+
     public void Close()
     {
         if (closed)
@@ -234,6 +254,24 @@ public sealed record KernelPipe(
     }
 }
 
+public sealed record DescriptorMapping(
+    int ParentDescriptor,
+    int ChildDescriptor
+);
+
+public abstract record SpawnDescriptorAction
+{
+    private SpawnDescriptorAction()
+    {
+    }
+
+    public sealed record Duplicate(int SourceDescriptor, int TargetDescriptor)
+        : SpawnDescriptorAction;
+
+    public sealed record Close(int Descriptor)
+        : SpawnDescriptorAction;
+}
+
 public sealed class SpawnOptions
 {
     public string? Cwd { get; init; }
@@ -241,6 +279,8 @@ public sealed class SpawnOptions
     public bool StartNewSession { get; init; }
     public bool InheritAllDescriptors { get; init; }
     public IReadOnlyList<int>? InheritDescriptors { get; init; }
+    public IReadOnlyList<DescriptorMapping>? DescriptorMappings { get; init; }
+    public IReadOnlyList<SpawnDescriptorAction>? DescriptorActions { get; init; }
     public int? ProcessGroupId { get; init; }
     public int? SessionId { get; init; }
     public StdioMode? StandardInput { get; init; }
@@ -332,6 +372,57 @@ public sealed class KernelProcess
         if (inheritedDescriptors is not null)
         {
             request["inheritDescriptors"] = inheritedDescriptors;
+        }
+        if (options.DescriptorMappings is not null)
+        {
+            request["descriptorMappings"] = options.DescriptorMappings
+                .Select(mapping =>
+                {
+                    if (
+                        mapping.ParentDescriptor < 0 ||
+                        mapping.ChildDescriptor < 0
+                    )
+                    {
+                        throw new ArgumentOutOfRangeException(
+                            nameof(options),
+                            "Descriptor mappings require non-negative fd numbers."
+                        );
+                    }
+                    return new
+                    {
+                        parentFd = mapping.ParentDescriptor,
+                        childFd = mapping.ChildDescriptor,
+                    };
+                })
+                .ToArray();
+        }
+        if (options.DescriptorActions is not null)
+        {
+            request["descriptorActions"] = options.DescriptorActions
+                .Select<SpawnDescriptorAction, object>(action => action switch
+                {
+                    SpawnDescriptorAction.Duplicate duplicate
+                        when duplicate.SourceDescriptor >= 0 &&
+                            duplicate.TargetDescriptor >= 0
+                        => new
+                        {
+                            op = "dup2",
+                            fd = duplicate.SourceDescriptor,
+                            targetFd = duplicate.TargetDescriptor,
+                        },
+                    SpawnDescriptorAction.Close close
+                        when close.Descriptor >= 0
+                        => new
+                        {
+                            op = "close",
+                            fd = close.Descriptor,
+                        },
+                    _ => throw new ArgumentOutOfRangeException(
+                        nameof(options),
+                        "Descriptor actions require non-negative fd numbers."
+                    ),
+                })
+                .ToArray();
         }
         if (options.ProcessGroupId is not null)
         {
