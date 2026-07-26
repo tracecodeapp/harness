@@ -1769,6 +1769,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           );
           return { ok: true, value: { op: 'getpeername', address } };
         }
+        case 'getsockopt': {
+          const error = await this.kernelNetwork.socketError(
+            context?.process.pid ?? 0,
+            request.fd
+          );
+          return {
+            ok: true,
+            value: {
+              op: 'getsockopt',
+              ...(error === undefined ? {} : { error }),
+            },
+          };
+        }
         case 'open': {
           const access = request.options?.access ?? 'read';
           if (access === 'read' || access === 'read-write') {

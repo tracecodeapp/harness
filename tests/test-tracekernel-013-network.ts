@@ -299,15 +299,91 @@ async function main(): Promise<void> {
         reboundAfterInterrupt.port >= 49_152,
         'Interrupted connect() did not release its provisional port or reset the socket.'
       );
+      const nonblockingClientFd = yield* session.createTcpSocket(contender);
+      yield* contender.descriptors.setNonblocking(nonblockingClientFd, true);
+      assertNetworkError(
+        yield* Effect.exit(
+          session.connectTcp(contender, nonblockingClientFd, backlogAddress)
+        ),
+        'EINPROGRESS'
+      );
+      assertNetworkError(
+        yield* Effect.exit(
+          session.connectTcp(contender, nonblockingClientFd, backlogAddress)
+        ),
+        'EALREADY'
+      );
+      const pendingConnect = yield* contender.descriptors.readiness(
+        nonblockingClientFd,
+        { read: false, write: true }
+      );
+      assertCondition(
+        !pendingConnect.write && !pendingConnect.error,
+        'An incomplete nonblocking connect reported writable.'
+      );
+      const connectCompletion = yield* Effect.fork(
+        contender.descriptors.awaitReadiness(
+          nonblockingClientFd,
+          { read: false, write: true }
+        )
+      );
+      const queuedAccepted = yield* session.acceptTcp(server, backlogListenerFd);
+      const completedConnect = yield* Fiber.join(connectCompletion);
+      assertCondition(
+        completedConnect.write && !completedConnect.error,
+        'A completed nonblocking connect did not become writable.'
+      );
+      assertCondition(
+        (yield* session.tcpSocketError(contender, nonblockingClientFd)) ===
+          undefined,
+        'A successful nonblocking connect retained a socket error.'
+      );
+      assertNetworkError(
+        yield* Effect.exit(
+          session.connectTcp(contender, nonblockingClientFd, backlogAddress)
+        ),
+        'EISCONN'
+      );
+      const nonblockingAccepted = yield* session.acceptTcp(
+        server,
+        backlogListenerFd
+      );
+      yield* server.close(queuedAccepted.fd);
+      yield* server.close(nonblockingAccepted.fd);
       yield* server.close(backlogListenerFd);
       yield* client.close(queuedClientFd);
       yield* contender.close(blockedClientFd);
+      yield* contender.close(nonblockingClientFd);
 
       const refusedFd = yield* session.createTcpSocket(contender);
       assertNetworkError(
         yield* Effect.exit(session.connectTcp(contender, refusedFd, bound)),
         'ECONNREFUSED'
       );
+      const refusedNonblockingFd = yield* session.createTcpSocket(contender);
+      yield* contender.descriptors.setNonblocking(refusedNonblockingFd, true);
+      assertNetworkError(
+        yield* Effect.exit(
+          session.connectTcp(contender, refusedNonblockingFd, bound)
+        ),
+        'EINPROGRESS'
+      );
+      const refusedReady = yield* contender.descriptors.awaitReadiness(
+        refusedNonblockingFd,
+        { read: false, write: true }
+      );
+      assertCondition(
+        refusedReady.write && refusedReady.error,
+        'A failed nonblocking connect did not report writable error readiness.'
+      );
+      assertCondition(
+        (yield* session.tcpSocketError(contender, refusedNonblockingFd)) ===
+          'ECONNREFUSED' &&
+          (yield* session.tcpSocketError(contender, refusedNonblockingFd)) ===
+            undefined,
+        'SO_ERROR did not consume the asynchronous connection error exactly once.'
+      );
+      yield* contender.close(refusedNonblockingFd);
       const rebound = yield* session.bindTcp(contender, conflictingFd, bound);
       assertCondition(
         rebound.port === bound.port,
@@ -336,6 +412,7 @@ async function main(): Promise<void> {
     bidirectionalFragmentedStreams: true,
     boundedBackpressure: true,
     nonblockingAcceptRecvAndSend: true,
+    nonblockingConnectLifecycle: true,
     writeHalfClosePreservesReverseStream: true,
     listenerCloseWakesAccept: true,
     backlogAppliesConnectBackpressure: true,

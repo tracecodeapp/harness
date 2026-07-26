@@ -7,6 +7,7 @@ import {
   type TraceKernelTcpConnectResult,
   type TraceKernelTcpListenOptions,
   type TraceKernelTcpShutdownHow,
+  type TraceKernelNetworkErrorCode,
 } from '@tracecode/tracekernel';
 import * as Effect from 'effect/Effect';
 
@@ -97,7 +98,18 @@ export class RuntimeKernelNetworkManager {
     address: TraceKernelTcpAddress
   ): Promise<TraceKernelTcpConnectResult> {
     const socket = await this.socketFor(pid, fd, 'connect');
-    return Effect.runPromise(socket.connect(address));
+    const nonblocking = await this.descriptors.getNonblocking(pid, fd);
+    return Effect.runPromise(
+      nonblocking ? socket.connectNonblocking(address) : socket.connect(address)
+    );
+  }
+
+  async socketError(
+    pid: number,
+    fd: number
+  ): Promise<TraceKernelNetworkErrorCode | undefined> {
+    const socket = await this.socketFor(pid, fd, 'getsockopt');
+    return Effect.runPromise(socket.takeConnectError());
   }
 
   async shutdown(

@@ -1239,8 +1239,24 @@ export class TraceKernelSession {
     fd: number,
     address: TraceKernelTcpAddress
   ): Effect.Effect<TraceKernelTcpConnectResult, Error> {
+    return Effect.all({
+      socket: this.tcpSocketFor(process, fd),
+      nonblocking: process.descriptors.getNonblocking(fd),
+    }).pipe(
+      Effect.flatMap(({ socket, nonblocking }) =>
+        nonblocking
+          ? socket.connectNonblocking(address)
+          : socket.connect(address)
+      )
+    );
+  }
+
+  tcpSocketError(
+    process: TraceKernelProcess,
+    fd: number
+  ): Effect.Effect<TraceKernelNetworkError['code'] | undefined, Error> {
     return this.tcpSocketFor(process, fd).pipe(
-      Effect.flatMap((socket) => socket.connect(address))
+      Effect.flatMap((socket) => socket.takeConnectError())
     );
   }
 

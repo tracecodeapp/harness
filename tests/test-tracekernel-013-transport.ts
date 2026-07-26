@@ -224,6 +224,7 @@ async function main(): Promise<void> {
     { op: 'shutdown', fd: 4, how: 'write' },
     { op: 'getsockname', fd: 4 },
     { op: 'getpeername', fd: 4 },
+    { op: 'getsockopt', fd: 4, option: 'error' },
     {
       op: 'open',
       path: '/workspace/a',
@@ -391,6 +392,11 @@ async function main(): Promise<void> {
         op: 'getpeername',
         address: { host: '127.0.0.1', port: 8080 },
       },
+    },
+    { ok: true, value: { op: 'getsockopt' } },
+    {
+      ok: true,
+      value: { op: 'getsockopt', error: 'ECONNREFUSED' },
     },
     { ok: true, value: { op: 'open', fd: 3 } },
     { ok: true, value: { op: 'read', bytes: Uint8Array.from([0, 255]) } },

@@ -700,6 +700,17 @@ async function main(): Promise<void> {
           remoteAddress.value.address.port === boundSocket.value.address.port,
         'Socket address syscalls returned inconsistent endpoint identities.'
       );
+      const socketError = yield* peerSyscalls.dispatch({
+        op: 'getsockopt',
+        fd: clientSocket.value.fd,
+        option: 'error',
+      });
+      success(socketError);
+      assertCondition(
+        socketError.value.op === 'getsockopt' &&
+          socketError.value.error === undefined,
+        `A connected socket retained a wire-level error: ${JSON.stringify(socketError)}`
+      );
       success(yield* peerSyscalls.dispatch({
         op: 'shutdown',
         fd: clientSocket.value.fd,

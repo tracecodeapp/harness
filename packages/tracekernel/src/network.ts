@@ -1,7 +1,10 @@
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
+import * as Exit from 'effect/Exit';
+import * as Fiber from 'effect/Fiber';
 import * as Option from 'effect/Option';
 import * as Queue from 'effect/Queue';
+import * as Scope from 'effect/Scope';
 import {
   TraceKernelPipe,
   type TraceKernelDescriptor,
@@ -100,6 +103,9 @@ export class TraceKernelTcpSocket {
   private readShutdown = false;
   private writeShutdown = false;
   private ownsBinding = false;
+  private connectError?: TraceKernelNetworkError;
+  private connectFiber?: Fiber.RuntimeFiber<void, never>;
+  private connectToken?: symbol;
 
   constructor(
     readonly id: string,
@@ -229,12 +235,16 @@ export class TraceKernelTcpSocket {
       if (this.state === 'closed') {
         return Effect.fail(networkError('EBADF', 'socket is closed'));
       }
-      if (this.state === 'connected' || this.state === 'connecting') {
+      if (this.state === 'connected') {
         return Effect.fail(networkError('EISCONN', 'socket is already connected'));
+      }
+      if (this.state === 'connecting') {
+        return Effect.fail(networkError('EALREADY', 'socket connection is already in progress'));
       }
       if (this.state === 'listening') {
         return Effect.fail(networkError('EOPNOTSUPP', 'listening socket cannot connect'));
       }
+      this.connectError = undefined;
       this.state = 'connecting';
       return Effect.raceFirst(
         this.namespace.connect(this, address),
@@ -252,6 +262,80 @@ export class TraceKernelTcpSocket {
         }))
       );
     });
+  }
+
+  connectNonblocking(
+    address: TraceKernelTcpAddress
+  ): Effect.Effect<never, TraceKernelNetworkError> {
+    return Effect.suspend(() => {
+      if (this.state === 'closed') {
+        return Effect.fail(networkError('EBADF', 'socket is closed'));
+      }
+      if (this.state === 'connected') {
+        return Effect.fail(networkError('EISCONN', 'socket is already connected'));
+      }
+      if (this.state === 'connecting') {
+        return Effect.fail(networkError('EALREADY', 'socket connection is already in progress'));
+      }
+      if (this.state === 'listening') {
+        return Effect.fail(networkError('EOPNOTSUPP', 'listening socket cannot connect'));
+      }
+      this.connectError = undefined;
+      this.state = 'connecting';
+      const token = Symbol(`connect-${this.id}`);
+      this.connectToken = token;
+      return Effect.gen(this, function* () {
+        const fiber = yield* this.namespace.fork(
+          Effect.raceFirst(
+            this.namespace.connect(this, address),
+            Deferred.await(this.closed).pipe(
+              Effect.andThen(Effect.fail(networkError(
+                'EBADF',
+                'socket closed during connect'
+              )))
+            )
+          ).pipe(
+            Effect.tapError((error) => Effect.sync(() => {
+              if (this.state !== 'closed') {
+                this.state = this.boundAddress ? 'bound' : 'new';
+                this.connectError = error;
+              }
+            })),
+            Effect.matchEffect({
+              onFailure: () => Effect.void,
+              onSuccess: () => Effect.void,
+            }),
+            Effect.ensuring(Effect.gen(this, function* () {
+              if (this.connectToken === token) {
+                this.connectToken = undefined;
+                this.connectFiber = undefined;
+              }
+              yield* this.notifyReadiness();
+            }))
+          )
+        );
+        if (this.connectToken === token) this.connectFiber = fiber;
+        return yield* Effect.fail(networkError(
+          'EINPROGRESS',
+          'socket connection is in progress'
+        ));
+      });
+    });
+  }
+
+  /**
+   * Implements the consume-on-read portion of `getsockopt(SO_ERROR)`.
+   *
+   * A pending connect reports no error until its completion becomes
+   * observable through descriptor readiness. Once consumed, a failed socket
+   * may be connected again.
+   */
+  takeConnectError(): Effect.Effect<TraceKernelNetworkErrorCode | undefined> {
+    return Effect.sync(() => {
+      const error = this.connectError;
+      this.connectError = undefined;
+      return error?.code;
+    }).pipe(Effect.tap(() => this.notifyReadiness()));
   }
 
   attachConnected(
@@ -322,6 +406,10 @@ export class TraceKernelTcpSocket {
       this.listener = undefined;
       const endpoint = this.endpoint;
       this.endpoint = undefined;
+      const connectFiber = this.connectFiber;
+      this.connectFiber = undefined;
+      this.connectToken = undefined;
+      this.connectError = undefined;
       const notifyClosed = Deferred.succeed(this.closed, undefined).pipe(Effect.asVoid);
       const closeListener = listener
         ? Deferred.succeed(listener.closed, undefined).pipe(
@@ -344,6 +432,7 @@ export class TraceKernelTcpSocket {
       return Effect.all([
         notifyClosed,
         this.notifyReadiness(),
+        connectFiber ? Fiber.interrupt(connectFiber).pipe(Effect.asVoid) : Effect.void,
         closeListener,
         closeEndpoint,
         this.ownsBinding
@@ -435,6 +524,14 @@ export class TraceKernelTcpSocket {
             error: false,
           }))
         );
+      }
+      if (this.connectError) {
+        return Effect.succeed(Object.freeze({
+          read: false,
+          write: events.write,
+          hangup: false,
+          error: true,
+        }));
       }
       if (this.state !== 'connected' || !this.endpoint) {
         return Effect.succeed(Object.freeze({
@@ -557,12 +654,26 @@ export class TraceKernelNetworkNamespace {
   private nextEphemeralPort = 49_152;
   private closed = false;
 
-  private constructor(private readonly mutex: Effect.Semaphore) {}
+  private constructor(
+    private readonly mutex: Effect.Semaphore,
+    private readonly scope: Scope.CloseableScope
+  ) {}
 
   static make(): Effect.Effect<TraceKernelNetworkNamespace> {
-    return Effect.makeSemaphore(1).pipe(
-      Effect.map((mutex) => new TraceKernelNetworkNamespace(mutex))
+    return Effect.all({
+      mutex: Effect.makeSemaphore(1),
+      scope: Scope.make(),
+    }).pipe(
+      Effect.map(({ mutex, scope }) =>
+        new TraceKernelNetworkNamespace(mutex, scope)
+      )
     );
+  }
+
+  fork(
+    effect: Effect.Effect<void, never>
+  ): Effect.Effect<Fiber.RuntimeFiber<void, never>> {
+    return Effect.forkIn(effect, this.scope);
   }
 
   createSocket(): Effect.Effect<TraceKernelTcpSocket, TraceKernelNetworkError> {
@@ -705,6 +816,7 @@ export class TraceKernelNetworkNamespace {
         (socket) => socket.dispose(),
         { concurrency: 'unbounded', discard: true }
       ).pipe(
+        Effect.andThen(Scope.close(this.scope, Exit.void)),
         Effect.ensuring(Effect.sync(() => {
           this.bindings.clear();
           this.sockets.clear();

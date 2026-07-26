@@ -143,6 +143,11 @@ export type TraceKernelSyscallRequest =
       readonly fd: number;
     }
   | {
+      readonly op: 'getsockopt';
+      readonly fd: number;
+      readonly option: 'error';
+    }
+  | {
       readonly op: 'open';
       readonly path: string;
       readonly options?: TraceKernelOpenFileOptions;
@@ -311,6 +316,10 @@ export type TraceKernelSyscallValue =
   | { readonly op: 'shutdown' }
   | { readonly op: 'getsockname'; readonly address: TraceKernelTcpAddress }
   | { readonly op: 'getpeername'; readonly address: TraceKernelTcpAddress }
+  | {
+      readonly op: 'getsockopt';
+      readonly error?: TraceKernelNetworkError['code'];
+    }
   | { readonly op: 'open'; readonly fd: number }
   | { readonly op: 'read'; readonly bytes: Uint8Array }
   | { readonly op: 'write'; readonly bytesWritten: number }
@@ -360,6 +369,7 @@ export type TraceKernelSyscallErrorCode =
   | 'EADDRINUSE'
   | 'EACCES'
   | 'EAFNOSUPPORT'
+  | 'EALREADY'
   | 'EBADF'
   | 'EBUSY'
   | 'ECHILD'
@@ -369,6 +379,7 @@ export type TraceKernelSyscallErrorCode =
   | 'EEXIST'
   | 'ECONNREFUSED'
   | 'EDESTADDRREQ'
+  | 'EINPROGRESS'
   | 'EISCONN'
   | 'EISDIR'
   | 'EINVAL'
@@ -631,6 +642,13 @@ export class TraceKernelSyscallDispatcher {
       case 'getpeername':
         return this.session.tcpRemoteAddress(this.process, request.fd).pipe(
           Effect.map((address) => ({ op: 'getpeername' as const, address }))
+        );
+      case 'getsockopt':
+        return this.session.tcpSocketError(this.process, request.fd).pipe(
+          Effect.map((error) => ({
+            op: 'getsockopt' as const,
+            ...(error === undefined ? {} : { error }),
+          }))
         );
       case 'open':
         return this.session.openFile(this.process, request.path, request.options).pipe(

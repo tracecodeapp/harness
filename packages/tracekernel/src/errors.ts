@@ -104,9 +104,11 @@ export class TraceKernelDescriptorLimitError extends Data.TaggedError(
 export type TraceKernelNetworkErrorCode =
   | 'EADDRINUSE'
   | 'EAFNOSUPPORT'
+  | 'EALREADY'
   | 'EBADF'
   | 'ECONNREFUSED'
   | 'EDESTADDRREQ'
+  | 'EINPROGRESS'
   | 'EISCONN'
   | 'EINVAL'
   | 'ENOTCONN'

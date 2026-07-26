@@ -1,4 +1,5 @@
 import * as Effect from 'effect/Effect';
+import type { TraceKernelNetworkErrorCode } from './errors';
 import type { TraceKernelSyscallDispatcher } from './syscalls';
 import type {
   TraceKernelSyscallErrorCode,
@@ -55,6 +56,7 @@ const OP_CODES = {
   setpgid: 40,
   dup3: 41,
   poll: 42,
+  getsockopt: 43,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -74,6 +76,7 @@ const SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'EADDRINUSE',
   'EACCES',
   'EAFNOSUPPORT',
+  'EALREADY',
   'EBADF',
   'EBUSY',
   'ECHILD',
@@ -83,6 +86,7 @@ const SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'EEXIST',
   'ECONNREFUSED',
   'EDESTADDRREQ',
+  'EINPROGRESS',
   'EISCONN',
   'EISDIR',
   'EINVAL',
@@ -98,6 +102,19 @@ const SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'EOPNOTSUPP',
   'EROFS',
   'ESRCH',
+]);
+const SOCKET_ERROR_CODES: ReadonlySet<TraceKernelNetworkErrorCode> = new Set([
+  'EADDRINUSE',
+  'EAFNOSUPPORT',
+  'EALREADY',
+  'EBADF',
+  'ECONNREFUSED',
+  'EDESTADDRREQ',
+  'EINPROGRESS',
+  'EISCONN',
+  'EINVAL',
+  'ENOTCONN',
+  'EOPNOTSUPP',
 ]);
 
 export type TraceKernelTransportErrorCode =
@@ -446,6 +463,10 @@ export function encodeTraceKernelSyscallRequest(
     case 'getsockname':
     case 'getpeername':
       writer.i32(request.fd);
+      break;
+    case 'getsockopt':
+      writer.i32(request.fd);
+      writer.u8(request.option === 'error' ? 1 : 0);
       break;
     case 'send':
       writer.i32(request.fd);
@@ -851,6 +872,18 @@ export function decodeTraceKernelSyscallRequest(
     case 'getpeername':
       request = { op: operation, fd: reader.i32() };
       break;
+    case 'getsockopt': {
+      const fd = reader.i32();
+      const option = reader.u8();
+      if (option !== 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid socket option code ${option}`
+        );
+      }
+      request = { op: 'getsockopt', fd, option: 'error' };
+      break;
+    }
     case 'send':
       request = { op: 'send', fd: reader.i32(), bytes: reader.byteArray() };
       break;
@@ -1246,6 +1279,10 @@ export function encodeTraceKernelSyscallResult(
     case 'getpeername':
       writeAddress(writer, value.address);
       break;
+    case 'getsockopt':
+      writer.u8(value.error === undefined ? 0 : 1);
+      if (value.error !== undefined) writer.string(value.error);
+      break;
     case 'read':
       writer.byteArray(value.bytes);
       break;
@@ -1544,6 +1581,32 @@ export function decodeTraceKernelSyscallResult(
     case 'getpeername':
       value = { op: operation, address: readAddress(reader) };
       break;
+    case 'getsockopt': {
+      const hasError = reader.u8();
+      if (hasError > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid socket error presence flag ${hasError}`
+        );
+      }
+      const error = hasError === 1 ? reader.string() : undefined;
+      if (
+        error !== undefined &&
+        !SOCKET_ERROR_CODES.has(error as TraceKernelNetworkErrorCode)
+      ) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid socket error code ${JSON.stringify(error)}`
+        );
+      }
+      value = {
+        op: 'getsockopt',
+        ...(error === undefined
+          ? {}
+          : { error: error as TraceKernelNetworkErrorCode }),
+      };
+      break;
+    }
     case 'read':
       value = { op: 'read', bytes: reader.byteArray() };
       break;
@@ -2064,6 +2127,19 @@ export class TraceKernelRuntimeFileClient {
       this.transport.dispatchSync({ op: 'getpeername', fd }),
       'getpeername'
     ).address;
+  }
+
+  socketError(
+    fd: number
+  ): Extract<TraceKernelSyscallValue, { op: 'getsockopt' }>['error'] {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: 'getsockopt',
+        fd,
+        option: 'error',
+      }),
+      'getsockopt'
+    ).error;
   }
 
   open(
