@@ -219,6 +219,65 @@ const CPP_SPAWN_CPP_PROGRAM = [
   '',
 ].join('\n');
 
+const CPP_POSIX_PROCESS_GROUP_PROGRAM = [
+  '#include <signal.h>',
+  '#include <spawn.h>',
+  '#include <sys/stat.h>',
+  '#include <sys/wait.h>',
+  '#include <unistd.h>',
+  '#include <chrono>',
+  '#include <cstdio>',
+  '#include <fstream>',
+  '#include <string>',
+  '',
+  'static bool wait_for(const char* path, int milliseconds) {',
+  '  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);',
+  '  struct stat info {};',
+  '  while (std::chrono::steady_clock::now() < deadline) {',
+  '    if (stat(path, &info) == 0) return true;',
+  '  }',
+  '  return false;',
+  '}',
+  '',
+  'int main() {',
+  '  posix_spawnattr_t attributes {};',
+  '  if (posix_spawnattr_init(&attributes) != 0) return 10;',
+  '  if (posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID) != 0) return 11;',
+  '  char command[] = "node";',
+  '  char script[] = "cpp-group-leader.js";',
+  '  char* child_argv[] = { command, script, nullptr };',
+  '  char environment[] = "CPP_GROUP_ENV=kernel";',
+  '  char* child_envp[] = { environment, nullptr };',
+  '  pid_t child = -1;',
+  '  const int spawn_result = posix_spawn(&child, command, nullptr, &attributes, child_argv, child_envp);',
+  '  posix_spawnattr_destroy(&attributes);',
+  '  if (spawn_result != 0 || child <= 0 || child == getpid()) return 12;',
+  '  if (!wait_for("cpp-group-ready.txt", 20000)) return 13;',
+  '  std::ifstream ready("cpp-group-ready.txt");',
+  '  pid_t leader = -1;',
+  '  pid_t descendant = -1;',
+  '  char separator = 0;',
+  '  ready >> leader >> separator >> descendant;',
+  '  if (!ready || separator != \':\' || leader != child || descendant <= 0 || descendant == child) return 14;',
+  '  if (killpg(child, SIGKILL) != 0) return 15;',
+  '  int status = 0;',
+  '  if (waitpid(child, &status, 0) != child) return 16;',
+  '  if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL) return 17;',
+  '  const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);',
+  '  while (std::chrono::steady_clock::now() < settle) {}',
+  '  struct stat survived {};',
+  '  if (stat("cpp-group-survived.txt", &survived) == 0) return 18;',
+  '  std::printf("posix-group:%d:%d:%d:%d:%d\\n",',
+  '    static_cast<int>(getpid()),',
+  '    static_cast<int>(getppid()),',
+  '    static_cast<int>(getpgrp()),',
+  '    static_cast<int>(getsid(0)),',
+  '    static_cast<int>(child));',
+  '  return 0;',
+  '}',
+  '',
+].join('\n');
+
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
@@ -757,6 +816,7 @@ async function main(): Promise<void> {
         { path: 'spawn-javascript.cpp', contents: CPP_SPAWN_JAVASCRIPT_PROGRAM },
         { path: 'cpp-child.cpp', contents: CPP_CHILD_PROGRAM },
         { path: 'spawn-cpp.cpp', contents: CPP_SPAWN_CPP_PROGRAM },
+        { path: 'posix-process-group.cpp', contents: CPP_POSIX_PROCESS_GROUP_PROGRAM },
         { path: 'watchdog-control.cpp', contents: CPP_WATCHDOG_CONTROL_PROGRAM },
         { path: 'watchdog-expiry.cpp', contents: CPP_WATCHDOG_EXPIRY_PROGRAM },
         { path: 'cpp-watches.txt', contents: 'before-js' },
@@ -766,6 +826,27 @@ async function main(): Promise<void> {
           contents: [
             'const fs = require("node:fs");',
             'fs.writeFileSync("cpp-child-owned.txt", `${process.ppid}:${process.pid}`);',
+            '',
+          ].join('\n'),
+        },
+        {
+          path: 'cpp-group-leader.js',
+          contents: [
+            'const fs = require("node:fs");',
+            'const { spawn } = require("node:child_process");',
+            'if (process.env.CPP_GROUP_ENV !== "kernel") throw new Error("posix_spawn envp was not forwarded");',
+            'const descendant = spawn("node", ["cpp-group-descendant.js"], { stdio: "inherit" });',
+            'fs.writeFileSync("cpp-group-ready.txt", `${process.pid}:${descendant.pid}`);',
+            'setInterval(() => {}, 1000);',
+            '',
+          ].join('\n'),
+        },
+        {
+          path: 'cpp-group-descendant.js',
+          contents: [
+            'const fs = require("node:fs");',
+            'setTimeout(() => fs.writeFileSync("cpp-group-survived.txt", "bad"), 300);',
+            'setInterval(() => {}, 1000);',
             '',
           ].join('\n'),
         },
@@ -1049,6 +1130,52 @@ async function main(): Promise<void> {
           javascriptParentStart,
           reverseCppChildStart,
         })}`
+      );
+
+      const posixProcessCompile = await crossLanguageWorkspace.runCommand(
+        'clang++ posix-process-group.cpp -o a.out'
+      );
+      assertCondition(
+        posixProcessCompile.exitCode === 0,
+        `C++ POSIX process-group fixture should compile: ${JSON.stringify(posixProcessCompile)}`
+      );
+      const posixExecutable = (await crossLanguageWorkspace.snapshot()).files.find(
+        (file) => file.path === 'a.out'
+      );
+      assertCondition(posixExecutable !== undefined, 'C++ POSIX process fixture should emit a.out');
+      const posixExecutableBytes = posixExecutable.encoding === 'base64'
+        ? Buffer.from(posixExecutable.contents, 'base64')
+        : Buffer.from(posixExecutable.contents, 'utf8');
+      const posixImports = WebAssembly.Module.imports(
+        await WebAssembly.compile(posixExecutableBytes)
+      );
+      for (const name of ['proc_spawn', 'proc_wait', 'proc_kill', 'proc_identity']) {
+        assertCondition(
+          posixImports.some(
+            (item) => item.module === 'tracecode_kernel' && item.name === name
+          ),
+          `C++ POSIX process fixture should import ${name}: ${JSON.stringify(posixImports)}`
+        );
+      }
+      const posixProcessRun = await crossLanguageWorkspace.runCommand('./a.out');
+      const posixIdentity =
+        /^posix-group:(\d+):(\d+):(\d+):(\d+):(\d+)\n$/.exec(posixProcessRun.stdout);
+      assertCondition(
+        posixProcessRun.exitCode === 0 &&
+          posixIdentity !== null &&
+          posixIdentity[1] !== posixIdentity[2] &&
+          posixIdentity[1] === posixIdentity[3] &&
+          Number(posixIdentity[4]) > 0 &&
+          posixIdentity[1] !== posixIdentity[5],
+        `C++ posix_spawn, waitpid, identity, and killpg should stay kernel-owned: ${JSON.stringify(
+          posixProcessRun
+        )}`
+      );
+      assertCondition(
+        !(await crossLanguageWorkspace.snapshot()).files.some(
+          (file) => file.path === 'cpp-group-survived.txt'
+        ),
+        'one C++ killpg call should terminate the JavaScript leader and descendant'
       );
 
       const watchdogControlCompile = await crossLanguageWorkspace.runCommand(

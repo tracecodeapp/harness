@@ -39,12 +39,15 @@ const WORKER_DEBUG = (() => {
   }
 })();
 const ESUCCESS = 0;
+const E2BIG = 1;
 const EACCES = 2;
+const EAGAIN = 6;
 const EADDRINUSE = 3;
 const EAFNOSUPPORT = 5;
 const EBADF = 8;
 const ECONNABORTED = 13;
 const ECONNREFUSED = 14;
+const ECHILD = 12;
 const EEXIST = 20;
 const EINVAL = 28;
 const EIO = 29;
@@ -57,6 +60,7 @@ const ENOTDIR = 54;
 const ENOTEMPTY = 55;
 const ENOTSUP = 58;
 const EROFS = 69;
+const ESRCH = 71;
 const ESPIPE = 70;
 const FILETYPE_UNKNOWN = 0;
 const FILETYPE_CHARACTER_DEVICE = 2;
@@ -1982,11 +1986,14 @@ class InMemoryFileSystem {
 }
 
 const CPP_TRACEKERNEL_ERRNO = Object.freeze({
+  E2BIG,
   EACCES,
+  EAGAIN,
   EADDRINUSE,
   EAFNOSUPPORT,
   EBADF,
   ECONNREFUSED,
+  ECHILD,
   EEXIST,
   EINVAL,
   EIO,
@@ -1999,6 +2006,7 @@ const CPP_TRACEKERNEL_ERRNO = Object.freeze({
   ENOTEMPTY,
   ENOTSUP,
   EROFS,
+  ESRCH,
 });
 
 function cppTraceKernelErrno(error, fallback = EIO) {
@@ -2363,6 +2371,21 @@ class MemoryView {
     return decodeUtf8(this.readBytes(offset, length));
   }
 
+  readCString(offset, maxBytes = 64 * 1024) {
+    this.refresh();
+    const start = offset >>> 0;
+    const limit = Math.min(this.u8.length, start + Math.max(0, maxBytes));
+    let end = start;
+    while (end < limit && this.u8[end] !== 0) end += 1;
+    if (end === limit) {
+      throw new CppTraceKernelSyscallError(
+        'E2BIG',
+        'unterminated C string crossed the TraceKernel process boundary'
+      );
+    }
+    return decodeUtf8(this.u8.subarray(start, end));
+  }
+
   writeString(offset, value) {
     const bytes = encodeUtf8(value);
     this.writeBytes(offset, bytes);
@@ -2423,6 +2446,12 @@ class WasiProcess {
     this.onOutput = options.onOutput;
     this.kernelHttp = options.kernelHttp || null;
     this.kernelClient = options.kernelClient || null;
+    this.process = options.process || {
+      pid: 1,
+      ppid: 0,
+      pgid: 1,
+      sid: 1,
+    };
     this.socketHostsByToken = new Map();
     this.nextSocketHostToken = 1;
     this.kernelDevices = wasiKernelDevices(options);
@@ -2462,6 +2491,48 @@ class WasiProcess {
   // cross the same synchronous syscall channel, so the session kernel owns
   // child lifecycle and descriptor/network state rather than the WASM worker.
   tracecodeKernelImports() {
+    const signalName = (signalNumber) => (
+      signalNumber === 2
+        ? 'SIGINT'
+        : signalNumber === 9
+          ? 'SIGKILL'
+          : signalNumber === 15
+            ? 'SIGTERM'
+            : null
+    );
+    const readArgv = (argvPtr) => {
+      const args = [];
+      for (let index = 0; index < 256; index += 1) {
+        const pointer = this.mem.readU32((argvPtr >>> 0) + index * 4);
+        if (pointer === 0) return args;
+        args.push(this.mem.readCString(pointer));
+      }
+      throw new CppTraceKernelSyscallError(
+        'E2BIG',
+        'process argv exceeds 256 entries'
+      );
+    };
+    const readEnvp = (envpPtr) => {
+      if ((envpPtr >>> 0) === 0) return null;
+      const env = {};
+      for (let index = 0; index < 4096; index += 1) {
+        const pointer = this.mem.readU32((envpPtr >>> 0) + index * 4);
+        if (pointer === 0) return env;
+        const assignment = this.mem.readCString(pointer);
+        const equals = assignment.indexOf('=');
+        if (equals <= 0) {
+          throw new CppTraceKernelSyscallError(
+            'EINVAL',
+            'process environment entries must use NAME=VALUE form'
+          );
+        }
+        env[assignment.slice(0, equals)] = assignment.slice(equals + 1);
+      }
+      throw new CppTraceKernelSyscallError(
+        'E2BIG',
+        'process environment exceeds 4096 entries'
+      );
+    };
     return {
       proc_system: (commandPtr, commandLen) => {
         if (!this.kernelClient) return -ENOTSUP;
@@ -2483,6 +2554,78 @@ class WasiProcess {
         } catch (error) {
           return -cppTraceKernelErrno(error);
         }
+      },
+      proc_spawn: (pathPtr, argvPtr, envpPtr, flags, processGroupId) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const command = this.mem.readCString(pathPtr);
+          const argv = readArgv(argvPtr);
+          const requestedEnv = readEnvp(envpPtr);
+          const startsNewSession = (flags & 2) !== 0;
+          const setsProcessGroup = (flags & 1) !== 0;
+          const spawned = this.kernelClient.call({
+            op: 'spawn',
+            runtime: cppRuntimeForCommand(command),
+            command,
+            args: argv.length > 0 ? argv.slice(1) : [],
+            cwd: this.kernelCwd,
+            env: requestedEnv ?? this.env,
+            stdio: {
+              stdin: 'inherit',
+              stdout: 'inherit',
+              stderr: 'inherit',
+            },
+            ...(startsNewSession
+              ? { processGroupId: 0, sessionId: 0 }
+              : setsProcessGroup
+                ? { processGroupId: processGroupId | 0 }
+                : {}),
+          });
+          return spawned.pid | 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_wait: (pid, statusPtr, options) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        if (options !== 0) return -ENOTSUP;
+        try {
+          const waited = this.kernelClient.call({ op: 'wait', pid: pid | 0 });
+          const termination = waited.termination;
+          const status = termination.kind === 'signal'
+            ? termination.signal === 'SIGINT'
+              ? 2
+              : termination.signal === 'SIGKILL'
+                ? 9
+                : 15
+            : (termination.exitCode & 0xff) << 8;
+          if (statusPtr) this.mem.writeU32(statusPtr, status);
+          return waited.pid | 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_kill: (pid, signalNumber) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        const signal = signalName(signalNumber | 0);
+        if (!signal) return -EINVAL;
+        try {
+          this.kernelClient.call({
+            op: 'kill',
+            pid: pid | 0,
+            signal,
+          });
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_identity: (kind) => {
+        if (kind === 1) return this.process.pid | 0;
+        if (kind === 2) return this.process.ppid | 0;
+        if (kind === 3) return this.process.pgid | 0;
+        if (kind === 4) return this.process.sid | 0;
+        return -EINVAL;
       },
       proc_watchdog: (action, timeoutMs, signalNumber, statusPtr) => {
         if (!this.kernelClient) return -ENOTSUP;
@@ -4465,6 +4608,7 @@ async function runWasi(module, args, fs, options = {}) {
     kernelDevices: options.kernelDevices,
     kernelHttp: options.kernelHttp,
     kernelClient: options.kernelClient,
+    process: options.process,
     filestatSizeOffset: options.filestatSizeOffset,
     outputBudget: options.outputBudget,
     onOutput: options.onOutput,
@@ -10874,6 +11018,9 @@ const CPP_KERNEL_SOCKET_HEADER_FILENAME = 'tracecode_socket.h';
 const CPP_KERNEL_SOCKET_SHIM_FILENAME = 'tracecode_socket.c';
 const CPP_KERNEL_NETDB_HEADER_FILENAME = 'netdb.h';
 const CPP_KERNEL_PROCESS_SHIM_FILENAME = 'tracecode_process.c';
+const CPP_KERNEL_PROCESS_HEADER_FILENAME = 'tracecode_process.h';
+const CPP_KERNEL_SPAWN_HEADER_FILENAME = 'spawn.h';
+const CPP_KERNEL_WAIT_HEADER_FILENAME = 'sys/wait.h';
 const CPP_KERNEL_CONTROL_HEADER_FILENAME = 'tracekernel.h';
 const CPP_KERNEL_CONTROL_SHIM_FILENAME = 'tracekernel.c';
 
@@ -11125,12 +11272,110 @@ const char* gai_strerror(int code) {
 #endif
 `;
 
+const CPP_KERNEL_SPAWN_HEADER_SOURCE = String.raw`#ifndef _SPAWN_H
+#define _SPAWN_H
+
+#include <sys/types.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define POSIX_SPAWN_SETPGROUP 0x01
+#define POSIX_SPAWN_SETSID 0x02
+
+typedef struct {
+  short __flags;
+  pid_t __pgroup;
+} posix_spawnattr_t;
+
+typedef struct {
+  int __unsupported;
+} posix_spawn_file_actions_t;
+
+int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* actions, const posix_spawnattr_t* attributes, char* const argv[], char* const envp[]);
+int posix_spawnp(pid_t* pid, const char* file, const posix_spawn_file_actions_t* actions, const posix_spawnattr_t* attributes, char* const argv[], char* const envp[]);
+int posix_spawnattr_init(posix_spawnattr_t* attributes);
+int posix_spawnattr_destroy(posix_spawnattr_t* attributes);
+int posix_spawnattr_getflags(const posix_spawnattr_t* attributes, short* flags);
+int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags);
+int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes, pid_t* pgroup);
+int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t pgroup);
+int posix_spawn_file_actions_init(posix_spawn_file_actions_t* actions);
+int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* actions);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
+const CPP_KERNEL_WAIT_HEADER_SOURCE = String.raw`#ifndef _SYS_WAIT_H
+#define _SYS_WAIT_H
+
+#include <sys/types.h>
+
+#define WNOHANG 1
+#define WIFEXITED(status) (((status) & 0x7f) == 0)
+#define WEXITSTATUS(status) (((status) >> 8) & 0xff)
+#define WIFSIGNALED(status) (((status) & 0x7f) != 0)
+#define WTERMSIG(status) ((status) & 0x7f)
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+pid_t waitpid(pid_t pid, int* status, int options);
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
+const CPP_KERNEL_PROCESS_HEADER_SOURCE = String.raw`#ifndef TRACECODE_PROCESS_H
+#define TRACECODE_PROCESS_H
+
+#include <sys/types.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int kill(pid_t pid, int signal);
+int killpg(pid_t pgroup, int signal);
+pid_t getpid(void);
+pid_t getppid(void);
+pid_t getpgrp(void);
+pid_t getpgid(pid_t pid);
+pid_t getsid(pid_t pid);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
 const CPP_KERNEL_PROCESS_SHIM_SOURCE = String.raw`#include <errno.h>
+#include <signal.h>
+#include <spawn.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 __attribute__((import_module("tracecode_kernel"), import_name("proc_system")))
 int __tracecode_proc_system(const char* command, unsigned int length);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_spawn")))
+int __tracecode_proc_spawn(const char* path, char* const argv[], char* const envp[], int flags, int pgroup);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_wait")))
+int __tracecode_proc_wait(int pid, int* status, int options);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_kill")))
+int __tracecode_proc_kill(int pid, int signal);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_identity")))
+int __tracecode_proc_identity(int kind);
 
 int system(const char* command) {
   int result;
@@ -11141,6 +11386,124 @@ int system(const char* command) {
     return -1;
   }
   return (result & 0xff) << 8;
+}
+
+int posix_spawn(
+  pid_t* pid,
+  const char* path,
+  const posix_spawn_file_actions_t* actions,
+  const posix_spawnattr_t* attributes,
+  char* const argv[],
+  char* const envp[]
+) {
+  int result;
+  if (pid == 0 || path == 0 || argv == 0) return EINVAL;
+  if (actions != 0) return ENOTSUP;
+  result = __tracecode_proc_spawn(
+    path,
+    argv,
+    envp,
+    attributes == 0 ? 0 : attributes->__flags,
+    attributes == 0 ? 0 : attributes->__pgroup
+  );
+  if (result < 0) return -result;
+  *pid = (pid_t)result;
+  return 0;
+}
+
+int posix_spawnp(
+  pid_t* pid,
+  const char* file,
+  const posix_spawn_file_actions_t* actions,
+  const posix_spawnattr_t* attributes,
+  char* const argv[],
+  char* const envp[]
+) {
+  return posix_spawn(pid, file, actions, attributes, argv, envp);
+}
+
+int posix_spawnattr_init(posix_spawnattr_t* attributes) {
+  if (attributes == 0) return EINVAL;
+  memset(attributes, 0, sizeof(*attributes));
+  return 0;
+}
+
+int posix_spawnattr_destroy(posix_spawnattr_t* attributes) {
+  return attributes == 0 ? EINVAL : 0;
+}
+
+int posix_spawnattr_getflags(const posix_spawnattr_t* attributes, short* flags) {
+  if (attributes == 0 || flags == 0) return EINVAL;
+  *flags = attributes->__flags;
+  return 0;
+}
+
+int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags) {
+  if (attributes == 0 || (flags & ~(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSID)) != 0) return EINVAL;
+  attributes->__flags = flags;
+  return 0;
+}
+
+int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes, pid_t* pgroup) {
+  if (attributes == 0 || pgroup == 0) return EINVAL;
+  *pgroup = attributes->__pgroup;
+  return 0;
+}
+
+int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t pgroup) {
+  if (attributes == 0 || pgroup < 0) return EINVAL;
+  attributes->__pgroup = pgroup;
+  return 0;
+}
+
+int posix_spawn_file_actions_init(posix_spawn_file_actions_t* actions) {
+  if (actions == 0) return EINVAL;
+  actions->__unsupported = 0;
+  return 0;
+}
+
+int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* actions) {
+  return actions == 0 ? EINVAL : 0;
+}
+
+pid_t waitpid(pid_t pid, int* status, int options) {
+  int result = __tracecode_proc_wait((int)pid, status, options);
+  if (result < 0) {
+    errno = -result;
+    return (pid_t)-1;
+  }
+  return (pid_t)result;
+}
+
+int kill(pid_t pid, int signal) {
+  int result = __tracecode_proc_kill((int)pid, signal);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+
+int killpg(pid_t pgroup, int signal) {
+  return kill(-pgroup, signal);
+}
+
+pid_t getpid(void) { return (pid_t)__tracecode_proc_identity(1); }
+pid_t getppid(void) { return (pid_t)__tracecode_proc_identity(2); }
+pid_t getpgrp(void) { return (pid_t)__tracecode_proc_identity(3); }
+pid_t getpgid(pid_t pid) {
+  if (pid != 0 && pid != getpid()) {
+    errno = ENOTSUP;
+    return (pid_t)-1;
+  }
+  return getpgrp();
+}
+pid_t getsid(pid_t pid) {
+  if (pid != 0 && pid != getpid()) {
+    errno = ENOTSUP;
+    return (pid_t)-1;
+  }
+  return (pid_t)__tracecode_proc_identity(4);
 }
 `;
 
@@ -11249,6 +11612,15 @@ function projectWithCppKernelShims(project) {
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_SHIM_FILENAME)) {
     additions.push({ path: CPP_KERNEL_PROCESS_SHIM_FILENAME, contents: CPP_KERNEL_PROCESS_SHIM_SOURCE });
   }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_PROCESS_HEADER_FILENAME, contents: CPP_KERNEL_PROCESS_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_SPAWN_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_SPAWN_HEADER_FILENAME, contents: CPP_KERNEL_SPAWN_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_WAIT_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_WAIT_HEADER_FILENAME, contents: CPP_KERNEL_WAIT_HEADER_SOURCE });
+  }
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_HEADER_FILENAME)) {
     additions.push({ path: CPP_KERNEL_CONTROL_HEADER_FILENAME, contents: CPP_KERNEL_CONTROL_HEADER_SOURCE });
   }
@@ -11267,6 +11639,9 @@ function cppProjectArgsWithKernelShims(args, project) {
   const injected = [];
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_HEADER_FILENAME)) {
     injected.push('-include', CPP_KERNEL_SOCKET_HEADER_FILENAME);
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_HEADER_FILENAME)) {
+    injected.push('-include', CPP_KERNEL_PROCESS_HEADER_FILENAME);
   }
   injected.push('-idirafter', '.');
   const linking = !args.some((arg) => arg === '-c' || arg === '-S' || arg === '-E');
@@ -11984,6 +12359,7 @@ async function handleProjectCpp(request, messageId, kernelSyscallChannel) {
       kernelDevices: projectKernelDevices(request?.project),
       kernelHttp,
       kernelClient,
+      process: request?.process,
       outputBudget: createProjectOutputByteBudget(),
       onOutput: (stream, data, device, outputDevice) => events.output(stream, data, device, outputDevice),
     });

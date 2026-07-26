@@ -443,6 +443,35 @@ function basename(pathname) {
   return slash >= 0 ? normalized.slice(slash + 1) : normalized;
 }
 
+function setVirtualFile(tree, pathname, bytes) {
+  const parts = normalizeProjectPath(pathname).split('/').filter(Boolean);
+  if (parts.length === 0) return;
+  let directory = tree;
+  for (const part of parts.slice(0, -1)) {
+    const existing = directory[part];
+    if (existing instanceof Uint8Array || typeof existing === 'string') {
+      throw new Error(`C++ virtual compiler path collides with a file: ${pathname}`);
+    }
+    directory = existing || (directory[part] = {});
+  }
+  const filename = parts[parts.length - 1];
+  const existing = directory[filename];
+  if (existing && !(existing instanceof Uint8Array) && typeof existing !== 'string') {
+    throw new Error(`C++ virtual compiler path collides with a directory: ${pathname}`);
+  }
+  directory[filename] = bytes;
+}
+
+function getVirtualFile(tree, pathname) {
+  const parts = normalizeProjectPath(pathname).split('/').filter(Boolean);
+  let entry = tree;
+  for (const part of parts) {
+    if (!entry || typeof entry !== 'object') return undefined;
+    entry = entry[part];
+  }
+  return entry;
+}
+
 function isLinkerArtifactPath(pathname) {
   return /\.(?:a|lib|o|obj)$/i.test(pathname);
 }
@@ -535,18 +564,23 @@ async function compileProjectWithYowasp(payload) {
     const path = normalizeProjectPath(file.path, payload);
     if (!path) continue;
     const bytes = projectFileBytes(file);
-    sourceFiles[path] = bytes;
+    setVirtualFile(sourceFiles, path, bytes);
     if (cwd && path.startsWith(`${cwd}/`)) {
-      sourceFiles[path.slice(cwd.length + 1)] = bytes;
+      setVirtualFile(sourceFiles, path.slice(cwd.length + 1), bytes);
     }
     const relativeFromCwd = relativePathFromCwd(path, cwd, payload);
-    if (relativeFromCwd && relativeFromCwd !== path && sourceFiles[relativeFromCwd] === undefined) {
-      sourceFiles[relativeFromCwd] = bytes;
+    if (
+      relativeFromCwd &&
+      relativeFromCwd !== path &&
+      !relativeFromCwd.split('/').includes('..') &&
+      getVirtualFile(sourceFiles, relativeFromCwd) === undefined
+    ) {
+      setVirtualFile(sourceFiles, relativeFromCwd, bytes);
     }
     for (const includePath of includePaths) {
       const includeRelative = includeRelativePath(path, includePath);
-      if (includeRelative && sourceFiles[includeRelative] === undefined) {
-        sourceFiles[includeRelative] = bytes;
+      if (includeRelative && getVirtualFile(sourceFiles, includeRelative) === undefined) {
+        setVirtualFile(sourceFiles, includeRelative, bytes);
       }
     }
     if (isLinkerArtifactPath(path)) {
@@ -596,6 +630,9 @@ async function compileProjectWithYowasp(payload) {
   if (!compileArgs.some((arg) => arg.startsWith('-std='))) {
     compileArgs.splice(1, 0, `-std=${compilerCommand === 'clang' ? defaultStandard : payload?.standard || defaultStandard}`);
   }
+  if (!compileArgs.includes('-D_WASI_EMULATED_SIGNAL')) {
+    compileArgs.splice(1, 0, '-D_WASI_EMULATED_SIGNAL');
+  }
   if (!compileArgs.includes('-fno-exceptions')) {
     compileArgs.splice(1, 0, '-fno-exceptions');
   }
@@ -622,7 +659,7 @@ async function compileProjectWithYowasp(payload) {
         fetchProgress: () => {},
       }
     );
-    const programBytes = files?.[outputPath];
+    const programBytes = getVirtualFile(files, outputPath);
     if (!(programBytes instanceof Uint8Array)) {
       return {
         success: false,

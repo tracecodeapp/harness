@@ -435,6 +435,15 @@ JavaScript leaders with JavaScript descendants from Node, Python, and C#
 parents and proves one negative PGID signal terminates each tree without
 reaching its parent.
 
+The C/C++ WASI process compatibility slice is intentionally smaller than a
+complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,
+`SIGTERM`, and `SIGKILL`, and maps `posix_spawnp` through TraceKernel's runtime
+command resolver. An explicit `envp` is forwarded as child environment
+overrides; a null `envp` inherits the parent environment. Nonblocking and
+selector-based waits, arbitrary signal handlers, PATH-compatible executable
+search, and `posix_spawn` file actions remain explicit later slices rather
+than silently falling back to WASI placeholders.
+
 Filesystem watches are now session resources exposed through process-owned
 descriptors. `watch(path)` installs an `fs-watch` descriptor; ordinary
 descriptor `read` blocks for a bounded binary event frame, and `close` or
@@ -497,8 +506,11 @@ The initial 0.13 branch now establishes:
   transport, with cross-worker live data and namespace visibility plus browser
   conformance coverage;
 - a browser C/C++ adapter using that same binary transport for TKFS, BSD TCP,
-  `system()` child processes, and process watchdog controls exposed through
-  the injected `tracekernel.h` compatibility boundary;
+  process watchdog controls, and kernel-supervised child processes; in
+  addition to `system()`, the injected WASI compatibility layer provides
+  `posix_spawn`/`posix_spawnp`, spawn attributes for process groups and new
+  sessions, `waitpid`, `kill`/`killpg`, and process identity calls, with real
+  cross-language process-group conformance;
 - the browser Python/Pyodide adapter's first general synchronous binary
   syscall client, with `tracekernel.watchdog` process controls and an explicit
   `tracekernel.fs` path-operation surface backed by authoritative TKFS;
