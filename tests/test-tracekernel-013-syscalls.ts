@@ -108,32 +108,35 @@ async function main(): Promise<void> {
       success(spawned);
       assertCondition(spawned.value.op === 'spawn', 'spawn returned the wrong response variant.');
       if (spawned.value.op !== 'spawn') return;
+      const childPid = spawned.value.pid;
+      const pipeReadFd = pipe.value.readFd;
+      const pipeWriteFd = pipe.value.writeFd;
       const childSnapshot = session.processSnapshots().find(
-        (snapshot) => snapshot.pid === spawned.value.pid
+        (snapshot) => snapshot.pid === childPid
       );
       assertCondition(
         childSnapshot?.ppid === process.pid &&
           childSnapshot.cwd === '/workspace/child' &&
           childSnapshot.env.CHILD_VALUE === 'isolated' &&
-          childSnapshot.descriptors.some((descriptor) => descriptor.fd === pipe.value.readFd) &&
-          childSnapshot.descriptors.some((descriptor) => descriptor.fd === pipe.value.writeFd),
+          childSnapshot.descriptors.some((descriptor) => descriptor.fd === pipeReadFd) &&
+          childSnapshot.descriptors.some((descriptor) => descriptor.fd === pipeWriteFd),
         `spawn did not preserve child topology, environment, or inherited descriptors: ${JSON.stringify(childSnapshot)}`
       );
       const waited = yield* syscalls.dispatch({
         op: 'wait',
-        pid: spawned.value.pid,
+        pid: childPid,
       });
       success(waited);
       assertCondition(
         waited.value.op === 'wait' &&
-          waited.value.pid === spawned.value.pid &&
+          waited.value.pid === childPid &&
           waited.value.termination.kind === 'exit' &&
           waited.value.termination.exitCode === 7,
         `wait returned the wrong child termination: ${JSON.stringify(waited)}`
       );
       const reaped = yield* syscalls.dispatch({
         op: 'wait',
-        pid: spawned.value.pid,
+        pid: childPid,
       });
       assertCondition(
         !reaped.ok && reaped.error.code === 'ECHILD',
@@ -161,8 +164,9 @@ async function main(): Promise<void> {
         `spawn did not return parent-owned stdio descriptors: ${JSON.stringify(stdioChild)}`
       );
       if (stdioChild.value.op !== 'spawn' || !stdioChild.value.stdio) return;
+      const stdioChildPid = stdioChild.value.pid;
       const stdioSnapshot = session.processSnapshots().find(
-        ({ pid }) => pid === stdioChild.value.pid
+        ({ pid }) => pid === stdioChildPid
       );
       assertCondition(
         [0, 1, 2].every((fd) =>

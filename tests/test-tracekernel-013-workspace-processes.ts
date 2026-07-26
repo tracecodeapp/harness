@@ -8,6 +8,10 @@ import type {
   RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
 } from '../packages/harness-core/src/runtime-project';
+import type {
+  TraceKernelSyscallRequest,
+  TraceKernelSyscallResult,
+} from '../packages/tracekernel/src/index';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -21,6 +25,18 @@ function syscalls(
     `runtime process ${request.process?.pid ?? 'unknown'} did not receive a syscall bridge`
   );
   return request.kernelSyscalls;
+}
+
+/**
+ * harness-core deliberately treats the syscall wire as unknown so it does not
+ * depend on TraceKernel. Runtime adapters own this single validation/typing
+ * boundary before working with the versioned kernel protocol.
+ */
+function dispatch(
+  kernel: RuntimeKernelSyscallBridge,
+  request: TraceKernelSyscallRequest
+): Promise<TraceKernelSyscallResult> {
+  return kernel.dispatch(request) as Promise<TraceKernelSyscallResult>;
 }
 
 async function main(): Promise<void> {
@@ -40,7 +56,7 @@ async function main(): Promise<void> {
 
     if (request.scriptPath.endsWith('child.js')) {
       const writeFd = Number(request.args.at(-1));
-      const written = await kernel.dispatch({
+      const written = await dispatch(kernel, {
         op: 'write',
         fd: writeFd,
         bytes: new TextEncoder().encode('child-pipe'),
@@ -51,7 +67,7 @@ async function main(): Promise<void> {
           written.value.bytesWritten === 10,
         `child could not write its inherited pipe descriptor: ${JSON.stringify(written)}`
       );
-      const file = await kernel.dispatch({
+      const file = await dispatch(kernel, {
         op: 'writeFile',
         path: 'child-owned.txt',
         bytes: new TextEncoder().encode('child-file'),
@@ -67,7 +83,7 @@ async function main(): Promise<void> {
       };
     }
 
-    const pipe = await kernel.dispatch({
+    const pipe = await dispatch(kernel, {
       op: 'pipe',
       options: { capacityChunks: 2 },
     });
@@ -79,7 +95,7 @@ async function main(): Promise<void> {
       return { stdout: '', stderr: 'pipe failed\n', exitCode: 1 };
     }
 
-    const spawned = await kernel.dispatch({
+    const spawned = await dispatch(kernel, {
       op: 'spawn',
       runtime: 'javascript',
       command: 'node',
@@ -95,7 +111,7 @@ async function main(): Promise<void> {
       return { stdout: '', stderr: 'spawn failed\n', exitCode: 1 };
     }
 
-    const closedWriter = await kernel.dispatch({
+    const closedWriter = await dispatch(kernel, {
       op: 'close',
       fd: pipe.value.writeFd,
     });
@@ -103,7 +119,7 @@ async function main(): Promise<void> {
       closedWriter.ok,
       `parent could not close its pipe writer: ${JSON.stringify(closedWriter)}`
     );
-    const read = await kernel.dispatch({
+    const read = await dispatch(kernel, {
       op: 'read',
       fd: pipe.value.readFd,
       maxBytes: 64,
@@ -112,7 +128,7 @@ async function main(): Promise<void> {
       read.ok && read.value.op === 'read',
       `parent could not read its child pipe: ${JSON.stringify(read)}`
     );
-    const waited = await kernel.dispatch({
+    const waited = await dispatch(kernel, {
       op: 'wait',
       pid: spawned.value.pid,
     });
@@ -123,7 +139,7 @@ async function main(): Promise<void> {
         waited.value.termination.exitCode === 7,
       `parent did not receive its child's exit status: ${JSON.stringify(waited)}`
     );
-    const waitedTwice = await kernel.dispatch({
+    const waitedTwice = await dispatch(kernel, {
       op: 'wait',
       pid: spawned.value.pid,
     });
@@ -131,7 +147,7 @@ async function main(): Promise<void> {
       !waitedTwice.ok && waitedTwice.error.code === 'ECHILD',
       `reaped child did not return ECHILD: ${JSON.stringify(waitedTwice)}`
     );
-    const childFile = await kernel.dispatch({
+    const childFile = await dispatch(kernel, {
       op: 'readFile',
       path: 'child-owned.txt',
     });
