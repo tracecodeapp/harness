@@ -1227,7 +1227,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         includeHiddenFiles: includeHiddenFilesForCurrentCommand,
         snapshotProject: snapshotProjectForCurrentCommand,
       }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
+      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner, { kernelSyscalls: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
       defineCommand('bg', async (args, ctx) => this.runKernelJobPlacement(args, 'bg', ctx)),
       defineCommand('curl', async (args, ctx) => this.runKernelCurl(args, ctx)),

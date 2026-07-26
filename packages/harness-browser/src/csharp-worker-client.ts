@@ -27,6 +27,7 @@ import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeKernelHttpBridge,
+  RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
 } from '@tracecode/harness-core';
 import { isDevEnvironment } from './browser-client-env';
@@ -252,9 +253,18 @@ export class CSharpWorkerClient {
     payload?: unknown,
     timeoutMs: number | null = MESSAGE_TIMEOUT_MS,
     onEvent?: RuntimeCommandEventHandler,
-    kernelHttp?: RuntimeKernelHttpBridge
+    kernelHttp?: RuntimeKernelHttpBridge,
+    kernelSyscalls?: RuntimeKernelSyscallBridge
   ): Effect.Effect<T, Error> {
-    return this.core.sendMessageEffect<T>(type, payload, timeoutMs, onEvent, kernelHttp).pipe(
+    return this.core.sendMessageEffect<T>(
+      type,
+      payload,
+      timeoutMs,
+      onEvent,
+      kernelHttp,
+      undefined,
+      kernelSyscalls
+    ).pipe(
       Effect.tapError((error) =>
         Effect.sync(() => {
           if (error instanceof WorkerRequestTimeoutError) this.core.closeSession(error);
@@ -526,7 +536,13 @@ export class CSharpWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     signal: AbortSignal | undefined = request.signal
   ): Promise<CSharpProjectCommandResult> {
-    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+    const {
+      signal: _signal,
+      onEvent: _requestOnEvent,
+      kernelHttp,
+      kernelSyscalls,
+      ...workerRequest
+    } = request;
     const program = this.warmupEffect().pipe(
       Effect.andThen(
         this.core.withExecutionDeadline(
@@ -543,7 +559,8 @@ export class CSharpWorkerClient {
             },
             null,
             onEvent,
-            kernelHttp
+            kernelHttp,
+            kernelSyscalls
           ),
           timeoutMs
         )
