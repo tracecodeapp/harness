@@ -703,9 +703,13 @@ public sealed class KernelProcess
         );
     }
 
-    public static ProcessIdentity GetCurrentIdentity()
+    public static ProcessIdentity GetIdentity(int processId = 0)
     {
-        JsonElement value = KernelInterop.Call(new { op = "identity" });
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "identity",
+            pid = processId,
+        });
         return new ProcessIdentity(
             value.GetProperty("pid").GetInt32(),
             value.GetProperty("ppid").GetInt32(),
@@ -713,6 +717,9 @@ public sealed class KernelProcess
             value.GetProperty("sid").GetInt32()
         );
     }
+
+    public static ProcessIdentity GetCurrentIdentity()
+        => GetIdentity();
 
     public static bool TryWaitChild(
         int processSelector,

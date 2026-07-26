@@ -2506,7 +2506,10 @@ class PythonTraceKernelSyncClient {
         if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
         break;
       case 'setsid':
+        break;
       case 'identity':
+        writer.u8(request.pid === undefined ? 0 : 1);
+        if (request.pid !== undefined) writer.i32(request.pid);
         break;
       case 'setpgid':
         writer.i32(request.pid);
@@ -3982,7 +3985,12 @@ async function executeProjectPythonUserCall(
             ...(input.noHang === true ? { noHang: true } : {}),
           };
         case 'identity':
-          return { op: 'identity' };
+          return {
+            op: 'identity',
+            ...(input.pid === undefined || input.pid === null
+              ? {}
+              : { pid: Number(input.pid) }),
+          };
         case 'kill':
           return {
             op: 'kill',
@@ -5216,23 +5224,18 @@ os.killpg = lambda pgid, signal: _tracekernel_module.process.kill(
     -abs(int(pgid)),
     signal,
 )
-def _tracekernel_process_identity():
-    return _TraceKernelProcessApi._call({"op": "identity"})
+def _tracekernel_process_identity(pid=0):
+    return _TraceKernelProcessApi._call({
+        "op": "identity",
+        "pid": int(pid),
+    })
 os.getpid = lambda: int(_tracekernel_process_identity()["pid"])
 os.getppid = lambda: int(_tracekernel_process_identity()["ppid"])
 os.getpgrp = lambda: int(_tracekernel_process_identity()["pgid"])
 def _tracekernel_getpgid(pid=0):
-    if int(pid) not in (0, os.getpid()):
-        raise NotImplementedError(
-            "TraceKernel getpgid currently supports only the calling process"
-        )
-    return int(_tracekernel_process_identity()["pgid"])
+    return int(_tracekernel_process_identity(pid)["pgid"])
 def _tracekernel_getsid(pid=0):
-    if int(pid) not in (0, os.getpid()):
-        raise NotImplementedError(
-            "TraceKernel getsid currently supports only the calling process"
-        )
-    return int(_tracekernel_process_identity()["sid"])
+    return int(_tracekernel_process_identity(pid)["sid"])
 os.getpgid = _tracekernel_getpgid
 os.getsid = _tracekernel_getsid
 os.setsid = lambda: _tracekernel_module.process.setsid()

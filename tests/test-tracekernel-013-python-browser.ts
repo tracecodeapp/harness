@@ -351,6 +351,8 @@ async function main(): Promise<void> {
                 'leader_pid, child_pid = map(int, ready.read_text().split(":"))',
                 'if leader_pid != leader.pid or child_pid == leader.pid:',
                 '    raise RuntimeError("invalid group process identities")',
+                'if os.getpgid(leader.pid) != leader.pid or os.getsid(leader.pid) != leader.pid:',
+                '    raise RuntimeError("target process topology was not kernel-visible")',
                 'os.killpg(leader.pid, signal.SIGKILL)',
                 'waited_leader, leader_status = os.waitpid(-leader.pid, 0)',
                 'local = subprocess.Popen(["python", "wait-child.py"])',

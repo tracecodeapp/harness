@@ -1613,7 +1613,26 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           };
         }
         case 'identity': {
-          const process = this.runtimeSyscallProcess(context);
+          const caller = this.runtimeSyscallProcess(context);
+          const requestedPid = request.pid === undefined || request.pid === 0
+            ? caller.pid
+            : Math.trunc(request.pid);
+          if (
+            !Number.isSafeInteger(request.pid ?? 0) ||
+            requestedPid <= 0
+          ) {
+            throw Object.assign(
+              new Error(`ESRCH: invalid process identity target ${request.pid}`),
+              { code: 'ESRCH' }
+            );
+          }
+          const process = this.findProcessRecord(requestedPid);
+          if (!process) {
+            throw Object.assign(
+              new Error(`ESRCH: process ${requestedPid} does not exist`),
+              { code: 'ESRCH' }
+            );
+          }
           return {
             ok: true,
             value: {

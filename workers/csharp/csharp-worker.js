@@ -541,7 +541,10 @@ class CSharpTraceKernelSyncClient {
         if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
         break;
       case 'setsid':
+        break;
       case 'identity':
+        writer.u8(request.pid === undefined ? 0 : 1);
+        if (request.pid !== undefined) writer.i32(request.pid);
         break;
       case 'setpgid':
         writer.i32(request.pid);

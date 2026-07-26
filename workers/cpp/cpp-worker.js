@@ -769,7 +769,10 @@ class CppTraceKernelSyncClient {
         if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
         break;
       case 'setsid':
+        break;
       case 'identity':
+        writer.u8(request.pid === undefined ? 0 : 1);
+        if (request.pid !== undefined) writer.i32(request.pid);
         break;
       case 'setpgid':
         writer.i32(request.pid);
@@ -2827,10 +2830,13 @@ class WasiProcess {
           return -cppTraceKernelErrno(error);
         }
       },
-      proc_identity: (kind) => {
+      proc_identity: (kind, pid) => {
         if (!this.kernelClient) return -ENOTSUP;
         try {
-          const identity = this.kernelClient.call({ op: 'identity' });
+          const identity = this.kernelClient.call({
+            op: 'identity',
+            ...((pid | 0) === 0 ? {} : { pid: pid | 0 }),
+          });
           if (kind === 1) return identity.pid | 0;
           if (kind === 2) return identity.ppid | 0;
           if (kind === 3) return identity.pgid | 0;
@@ -12024,7 +12030,7 @@ int __tracecode_proc_wait(int pid, int* status, int options);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_kill")))
 int __tracecode_proc_kill(int pid, int signal);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_identity")))
-int __tracecode_proc_identity(int kind);
+int __tracecode_proc_identity(int kind, int pid);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_fcntl")))
 int __tracecode_proc_fcntl(int fd, int action, int value);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_pipe")))
@@ -12390,22 +12396,24 @@ int killpg(pid_t pgroup, int signal) {
   return kill(-pgroup, signal);
 }
 
-pid_t getpid(void) { return (pid_t)__tracecode_proc_identity(1); }
-pid_t getppid(void) { return (pid_t)__tracecode_proc_identity(2); }
-pid_t getpgrp(void) { return (pid_t)__tracecode_proc_identity(3); }
+pid_t getpid(void) { return (pid_t)__tracecode_proc_identity(1, 0); }
+pid_t getppid(void) { return (pid_t)__tracecode_proc_identity(2, 0); }
+pid_t getpgrp(void) { return (pid_t)__tracecode_proc_identity(3, 0); }
 pid_t getpgid(pid_t pid) {
-  if (pid != 0 && pid != getpid()) {
-    errno = ENOTSUP;
+  int result = __tracecode_proc_identity(3, (int)pid);
+  if (result < 0) {
+    errno = -result;
     return (pid_t)-1;
   }
-  return getpgrp();
+  return (pid_t)result;
 }
 pid_t getsid(pid_t pid) {
-  if (pid != 0 && pid != getpid()) {
-    errno = ENOTSUP;
+  int result = __tracecode_proc_identity(4, (int)pid);
+  if (result < 0) {
+    errno = -result;
     return (pid_t)-1;
   }
-  return (pid_t)__tracecode_proc_identity(4);
+  return (pid_t)result;
 }
 pid_t setsid(void) {
   int result = __tracecode_proc_setsid();

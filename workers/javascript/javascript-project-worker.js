@@ -355,6 +355,8 @@ function encodeTraceKernelSyscallRequest(request) {
       writer.u8(request.noHang ? 1 : 0);
       break;
     case "identity":
+      writer.u8(request.pid === void 0 ? 0 : 1);
+      if (request.pid !== void 0) writer.i32(request.pid);
       break;
     case "kill":
       writer.i32(request.pid);
