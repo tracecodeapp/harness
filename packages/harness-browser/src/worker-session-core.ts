@@ -32,6 +32,7 @@ import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpListenerHandle,
   RuntimeKernelHttpResponse,
+  RuntimeKernelSyscallBridge,
 } from '@tracecode/harness-core';
 import type { KernelHttpSyncServerBridge } from './kernel-http-sync';
 import type { BrowserWorkerLike } from './execution-host';
@@ -55,6 +56,7 @@ export interface WorkerSessionPendingMessage {
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
   kernelHttp?: RuntimeKernelHttpBridge;
+  kernelSyscalls?: RuntimeKernelSyscallBridge;
   httpListeners?: Map<string, RuntimeKernelHttpListenerHandle>;
   httpRequests?: Map<
     string,
@@ -372,7 +374,8 @@ export class WorkerSessionCore {
     timeoutMs: number | null = this.config.defaultMessageTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
-    validateLifecycle?: () => void
+    validateLifecycle?: () => void,
+    kernelSyscalls?: RuntimeKernelSyscallBridge
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
       yield* Effect.try({
@@ -399,7 +402,14 @@ export class WorkerSessionCore {
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
 
-      const reply = this.postAndAwaitReply<T>(session.worker, type, payload, onEvent, kernelHttp);
+      const reply = this.postAndAwaitReply<T>(
+        session.worker,
+        type,
+        payload,
+        onEvent,
+        kernelHttp,
+        kernelSyscalls
+      );
       if (timeoutMs === null) {
         return yield* reply;
       }
@@ -429,7 +439,8 @@ export class WorkerSessionCore {
     type: string,
     payload?: unknown,
     onEvent?: RuntimeCommandEventHandler,
-    kernelHttp?: RuntimeKernelHttpBridge
+    kernelHttp?: RuntimeKernelHttpBridge,
+    kernelSyscalls?: RuntimeKernelSyscallBridge
   ): Effect.Effect<T, Error> {
     return Effect.async<T, Error>((resume) => {
       const id = String(++this.messageId);
@@ -441,6 +452,7 @@ export class WorkerSessionCore {
         reject: (error) => resume(Effect.fail(error)),
         ...(onEvent ? { onEvent } : {}),
         ...(kernelHttp ? { kernelHttp } : {}),
+        ...(kernelSyscalls ? { kernelSyscalls } : {}),
         httpListeners: new Map(),
         httpRequests: new Map(),
         httpDispatchAbortControllers: new Map(),
@@ -456,7 +468,23 @@ export class WorkerSessionCore {
       }, { enabled: this.config.debug });
 
       try {
-        worker.postMessage({ id, type, payload, protocolToken });
+        worker.postMessage({
+          id,
+          type,
+          payload,
+          protocolToken,
+          ...(kernelSyscalls
+            ? {
+                kernelSyscallChannel: kernelSyscalls.channel,
+                ...(kernelSyscalls.generationBuffer
+                  ? {
+                      kernelSyscallGenerationBuffer:
+                        kernelSyscalls.generationBuffer,
+                    }
+                  : {}),
+              }
+            : {}),
+        });
       } catch (error) {
         const entry = this.pendingMessages.get(id);
         if (entry) {
@@ -484,10 +512,19 @@ export class WorkerSessionCore {
     timeoutMs: number | null = this.config.defaultMessageTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
-    validateLifecycle?: () => void
+    validateLifecycle?: () => void,
+    kernelSyscalls?: RuntimeKernelSyscallBridge
   ): Promise<T> {
     return this.runClientEffect(
-      this.sendMessageEffect<T>(type, payload, timeoutMs, onEvent, kernelHttp, validateLifecycle)
+      this.sendMessageEffect<T>(
+        type,
+        payload,
+        timeoutMs,
+        onEvent,
+        kernelHttp,
+        validateLifecycle,
+        kernelSyscalls
+      )
     );
   }
 

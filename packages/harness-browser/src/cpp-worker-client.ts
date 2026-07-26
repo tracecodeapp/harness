@@ -270,6 +270,13 @@ export class CppWorkerClient {
           this.lastRuntimeProgress = payload && typeof payload === 'object' ? (payload as CppRuntimeProgress) : {};
           return true;
         }
+        if (type === 'kernel-syscall') {
+          if (!pending.kernelSyscalls) return true;
+          void pending.kernelSyscalls.service().catch(() => {
+            pending.kernelSyscalls?.close();
+          });
+          return true;
+        }
         if (!KERNEL_HTTP_SYNC_MESSAGE_TYPES.has(type)) return false;
         if (type === 'kernel-http-dispatch-sync') {
           handleKernelHttpDispatchSyncMessage(pending, payload, CPP_KERNEL_HTTP_RUNTIME_LABEL);
@@ -1197,7 +1204,13 @@ export class CppWorkerClient {
     signal: AbortSignal | undefined = request.signal
   ): Promise<CppProjectCommandResult> {
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
-      const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+      const {
+        signal: _signal,
+        onEvent: _requestOnEvent,
+        kernelHttp,
+        kernelSyscalls,
+        ...workerRequest
+      } = request;
       if (!this.externalCompilerUrl && workerRequest.source === 'compile') {
         await this.options.runtimeAssetPreflight?.();
         this.assertLifecycleGeneration(lifecycleGeneration);
@@ -1213,7 +1226,8 @@ export class CppWorkerClient {
           null,
           onEvent,
           kernelHttp,
-          () => this.assertLifecycleGeneration(lifecycleGeneration)
+          () => this.assertLifecycleGeneration(lifecycleGeneration),
+          kernelSyscalls
         ),
         timeoutMs,
         'compile-run',
