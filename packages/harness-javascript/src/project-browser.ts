@@ -1577,6 +1577,30 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
       pendingExternalWork = Math.max(0, pendingExternalWork - 1);
     });
   };
+  const trackRefable = <T>(work: Promise<T>) => {
+    let referenced = true;
+    let settled = false;
+    pendingExternalWork += 1;
+    const completion = work.finally(() => {
+      settled = true;
+      if (referenced) {
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+      }
+    });
+    return {
+      completion,
+      ref(): void {
+        if (settled || referenced) return;
+        referenced = true;
+        pendingExternalWork += 1;
+      },
+      unref(): void {
+        if (settled || !referenced) return;
+        referenced = false;
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+      },
+    };
+  };
 
   return {
     setTimeout: setTrackedTimeout,
@@ -1587,6 +1611,7 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
     clearImmediate: clearTrackedTimeout,
     queueMicrotask: hostQueueMicrotask,
     track,
+    trackRefable,
     drain,
     clearAll,
   };
@@ -2309,6 +2334,10 @@ function createChildProcessApi(
     exitCode: number | null = null;
     signalCode: string | null = null;
     killed = false;
+    private refControl?: {
+      readonly ref: () => void;
+      readonly unref: () => void;
+    };
 
     constructor(
       pid: number,
@@ -2350,11 +2379,20 @@ function createChildProcessApi(
     }
 
     ref(): this {
+      this.refControl?.ref();
       return this;
     }
 
     unref(): this {
+      this.refControl?.unref();
       return this;
+    }
+
+    attachRefControl(control: {
+      readonly ref: () => void;
+      readonly unref: () => void;
+    }): void {
+      this.refControl = control;
     }
   }
 
@@ -2390,7 +2428,7 @@ function createChildProcessApi(
       invocation.options.signal
     );
     globalThis.queueMicrotask(() => child.emit('spawn'));
-    void eventLoopApi.track(
+    const waitHandle = eventLoopApi.trackRefable(
       asyncDispatch({ op: 'wait', pid: spawned.pid }).then(
         async (waited) => {
           const termination = waited.termination;
@@ -2426,6 +2464,8 @@ function createChildProcessApi(
         }
       )
     );
+    child.attachRefControl(waitHandle);
+    void waitHandle.completion;
     return child;
   };
 

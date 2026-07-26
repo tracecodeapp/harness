@@ -6602,6 +6602,30 @@ function createBrowserEventLoopApi(executionState) {
       pendingExternalWork = Math.max(0, pendingExternalWork - 1);
     });
   };
+  const trackRefable = (work) => {
+    let referenced = true;
+    let settled = false;
+    pendingExternalWork += 1;
+    const completion = work.finally(() => {
+      settled = true;
+      if (referenced) {
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+      }
+    });
+    return {
+      completion,
+      ref() {
+        if (settled || referenced) return;
+        referenced = true;
+        pendingExternalWork += 1;
+      },
+      unref() {
+        if (settled || !referenced) return;
+        referenced = false;
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+      }
+    };
+  };
   return {
     setTimeout: setTrackedTimeout,
     clearTimeout: clearTrackedTimeout,
@@ -6611,6 +6635,7 @@ function createBrowserEventLoopApi(executionState) {
     clearImmediate: clearTrackedTimeout,
     queueMicrotask: hostQueueMicrotask,
     track,
+    trackRefable,
     drain,
     clearAll
   };
@@ -7186,6 +7211,7 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
     exitCode = null;
     signalCode = null;
     killed = false;
+    refControl;
     constructor(pid, stdio, signal) {
       super();
       this.pid = pid;
@@ -7210,10 +7236,15 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
       return true;
     }
     ref() {
+      this.refControl?.ref();
       return this;
     }
     unref() {
+      this.refControl?.unref();
       return this;
+    }
+    attachRefControl(control) {
+      this.refControl = control;
     }
   }
   const spawn = (command, argsOrOptions, maybeOptions) => {
@@ -7238,7 +7269,7 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
       invocation.options.signal
     );
     globalThis.queueMicrotask(() => child.emit("spawn"));
-    void eventLoopApi.track(
+    const waitHandle = eventLoopApi.trackRefable(
       asyncDispatch({ op: "wait", pid: spawned.pid }).then(
         async (waited) => {
           const termination = waited.termination;
@@ -7274,6 +7305,8 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
         }
       )
     );
+    child.attachRefControl(waitHandle);
+    void waitHandle.completion;
     return child;
   };
   const spawnSync = (command, argsOrOptions, maybeOptions) => {

@@ -548,6 +548,28 @@ async function main(): Promise<void> {
               ].join('\n'),
             },
             {
+              path: 'unref-child.js',
+              contents: [
+                'setTimeout(() => {',
+                '  require("node:fs").writeFileSync(',
+                '    "unref-child-identity.txt",',
+                '    String(process.ppid)',
+                '  );',
+                '}, 100);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'unref-parent.js',
+              contents: [
+                'const { spawn } = require("node:child_process");',
+                'const child = spawn("node", ["unref-child.js"], { stdio: "ignore" });',
+                'child.unref();',
+                'console.log(`unref:${process.pid}:${child.pid}`);',
+                '',
+              ].join('\n'),
+            },
+            {
               path: 'group-grandchild.js',
               contents: [
                 'setTimeout(() => {',
@@ -982,6 +1004,20 @@ async function main(): Promise<void> {
           await workspace.writeFile('host-cycle-ready.txt', 'ready');
           const hostCycleReaderResult = await hostCycleReader;
           const spawnedChild = await workspace.runCommand('node spawn-parent.js');
+          const unrefParent = await workspace.runCommand('node unref-parent.js');
+          let unrefChildParent: string | null = null;
+          for (let attempt = 0; attempt < 500; attempt += 1) {
+            try {
+              unrefChildParent = await workspace.readFile(
+                'unref-child-identity.txt'
+              );
+              if ((unrefChildParent?.length ?? 0) > 0) break;
+            } catch {
+              await new Promise((resolvePromise) =>
+                setTimeout(resolvePromise, 10)
+              );
+            }
+          }
           const processGroup = await workspace.runCommand('node group-parent.js');
           const pipedChild = await workspace.runCommand('node stdio-parent.js');
           const remappedDescriptor = await workspace.runCommand('node fd-remap-parent.js');
@@ -1062,6 +1098,8 @@ async function main(): Promise<void> {
             nodeHttpClient,
             hostCycleReader: hostCycleReaderResult,
             spawnedChild,
+            unrefParent,
+            unrefChildParent,
             processGroup,
             pipedChild,
             remappedDescriptor,
@@ -1097,6 +1135,15 @@ async function main(): Promise<void> {
         descriptorSource: descriptorConformanceSource,
       });
 
+      assertCondition(
+        result.unrefParent.exitCode === 0 &&
+          /^unref:\d+:\d+\n$/.test(result.unrefParent.stdout) &&
+          result.unrefChildParent === '1',
+        `ChildProcess.unref did not allow an independently reparented child: ${JSON.stringify({
+          parent: result.unrefParent,
+          observedParent: result.unrefChildParent,
+        })}`
+      );
       assertCondition(
         result.writer.exitCode === 0 &&
           result.reader.exitCode === 0 &&
@@ -1293,6 +1340,8 @@ async function main(): Promise<void> {
           'detached-process-groups',
           'negative-pgid-signals',
           'parent-pid-topology',
+          'child-process-ref-unref',
+          'orphan-reparenting',
           'child-wait-and-reap',
           'kernel-piped-stdin-stdout-stderr',
           'pipe-eof-and-backpressure',
