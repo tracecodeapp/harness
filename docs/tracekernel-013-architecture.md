@@ -474,12 +474,22 @@ using its native `child_process` detached-spawn surface.
 Process identity is also a syscall result rather than immutable worker-start
 metadata. `pid`, `ppid`, `pgid`, and `sid` are read from the live process
 record, so topology mutations and orphan reparenting are immediately visible
-inside the runtime. C/C++ identity calls, Python `os.getpid`/`getppid`/
-`getpgrp`/`getsid`, JavaScript `process.ppid`, and managed C#
-`KernelProcess.GetCurrentIdentity` share that query. The transitional product
-bridge reparents independently running children to logical init PID 1 when
-their runtime parent exits, matching the extracted kernel rather than leaving
-a stale parent snapshot in the child worker.
+inside the runtime. The syscall can target the caller or another visible
+process in the same session. C/C++ identity calls (including
+`getpgid(child)`/`getsid(child)`), Python `os.getpid`/`getppid`/`getpgrp`/
+`getpgid`/`getsid`, JavaScript `process.ppid`, and managed C#
+`KernelProcess.GetIdentity` share that query. The transitional product bridge
+reparents independently running children to logical init PID 1 when their
+runtime parent exits, matching the extracted kernel rather than leaving a
+stale parent snapshot in the child worker.
+
+JavaScript child handles participate in process lifetime in the normal Node
+shape: a referenced child keeps the parent worker's event loop alive, while
+`ChildProcess.unref()` releases only that lifetime reference. The child process,
+kernel wait, descriptors, and execution continue independently; if the parent
+then exits, the host reparents the child and its live `process.ppid` becomes 1.
+Piped stdio retains its own references, so unref does not incorrectly discard
+active stream handles.
 
 Descriptor-table entries also carry kernel-owned close-on-exec state.
 `inheritDescriptors: "all"` filters `FD_CLOEXEC` entries in the kernel, while
