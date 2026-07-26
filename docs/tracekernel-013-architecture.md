@@ -471,6 +471,16 @@ POSIX functions, Python maps `os.setsid`/`os.setpgid` plus identity queries,
 and managed C# exposes caller-scoped session/group controls; JavaScript keeps
 using its native `child_process` detached-spawn surface.
 
+Process identity is also a syscall result rather than immutable worker-start
+metadata. `pid`, `ppid`, `pgid`, and `sid` are read from the live process
+record, so topology mutations and orphan reparenting are immediately visible
+inside the runtime. C/C++ identity calls, Python `os.getpid`/`getppid`/
+`getpgrp`/`getsid`, JavaScript `process.ppid`, and managed C#
+`KernelProcess.GetCurrentIdentity` share that query. The transitional product
+bridge reparents independently running children to logical init PID 1 when
+their runtime parent exits, matching the extracted kernel rather than leaving
+a stale parent snapshot in the child worker.
+
 Descriptor-table entries also carry kernel-owned close-on-exec state.
 `inheritDescriptors: "all"` filters `FD_CLOEXEC` entries in the kernel, while
 explicit mappings remain spawn file actions and can intentionally pass a
@@ -601,6 +611,9 @@ The initial 0.13 branch now establishes:
 - cross-process visibility without private mutable file snapshots;
 - a language-neutral syscall dispatcher covering descriptor I/O and namespace
   operations whose wire contract does not expose Effect;
+- authoritative process-identity queries that expose live parent, process
+  group, and session topology across runtime workers, including product-bridge
+  orphan reparenting to PID 1;
 - a transport-neutral synchronous runtime adapter plus a bounded binary
   SharedArrayBuffer implementation for dedicated browser workers;
 - atomic versioned bulk reads and a bounded generation-validated runtime read
