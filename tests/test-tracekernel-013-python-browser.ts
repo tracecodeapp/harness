@@ -288,6 +288,62 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'socket-child.js',
+              contents: [
+                'const net = require("node:net");',
+                'const port = Number(process.argv[2]);',
+                'const socket = net.createConnection({ host: "127.0.0.1", port });',
+                'const chunks = [];',
+                'socket.on("connect", () => {',
+                '  socket.write(Buffer.from("fragment-"));',
+                '  socket.end(Buffer.from("payload"));',
+                '});',
+                'socket.on("data", (chunk) => chunks.push(Buffer.from(chunk)));',
+                'socket.on("end", () => {',
+                '  process.stdout.write(`socket-child:${Buffer.concat(chunks).toString("utf8")}\\n`);',
+                '});',
+                'socket.on("error", (error) => { throw error; });',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'socket-parent.py',
+              contents: [
+                'import socket',
+                'import subprocess',
+                'with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:',
+                '    server.bind(("127.0.0.1", 0))',
+                '    server.listen(4)',
+                '    host, port = server.getsockname()',
+                '    child = subprocess.Popen(',
+                '        ["node", "socket-child.js", str(port)],',
+                '        stdout=subprocess.PIPE,',
+                '        stderr=subprocess.PIPE,',
+                '        text=True,',
+                '    )',
+                '    with server.accept()[0] as connection:',
+                '        chunks = []',
+                '        while True:',
+                '            chunk = connection.recv(3)',
+                '            if not chunk:',
+                '                break',
+                '            chunks.append(chunk)',
+                '        payload = b"".join(chunks)',
+                '        connection.sendall(payload.upper())',
+                '        connection.shutdown(socket.SHUT_WR)',
+                '    stdout, stderr = child.communicate()',
+                'valid = (',
+                '    host == "127.0.0.1"',
+                '    and payload == b"fragment-payload"',
+                '    and stdout == "socket-child:FRAGMENT-PAYLOAD\\n"',
+                '    and stderr == ""',
+                '    and child.returncode == 0',
+                ')',
+                'print(f"socket:{str(valid).lower()}")',
+                '',
+              ].join('\n'),
+            },
           ],
         });
         try {
@@ -297,6 +353,9 @@ async function main(): Promise<void> {
           );
           const spawnControl = await workspace.runCommand(
             'python spawn-parent.py'
+          );
+          const socketControl = await workspace.runCommand(
+            'python socket-parent.py'
           );
           return {
             fsControl,
@@ -308,6 +367,7 @@ async function main(): Promise<void> {
                 )
               : null,
             spawnControl,
+            socketControl,
             spawnJsResult: spawnControl.exitCode === 0
               ? await workspace.readFile('spawn-js-child.txt')
               : null,
@@ -328,6 +388,11 @@ async function main(): Promise<void> {
         }
       });
 
+      assertCondition(
+        result.socketControl.exitCode === 0 &&
+          result.socketControl.stdout === 'socket:true\n',
+        `Python and JavaScript did not share kernel TCP streams: ${JSON.stringify(result.socketControl)}`
+      );
       assertCondition(
         result.spawnControl.exitCode === 0 &&
           result.spawnControl.stdout === 'spawn:true\n' &&
@@ -367,6 +432,7 @@ async function main(): Promise<void> {
         explicitTkfsControls: true,
         nativeTkfsMount: true,
         childProcesses: ['javascript', 'python'],
+        tcpPeers: ['python', 'javascript'],
         watchdogControls: true,
         watchdogExpirySignal: 'SIGKILL',
       }));

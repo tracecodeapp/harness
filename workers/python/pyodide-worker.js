@@ -2065,6 +2065,16 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   readlink: 18,
   lstat: 19,
   realpath: 20,
+  socket: 21,
+  bind: 22,
+  listen: 23,
+  accept: 24,
+  connect: 25,
+  send: 26,
+  recv: 27,
+  shutdown: 28,
+  getsockname: 29,
+  getpeername: 30,
   spawn: 32,
   wait: 33,
   kill: 34,
@@ -2351,6 +2361,50 @@ class PythonTraceKernelSyncClient {
               : 3
         );
         break;
+      case 'socket':
+        break;
+      case 'bind':
+      case 'connect':
+        writer.i32(request.fd);
+        writer.string(request.address.host);
+        writer.u32(request.address.port);
+        break;
+      case 'listen':
+        writer.i32(request.fd);
+        writer.u8(
+          (request.options?.backlog === undefined ? 0 : 1) |
+            (request.options?.capacityChunks === undefined ? 0 : 2)
+        );
+        if (request.options?.backlog !== undefined) {
+          writer.u32(request.options.backlog);
+        }
+        if (request.options?.capacityChunks !== undefined) {
+          writer.u32(request.options.capacityChunks);
+        }
+        break;
+      case 'accept':
+      case 'getsockname':
+      case 'getpeername':
+        writer.i32(request.fd);
+        break;
+      case 'send':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        break;
+      case 'recv':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        break;
+      case 'shutdown':
+        writer.i32(request.fd);
+        writer.u8(
+          request.how === 'read'
+            ? 1
+            : request.how === 'write'
+              ? 2
+              : 3
+        );
+        break;
       case 'open': {
         writer.string(request.path);
         const access = request.options?.access === 'write'
@@ -2587,6 +2641,38 @@ class PythonTraceKernelSyncClient {
           signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
         };
       }
+    } else if (operation === 'socket') {
+      value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'bind') {
+      value = {
+        op: operation,
+        address: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'accept') {
+      value = {
+        op: operation,
+        fd: reader.i32(),
+        localAddress: { host: reader.string(), port: reader.u32() },
+        remoteAddress: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'connect') {
+      value = {
+        op: operation,
+        localAddress: { host: reader.string(), port: reader.u32() },
+        remoteAddress: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'send') {
+      value = { op: operation, bytesWritten: reader.u32() };
+    } else if (operation === 'recv') {
+      value = { op: operation, bytes: reader.bytesValue() };
+    } else if (
+      operation === 'getsockname' ||
+      operation === 'getpeername'
+    ) {
+      value = {
+        op: operation,
+        address: { host: reader.string(), port: reader.u32() },
+      };
     } else if (operation === 'spawn') {
       const pid = reader.i32();
       const readOptionalFd = (name) => {
@@ -3559,6 +3645,95 @@ async function executeProjectPythonUserCall(
         : result
     );
   };
+  self.__tracecodeKernelSocket = (requestJson) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel socket controls are unavailable'
+      );
+    }
+    const input = typeof requestJson === 'string'
+      ? JSON.parse(requestJson)
+      : requestJson ?? {};
+    const base64ToBytes = (value) => {
+      const binary = atob(String(value ?? ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    };
+    const bytesToBase64 = (bytes) => {
+      let binary = '';
+      for (let index = 0; index < bytes.length; index += 0x8000) {
+        binary += String.fromCharCode(
+          ...bytes.subarray(index, index + 0x8000)
+        );
+      }
+      return btoa(binary);
+    };
+    const address = (value) => ({
+      host: String(value?.host ?? '127.0.0.1'),
+      port: Number(value?.port ?? 0),
+    });
+    const syscallRequest = (() => {
+      switch (String(input.op ?? '')) {
+        case 'socket':
+          return { op: 'socket' };
+        case 'bind':
+        case 'connect':
+          return {
+            op: input.op,
+            fd: Number(input.fd),
+            address: address(input.address),
+          };
+        case 'listen':
+          return {
+            op: 'listen',
+            fd: Number(input.fd),
+            options: {
+              backlog: Number(input.backlog ?? 128),
+              capacityChunks: Number(input.capacityChunks ?? 16),
+            },
+          };
+        case 'accept':
+        case 'getsockname':
+        case 'getpeername':
+          return { op: input.op, fd: Number(input.fd) };
+        case 'send':
+          return {
+            op: 'send',
+            fd: Number(input.fd),
+            bytes: base64ToBytes(input.bytes),
+          };
+        case 'recv':
+          return {
+            op: 'recv',
+            fd: Number(input.fd),
+            maxBytes: Number(input.maxBytes ?? 16 * 1024),
+          };
+        case 'shutdown':
+          return {
+            op: 'shutdown',
+            fd: Number(input.fd),
+            how: String(input.how ?? 'both'),
+          };
+        case 'close':
+          return { op: 'close', fd: Number(input.fd) };
+        default:
+          throw new PythonTraceKernelSyscallError(
+            'ENOSYS',
+            `unsupported Python TraceKernel socket operation ${input.op}`
+          );
+      }
+    })();
+    const result = kernelClient.request(syscallRequest);
+    return JSON.stringify(
+      result.op === 'recv'
+        ? { ...result, bytes: bytesToBase64(result.bytes) }
+        : result
+    );
+  };
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
     request?.stdinPipe
@@ -4029,11 +4204,284 @@ class _TraceKernelProcessApi:
             errors=errors,
         )
 
+class _TraceKernelSocketFile:
+    def __init__(self, socket, mode="r", encoding=None, errors=None, newline=None):
+        self._socket = socket
+        self.mode = mode
+        self.encoding = encoding or "utf-8"
+        self.errors = errors or "strict"
+        self.newline = newline
+        self.closed = False
+        self._binary = "b" in mode
+
+    def read(self, size=-1):
+        if self.closed:
+            raise ValueError("I/O operation on closed socket file")
+        _remaining = int(size)
+        _chunks = []
+        while _remaining != 0:
+            _limit = 16 * 1024 if _remaining < 0 else min(_remaining, 16 * 1024)
+            _chunk = self._socket.recv(_limit)
+            if not _chunk:
+                break
+            _chunks.append(_chunk)
+            if _remaining > 0:
+                _remaining -= len(_chunk)
+        _bytes = b"".join(_chunks)
+        return _bytes if self._binary else _bytes.decode(self.encoding, self.errors)
+
+    def readline(self, size=-1):
+        _remaining = int(size)
+        _chunks = []
+        while _remaining != 0:
+            _chunk = self._socket.recv(1)
+            if not _chunk:
+                break
+            _chunks.append(_chunk)
+            if _chunk == b"\\n":
+                break
+            if _remaining > 0:
+                _remaining -= 1
+        _bytes = b"".join(_chunks)
+        return _bytes if self._binary else _bytes.decode(self.encoding, self.errors)
+
+    def write(self, value):
+        if self.closed:
+            raise ValueError("I/O operation on closed socket file")
+        _bytes = bytes(value) if self._binary else str(value).encode(self.encoding, self.errors)
+        self._socket.sendall(_bytes)
+        return len(_bytes)
+
+    def flush(self):
+        return None
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+class _TraceKernelSocket:
+    family = 2
+    type = 1
+    proto = 0
+
+    @staticmethod
+    def _call(_request):
+        try:
+            _raw = getattr(_js_self, "__tracecodeKernelSocket")(
+                json.dumps(_request)
+            )
+        except BaseException as _error:
+            _code = getattr(_error, "code", None) or "EIO"
+            raise OSError(_code, str(_error)) from None
+        return json.loads(str(_raw))
+
+    @staticmethod
+    def _address(_value):
+        if not isinstance(_value, (tuple, list)) or len(_value) < 2:
+            raise TypeError("AF_INET address must be a (host, port) pair")
+        _host = str(_value[0] or "0.0.0.0")
+        _port = int(_value[1])
+        if _port < 0 or _port > 65535:
+            raise OverflowError("socket port must be 0-65535")
+        return {"host": _host, "port": _port}
+
+    def __init__(self, family=2, type=1, proto=0, fileno=None, _fd=None):
+        if family not in (2,):
+            raise OSError("TraceKernel currently supports AF_INET only")
+        if type not in (1,):
+            raise OSError("TraceKernel currently supports SOCK_STREAM only")
+        if proto not in (0, 6):
+            raise OSError("TraceKernel currently supports TCP only")
+        if fileno is not None:
+            raise NotImplementedError(
+                "Constructing a TraceKernel socket from an arbitrary fd is unsupported"
+            )
+        self.family = family
+        self.type = type
+        self.proto = proto
+        self._fd = int(_fd) if _fd is not None else int(
+            self._call({"op": "socket"})["fd"]
+        )
+        self._closed = False
+        self._timeout = None
+
+    def fileno(self):
+        return -1 if self._closed else self._fd
+
+    def bind(self, address):
+        self._call({
+            "op": "bind",
+            "fd": self._fd,
+            "address": self._address(address),
+        })
+
+    def listen(self, backlog=128):
+        self._call({
+            "op": "listen",
+            "fd": self._fd,
+            "backlog": max(0, int(backlog)),
+        })
+
+    def accept(self):
+        _value = self._call({"op": "accept", "fd": self._fd})
+        return (
+            _TraceKernelSocket(
+                self.family,
+                self.type,
+                self.proto,
+                _fd=_value["fd"],
+            ),
+            (
+                _value["remoteAddress"]["host"],
+                int(_value["remoteAddress"]["port"]),
+            ),
+        )
+
+    def connect(self, address):
+        self._call({
+            "op": "connect",
+            "fd": self._fd,
+            "address": self._address(address),
+        })
+
+    def connect_ex(self, address):
+        try:
+            self.connect(address)
+            return 0
+        except OSError as _error:
+            return int(getattr(_error, "errno", 1) or 1)
+
+    def send(self, data, flags=0):
+        if flags:
+            raise NotImplementedError("TraceKernel socket send flags are unsupported")
+        _bytes = bytes(data)
+        return int(self._call({
+            "op": "send",
+            "fd": self._fd,
+            "bytes": base64.b64encode(_bytes).decode("ascii"),
+        })["bytesWritten"])
+
+    def sendall(self, data, flags=0):
+        _bytes = memoryview(bytes(data))
+        _offset = 0
+        while _offset < len(_bytes):
+            _written = self.send(_bytes[_offset:], flags)
+            if _written <= 0:
+                raise BrokenPipeError("TraceKernel socket send made no progress")
+            _offset += _written
+        return None
+
+    def recv(self, bufsize, flags=0):
+        if flags:
+            raise NotImplementedError("TraceKernel socket recv flags are unsupported")
+        if int(bufsize) < 0:
+            raise ValueError("negative buffersize in recv")
+        _value = self._call({
+            "op": "recv",
+            "fd": self._fd,
+            "maxBytes": int(bufsize),
+        })
+        return base64.b64decode(_value["bytes"])
+
+    def recv_into(self, buffer, nbytes=0, flags=0):
+        _view = memoryview(buffer)
+        _limit = len(_view) if not nbytes else min(int(nbytes), len(_view))
+        _bytes = self.recv(_limit, flags)
+        _view[:len(_bytes)] = _bytes
+        return len(_bytes)
+
+    def shutdown(self, how):
+        _mode = {0: "read", 1: "write", 2: "both"}.get(int(how))
+        if _mode is None:
+            raise ValueError(f"invalid shutdown mode: {how}")
+        self._call({
+            "op": "shutdown",
+            "fd": self._fd,
+            "how": _mode,
+        })
+
+    def getsockname(self):
+        _address = self._call({
+            "op": "getsockname",
+            "fd": self._fd,
+        })["address"]
+        return (_address["host"], int(_address["port"]))
+
+    def getpeername(self):
+        _address = self._call({
+            "op": "getpeername",
+            "fd": self._fd,
+        })["address"]
+        return (_address["host"], int(_address["port"]))
+
+    def settimeout(self, value):
+        if value is not None and float(value) != 0:
+            raise NotImplementedError(
+                "TraceKernel socket deadlines require a timed blocking-I/O syscall"
+            )
+        if value == 0:
+            raise NotImplementedError(
+                "TraceKernel nonblocking sockets are not implemented"
+            )
+        self._timeout = None
+
+    def gettimeout(self):
+        return self._timeout
+
+    def setblocking(self, flag):
+        if not flag:
+            raise NotImplementedError(
+                "TraceKernel nonblocking sockets are not implemented"
+            )
+        self._timeout = None
+
+    def makefile(
+        self,
+        mode="r",
+        buffering=None,
+        encoding=None,
+        errors=None,
+        newline=None,
+    ):
+        return _TraceKernelSocketFile(
+            self,
+            mode,
+            encoding,
+            errors,
+            newline,
+        )
+
+    def close(self):
+        if not self._closed:
+            try:
+                self._call({"op": "close", "fd": self._fd})
+            finally:
+                self._closed = True
+
+    def detach(self):
+        if self._closed:
+            return -1
+        _fd = self._fd
+        self._closed = True
+        return _fd
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
 _tracekernel_module = types.ModuleType("tracekernel")
 _tracekernel_module.WatchdogStatus = _TraceKernelWatchdogStatus
 _tracekernel_module.watchdog = _TraceKernelWatchdog()
 _tracekernel_module.fs = _TraceKernelFileSystem()
 _tracekernel_module.process = _TraceKernelProcessApi()
+_tracekernel_module.socket = _TraceKernelSocket
 sys.modules["tracekernel"] = _tracekernel_module
 
 def _install_tracekernel_subprocess_module():
@@ -4174,6 +4622,72 @@ def _install_tracekernel_subprocess_module():
 
 if _tracekernel_fs_mounted:
     _install_tracekernel_subprocess_module()
+
+def _install_tracekernel_socket_module():
+    _previous = sys.modules.get("socket")
+    _module = types.ModuleType("socket")
+    _module.AF_INET = 2
+    _module.AF_UNSPEC = 0
+    _module.SOCK_STREAM = 1
+    _module.IPPROTO_TCP = 6
+    _module.SOL_SOCKET = 1
+    _module.SO_REUSEADDR = 2
+    _module.SHUT_RD = 0
+    _module.SHUT_WR = 1
+    _module.SHUT_RDWR = 2
+    _module.has_ipv6 = False
+    _module.socket = _TraceKernelSocket
+    _module.SocketType = _TraceKernelSocket
+    _module.error = OSError
+    _module.timeout = TimeoutError
+    _module.gethostname = lambda: "tracekernel"
+    _module.getfqdn = lambda name="": str(name or "tracekernel")
+
+    def _host(value):
+        _value = str(value or "")
+        if _value in ("", "localhost", "tracekernel"):
+            return "127.0.0.1"
+        return _value
+
+    _module.gethostbyname = _host
+    _module.gethostbyname_ex = lambda name: (
+        str(name),
+        [],
+        [_host(name)],
+    )
+    _module.getaddrinfo = lambda host, port, family=0, type=0, proto=0, flags=0: [
+        (
+            _module.AF_INET,
+            _module.SOCK_STREAM,
+            _module.IPPROTO_TCP,
+            "",
+            (_host(host), int(port)),
+        )
+    ]
+
+    def create_connection(address, timeout=None, source_address=None):
+        _socket = _TraceKernelSocket()
+        try:
+            if timeout is not None:
+                _socket.settimeout(timeout)
+            if source_address is not None:
+                _socket.bind(source_address)
+            _socket.connect(address)
+            return _socket
+        except BaseException:
+            _socket.close()
+            raise
+
+    _module.create_connection = create_connection
+    sys.modules["socket"] = _module
+
+    def _restore():
+        if _previous is None:
+            sys.modules.pop("socket", None)
+        else:
+            sys.modules["socket"] = _previous
+
+    return _restore
 
 def _project_utf8_len(_value):
     return len(str(_value).encode("utf-8", "replace"))
@@ -4371,6 +4885,7 @@ _previous_modules = set(sys.modules.keys())
 _env = {str(key): str(value) for key, value in _request.get("env", {}).items()}
 _exit_code = 0
 _restore_workspace_paths = lambda: None
+_restore_tracekernel_socket_module = lambda: None
 _active_project_cwd = _root
 _project_original_open = builtins.open
 _project_original_readlink = os.readlink
@@ -6998,6 +7513,8 @@ try:
         if _script_dir and _script_dir not in sys.path:
             sys.path.insert(0, _script_dir)
     _install_tracekernel_asgi_modules()
+    if _tracekernel_fs_mounted:
+        _restore_tracekernel_socket_module = _install_tracekernel_socket_module()
     sys.argv = _project_argv()
     sys.stdin = _TraceProjectInputStream()
     sys.__stdout__ = _stdout
@@ -7024,6 +7541,7 @@ try:
             traceback.print_exc(file=_stderr)
             _exit_code = 1
 finally:
+    _restore_tracekernel_socket_module()
     _restore_provider_fs_mutation_events()
     _restore_workspace_paths()
     sys.argv = _previous_argv
@@ -7083,6 +7601,7 @@ json.dumps({
     delete self.__tracecodeKernelWatchdog;
     delete self.__tracecodeKernelFileSystem;
     delete self.__tracecodeKernelProcess;
+    delete self.__tracecodeKernelSocket;
     kernelClient?.close();
     activeProjectHttpBridges.delete(messageId);
   }

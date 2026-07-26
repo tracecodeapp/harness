@@ -488,8 +488,12 @@ The initial 0.13 branch now establishes:
 - Python `tracekernel.process` and `subprocess` adapters for kernel-supervised
   JavaScript and Python children, including process-owned piped stdio,
   synchronous wait/reap, signal delivery, shared TKFS visibility, and
-  separate-worker interpreter isolation; Python raw-socket adaptation remains
-  a subsequent milestone;
+  separate-worker interpreter isolation;
+- a Python `socket` adapter for blocking IPv4 TCP sockets backed by
+  process-owned TraceKernel descriptors, with bind/listen/accept/connect,
+  fragmented send/recv, half-close, address inspection, and cross-language
+  Python/JavaScript stream conformance; nonblocking mode, socket deadlines,
+  UDP, and broader address-family compatibility remain later slices;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic
