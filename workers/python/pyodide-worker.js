@@ -3318,6 +3318,151 @@ function installPyodideTraceKernelMount(
   };
 }
 
+function installPyodideTraceKernelPipeFactory(pyodideInstance, kernelClient) {
+  const fs = pyodideInstance.FS;
+  const fifoMode = 0x1000 | 0o666;
+  const throwErrno = (error) => {
+    if (error instanceof fs.ErrnoError) throw error;
+    const code = typeof error?.code === 'string' ? error.code : 'EIO';
+    throw new fs.ErrnoError(PYTHON_TK_ERRNO[code] ?? PYTHON_TK_ERRNO.EIO);
+  };
+  const streamOperations = {
+    read(stream, buffer, offset, length) {
+      try {
+        const bytes = kernelClient.request({
+          op: 'read',
+          fd: stream.shared.tracekernelFd,
+          maxBytes: length,
+        }).bytes;
+        buffer.set(bytes, offset);
+        return bytes.byteLength;
+      } catch (error) {
+        return throwErrno(error);
+      }
+    },
+    write(stream, buffer, offset, length) {
+      try {
+        return kernelClient.request({
+          op: 'write',
+          fd: stream.shared.tracekernelFd,
+          bytes: buffer.slice(offset, offset + length),
+        }).bytesWritten;
+      } catch (error) {
+        return throwErrno(error);
+      }
+    },
+    close(stream) {
+      stream.shared.tracekernelRefcount -= 1;
+      if (stream.shared.tracekernelRefcount !== 0) return;
+      try {
+        kernelClient.request({
+          op: 'close',
+          fd: stream.shared.tracekernelFd,
+        });
+      } catch (error) {
+        return throwErrno(error);
+      }
+    },
+    dup(stream) {
+      stream.shared.tracekernelRefcount += 1;
+    },
+    llseek() {
+      throw new fs.ErrnoError(PYTHON_TK_ERRNO.ESPIPE);
+    },
+  };
+  const nodeOperations = {
+    getattr(node) {
+      const now = new Date();
+      return {
+        dev: 0,
+        ino: node.id,
+        mode: node.mode,
+        nlink: 1,
+        uid: 0,
+        gid: 0,
+        rdev: 0,
+        size: 0,
+        atime: now,
+        mtime: now,
+        ctime: now,
+        blksize: 4096,
+        blocks: 0,
+      };
+    },
+  };
+  let nextPipeNodeId = 1;
+
+  const createStream = (kernelFd, readable) => {
+    const node = fs.createNode(
+      null,
+      `tracekernel-pipe-${nextPipeNodeId++}`,
+      fifoMode,
+      0
+    );
+    node.node_ops = nodeOperations;
+    node.stream_ops = streamOperations;
+    const shared = {
+      tracekernelFd: kernelFd,
+      tracekernelRefcount: 1,
+      position: 0,
+    };
+    return fs.createStream({
+      shared,
+      node,
+      path: `pipe:[${kernelFd}]`,
+      flags: readable ? 0 : 1,
+      seekable: false,
+      position: 0,
+      stream_ops: streamOperations,
+      ungotten: [],
+      error: false,
+    });
+  };
+
+  self.__tracecodeCreateKernelPipe = (closeOnExec = true) => {
+    let readStream;
+    let writeStream;
+    let pair;
+    try {
+      pair = kernelClient.request({
+        op: 'pipe',
+        options: { closeOnExec: closeOnExec !== false },
+      });
+      readStream = createStream(pair.readFd, true);
+      writeStream = createStream(pair.writeFd, false);
+      return JSON.stringify([readStream.fd, writeStream.fd]);
+    } catch (error) {
+      if (writeStream) {
+        try {
+          fs.close(writeStream);
+        } catch {
+          // Preserve the original creation failure.
+        }
+      } else if (pair?.writeFd !== undefined) {
+        try {
+          kernelClient.request({ op: 'close', fd: pair.writeFd });
+        } catch {
+          // The process descriptor table remains the final cleanup boundary.
+        }
+      }
+      if (readStream) {
+        try {
+          fs.close(readStream);
+        } catch {
+          // Preserve the original creation failure.
+        }
+      } else if (pair?.readFd !== undefined) {
+        try {
+          kernelClient.request({ op: 'close', fd: pair.readFd });
+        } catch {
+          // The process descriptor table remains the final cleanup boundary.
+        }
+      }
+      return throwErrno(error);
+    }
+  };
+}
+
 class TraceKernelHttpBridge {
   constructor(messageId, protocolToken) {
     this.messageId = messageId;
@@ -3928,6 +4073,7 @@ async function executeProjectPythonUserCall(
 import base64
 import builtins
 import contextlib
+import errno
 import io
 import importlib
 import json
@@ -4759,6 +4905,54 @@ _tracekernel_module.fs = _TraceKernelFileSystem()
 _tracekernel_module.process = _TraceKernelProcessApi()
 _tracekernel_module.socket = _TraceKernelSocket
 sys.modules["tracekernel"] = _tracekernel_module
+
+_original_tracekernel_os_pipe = getattr(os, "pipe", None)
+_original_tracekernel_os_pipe2 = getattr(os, "pipe2", None)
+_original_tracekernel_o_cloexec = getattr(os, "O_CLOEXEC", None)
+_tracekernel_o_cloexec = int(_original_tracekernel_o_cloexec or 0x80000)
+os.O_CLOEXEC = _tracekernel_o_cloexec
+def _tracekernel_os_pipe():
+    return tuple(json.loads(str(
+        getattr(_js_self, "__tracecodeCreateKernelPipe")(True)
+    )))
+def _tracekernel_os_pipe2(flags):
+    _flags = int(flags)
+    _nonblocking = int(getattr(os, "O_NONBLOCK", 0))
+    if _nonblocking and (_flags & _nonblocking):
+        raise NotImplementedError(
+            "TraceKernel O_NONBLOCK requires kernel readiness and poll semantics"
+        )
+    if _flags & ~_tracekernel_o_cloexec:
+        raise OSError(errno.EINVAL, "Unsupported TraceKernel pipe2 flags")
+    return tuple(json.loads(str(
+        getattr(_js_self, "__tracecodeCreateKernelPipe")(
+            bool(_flags & _tracekernel_o_cloexec)
+        )
+    )))
+os.pipe = _tracekernel_os_pipe
+os.pipe2 = _tracekernel_os_pipe2
+def _restore_tracekernel_pipe_module():
+    if _original_tracekernel_os_pipe is None:
+        try:
+            delattr(os, "pipe")
+        except AttributeError:
+            pass
+    else:
+        os.pipe = _original_tracekernel_os_pipe
+    if _original_tracekernel_os_pipe2 is None:
+        try:
+            delattr(os, "pipe2")
+        except AttributeError:
+            pass
+    else:
+        os.pipe2 = _original_tracekernel_os_pipe2
+    if _original_tracekernel_o_cloexec is None:
+        try:
+            delattr(os, "O_CLOEXEC")
+        except AttributeError:
+            pass
+    else:
+        os.O_CLOEXEC = _original_tracekernel_o_cloexec
 
 os.kill = lambda pid, signal: _tracekernel_module.process.kill(pid, signal)
 os.killpg = lambda pgid, signal: _tracekernel_module.process.kill(
@@ -7914,6 +8108,7 @@ try:
             _exit_code = 1
 finally:
     _restore_tracekernel_socket_module()
+    _restore_tracekernel_pipe_module()
     _restore_provider_fs_mutation_events()
     _restore_workspace_paths()
     sys.argv = _previous_argv
@@ -7947,6 +8142,7 @@ json.dumps({
         kernelClient,
         workspaceRoot
       );
+      installPyodideTraceKernelPipeFactory(pyodide, kernelClient);
     }
     const resultJson = await pyodide.runPythonAsync(projectCode);
     const result = JSON.parse(resultJson);
@@ -7974,6 +8170,7 @@ json.dumps({
     delete self.__tracecodeKernelFileSystem;
     delete self.__tracecodeKernelProcess;
     delete self.__tracecodeKernelSocket;
+    delete self.__tracecodeCreateKernelPipe;
     kernelClient?.close();
     activeProjectHttpBridges.delete(messageId);
   }

@@ -485,6 +485,13 @@ header (including a nonzero `O_CLOEXEC` value), while managed C# exposes the
 same atomic choices through `KernelPipe.Create` and
 `KernelDescriptor.DuplicateTo`. `O_NONBLOCK` remains unsupported until
 readiness, polling, and open-file-description status flags land together.
+Python `os.pipe` and `os.pipe2` install ordinary Pyodide descriptor identities
+whose stream operations reference the kernel endpoints. Consequently
+`os.read`/`write`/`close`, `dup`, inheritable flags, `pass_fds`, and
+cross-language child mappings do not require a parallel Python-only pipe
+registry. Python's `os.pipe` follows PEP 446 and defaults both endpoints to
+close-on-exec; `os.pipe2(0)` and `os.pipe2(O_CLOEXEC)` retain their explicit
+POSIX flag behavior.
 
 The C/C++ WASI process compatibility slice is intentionally smaller than a
 complete host libc. It supports exact-child blocking `waitpid`, `SIGINT`,
@@ -579,6 +586,9 @@ The initial 0.13 branch now establishes:
   `pathlib` path and regular-file descriptor operations with TKFS, including
   positioned I/O, truncate, rename, symlink traversal, and kernel-owned
   descriptor cleanup;
+- Python `os.pipe`/`os.pipe2` descriptors backed by session-owned kernel pipes,
+  including duplication, close-on-exec flags, and inheritance into a
+  JavaScript child through `pass_fds`;
 - Python `tracekernel.process` and `subprocess` adapters for kernel-supervised
   JavaScript and Python children, including process-owned piped stdio,
   synchronous wait/reap, signal delivery, local-to-kernel descriptor
