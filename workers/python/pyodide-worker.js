@@ -4069,49 +4069,59 @@ async function executeProjectPythonUserCall(
           );
       }
     })();
-    const result = kernelClient.request(syscallRequest);
-    if (result.op === 'setsid') {
-      runtimeKernelProcessIdentity.sid = result.sid;
-      runtimeKernelProcessIdentity.pgid = result.pgid;
-    } else if (
-      result.op === 'setpgid' &&
-      (Number(input.pid ?? 0) === 0 ||
-        Number(input.pid ?? 0) === runtimeKernelProcessIdentity.pid)
-    ) {
-      runtimeKernelProcessIdentity.pgid = result.pgid;
-    }
-    const serializableResult = result.op === 'read'
-      ? { ...result, bytes: bytesToBase64(result.bytes) }
-      : result.op === 'poll' && pollMappings
-        ? {
-            ...result,
-            entries: pollMappings.flatMap((mapping) => {
-              if (mapping.kernelFd === null) {
+    try {
+      const result = kernelClient.request(syscallRequest);
+      if (result.op === 'setsid') {
+        runtimeKernelProcessIdentity.sid = result.sid;
+        runtimeKernelProcessIdentity.pgid = result.pgid;
+      } else if (
+        result.op === 'setpgid' &&
+        (Number(input.pid ?? 0) === 0 ||
+          Number(input.pid ?? 0) === runtimeKernelProcessIdentity.pid)
+      ) {
+        runtimeKernelProcessIdentity.pgid = result.pgid;
+      }
+      const serializableResult = result.op === 'read'
+        ? { ...result, bytes: bytesToBase64(result.bytes) }
+        : result.op === 'poll' && pollMappings
+          ? {
+              ...result,
+              entries: pollMappings.flatMap((mapping) => {
+                if (mapping.kernelFd === null) {
+                  return [{
+                    fd: mapping.localFd,
+                    read: false,
+                    write: false,
+                    hangup: false,
+                    error: false,
+                    invalid: true,
+                  }];
+                }
+                const readiness = result.entries.find(
+                  (entry) => entry.fd === mapping.kernelFd
+                );
+                if (!readiness) return [];
                 return [{
                   fd: mapping.localFd,
-                  read: false,
-                  write: false,
-                  hangup: false,
-                  error: false,
-                  invalid: true,
+                  read: mapping.read && readiness.read,
+                  write: mapping.write && readiness.write,
+                  hangup: readiness.hangup,
+                  error: readiness.error,
+                  invalid: readiness.invalid,
                 }];
-              }
-              const readiness = result.entries.find(
-                (entry) => entry.fd === mapping.kernelFd
-              );
-              if (!readiness) return [];
-              return [{
-                fd: mapping.localFd,
-                read: mapping.read && readiness.read,
-                write: mapping.write && readiness.write,
-                hangup: readiness.hangup,
-                error: readiness.error,
-                invalid: readiness.invalid,
-              }];
-            }),
-          }
-        : result;
-    return JSON.stringify(serializableResult);
+              }),
+            }
+          : result;
+      return JSON.stringify({ ok: true, value: serializableResult });
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        error: {
+          code: String(error?.code ?? 'EIO'),
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   };
   self.__tracecodeKernelSocket = (requestJson) => {
     if (!kernelClient) {
@@ -4662,7 +4672,24 @@ class _TraceKernelProcessApi:
         except BaseException as _error:
             _code = getattr(_error, "code", None) or "EIO"
             raise OSError(_code, str(_error)) from None
-        return json.loads(str(_raw))
+        _response = json.loads(str(_raw))
+        if not _response.get("ok", False):
+            _error = _response.get("error") or {}
+            _code = str(_error.get("code") or "EIO")
+            _message = str(
+                _error.get("message") or "TraceKernel process syscall failed"
+            )
+            if _code == "EIO" or not hasattr(errno, _code):
+                _code = next((
+                    _candidate
+                    for _candidate in errno.errorcode.values()
+                    if f"{_candidate}:" in _message
+                ), _code)
+            raise OSError(
+                int(getattr(errno, _code, errno.EIO)),
+                _message,
+            )
+        return _response.get("value") or {}
 
     @staticmethod
     def runtime_for_command(command):
@@ -4778,6 +4805,13 @@ class _TraceKernelProcessApi:
             "op": "setpgid",
             "pid": int(pid),
             "pgid": int(pgid),
+        })
+
+    def waitpid(self, pid=-1, *, no_hang=False):
+        return self._call({
+            "op": "wait",
+            "pid": int(pid),
+            "noHang": bool(no_hang),
         })
 
 class _TraceKernelSocketFile:
@@ -5212,6 +5246,37 @@ os.getpgid = _tracekernel_getpgid
 os.getsid = _tracekernel_getsid
 os.setsid = lambda: _tracekernel_module.process.setsid()
 os.setpgid = lambda pid, pgid: _tracekernel_module.process.setpgid(pid, pgid)
+os.WNOHANG = int(getattr(os, "WNOHANG", 1))
+def _tracekernel_wait_status(_termination):
+    if _termination["kind"] == "signal":
+        return {
+            "SIGINT": 2,
+            "SIGTERM": 15,
+            "SIGKILL": 9,
+        }.get(_termination.get("signal"), 1)
+    return (int(_termination.get("exitCode", 1)) & 0xff) << 8
+def _tracekernel_waitpid(pid, options):
+    _options = int(options)
+    if _options & ~os.WNOHANG:
+        raise OSError(
+            errno.ENOTSUP,
+            "TraceKernel waitpid currently supports only WNOHANG",
+        )
+    try:
+        _value = _tracekernel_module.process.waitpid(
+            int(pid),
+            no_hang=bool(_options & os.WNOHANG),
+        )
+    except OSError as _error:
+        if _error.errno == errno.ECHILD:
+            raise ChildProcessError(_error.errno, _error.strerror) from None
+        raise
+    _termination = _value.get("termination")
+    if _termination is None:
+        return 0, 0
+    return int(_value["pid"]), _tracekernel_wait_status(_termination)
+os.waitpid = _tracekernel_waitpid
+os.wait = lambda: _tracekernel_waitpid(-1, 0)
 
 def _tracekernel_get_inheritable(fd):
     _value = _TraceKernelProcessApi._call({
