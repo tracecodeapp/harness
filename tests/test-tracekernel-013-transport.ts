@@ -255,6 +255,14 @@ async function main(): Promise<void> {
       action: 'set-nonblocking',
       nonblocking: true,
     },
+    {
+      op: 'poll',
+      entries: [
+        { fd: 20, read: true, write: false },
+        { fd: 21, read: false, write: true },
+      ],
+      timeoutMs: 25,
+    },
     { op: 'fstat', fd: 13 },
     { op: 'ftruncate', fd: 14, length: 4096 },
     { op: 'stat', path: '/workspace/a' },
@@ -402,6 +410,30 @@ async function main(): Promise<void> {
     {
       ok: true,
       value: { op: 'fcntl', closeOnExec: true, nonblocking: true },
+    },
+    {
+      ok: true,
+      value: {
+        op: 'poll',
+        entries: [
+          {
+            fd: 20,
+            read: true,
+            write: false,
+            hangup: true,
+            error: false,
+            invalid: false,
+          },
+          {
+            fd: 21,
+            read: false,
+            write: false,
+            hangup: false,
+            error: false,
+            invalid: true,
+          },
+        ],
+      },
     },
     {
       ok: true,

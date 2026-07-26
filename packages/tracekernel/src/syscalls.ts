@@ -190,6 +190,15 @@ export type TraceKernelSyscallRequest =
       readonly nonblocking?: boolean;
     }
   | {
+      readonly op: 'poll';
+      readonly entries: readonly {
+        readonly fd: number;
+        readonly read?: boolean;
+        readonly write?: boolean;
+      }[];
+      readonly timeoutMs?: number;
+    }
+  | {
       readonly op: 'fstat';
       readonly fd: number;
     }
@@ -313,6 +322,17 @@ export type TraceKernelSyscallValue =
       readonly op: 'fcntl';
       readonly closeOnExec: boolean;
       readonly nonblocking: boolean;
+    }
+  | {
+      readonly op: 'poll';
+      readonly entries: readonly {
+        readonly fd: number;
+        readonly read: boolean;
+        readonly write: boolean;
+        readonly hangup: boolean;
+        readonly error: boolean;
+        readonly invalid: boolean;
+      }[];
     }
   | { readonly op: 'fstat'; readonly stat: TraceKernelStat }
   | { readonly op: 'ftruncate' }
@@ -669,6 +689,8 @@ export class TraceKernelSyscallDispatcher {
           );
           return { op: 'fcntl' as const, closeOnExec, nonblocking };
         });
+      case 'poll':
+        return this.pollDescriptors(request.entries, request.timeoutMs);
       case 'fstat':
         return this.process.fstat(request.fd).pipe(
           Effect.map((stat) => ({ op: 'fstat' as const, stat }))
@@ -741,5 +763,91 @@ export class TraceKernelSyscallDispatcher {
           Effect.as({ op: 'writeFile' as const })
         );
     }
+  }
+
+  private pollDescriptors(
+    entries: readonly {
+      readonly fd: number;
+      readonly read?: boolean;
+      readonly write?: boolean;
+    }[],
+    timeoutMs?: number
+  ): Effect.Effect<TraceKernelSyscallValue, Error> {
+    if (
+      timeoutMs !== undefined &&
+      (!Number.isFinite(timeoutMs) || timeoutMs < 0)
+    ) {
+      return Effect.fail(new TraceKernelInvalidArgumentError({
+        code: 'EINVAL',
+        argument: 'timeoutMs',
+        message: `EINVAL: invalid poll timeout ${timeoutMs}`,
+      }));
+    }
+    const timeout = timeoutMs === undefined
+      ? undefined
+      : Math.max(0, Math.floor(timeoutMs));
+    const startedAt = Date.now();
+    const snapshot = () => Effect.forEach(
+      entries,
+      (entry) => this.process.descriptors.readiness(entry.fd, {
+        read: entry.read === true,
+        write: entry.write === true,
+      }).pipe(
+        Effect.match({
+          onFailure: () => ({
+            fd: entry.fd,
+            read: false,
+            write: false,
+            hangup: false,
+            error: false,
+            invalid: true,
+          }),
+          onSuccess: (ready) => ({
+            fd: entry.fd,
+            ...ready,
+            invalid: false,
+          }),
+        })
+      ),
+      { concurrency: 'unbounded' }
+    ).pipe(
+      Effect.map((results) => results.filter((result) =>
+        result.read ||
+        result.write ||
+        result.hangup ||
+        result.error ||
+        result.invalid
+      ))
+    );
+    const loop = (): Effect.Effect<TraceKernelSyscallValue, Error> =>
+      Effect.suspend(() => snapshot().pipe(
+        Effect.flatMap((ready) => {
+          if (ready.length > 0 || timeout === 0) {
+            return Effect.succeed({ op: 'poll' as const, entries: ready });
+          }
+          const elapsed = Date.now() - startedAt;
+          const remaining = timeout === undefined ? undefined : timeout - elapsed;
+          if (remaining !== undefined && remaining <= 0) {
+            return Effect.succeed({ op: 'poll' as const, entries: [] });
+          }
+          const waits = entries.map((entry) =>
+            this.process.descriptors.awaitReadiness(entry.fd, {
+              read: entry.read === true,
+              write: entry.write === true,
+            }).pipe(
+              Effect.asVoid,
+              Effect.catchAll(() => Effect.void)
+            )
+          );
+          const awakened = waits.length === 0
+            ? Effect.never
+            : Effect.raceAll(waits);
+          const wait = remaining === undefined
+            ? awakened
+            : Effect.raceFirst(awakened, Effect.sleep(remaining));
+          return wait.pipe(Effect.andThen(loop()));
+        })
+      ));
+    return loop();
   }
 }

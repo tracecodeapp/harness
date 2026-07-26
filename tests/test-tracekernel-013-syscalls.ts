@@ -2,6 +2,7 @@
 
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
+import * as Option from 'effect/Option';
 import {
   makeTraceKernelHost,
   TraceKernelSyscallDispatcher,
@@ -193,12 +194,53 @@ async function main(): Promise<void> {
           getCloseOnExec.value.closeOnExec,
         `fcntl did not preserve FD_CLOEXEC: ${JSON.stringify(getCloseOnExec)}`
       );
+      const emptyPipePoll = yield* syscalls.dispatch({
+        op: 'poll',
+        entries: [{ fd: pipe.value.readFd, read: true }],
+        timeoutMs: 0,
+      });
+      success(emptyPipePoll);
+      assertCondition(
+        emptyPipePoll.value.op === 'poll' &&
+          emptyPipePoll.value.entries.length === 0,
+        `poll reported an empty pipe reader as readable: ${JSON.stringify(emptyPipePoll)}`
+      );
+      const writablePipePoll = yield* syscalls.dispatch({
+        op: 'poll',
+        entries: [{ fd: pipe.value.writeFd, write: true }],
+        timeoutMs: 0,
+      });
+      success(writablePipePoll);
+      assertCondition(
+        writablePipePoll.value.op === 'poll' &&
+          writablePipePoll.value.entries.length === 1 &&
+          writablePipePoll.value.entries[0]?.write === true,
+        `poll did not report pipe capacity as writable: ${JSON.stringify(writablePipePoll)}`
+      );
+      const waitingPipePoll = yield* Effect.fork(syscalls.dispatch({
+        op: 'poll',
+        entries: [{ fd: pipe.value.readFd, read: true }],
+        timeoutMs: 1_000,
+      }));
+      yield* Effect.yieldNow();
+      assertCondition(
+        Option.isNone(yield* Fiber.poll(waitingPipePoll)),
+        'poll returned before the requested pipe event occurred.'
+      );
       const pipeWrite = yield* syscalls.dispatch({
         op: 'write',
         fd: pipe.value.writeFd,
         bytes: new TextEncoder().encode('pipe-wire'),
       });
       success(pipeWrite);
+      const awakenedPipePoll = yield* Fiber.join(waitingPipePoll);
+      success(awakenedPipePoll);
+      assertCondition(
+        awakenedPipePoll.value.op === 'poll' &&
+          awakenedPipePoll.value.entries.length === 1 &&
+          awakenedPipePoll.value.entries[0]?.read === true,
+        `a pipe write did not wake a blocked poll: ${JSON.stringify(awakenedPipePoll)}`
+      );
       const pipeRead = yield* syscalls.dispatch({
         op: 'read',
         fd: pipe.value.readFd,
@@ -269,8 +311,35 @@ async function main(): Promise<void> {
         !reaped.ok && reaped.error.code === 'ECHILD',
         `waiting twice did not return ECHILD: ${JSON.stringify(reaped)}`
       );
-      success(yield* syscalls.dispatch({ op: 'close', fd: pipe.value.readFd }));
       success(yield* syscalls.dispatch({ op: 'close', fd: pipe.value.writeFd }));
+      const hungUpPipePoll = yield* syscalls.dispatch({
+        op: 'poll',
+        entries: [{ fd: pipe.value.readFd, read: true }],
+        timeoutMs: 0,
+      });
+      success(hungUpPipePoll);
+      assertCondition(
+        hungUpPipePoll.value.op === 'poll' &&
+          hungUpPipePoll.value.entries.length === 1 &&
+          hungUpPipePoll.value.entries[0]?.read === true &&
+          hungUpPipePoll.value.entries[0]?.hangup === true,
+        `poll did not report EOF and HUP after the final writer closed: ${JSON.stringify(
+          hungUpPipePoll
+        )}`
+      );
+      const invalidPipePoll = yield* syscalls.dispatch({
+        op: 'poll',
+        entries: [{ fd: 999_999, read: true }],
+        timeoutMs: 1_000,
+      });
+      success(invalidPipePoll);
+      assertCondition(
+        invalidPipePoll.value.op === 'poll' &&
+          invalidPipePoll.value.entries.length === 1 &&
+          invalidPipePoll.value.entries[0]?.invalid === true,
+        `poll did not return POLLNVAL-style readiness: ${JSON.stringify(invalidPipePoll)}`
+      );
+      success(yield* syscalls.dispatch({ op: 'close', fd: pipe.value.readFd }));
 
       const stdioChild = yield* syscalls.dispatch({
         op: 'spawn',

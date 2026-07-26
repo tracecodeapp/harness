@@ -27,6 +27,18 @@ export interface TraceKernelDescriptorSnapshot {
   readonly nonblocking: boolean;
 }
 
+export interface TraceKernelPollEvents {
+  readonly read: boolean;
+  readonly write: boolean;
+}
+
+export interface TraceKernelDescriptorReadiness {
+  readonly read: boolean;
+  readonly write: boolean;
+  readonly hangup: boolean;
+  readonly error: boolean;
+}
+
 export interface TraceKernelDescriptor {
   readonly kind: TraceKernelDescriptorKind;
   readonly resourceId: string;
@@ -39,6 +51,12 @@ export interface TraceKernelDescriptor {
   readNonblocking?(maxBytes: number, position?: number): Effect.Effect<Uint8Array, Error>;
   write?(bytes: Uint8Array, position?: number): Effect.Effect<number, Error>;
   writeNonblocking?(bytes: Uint8Array, position?: number): Effect.Effect<number, Error>;
+  readiness?(
+    events: TraceKernelPollEvents
+  ): Effect.Effect<TraceKernelDescriptorReadiness, Error>;
+  awaitReadiness?(
+    events: TraceKernelPollEvents
+  ): Effect.Effect<TraceKernelDescriptorReadiness, Error>;
   stat?(): Effect.Effect<TraceKernelStat, Error>;
   truncate?(length: number): Effect.Effect<void, Error>;
   duplicate(): Effect.Effect<TraceKernelDescriptor, Error>;
@@ -268,6 +286,66 @@ export class TraceKernelDescriptorTable {
     }
     statusFor(descriptor).nonblocking = nonblocking;
     return Effect.void;
+  }
+
+  readiness(
+    fd: number,
+    events: TraceKernelPollEvents
+  ): Effect.Effect<
+    TraceKernelDescriptorReadiness,
+    TraceKernelBadFileDescriptorError
+  > {
+    const descriptor = this.descriptors.get(fd);
+    if (!descriptor) {
+      return Effect.fail(new TraceKernelBadFileDescriptorError({
+        fd,
+        operation: 'poll',
+        message: `EBADF: bad file descriptor, poll ${fd}`,
+      }));
+    }
+    if (descriptor.readiness) {
+      return descriptor.readiness(events).pipe(
+        Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
+          fd,
+          operation: 'poll',
+          message: error.message,
+        }))
+      );
+    }
+    return Effect.succeed(Object.freeze({
+      read: events.read && descriptor.kind === 'file' && Boolean(descriptor.read),
+      write: events.write && descriptor.kind === 'file' && Boolean(descriptor.write),
+      hangup: false,
+      error: false,
+    }));
+  }
+
+  awaitReadiness(
+    fd: number,
+    events: TraceKernelPollEvents
+  ): Effect.Effect<
+    TraceKernelDescriptorReadiness,
+    TraceKernelBadFileDescriptorError
+  > {
+    const descriptor = this.descriptors.get(fd);
+    if (!descriptor) {
+      return Effect.fail(new TraceKernelBadFileDescriptorError({
+        fd,
+        operation: 'poll',
+        message: `EBADF: bad file descriptor, poll ${fd}`,
+      }));
+    }
+    if (descriptor.awaitReadiness) {
+      return descriptor.awaitReadiness(events).pipe(
+        Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
+          fd,
+          operation: 'poll',
+          message: error.message,
+        }))
+      );
+    }
+    if (descriptor.kind === 'file') return this.readiness(fd, events);
+    return Effect.never;
   }
 
   read(
@@ -730,6 +808,7 @@ export class TraceKernelPipe {
     private readonly chunks: Queue.Queue<Uint8Array>,
     private readonly readerClosed: Deferred.Deferred<void>,
     private readonly writerClosed: Deferred.Deferred<void>,
+    private readinessChanged: Deferred.Deferred<void>,
     private readonly readMutex: Effect.Semaphore,
     private readonly onFullyClosed: (id: string) => void
   ) {}
@@ -745,12 +824,14 @@ export class TraceKernelPipe {
       );
       const readerClosed = yield* Deferred.make<void>();
       const writerClosed = yield* Deferred.make<void>();
+      const readinessChanged = yield* Deferred.make<void>();
       const readMutex = yield* Effect.makeSemaphore(1);
       return new TraceKernelPipe(
         id,
         chunks,
         readerClosed,
         writerClosed,
+        readinessChanged,
         readMutex,
         onFullyClosed
       );
@@ -761,8 +842,14 @@ export class TraceKernelPipe {
     return {
       kind: 'pipe-reader',
       resourceId: this.id,
-      read: (maxBytes) => this.read(maxBytes),
-      readNonblocking: (maxBytes) => this.readNonblocking(maxBytes),
+      read: (maxBytes) => this.read(maxBytes).pipe(
+        Effect.tap(() => this.notifyReadiness())
+      ),
+      readNonblocking: (maxBytes) => this.readNonblocking(maxBytes).pipe(
+        Effect.tap(() => this.notifyReadiness())
+      ),
+      readiness: (events) => this.pipeReadiness('reader', events),
+      awaitReadiness: (events) => this.awaitPipeReadiness('reader', events),
       duplicate: () => this.duplicateReader(),
       close: () => this.closeReader(),
     };
@@ -772,8 +859,14 @@ export class TraceKernelPipe {
     return {
       kind: 'pipe-writer',
       resourceId: this.id,
-      write: (bytes) => this.write(bytes),
-      writeNonblocking: (bytes) => this.writeNonblocking(bytes),
+      write: (bytes) => this.write(bytes).pipe(
+        Effect.tap(() => this.notifyReadiness())
+      ),
+      writeNonblocking: (bytes) => this.writeNonblocking(bytes).pipe(
+        Effect.tap(() => this.notifyReadiness())
+      ),
+      readiness: (events) => this.pipeReadiness('writer', events),
+      awaitReadiness: (events) => this.awaitPipeReadiness('writer', events),
       duplicate: () => this.duplicateWriter(),
       close: () => this.closeWriter(),
     };
@@ -903,6 +996,63 @@ export class TraceKernelPipe {
     });
   }
 
+  private pipeReadiness(
+    endpoint: 'reader' | 'writer',
+    events: TraceKernelPollEvents
+  ): Effect.Effect<TraceKernelDescriptorReadiness> {
+    return Effect.all({
+      empty: Queue.isEmpty(this.chunks),
+      full: Queue.isFull(this.chunks),
+    }).pipe(
+      Effect.map(({ empty, full }) => {
+        const hangup = endpoint === 'reader'
+          ? this.writerIsClosed
+          : this.readerIsClosed;
+        return Object.freeze({
+          read: endpoint === 'reader' &&
+            events.read &&
+            (this.remainder.byteLength > 0 || !empty || this.writerIsClosed),
+          write: endpoint === 'writer' &&
+            events.write &&
+            !this.readerIsClosed &&
+            !full,
+          hangup,
+          error: endpoint === 'writer' && this.readerIsClosed,
+        });
+      })
+    );
+  }
+
+  private awaitPipeReadiness(
+    endpoint: 'reader' | 'writer',
+    events: TraceKernelPollEvents
+  ): Effect.Effect<TraceKernelDescriptorReadiness> {
+    return Effect.suspend(() => {
+      const changed = this.readinessChanged;
+      return this.pipeReadiness(endpoint, events).pipe(
+        Effect.flatMap((readiness) =>
+          readiness.read ||
+          readiness.write ||
+          readiness.hangup ||
+          readiness.error
+            ? Effect.succeed(readiness)
+            : Deferred.await(changed).pipe(
+                Effect.andThen(this.awaitPipeReadiness(endpoint, events))
+              )
+        )
+      );
+    });
+  }
+
+  private notifyReadiness(): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      const previous = this.readinessChanged;
+      const next = yield* Deferred.make<void>();
+      this.readinessChanged = next;
+      yield* Deferred.succeed(previous, undefined);
+    });
+  }
+
   private closeReader(): Effect.Effect<void> {
     return Effect.suspend(() => {
       if (this.readerIsClosed) return Effect.void;
@@ -911,6 +1061,7 @@ export class TraceKernelPipe {
       this.readerIsClosed = true;
       return Deferred.succeed(this.readerClosed, undefined).pipe(
         Effect.asVoid,
+        Effect.tap(() => this.notifyReadiness()),
         Effect.tap(() => Effect.sync(() => this.notifyIfFullyClosed()))
       );
     });
@@ -924,6 +1075,7 @@ export class TraceKernelPipe {
       this.writerIsClosed = true;
       return Deferred.succeed(this.writerClosed, undefined).pipe(
         Effect.asVoid,
+        Effect.tap(() => this.notifyReadiness()),
         Effect.tap(() => Effect.sync(() => this.notifyIfFullyClosed()))
       );
     });

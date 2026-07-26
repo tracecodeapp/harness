@@ -525,6 +525,36 @@ export class RuntimeKernelDescriptorManager {
     );
   }
 
+  readiness(
+    pid: number,
+    fd: number,
+    events: { readonly read: boolean; readonly write: boolean }
+  ): Promise<{
+    readonly read: boolean;
+    readonly write: boolean;
+    readonly hangup: boolean;
+    readonly error: boolean;
+  }> {
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'poll').readiness(fd, events)
+    );
+  }
+
+  awaitReadiness(
+    pid: number,
+    fd: number,
+    events: { readonly read: boolean; readonly write: boolean }
+  ): Promise<{
+    readonly read: boolean;
+    readonly write: boolean;
+    readonly hangup: boolean;
+    readonly error: boolean;
+  }> {
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'poll').awaitReadiness(fd, events)
+    );
+  }
+
   async closeProcess(pid: number): Promise<void> {
     const table = this.tables.get(pid);
     if (!table) return;

@@ -54,6 +54,7 @@ const OP_CODES = {
   setsid: 39,
   setpgid: 40,
   dup3: 41,
+  poll: 42,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -519,6 +520,15 @@ export function encodeTraceKernelSyscallRequest(
         writer.u8(request.nonblocking ? 1 : 0);
       }
       break;
+    case 'poll':
+      writer.u32(request.entries.length);
+      for (const entry of request.entries) {
+        writer.i32(entry.fd);
+        writer.u8((entry.read ? 1 : 0) | (entry.write ? 2 : 0));
+      }
+      writer.u8(request.timeoutMs === undefined ? 0 : 1);
+      if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
+      break;
     case 'ftruncate':
       writer.i32(request.fd);
       writer.f64(request.length);
@@ -979,6 +989,38 @@ export function decodeTraceKernelSyscallRequest(
       }
       break;
     }
+    case 'poll': {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const fd = reader.i32();
+        const events = reader.u8();
+        if ((events & ~3) !== 0) {
+          throw new TraceKernelTransportError(
+            'EPROTO',
+            `invalid poll event mask ${events}`
+          );
+        }
+        entries.push({
+          fd,
+          read: (events & 1) !== 0,
+          write: (events & 2) !== 0,
+        });
+      }
+      const hasTimeout = reader.u8();
+      if (hasTimeout > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid poll timeout flag ${hasTimeout}`
+        );
+      }
+      request = {
+        op: 'poll',
+        entries,
+        ...(hasTimeout ? { timeoutMs: reader.f64() } : {}),
+      };
+      break;
+    }
     case 'fstat':
       request = { op: 'fstat', fd: reader.i32() };
       break;
@@ -1161,6 +1203,19 @@ export function encodeTraceKernelSyscallResult(
     case 'fcntl':
       writer.u8(value.closeOnExec ? 1 : 0);
       writer.u8(value.nonblocking ? 1 : 0);
+      break;
+    case 'poll':
+      writer.u32(value.entries.length);
+      for (const entry of value.entries) {
+        writer.i32(entry.fd);
+        writer.u8(
+          (entry.read ? 1 : 0) |
+          (entry.write ? 2 : 0) |
+          (entry.hangup ? 4 : 0) |
+          (entry.error ? 8 : 0) |
+          (entry.invalid ? 16 : 0)
+        );
+      }
       break;
     case 'setsid':
       writer.i32(value.sid);
@@ -1429,6 +1484,30 @@ export function decodeTraceKernelSyscallResult(
         closeOnExec: closeOnExec === 1,
         nonblocking: nonblocking === 1,
       };
+      break;
+    }
+    case 'poll': {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const fd = reader.i32();
+        const events = reader.u8();
+        if ((events & ~31) !== 0) {
+          throw new TraceKernelTransportError(
+            'EPROTO',
+            `invalid poll result mask ${events}`
+          );
+        }
+        entries.push({
+          fd,
+          read: (events & 1) !== 0,
+          write: (events & 2) !== 0,
+          hangup: (events & 4) !== 0,
+          error: (events & 8) !== 0,
+          invalid: (events & 16) !== 0,
+        });
+      }
+      value = { op: 'poll', entries };
       break;
     }
     case 'setsid':

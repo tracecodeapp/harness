@@ -1873,6 +1873,89 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             value: { op: 'fcntl', closeOnExec, nonblocking },
           };
         }
+        case 'poll': {
+          if (
+            request.timeoutMs !== undefined &&
+            (!Number.isFinite(request.timeoutMs) || request.timeoutMs < 0)
+          ) {
+            throw Object.assign(
+              new Error(`EINVAL: invalid poll timeout ${request.timeoutMs}`),
+              { code: 'EINVAL' }
+            );
+          }
+          const pid = context?.process.pid ?? 0;
+          const timeout = request.timeoutMs === undefined
+            ? undefined
+            : Math.max(0, Math.floor(request.timeoutMs));
+          const startedAt = Date.now();
+          const snapshot = async () => {
+            const results = await Promise.all(request.entries.map(async (entry) => {
+              try {
+                const readiness = await this.kernelDescriptors.readiness(
+                  pid,
+                  entry.fd,
+                  {
+                    read: entry.read === true,
+                    write: entry.write === true,
+                  }
+                );
+                return {
+                  fd: entry.fd,
+                  ...readiness,
+                  invalid: false,
+                };
+              } catch {
+                return {
+                  fd: entry.fd,
+                  read: false,
+                  write: false,
+                  hangup: false,
+                  error: false,
+                  invalid: true,
+                };
+              }
+            }));
+            return results.filter((entry) =>
+              entry.read ||
+              entry.write ||
+              entry.hangup ||
+              entry.error ||
+              entry.invalid
+            );
+          };
+          while (true) {
+            const ready = await snapshot();
+            if (ready.length > 0 || timeout === 0) {
+              return { ok: true, value: { op: 'poll', entries: ready } };
+            }
+            const elapsed = Date.now() - startedAt;
+            const remaining = timeout === undefined
+              ? undefined
+              : timeout - elapsed;
+            if (remaining !== undefined && remaining <= 0) {
+              return { ok: true, value: { op: 'poll', entries: [] } };
+            }
+            const waits = request.entries.map((entry) =>
+              this.kernelDescriptors.awaitReadiness(
+                pid,
+                entry.fd,
+                {
+                  read: entry.read === true,
+                  write: entry.write === true,
+                }
+              ).catch(() => undefined)
+            );
+            const awakened = waits.length === 0
+              ? new Promise<void>(() => undefined)
+              : Promise.race(waits).then(() => undefined);
+            await (remaining === undefined
+              ? awakened
+              : Promise.race([
+                  awakened,
+                  new Promise<void>((resolve) => setTimeout(resolve, remaining)),
+                ]));
+          }
+        }
         case 'fstat': {
           const stat = await this.kernelDescriptors.fstat(
             context?.process.pid ?? 0,
