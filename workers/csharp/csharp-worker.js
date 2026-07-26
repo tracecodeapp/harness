@@ -172,6 +172,16 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   fstat: 14,
   ftruncate: 15,
   lstat: 19,
+  socket: 21,
+  bind: 22,
+  listen: 23,
+  accept: 24,
+  connect: 25,
+  send: 26,
+  recv: 27,
+  shutdown: 28,
+  getsockname: 29,
+  getpeername: 30,
   pipe: 31,
   spawn: 32,
   wait: 33,
@@ -390,6 +400,50 @@ class CSharpTraceKernelSyncClient {
     }
     writer.u8(operationCode);
     switch (request.op) {
+      case 'socket':
+        break;
+      case 'bind':
+      case 'connect':
+        writer.i32(request.fd);
+        writer.string(request.address.host);
+        writer.u32(request.address.port);
+        break;
+      case 'listen':
+        writer.i32(request.fd);
+        writer.u8(
+          (request.options?.backlog === undefined ? 0 : 1) |
+            (request.options?.capacityChunks === undefined ? 0 : 2)
+        );
+        if (request.options?.backlog !== undefined) {
+          writer.u32(request.options.backlog);
+        }
+        if (request.options?.capacityChunks !== undefined) {
+          writer.u32(request.options.capacityChunks);
+        }
+        break;
+      case 'accept':
+      case 'getsockname':
+      case 'getpeername':
+        writer.i32(request.fd);
+        break;
+      case 'send':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        break;
+      case 'recv':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        break;
+      case 'shutdown':
+        writer.i32(request.fd);
+        writer.u8(
+          request.how === 'read'
+            ? 1
+            : request.how === 'write'
+              ? 2
+              : 3
+        );
+        break;
       case 'pipe':
         writer.u32(request.options?.capacityChunks ?? 0);
         break;
@@ -567,7 +621,39 @@ class CSharpTraceKernelSyncClient {
       );
     }
     let value;
-    if (operation === 'pipe') {
+    if (operation === 'socket') {
+      value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'bind') {
+      value = {
+        op: operation,
+        address: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'accept') {
+      value = {
+        op: operation,
+        fd: reader.i32(),
+        localAddress: { host: reader.string(), port: reader.u32() },
+        remoteAddress: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'connect') {
+      value = {
+        op: operation,
+        localAddress: { host: reader.string(), port: reader.u32() },
+        remoteAddress: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'send') {
+      value = { op: operation, bytesWritten: reader.u32() };
+    } else if (operation === 'recv') {
+      value = { op: operation, bytes: reader.bytesValue() };
+    } else if (
+      operation === 'getsockname' ||
+      operation === 'getpeername'
+    ) {
+      value = {
+        op: operation,
+        address: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'pipe') {
       value = {
         op: operation,
         readFd: reader.i32(),
@@ -1176,7 +1262,10 @@ function invokeCSharpTraceKernelSyscall(requestJson) {
   }
   try {
     const parsed = JSON.parse(String(requestJson));
-    const request = parsed?.op === 'write' && typeof parsed.bytes === 'string'
+    const request = (
+      parsed?.op === 'write' ||
+      parsed?.op === 'send'
+    ) && typeof parsed.bytes === 'string'
       ? {
           ...parsed,
           bytes: Uint8Array.from(
@@ -1188,7 +1277,7 @@ function invokeCSharpTraceKernelSyscall(requestJson) {
     const result = activeTraceKernelClient.request(request);
     return JSON.stringify({
       ok: true,
-      value: result?.op === 'read'
+      value: result?.op === 'read' || result?.op === 'recv'
         ? { ...result, bytes: encodeBase64(result.bytes) }
         : result,
     });

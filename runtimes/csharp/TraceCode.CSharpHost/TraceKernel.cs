@@ -422,6 +422,256 @@ public sealed class KernelProcess
     };
 }
 
+public sealed record KernelEndpoint(string Host, int Port);
+
+public enum SocketShutdown
+{
+    Read,
+    Write,
+    Both,
+}
+
+[SupportedOSPlatform("browser")]
+public sealed class KernelSocket : IDisposable
+{
+    private bool closed;
+    private KernelEndpoint? localEndpoint;
+    private KernelEndpoint? remoteEndpoint;
+
+    private KernelSocket(
+        int descriptor,
+        KernelEndpoint? localEndpoint = null,
+        KernelEndpoint? remoteEndpoint = null
+    )
+    {
+        Descriptor = descriptor;
+        this.localEndpoint = localEndpoint;
+        this.remoteEndpoint = remoteEndpoint;
+    }
+
+    public int Descriptor { get; }
+    public bool IsClosed => closed;
+
+    public static KernelSocket Create()
+    {
+        JsonElement value = KernelInterop.Call(new { op = "socket" });
+        return new KernelSocket(value.GetProperty("fd").GetInt32());
+    }
+
+    public KernelEndpoint Bind(string host, int port)
+    {
+        ThrowIfClosed();
+        ValidateEndpoint(host, port, allowEphemeral: true);
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "bind",
+            fd = Descriptor,
+            address = new { host, port },
+        });
+        localEndpoint = ReadEndpoint(value.GetProperty("address"));
+        return localEndpoint;
+    }
+
+    public void Listen(int backlog = 128, int capacityChunks = 16)
+    {
+        ThrowIfClosed();
+        if (backlog <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(backlog));
+        }
+        if (capacityChunks <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capacityChunks));
+        }
+        KernelInterop.Call(new
+        {
+            op = "listen",
+            fd = Descriptor,
+            options = new { backlog, capacityChunks },
+        });
+    }
+
+    public KernelSocket Accept()
+    {
+        ThrowIfClosed();
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "accept",
+            fd = Descriptor,
+        });
+        return new KernelSocket(
+            value.GetProperty("fd").GetInt32(),
+            ReadEndpoint(value.GetProperty("localAddress")),
+            ReadEndpoint(value.GetProperty("remoteAddress"))
+        );
+    }
+
+    public void Connect(string host, int port)
+    {
+        ThrowIfClosed();
+        ValidateEndpoint(host, port, allowEphemeral: false);
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "connect",
+            fd = Descriptor,
+            address = new { host, port },
+        });
+        localEndpoint = ReadEndpoint(value.GetProperty("localAddress"));
+        remoteEndpoint = ReadEndpoint(value.GetProperty("remoteAddress"));
+    }
+
+    public int Send(ReadOnlySpan<byte> bytes)
+    {
+        ThrowIfClosed();
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "send",
+            fd = Descriptor,
+            bytes = Convert.ToBase64String(bytes),
+        });
+        return value.GetProperty("bytesWritten").GetInt32();
+    }
+
+    public void SendAll(ReadOnlySpan<byte> bytes)
+    {
+        int offset = 0;
+        while (offset < bytes.Length)
+        {
+            int written = Send(bytes[offset..]);
+            if (written <= 0)
+            {
+                throw new TraceKernelException(
+                    "EPIPE",
+                    "TraceKernel socket send made no forward progress."
+                );
+            }
+            offset += written;
+        }
+    }
+
+    public void SendText(string text, Encoding? encoding = null) =>
+        SendAll((encoding ?? Encoding.UTF8).GetBytes(text));
+
+    public byte[] Receive(int maxBytes = 16 * 1024)
+    {
+        ThrowIfClosed();
+        if (maxBytes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxBytes));
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "recv",
+            fd = Descriptor,
+            maxBytes,
+        });
+        return Convert.FromBase64String(
+            value.GetProperty("bytes").GetString() ?? string.Empty
+        );
+    }
+
+    public string ReceiveText(
+        int maxBytes = 16 * 1024,
+        Encoding? encoding = null
+    ) => (encoding ?? Encoding.UTF8).GetString(Receive(maxBytes));
+
+    public KernelEndpoint GetLocalEndpoint()
+    {
+        ThrowIfClosed();
+        if (localEndpoint is not null)
+        {
+            return localEndpoint;
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "getsockname",
+            fd = Descriptor,
+        });
+        localEndpoint = ReadEndpoint(value.GetProperty("address"));
+        return localEndpoint;
+    }
+
+    public KernelEndpoint GetRemoteEndpoint()
+    {
+        ThrowIfClosed();
+        if (remoteEndpoint is not null)
+        {
+            return remoteEndpoint;
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "getpeername",
+            fd = Descriptor,
+        });
+        remoteEndpoint = ReadEndpoint(value.GetProperty("address"));
+        return remoteEndpoint;
+    }
+
+    public void Shutdown(SocketShutdown how = SocketShutdown.Both)
+    {
+        ThrowIfClosed();
+        KernelInterop.Call(new
+        {
+            op = "shutdown",
+            fd = Descriptor,
+            how = how switch
+            {
+                SocketShutdown.Read => "read",
+                SocketShutdown.Write => "write",
+                _ => "both",
+            },
+        });
+    }
+
+    public void Close()
+    {
+        if (closed)
+        {
+            return;
+        }
+        KernelInterop.Call(new
+        {
+            op = "close",
+            fd = Descriptor,
+        });
+        closed = true;
+    }
+
+    public void Dispose()
+    {
+        Close();
+        GC.SuppressFinalize(this);
+    }
+
+    private static KernelEndpoint ReadEndpoint(JsonElement value) =>
+        new(
+            value.GetProperty("host").GetString() ?? "127.0.0.1",
+            value.GetProperty("port").GetInt32()
+        );
+
+    private static void ValidateEndpoint(
+        string host,
+        int port,
+        bool allowEphemeral
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(host);
+        int minimum = allowEphemeral ? 0 : 1;
+        if (port < minimum || port > 65535)
+        {
+            throw new ArgumentOutOfRangeException(nameof(port));
+        }
+    }
+
+    private void ThrowIfClosed()
+    {
+        if (closed)
+        {
+            throw new ObjectDisposedException(nameof(KernelSocket));
+        }
+    }
+}
+
 internal static partial class KernelInterop
 {
     private static readonly JsonSerializerOptions JsonOptions = new(

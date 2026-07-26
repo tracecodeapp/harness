@@ -509,7 +509,12 @@ The initial 0.13 branch now establishes:
 - runtime process leases now declare preinstalled descriptor identities, and
   the JavaScript/Node adapter seeds those identities as direct kernel-backed
   descriptors so inherited file, pipe, and socket numbers remain usable without
-  a runtime-local reopen; managed C# sockets remain the next C# slice;
+  a runtime-local reopen;
+- managed C# `KernelSocket` TCP descriptors with ephemeral/exclusive bind,
+  listen/accept/connect, bounded fragmented send/receive, endpoint inspection,
+  read/write/both half-close, and deterministic close; browser conformance
+  covers C# listeners serving JavaScript and C# children through the same
+  session-local virtual network namespace;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic
