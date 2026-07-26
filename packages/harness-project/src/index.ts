@@ -685,8 +685,8 @@ type RuntimeKernelTtyName = RuntimeKernelDevicePath | '?';
 interface RuntimeKernelProcessRecord {
   readonly pid: number;
   readonly ppid: number;
-  readonly pgid: number;
-  readonly sid: number;
+  pgid: number;
+  sid: number;
   readonly fds: readonly RuntimeKernelFileDescriptorRecord[];
   tty: RuntimeKernelTtyName;
   readonly command: string;
@@ -1604,23 +1604,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         case 'kill': {
           const process = this.runtimeSyscallProcess(context);
-          const target = this.findProcessRecord(request.pid);
-          if (!target || target.state === 'exited') {
-            throw Object.assign(
-              new Error(`ESRCH: process ${request.pid} does not exist`),
-              { code: 'ESRCH' }
-            );
-          }
-          if (
-            target.signalPolicy === 'system-only' &&
-            process.actor.kind !== 'system'
-          ) {
-            throw Object.assign(
-              new Error(`EACCES: process ${request.pid} is protected`),
-              { code: 'EACCES' }
-            );
-          }
-          this.signalProcess(target, request.signal);
+          this.signalRuntimeProcessSelector(process, request.pid, request.signal);
           return { ok: true, value: { op: 'kill' } };
         }
         case 'socket': {
@@ -2138,6 +2122,36 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         initialize: async (child, context) => {
           childContext = context;
           try {
+            if (
+              request.sessionId !== undefined &&
+              request.sessionId !== parent.sid
+            ) {
+              throw Object.assign(
+                new Error(
+                  `EINVAL: child session ${request.sessionId} does not match parent session ${parent.sid}`
+                ),
+                { code: 'EINVAL' }
+              );
+            }
+            const requestedProcessGroup = request.processGroupId === 0
+              ? child.pid
+              : request.processGroupId ?? parent.pgid;
+            if (
+              requestedProcessGroup !== child.pid &&
+              !this.activeProcessRecords().some((candidate) =>
+                candidate.pgid === requestedProcessGroup &&
+                candidate.sid === parent.sid
+              )
+            ) {
+              throw Object.assign(
+                new Error(
+                  `EINVAL: process group ${requestedProcessGroup} does not exist in session ${parent.sid}`
+                ),
+                { code: 'EINVAL' }
+              );
+            }
+            child.pgid = requestedProcessGroup;
+            child.sid = parent.sid;
             if (request.inheritDescriptors !== undefined) {
               const replacedStdioFds = new Set<number>(
                 ([
@@ -4442,6 +4456,66 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     if (signaled > 0) this.recordKernelEvent('process-group-signal', undefined, { pgid, signal: normalizeTraceKernelSignal(signalName)?.name, count: signaled });
     return { signaled, denied };
+  }
+
+  private signalRuntimeProcessSelector(
+    caller: RuntimeKernelProcessRecord,
+    targetPid: number,
+    signalName: string
+  ): void {
+    if (!Number.isSafeInteger(targetPid)) {
+      throw Object.assign(
+        new Error(`ESRCH: invalid process selector ${targetPid}`),
+        { code: 'ESRCH' }
+      );
+    }
+    const targets = targetPid > 0
+      ? [this.findProcessRecord(targetPid)].filter(
+          (process): process is RuntimeKernelProcessRecord =>
+            process !== undefined && process.state !== 'exited'
+        )
+      : this.activeProcessRecords().filter((process) => {
+          if (process.pid === 1 || process.state === 'exited') return false;
+          if (targetPid === -1) return process.pid !== caller.pid;
+          const pgid = targetPid === 0 ? caller.pgid : -targetPid;
+          return process.pgid === pgid;
+        });
+    if (targets.length === 0) {
+      throw Object.assign(
+        new Error(
+          targetPid === -1
+            ? 'ESRCH: no other processes exist'
+            : targetPid <= 0
+              ? `ESRCH: process group ${targetPid === 0 ? caller.pgid : -targetPid} does not exist`
+              : `ESRCH: process ${targetPid} does not exist`
+        ),
+        { code: 'ESRCH' }
+      );
+    }
+
+    const authority = caller.actor.kind === 'system' ? 'system' : 'workspace';
+    let delivered = 0;
+    let denied = 0;
+    for (const target of targets) {
+      if (target.signalPolicy === 'system-only' && authority !== 'system') {
+        denied += 1;
+        continue;
+      }
+      if (this.signalProcess(target, signalName, authority)) delivered += 1;
+    }
+    if (delivered === 0 && denied > 0) {
+      throw Object.assign(
+        new Error(`EACCES: process selector ${targetPid} is protected`),
+        { code: 'EACCES' }
+      );
+    }
+    if (targetPid <= 0 && delivered > 0) {
+      this.recordKernelEvent('process-group-signal', undefined, {
+        selector: targetPid,
+        signal: normalizeTraceKernelSignal(signalName)?.name,
+        count: delivered,
+      });
+    }
   }
 
   private setProcessGroupForeground(pgid: number, foreground: boolean): void {

@@ -1279,7 +1279,9 @@ export class TraceKernelSession {
     }
     const pid = this.nextPid++;
     const parentSnapshot = parent?.snapshot();
-    const pgid = spec.processGroupId ?? parentSnapshot?.pgid ?? pid;
+    const pgid = spec.processGroupId === 0
+      ? pid
+      : spec.processGroupId ?? parentSnapshot?.pgid ?? pid;
     const sid = spec.sessionId ?? parentSnapshot?.sid ?? pid;
     const record: MutableProcessRecord = {
       pid,

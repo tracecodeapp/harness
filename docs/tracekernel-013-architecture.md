@@ -422,6 +422,14 @@ copy-on-write to hard-link paths, so the transitional handler performs a
 locked, rollback-capable update of every pathname bound to a TraceKernel inode.
 That compatibility rule disappears when TKFS becomes the backing store.
 
+Runtime-spawned workspace children inherit the parent's PGID and SID through
+the transitional product bridge as well as the extracted kernel. Node
+`child_process.spawn({ detached: true })` requests a child-led process group,
+and `process.kill` accepts the same positive, zero, negative-PGID, and `-1`
+selectors as the kernel syscall. Browser conformance creates a detached
+JavaScript leader with its own JavaScript descendant and proves one negative
+PGID signal terminates both without reaching the parent.
+
 Filesystem watches are now session resources exposed through process-owned
 descriptors. `watch(path)` installs an `fs-watch` descriptor; ordinary
 descriptor `read` blocks for a bounded binary event frame, and `close` or

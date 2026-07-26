@@ -1976,6 +1976,7 @@ function createChildProcessApi(
 ) {
   interface SpawnOptions {
     cwd?: string;
+    detached?: boolean;
     env?: Record<string, unknown>;
     signal?: AbortSignal;
     stdio?: 'pipe' | 'inherit' | 'ignore';
@@ -2313,6 +2314,7 @@ function createChildProcessApi(
           .filter(([, value]) => value !== undefined)
           .map(([name, value]) => [name, String(value)])
       ),
+      ...(invocation.options.detached ? { processGroupId: 0 } : {}),
       stdio: {
         stdin: stdioMode,
         stdout: stdioMode,
@@ -2381,6 +2383,7 @@ function createChildProcessApi(
           .filter(([, value]) => value !== undefined)
           .map(([name, value]) => [name, String(value)])
       ),
+      ...(invocation.options.detached ? { processGroupId: 0 } : {}),
       stdio: {
         stdin: stdioMode,
         stdout: stdioMode,
@@ -6045,6 +6048,44 @@ export async function runBrowserJavaScriptProjectRequest(
       title: 'node',
       exitCode: undefined as number | undefined,
       cwd: () => request.cwd,
+      kill: (
+        pid: number,
+        signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL' = 'SIGTERM'
+      ): true => {
+        if (!Number.isSafeInteger(pid)) {
+          throw Object.assign(
+            new TypeError('The "pid" argument must be a safe integer'),
+            { code: 'ERR_INVALID_ARG_TYPE' }
+          );
+        }
+        if (
+          signal !== 'SIGINT' &&
+          signal !== 'SIGTERM' &&
+          signal !== 'SIGKILL'
+        ) {
+          throw Object.assign(
+            new TypeError(`Unknown signal: ${String(signal)}`),
+            { code: 'ERR_UNKNOWN_SIGNAL' }
+          );
+        }
+        if (!executionState.kernelSyscalls) {
+          throw Object.assign(
+            new Error('ENOSYS: TraceKernel process controls are unavailable'),
+            { code: 'ENOSYS' }
+          );
+        }
+        const result = executionState.kernelSyscalls.dispatchSync({
+          op: 'kill',
+          pid,
+          signal,
+        });
+        if (result.ok === false) {
+          throw Object.assign(new Error(result.error.message), {
+            code: result.error.code,
+          });
+        }
+        return true;
+      },
       nextTick: (callback: (...args: unknown[]) => void, ...args: unknown[]) => {
         globalThis.queueMicrotask(() => callback(...args));
       },

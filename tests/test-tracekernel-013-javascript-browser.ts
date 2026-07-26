@@ -548,6 +548,53 @@ async function main(): Promise<void> {
               ].join('\n'),
             },
             {
+              path: 'group-grandchild.js',
+              contents: [
+                'setTimeout(() => {',
+                '  require("node:fs").writeFileSync("group-survived.txt", "escaped");',
+                '}, 500);',
+                'setInterval(() => {}, 1000);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'group-leader.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const { spawn } = require("node:child_process");',
+                'const child = spawn("node", ["group-grandchild.js"], { stdio: "inherit" });',
+                'child.on("error", (error) => { throw error; });',
+                'fs.writeFileSync("group-ready.txt", `${process.pid}:${child.pid}`);',
+                'setInterval(() => {}, 1000);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'group-parent.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const { spawn } = require("node:child_process");',
+                'const leader = spawn("node", ["group-leader.js"], { detached: true, stdio: "inherit" });',
+                'leader.on("error", (error) => { throw error; });',
+                'const signalWhenReady = () => {',
+                '  if (!fs.existsSync("group-ready.txt")) {',
+                '    setTimeout(signalWhenReady, 5);',
+                '    return;',
+                '  }',
+                '  const [leaderPid, childPid] = fs.readFileSync("group-ready.txt", "utf8").split(":").map(Number);',
+                '  if (leaderPid !== leader.pid || childPid === leader.pid) throw new Error("invalid process identities");',
+                '  process.kill(-leader.pid, "SIGKILL");',
+                '};',
+                'leader.on("close", (_code, signal) => {',
+                '  setTimeout(() => {',
+                '    console.log(`group:${signal}:${fs.existsSync("group-survived.txt")}`);',
+                '  }, 650);',
+                '});',
+                'signalWhenReady();',
+                '',
+              ].join('\n'),
+            },
+            {
               path: 'stdio-child.js',
               contents: [
                 'let input = "";',
@@ -911,6 +958,7 @@ async function main(): Promise<void> {
           await workspace.writeFile('host-cycle-ready.txt', 'ready');
           const hostCycleReaderResult = await hostCycleReader;
           const spawnedChild = await workspace.runCommand('node spawn-parent.js');
+          const processGroup = await workspace.runCommand('node group-parent.js');
           const pipedChild = await workspace.runCommand('node stdio-parent.js');
           let markKernelWatchReady!: () => void;
           const kernelWatchReady = new Promise<void>((resolvePromise) => {
@@ -989,6 +1037,7 @@ async function main(): Promise<void> {
             nodeHttpClient,
             hostCycleReader: hostCycleReaderResult,
             spawnedChild,
+            processGroup,
             pipedChild,
             kernelWatchReader: kernelWatchReaderResult,
             kernelWatchWriter,
@@ -1042,6 +1091,11 @@ async function main(): Promise<void> {
           result.spawnedChild.stdout.includes('spawn:0:null:true:true') &&
           /^[0-9]+:[0-9]+$/.test(result.spawnChild),
         `node:child_process did not acquire and reap a distinct worker process: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.processGroup.exitCode === 0 &&
+          result.processGroup.stdout.includes('group:SIGKILL:false'),
+        `A detached Node process group did not receive one kernel-owned signal: ${JSON.stringify(result)}`
       );
       assertCondition(
         result.pipedChild.exitCode === 0 &&
@@ -1201,6 +1255,8 @@ async function main(): Promise<void> {
         processOperations: [
           'node:child_process-spawn',
           'distinct-child-pid',
+          'detached-process-groups',
+          'negative-pgid-signals',
           'parent-pid-topology',
           'child-wait-and-reap',
           'kernel-piped-stdin-stdout-stderr',

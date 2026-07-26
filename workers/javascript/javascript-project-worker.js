@@ -6964,6 +6964,7 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
       env: Object.fromEntries(
         Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
       ),
+      ...invocation.options.detached ? { processGroupId: 0 } : {},
       stdio: {
         stdin: stdioMode,
         stdout: stdioMode,
@@ -7025,6 +7026,7 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
       env: Object.fromEntries(
         Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
       ),
+      ...invocation.options.detached ? { processGroupId: 0 } : {},
       stdio: {
         stdin: stdioMode,
         stdout: stdioMode,
@@ -9555,6 +9557,37 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     title: "node",
     exitCode: void 0,
     cwd: () => request.cwd,
+    kill: (pid, signal = "SIGTERM") => {
+      if (!Number.isSafeInteger(pid)) {
+        throw Object.assign(
+          new TypeError('The "pid" argument must be a safe integer'),
+          { code: "ERR_INVALID_ARG_TYPE" }
+        );
+      }
+      if (signal !== "SIGINT" && signal !== "SIGTERM" && signal !== "SIGKILL") {
+        throw Object.assign(
+          new TypeError(`Unknown signal: ${String(signal)}`),
+          { code: "ERR_UNKNOWN_SIGNAL" }
+        );
+      }
+      if (!executionState.kernelSyscalls) {
+        throw Object.assign(
+          new Error("ENOSYS: TraceKernel process controls are unavailable"),
+          { code: "ENOSYS" }
+        );
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: "kill",
+        pid,
+        signal
+      });
+      if (result.ok === false) {
+        throw Object.assign(new Error(result.error.message), {
+          code: result.error.code
+        });
+      }
+      return true;
+    },
     nextTick: (callback, ...args) => {
       globalThis.queueMicrotask(() => callback(...args));
     },
