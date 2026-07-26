@@ -488,13 +488,26 @@ same atomic choices through `KernelPipe.Create` and
 `O_NONBLOCK` is an open-description status flag, so a change through any
 duplicated or inherited descriptor is immediately visible through every other
 reference to that description. Nonblocking empty pipe reads and full pipe
-writes return `EAGAIN`; queued data and final-writer EOF retain their normal
-distinct results. `pipe2(O_NONBLOCK)` publishes both endpoint descriptions
-with the flag already set, and `fcntl` can inspect or mutate it afterward.
-C/C++ maps `F_GETFL`/`F_SETFL`, Python maps `os.get_blocking`,
-`os.set_blocking`, and `fcntl`, and managed C# exposes
-`KernelDescriptor.Nonblocking`. Poll/readiness multiplexing and nonblocking
-socket state remain later slices.
+writes, empty TCP receives and listener accepts, and backpressured TCP sends
+return `EAGAIN`; queued data and final-writer or peer-FIN EOF retain their
+normal distinct results. `pipe2(O_NONBLOCK)` publishes both endpoint
+descriptions with the flag already set, and `fcntl` can inspect or mutate it
+afterward. C/C++ maps `F_GETFL`/`F_SETFL`, Python maps `os.get_blocking`,
+`os.set_blocking`, socket `setblocking`/`settimeout(0)`, and `fcntl`, and
+managed C# exposes `KernelDescriptor.Nonblocking` and
+`KernelSocket.Nonblocking`. Nonblocking connect remains separate because its
+truthful contract requires persistent `EINPROGRESS` state.
+
+Descriptor readiness is one level-triggered kernel syscall rather than a
+runtime-specific probe loop. `poll` snapshots regular files, pipes, filesystem
+watches, TCP listeners, and connected TCP streams; state transitions complete
+descriptor-owned deferred signals, while an explicit caller timeout is the
+only timer. Pipe capacity, queued watch events, listener backlogs, TCP stream
+capacity, EOF, HUP, error, and invalid descriptors therefore share one
+process-owned FD contract. C/C++ maps both `poll(2)` and `select(2)`, Python
+maps `select.poll`, `select.select`, and the standard `selectors` module, and
+managed C# exposes `KernelPoll`. JavaScript retains its event-driven Node
+streams while its binary syscall codec shares the same poll frame contract.
 Python `os.pipe` and `os.pipe2` install ordinary Pyodide descriptor identities
 whose stream operations reference the kernel endpoints. Consequently
 `os.read`/`write`/`close`, `dup`, inheritable flags, `pass_fds`, and
@@ -590,8 +603,8 @@ The initial 0.13 branch now establishes:
   addition to `system()`, the injected WASI compatibility layer provides
   `posix_spawn`/`posix_spawnp`, spawn attributes for process groups and new
   sessions, `waitpid`, `kill`/`killpg`, process identity calls, and descriptor
-  remapping actions, with real cross-language process-group and inherited-fd
-  conformance;
+  remapping actions, plus `poll`/`select` readiness and nonblocking socket I/O,
+  with real cross-language process-group and inherited-fd conformance;
 - the browser Python/Pyodide adapter's first general synchronous binary
   syscall client, with `tracekernel.watchdog` process controls and an explicit
   `tracekernel.fs` path-operation surface backed by authoritative TKFS;
@@ -607,11 +620,13 @@ The initial 0.13 branch now establishes:
   synchronous wait/reap, signal delivery, local-to-kernel descriptor
   inheritance/remapping, shared TKFS visibility, and separate-worker
   interpreter isolation;
-- a Python `socket` adapter for blocking IPv4 TCP sockets backed by
+- a Python `socket` adapter for IPv4 TCP sockets backed by
   process-owned TraceKernel descriptors, with bind/listen/accept/connect,
-  fragmented send/recv, half-close, address inspection, and cross-language
-  Python/JavaScript stream conformance; nonblocking mode, socket deadlines,
-  UDP, and broader address-family compatibility remain later slices;
+  fragmented send/recv, half-close, address inspection, local Pyodide
+  descriptor identities, poll/select/selectors readiness, nonblocking
+  accept/receive/send, and cross-language Python/JavaScript stream conformance;
+  positive socket deadlines, nonblocking connect, UDP, and broader
+  address-family compatibility remain later slices;
 - a browser C# binary syscall client and Emscripten filesystem mount that back
   ordinary managed `System.IO` path and regular-file descriptor operations
   with authoritative TKFS; the mount preserves kernel-owned open-file offsets,
@@ -631,9 +646,10 @@ The initial 0.13 branch now establishes:
   a runtime-local reopen;
 - managed C# `KernelSocket` TCP descriptors with ephemeral/exclusive bind,
   listen/accept/connect, bounded fragmented send/receive, endpoint inspection,
-  read/write/both half-close, and deterministic close; browser conformance
-  covers C# listeners serving JavaScript and C# children through the same
-  session-local virtual network namespace;
+  read/write/both half-close, nonblocking state, and deterministic close;
+  `KernelPoll` multiplexes pipe, listener, stream, and watch descriptors.
+  Browser conformance covers C# listeners serving JavaScript and C# children
+  through the same session-local virtual network namespace;
 - browser C# symbolic-link snapshots and ordinary `System.IO` link traversal,
   creation, and target inspection backed by TKFS, plus managed hard-link,
   `readlink`, and `realpath` operations that preserve inode identity and raw
@@ -649,7 +665,8 @@ The initial 0.13 branch now establishes:
 - an isolated session-local TCP namespace with process-owned socket
   descriptors, exclusive port binding, bounded listener backlogs, blocking
   accept/connect, bidirectional fragmented streams, sender backpressure,
-  half-close semantics, address inspection, and deterministic teardown;
+  half-close semantics, address inspection, descriptor readiness,
+  nonblocking accept/receive/send, and deterministic teardown;
 - TCP syscall frames proven across two independent synchronous runtime workers;
 - exactly-once lease and resource cleanup assertions.
 
