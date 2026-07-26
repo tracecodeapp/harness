@@ -182,7 +182,14 @@ export class CSharpWorkerClient {
           await this.options.runtimeAssetPreflight?.();
         }
       },
-      onCommandMessage: (commandId, type, payload) => {
+      onCommandMessage: (commandId, type, payload, pending) => {
+        if (type === 'kernel-syscall') {
+          if (!pending.kernelSyscalls) return true;
+          void pending.kernelSyscalls.service().catch(() => {
+            pending.kernelSyscalls?.close();
+          });
+          return true;
+        }
         if (!KERNEL_HTTP_MESSAGE_TYPES.has(type)) return false;
         handleAsyncKernelHttpProtocolMessage(this.kernelHttpHost, commandId, type, payload);
         return true;

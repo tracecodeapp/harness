@@ -494,9 +494,11 @@ The initial 0.13 branch now establishes:
   fragmented send/recv, half-close, address inspection, and cross-language
   Python/JavaScript stream conformance; nonblocking mode, socket deadlines,
   UDP, and broader address-family compatibility remain later slices;
-- C# project commands now receive the same process-bound shared syscall
-  channel as JavaScript, C++, and Python; the worker-side binary client and
-  `System.IO` mount are the next C# adapter slice;
+- a browser C# binary syscall client and Emscripten filesystem mount that back
+  ordinary managed `System.IO` path and regular-file descriptor operations
+  with authoritative TKFS; the mount preserves kernel-owned open-file offsets,
+  truncate/rename behavior, cross-process visibility, and process-exit cleanup;
+  managed process, watchdog, and socket surfaces remain the next C# slices;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic

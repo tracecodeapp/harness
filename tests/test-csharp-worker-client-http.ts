@@ -76,6 +76,12 @@ class CSharpProtocolWorker {
       };
       queueMicrotask(() => this.emit({
         id,
+        type: 'kernel-syscall',
+        protocolToken,
+        payload: {},
+      }));
+      queueMicrotask(() => this.emit({
+        id,
         type: 'kernel-http-listen',
         protocolToken,
         payload: {
@@ -272,6 +278,7 @@ async function testCSharpKernelHttpProtocol(): Promise<void> {
     debug: false,
   });
   const syscallBuffer = new SharedArrayBuffer(32 + 256);
+  let syscallServiceCount = 0;
   const kernelSyscalls: RuntimeKernelSyscallBridge = {
     channel: {
       buffer: syscallBuffer,
@@ -280,7 +287,9 @@ async function testCSharpKernelHttpProtocol(): Promise<void> {
     async dispatch() {
       throw new Error('Unexpected asynchronous syscall dispatch');
     },
-    async service() {},
+    async service() {
+      syscallServiceCount += 1;
+    },
     close() {},
   };
   const execute = client.executeProjectCSharp(({
@@ -324,6 +333,10 @@ async function testCSharpKernelHttpProtocol(): Promise<void> {
     executeEnvelope?.kernelSyscallChannel?.buffer === syscallBuffer &&
       executeEnvelope.kernelSyscallChannel.byteCapacity === 256,
     'C# project worker should receive the process-bound shared syscall channel'
+  );
+  assertCondition(
+    syscallServiceCount === 1,
+    'C# project worker syscall wakeups should service the bridge without resolving the command'
   );
   assertCondition(
     worker.listenerRequest !== undefined && !('signal' in (worker.listenerRequest as unknown as Record<string, unknown>)),
