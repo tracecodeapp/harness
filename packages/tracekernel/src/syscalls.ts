@@ -154,6 +154,11 @@ export type TraceKernelSyscallRequest =
       readonly fd: number;
     }
   | {
+      readonly op: 'dup2';
+      readonly fd: number;
+      readonly targetFd: number;
+    }
+  | {
       readonly op: 'fstat';
       readonly fd: number;
     }
@@ -269,6 +274,7 @@ export type TraceKernelSyscallValue =
   | { readonly op: 'write'; readonly bytesWritten: number }
   | { readonly op: 'close' }
   | { readonly op: 'dup'; readonly fd: number }
+  | { readonly op: 'dup2'; readonly fd: number }
   | { readonly op: 'fstat'; readonly stat: TraceKernelStat }
   | { readonly op: 'ftruncate' }
   | { readonly op: 'stat'; readonly stat: TraceKernelStat }
@@ -560,6 +566,10 @@ export class TraceKernelSyscallDispatcher {
       case 'dup':
         return this.process.dup(request.fd).pipe(
           Effect.map((fd) => ({ op: 'dup' as const, fd }))
+        );
+      case 'dup2':
+        return this.process.dup2(request.fd, request.targetFd).pipe(
+          Effect.map((fd) => ({ op: 'dup2' as const, fd }))
         );
       case 'fstat':
         return this.process.fstat(request.fd).pipe(

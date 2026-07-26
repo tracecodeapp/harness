@@ -64,7 +64,7 @@ export class TraceKernelBadFileDescriptorError extends Data.TaggedError(
   'TraceKernelBadFileDescriptorError'
 )<{
   readonly fd: number;
-  readonly operation: 'read' | 'write' | 'close' | 'dup' | 'inherit' | 'stat' | 'truncate';
+  readonly operation: 'read' | 'write' | 'close' | 'dup' | 'dup2' | 'inherit' | 'stat' | 'truncate';
   readonly message: string;
 }> {}
 

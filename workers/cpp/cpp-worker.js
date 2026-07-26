@@ -352,6 +352,7 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   wait: 33,
   kill: 34,
   watchdog: 36,
+  dup2: 37,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -704,6 +705,10 @@ class CppTraceKernelSyncClient {
       case 'fstat':
         writer.i32(request.fd);
         break;
+      case 'dup2':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
+        break;
       case 'ftruncate':
         writer.i32(request.fd);
         writer.f64(request.length);
@@ -882,6 +887,7 @@ class CppTraceKernelSyncClient {
       case 'socket':
       case 'open':
       case 'dup':
+      case 'dup2':
         value = { op: operation, fd: reader.i32() };
         break;
       case 'bind':

@@ -223,6 +223,10 @@ export class TraceKernelProcess {
     return this.descriptors.dup(fd);
   }
 
+  dup2(fd: number, targetFd: number): Effect.Effect<number, TraceKernelDescriptorDupError> {
+    return this.descriptors.dup2(fd, targetFd);
+  }
+
   fstat(fd: number): Effect.Effect<TraceKernelStat, TraceKernelBadFileDescriptorError> {
     return this.descriptors.stat(fd);
   }

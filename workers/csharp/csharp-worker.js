@@ -192,6 +192,7 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   kill: 34,
   watch: 35,
   watchdog: 36,
+  dup2: 37,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -490,6 +491,10 @@ class CSharpTraceKernelSyncClient {
       case 'dup':
       case 'fstat':
         writer.i32(request.fd);
+        break;
+      case 'dup2':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
         break;
       case 'ftruncate':
         writer.i32(request.fd);
@@ -790,7 +795,11 @@ class CSharpTraceKernelSyncClient {
           `invalid process termination code ${terminationCode}`
         );
       }
-    } else if (operation === 'open' || operation === 'dup') {
+    } else if (
+      operation === 'open' ||
+      operation === 'dup' ||
+      operation === 'dup2'
+    ) {
       value = { op: operation, fd: reader.i32() };
     } else if (operation === 'read') {
       value = { op: operation, bytes: reader.bytesValue() };

@@ -1753,6 +1753,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           );
           return { ok: true, value: { op: 'dup', fd } };
         }
+        case 'dup2': {
+          const fd = await this.kernelDescriptors.dup2(
+            context?.process.pid ?? 0,
+            request.fd,
+            request.targetFd
+          );
+          return { ok: true, value: { op: 'dup2', fd } };
+        }
         case 'fstat': {
           const stat = await this.kernelDescriptors.fstat(
             context?.process.pid ?? 0,

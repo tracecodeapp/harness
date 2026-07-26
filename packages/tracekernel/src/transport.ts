@@ -49,6 +49,7 @@ const OP_CODES = {
   kill: 34,
   watch: 35,
   watchdog: 36,
+  dup2: 37,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -468,6 +469,10 @@ export function encodeTraceKernelSyscallRequest(
     case 'fstat':
       writer.i32(request.fd);
       break;
+    case 'dup2':
+      writer.i32(request.fd);
+      writer.i32(request.targetFd);
+      break;
     case 'ftruncate':
       writer.i32(request.fd);
       writer.f64(request.length);
@@ -806,6 +811,9 @@ export function decodeTraceKernelSyscallRequest(
     case 'dup':
       request = { op: 'dup', fd: reader.i32() };
       break;
+    case 'dup2':
+      request = { op: 'dup2', fd: reader.i32(), targetFd: reader.i32() };
+      break;
     case 'fstat':
       request = { op: 'fstat', fd: reader.i32() };
       break;
@@ -976,6 +984,7 @@ export function encodeTraceKernelSyscallResult(
     case 'socket':
     case 'open':
     case 'dup':
+    case 'dup2':
       writer.i32(value.fd);
       break;
     case 'bind':
@@ -1198,6 +1207,7 @@ export function decodeTraceKernelSyscallResult(
     case 'socket':
     case 'open':
     case 'dup':
+    case 'dup2':
       value = { op: operation, fd: reader.i32() };
       break;
     case 'bind':
@@ -1795,6 +1805,13 @@ export class TraceKernelRuntimeFileClient {
     return this.expectSuccess(
       this.transport.dispatchSync({ op: 'dup', fd }),
       'dup'
+    ).fd;
+  }
+
+  dup2(fd: number, targetFd: number): number {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: 'dup2', fd, targetFd }),
+      'dup2'
     ).fd;
   }
 

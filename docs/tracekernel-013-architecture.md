@@ -475,6 +475,8 @@ The initial 0.13 branch now establishes:
   teardown with a transport-neutral syscall and JavaScript adapter;
 - process environment isolation;
 - process-owned descriptor tables;
+- atomic `dup2` replacement with validated self-duplication, descriptor-ceiling
+  replacement, displaced-resource close, and failure rollback;
 - explicit all-or-selected child descriptor inheritance with stable fd numbers,
   shared open descriptions, and atomic failure rollback;
 - session-owned pipe resources;

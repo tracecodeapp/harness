@@ -77,7 +77,8 @@ var OP_CODES = {
   wait: 33,
   kill: 34,
   watch: 35,
-  watchdog: 36
+  watchdog: 36,
+  dup2: 37
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -383,6 +384,10 @@ function encodeTraceKernelSyscallRequest(request) {
     case "fstat":
       writer.i32(request.fd);
       break;
+    case "dup2":
+      writer.i32(request.fd);
+      writer.i32(request.targetFd);
+      break;
     case "ftruncate":
       writer.i32(request.fd);
       writer.f64(request.length);
@@ -587,6 +592,7 @@ function decodeTraceKernelSyscallResult(bytes) {
     case "socket":
     case "open":
     case "dup":
+    case "dup2":
       value = { op: operation, fd: reader.i32() };
       break;
     case "bind":
@@ -935,6 +941,12 @@ var TraceKernelRuntimeFileClient = class {
     return this.expectSuccess(
       this.transport.dispatchSync({ op: "dup", fd: fd2 }),
       "dup"
+    ).fd;
+  }
+  dup2(fd2, targetFd) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "dup2", fd: fd2, targetFd }),
+      "dup2"
     ).fd;
   }
   fstat(fd2) {

@@ -2079,6 +2079,7 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   wait: 33,
   kill: 34,
   watchdog: 36,
+  dup2: 37,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
   Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
@@ -2439,6 +2440,10 @@ class PythonTraceKernelSyncClient {
       case 'dup':
       case 'fstat':
         writer.i32(request.fd);
+        break;
+      case 'dup2':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
         break;
       case 'ftruncate':
         writer.i32(request.fd);
@@ -2805,7 +2810,8 @@ class PythonTraceKernelSyncClient {
       value = { op: operation, target: reader.string() };
     } else if (
       operation === 'open' ||
-      operation === 'dup'
+      operation === 'dup' ||
+      operation === 'dup2'
     ) {
       value = { op: operation, fd: reader.i32() };
     } else if (

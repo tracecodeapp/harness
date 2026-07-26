@@ -186,6 +186,34 @@ async function main(): Promise<void> {
           limitedSession.resourceIds().length === 2,
         'A rejected dup() leaked a descriptor reference.'
       );
+      const sourceResource = limited.snapshot().descriptors.find(
+        (descriptor) => descriptor.fd === secondSocket
+      )?.resourceId;
+      assertCondition(
+        (yield* limited.dup2(secondSocket, secondSocket)) === secondSocket &&
+          limitedSession.resourceIds().length === 2,
+        'dup2(fd, fd) was not a validated no-op.'
+      );
+      assertCondition(
+        (yield* limited.dup2(secondSocket, reusedSocket)) === reusedSocket,
+        'dup2() did not preserve the requested target descriptor number.'
+      );
+      assertCondition(
+        limited.snapshot().descriptors.length === 2 &&
+          limited.snapshot().descriptors.every(
+            (descriptor) => descriptor.resourceId === sourceResource
+          ) &&
+          limitedSession.resourceIds().length === 1,
+        'dup2() did not atomically replace and close the occupied target at the descriptor ceiling.'
+      );
+      const invalidDup2 = yield* Effect.exit(limited.dup2(999_999, reusedSocket));
+      assertCondition(
+        Exit.isFailure(invalidDup2) &&
+          limited.snapshot().descriptors.find(
+            (descriptor) => descriptor.fd === reusedSocket
+          )?.resourceId === sourceResource,
+        'A failed dup2() changed the existing target descriptor.'
+      );
       yield* limited.close(secondSocket);
       yield* limited.close(reusedSocket);
       const pipeLimitBlocker = yield* limitedSession.createTcpSocket(limited);
@@ -329,6 +357,7 @@ async function main(): Promise<void> {
     resourcesReleasedOnFinalDescriptorClose: true,
     descriptorCeilingReturnsEmfile: true,
     lowestAvailableFdReused: true,
+    atomicDup2Replacement: true,
     failedInstallsReleaseResources: true,
     defaultDescriptorNonInheritance: true,
     selectiveDescriptorInheritance: true,

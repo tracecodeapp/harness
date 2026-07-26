@@ -225,6 +225,7 @@ async function main(): Promise<void> {
     { op: 'write', fd: 10, bytes: Uint8Array.from([0, 1, 127, 255]), position: 19 },
     { op: 'close', fd: 11 },
     { op: 'dup', fd: 12 },
+    { op: 'dup2', fd: 12, targetFd: 19 },
     { op: 'fstat', fd: 13 },
     { op: 'ftruncate', fd: 14, length: 4096 },
     { op: 'stat', path: '/workspace/a' },
@@ -356,6 +357,7 @@ async function main(): Promise<void> {
     { ok: true, value: { op: 'write', bytesWritten: 2 } },
     { ok: true, value: { op: 'close' } },
     { ok: true, value: { op: 'dup', fd: 4 } },
+    { ok: true, value: { op: 'dup2', fd: 19 } },
     {
       ok: true,
       value: {

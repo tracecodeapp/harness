@@ -279,6 +279,55 @@ export class TraceKernelDescriptorTable {
     );
   }
 
+  dup2(
+    fd: number,
+    targetFd: number
+  ): Effect.Effect<number, TraceKernelDescriptorDupError> {
+    const descriptor = this.descriptors.get(fd);
+    if (!descriptor) {
+      return Effect.fail(new TraceKernelBadFileDescriptorError({
+        fd,
+        operation: 'dup2',
+        message: `EBADF: bad file descriptor, dup2 ${fd}`,
+      }));
+    }
+    const target = Math.floor(targetFd);
+    if (!Number.isSafeInteger(targetFd) || target < 0) {
+      return Effect.fail(new TraceKernelBadFileDescriptorError({
+        fd: target,
+        operation: 'dup2',
+        message: `EBADF: invalid target descriptor ${targetFd}`,
+      }));
+    }
+    if (fd === target) return Effect.succeed(target);
+
+    const replaced = this.descriptors.get(target);
+    if (!replaced && this.descriptors.size >= this.maxDescriptors) {
+      return Effect.fail(new TraceKernelDescriptorLimitError({
+        code: 'EMFILE',
+        maxDescriptors: this.maxDescriptors,
+        message: `EMFILE: process descriptor limit ${this.maxDescriptors} reached`,
+      }));
+    }
+
+    return descriptor.duplicate().pipe(
+      Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
+        fd,
+        operation: 'dup2',
+        message: error.message,
+      })),
+      Effect.flatMap((duplicate) =>
+        Effect.sync(() => {
+          this.descriptors.set(target, duplicate);
+          this.resetNextFd();
+        }).pipe(
+          Effect.andThen(replaced ? replaced.close() : Effect.void),
+          Effect.as(target)
+        )
+      )
+    );
+  }
+
   /**
    * Duplicate selected descriptors from a parent table while preserving their
    * numeric descriptor identities.

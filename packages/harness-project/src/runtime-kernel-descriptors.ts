@@ -339,6 +339,10 @@ export class RuntimeKernelDescriptorManager {
     return Effect.runPromise(this.existingTable(pid, fd, 'dup').dup(fd));
   }
 
+  dup2(pid: number, fd: number, targetFd: number): Promise<number> {
+    return Effect.runPromise(this.existingTable(pid, fd, 'dup2').dup2(fd, targetFd));
+  }
+
   async createPipe(
     pid: number,
     options: TraceKernelPipeOptions = {}
