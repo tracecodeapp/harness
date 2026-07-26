@@ -1055,6 +1055,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly zombieProcessTable = new Map<number, RuntimeKernelZombieRecord>();
   private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
   private readonly anyProcessWaiters: Array<(process: RuntimeKernelProcessRecord) => void> = [];
+  private readonly runtimeChildSelectorWaiters: Array<() => void> = [];
   private readonly runtimeChildWaits = new Set<number>();
   private readonly processWatchdogs = new Map<number, RuntimeKernelWatchdogRecord>();
   private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
@@ -1628,6 +1629,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           }
           process.sid = process.pid;
           process.pgid = process.pid;
+          this.notifyRuntimeChildSelectorWaiters();
           return {
             ok: true,
             value: { op: 'setsid', sid: process.sid, pgid: process.pgid },
@@ -1675,6 +1677,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             );
           }
           process.pgid = pgid;
+          this.notifyRuntimeChildSelectorWaiters();
           return { ok: true, value: { op: 'setpgid', pgid } };
         }
         case 'socket': {
@@ -2504,43 +2507,70 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private async waitRuntimeSyscallChild(
     parent: RuntimeKernelProcessRecord,
-    pid: number,
+    selector: number,
     noHang = false
   ): Promise<RuntimeKernelProcessRecord | undefined> {
-    const child = this.findProcessRecord(pid);
-    if (
-      !child ||
-      child.ppid !== parent.pid ||
-      this.runtimeChildWaits.has(pid)
-    ) {
+    if (!Number.isSafeInteger(selector)) {
       throw Object.assign(
-        new Error(
-          `ECHILD: process ${pid} is not an unreaped child of process ${parent.pid}`
-        ),
+        new Error(`ECHILD: invalid child selector ${selector}`),
         { code: 'ECHILD' }
       );
     }
-    if (noHang && !this.zombieProcessTable.has(pid)) return undefined;
-    this.runtimeChildWaits.add(pid);
-    try {
-      const zombie = await this.waitForZombieProcess(pid, parent.pid);
-      if (!zombie || zombie.ppid !== parent.pid) {
+    const matchesSelector = (child: RuntimeKernelProcessRecord): boolean => {
+      if (
+        child.ppid !== parent.pid ||
+        child.state === 'exited' ||
+        this.runtimeChildWaits.has(child.pid)
+      ) {
+        return false;
+      }
+      if (selector > 0) return child.pid === selector;
+      if (selector === -1) return true;
+      const processGroupId = selector === 0 ? parent.pgid : -selector;
+      return child.pgid === processGroupId;
+    };
+
+    while (true) {
+      const candidates = this.activeProcessRecords().filter(matchesSelector);
+      if (candidates.length === 0) {
         throw Object.assign(
           new Error(
-            `ECHILD: process ${pid} is not an unreaped child of process ${parent.pid}`
+            `ECHILD: selector ${selector} has no unreaped children of process ${parent.pid}`
           ),
           { code: 'ECHILD' }
         );
       }
-      this.zombieProcessTable.delete(pid);
-      this.recordKernelEvent('process-reap', pid, {
-        exitCode: zombie.exitCode ?? 0,
-        signal: zombie.signal,
-        parentPid: parent.pid,
-      });
-      return zombie;
-    } finally {
-      this.runtimeChildWaits.delete(pid);
+      const zombie = candidates.find((child) =>
+        child.state === 'zombie' && this.zombieProcessTable.has(child.pid)
+      );
+      if (!zombie) {
+        if (noHang) return undefined;
+        await new Promise<void>((resolve) => {
+          this.runtimeChildSelectorWaiters.push(resolve);
+        });
+        continue;
+      }
+
+      this.runtimeChildWaits.add(zombie.pid);
+      try {
+        this.zombieProcessTable.delete(zombie.pid);
+        zombie.state = 'exited';
+        this.recordKernelEvent('process-reap', zombie.pid, {
+          exitCode: zombie.exitCode ?? 0,
+          signal: zombie.signal,
+          parentPid: parent.pid,
+        });
+        return zombie;
+      } finally {
+        this.runtimeChildWaits.delete(zombie.pid);
+      }
+    }
+  }
+
+  private notifyRuntimeChildSelectorWaiters(): void {
+    const waiters = this.runtimeChildSelectorWaiters.splice(0);
+    for (const waiter of waiters) {
+      waiter();
     }
   }
 
@@ -4857,6 +4887,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     for (const waiter of [...waiters, ...anyWaiters]) {
       waiter(process);
     }
+    this.notifyRuntimeChildSelectorWaiters();
   }
 
   private attachExternalSignal(process: RuntimeKernelProcessRecord, signal: AbortSignal | undefined): (() => void) | undefined {
@@ -8958,6 +8989,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.zombieProcessTable.clear();
     this.processWaiters.clear();
     this.anyProcessWaiters.splice(0);
+    this.notifyRuntimeChildSelectorWaiters();
     this.runtimeChildWaits.clear();
     this.recordKernelEvent('kernel-destroy', 1, { reason: options.reason ?? 'destroy', clearStorage: options.clearStorage === true });
     this.destroyed = true;
