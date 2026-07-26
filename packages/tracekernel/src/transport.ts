@@ -43,6 +43,10 @@ const OP_CODES = {
   shutdown: 28,
   getsockname: 29,
   getpeername: 30,
+  pipe: 31,
+  spawn: 32,
+  wait: 33,
+  kill: 34,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -58,11 +62,13 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
 const SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'E2BIG',
+  'EAGAIN',
   'EADDRINUSE',
   'EACCES',
   'EAFNOSUPPORT',
   'EBADF',
   'EBUSY',
+  'ECHILD',
   'ELOOP',
   'EMFILE',
   'EEXIST',
@@ -278,6 +284,55 @@ export function encodeTraceKernelSyscallRequest(
   writeFramePrefix(writer, FRAME_REQUEST);
   writeOperation(writer, request.op);
   switch (request.op) {
+    case 'pipe':
+      writer.u32(request.options?.capacityChunks ?? 0);
+      break;
+    case 'spawn': {
+      writer.string(request.runtime);
+      writer.string(request.command);
+      writer.u32(request.args?.length ?? 0);
+      for (const arg of request.args ?? []) writer.string(arg);
+      writer.u8(request.cwd === undefined ? 0 : 1);
+      if (request.cwd !== undefined) writer.string(request.cwd);
+      const environment = Object.entries(request.env ?? {});
+      writer.u32(environment.length);
+      for (const [name, value] of environment) {
+        writer.string(name);
+        writer.string(value);
+      }
+      writer.u8(
+        request.inheritDescriptors === 'all'
+          ? 1
+          : request.inheritDescriptors === undefined
+            ? 0
+            : 2
+      );
+      if (
+        request.inheritDescriptors !== undefined &&
+        request.inheritDescriptors !== 'all'
+      ) {
+        writer.u32(request.inheritDescriptors.length);
+        for (const fd of request.inheritDescriptors) writer.i32(fd);
+      }
+      writer.u8(request.processGroupId === undefined ? 0 : 1);
+      if (request.processGroupId !== undefined) writer.i32(request.processGroupId);
+      writer.u8(request.sessionId === undefined ? 0 : 1);
+      if (request.sessionId !== undefined) writer.i32(request.sessionId);
+      break;
+    }
+    case 'wait':
+      writer.i32(request.pid);
+      break;
+    case 'kill':
+      writer.i32(request.pid);
+      writer.u8(
+        request.signal === 'SIGINT'
+          ? 1
+          : request.signal === 'SIGTERM'
+            ? 2
+            : 3
+      );
+      break;
     case 'socket':
       break;
     case 'bind':
@@ -400,6 +455,104 @@ export function decodeTraceKernelSyscallRequest(
   const operation = readOperation(reader);
   let request: TraceKernelSyscallRequest;
   switch (operation) {
+    case 'pipe': {
+      const capacityChunks = reader.u32();
+      request = {
+        op: 'pipe',
+        ...(capacityChunks === 0
+          ? {}
+          : { options: { capacityChunks } }),
+      };
+      break;
+    }
+    case 'spawn': {
+      const runtime = reader.string();
+      const command = reader.string();
+      const argsLength = reader.u32();
+      const args: string[] = [];
+      for (let index = 0; index < argsLength; index += 1) {
+        args.push(reader.string());
+      }
+      const hasCwd = reader.u8();
+      if (hasCwd > 1) {
+        throw new TraceKernelTransportError('EPROTO', `invalid spawn cwd flag ${hasCwd}`);
+      }
+      const cwd = hasCwd ? reader.string() : undefined;
+      const environmentLength = reader.u32();
+      const env: Record<string, string> = {};
+      for (let index = 0; index < environmentLength; index += 1) {
+        env[reader.string()] = reader.string();
+      }
+      const inheritance = reader.u8();
+      if (inheritance > 2) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid descriptor inheritance mode ${inheritance}`
+        );
+      }
+      let inheritDescriptors: 'all' | readonly number[] | undefined;
+      if (inheritance === 1) {
+        inheritDescriptors = 'all';
+      } else if (inheritance === 2) {
+        const descriptorCount = reader.u32();
+        const descriptors: number[] = [];
+        for (let index = 0; index < descriptorCount; index += 1) {
+          descriptors.push(reader.i32());
+        }
+        inheritDescriptors = Object.freeze(descriptors);
+      }
+      const hasProcessGroupId = reader.u8();
+      if (hasProcessGroupId > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid spawn process-group flag ${hasProcessGroupId}`
+        );
+      }
+      const processGroupId = hasProcessGroupId ? reader.i32() : undefined;
+      const hasSessionId = reader.u8();
+      if (hasSessionId > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid spawn session flag ${hasSessionId}`
+        );
+      }
+      const sessionId = hasSessionId ? reader.i32() : undefined;
+      request = {
+        op: 'spawn',
+        runtime,
+        command,
+        ...(args.length === 0 ? {} : { args: Object.freeze(args) }),
+        ...(cwd === undefined ? {} : { cwd }),
+        ...(environmentLength === 0 ? {} : { env: Object.freeze(env) }),
+        ...(inheritDescriptors === undefined ? {} : { inheritDescriptors }),
+        ...(processGroupId === undefined ? {} : { processGroupId }),
+        ...(sessionId === undefined ? {} : { sessionId }),
+      };
+      break;
+    }
+    case 'wait':
+      request = { op: 'wait', pid: reader.i32() };
+      break;
+    case 'kill': {
+      const pid = reader.i32();
+      const signalCode = reader.u8();
+      if (signalCode < 1 || signalCode > 3) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid signal code ${signalCode}`
+        );
+      }
+      request = {
+        op: 'kill',
+        pid,
+        signal: signalCode === 1
+          ? 'SIGINT'
+          : signalCode === 2
+            ? 'SIGTERM'
+            : 'SIGKILL',
+      };
+      break;
+    }
     case 'socket':
       request = { op: 'socket' };
       break;
@@ -635,6 +788,35 @@ export function encodeTraceKernelSyscallResult(
   writeOperation(writer, result.value.op);
   const value = result.value;
   switch (value.op) {
+    case 'pipe':
+      writer.i32(value.readFd);
+      writer.i32(value.writeFd);
+      break;
+    case 'spawn':
+      writer.i32(value.pid);
+      break;
+    case 'wait':
+      writer.i32(value.pid);
+      writer.u8(
+        value.termination.kind === 'exit'
+          ? 1
+          : value.termination.kind === 'signal'
+            ? 2
+            : 3
+      );
+      writer.i32(value.termination.exitCode);
+      if (value.termination.kind === 'signal') {
+        writer.u8(
+          value.termination.signal === 'SIGINT'
+            ? 1
+            : value.termination.signal === 'SIGTERM'
+              ? 2
+              : 3
+        );
+      } else if (value.termination.kind === 'failure') {
+        writer.string(value.termination.message);
+      }
+      break;
     case 'socket':
     case 'open':
     case 'dup':
@@ -692,6 +874,7 @@ export function encodeTraceKernelSyscallResult(
       writer.byteArray(value.bytes);
       break;
     case 'close':
+    case 'kill':
     case 'listen':
     case 'shutdown':
     case 'mkdir':
@@ -735,6 +918,66 @@ export function decodeTraceKernelSyscallResult(
   const operation = readOperation(reader);
   let value: TraceKernelSyscallValue;
   switch (operation) {
+    case 'pipe':
+      value = {
+        op: 'pipe',
+        readFd: reader.i32(),
+        writeFd: reader.i32(),
+      };
+      break;
+    case 'spawn':
+      value = { op: 'spawn', pid: reader.i32() };
+      break;
+    case 'wait': {
+      const pid = reader.i32();
+      const terminationCode = reader.u8();
+      if (terminationCode < 1 || terminationCode > 3) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid process termination code ${terminationCode}`
+        );
+      }
+      const exitCode = reader.i32();
+      if (terminationCode === 1) {
+        value = {
+          op: 'wait',
+          pid,
+          termination: { kind: 'exit', exitCode },
+        };
+      } else if (terminationCode === 2) {
+        const signalCode = reader.u8();
+        if (signalCode < 1 || signalCode > 3) {
+          throw new TraceKernelTransportError(
+            'EPROTO',
+            `invalid termination signal code ${signalCode}`
+          );
+        }
+        value = {
+          op: 'wait',
+          pid,
+          termination: {
+            kind: 'signal',
+            signal: signalCode === 1
+              ? 'SIGINT'
+              : signalCode === 2
+                ? 'SIGTERM'
+                : 'SIGKILL',
+            exitCode,
+          },
+        };
+      } else {
+        value = {
+          op: 'wait',
+          pid,
+          termination: {
+            kind: 'failure',
+            exitCode,
+            message: reader.string(),
+          },
+        };
+      }
+      break;
+    }
     case 'socket':
     case 'open':
     case 'dup':
@@ -819,6 +1062,7 @@ export function decodeTraceKernelSyscallResult(
       };
       break;
     case 'close':
+    case 'kill':
     case 'listen':
     case 'shutdown':
     case 'mkdir':

@@ -29,7 +29,15 @@ async function main(): Promise<void> {
           Effect.succeed({
             id: `syscall-lease-${process.pid}`,
             runtime: 'syscall-test',
-            execute: () => Effect.never,
+            execute: () =>
+              process.command === 'syscall-child'
+                ? Effect.sleep(5).pipe(
+                    Effect.as({
+                      exitCode: 7,
+                      stdout: 'child-exit\n',
+                    })
+                  )
+                : Effect.never,
           }),
           () => Effect.void
         ),
@@ -56,6 +64,106 @@ async function main(): Promise<void> {
       });
       const syscalls = new TraceKernelSyscallDispatcher(session, process);
       const peerSyscalls = new TraceKernelSyscallDispatcher(session, peer);
+
+      const pipe = yield* syscalls.dispatch({
+        op: 'pipe',
+        options: { capacityChunks: 2 },
+      });
+      success(pipe);
+      assertCondition(pipe.value.op === 'pipe', 'pipe returned the wrong response variant.');
+      if (pipe.value.op !== 'pipe') return;
+      const pipeWrite = yield* syscalls.dispatch({
+        op: 'write',
+        fd: pipe.value.writeFd,
+        bytes: new TextEncoder().encode('pipe-wire'),
+      });
+      success(pipeWrite);
+      const pipeRead = yield* syscalls.dispatch({
+        op: 'read',
+        fd: pipe.value.readFd,
+        maxBytes: 64,
+      });
+      success(pipeRead);
+      assertCondition(
+        pipeRead.value.op === 'read' &&
+          new TextDecoder().decode(pipeRead.value.bytes) === 'pipe-wire',
+        `pipe bytes changed across the dispatcher: ${JSON.stringify(pipeRead)}`
+      );
+
+      const spawned = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'syscall-child',
+        args: ['one', 'two'],
+        cwd: '/workspace/child',
+        env: { CHILD_VALUE: 'isolated' },
+        inheritDescriptors: [pipe.value.readFd, pipe.value.writeFd],
+      });
+      success(spawned);
+      assertCondition(spawned.value.op === 'spawn', 'spawn returned the wrong response variant.');
+      if (spawned.value.op !== 'spawn') return;
+      const childSnapshot = session.processSnapshots().find(
+        (snapshot) => snapshot.pid === spawned.value.pid
+      );
+      assertCondition(
+        childSnapshot?.ppid === process.pid &&
+          childSnapshot.cwd === '/workspace/child' &&
+          childSnapshot.env.CHILD_VALUE === 'isolated' &&
+          childSnapshot.descriptors.some((descriptor) => descriptor.fd === pipe.value.readFd) &&
+          childSnapshot.descriptors.some((descriptor) => descriptor.fd === pipe.value.writeFd),
+        `spawn did not preserve child topology, environment, or inherited descriptors: ${JSON.stringify(childSnapshot)}`
+      );
+      const waited = yield* syscalls.dispatch({
+        op: 'wait',
+        pid: spawned.value.pid,
+      });
+      success(waited);
+      assertCondition(
+        waited.value.op === 'wait' &&
+          waited.value.pid === spawned.value.pid &&
+          waited.value.termination.kind === 'exit' &&
+          waited.value.termination.exitCode === 7,
+        `wait returned the wrong child termination: ${JSON.stringify(waited)}`
+      );
+      const reaped = yield* syscalls.dispatch({
+        op: 'wait',
+        pid: spawned.value.pid,
+      });
+      assertCondition(
+        !reaped.ok && reaped.error.code === 'ECHILD',
+        `waiting twice did not return ECHILD: ${JSON.stringify(reaped)}`
+      );
+      success(yield* syscalls.dispatch({ op: 'close', fd: pipe.value.readFd }));
+      success(yield* syscalls.dispatch({ op: 'close', fd: pipe.value.writeFd }));
+
+      const blockedChild = yield* syscalls.dispatch({
+        op: 'spawn',
+        runtime: 'syscall-test',
+        command: 'syscall-child-blocked',
+      });
+      success(blockedChild);
+      assertCondition(
+        blockedChild.value.op === 'spawn',
+        'blocked child spawn returned the wrong response variant.'
+      );
+      if (blockedChild.value.op !== 'spawn') return;
+      success(yield* syscalls.dispatch({
+        op: 'kill',
+        pid: blockedChild.value.pid,
+        signal: 'SIGTERM',
+      }));
+      const killedChild = yield* syscalls.dispatch({
+        op: 'wait',
+        pid: blockedChild.value.pid,
+      });
+      success(killedChild);
+      assertCondition(
+        killedChild.value.op === 'wait' &&
+          killedChild.value.termination.kind === 'signal' &&
+          killedChild.value.termination.signal === 'SIGTERM' &&
+          killedChild.value.termination.exitCode === 143,
+        `kernel kill/wait lost child signal status: ${JSON.stringify(killedChild)}`
+      );
 
       const mkdir = yield* syscalls.dispatch({
         op: 'mkdir',
@@ -367,6 +475,8 @@ async function main(): Promise<void> {
     structuredCloneResponse: true,
     namespaceOperationsShareTheWireContract: true,
     tcpOperationsShareTheWireContract: true,
+    processAndPipeOperationsShareTheWireContract: true,
+    childWaitReapsExactlyOnce: true,
     typedErrorsMappedToPosixWireErrors: true,
     descriptorLimitsCrossWireAsEmfile: true,
     effectDoesNotCrossRuntimeBoundary: true,

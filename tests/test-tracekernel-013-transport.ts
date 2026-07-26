@@ -167,6 +167,20 @@ function makeFixtureWorker(
 
 async function main(): Promise<void> {
   const requests: readonly TraceKernelSyscallRequest[] = [
+    { op: 'pipe', options: { capacityChunks: 4 } },
+    {
+      op: 'spawn',
+      runtime: 'javascript',
+      command: 'node',
+      args: ['child.js', '--mode=test'],
+      cwd: '/workspace/child',
+      env: { CHILD_VALUE: 'yes' },
+      inheritDescriptors: [0, 1, 2, 7],
+      processGroupId: 100,
+      sessionId: 100,
+    },
+    { op: 'wait', pid: 101 },
+    { op: 'kill', pid: 102, signal: 'SIGTERM' },
     { op: 'socket' },
     { op: 'bind', fd: 3, address: { host: '127.0.0.1', port: 8080 } },
     { op: 'listen', fd: 3, options: { backlog: 8, capacityChunks: 4 } },
@@ -217,6 +231,41 @@ async function main(): Promise<void> {
   }
 
   const results: readonly TraceKernelSyscallResult[] = [
+    { ok: true, value: { op: 'pipe', readFd: 3, writeFd: 4 } },
+    { ok: true, value: { op: 'spawn', pid: 101 } },
+    {
+      ok: true,
+      value: {
+        op: 'wait',
+        pid: 101,
+        termination: { kind: 'exit', exitCode: 7 },
+      },
+    },
+    {
+      ok: true,
+      value: {
+        op: 'wait',
+        pid: 102,
+        termination: {
+          kind: 'signal',
+          signal: 'SIGTERM',
+          exitCode: 143,
+        },
+      },
+    },
+    {
+      ok: true,
+      value: {
+        op: 'wait',
+        pid: 103,
+        termination: {
+          kind: 'failure',
+          exitCode: 126,
+          message: 'runtime unavailable',
+        },
+      },
+    },
+    { ok: true, value: { op: 'kill' } },
     { ok: true, value: { op: 'socket', fd: 3 } },
     {
       ok: true,
@@ -345,6 +394,8 @@ async function main(): Promise<void> {
     },
     { ok: true, value: { op: 'writeFile' } },
     { ok: false, error: { code: 'ENOENT', message: 'ENOENT: missing' } },
+    { ok: false, error: { code: 'EAGAIN', message: 'EAGAIN: process limit' } },
+    { ok: false, error: { code: 'ECHILD', message: 'ECHILD: already reaped' } },
     { ok: false, error: { code: 'EMFILE', message: 'EMFILE: descriptor limit' } },
     { ok: false, error: { code: 'EROFS', message: 'EROFS: read-only filesystem' } },
   ];

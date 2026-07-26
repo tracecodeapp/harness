@@ -15,6 +15,7 @@ import {
 } from './descriptors';
 import {
   TraceKernelBadFileDescriptorError,
+  TraceKernelChildProcessError,
   TraceKernelDescriptorLimitError,
   TraceKernelHostClosedError,
   TraceKernelProcessLimitError,
@@ -404,6 +405,8 @@ export class TraceKernelProcess {
 
 export class TraceKernelSession {
   private readonly processes = new Map<number, TraceKernelProcess>();
+  private readonly exitedChildren = new Map<number, TraceKernelProcess>();
+  private readonly waitingChildren = new Set<number>();
   private readonly resources = new Map<
     string,
     TraceKernelPipe | TraceKernelOpenFileDescription
@@ -477,6 +480,70 @@ export class TraceKernelSession {
       const fiber = yield* Effect.forkIn(program, this.scope);
       process.attachFiber(fiber);
       return process;
+    });
+  }
+
+  spawnChild(
+    parent: TraceKernelProcess,
+    spec: Omit<
+      TraceKernelProcessSpec,
+      'parentPid' | 'owner' | 'protected' | 'visible'
+    >
+  ): Effect.Effect<
+    TraceKernelProcess,
+    TraceKernelSessionClosedError |
+      TraceKernelProcessLimitError |
+      TraceKernelProcessStateError |
+      TraceKernelDescriptorInheritanceError
+  > {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(parent);
+      const parentSnapshot = parent.snapshot();
+      return yield* this.spawn({
+        ...spec,
+        parentPid: parent.pid,
+        owner: parentSnapshot.owner,
+        protected: parentSnapshot.protected,
+        visible: parentSnapshot.visible,
+        cwd: spec.cwd ?? parentSnapshot.cwd,
+        env: Object.freeze({
+          ...parentSnapshot.env,
+          ...(spec.env ?? {}),
+        }),
+      });
+    });
+  }
+
+  waitChild(
+    parent: TraceKernelProcess,
+    pid: number
+  ): Effect.Effect<
+    TraceKernelProcessSnapshot,
+    TraceKernelProcessStateError | TraceKernelChildProcessError
+  > {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(parent);
+      const child = this.processes.get(pid) ?? this.exitedChildren.get(pid);
+      if (
+        !child ||
+        child.snapshot().ppid !== parent.pid ||
+        this.waitingChildren.has(pid)
+      ) {
+        return yield* Effect.fail(new TraceKernelChildProcessError({
+          code: 'ECHILD',
+          pid,
+          message: `ECHILD: process ${pid} is not an unreaped child of process ${parent.pid}`,
+        }));
+      }
+      this.waitingChildren.add(pid);
+      return yield* child.wait().pipe(
+        Effect.tap(() => Effect.sync(() => {
+          this.exitedChildren.delete(pid);
+        })),
+        Effect.ensuring(Effect.sync(() => {
+          this.waitingChildren.delete(pid);
+        }))
+      );
     });
   }
 
@@ -766,6 +833,8 @@ export class TraceKernelSession {
         Effect.andThen(Scope.close(this.scope, Exit.void)),
         Effect.ensuring(Effect.sync(() => {
           this.processes.clear();
+          this.exitedChildren.clear();
+          this.waitingChildren.clear();
           this.resources.clear();
           this.fileSystem.clear();
           this.host.unregisterSession(this.id);
@@ -784,7 +853,7 @@ export class TraceKernelSession {
         message: `TraceKernel session ${this.id} is closed.`,
       });
     }
-    if (this.processes.size >= this.maxProcesses) {
+    if (this.processes.size + this.exitedChildren.size >= this.maxProcesses) {
       throw new TraceKernelProcessLimitError({
         code: 'EAGAIN',
         maxProcesses: this.maxProcesses,
@@ -831,9 +900,23 @@ export class TraceKernelSession {
   }
 
   private unregisterProcess(pid: number): void {
+    const exited = this.processes.get(pid);
     this.processes.delete(pid);
+    if (exited) {
+      const snapshot = exited.snapshot();
+      if (snapshot.ppid !== 1) {
+        this.exitedChildren.set(pid, exited);
+      }
+    }
     for (const process of this.processes.values()) {
       process.reparent(pid, 1);
+    }
+    for (const [childPid, child] of this.exitedChildren) {
+      if (childPid === pid) continue;
+      if (child.snapshot().ppid === pid) {
+        child.reparent(pid, 1);
+        this.exitedChildren.delete(childPid);
+      }
     }
   }
 

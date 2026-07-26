@@ -44,6 +44,14 @@ export class TraceKernelProcessPermissionError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class TraceKernelChildProcessError extends Data.TaggedError(
+  'TraceKernelChildProcessError'
+)<{
+  readonly code: 'ECHILD';
+  readonly pid: number;
+  readonly message: string;
+}> {}
+
 export class TraceKernelBadFileDescriptorError extends Data.TaggedError(
   'TraceKernelBadFileDescriptorError'
 )<{
@@ -120,6 +128,7 @@ export type TraceKernelLifecycleError =
   | TraceKernelProcessStateError
   | TraceKernelProcessLimitError
   | TraceKernelProcessPermissionError
+  | TraceKernelChildProcessError
   | TraceKernelBadFileDescriptorError
   | TraceKernelBrokenPipeError
   | TraceKernelDescriptorLimitError

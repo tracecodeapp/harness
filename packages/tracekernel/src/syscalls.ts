@@ -2,13 +2,17 @@ import * as Effect from 'effect/Effect';
 import {
   TraceKernelBadFileDescriptorError,
   TraceKernelBrokenPipeError,
+  TraceKernelChildProcessError,
   TraceKernelDescriptorLimitError,
   TraceKernelFileSystemError,
   TraceKernelInvalidDescriptorOperationError,
   TraceKernelNetworkError,
+  TraceKernelProcessLimitError,
+  TraceKernelProcessPermissionError,
   TraceKernelProcessStateError,
 } from './errors';
 import type { TraceKernelProcess, TraceKernelSession } from './kernel';
+import type { TraceKernelProcessTermination, TraceKernelSignal } from './model';
 import type {
   TraceKernelDirectoryEntry,
   TraceKernelMkdirOptions,
@@ -22,6 +26,32 @@ import type {
 } from './network';
 
 export type TraceKernelSyscallRequest =
+  | {
+      readonly op: 'pipe';
+      readonly options?: {
+        readonly capacityChunks?: number;
+      };
+    }
+  | {
+      readonly op: 'spawn';
+      readonly runtime: string;
+      readonly command: string;
+      readonly args?: readonly string[];
+      readonly cwd?: string;
+      readonly env?: Readonly<Record<string, string>>;
+      readonly inheritDescriptors?: 'all' | readonly number[];
+      readonly processGroupId?: number;
+      readonly sessionId?: number;
+    }
+  | {
+      readonly op: 'wait';
+      readonly pid: number;
+    }
+  | {
+      readonly op: 'kill';
+      readonly pid: number;
+      readonly signal: TraceKernelSignal;
+    }
   | {
       readonly op: 'socket';
     }
@@ -156,6 +186,18 @@ export type TraceKernelSyscallRequest =
     };
 
 export type TraceKernelSyscallValue =
+  | {
+      readonly op: 'pipe';
+      readonly readFd: number;
+      readonly writeFd: number;
+    }
+  | { readonly op: 'spawn'; readonly pid: number }
+  | {
+      readonly op: 'wait';
+      readonly pid: number;
+      readonly termination: TraceKernelProcessTermination;
+    }
+  | { readonly op: 'kill' }
   | { readonly op: 'socket'; readonly fd: number }
   | { readonly op: 'bind'; readonly address: TraceKernelTcpAddress }
   | { readonly op: 'listen' }
@@ -202,11 +244,13 @@ export type TraceKernelSyscallValue =
 
 export type TraceKernelSyscallErrorCode =
   | 'E2BIG'
+  | 'EAGAIN'
   | 'EADDRINUSE'
   | 'EACCES'
   | 'EAFNOSUPPORT'
   | 'EBADF'
   | 'EBUSY'
+  | 'ECHILD'
   | 'ELOOP'
   | 'EMFILE'
   | 'EEXIST'
@@ -256,6 +300,15 @@ function syscallWireError(error: unknown): TraceKernelSyscallWireError {
   if (error instanceof TraceKernelDescriptorLimitError) {
     return Object.freeze({ code: 'EMFILE', message: error.message });
   }
+  if (error instanceof TraceKernelProcessLimitError) {
+    return Object.freeze({ code: 'EAGAIN', message: error.message });
+  }
+  if (error instanceof TraceKernelChildProcessError) {
+    return Object.freeze({ code: 'ECHILD', message: error.message });
+  }
+  if (error instanceof TraceKernelProcessPermissionError) {
+    return Object.freeze({ code: 'EACCES', message: error.message });
+  }
   if (error instanceof TraceKernelProcessStateError) {
     return Object.freeze({ code: 'ESRCH', message: error.message });
   }
@@ -297,6 +350,54 @@ export class TraceKernelSyscallDispatcher {
     request: TraceKernelSyscallRequest
   ): Effect.Effect<TraceKernelSyscallValue, Error> {
     switch (request.op) {
+      case 'pipe':
+        return this.session.createPipe(
+          this.process,
+          this.process,
+          request.options
+        ).pipe(
+          Effect.map(({ readFd, writeFd }) => ({
+            op: 'pipe' as const,
+            readFd,
+            writeFd,
+          }))
+        );
+      case 'spawn':
+        return this.session.spawnChild(this.process, {
+          runtime: request.runtime,
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+          env: request.env,
+          inheritDescriptors: request.inheritDescriptors,
+          processGroupId: request.processGroupId,
+          sessionId: request.sessionId,
+        }).pipe(
+          Effect.map((child) => ({ op: 'spawn' as const, pid: child.pid }))
+        );
+      case 'wait':
+        return this.session.waitChild(this.process, request.pid).pipe(
+          Effect.flatMap((snapshot) =>
+            snapshot.termination
+              ? Effect.succeed({
+                  op: 'wait' as const,
+                  pid: snapshot.pid,
+                  termination: snapshot.termination,
+                })
+              : Effect.fail(new TraceKernelProcessStateError({
+                  pid: snapshot.pid,
+                  message: `Process ${snapshot.pid} completed without termination state.`,
+                }))
+          )
+        );
+      case 'kill':
+        return this.session.signalProcess(
+          this.process.snapshot().owner,
+          request.pid,
+          request.signal
+        ).pipe(
+          Effect.as({ op: 'kill' as const })
+        );
       case 'socket':
         return this.session.createTcpSocket(this.process).pipe(
           Effect.map((fd) => ({ op: 'socket' as const, fd }))
