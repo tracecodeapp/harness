@@ -11497,6 +11497,7 @@ const CPP_KERNEL_NETDB_HEADER_FILENAME = 'netdb.h';
 const CPP_KERNEL_PROCESS_SHIM_FILENAME = 'tracecode_process.c';
 const CPP_KERNEL_PROCESS_HEADER_FILENAME = 'tracecode_process.h';
 const CPP_KERNEL_POLL_HEADER_FILENAME = 'poll.h';
+const CPP_KERNEL_SELECT_HEADER_FILENAME = 'sys/select.h';
 const CPP_KERNEL_SPAWN_HEADER_FILENAME = 'spawn.h';
 const CPP_KERNEL_WAIT_HEADER_FILENAME = 'sys/wait.h';
 const CPP_KERNEL_CONTROL_HEADER_FILENAME = 'tracekernel.h';
@@ -11889,14 +11890,60 @@ int poll(struct pollfd* descriptors, nfds_t count, int timeout);
 #endif
 `;
 
+const CPP_KERNEL_SELECT_HEADER_SOURCE = String.raw`#ifndef _SYS_SELECT_H
+#define _SYS_SELECT_H
+
+#include <sys/time.h>
+
+#ifndef FD_SETSIZE
+#define FD_SETSIZE 1024
+#endif
+
+typedef struct {
+  unsigned long __tracecode_bits[FD_SETSIZE / (8 * sizeof(unsigned long))];
+} fd_set;
+
+#define __TRACECODE_FD_WORD(fd) ((unsigned int)(fd) / (8 * sizeof(unsigned long)))
+#define __TRACECODE_FD_MASK(fd) (1UL << ((unsigned int)(fd) % (8 * sizeof(unsigned long))))
+#define FD_ZERO(set) do { \
+  unsigned int __tracecode_fd_index; \
+  for (__tracecode_fd_index = 0; \
+       __tracecode_fd_index < FD_SETSIZE / (8 * sizeof(unsigned long)); \
+       ++__tracecode_fd_index) { \
+    (set)->__tracecode_bits[__tracecode_fd_index] = 0; \
+  } \
+} while (0)
+#define FD_SET(fd, set) ((set)->__tracecode_bits[__TRACECODE_FD_WORD(fd)] |= __TRACECODE_FD_MASK(fd))
+#define FD_CLR(fd, set) ((set)->__tracecode_bits[__TRACECODE_FD_WORD(fd)] &= ~__TRACECODE_FD_MASK(fd))
+#define FD_ISSET(fd, set) (((set)->__tracecode_bits[__TRACECODE_FD_WORD(fd)] & __TRACECODE_FD_MASK(fd)) != 0)
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+int select(
+  int descriptor_count,
+  fd_set* read_descriptors,
+  fd_set* write_descriptors,
+  fd_set* error_descriptors,
+  struct timeval* timeout
+);
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
 const CPP_KERNEL_PROCESS_SHIM_SOURCE = String.raw`#include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/select.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <stdarg.h>
@@ -12027,6 +12074,120 @@ int poll(struct pollfd* descriptors, nfds_t count, int timeout) {
     return -1;
   }
   return result;
+}
+
+int select(
+  int descriptor_count,
+  fd_set* read_descriptors,
+  fd_set* write_descriptors,
+  fd_set* error_descriptors,
+  struct timeval* timeout
+) {
+  struct pollfd* descriptors;
+  unsigned char* interests;
+  unsigned int count = 0;
+  int timeout_ms = -1;
+  int result;
+  int ready = 0;
+  int fd;
+
+  if (descriptor_count < 0 || descriptor_count > FD_SETSIZE) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (timeout != 0) {
+    long long milliseconds;
+    if (
+      timeout->tv_sec < 0 ||
+      timeout->tv_usec < 0 ||
+      timeout->tv_usec >= 1000000
+    ) {
+      errno = EINVAL;
+      return -1;
+    }
+    milliseconds =
+      (long long)timeout->tv_sec * 1000LL +
+      ((long long)timeout->tv_usec + 999LL) / 1000LL;
+    timeout_ms = milliseconds > INT_MAX ? INT_MAX : (int)milliseconds;
+  }
+
+  descriptors = (struct pollfd*)calloc(
+    descriptor_count > 0 ? (unsigned int)descriptor_count : 1,
+    sizeof(struct pollfd)
+  );
+  interests = (unsigned char*)calloc(
+    descriptor_count > 0 ? (unsigned int)descriptor_count : 1,
+    sizeof(unsigned char)
+  );
+  if (descriptors == 0 || interests == 0) {
+    free(descriptors);
+    free(interests);
+    errno = ENOMEM;
+    return -1;
+  }
+
+  for (fd = 0; fd < descriptor_count; ++fd) {
+    unsigned char interest = 0;
+    if (read_descriptors != 0 && FD_ISSET(fd, read_descriptors)) interest |= 1;
+    if (write_descriptors != 0 && FD_ISSET(fd, write_descriptors)) interest |= 2;
+    if (error_descriptors != 0 && FD_ISSET(fd, error_descriptors)) interest |= 4;
+    if (interest == 0) continue;
+    descriptors[count].fd = fd;
+    descriptors[count].events =
+      ((interest & 1) != 0 ? POLLIN : 0) |
+      ((interest & 2) != 0 ? POLLOUT : 0);
+    interests[count] = interest;
+    ++count;
+  }
+
+  result = poll(descriptors, (nfds_t)count, timeout_ms);
+  if (result < 0) {
+    free(descriptors);
+    free(interests);
+    return -1;
+  }
+  if (read_descriptors != 0) FD_ZERO(read_descriptors);
+  if (write_descriptors != 0) FD_ZERO(write_descriptors);
+  if (error_descriptors != 0) FD_ZERO(error_descriptors);
+
+  for (fd = 0; fd < (int)count; ++fd) {
+    short revents = descriptors[fd].revents;
+    int descriptor_ready = 0;
+    if ((revents & POLLNVAL) != 0) {
+      free(descriptors);
+      free(interests);
+      errno = EBADF;
+      return -1;
+    }
+    if (
+      read_descriptors != 0 &&
+      (interests[fd] & 1) != 0 &&
+      (revents & (POLLIN | POLLHUP)) != 0
+    ) {
+      FD_SET(descriptors[fd].fd, read_descriptors);
+      descriptor_ready = 1;
+    }
+    if (
+      write_descriptors != 0 &&
+      (interests[fd] & 2) != 0 &&
+      (revents & POLLOUT) != 0
+    ) {
+      FD_SET(descriptors[fd].fd, write_descriptors);
+      descriptor_ready = 1;
+    }
+    if (
+      error_descriptors != 0 &&
+      (interests[fd] & 4) != 0 &&
+      (revents & POLLERR) != 0
+    ) {
+      FD_SET(descriptors[fd].fd, error_descriptors);
+      descriptor_ready = 1;
+    }
+    if (descriptor_ready) ++ready;
+  }
+  free(descriptors);
+  free(interests);
+  return ready;
 }
 
 int system(const char* command) {
@@ -12307,6 +12468,9 @@ function projectWithCppKernelShims(project) {
   }
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_POLL_HEADER_FILENAME)) {
     additions.push({ path: CPP_KERNEL_POLL_HEADER_FILENAME, contents: CPP_KERNEL_POLL_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_SELECT_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_SELECT_HEADER_FILENAME, contents: CPP_KERNEL_SELECT_HEADER_SOURCE });
   }
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_SPAWN_HEADER_FILENAME)) {
     additions.push({ path: CPP_KERNEL_SPAWN_HEADER_FILENAME, contents: CPP_KERNEL_SPAWN_HEADER_SOURCE });
