@@ -38,7 +38,11 @@ var OP_CODES = {
   recv: 27,
   shutdown: 28,
   getsockname: 29,
-  getpeername: 30
+  getpeername: 30,
+  pipe: 31,
+  spawn: 32,
+  wait: 33,
+  kill: 34
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -50,11 +54,13 @@ var textEncoder = new TextEncoder();
 var textDecoder = new TextDecoder("utf-8", { fatal: true });
 var SYSCALL_ERROR_CODES = /* @__PURE__ */ new Set([
   "E2BIG",
+  "EAGAIN",
   "EADDRINUSE",
   "EACCES",
   "EAFNOSUPPORT",
   "EBADF",
   "EBUSY",
+  "ECHILD",
   "ELOOP",
   "EMFILE",
   "EEXIST",
@@ -220,6 +226,44 @@ function encodeTraceKernelSyscallRequest(request) {
   writeFramePrefix(writer, FRAME_REQUEST);
   writeOperation(writer, request.op);
   switch (request.op) {
+    case "pipe":
+      writer.u32(request.options?.capacityChunks ?? 0);
+      break;
+    case "spawn": {
+      writer.string(request.runtime);
+      writer.string(request.command);
+      writer.u32(request.args?.length ?? 0);
+      for (const arg of request.args ?? []) writer.string(arg);
+      writer.u8(request.cwd === void 0 ? 0 : 1);
+      if (request.cwd !== void 0) writer.string(request.cwd);
+      const environment = Object.entries(request.env ?? {});
+      writer.u32(environment.length);
+      for (const [name, value] of environment) {
+        writer.string(name);
+        writer.string(value);
+      }
+      writer.u8(
+        request.inheritDescriptors === "all" ? 1 : request.inheritDescriptors === void 0 ? 0 : 2
+      );
+      if (request.inheritDescriptors !== void 0 && request.inheritDescriptors !== "all") {
+        writer.u32(request.inheritDescriptors.length);
+        for (const fd2 of request.inheritDescriptors) writer.i32(fd2);
+      }
+      writer.u8(request.processGroupId === void 0 ? 0 : 1);
+      if (request.processGroupId !== void 0) writer.i32(request.processGroupId);
+      writer.u8(request.sessionId === void 0 ? 0 : 1);
+      if (request.sessionId !== void 0) writer.i32(request.sessionId);
+      break;
+    }
+    case "wait":
+      writer.i32(request.pid);
+      break;
+    case "kill":
+      writer.i32(request.pid);
+      writer.u8(
+        request.signal === "SIGINT" ? 1 : request.signal === "SIGTERM" ? 2 : 3
+      );
+      break;
     case "socket":
       break;
     case "bind":
@@ -366,6 +410,62 @@ function decodeTraceKernelSyscallResult(bytes) {
   const operation = readOperation(reader);
   let value;
   switch (operation) {
+    case "pipe":
+      value = {
+        op: "pipe",
+        readFd: reader.i32(),
+        writeFd: reader.i32()
+      };
+      break;
+    case "spawn":
+      value = { op: "spawn", pid: reader.i32() };
+      break;
+    case "wait": {
+      const pid = reader.i32();
+      const terminationCode = reader.u8();
+      if (terminationCode < 1 || terminationCode > 3) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid process termination code ${terminationCode}`
+        );
+      }
+      const exitCode = reader.i32();
+      if (terminationCode === 1) {
+        value = {
+          op: "wait",
+          pid,
+          termination: { kind: "exit", exitCode }
+        };
+      } else if (terminationCode === 2) {
+        const signalCode = reader.u8();
+        if (signalCode < 1 || signalCode > 3) {
+          throw new TraceKernelTransportError(
+            "EPROTO",
+            `invalid termination signal code ${signalCode}`
+          );
+        }
+        value = {
+          op: "wait",
+          pid,
+          termination: {
+            kind: "signal",
+            signal: signalCode === 1 ? "SIGINT" : signalCode === 2 ? "SIGTERM" : "SIGKILL",
+            exitCode
+          }
+        };
+      } else {
+        value = {
+          op: "wait",
+          pid,
+          termination: {
+            kind: "failure",
+            exitCode,
+            message: reader.string()
+          }
+        };
+      }
+      break;
+    }
     case "socket":
     case "open":
     case "dup":
@@ -446,6 +546,7 @@ function decodeTraceKernelSyscallResult(bytes) {
       };
       break;
     case "close":
+    case "kill":
     case "listen":
     case "shutdown":
     case "mkdir":
@@ -1009,7 +1110,7 @@ var package_default = {
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
     "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
-    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
+    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
     "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
@@ -6086,6 +6187,7 @@ function createBrowserEventLoopApi(executionState) {
   let nextTimerId = 1;
   let pendingTimerWork = Promise.resolve();
   let timerError;
+  let pendingExternalWork = 0;
   const timers = /* @__PURE__ */ new Map();
   const recordTimerWork = (work) => {
     pendingTimerWork = Promise.allSettled([pendingTimerWork, work]).then(() => void 0);
@@ -6132,7 +6234,7 @@ function createBrowserEventLoopApi(executionState) {
   const setTrackedImmediate = (callback, ...args) => setTrackedTimeout(callback, 0, ...args);
   const drain = async () => {
     await new Promise((resolve) => hostSetTimeout(resolve, 0));
-    while (!executionState.cancelled && timers.size > 0) {
+    while (!executionState.cancelled && (timers.size > 0 || pendingExternalWork > 0)) {
       await new Promise((resolve) => hostSetTimeout(resolve, 0));
       await pendingTimerWork;
       if (timerError !== void 0) throw timerError;
@@ -6148,6 +6250,13 @@ function createBrowserEventLoopApi(executionState) {
       hostClearTimeout(timer.handle);
     }
     timers.clear();
+    pendingExternalWork = 0;
+  };
+  const track = (work) => {
+    pendingExternalWork += 1;
+    return work.finally(() => {
+      pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+    });
   };
   return {
     setTimeout: setTrackedTimeout,
@@ -6157,6 +6266,7 @@ function createBrowserEventLoopApi(executionState) {
     setImmediate: setTrackedImmediate,
     clearImmediate: clearTrackedTimeout,
     queueMicrotask: hostQueueMicrotask,
+    track,
     drain,
     clearAll
   };
@@ -6437,6 +6547,163 @@ function createStreamApi() {
     Duplex: PassThrough,
     Transform: PassThrough,
     PassThrough
+  };
+}
+function createChildProcessApi(executionState, eventLoopApi, request) {
+  const runtimeForCommand = (command) => {
+    const name = command.split("/").at(-1)?.toLowerCase() ?? command.toLowerCase();
+    if (name === "node" || name === "nodejs") return "javascript";
+    if (name === "python" || name === "python3") return "python";
+    if (name === "java") return "java";
+    if (name === "dotnet") return "csharp";
+    return "cpp";
+  };
+  const normalizeInvocation = (command, argsOrOptions, maybeOptions) => {
+    if (typeof command !== "string" || command.length === 0) {
+      throw Object.assign(
+        new TypeError('The "file" argument must be of type string and non-empty'),
+        { code: "ERR_INVALID_ARG_TYPE" }
+      );
+    }
+    const args = Array.isArray(argsOrOptions) ? argsOrOptions.map((arg) => String(arg)) : [];
+    const options = Array.isArray(argsOrOptions) ? maybeOptions : argsOrOptions;
+    if (options?.stdio !== void 0 && options.stdio !== "inherit" && options.stdio !== "ignore") {
+      throw Object.assign(
+        new Error("ENOSYS: piped child stdio is not available yet"),
+        { code: "ENOSYS" }
+      );
+    }
+    return {
+      command,
+      args,
+      options: options ?? {}
+    };
+  };
+  const syncDispatch = (syscall) => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error("ENOSYS: child-process subsystem is unavailable"),
+        { code: "ENOSYS" }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(syscall);
+    if (!result.ok) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    return result.value;
+  };
+  const asyncDispatch = (syscall) => dispatchBrowserNetworkSyscall(
+    executionState.kernelNetwork,
+    syscall
+  );
+  class BrowserChildProcess extends BrowserEventEmitter {
+    pid;
+    stdin = null;
+    stdout = null;
+    stderr = null;
+    stdio = [null, null, null];
+    connected = false;
+    exitCode = null;
+    signalCode = null;
+    killed = false;
+    constructor(pid, signal) {
+      super();
+      this.pid = pid;
+      if (signal) {
+        const abort = () => this.kill("SIGTERM");
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      }
+    }
+    kill(signal = "SIGTERM") {
+      if (this.exitCode !== null || this.signalCode !== null) return false;
+      syncDispatch({
+        op: "kill",
+        pid: this.pid,
+        signal
+      });
+      this.killed = true;
+      return true;
+    }
+    ref() {
+      return this;
+    }
+    unref() {
+      return this;
+    }
+  }
+  const spawn = (command, argsOrOptions, maybeOptions) => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const spawned = syncDispatch({
+      op: "spawn",
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
+      )
+    });
+    const child = new BrowserChildProcess(
+      spawned.pid,
+      invocation.options.signal
+    );
+    globalThis.queueMicrotask(() => child.emit("spawn"));
+    void eventLoopApi.track(
+      asyncDispatch({ op: "wait", pid: spawned.pid }).then(
+        (waited) => {
+          if (waited.termination.kind === "signal") {
+            child.signalCode = waited.termination.signal;
+          } else {
+            child.exitCode = waited.termination.exitCode;
+          }
+          child.emit(
+            "exit",
+            child.exitCode,
+            child.signalCode
+          );
+          child.emit(
+            "close",
+            child.exitCode,
+            child.signalCode
+          );
+        },
+        (error) => {
+          child.emit("error", error);
+          child.emit("close", null, null);
+        }
+      )
+    );
+    return child;
+  };
+  const spawnSync = (command, argsOrOptions, maybeOptions) => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const spawned = syncDispatch({
+      op: "spawn",
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
+      )
+    });
+    const waited = syncDispatch({ op: "wait", pid: spawned.pid });
+    return {
+      pid: spawned.pid,
+      output: [null, BrowserBuffer.alloc(0), BrowserBuffer.alloc(0)],
+      stdout: BrowserBuffer.alloc(0),
+      stderr: BrowserBuffer.alloc(0),
+      status: waited.termination.kind === "signal" ? null : waited.termination.exitCode,
+      signal: waited.termination.kind === "signal" ? waited.termination.signal : null
+    };
+  };
+  return {
+    ChildProcess: BrowserChildProcess,
+    spawn,
+    spawnSync
   };
 }
 function createUrlApi() {
@@ -8973,6 +9240,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const eventsApi = createEventsApi();
   const utilApi = createUtilApi();
   const streamApi = createStreamApi();
+  const childProcessApi = createChildProcessApi(
+    executionState,
+    eventLoopApi,
+    request
+  );
   const cryptoApi = createCryptoApi();
   const timersPromisesApi = createTimersPromisesApi(eventLoopApi);
   const syncTextModule = (path, bytes) => {
@@ -12196,6 +12468,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ["node:util", utilApi],
     ["stream", streamApi],
     ["node:stream", streamApi],
+    ["child_process", childProcessApi],
+    ["node:child_process", childProcessApi],
     ["timers/promises", timersPromisesApi],
     ["node:timers/promises", timersPromisesApi],
     ["crypto", cryptoApi],
@@ -12842,6 +13116,7 @@ workerScope.onmessage = (event) => {
         } : {}
       }
     );
+    executionState.kernelSyscalls = syscallClient;
     asyncSyscallClient = new WorkerKernelAsyncSyscallClient(
       (requestId, request2) => postCommandMessage(
         postToHost,

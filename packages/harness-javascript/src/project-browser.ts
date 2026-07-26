@@ -289,6 +289,9 @@ export interface BrowserJavaScriptProjectExecutionState {
   handledSignal?: string;
   kernelFileSystem?: BrowserTraceKernelFileSystem;
   kernelNetwork?: BrowserTraceKernelNetwork;
+  kernelSyscalls?: {
+    dispatchSync(request: TraceKernelSyscallRequest): TraceKernelSyscallResult;
+  };
 }
 
 export interface BrowserTraceKernelNetwork {
@@ -1488,6 +1491,7 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
   let nextTimerId = 1;
   let pendingTimerWork: Promise<void> = Promise.resolve();
   let timerError: unknown;
+  let pendingExternalWork = 0;
   const timers = new Map<number, TimerEntry>();
 
   const recordTimerWork = (work: Promise<void>): void => {
@@ -1543,7 +1547,10 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
     // handles. Yield through one host task so the browser drains that promise
     // queue to quiescence before we inspect the tracked event-loop resources.
     await new Promise((resolve) => hostSetTimeout(resolve, 0));
-    while (!executionState.cancelled && timers.size > 0) {
+    while (
+      !executionState.cancelled &&
+      (timers.size > 0 || pendingExternalWork > 0)
+    ) {
       await new Promise((resolve) => hostSetTimeout(resolve, 0));
       await pendingTimerWork;
       if (timerError !== undefined) throw timerError;
@@ -1559,6 +1566,13 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
       hostClearTimeout(timer.handle);
     }
     timers.clear();
+    pendingExternalWork = 0;
+  };
+  const track = <T>(work: Promise<T>): Promise<T> => {
+    pendingExternalWork += 1;
+    return work.finally(() => {
+      pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+    });
   };
 
   return {
@@ -1569,6 +1583,7 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
     setImmediate: setTrackedImmediate,
     clearImmediate: clearTrackedTimeout,
     queueMicrotask: hostQueueMicrotask,
+    track,
     drain,
     clearAll,
   };
@@ -1877,6 +1892,229 @@ function createStreamApi() {
     Duplex: PassThrough,
     Transform: PassThrough,
     PassThrough,
+  };
+}
+
+function createChildProcessApi(
+  executionState: BrowserJavaScriptProjectExecutionState,
+  eventLoopApi: ReturnType<typeof createBrowserEventLoopApi>,
+  request: JavaScriptProjectCommandRequest
+) {
+  interface SpawnOptions {
+    cwd?: string;
+    env?: Record<string, unknown>;
+    signal?: AbortSignal;
+    stdio?: 'inherit' | 'ignore';
+  }
+
+  const runtimeForCommand = (command: string): string => {
+    const name = command.split('/').at(-1)?.toLowerCase() ?? command.toLowerCase();
+    if (name === 'node' || name === 'nodejs') return 'javascript';
+    if (name === 'python' || name === 'python3') return 'python';
+    if (name === 'java') return 'java';
+    if (name === 'dotnet') return 'csharp';
+    return 'cpp';
+  };
+  const normalizeInvocation = (
+    command: unknown,
+    argsOrOptions?: unknown,
+    maybeOptions?: unknown
+  ): {
+    command: string;
+    args: string[];
+    options: SpawnOptions;
+  } => {
+    if (typeof command !== 'string' || command.length === 0) {
+      throw Object.assign(
+        new TypeError('The "file" argument must be of type string and non-empty'),
+        { code: 'ERR_INVALID_ARG_TYPE' }
+      );
+    }
+    const args = Array.isArray(argsOrOptions)
+      ? argsOrOptions.map((arg) => String(arg))
+      : [];
+    const options = (
+      Array.isArray(argsOrOptions)
+        ? maybeOptions
+        : argsOrOptions
+    ) as SpawnOptions | undefined;
+    if (
+      options?.stdio !== undefined &&
+      options.stdio !== 'inherit' &&
+      options.stdio !== 'ignore'
+    ) {
+      throw Object.assign(
+        new Error('ENOSYS: piped child stdio is not available yet'),
+        { code: 'ENOSYS' }
+      );
+    }
+    return {
+      command,
+      args,
+      options: options ?? {},
+    };
+  };
+  const syncDispatch = <
+    Operation extends TraceKernelSyscallValue['op']
+  >(
+    syscall: Extract<TraceKernelSyscallRequest, { op: Operation }>
+  ): Extract<TraceKernelSyscallValue, { op: Operation }> => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error('ENOSYS: child-process subsystem is unavailable'),
+        { code: 'ENOSYS' }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(syscall);
+    if (!result.ok) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code,
+      });
+    }
+    return result.value as Extract<TraceKernelSyscallValue, { op: Operation }>;
+  };
+  const asyncDispatch = <
+    Operation extends TraceKernelSyscallValue['op']
+  >(
+    syscall: Extract<TraceKernelSyscallRequest, { op: Operation }>
+  ): Promise<Extract<TraceKernelSyscallValue, { op: Operation }>> =>
+    dispatchBrowserNetworkSyscall(
+      executionState.kernelNetwork,
+      syscall
+    );
+
+  class BrowserChildProcess extends BrowserEventEmitter {
+    readonly pid: number;
+    readonly stdin = null;
+    readonly stdout = null;
+    readonly stderr = null;
+    readonly stdio = [null, null, null] as const;
+    connected = false;
+    exitCode: number | null = null;
+    signalCode: string | null = null;
+    killed = false;
+
+    constructor(
+      pid: number,
+      signal?: AbortSignal
+    ) {
+      super();
+      this.pid = pid;
+      if (signal) {
+        const abort = () => this.kill('SIGTERM');
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      }
+    }
+
+    kill(signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): boolean {
+      if (this.exitCode !== null || this.signalCode !== null) return false;
+      syncDispatch({
+        op: 'kill',
+        pid: this.pid,
+        signal,
+      });
+      this.killed = true;
+      return true;
+    }
+
+    ref(): this {
+      return this;
+    }
+
+    unref(): this {
+      return this;
+    }
+  }
+
+  const spawn = (
+    command: unknown,
+    argsOrOptions?: unknown,
+    maybeOptions?: unknown
+  ): BrowserChildProcess => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const spawned = syncDispatch({
+      op: 'spawn',
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env)
+          .filter(([, value]) => value !== undefined)
+          .map(([name, value]) => [name, String(value)])
+      ),
+    });
+    const child = new BrowserChildProcess(
+      spawned.pid,
+      invocation.options.signal
+    );
+    globalThis.queueMicrotask(() => child.emit('spawn'));
+    void eventLoopApi.track(
+      asyncDispatch({ op: 'wait', pid: spawned.pid }).then(
+        (waited) => {
+          if (waited.termination.kind === 'signal') {
+            child.signalCode = waited.termination.signal;
+          } else {
+            child.exitCode = waited.termination.exitCode;
+          }
+          child.emit(
+            'exit',
+            child.exitCode,
+            child.signalCode
+          );
+          child.emit(
+            'close',
+            child.exitCode,
+            child.signalCode
+          );
+        },
+        (error) => {
+          child.emit('error', error);
+          child.emit('close', null, null);
+        }
+      )
+    );
+    return child;
+  };
+
+  const spawnSync = (
+    command: unknown,
+    argsOrOptions?: unknown,
+    maybeOptions?: unknown
+  ) => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const spawned = syncDispatch({
+      op: 'spawn',
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env)
+          .filter(([, value]) => value !== undefined)
+          .map(([name, value]) => [name, String(value)])
+      ),
+    });
+    const waited = syncDispatch({ op: 'wait', pid: spawned.pid });
+    return {
+      pid: spawned.pid,
+      output: [null, BrowserBuffer.alloc(0), BrowserBuffer.alloc(0)],
+      stdout: BrowserBuffer.alloc(0),
+      stderr: BrowserBuffer.alloc(0),
+      status: waited.termination.kind === 'signal'
+        ? null
+        : waited.termination.exitCode,
+      signal: waited.termination.kind === 'signal'
+        ? waited.termination.signal
+        : null,
+    };
+  };
+
+  return {
+    ChildProcess: BrowserChildProcess,
+    spawn,
+    spawnSync,
   };
 }
 
@@ -5539,6 +5777,11 @@ export async function runBrowserJavaScriptProjectRequest(
     const eventsApi = createEventsApi();
     const utilApi = createUtilApi();
     const streamApi = createStreamApi();
+    const childProcessApi = createChildProcessApi(
+      executionState,
+      eventLoopApi,
+      request
+    );
     const cryptoApi = createCryptoApi();
     const timersPromisesApi = createTimersPromisesApi(eventLoopApi);
     const syncTextModule = (path: string, bytes: Uint8Array): void => {
@@ -9121,6 +9364,8 @@ export async function runBrowserJavaScriptProjectRequest(
       ['node:util', utilApi],
       ['stream', streamApi],
       ['node:stream', streamApi],
+      ['child_process', childProcessApi],
+      ['node:child_process', childProcessApi],
       ['timers/promises', timersPromisesApi],
       ['node:timers/promises', timersPromisesApi],
       ['crypto', cryptoApi],

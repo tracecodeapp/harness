@@ -429,6 +429,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
           : {}),
       }
     ) satisfies BrowserTraceKernelFileSystem;
+    executionState.kernelSyscalls = syscallClient;
     asyncSyscallClient = new WorkerKernelAsyncSyscallClient(
       (requestId, request) => postCommandMessage(
         postToHost,

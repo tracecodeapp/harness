@@ -524,6 +524,29 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'spawn-child.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'fs.writeFileSync("spawn-child.txt", `${process.ppid}:${process.pid}`);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'spawn-parent.js',
+              contents: [
+                'const fs = require("node:fs");',
+                'const { spawn } = require("node:child_process");',
+                'const child = spawn("node", ["spawn-child.js"], { stdio: "inherit" });',
+                'child.on("error", (error) => { throw error; });',
+                'child.on("close", (code, signal) => {',
+                '  const identity = fs.readFileSync("spawn-child.txt", "utf8");',
+                '  const [ppid, pid] = identity.split(":").map(Number);',
+                '  console.log(`spawn:${code}:${signal}:${ppid === process.pid}:${pid === child.pid}`);',
+                '});',
+                '',
+              ].join('\n'),
+            },
             { path: 'conformance.js', contents: javascriptSource },
             { path: 'descriptor-conformance.js', contents: descriptorSource },
             { path: 'conformance.ts', contents: typescriptSource },
@@ -727,6 +750,7 @@ async function main(): Promise<void> {
           await workspace.writeFile('host-cycle.txt', 'host-replacement');
           await workspace.writeFile('host-cycle-ready.txt', 'ready');
           const hostCycleReaderResult = await hostCycleReader;
+          const spawnedChild = await workspace.runCommand('node spawn-parent.js');
           const javascript = await workspace.runCommand('node conformance.js');
           const descriptors = await workspace.runCommand('node descriptor-conformance.js');
           const compile = await workspace.runCommand('tsc --project tsconfig.json');
@@ -773,6 +797,7 @@ async function main(): Promise<void> {
             rawHttpServer: rawHttpServerResult,
             nodeHttpClient,
             hostCycleReader: hostCycleReaderResult,
+            spawnedChild,
             javascript,
             descriptors,
             compile,
@@ -782,6 +807,7 @@ async function main(): Promise<void> {
             blockedExists: await workspace.exists('blocked.txt'),
             shared: await workspace.readFile('shared.txt'),
             hostCycle: await workspace.readFile('host-cycle.txt'),
+            spawnChild: await workspace.readFile('spawn-child.txt'),
             javascriptMarker: javascript.exitCode === 0
               ? await workspace.readFile('conformance-javascript.txt')
               : null,
@@ -812,6 +838,12 @@ async function main(): Promise<void> {
           ) &&
           result.hostCycle === 'host-replacement',
         `Host unlink/recreate did not preserve the open descriptor node: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.spawnedChild.exitCode === 0 &&
+          result.spawnedChild.stdout.includes('spawn:0:null:true:true') &&
+          /^[0-9]+:[0-9]+$/.test(result.spawnChild),
+        `node:child_process did not acquire and reap a distinct worker process: ${JSON.stringify(result)}`
       );
       assertCondition(
         result.descriptorWriter.exitCode === 0 &&
@@ -931,6 +963,12 @@ async function main(): Promise<void> {
           'cross-process-half-close',
           'node:http-over-raw-tcp',
           'node:http-client-to-raw-tcp',
+        ],
+        processOperations: [
+          'node:child_process-spawn',
+          'distinct-child-pid',
+          'parent-pid-topology',
+          'child-wait-and-reap',
         ],
         adapters: ['javascript', 'typescript-emitted-javascript'],
         hostCapabilityEnforcement: true,
