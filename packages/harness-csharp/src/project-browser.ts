@@ -88,7 +88,10 @@ export function createBrowserCSharpProjectRunner(
 ): CSharpProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
-    if ((request.project.symlinks?.length ?? 0) > 0) {
+    if (
+      (request.project.symlinks?.length ?? 0) > 0 &&
+      !request.kernelSyscalls
+    ) {
       return Promise.resolve(unsupportedBrowserCSharpSymlinkResult(request));
     }
     if (request.source === 'run' && request.options?.noBuild === true) {

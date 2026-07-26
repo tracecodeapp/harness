@@ -515,6 +515,10 @@ The initial 0.13 branch now establishes:
   read/write/both half-close, and deterministic close; browser conformance
   covers C# listeners serving JavaScript and C# children through the same
   session-local virtual network namespace;
+- browser C# symbolic-link snapshots and ordinary `System.IO` link traversal,
+  creation, and target inspection backed by TKFS, plus managed hard-link,
+  `readlink`, and `realpath` operations that preserve inode identity and raw
+  link text; the legacy non-kernel runner continues to reject link snapshots;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic

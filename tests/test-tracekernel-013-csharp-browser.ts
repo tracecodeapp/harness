@@ -144,6 +144,13 @@ async function main(): Promise<void> {
           providers: ['csharp', 'javascript'],
           projectWorkerIsolation: 'per-command',
           csharpProjectTimeoutMs: 180_000,
+          symlinks: [
+            {
+              path: 'seed-link.txt',
+              symlink: true,
+              target: 'host-shared.txt',
+            },
+          ],
           files: [
             {
               path: 'App.csproj',
@@ -270,6 +277,18 @@ async function main(): Promise<void> {
                 'csharpSocketChild.StandardOutput.Dispose();',
                 'csharpSocketChild.StandardError.Dispose();',
                 'string host = File.ReadAllText("host-shared.txt");',
+                'string seededLink = File.ReadAllText("seed-link.txt");',
+                'File.CreateSymbolicLink("created-link.txt", "host-shared.txt");',
+                'string? createdLinkTarget = new FileInfo("created-link.txt").LinkTarget;',
+                'string createdLinkContents = File.ReadAllText("created-link.txt");',
+                'TraceKernel.KernelFileSystem.CreateHardLink(',
+                '    "host-shared.txt",',
+                '    "hard-shared.txt"',
+                ');',
+                'File.WriteAllText("hard-shared.txt", "hard-updated");',
+                'string hardLinkedOriginal = File.ReadAllText("host-shared.txt");',
+                'string rawLinkTarget = TraceKernel.KernelFileSystem.ReadLink("created-link.txt");',
+                'string resolvedLink = TraceKernel.KernelFileSystem.RealPath("created-link.txt");',
                 'Directory.CreateDirectory("csharp-kernel");',
                 'using (var stream = new FileStream(',
                 '    "csharp-kernel/value.bin",',
@@ -286,6 +305,14 @@ async function main(): Promise<void> {
                 'File.Move("csharp-kernel/value.bin", "csharp-kernel/final.bin");',
                 'byte[] value = File.ReadAllBytes("csharp-kernel/final.bin");',
                 'bool valid = host == "host-authoritative\\n"',
+                '    && seededLink == host',
+                '    && createdLinkContents == host',
+                '    && createdLinkTarget != null',
+                '    && createdLinkTarget.EndsWith("/host-shared.txt")',
+                '    && rawLinkTarget == "host-shared.txt"',
+                '    && resolvedLink.EndsWith("/host-shared.txt")',
+                '    && hardLinkedOriginal == "hard-updated"',
+                '    && File.ReadAllText("seed-link.txt") == "hard-updated"',
                 '    && armed.Armed',
                 '    && armed.Signal == TraceKernel.KernelSignal.Kill',
                 '    && petted.Armed',
@@ -471,6 +498,8 @@ async function main(): Promise<void> {
         selectedDescriptorInheritance: true,
         managedTcpSockets: true,
         socketHalfClose: true,
+        symbolicLinks: true,
+        hardLinks: true,
       }));
     } finally {
       await browser.close();

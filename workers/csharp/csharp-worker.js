@@ -171,7 +171,11 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   rename: 11,
   fstat: 14,
   ftruncate: 15,
+  link: 16,
+  symlink: 17,
+  readlink: 18,
   lstat: 19,
+  realpath: 20,
   socket: 21,
   bind: 22,
   listen: 23,
@@ -487,9 +491,11 @@ class CSharpTraceKernelSyncClient {
         break;
       case 'stat':
       case 'lstat':
+      case 'realpath':
       case 'readdir':
       case 'rmdir':
       case 'unlink':
+      case 'readlink':
         writer.string(request.path);
         break;
       case 'mkdir':
@@ -505,6 +511,14 @@ class CSharpTraceKernelSyncClient {
       case 'rename':
         writer.string(request.sourcePath);
         writer.string(request.destinationPath);
+        break;
+      case 'link':
+        writer.string(request.existingPath);
+        writer.string(request.newPath);
+        break;
+      case 'symlink':
+        writer.string(request.target);
+        writer.string(request.linkPath);
         break;
       case 'watchdog':
         writer.u8(
@@ -653,6 +667,10 @@ class CSharpTraceKernelSyncClient {
         op: operation,
         address: { host: reader.string(), port: reader.u32() },
       };
+    } else if (operation === 'readlink') {
+      value = { op: operation, target: reader.string() };
+    } else if (operation === 'realpath') {
+      value = { op: operation, path: reader.string() };
     } else if (operation === 'pipe') {
       value = {
         op: operation,
@@ -1060,6 +1078,52 @@ function installCSharpTraceKernelMount(
           });
           oldNode.name = newName;
         });
+      },
+
+      link(oldNode, newDirectory, newName) {
+        return attempt(() => {
+          const path = childPath(newDirectory, newName);
+          kernelClient.request({
+            op: 'link',
+            existingPath: kernelPath(oldNode),
+            newPath: path,
+          });
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path,
+          }).stat;
+          return backend.createNode(
+            newDirectory,
+            newName,
+            modeForStat(stat),
+            0
+          );
+        });
+      },
+
+      symlink(parent, newName, target) {
+        return attempt(() => {
+          const path = childPath(parent, newName);
+          kernelClient.request({
+            op: 'symlink',
+            target: String(target),
+            linkPath: path,
+          });
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path,
+          }).stat;
+          return backend.createNode(parent, newName, modeForStat(stat), 0);
+        });
+      },
+
+      readlink(node) {
+        return attempt(() =>
+          kernelClient.request({
+            op: 'readlink',
+            path: kernelPath(node),
+          }).target
+        );
       },
 
       unlink(parent, name) {
@@ -2736,7 +2800,7 @@ function installRuntimeFsHooks(runtime) {
   const originalSymlink = fs.symlink;
   if (typeof originalSymlink === 'function') {
     fs.symlink = function symlinkWithProjectEvents(oldPath, newPath) {
-      if (activeProjectIo) {
+      if (activeProjectIo && !activeProjectIo.traceKernelFileSystem) {
         throwKernelVirtualMutationError(newPath, 'symlink');
         throwKernelFsError(newPath, 'symlink', 'ENOTSUP', 'symbolic links are not supported by this runtime');
       }
@@ -2747,7 +2811,7 @@ function installRuntimeFsHooks(runtime) {
   const originalLink = fs.link;
   if (typeof originalLink === 'function') {
     fs.link = function linkWithProjectEvents(oldPath, newPath) {
-      if (activeProjectIo) {
+      if (activeProjectIo && !activeProjectIo.traceKernelFileSystem) {
         throwKernelVirtualMutationError(oldPath, 'link');
         throwKernelVirtualMutationError(newPath, 'link');
         throwKernelFsError(newPath, 'link', 'ENOTSUP', 'hard links are not supported by the project file manifest');
@@ -2759,7 +2823,7 @@ function installRuntimeFsHooks(runtime) {
   const originalReadlink = fs.readlink;
   if (typeof originalReadlink === 'function') {
     fs.readlink = function readlinkWithProjectEvents(path) {
-      if (activeProjectIo) {
+      if (activeProjectIo && !activeProjectIo.traceKernelFileSystem) {
         throwKernelFsError(path, 'readlink', 'EINVAL', 'invalid argument');
       }
       return originalReadlink.apply(this, arguments);

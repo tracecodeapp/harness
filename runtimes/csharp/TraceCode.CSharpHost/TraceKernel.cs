@@ -432,6 +432,70 @@ public enum SocketShutdown
 }
 
 [SupportedOSPlatform("browser")]
+public static class KernelFileSystem
+{
+    public static void CreateHardLink(
+        string existingPath,
+        string newPath
+    )
+    {
+        ValidatePath(existingPath, nameof(existingPath));
+        ValidatePath(newPath, nameof(newPath));
+        KernelInterop.Call(new
+        {
+            op = "link",
+            existingPath,
+            newPath,
+        });
+    }
+
+    public static void CreateSymbolicLink(string target, string linkPath)
+    {
+        ValidatePath(target, nameof(target));
+        ValidatePath(linkPath, nameof(linkPath));
+        KernelInterop.Call(new
+        {
+            op = "symlink",
+            target,
+            linkPath,
+        });
+    }
+
+    public static string ReadLink(string path)
+    {
+        ValidatePath(path, nameof(path));
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "readlink",
+            path,
+        });
+        return value.GetProperty("target").GetString() ?? string.Empty;
+    }
+
+    public static string RealPath(string path)
+    {
+        ValidatePath(path, nameof(path));
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "realpath",
+            path,
+        });
+        return value.GetProperty("path").GetString() ?? string.Empty;
+    }
+
+    private static void ValidatePath(string path, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException(
+                "TraceKernel path must not be empty.",
+                parameterName
+            );
+        }
+    }
+}
+
+[SupportedOSPlatform("browser")]
 public sealed class KernelSocket : IDisposable
 {
     private bool closed;

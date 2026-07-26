@@ -287,12 +287,14 @@ only by the provider's own snapshot scan. Browser Node and browser Python use
 their runtime filesystems directly. Native Java and native C# can materialize
 safe relative links, but reject absolute link targets because their temporary
 host roots cannot preserve virtual absolute `readlink` and rename behavior.
-Browser Java and browser C# reject snapshots containing links with `ENOTSUP`
-until their upstream virtual filesystems can expose genuine link semantics.
-On the 0.13 kernel path, browser C# mounts authoritative TKFS beneath ordinary
-`System.IO` regular-file and directory operations instead of reconciling a
-private mutable workspace after execution. Browser Java preserves metadata in
-the TraceKernel workspace, but
+Browser Java rejects snapshots containing links with `ENOTSUP` until its
+upstream virtual filesystem can expose genuine link semantics. Browser C#
+retains that rejection on its legacy private-filesystem path, but the 0.13
+kernel path accepts symlink snapshots and mounts authoritative TKFS beneath
+ordinary `System.IO` file, directory, and symbolic-link operations. Hard links
+and raw `readlink`/`realpath` are also available through the managed
+`TraceKernel.KernelFileSystem` surface. Browser Java preserves metadata in the
+TraceKernel workspace, but
 CheerpJ does not currently expose the POSIX metadata surface to Java code, so
 Java code cannot inspect or mutate those bits in a browser command.
 
