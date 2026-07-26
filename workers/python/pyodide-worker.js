@@ -2086,6 +2086,7 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   setpgid: 40,
   dup3: 41,
   poll: 42,
+  getsockopt: 43,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
   Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
@@ -2410,6 +2411,10 @@ class PythonTraceKernelSyncClient {
       case 'getsockname':
       case 'getpeername':
         writer.i32(request.fd);
+        break;
+      case 'getsockopt':
+        writer.i32(request.fd);
+        writer.u8(request.option === 'error' ? 1 : 0);
         break;
       case 'send':
         writer.i32(request.fd);
@@ -2743,6 +2748,12 @@ class PythonTraceKernelSyncClient {
       value = {
         op: operation,
         address: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'getsockopt') {
+      const hasError = reader.u8();
+      value = {
+        op: operation,
+        ...(hasError === 1 ? { error: reader.string() } : {}),
       };
     } else if (operation === 'spawn') {
       const pid = reader.i32();
@@ -4157,6 +4168,12 @@ async function executeProjectPythonUserCall(
         case 'getsockname':
         case 'getpeername':
           return { op: input.op, fd: Number(input.fd) };
+        case 'getsockopt':
+          return {
+            op: 'getsockopt',
+            fd: Number(input.fd),
+            option: 'error',
+          };
         case 'send':
           return {
             op: 'send',
@@ -4184,12 +4201,23 @@ async function executeProjectPythonUserCall(
           );
       }
     })();
-    const result = kernelClient.request(syscallRequest);
-    return JSON.stringify(
-      result.op === 'recv'
-        ? { ...result, bytes: bytesToBase64(result.bytes) }
-        : result
-    );
+    try {
+      const result = kernelClient.request(syscallRequest);
+      return JSON.stringify({
+        ok: true,
+        value: result.op === 'recv'
+          ? { ...result, bytes: bytesToBase64(result.bytes) }
+          : result,
+      });
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        error: {
+          code: String(error?.code ?? 'EIO'),
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   };
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
@@ -4824,9 +4852,36 @@ class _TraceKernelSocket:
                 json.dumps(_request)
             )
         except BaseException as _error:
-            _code = getattr(_error, "code", None) or "EIO"
-            raise OSError(_code, str(_error)) from None
-        return json.loads(str(_raw))
+            _message = str(_error)
+            _code = str(getattr(_error, "code", "") or "")
+            if not hasattr(errno, _code):
+                _code = next((
+                    _candidate
+                    for _candidate in errno.errorcode.values()
+                    if f"{_candidate}:" in _message
+                ), "EIO")
+            raise OSError(
+                int(getattr(errno, str(_code), errno.EIO)),
+                _message,
+            ) from None
+        _response = json.loads(str(_raw))
+        if not _response.get("ok", False):
+            _error = _response.get("error") or {}
+            _code = str(_error.get("code") or "EIO")
+            _message = str(
+                _error.get("message") or "TraceKernel socket syscall failed"
+            )
+            if _code == "EIO" or not hasattr(errno, _code):
+                _code = next((
+                    _candidate
+                    for _candidate in errno.errorcode.values()
+                    if f"{_candidate}:" in _message
+                ), _code)
+            raise OSError(
+                int(getattr(errno, _code, errno.EIO)),
+                _message,
+            )
+        return _response.get("value") or {}
 
     @staticmethod
     def _address(_value):
@@ -4978,6 +5033,17 @@ class _TraceKernelSocket:
             "fd": self._kernel_fd,
         })["address"]
         return (_address["host"], int(_address["port"]))
+
+    def getsockopt(self, level, optname, buflen=0):
+        if int(level) == 1 and int(optname) == 4:
+            _error = self._call({
+                "op": "getsockopt",
+                "fd": self._kernel_fd,
+            }).get("error")
+            return 0 if _error is None else int(
+                getattr(errno, str(_error), errno.EIO)
+            )
+        raise OSError(errno.ENOPROTOOPT, "Protocol not available")
 
     def settimeout(self, value):
         if value is not None and float(value) < 0:
@@ -5520,6 +5586,7 @@ def _install_tracekernel_socket_module():
     _module.IPPROTO_TCP = 6
     _module.SOL_SOCKET = 1
     _module.SO_REUSEADDR = 2
+    _module.SO_ERROR = 4
     _module.SHUT_RD = 0
     _module.SHUT_WR = 1
     _module.SHUT_RDWR = 2

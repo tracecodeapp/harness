@@ -42,6 +42,7 @@ const ESUCCESS = 0;
 const E2BIG = 1;
 const EACCES = 2;
 const EAGAIN = 6;
+const EALREADY = 7;
 const EADDRINUSE = 3;
 const EAFNOSUPPORT = 5;
 const EBADF = 8;
@@ -50,6 +51,7 @@ const ECONNREFUSED = 14;
 const ECHILD = 12;
 const EEXIST = 20;
 const EINVAL = 28;
+const EINPROGRESS = 26;
 const EIO = 29;
 const EISDIR = 31;
 const EISCONN = 30;
@@ -359,6 +361,7 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   setpgid: 40,
   dup3: 41,
   poll: 42,
+  getsockopt: 43,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -677,6 +680,10 @@ class CppTraceKernelSyncClient {
       case 'getsockname':
       case 'getpeername':
         writer.i32(request.fd);
+        break;
+      case 'getsockopt':
+        writer.i32(request.fd);
+        writer.u8(request.option === 'error' ? 1 : 0);
         break;
       case 'send':
         writer.i32(request.fd);
@@ -1026,6 +1033,14 @@ class CppTraceKernelSyncClient {
       case 'getpeername':
         value = { op: operation, address: readCppTraceKernelAddress(reader) };
         break;
+      case 'getsockopt': {
+        const hasError = reader.u8();
+        value = {
+          op: operation,
+          ...(hasError === 1 ? { error: reader.string() } : {}),
+        };
+        break;
+      }
       case 'stat':
       case 'lstat':
       case 'fstat':
@@ -2101,6 +2116,7 @@ const CPP_TRACEKERNEL_ERRNO = Object.freeze({
   E2BIG,
   EACCES,
   EAGAIN,
+  EALREADY,
   EADDRINUSE,
   EAFNOSUPPORT,
   EBADF,
@@ -2108,6 +2124,7 @@ const CPP_TRACEKERNEL_ERRNO = Object.freeze({
   ECHILD,
   EEXIST,
   EINVAL,
+  EINPROGRESS,
   EIO,
   EISDIR,
   EISCONN,
@@ -2984,6 +3001,23 @@ class WasiProcess {
           failed: false,
         };
         return 0;
+      },
+      sock_error: (fd) => {
+        const entry = this.fds.get(fd);
+        if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd === undefined || !this.kernelClient) return 0;
+        try {
+          const result = this.kernelClient.call({
+            op: 'getsockopt',
+            fd: entry.kernelFd,
+            option: 'error',
+          });
+          return result.error === undefined
+            ? 0
+            : cppTraceKernelErrno({ code: result.error });
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
       },
       sock_bind: (fd, ipValue, port) => {
         const entry = this.fds.get(fd);
@@ -11514,6 +11548,10 @@ extern "C" {
 
 struct sockaddr;
 
+#ifndef SO_ERROR
+#define SO_ERROR 4
+#endif
+
 int socket(int __domain, int __type, int __protocol);
 int connect(int __fd, const struct sockaddr* __addr, unsigned int __len);
 int bind(int __fd, const struct sockaddr* __addr, unsigned int __len);
@@ -11595,6 +11633,8 @@ __attribute__((import_module("tracecode_kernel"), import_name("sock_open")))
 int __tracecode_sock_open(int domain, int type);
 __attribute__((import_module("tracecode_kernel"), import_name("sock_connect")))
 int __tracecode_sock_connect(int fd, unsigned int ip, int port);
+__attribute__((import_module("tracecode_kernel"), import_name("sock_error")))
+int __tracecode_sock_error(int fd);
 __attribute__((import_module("tracecode_kernel"), import_name("sock_bind")))
 int __tracecode_sock_bind(int fd, unsigned int ip, int port);
 __attribute__((import_module("tracecode_kernel"), import_name("sock_listen")))
@@ -11684,13 +11724,23 @@ int setsockopt(int fd, int level, int option, const void* value, unsigned int le
 }
 
 int getsockopt(int fd, int level, int option, void* value, unsigned int* len) {
-  (void)fd;
-  (void)level;
-  (void)option;
-  if (value != 0 && len != 0 && *len >= (unsigned int)sizeof(int)) {
-    memset(value, 0, sizeof(int));
-    *len = (unsigned int)sizeof(int);
+  int socket_error;
+  if (value == 0 || len == 0 || *len < (unsigned int)sizeof(int)) {
+    errno = EINVAL;
+    return -1;
   }
+  if (level == SOL_SOCKET && option == SO_ERROR) {
+    socket_error = __tracecode_sock_error(fd);
+    if (socket_error < 0) {
+      errno = -socket_error;
+      return -1;
+    }
+    memcpy(value, &socket_error, sizeof(int));
+    *len = (unsigned int)sizeof(int);
+    return 0;
+  }
+  memset(value, 0, sizeof(int));
+  *len = (unsigned int)sizeof(int);
   return 0;
 }
 

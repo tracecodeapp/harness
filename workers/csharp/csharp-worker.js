@@ -198,6 +198,7 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   setpgid: 40,
   dup3: 41,
   poll: 42,
+  getsockopt: 43,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -441,6 +442,10 @@ class CSharpTraceKernelSyncClient {
       case 'getsockname':
       case 'getpeername':
         writer.i32(request.fd);
+        break;
+      case 'getsockopt':
+        writer.i32(request.fd);
+        writer.u8(request.option === 'error' ? 1 : 0);
         break;
       case 'send':
         writer.i32(request.fd);
@@ -735,6 +740,12 @@ class CSharpTraceKernelSyncClient {
       value = {
         op: operation,
         address: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'getsockopt') {
+      const hasError = reader.u8();
+      value = {
+        op: operation,
+        ...(hasError === 1 ? { error: reader.string() } : {}),
       };
     } else if (operation === 'readlink') {
       value = { op: operation, target: reader.string() };

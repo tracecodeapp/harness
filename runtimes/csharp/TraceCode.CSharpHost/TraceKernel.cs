@@ -1167,6 +1167,24 @@ public sealed class KernelSocket : IDisposable
         return remoteEndpoint;
     }
 
+    /// <summary>
+    /// Returns and clears the asynchronous connect error, matching
+    /// getsockopt(SO_ERROR). A null result means no pending socket error.
+    /// </summary>
+    public string? GetAndClearConnectError()
+    {
+        ThrowIfClosed();
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "getsockopt",
+            fd = Descriptor,
+            option = "error",
+        });
+        return value.TryGetProperty("error", out JsonElement error)
+            ? error.GetString()
+            : null;
+    }
+
     public void Shutdown(SocketShutdown how = SocketShutdown.Both)
     {
         ThrowIfClosed();

@@ -83,7 +83,8 @@ var OP_CODES = {
   setsid: 39,
   setpgid: 40,
   dup3: 41,
-  poll: 42
+  poll: 42,
+  getsockopt: 43
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -99,6 +100,7 @@ var SYSCALL_ERROR_CODES = /* @__PURE__ */ new Set([
   "EADDRINUSE",
   "EACCES",
   "EAFNOSUPPORT",
+  "EALREADY",
   "EBADF",
   "EBUSY",
   "ECHILD",
@@ -108,6 +110,7 @@ var SYSCALL_ERROR_CODES = /* @__PURE__ */ new Set([
   "EEXIST",
   "ECONNREFUSED",
   "EDESTADDRREQ",
+  "EINPROGRESS",
   "EISCONN",
   "EISDIR",
   "EINVAL",
@@ -123,6 +126,19 @@ var SYSCALL_ERROR_CODES = /* @__PURE__ */ new Set([
   "EOPNOTSUPP",
   "EROFS",
   "ESRCH"
+]);
+var SOCKET_ERROR_CODES = /* @__PURE__ */ new Set([
+  "EADDRINUSE",
+  "EAFNOSUPPORT",
+  "EALREADY",
+  "EBADF",
+  "ECONNREFUSED",
+  "EDESTADDRREQ",
+  "EINPROGRESS",
+  "EISCONN",
+  "EINVAL",
+  "ENOTCONN",
+  "EOPNOTSUPP"
 ]);
 var TraceKernelTransportError = class extends Error {
   constructor(code, message) {
@@ -370,6 +386,10 @@ function encodeTraceKernelSyscallRequest(request) {
     case "getsockname":
     case "getpeername":
       writer.i32(request.fd);
+      break;
+    case "getsockopt":
+      writer.i32(request.fd);
+      writer.u8(request.option === "error" ? 1 : 0);
       break;
     case "send":
       writer.i32(request.fd);
@@ -656,13 +676,18 @@ function decodeTraceKernelSyscallResult(bytes) {
     case "dup2":
       value = { op: operation, fd: reader.i32() };
       break;
-    case "dup3":
-      value = {
-        op: operation,
-        fd: reader.i32(),
-        closeOnExec: reader.u8() === 1
-      };
+    case "dup3": {
+      const fd2 = reader.i32();
+      const closeOnExec = reader.u8();
+      if (closeOnExec > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          "Invalid dup3 close-on-exec result"
+        );
+      }
+      value = { op: "dup3", fd: fd2, closeOnExec: closeOnExec === 1 };
       break;
+    }
     case "fcntl": {
       const closeOnExec = reader.u8();
       const nonblocking = reader.u8();
@@ -683,10 +708,16 @@ function decodeTraceKernelSyscallResult(bytes) {
       const length = reader.u32();
       const entries = [];
       for (let index = 0; index < length; index += 1) {
-        const fd = reader.i32();
+        const fd2 = reader.i32();
         const events = reader.u8();
+        if ((events & ~31) !== 0) {
+          throw new TraceKernelTransportError(
+            "EPROTO",
+            `invalid poll result mask ${events}`
+          );
+        }
         entries.push({
-          fd,
+          fd: fd2,
           read: (events & 1) !== 0,
           write: (events & 2) !== 0,
           hangup: (events & 4) !== 0,
@@ -731,6 +762,27 @@ function decodeTraceKernelSyscallResult(bytes) {
     case "getpeername":
       value = { op: operation, address: readAddress(reader) };
       break;
+    case "getsockopt": {
+      const hasError = reader.u8();
+      if (hasError > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid socket error presence flag ${hasError}`
+        );
+      }
+      const error = hasError === 1 ? reader.string() : void 0;
+      if (error !== void 0 && !SOCKET_ERROR_CODES.has(error)) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid socket error code ${JSON.stringify(error)}`
+        );
+      }
+      value = {
+        op: "getsockopt",
+        ...error === void 0 ? {} : { error }
+      };
+      break;
+    }
     case "read":
       value = { op: "read", bytes: reader.byteArray() };
       break;
@@ -1010,6 +1062,16 @@ var TraceKernelRuntimeFileClient = class {
       this.transport.dispatchSync({ op: "getpeername", fd: fd2 }),
       "getpeername"
     ).address;
+  }
+  socketError(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "getsockopt",
+        fd: fd2,
+        option: "error"
+      }),
+      "getsockopt"
+    ).error;
   }
   open(path, options) {
     return this.expectSuccess(
