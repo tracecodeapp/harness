@@ -211,6 +211,10 @@ importers:
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
+    devDependencies:
+      '@tracecode/tracejvm':
+        specifier: link:../../../tracejvm
+        version: link:../../../tracejvm
 
   packages/harness-javascript:
     dependencies:

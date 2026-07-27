@@ -39,11 +39,28 @@
       "require": "./dist/project-browser.cjs",
       "default": "./dist/project-browser.js"
     },
+    "./tracejvm-project": {
+      "types": "./dist/tracejvm-project.d.ts",
+      "import": "./dist/tracejvm-project.js",
+      "require": "./dist/tracejvm-project.cjs",
+      "default": "./dist/tracejvm-project.js"
+    },
     "./workers/*": "./workers/*",
     "./package.json": "./package.json"
   },
   "sideEffects": false,
   "dependencies": {
     "@tracecode/harness-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@tracecode/tracejvm": "link:../../../tracejvm"
+  },
+  "peerDependencies": {
+    "@tracecode/tracejvm": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@tracecode/tracejvm": {
+      "optional": true
+    }
   }
 }

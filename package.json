@@ -159,7 +159,7 @@
     "test:typescript-project-libs-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts --check",
     "test:java-sync": "pnpm generate:java-helper --check && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-harness-sync.ts",
     "test:python-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime.ts",
-    "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts",
+    "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-tracejvm-adapter.ts",
     "test:csharp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-project-fs-parity.ts",
     "test:csharp-worker-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-client-http.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-browser.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-lifecycle-browser.ts",
     "test:cpp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-runtime.ts",

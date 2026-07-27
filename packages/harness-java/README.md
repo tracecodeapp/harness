@@ -29,3 +29,44 @@ self-hosted or served from a consumer-approved HTTP(S) CDN under the declared
 origin policy. Because worker `importScripts()` does not provide
 execution-bound SRI, use immutable URLs, confirm the required CheerpJ license,
 and maintain explicit deployment hashes and allowlists.
+
+## TraceJVM provider for TraceKernel 0.13
+
+TraceJVM is a separate, default-off Java 23 provider. Configure it with a
+factory that returns a fresh `TraceJVMWorkerClient`:
+
+```ts
+import { TraceJVMWorkerClient } from '@tracecode/tracejvm';
+import { createBrowserProjectWorkspace } from '@tracecode/harness-browser/project';
+
+const workspace = await createBrowserProjectWorkspace({
+  providers: ['java'],
+  traceJVM: {
+    createClient: () => new TraceJVMWorkerClient({
+      engine: {
+        assets: {
+          wasmUrl: '/tracejvm/bjvm_main.wasm',
+          runtimeProfileBaseUrls: {
+            core: '/tracejvm/profiles/core',
+          },
+        },
+        runtimeProfile: 'core',
+      },
+      createWorker: () => new Worker('/tracejvm/browser-worker.js', {
+        type: 'module',
+      }),
+    }),
+  },
+});
+```
+
+The 0.13 adapter binds one coordinator to the TraceKernel PID but admits each
+`javac` or `java` invocation to a fresh Worker. Compilation artifacts are
+committed to TKFS and subsequent commands read them from TKFS, including
+commands chained inside one kernel process.
+
+This is intentionally a value adapter, not yet the final Java syscall adapter.
+TraceJVM's current public host boundary does not expose application filesystem,
+descriptor/stdin, or socket operations. Java application code therefore does
+not yet claim live TKFS or socket support; those capabilities require a
+TraceJVM host-port extension and corresponding kernel conformance tests.

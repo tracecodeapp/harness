@@ -11,6 +11,7 @@ import type {
 import type { CSharpWorkerClient, CSharpWorkerClientOptions } from './csharp-worker-client';
 import type { CppWorkerClient, CppWorkerClientOptions } from './cpp-worker-client';
 import type { JavaWorkerClient, JavaWorkerClientOptions } from './java-worker-client';
+import type { TraceJVMProjectRunnerOptions } from '../../harness-java/src/tracejvm-project';
 import { runJavaSafeStorageExclusive } from './java-storage-isolation';
 import type { PythonWorkerClient, PythonWorkerClientOptions } from './pyodide-worker-client';
 import {
@@ -649,6 +650,11 @@ export interface CreateBrowserProjectWorkspaceOptions
   debug?: boolean;
   pythonWorkerClient?: Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'>;
   javaWorkerClient?: Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'>;
+  /**
+   * Default-off Java 23 provider. Each factory result is admitted to exactly
+   * one javac/java invocation and hard-retired by the TraceKernel adapter.
+   */
+  traceJVM?: Omit<TraceJVMProjectRunnerOptions, 'applyFileChange'>;
   csharpWorkerClient?: Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'>;
   cppWorkerClient?: Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'>;
   /** Runs selected project workers on a dedicated, credential-free origin. */
@@ -693,6 +699,7 @@ export async function createBrowserProjectWorkspace(
       ? Promise.all([
           import('../../harness-java/src/project-browser'),
           import('./java-worker-client'),
+          import('../../harness-java/src/tracejvm-project'),
         ])
       : undefined,
     hasProvider('csharp')
@@ -769,6 +776,7 @@ export async function createBrowserProjectWorkspace(
     debug,
     pythonWorkerClient: providedPythonWorkerClient,
     javaWorkerClient: providedJavaWorkerClient,
+    traceJVM,
     csharpWorkerClient: providedCSharpWorkerClient,
     cppWorkerClient: providedCppWorkerClient,
     executionHost: executionHostOptions,
@@ -837,6 +845,17 @@ export async function createBrowserProjectWorkspace(
       );
     }
   }
+  if (traceJVM && !hasProvider('java')) {
+    throw new Error('traceJVM requires providers to include "java".');
+  }
+  if (traceJVM && providedJavaWorkerClient) {
+    throw new Error('traceJVM cannot be combined with javaWorkerClient.');
+  }
+  if (traceJVM && isExecutionHosted('java')) {
+    throw new Error(
+      'traceJVM cannot use the legacy Java executionHost route; createClient must own its Worker boundary.'
+    );
+  }
   const javaExecutionLifecycle = executionHostOptions?.javaLifecycle ?? 'workspace-session';
   if (javaExecutionLifecycle !== 'workspace-session' && javaExecutionLifecycle !== 'per-command') {
     throw new TypeError('executionHost.javaLifecycle must be "workspace-session" or "per-command".');
@@ -869,7 +888,12 @@ export async function createBrowserProjectWorkspace(
   if (providedJavaWorkerClient && projectPrewarm.java > 0) {
     throw new Error('projectWorkerPrewarm.java cannot be used with a provided javaWorkerClient.');
   }
-  if (!providedJavaWorkerClient && projectPrewarm.java > 0) {
+  if (traceJVM && projectPrewarm.java > 0) {
+    throw new Error(
+      'projectWorkerPrewarm.java cannot be used with traceJVM; supply fresh prepared clients through traceJVM.createClient.'
+    );
+  }
+  if (!providedJavaWorkerClient && !traceJVM && projectPrewarm.java > 0) {
     assertProjectJavaRuntimeAssets();
   }
   if (providedCSharpWorkerClient && projectPrewarm.csharp > 0) {
@@ -1086,7 +1110,7 @@ export async function createBrowserProjectWorkspace(
       : undefined;
     if (pythonWorkerClient && !providedPythonWorkerClient) ownedWorkers.push(pythonWorkerClient);
     const JavaWorkerClientConstructor = javaProvider?.[1].JavaWorkerClient;
-    const createdJavaWorkerClient = hasProvider('java')
+    const createdJavaWorkerClient = hasProvider('java') && !traceJVM
       ? providedJavaWorkerClient ?? (
           projectWorkerIsolation === 'per-command' && (!isExecutionHosted('java') || javaExecutionLifecycle === 'per-command')
             ? createPerCommandJavaWorkerClient(
@@ -1213,7 +1237,14 @@ export async function createBrowserProjectWorkspace(
             }),
           }
         : {}),
-      ...(javaWorkerClient && javaProvider
+      ...(traceJVM && javaProvider
+        ? {
+            javaRunner: javaProvider[2].createTraceJVMProjectRunner({
+              ...traceJVM,
+              timeoutMs: javaProjectTimeoutMs ?? traceJVM.timeoutMs,
+            }),
+          }
+        : javaWorkerClient && javaProvider
         ? {
             javaRunner: javaProvider[0].createBrowserJavaProjectRunner(javaWorkerClient, {
               timeoutMs: javaProjectTimeoutMs,

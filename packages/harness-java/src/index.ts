@@ -22,3 +22,10 @@ export {
   type JavaProjectSnapshot,
   type NativeJavaProjectRunnerOptions,
 } from './project-node';
+export {
+  createTraceJVMProjectRunner,
+  type TraceJVMProjectClient,
+  type TraceJVMProjectClientFactory,
+  type TraceJVMProjectExecutionReport,
+  type TraceJVMProjectRunnerOptions,
+} from './tracejvm-project';
