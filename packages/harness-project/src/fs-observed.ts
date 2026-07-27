@@ -164,9 +164,9 @@ export interface RuntimeCommandExecutionContext {
   readonly actor: RuntimeWorkspaceActor;
   readonly process: {
     readonly pid: number;
-    readonly abortController?: AbortController;
     [key: string]: any;
   };
+  readonly signal: AbortSignal;
   readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
   readonly terminal?: RuntimeCommandOptions['terminal'];
   umask: number;
@@ -1909,7 +1909,7 @@ export class KernelObservedFileSystem implements IFileSystem {
           baseline: context.generationBaseline,
           mutatedPaths: context.mutatedGenerationPaths,
           pid: context.process.pid,
-          signal: context.process.abortController!.signal,
+          signal: context.signal,
           setError: (error) => {
             context.kernelError = error;
           },

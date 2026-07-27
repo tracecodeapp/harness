@@ -206,22 +206,26 @@ async function main(): Promise<void> {
         }
       )}`
     );
-    const originalProjection = {
-      ppid: productProcess.ppid,
-      pgid: productProcess.pgid,
-      sid: productProcess.sid,
-      state: productProcess.state,
-    };
-    productProcess.ppid = 99_991;
-    productProcess.pgid = 99_992;
-    productProcess.sid = 99_993;
+    const originalState = productProcess.state;
+    const rejectedTopologyMutations = [
+      Reflect.set(productProcess, 'ppid', 99_991),
+      Reflect.set(productProcess, 'pgid', 99_992),
+      Reflect.set(productProcess, 'sid', 99_993),
+    ];
     productProcess.state = 'zombie';
-    const [authoritativeStatus, authoritativeProcesses, authoritativePs, authoritativeJobs] =
+    const [
+      authoritativeStatus,
+      authoritativeProcesses,
+      authoritativePs,
+      authoritativeJobs,
+      authoritativeGroupProbe,
+    ] =
       await Promise.all([
         workspace.readFile(`/proc/${pid}/status`),
         workspace.readFile('/proc/tracekernel/processes'),
         workspace.runCommand('ps -ef'),
         workspace.runCommand('jobs -l'),
+        workspace.runCommand(`kill -0 -${pid}`),
       ]);
     assertCondition(
       authoritativeStatus.includes('State:\tR (running)\n') &&
@@ -236,15 +240,19 @@ async function main(): Promise<void> {
         ) &&
         authoritativeJobs.stdout.includes(
           `${pid}\tRunning\tbackground\t?\tnode job.js`
-        ),
+        ) &&
+        authoritativeGroupProbe.exitCode === 0 &&
+        rejectedTopologyMutations.every((accepted) => !accepted),
       `Process inspection trusted the corrupted product projection: ${JSON.stringify({
         authoritativeStatus,
         authoritativeProcesses,
         authoritativePs,
         authoritativeJobs,
+        authoritativeGroupProbe,
+        rejectedTopologyMutations,
       })}`
     );
-    Object.assign(productProcess, originalProjection);
+    productProcess.state = originalState;
 
     const killed = await workspace.runCommand(`kill -TERM ${pid}`);
     assertCondition(
@@ -440,6 +448,9 @@ async function main(): Promise<void> {
     preExitShellWaitBeatsNormalAutoReap: true,
     procPsAndJobsReadAuthoritativeProcessTable: true,
     kernelOwnedSchedulingState: true,
+    immutableKernelBackedTopologyProjection: true,
+    processGroupControlIgnoresProductLifecycleProjection: true,
+    hostExecutionHandlesSeparatedFromProcessProjection: true,
   }, null, 2));
 }
 
