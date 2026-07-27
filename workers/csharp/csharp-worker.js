@@ -687,7 +687,11 @@ class CSharpTraceKernelSyncClient {
             ? 1
             : request.signal === 'SIGTERM'
               ? 2
-              : 3
+              : request.signal === 'SIGKILL'
+                ? 3
+                : request.signal === 'SIGHUP'
+                  ? 4
+                  : 5
         );
         break;
     }
@@ -855,7 +859,7 @@ class CSharpTraceKernelSyncClient {
         };
       } else if (terminationCode === 2) {
         const signalCode = reader.u8();
-        if (signalCode < 1 || signalCode > 3) {
+        if (signalCode < 1 || signalCode > 5) {
           throw new CSharpTraceKernelSyscallError(
             'EPROTO',
             `invalid termination signal ${signalCode}`
@@ -870,7 +874,11 @@ class CSharpTraceKernelSyncClient {
               ? 'SIGINT'
               : signalCode === 2
                 ? 'SIGTERM'
-                : 'SIGKILL',
+                : signalCode === 3
+                  ? 'SIGKILL'
+                  : signalCode === 4
+                    ? 'SIGHUP'
+                    : 'SIGQUIT',
             exitCode,
           },
         };

@@ -605,7 +605,7 @@ async function main(): Promise<void> {
                 '  }',
                 '  const [leaderPid, childPid] = fs.readFileSync("group-ready.txt", "utf8").split(":").map(Number);',
                 '  if (leaderPid !== leader.pid || childPid === leader.pid) throw new Error("invalid process identities");',
-                '  process.kill(-leader.pid, "SIGKILL");',
+                '  process.kill(-leader.pid, "SIGQUIT");',
                 '};',
                 'leader.on("close", (_code, signal) => {',
                 '  setTimeout(() => {',
@@ -1187,7 +1187,7 @@ async function main(): Promise<void> {
       );
       assertCondition(
         result.processGroup.exitCode === 0 &&
-          result.processGroup.stdout.includes('group:SIGKILL:false'),
+          result.processGroup.stdout.includes('group:SIGQUIT:false'),
         `A detached Node process group did not receive one kernel-owned signal: ${JSON.stringify(result)}`
       );
       assertCondition(
@@ -1366,8 +1366,9 @@ async function main(): Promise<void> {
         processOperations: [
           'node:child_process-spawn',
           'distinct-child-pid',
-          'detached-process-groups',
-          'negative-pgid-signals',
+            'detached-process-groups',
+            'negative-pgid-signals',
+            'SIGHUP/SIGQUIT-termination',
           'parent-pid-topology',
           'child-process-ref-unref',
           'orphan-reparenting',

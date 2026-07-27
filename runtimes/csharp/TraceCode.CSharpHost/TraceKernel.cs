@@ -20,7 +20,9 @@ public sealed class TraceKernelException : IOException
 
 public enum KernelSignal
 {
+    Hangup,
     Interrupt,
+    Quit,
     Terminate,
     Kill,
 }
@@ -812,7 +814,9 @@ public sealed class KernelProcess
             raw.GetProperty("exitCode").GetInt32(),
             signal switch
             {
+                "SIGHUP" => KernelSignal.Hangup,
                 "SIGINT" => KernelSignal.Interrupt,
+                "SIGQUIT" => KernelSignal.Quit,
                 "SIGTERM" => KernelSignal.Terminate,
                 "SIGKILL" => KernelSignal.Kill,
                 _ => null,
@@ -837,7 +841,9 @@ public sealed class KernelProcess
             pid = processSelector,
             signal = signal switch
             {
+                KernelSignal.Hangup => "SIGHUP",
                 KernelSignal.Interrupt => "SIGINT",
+                KernelSignal.Quit => "SIGQUIT",
                 KernelSignal.Kill => "SIGKILL",
                 _ => "SIGTERM",
             },

@@ -274,6 +274,40 @@ function readOperation(reader) {
   }
   return operation;
 }
+function traceKernelSignalCode(signal) {
+  switch (signal) {
+    case "SIGINT":
+      return 1;
+    case "SIGTERM":
+      return 2;
+    case "SIGKILL":
+      return 3;
+    case "SIGHUP":
+      return 4;
+    case "SIGQUIT":
+      return 5;
+  }
+}
+function readTraceKernelSignal(reader, context) {
+  const code = reader.u8();
+  switch (code) {
+    case 1:
+      return "SIGINT";
+    case 2:
+      return "SIGTERM";
+    case 3:
+      return "SIGKILL";
+    case 4:
+      return "SIGHUP";
+    case 5:
+      return "SIGQUIT";
+    default:
+      throw new TraceKernelTransportError(
+        "EPROTO",
+        `invalid ${context} signal code ${code}`
+      );
+  }
+}
 function writeAddress(writer, address) {
   writer.string(address.host);
   writer.u32(address.port);
@@ -364,9 +398,7 @@ function encodeTraceKernelSyscallRequest(request) {
       break;
     case "kill":
       writer.i32(request.pid);
-      writer.u8(
-        request.signal === "SIGINT" ? 1 : request.signal === "SIGTERM" ? 2 : 3
-      );
+      writer.u8(traceKernelSignalCode(request.signal));
       break;
     case "setsid":
       break;
@@ -658,19 +690,12 @@ function decodeTraceKernelSyscallResult(bytes) {
           termination: { kind: "exit", exitCode }
         };
       } else if (terminationCode === 2) {
-        const signalCode = reader.u8();
-        if (signalCode < 1 || signalCode > 3) {
-          throw new TraceKernelTransportError(
-            "EPROTO",
-            `invalid termination signal code ${signalCode}`
-          );
-        }
         value = {
           op: "wait",
           pid,
           termination: {
             kind: "signal",
-            signal: signalCode === 1 ? "SIGINT" : signalCode === 2 ? "SIGTERM" : "SIGKILL",
+            signal: readTraceKernelSignal(reader, "termination"),
             exitCode
           }
         };
@@ -9973,7 +9998,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           { code: "ERR_INVALID_ARG_TYPE" }
         );
       }
-      if (signal !== "SIGINT" && signal !== "SIGTERM" && signal !== "SIGKILL") {
+      if (signal !== "SIGHUP" && signal !== "SIGINT" && signal !== "SIGQUIT" && signal !== "SIGTERM" && signal !== "SIGKILL") {
         throw Object.assign(
           new TypeError(`Unknown signal: ${String(signal)}`),
           { code: "ERR_UNKNOWN_SIGNAL" }

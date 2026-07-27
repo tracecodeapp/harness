@@ -662,7 +662,11 @@ class CppTraceKernelSyncClient {
             ? 1
             : request.signal === 'SIGTERM'
               ? 2
-              : 3
+              : request.signal === 'SIGKILL'
+                ? 3
+                : request.signal === 'SIGHUP'
+                  ? 4
+                  : 5
         );
         break;
       case 'socket':
@@ -945,16 +949,26 @@ class CppTraceKernelSyncClient {
           };
         } else if (terminationCode === 2) {
           const signalCode = reader.u8();
+          const signal = [
+            undefined,
+            'SIGINT',
+            'SIGTERM',
+            'SIGKILL',
+            'SIGHUP',
+            'SIGQUIT',
+          ][signalCode];
+          if (!signal) {
+            throw new CppTraceKernelSyscallError(
+              'EPROTO',
+              `invalid termination signal ${signalCode}`
+            );
+          }
           value = {
             op: operation,
             pid,
             termination: {
               kind: 'signal',
-              signal: signalCode === 1
-                ? 'SIGINT'
-                : signalCode === 2
-                  ? 'SIGTERM'
-                  : 'SIGKILL',
+              signal,
               exitCode,
             },
           };
@@ -2655,13 +2669,17 @@ class WasiProcess {
   // child lifecycle and descriptor/network state rather than the WASM worker.
   tracecodeKernelImports() {
     const signalName = (signalNumber) => (
-      signalNumber === 2
-        ? 'SIGINT'
-        : signalNumber === 9
-          ? 'SIGKILL'
-          : signalNumber === 15
-            ? 'SIGTERM'
-            : null
+      signalNumber === 1
+        ? 'SIGHUP'
+        : signalNumber === 2
+          ? 'SIGINT'
+          : signalNumber === 3
+            ? 'SIGQUIT'
+            : signalNumber === 9
+              ? 'SIGKILL'
+              : signalNumber === 15
+                ? 'SIGTERM'
+                : null
     );
     const readArgv = (argvPtr) => {
       const args = [];
@@ -2823,11 +2841,15 @@ class WasiProcess {
           if (!waited.termination) return 0;
           const termination = waited.termination;
           const status = termination.kind === 'signal'
-            ? termination.signal === 'SIGINT'
-              ? 2
-              : termination.signal === 'SIGKILL'
-                ? 9
-                : 15
+            ? termination.signal === 'SIGHUP'
+              ? 1
+              : termination.signal === 'SIGINT'
+                ? 2
+                : termination.signal === 'SIGQUIT'
+                  ? 3
+                  : termination.signal === 'SIGKILL'
+                    ? 9
+                    : 15
             : (termination.exitCode & 0xff) << 8;
           if (statusPtr) this.mem.writeU32(statusPtr, status);
           return waited.pid | 0;

@@ -2408,7 +2408,9 @@ function createChildProcessApi(
       }
     }
 
-    kill(signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): boolean {
+    kill(
+      signal: 'SIGHUP' | 'SIGINT' | 'SIGQUIT' | 'SIGKILL' | 'SIGTERM' = 'SIGTERM'
+    ): boolean {
       if (this.exitCode !== null || this.signalCode !== null) return false;
       syncDispatch({
         op: 'kill',
@@ -6241,7 +6243,7 @@ export async function runBrowserJavaScriptProjectRequest(
       cwd: () => request.cwd,
       kill: (
         pid: number,
-        signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL' = 'SIGTERM'
+        signal: 'SIGHUP' | 'SIGINT' | 'SIGQUIT' | 'SIGKILL' | 'SIGTERM' = 'SIGTERM'
       ): true => {
         if (!Number.isSafeInteger(pid)) {
           throw Object.assign(
@@ -6250,7 +6252,9 @@ export async function runBrowserJavaScriptProjectRequest(
           );
         }
         if (
+          signal !== 'SIGHUP' &&
           signal !== 'SIGINT' &&
+          signal !== 'SIGQUIT' &&
           signal !== 'SIGTERM' &&
           signal !== 'SIGKILL'
         ) {

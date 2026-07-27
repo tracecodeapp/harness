@@ -1592,7 +1592,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             };
           }
           const exitCode = child.exitCode ?? 1;
-          const signal = child.signal === 'SIGINT' ||
+          const signal = child.signal === 'SIGHUP' ||
+            child.signal === 'SIGINT' ||
+            child.signal === 'SIGQUIT' ||
             child.signal === 'SIGTERM' ||
             child.signal === 'SIGKILL'
             ? child.signal

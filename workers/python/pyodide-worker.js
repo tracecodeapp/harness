@@ -2387,7 +2387,11 @@ class PythonTraceKernelSyncClient {
             ? 1
             : request.signal === 'SIGTERM'
               ? 2
-              : 3
+              : request.signal === 'SIGKILL'
+                ? 3
+                : request.signal === 'SIGHUP'
+                  ? 4
+                  : 5
         );
         break;
       case 'socket':
@@ -2825,16 +2829,26 @@ class PythonTraceKernelSyncClient {
         };
       } else if (terminationCode === 2) {
         const signalCode = reader.u8();
+        const signal = [
+          undefined,
+          'SIGINT',
+          'SIGTERM',
+          'SIGKILL',
+          'SIGHUP',
+          'SIGQUIT',
+        ][signalCode];
+        if (!signal) {
+          throw new PythonTraceKernelSyscallError(
+            'EPROTO',
+            `invalid termination signal ${signalCode}`
+          );
+        }
         value = {
           op: operation,
           pid,
           termination: {
             kind: 'signal',
-            signal: signalCode === 1
-              ? 'SIGINT'
-              : signalCode === 2
-                ? 'SIGTERM'
-                : 'SIGKILL',
+            signal,
             exitCode,
           },
         };
@@ -4664,7 +4678,9 @@ class _TraceKernelChildProcess:
         self.signal = _termination.get("signal")
         if _termination["kind"] == "signal":
             self.returncode = -{
+                "SIGHUP": 1,
                 "SIGINT": 2,
+                "SIGQUIT": 3,
                 "SIGTERM": 15,
                 "SIGKILL": 9,
             }.get(self.signal, 1)
@@ -4690,8 +4706,14 @@ class _TraceKernelChildProcess:
     def send_signal(self, signal):
         _name = signal
         if isinstance(signal, int):
-            _name = {2: "SIGINT", 9: "SIGKILL", 15: "SIGTERM"}.get(signal)
-        if _name not in ("SIGINT", "SIGTERM", "SIGKILL"):
+            _name = {
+                1: "SIGHUP",
+                2: "SIGINT",
+                3: "SIGQUIT",
+                9: "SIGKILL",
+                15: "SIGTERM",
+            }.get(signal)
+        if _name not in ("SIGHUP", "SIGINT", "SIGQUIT", "SIGKILL", "SIGTERM"):
             raise ValueError(f"Unsupported TraceKernel signal: {signal}")
         _TraceKernelProcessApi._call({
             "op": "kill",
@@ -4841,8 +4863,14 @@ class _TraceKernelProcessApi:
     def kill(self, pid, signal="SIGTERM"):
         _name = signal
         if isinstance(signal, int):
-            _name = {2: "SIGINT", 9: "SIGKILL", 15: "SIGTERM"}.get(signal)
-        if _name not in ("SIGINT", "SIGTERM", "SIGKILL"):
+            _name = {
+                1: "SIGHUP",
+                2: "SIGINT",
+                3: "SIGQUIT",
+                9: "SIGKILL",
+                15: "SIGTERM",
+            }.get(signal)
+        if _name not in ("SIGHUP", "SIGINT", "SIGQUIT", "SIGKILL", "SIGTERM"):
             raise ValueError(f"Unsupported TraceKernel signal: {signal}")
         self._call({
             "op": "kill",
@@ -5348,7 +5376,9 @@ os.WNOHANG = int(getattr(os, "WNOHANG", 1))
 def _tracekernel_wait_status(_termination):
     if _termination["kind"] == "signal":
         return {
+            "SIGHUP": 1,
             "SIGINT": 2,
+            "SIGQUIT": 3,
             "SIGTERM": 15,
             "SIGKILL": 9,
         }.get(_termination.get("signal"), 1)
