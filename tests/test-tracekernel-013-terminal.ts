@@ -211,7 +211,10 @@ async function main(): Promise<void> {
         `Terminal snapshot is incomplete: ${JSON.stringify(terminalSnapshot)}`
       );
 
-      yield* session.signalTerminalForeground(terminal.id, 'SIGINT');
+      yield* session.writeTerminalInput(
+        terminal.id,
+        Uint8Array.of(0x03)
+      );
       const interrupted = yield* backgroundChild.wait();
       assertCondition(
         interrupted.termination?.kind === 'signal' &&
@@ -224,6 +227,32 @@ async function main(): Promise<void> {
           foregroundChild.snapshot().phase === 'running' &&
           detached.snapshot().phase === 'running',
         'Terminal interrupt escaped the selected foreground process group.'
+      );
+
+      const quitChild = yield* session.spawnChild(shell, {
+        runtime: 'terminal-test',
+        command: 'quit-child',
+        inheritDescriptors: 'all',
+        processGroupId: 0,
+      });
+      yield* quitChild.awaitStarted();
+      yield* session.setTerminalForegroundProcessGroup(
+        shell,
+        0,
+        quitChild.snapshot().pgid
+      );
+      yield* session.writeTerminalInput(
+        terminal.id,
+        Uint8Array.of(0x1c)
+      );
+      const quitSnapshot = yield* quitChild.wait();
+      assertCondition(
+        quitSnapshot.termination?.kind === 'signal' &&
+          quitSnapshot.termination.signal === 'SIGQUIT' &&
+          quitSnapshot.termination.exitCode === 131,
+        `Terminal VQUIT did not signal the foreground process group: ${JSON.stringify(
+          quitSnapshot.termination
+        )}`
       );
 
       yield* session.setTerminalForegroundProcessGroup(
@@ -269,6 +298,7 @@ async function main(): Promise<void> {
     foregroundGroupTransfer: true,
     newSessionDetachment: true,
     foregroundSignalDelivery: true,
+    defaultSignalLineDiscipline: ['VINTR', 'VQUIT'],
     hangupSignalsForegroundGroup: true,
     terminalSyscallContract: true,
   }, null, 2));

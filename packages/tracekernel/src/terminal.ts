@@ -162,6 +162,14 @@ export class TraceKernelTerminal {
     return this.readStream(this.output, maxBytes, nonblocking);
   }
 
+  discardInput(): Effect.Effect<void> {
+    return Effect.sync(() => {
+      this.input.chunks.length = 0;
+      this.input.remainder = new Uint8Array(0);
+      this.wake(this.input);
+    });
+  }
+
   dispose(): Effect.Effect<void> {
     return Effect.sync(() => {
       if (this.closed) return;

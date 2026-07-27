@@ -1109,9 +1109,23 @@ export class TraceKernelSession {
     terminalId: string,
     bytes: Uint8Array
   ): Effect.Effect<number, Error> {
-    return this.terminalById(terminalId).pipe(
-      Effect.flatMap((terminal) => terminal.writeInput(bytes))
-    );
+    return Effect.gen(this, function* () {
+      const terminal = yield* this.terminalById(terminalId);
+      const signalByte = bytes.find((byte) => byte === 0x03 || byte === 0x1c);
+      if (signalByte === undefined) {
+        return yield* terminal.writeInput(bytes);
+      }
+
+      // Default termios ISIG behavior: signal-generating characters are
+      // consumed by the terminal and flush unread input instead of becoming
+      // process-visible bytes.
+      yield* terminal.discardInput();
+      yield* this.signalTerminalForeground(
+        terminalId,
+        signalByte === 0x03 ? 'SIGINT' : 'SIGQUIT'
+      );
+      return bytes.byteLength;
+    });
   }
 
   readTerminalOutput(
