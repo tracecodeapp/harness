@@ -719,6 +719,7 @@ interface RuntimeKernelProcessRecord {
   signal?: string;
   signalCode?: number;
   foreground: boolean;
+  terminalAttachedByJobControl?: boolean;
   exitCode?: number;
   endedAt?: string;
 }
@@ -6957,7 +6958,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return process;
   }
 
-  private runKernelJobPlacement(args: string[], commandName: 'bg' | 'fg', ctx: CommandContext): RuntimeCommandResult {
+  private async runKernelJobPlacement(
+    args: string[],
+    commandName: 'bg' | 'fg',
+    ctx: CommandContext
+  ): Promise<RuntimeCommandResult> {
     if (args.length > 1) {
       return { stdout: '', stderr: `usage: ${commandName} [pid|%job]\n`, exitCode: 2 };
     }
@@ -6966,7 +6971,70 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { stdout: '', stderr: `${commandName}: no such job${args[0] === undefined ? '' : `: ${args[0]}`}\n`, exitCode: 10 };
     }
     const foreground = commandName === 'fg';
-    this.setProcessGroupForeground(process.pgid, foreground);
+    const caller = this.resolveCommandContext(ctx)?.process as
+      | RuntimeKernelProcessRecord
+      | undefined;
+    const authority = this.traceKernelAuthority;
+    if (authority && caller?.kernelProcess && process.kernelProcess) {
+      if (foreground) {
+        const wasDetached = process.tty === '?';
+        const terminal = authority.session.terminalSnapshots()[0] ??
+          await Effect.runPromise(
+            authority.session.bootstrapSessionTerminal(caller.kernelProcess, {
+              name: '/dev/tty',
+            })
+          );
+        if (
+          !caller.kernelProcess.snapshot().descriptors.some(
+            (descriptor) =>
+              descriptor.fd === 0 && descriptor.kind === 'terminal'
+          )
+        ) {
+          await Effect.runPromise(
+            authority.session.replaceTerminalStdio(
+              caller.kernelProcess,
+              terminal.id
+            )
+          );
+        }
+        await Effect.runPromise(
+          authority.session.replaceTerminalStdio(
+            process.kernelProcess,
+            terminal.id
+          )
+        );
+        await Effect.runPromise(
+          authority.session.setTerminalForegroundProcessGroup(
+            caller.kernelProcess,
+            0,
+            process.kernelProcess.snapshot().pgid
+          )
+        );
+        process.terminalAttachedByJobControl ||= wasDetached;
+        process.tty = '/dev/tty';
+        this.setProcessGroupForeground(process.pgid, true);
+      } else {
+        if (process.terminalAttachedByJobControl) {
+          await Effect.runPromise(
+            authority.session.replaceNullStandardIo(process.kernelProcess)
+          );
+          process.tty = '?';
+          process.terminalAttachedByJobControl = false;
+        }
+        const terminal = authority.session.terminalSnapshots()[0];
+        if (terminal) {
+          await Effect.runPromise(
+            authority.session.releaseTerminalForegroundToHost(
+              terminal.id,
+              process.kernelProcess.snapshot().pgid
+            )
+          );
+        }
+        this.setProcessGroupForeground(process.pgid, false);
+      }
+    } else {
+      this.setProcessGroupForeground(process.pgid, foreground);
+    }
     this.recordKernelEvent(foreground ? 'process-foreground' : 'process-background', process.pid, {
       command: process.command,
       pgid: process.pgid,

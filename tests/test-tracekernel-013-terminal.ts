@@ -180,6 +180,30 @@ async function main(): Promise<void> {
         'Changing the foreground process group did not transfer terminal input authority.'
       );
       assertTerminalError(yield* Effect.exit(shell.read(0, 64)), 'EIO');
+      const staleHostRelease = yield* session.releaseTerminalForegroundToHost(
+        terminal.id,
+        shell.snapshot().pgid
+      );
+      assertCondition(
+        staleHostRelease === backgroundChild.snapshot().pgid &&
+          terminal.snapshot().foregroundProcessGroupId ===
+            backgroundChild.snapshot().pgid,
+        'A stale host release stole the terminal from a newer foreground group.'
+      );
+      const hostRelease = yield* session.releaseTerminalForegroundToHost(
+        terminal.id,
+        backgroundChild.snapshot().pgid
+      );
+      assertCondition(
+        hostRelease === terminal.sessionId &&
+          terminal.snapshot().foregroundProcessGroupId === terminal.sessionId,
+        'The host could not reclaim a terminal from its expected foreground group.'
+      );
+      yield* session.setTerminalForegroundProcessGroup(
+        shell,
+        0,
+        backgroundChild.snapshot().pgid
+      );
 
       const detached = yield* session.spawnChild(shell, {
         runtime: 'terminal-test',
@@ -296,6 +320,7 @@ async function main(): Promise<void> {
     hostProcessByteTransport: true,
     foregroundReadEnforcement: true,
     foregroundGroupTransfer: true,
+    conditionalHostForegroundRelease: true,
     newSessionDetachment: true,
     foregroundSignalDelivery: true,
     defaultSignalLineDiscipline: ['VINTR', 'VQUIT'],

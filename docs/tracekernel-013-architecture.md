@@ -457,8 +457,21 @@ read-through compatibility projection after topology changes rather than the
 decision-maker for those operations. Foreground compatibility state releases
 a process group only after its final live terminal member exits; one child
 cannot detach its surviving group peers. Product-level wait publication and
-shell job-control presentation remain until the terminal/lifecycle cutovers
-can remove the projection entirely.
+shell job listings remain until the terminal/lifecycle cutovers can remove the
+projection entirely.
+
+Shell `fg` and `bg` placement now terminates in the extracted session rather
+than toggling only product metadata. Foregrounding a compatibility job
+atomically replaces fd 0/1/2 with descriptors for the session console before
+transferring that terminal's foreground process-group ID. If this command was
+the only reason a formerly detached product job acquired terminal stdio,
+backgrounding it atomically restores null-device descriptors and returns
+foreground ownership to the host console boundary only if that group still
+owns it; backgrounding a stale/non-foreground job cannot steal placement from
+a newer foreground group. The process remains a member of the console's
+controlling session: controlling-terminal identity is session topology, while
+standard descriptor placement is process state. Product `tty` and foreground
+fields are a temporary read-through presentation of those two kernel facts.
 
 Runtime watchdog arm, status, pet, disarm, and expiry are process-owned kernel
 operations as well. The deadline fiber is scoped to the session, is cleared by
@@ -837,10 +850,10 @@ The remaining authority migration must preserve, in order:
    legacy input dual feed and its control-byte suppression; metadata, resize,
    input/output bytes, one-shot EOF, line discipline, foreground signal
    delivery, and fd 0/1/2 descriptors are already authoritative;
-2. route shell wait publication and job-control presentation through the
-   extracted session without maintaining a second mutable lifecycle or
-   topology projection; language wait selection and reaping are already
-   authoritative;
+2. route shell wait publication, job listings, and `/proc` lifecycle
+   presentation through the extracted session without maintaining a second
+   mutable lifecycle or topology projection; language wait selection/reaping
+   and shell foreground-group/descriptor placement are already authoritative;
 3. attribute journal and resource events directly to the authoritative process
    and eliminate the remaining transitional lifecycle observations;
 4. migrate local structured HTTP onto TCP only after the HTTP conformance

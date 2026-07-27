@@ -1257,6 +1257,29 @@ export class TraceKernelSession {
     );
   }
 
+  releaseTerminalForegroundToHost(
+    terminalId: string,
+    expectedProcessGroupId: number
+  ): Effect.Effect<number, Error> {
+    return Effect.gen(this, function* () {
+      const terminal = yield* this.terminalById(terminalId);
+      if (terminal.snapshot().closed) {
+        return yield* Effect.fail(new TraceKernelTerminalError({
+          code: 'EIO',
+          message: `EIO: terminal ${terminal.name} is closed`,
+        }));
+      }
+      if (
+        terminal.snapshot().foregroundProcessGroupId !==
+        expectedProcessGroupId
+      ) {
+        return terminal.snapshot().foregroundProcessGroupId;
+      }
+      terminal.setForegroundProcessGroup(terminal.sessionId);
+      return terminal.sessionId;
+    });
+  }
+
   closeTerminal(terminalId: string): Effect.Effect<void, Error> {
     return Effect.gen(this, function* () {
       const terminal = yield* this.terminalById(terminalId);
@@ -1544,6 +1567,48 @@ export class TraceKernelSession {
           )
         )
       );
+    });
+  }
+
+  replaceNullStandardIo(
+    process: TraceKernelProcess
+  ): Effect.Effect<{
+    readonly stdinFd: 0;
+    readonly stdoutFd: 1;
+    readonly stderrFd: 2;
+  }, Error> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const resourcePrefix =
+        `null-${process.pid}-replace-${this.nextResourceId++}`;
+      yield* process.descriptors.replaceMany([
+        {
+          fd: 0,
+          descriptor: makeTraceKernelNullDescriptor(
+            `${resourcePrefix}-0`,
+            'read'
+          ),
+        },
+        {
+          fd: 1,
+          descriptor: makeTraceKernelNullDescriptor(
+            `${resourcePrefix}-1`,
+            'write'
+          ),
+        },
+        {
+          fd: 2,
+          descriptor: makeTraceKernelNullDescriptor(
+            `${resourcePrefix}-2`,
+            'write'
+          ),
+        },
+      ]);
+      return Object.freeze({
+        stdinFd: 0 as const,
+        stdoutFd: 1 as const,
+        stderrFd: 2 as const,
+      });
     });
   }
 
