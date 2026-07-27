@@ -23,6 +23,7 @@ export {
   type NativeJavaProjectRunnerOptions,
 } from './project-node';
 export {
+  TRACEJVM_PROJECT_CAPABILITIES,
   createTraceJVMProjectRunner,
   type TraceJVMProjectClient,
   type TraceJVMProjectClientFactory,

@@ -38,6 +38,16 @@ export interface TraceJVMProjectClient {
 export type TraceJVMProjectClientFactory =
   () => TraceJVMProjectClient | Promise<TraceJVMProjectClient>;
 
+export const TRACEJVM_PROJECT_CAPABILITIES = Object.freeze({
+  provider: 'tracejvm',
+  javaVersion: '23',
+  filesystem: 'snapshot-input-final-diff',
+  descriptorStdio: false,
+  terminalStdin: false,
+  sockets: false,
+  workerIsolation: 'per-invocation',
+} as const);
+
 export interface TraceJVMProjectExecutionReport {
   readonly pid?: number;
   readonly source: JavaProjectRequest['source'];
@@ -316,6 +326,15 @@ function cancelledResult(signal: AbortSignal | undefined): RuntimeCommandResult 
   };
 }
 
+function terminateClient(client: TraceJVMProjectClient | undefined): void {
+  try {
+    client?.terminate();
+  } catch {
+    // Termination is a best-effort idempotent cleanup boundary. The operation
+    // result or original infrastructure failure remains authoritative.
+  }
+}
+
 function unsupportedSnapshot(request: JavaProjectRequest): RuntimeCommandResult | undefined {
   if ((request.project.symlinks?.length ?? 0) > 0) {
     return {
@@ -438,6 +457,7 @@ export function createTraceJVMProjectRunner(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const coordinators =
     new WeakMap<RuntimeProjectEngineLeaseController, KernelProcessCoordinator>();
+  const admittedClients = new WeakSet<object>();
 
   const coordinatorFor = (
     lease: RuntimeProjectEngineLeaseController
@@ -452,7 +472,7 @@ export function createTraceJVMProjectRunner(
     lease.attach({
       release: async () => {
         coordinator.released = true;
-        coordinator.activeClient?.terminate();
+        terminateClient(coordinator.activeClient);
         await coordinator.tail.catch(() => undefined);
         coordinators.delete(lease);
       },
@@ -477,13 +497,28 @@ export function createTraceJVMProjectRunner(
       }
       const bounded = combineWithTimeout(request.signal, timeoutMs);
       let client: TraceJVMProjectClient | undefined;
-      const terminateActive = (): void => client?.terminate();
+      const terminateActive = (): void => terminateClient(client);
       bounded.signal?.addEventListener('abort', terminateActive, { once: true });
       try {
         if (bounded.signal?.aborted) return cancelledResult(bounded.signal);
         client = await options.createClient();
+        if (
+          (typeof client !== 'object' && typeof client !== 'function') ||
+          client === null
+        ) {
+          throw new TypeError(
+            'TraceJVM createClient must return a fresh Worker client object.'
+          );
+        }
+        if (admittedClients.has(client)) {
+          terminateClient(client);
+          throw new Error(
+            'TraceJVM createClient returned a client that was already admitted; mutable VM reuse across invocations is forbidden.'
+          );
+        }
+        admittedClients.add(client);
         if (coordinator.released || bounded.signal?.aborted) {
-          client.terminate();
+          terminateClient(client);
           return cancelledResult(bounded.signal);
         }
         coordinator.activeClient = client;
@@ -502,7 +537,7 @@ export function createTraceJVMProjectRunner(
         if (coordinator.activeClient === client) {
           coordinator.activeClient = undefined;
         }
-        client?.terminate();
+        terminateClient(client);
         bounded.cleanup();
       }
     };

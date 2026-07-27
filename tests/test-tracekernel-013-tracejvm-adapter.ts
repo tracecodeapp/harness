@@ -270,6 +270,37 @@ async function testUnsupportedBoundaryIsExplicit(): Promise<void> {
   );
 }
 
+async function testClientReuseIsRejected(): Promise<void> {
+  let terminateCount = 0;
+  const reusedClient: TraceJVMProjectClient = {
+    async compile() {
+      throw new Error('compile should not run');
+    },
+    async run() {
+      return completed();
+    },
+    terminate() {
+      terminateCount += 1;
+    },
+  };
+  const runner = createTraceJVMProjectRunner({
+    createClient: () => reusedClient,
+  });
+  const first = await runner(request('run', []));
+  const second = await runner(request('run', []));
+  assertCondition(
+    first.exitCode === 0 &&
+      second.exitCode !== 0 &&
+      String(second.error?.detail?.diagnostic).includes('mutable VM reuse') &&
+      terminateCount >= 2,
+    `reused TraceJVM client was admitted across processes: ${JSON.stringify({
+      first,
+      second,
+      terminateCount,
+    })}`
+  );
+}
+
 async function testBrowserWorkspaceCommitsArtifactsToTKFS(): Promise<void> {
   let clientCount = 0;
   const workspace = await createBrowserProjectWorkspace({
@@ -339,5 +370,7 @@ await testCancellationHardRetiresWorker();
 console.log('PASS: TraceJVM adapter maps signals to hard Worker retirement');
 await testUnsupportedBoundaryIsExplicit();
 console.log('PASS: TraceJVM adapter exposes its current filesystem boundary');
+await testClientReuseIsRejected();
+console.log('PASS: TraceJVM adapter rejects mutable client reuse');
 await testBrowserWorkspaceCommitsArtifactsToTKFS();
 console.log('PASS: browser TraceJVM javac/java chains exchange artifacts through TKFS');
