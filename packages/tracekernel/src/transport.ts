@@ -1,5 +1,6 @@
 import * as Effect from 'effect/Effect';
 import type { TraceKernelNetworkErrorCode } from './errors';
+import type { TraceKernelSignal } from './model';
 import type { TraceKernelSyscallDispatcher } from './syscalls';
 import type {
   TraceKernelSyscallErrorCode,
@@ -291,6 +292,45 @@ function readOperation(reader: BinaryFrameReader): TraceKernelSyscallOperation {
   return operation;
 }
 
+function traceKernelSignalCode(signal: TraceKernelSignal): number {
+  switch (signal) {
+    case 'SIGINT':
+      return 1;
+    case 'SIGTERM':
+      return 2;
+    case 'SIGKILL':
+      return 3;
+    case 'SIGHUP':
+      return 4;
+    case 'SIGQUIT':
+      return 5;
+  }
+}
+
+function readTraceKernelSignal(
+  reader: BinaryFrameReader,
+  context: string
+): TraceKernelSignal {
+  const code = reader.u8();
+  switch (code) {
+    case 1:
+      return 'SIGINT';
+    case 2:
+      return 'SIGTERM';
+    case 3:
+      return 'SIGKILL';
+    case 4:
+      return 'SIGHUP';
+    case 5:
+      return 'SIGQUIT';
+    default:
+      throw new TraceKernelTransportError(
+        'EPROTO',
+        `invalid ${context} signal code ${code}`
+      );
+  }
+}
+
 function writeAddress(
   writer: BinaryFrameWriter,
   address: { readonly host: string; readonly port: number }
@@ -436,13 +476,7 @@ export function encodeTraceKernelSyscallRequest(
       break;
     case 'kill':
       writer.i32(request.pid);
-      writer.u8(
-        request.signal === 'SIGINT'
-          ? 1
-          : request.signal === 'SIGTERM'
-            ? 2
-            : 3
-      );
+      writer.u8(traceKernelSignalCode(request.signal));
       break;
     case 'setsid':
       break;
@@ -833,21 +867,10 @@ export function decodeTraceKernelSyscallRequest(
     }
     case 'kill': {
       const pid = reader.i32();
-      const signalCode = reader.u8();
-      if (signalCode < 1 || signalCode > 3) {
-        throw new TraceKernelTransportError(
-          'EPROTO',
-          `invalid signal code ${signalCode}`
-        );
-      }
       request = {
         op: 'kill',
         pid,
-        signal: signalCode === 1
-          ? 'SIGINT'
-          : signalCode === 2
-            ? 'SIGTERM'
-            : 'SIGKILL',
+        signal: readTraceKernelSignal(reader, 'kill'),
       };
       break;
     }
@@ -1250,13 +1273,7 @@ export function encodeTraceKernelSyscallResult(
       );
       writer.i32(value.termination.exitCode);
       if (value.termination.kind === 'signal') {
-        writer.u8(
-          value.termination.signal === 'SIGINT'
-            ? 1
-            : value.termination.signal === 'SIGTERM'
-              ? 2
-              : 3
-        );
+        writer.u8(traceKernelSignalCode(value.termination.signal));
       } else if (value.termination.kind === 'failure') {
         writer.string(value.termination.message);
       }
@@ -1507,23 +1524,12 @@ export function decodeTraceKernelSyscallResult(
           termination: { kind: 'exit', exitCode },
         };
       } else if (terminationCode === 2) {
-        const signalCode = reader.u8();
-        if (signalCode < 1 || signalCode > 3) {
-          throw new TraceKernelTransportError(
-            'EPROTO',
-            `invalid termination signal code ${signalCode}`
-          );
-        }
         value = {
           op: 'wait',
           pid,
           termination: {
             kind: 'signal',
-            signal: signalCode === 1
-              ? 'SIGINT'
-              : signalCode === 2
-                ? 'SIGTERM'
-                : 'SIGKILL',
+            signal: readTraceKernelSignal(reader, 'termination'),
             exitCode,
           },
         };

@@ -134,7 +134,9 @@ interface MutableProcessRecord {
 }
 
 function signalExitCode(signal: TraceKernelSignal): number {
+  if (signal === 'SIGHUP') return 129;
   if (signal === 'SIGINT') return 130;
+  if (signal === 'SIGQUIT') return 131;
   if (signal === 'SIGTERM') return 143;
   return 137;
 }

@@ -11,7 +11,12 @@ export type TraceKernelProcessPhase =
   | 'exiting'
   | 'exited';
 
-export type TraceKernelSignal = 'SIGINT' | 'SIGTERM' | 'SIGKILL';
+export type TraceKernelSignal =
+  | 'SIGHUP'
+  | 'SIGINT'
+  | 'SIGQUIT'
+  | 'SIGKILL'
+  | 'SIGTERM';
 export type TraceKernelWatchdogSignal = Extract<
   TraceKernelSignal,
   'SIGTERM' | 'SIGKILL'

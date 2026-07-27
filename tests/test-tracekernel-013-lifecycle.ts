@@ -62,7 +62,7 @@ async function main(): Promise<void> {
                   );
                 },
                 ...(supportsSignals ? {
-                  signal: (signal: 'SIGINT' | 'SIGTERM') =>
+                  signal: (signal: 'SIGHUP' | 'SIGINT' | 'SIGQUIT' | 'SIGTERM') =>
                     Effect.sync(() => {
                       deliveredSignals.push({ pid: process.pid, signal });
                     }).pipe(
@@ -351,6 +351,34 @@ async function main(): Promise<void> {
           deliveredSignals.length === deliveriesBeforeKill,
         `SIGKILL was delivered as a catchable runtime signal: ${JSON.stringify(killedSnapshot)}`
       );
+
+      const hungUp = yield* signalSession.spawn({
+        runtime: 'test',
+        command: 'block',
+      });
+      yield* hungUp.awaitStarted();
+      yield* hungUp.signal('SIGHUP');
+      const hungUpSnapshot = yield* hungUp.wait();
+      assertCondition(
+        hungUpSnapshot.termination?.kind === 'signal' &&
+          hungUpSnapshot.termination.signal === 'SIGHUP' &&
+          hungUpSnapshot.termination.exitCode === 129,
+        `SIGHUP did not use POSIX signal exit status: ${JSON.stringify(hungUpSnapshot)}`
+      );
+
+      const quit = yield* signalSession.spawn({
+        runtime: 'test',
+        command: 'block',
+      });
+      yield* quit.awaitStarted();
+      yield* quit.signal('SIGQUIT');
+      const quitSnapshot = yield* quit.wait();
+      assertCondition(
+        quitSnapshot.termination?.kind === 'signal' &&
+          quitSnapshot.termination.signal === 'SIGQUIT' &&
+          quitSnapshot.termination.exitCode === 131,
+        `SIGQUIT did not use POSIX signal exit status: ${JSON.stringify(quitSnapshot)}`
+      );
       assertCondition(
         deliveredSignals.some((delivery) =>
           delivery.pid === graceful.pid && delivery.signal === 'SIGTERM'
@@ -364,8 +392,8 @@ async function main(): Promise<void> {
   ));
 
   assertCondition(initializeCount === 1, 'Provider initialization should remain memoized for the host lifetime.');
-  assertCondition(acquireCount === 13, `Expected thirteen leases, acquired ${acquireCount}.`);
-  assertCondition(releaseCount === 13, `Expected thirteen lease releases, observed ${releaseCount}.`);
+  assertCondition(acquireCount === 15, `Expected fifteen leases, acquired ${acquireCount}.`);
+  assertCondition(releaseCount === 15, `Expected fifteen lease releases, observed ${releaseCount}.`);
   assertCondition(new Set(releasedLeaseIds).size === releasedLeaseIds.length, 'A runtime lease was released more than once.');
 
   console.log(JSON.stringify({
@@ -387,6 +415,7 @@ async function main(): Promise<void> {
     gracefulSignalDelivery: true,
     signalGraceDeadlineForcesExit: true,
     sigkillBypassesRuntimeHooks: true,
+    posixTerminationSignals: ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGKILL', 'SIGTERM'],
   }, null, 2));
 }
 

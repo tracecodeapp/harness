@@ -213,7 +213,9 @@ async function main(): Promise<void> {
     { op: 'wait', pid: 101, noHang: true },
     { op: 'identity' },
     { op: 'identity', pid: 101 },
+    { op: 'kill', pid: 102, signal: 'SIGHUP' },
     { op: 'kill', pid: 102, signal: 'SIGTERM' },
+    { op: 'kill', pid: 102, signal: 'SIGQUIT' },
     { op: 'setsid' },
     { op: 'setpgid', pid: 0, pgid: 0 },
     { op: 'isatty', fd: 0 },
@@ -325,6 +327,30 @@ async function main(): Promise<void> {
         op: 'wait',
         pid: 101,
         termination: { kind: 'exit', exitCode: 7 },
+      },
+    },
+    {
+      ok: true,
+      value: {
+        op: 'wait',
+        pid: 104,
+        termination: {
+          kind: 'signal',
+          signal: 'SIGHUP',
+          exitCode: 129,
+        },
+      },
+    },
+    {
+      ok: true,
+      value: {
+        op: 'wait',
+        pid: 105,
+        termination: {
+          kind: 'signal',
+          signal: 'SIGQUIT',
+          exitCode: 131,
+        },
       },
     },
     { ok: true, value: { op: 'wait', pid: 101 } },
