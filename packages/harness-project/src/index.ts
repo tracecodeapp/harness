@@ -7581,6 +7581,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       processGroupId: options.processGroupId ?? 0,
       owner: this.traceKernelPrincipal(options.actor),
     }));
+    await Effect.runPromise(authority.session.attachNullStandardIo(process));
     await Effect.runPromise(process.awaitStarted());
     return process;
   }
@@ -9649,6 +9650,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       processGroupId: 0,
       owner: this.traceKernelPrincipal(options.actor),
     }));
+    Effect.runSync(authority.session.attachNullStandardIo(kernelProcess));
     const kernelSnapshot = kernelProcess.snapshot();
     const pid = kernelProcess.pid;
     this.nextPid = Math.max(this.nextPid, pid + 1);

@@ -1,5 +1,6 @@
 export * from './descriptors';
 export * from './controlled-runtime';
+export * from './devices';
 export * from './errors';
 export * from './kernel';
 export * from './model';

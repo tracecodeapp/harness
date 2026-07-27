@@ -26,6 +26,9 @@ Effect, fibers, and services never cross that boundary.
 Host-owned execution engines can attach with `TraceKernelControlledRuntime`.
 The controlled provider leaves PID, signal, descriptor, and lease authority in
 TraceKernel while the host reports completion from an existing runner.
+Detached controlled processes can attach real `/dev/null` standard descriptors
+at fd 0/1/2, reserving the conventional identities in the same table used by
+files, pipes, watches, terminals, and sockets.
 
 The package now also contains the first session-local TCP foundation. Local
 socket descriptors, port bindings, listener backlogs, duplex streams,

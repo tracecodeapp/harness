@@ -14,6 +14,7 @@ import {
 import type { TraceKernelStat } from './vfs';
 
 export type TraceKernelDescriptorKind =
+  | 'device'
   | 'file'
   | 'pipe-reader'
   | 'pipe-writer'

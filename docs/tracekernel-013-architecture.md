@@ -408,6 +408,13 @@ reaped from the session alongside the product wait model, so process capacity
 is released once. The product's descriptor, terminal, socket, and journal
 managers are still transitional and are the next ownership cutover.
 
+Every controlled product process also receives kernel-owned detached standard
+descriptors: fd 0 is a `/dev/null` EOF reader and fd 1/2 are discard writers.
+They are real device descriptors, not reserved integers, so subsequent file,
+pipe, watch, and socket allocation begins at fd 3 in the single process table.
+Terminal processes will replace those entries atomically when the controlling
+terminal cutover lands.
+
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
 | Runtime API surface | 0.13 syscall |

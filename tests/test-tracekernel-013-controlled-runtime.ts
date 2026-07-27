@@ -26,6 +26,7 @@ async function main(): Promise<void> {
         cwd: '/workspace',
       });
       yield* process.awaitStarted();
+      yield* session.attachNullStandardIo(process);
       const context = yield* controlled.awaitAttached(process.pid);
       assertCondition(
         context.pid === process.pid &&
@@ -35,6 +36,20 @@ async function main(): Promise<void> {
       assertCondition(
         controlled.attachedPids().includes(process.pid),
         'The controlled lease was not visible while execution was active.'
+      );
+      const standardDescriptors = process.snapshot().descriptors;
+      assertCondition(
+        standardDescriptors.map((descriptor) => descriptor.fd).join(',') ===
+          '0,1,2' &&
+          standardDescriptors.every((descriptor) => descriptor.kind === 'device'),
+        `Detached standard streams did not reserve kernel fd 0/1/2: ${JSON.stringify(
+          standardDescriptors
+        )}`
+      );
+      assertCondition(
+        (yield* process.read(0, 32)).byteLength === 0 &&
+          (yield* process.write(1, new TextEncoder().encode('discarded'))) === 9,
+        'The detached null standard streams did not implement EOF/discard semantics.'
       );
 
       yield* controlled.setSignalHandler(process.pid, (signal) => {
@@ -67,6 +82,7 @@ async function main(): Promise<void> {
     schema: 'tracekernel-013-controlled-runtime-v1',
     kernelOwnedPid: true,
     hostControlledExecution: true,
+    kernelOwnedStandardDescriptors: true,
     signalDelivery: true,
     leaseCleanup: true,
   }, null, 2));
