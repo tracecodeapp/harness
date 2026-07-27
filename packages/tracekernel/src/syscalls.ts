@@ -794,37 +794,59 @@ export class TraceKernelSyscallDispatcher {
         );
       case 'stat':
         return this.authorizeFileSystem([{ path: request.path, permission: 'metadata' }]).pipe(
-          Effect.zipRight(this.session.stat(request.path)),
+          Effect.zipRight(this.session.fileSystem.stat(
+            request.path,
+            this.process.snapshot().cwd
+          )),
           Effect.map((stat) => ({ op: 'stat' as const, stat }))
         );
       case 'lstat':
         return this.authorizeFileSystem([{ path: request.path, permission: 'metadata' }]).pipe(
-          Effect.zipRight(this.session.lstat(request.path)),
+          Effect.zipRight(this.session.fileSystem.lstat(
+            request.path,
+            this.process.snapshot().cwd
+          )),
           Effect.map((stat) => ({ op: 'lstat' as const, stat }))
         );
       case 'realpath':
         return this.authorizeFileSystem([{ path: request.path, permission: 'metadata' }]).pipe(
-          Effect.zipRight(this.session.realpath(request.path)),
+          Effect.zipRight(this.session.fileSystem.realpath(
+            request.path,
+            this.process.snapshot().cwd
+          )),
           Effect.map((path) => ({ op: 'realpath' as const, path }))
         );
       case 'readdir':
         return this.authorizeFileSystem([{ path: request.path, permission: 'read' }]).pipe(
-          Effect.zipRight(this.session.readdir(request.path)),
+          Effect.zipRight(this.session.fileSystem.readdir(
+            request.path,
+            this.process.snapshot().cwd
+          )),
           Effect.map((entries) => ({ op: 'readdir' as const, entries }))
         );
       case 'mkdir':
         return this.authorizeFileSystem([{ path: request.path, permission: 'write' }]).pipe(
-          Effect.zipRight(this.session.mkdir(request.path, request.options)),
+          Effect.zipRight(this.session.fileSystem.mkdir(
+            request.path,
+            request.options,
+            this.process.snapshot().cwd
+          )),
           Effect.as({ op: 'mkdir' as const })
         );
       case 'rmdir':
         return this.authorizeFileSystem([{ path: request.path, permission: 'delete' }]).pipe(
-          Effect.zipRight(this.session.rmdir(request.path)),
+          Effect.zipRight(this.session.fileSystem.rmdir(
+            request.path,
+            this.process.snapshot().cwd
+          )),
           Effect.as({ op: 'rmdir' as const })
         );
       case 'unlink':
         return this.authorizeFileSystem([{ path: request.path, permission: 'delete' }]).pipe(
-          Effect.zipRight(this.session.unlink(request.path)),
+          Effect.zipRight(this.session.fileSystem.unlink(
+            request.path,
+            this.process.snapshot().cwd
+          )),
           Effect.as({ op: 'unlink' as const })
         );
       case 'link':
@@ -832,17 +854,28 @@ export class TraceKernelSyscallDispatcher {
           { path: request.existingPath, permission: 'read' },
           { path: request.newPath, permission: 'write' },
         ]).pipe(
-          Effect.zipRight(this.session.link(request.existingPath, request.newPath)),
+          Effect.zipRight(this.session.fileSystem.link(
+            request.existingPath,
+            request.newPath,
+            this.process.snapshot().cwd
+          )),
           Effect.as({ op: 'link' as const })
         );
       case 'symlink':
         return this.authorizeFileSystem([{ path: request.linkPath, permission: 'write' }]).pipe(
-          Effect.zipRight(this.session.symlink(request.target, request.linkPath)),
+          Effect.zipRight(this.session.fileSystem.symlink(
+            request.target,
+            request.linkPath,
+            this.process.snapshot().cwd
+          )),
           Effect.as({ op: 'symlink' as const })
         );
       case 'readlink':
         return this.authorizeFileSystem([{ path: request.path, permission: 'read' }]).pipe(
-          Effect.zipRight(this.session.readlink(request.path)),
+          Effect.zipRight(this.session.fileSystem.readlink(
+            request.path,
+            this.process.snapshot().cwd
+          )),
           Effect.map((target) => ({ op: 'readlink' as const, target }))
         );
       case 'rename':
@@ -850,7 +883,11 @@ export class TraceKernelSyscallDispatcher {
           { path: request.sourcePath, permission: 'delete' },
           { path: request.destinationPath, permission: 'write' },
         ]).pipe(
-          Effect.zipRight(this.session.rename(request.sourcePath, request.destinationPath)),
+          Effect.zipRight(this.session.fileSystem.rename(
+            request.sourcePath,
+            request.destinationPath,
+            this.process.snapshot().cwd
+          )),
           Effect.as({ op: 'rename' as const })
         );
       case 'readFile':

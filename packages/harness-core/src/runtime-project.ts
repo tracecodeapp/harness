@@ -695,6 +695,12 @@ export interface RuntimeCommandOptions {
   executionLimits?: RuntimeCommandExecutionLimits;
   onEvent?: RuntimeCommandEventHandler;
   /**
+   * Called once after the kernel has allocated and published the process but
+   * before its command executor is admitted. Terminal background submission
+   * uses this instead of inferring PID creation from synchronous timing.
+   */
+  onProcessStart?: (pid: number) => void;
+  /**
    * Receives the shell variable changes the command produced relative to the
    * environment it started with: assignments/exports map to their final
    * value, `unset` variables map to `undefined`. Terminal sessions use this

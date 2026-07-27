@@ -441,7 +441,11 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       let error: RuntimeCommandError | undefined;
       for (const segment of segments) {
         if (segment.background) {
-          stdout += this.startTerminalBackgroundCommand(segment.command, options, this.currentCwd);
+          stdout += await this.startTerminalBackgroundCommand(
+            segment.command,
+            options,
+            this.currentCwd
+          );
           continue;
         }
         const result = await this.runForegroundTerminalCommand(segment.command, options, commandStdinPipe);
@@ -710,12 +714,16 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     }
   }
 
-  private startTerminalBackgroundCommand(
+  private async startTerminalBackgroundCommand(
     command: string,
     options: RuntimeProjectTerminalRunOptions,
     cwd: string
-  ): string {
+  ): Promise<string> {
     const previousJobPids = new Set(this.options.jobRecords().map((job) => job.pid));
+    let resolveProcessStarted!: () => void;
+    const processStarted = new Promise<void>((resolve) => {
+      resolveProcessStarted = resolve;
+    });
     const handleBackgroundEvent = (event: RuntimeCommandEvent): void => {
       if (event.type === 'status' && !this.options.isVerbose()) return;
       options.onEvent?.(event);
@@ -739,11 +747,18 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       terminal: this.terminal,
       umask: this.currentUmask,
       onEvent: handleBackgroundEvent,
+      onProcessStart: () => {
+        resolveProcessStarted();
+      },
     });
     void backgroundRun.catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       options.onEvent?.({ type: 'output', stream: 'stderr', data: `${message}\n` });
     });
+    await Promise.race([
+      processStarted,
+      backgroundRun.then(() => undefined, () => undefined),
+    ]);
     const job = this.options.jobRecords().find((candidate) =>
       !previousJobPids.has(candidate.pid) && candidate.command === command
     );

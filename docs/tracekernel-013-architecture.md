@@ -389,9 +389,11 @@ one live session. Session shutdown does not clear host-owned storage.
 
 The syscall dispatcher also canonicalizes existing paths and missing-path
 parents before applying the session filesystem policy. This closes symlink
-aliases over hidden and readonly paths. Runtime process access remains internal
-until descriptor writes participate in the same quota/resource accounting as
-host writes.
+aliases over hidden and readonly paths. Product runtime path syscalls now
+terminate in that extracted session and use the calling process cwd; their
+commits are therefore direct, process-side TKFS mutations. Regular-file
+`open`/fd operations remain on the transitional descriptor manager until
+standard streams and inherited descriptor identity move together.
 
 Existing product executors attach through `TraceKernelControlledRuntime`.
 TraceKernel allocates the PID and owns topology, descriptors, signal delivery,
@@ -769,8 +771,9 @@ The remaining authority migration must preserve, in order:
 2. attribute direct session mutation events and journal records to the
    authoritative process while replacing transitional open-file snapshots with
    TKFS open-file descriptions;
-3. route every product runtime syscall through the extracted session policy already
-   enforcing canonical hidden/readonly paths;
+3. route product fd, terminal, socket, process-control, and watch syscalls
+   through the extracted session; path syscalls already use its canonical
+   hidden/readonly policy;
 4. replace the transitional descriptor, terminal, socket, journal, and
    resource-accounting identity across terminal, `runCommand`, and
    language-initiated children now that their PID/topology identity is

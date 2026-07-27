@@ -100,6 +100,7 @@ import {
   TraceKernelFileSystemError,
   TraceKernelHttp1Decoder,
   TraceKernelSharedSyscallServer,
+  TraceKernelSyscallDispatcher,
   type TraceKernelHttp1Header,
   type TraceKernelHttp1Message,
   type TraceKernelHttp1Request,
@@ -1540,6 +1541,28 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return buffer;
   }
 
+  private dispatchExtractedTraceKernelSyscall(
+    request: TraceKernelSyscallRequest,
+    context: RuntimeCommandExecutionContext | undefined
+  ): Promise<TraceKernelSyscallResult> {
+    const authority = this.traceKernelAuthority;
+    const process = context?.process.kernelProcess;
+    if (!authority || !process) {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          code: 'ESRCH',
+          message: 'Runtime syscall is not attached to an authoritative TraceKernel process.',
+        },
+      });
+    }
+    return Effect.runPromise(
+      new TraceKernelSyscallDispatcher(authority.session, process).dispatch(
+        request
+      )
+    );
+  }
+
   private async dispatchRuntimeKernelSyscall(
     request: TraceKernelSyscallRequest,
     context?: RuntimeCommandExecutionContext
@@ -2115,222 +2138,57 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           return { ok: true, value: { op: 'ftruncate' } };
         case 'readFile': {
           this.assertActorFileCapability(actor, 'read', request.path);
-          const path = workspacePath(request.path);
-          for (let attempt = 0; attempt < 2; attempt += 1) {
-            const cacheGeneration = this.fs.mutationVersion | 0;
-            const fileBytes = await this.fs.readFileBufferWithContext(context, path);
-            if (cacheGeneration === (this.fs.mutationVersion | 0)) {
-              return {
-                ok: true,
-                value: {
-                  op: 'readFile',
-                  bytes: fileBytes,
-                  cacheGeneration,
-                },
-              };
-            }
-            if (attempt === 1) {
-              return {
-                ok: true,
-                value: {
-                  op: 'readFile',
-                  bytes: fileBytes,
-                  cacheGeneration: -1,
-                },
-              };
-            }
-          }
-          break;
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'writeFile': {
           this.assertActorFileCapability(actor, 'write', request.path);
-          await this.fs.writeFileByInodeWithContext(
-            context,
-            workspacePath(request.path),
-            request.bytes
-          );
-          return { ok: true, value: { op: 'writeFile' } };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'stat': {
           this.assertActorFileCapability(actor, 'read', request.path);
-          const path = workspacePath(request.path);
-          const stat = await this.fs.statWithContext(context, path);
-          const identityPath = await this.fs.inodeIdentityPathWithContext(context, path);
-          const modifiedAt = stat.mtime instanceof Date ? stat.mtime.getTime() : 0;
-          return {
-            ok: true,
-            value: {
-              op: 'stat',
-              stat: {
-                path: request.path,
-                kind: stat.isDirectory ? 'directory' : 'file',
-                inode: this.fs.inodeForPath(identityPath),
-                nlink: stat.isDirectory ? 2 : this.fs.inodeLinkCount(identityPath),
-                mode: stat.mode ?? (stat.isDirectory ? 0o40755 : 0o100644),
-                size: stat.size ?? 0,
-                generation: this.fs.mutationVersion,
-                createdAt: modifiedAt,
-                modifiedAt,
-                changedAt: modifiedAt,
-              },
-            },
-          };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'lstat': {
           this.assertActorFileCapability(actor, 'read', request.path);
-          const path = workspacePath(request.path);
-          const stat = await this.fs.lstatWithContext(context, path);
-          const symbolicLink = runtimeFileSystemEntryIsSymlink(stat);
-          const modifiedAt = stat.mtime instanceof Date ? stat.mtime.getTime() : 0;
-          return {
-            ok: true,
-            value: {
-              op: 'lstat',
-              stat: {
-                path: request.path,
-                kind: symbolicLink
-                  ? 'symlink'
-                  : stat.isDirectory
-                    ? 'directory'
-                    : 'file',
-                inode: this.fs.inodeForPath(path),
-                nlink: symbolicLink
-                  ? 1
-                  : stat.isDirectory
-                    ? 2
-                    : this.fs.inodeLinkCount(path),
-                mode: stat.mode ?? (
-                  symbolicLink
-                    ? 0o120777
-                    : stat.isDirectory
-                      ? 0o40755
-                      : 0o100644
-                ),
-                size: stat.size ?? 0,
-                generation: this.fs.mutationVersion,
-                createdAt: modifiedAt,
-                modifiedAt,
-                changedAt: modifiedAt,
-              },
-            },
-          };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'realpath': {
           this.assertActorFileCapability(actor, 'read', request.path);
-          const path = await this.fs.realpathWithContext(
-            context,
-            workspacePath(request.path)
-          );
-          return { ok: true, value: { op: 'realpath', path } };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'readdir': {
           this.assertActorFileCapability(actor, 'read', request.path);
-          const path = workspacePath(request.path);
-          const entries = await this.fs.readdirWithFileTypesWithContext(
-            context,
-            path
-          );
-          return {
-            ok: true,
-            value: {
-              op: 'readdir',
-              entries: Object.freeze(entries
-                .map((entry) => Object.freeze({
-                  name: entry.name,
-                  kind: entry.isSymbolicLink
-                    ? 'symlink' as const
-                    : entry.isDirectory
-                      ? 'directory' as const
-                      : 'file' as const,
-                  inode: this.fs.inodeForPath(
-                    path === '.'
-                      ? entry.name
-                      : `${path.replace(/\/+$/, '')}/${entry.name}`
-                  ),
-                }))
-                .sort((left, right) => left.name.localeCompare(right.name))),
-            },
-          };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'mkdir': {
           this.assertActorFileCapability(actor, 'write', request.path);
-          const path = workspacePath(request.path);
-          await this.fs.mkdirWithContext(context, path, {
-            recursive: request.options?.recursive,
-          });
-          if (request.options?.mode !== undefined) {
-            await this.fs.chmodWithContext(context, path, request.options.mode);
-          }
-          return { ok: true, value: { op: 'mkdir' } };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'rmdir': {
           this.assertActorFileCapability(actor, 'delete', request.path);
-          const path = workspacePath(request.path);
-          const stat = await this.fs.statWithContext(context, path);
-          if (!stat.isDirectory) {
-            throw Object.assign(
-              new Error(`ENOTDIR: not a directory, rmdir '${request.path}'`),
-              { code: 'ENOTDIR' }
-            );
-          }
-          await this.fs.rmWithContext(context, path, {
-            force: false,
-            recursive: false,
-          });
-          return { ok: true, value: { op: 'rmdir' } };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'unlink': {
           this.assertActorFileCapability(actor, 'delete', request.path);
-          const path = workspacePath(request.path);
-          const stat = await this.fs.lstatWithContext(context, path);
-          if (stat.isDirectory) {
-            throw Object.assign(
-              new Error(`EISDIR: illegal operation on a directory, unlink '${request.path}'`),
-              { code: 'EISDIR' }
-            );
-          }
-          await this.fs.rmWithContext(context, path, {
-            force: false,
-            recursive: false,
-          });
-          return { ok: true, value: { op: 'unlink' } };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'link': {
           this.assertActorFileCapability(actor, 'read', request.existingPath);
           this.assertActorFileCapability(actor, 'write', request.newPath);
-          await this.fs.linkWithContext(
-            context,
-            workspacePath(request.existingPath),
-            workspacePath(request.newPath)
-          );
-          return { ok: true, value: { op: 'link' } };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'symlink': {
           this.assertActorFileCapability(actor, 'write', request.linkPath);
-          await this.fs.symlinkWithContext(
-            context,
-            request.target,
-            workspacePath(request.linkPath)
-          );
-          return { ok: true, value: { op: 'symlink' } };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'readlink': {
           this.assertActorFileCapability(actor, 'read', request.path);
-          const target = await this.fs.readlinkWithContext(
-            context,
-            workspacePath(request.path)
-          );
-          return { ok: true, value: { op: 'readlink', target } };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         case 'rename': {
           this.assertActorFileCapability(actor, 'delete', request.sourcePath);
           this.assertActorFileCapability(actor, 'write', request.destinationPath);
-          await this.fs.mvWithContext(
-            context,
-            workspacePath(request.sourcePath),
-            workspacePath(request.destinationPath)
-          );
-          return { ok: true, value: { op: 'rename' } };
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
         default:
           return {
@@ -8763,6 +8621,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const commandFs = new CommandBoundFileSystem(this.fs, commandContext);
     registerCommandContext(commandFs, commandContext);
     this.processTable.set(process.pid, process);
+    options.onProcessStart?.(process.pid);
     const clearKernelSignalHandler = await Effect.runPromise(
       this.traceKernelControlledRuntime.setSignalHandler(
         process.pid,

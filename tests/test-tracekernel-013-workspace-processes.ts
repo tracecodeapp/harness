@@ -300,6 +300,19 @@ async function main(): Promise<void> {
     authoritativeSession,
     'The product workspace did not own an extracted TraceKernel session.'
   );
+  const authoritativeFileMutations: Array<{
+    readonly operation: string;
+    readonly paths: readonly string[];
+    readonly directProcessCommit: boolean;
+  }> = [];
+  const stopWatchingAuthoritativeFileMutations =
+    authoritativeSession.fileSystem.watchMutations((mutation) => {
+      authoritativeFileMutations.push({
+        operation: mutation.operation,
+        paths: mutation.paths,
+        directProcessCommit: mutation.origin === undefined,
+      });
+    });
 
   try {
     const result = await workspace.runCommand('node parent.js');
@@ -320,6 +333,17 @@ async function main(): Promise<void> {
         child.pid !== parent.pid &&
         child.ppid === parent.pid,
       `child runner did not receive an isolated process identity: ${JSON.stringify(observedProcesses)}`
+    );
+    assertCondition(
+      authoritativeFileMutations.some(
+        (mutation) =>
+          mutation.operation === 'write' &&
+          mutation.directProcessCommit &&
+          mutation.paths.includes('/workspace/child-owned.txt')
+      ),
+      `runtime path syscalls did not commit through the authoritative session: ${JSON.stringify(
+        authoritativeFileMutations
+      )}`
     );
     const events = await workspace.readFile('/proc/tracekernel/events');
     assertCondition(
@@ -418,6 +442,7 @@ async function main(): Promise<void> {
       'Completed product runners remained in the authoritative TraceKernel process table.'
     );
   } finally {
+    stopWatchingAuthoritativeFileMutations();
     workspace.dispose();
   }
 
@@ -425,6 +450,7 @@ async function main(): Promise<void> {
     schema: 'tracekernel-013-workspace-processes-v1',
     languageInitiatedSpawn: true,
     kernelOwnedProductPids: true,
+    kernelOwnedPathSyscalls: true,
     distinctRuntimeProcessIdentity: true,
     processOwnedPipeInheritance: true,
     sharedFilesystemAcrossParentAndChild: true,
