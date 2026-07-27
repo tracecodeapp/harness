@@ -1508,13 +1508,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private ensureKernelSyscallGenerationBuffer(): SharedArrayBuffer | undefined {
     if (typeof SharedArrayBuffer === 'undefined') return undefined;
     if (this.kernelSyscallGenerationBuffer) return this.kernelSyscallGenerationBuffer;
-    const buffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
-    const generation = new Int32Array(buffer);
-    Atomics.store(generation, 0, this.fs.mutationVersion | 0);
-    this.kernelSyscallGenerationUnsubscribe = this.fs.watchMutations((revision) => {
-      Atomics.store(generation, 0, revision | 0);
-      Atomics.notify(generation, 0);
-    });
+    const buffer = this.traceKernelFileSystem.sharedGenerationBuffer();
     this.kernelSyscallGenerationBuffer = buffer;
     return buffer;
   }
