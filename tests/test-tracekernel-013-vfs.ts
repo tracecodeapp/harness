@@ -127,8 +127,14 @@ async function main(): Promise<void> {
 
       yield* session.mkdir('image-tree');
       yield* session.writeFile('image-tree/source.txt', bytes('shared inode'));
+      yield* session.fileSystem.chmod('image-tree/source.txt', 0o640);
+      yield* session.fileSystem.utimes('image-tree/source.txt', 1_700_000_000_000);
       yield* session.link('image-tree/source.txt', 'image-tree/alias.txt');
       yield* session.symlink('source.txt', 'image-tree/current.txt');
+      assertCondition(
+        session.fileSystem.namespacePaths().includes('/workspace/image-tree/current.txt'),
+        'Synchronous namespace discovery omitted a committed symbolic link.'
+      );
       const image = yield* session.fileSystem.exportImage();
       const hydratedSession = yield* host.openSession({
         cwd: '/workspace/image-tree',
@@ -138,6 +144,11 @@ async function main(): Promise<void> {
       assertCondition(
         text(yield* hydratedSession.readFile('current.txt')) === 'shared inode',
         'Hydration did not preserve symbolic-link resolution.'
+      );
+      const hydratedStat = yield* hydratedSession.stat('source.txt');
+      assertCondition(
+        hydratedStat.mode === 0o640 && hydratedStat.modifiedAt === 1_700_000_000_000,
+        'Hydration did not preserve chmod/utimes metadata.'
       );
       yield* hydratedSession.writeFile('alias.txt', bytes('updated inode'));
       assertCondition(
@@ -212,6 +223,7 @@ async function main(): Promise<void> {
     losslessImageHydration: true,
     imagePreservesHardLinks: true,
     imagePreservesSymlinks: true,
+    imagePreservesMetadata: true,
     fileDescriptionsCloseOnProcessExit: true,
   }, null, 2));
 }

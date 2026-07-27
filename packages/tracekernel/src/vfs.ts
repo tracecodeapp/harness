@@ -358,6 +358,70 @@ export class TraceKernelFileSystem {
     );
   }
 
+  /**
+   * Return a point-in-turn namespace key snapshot for synchronous host APIs
+   * such as shell glob discovery.
+   *
+   * TKFS mutations never await while editing the namespace map, so JavaScript
+   * cannot observe a partially-applied rename or recursive construction here.
+   */
+  namespacePaths(): readonly string[] {
+    return Object.freeze([...this.nodes.keys()].sort((left, right) => left.localeCompare(right)));
+  }
+
+  chmod(
+    path: string,
+    mode: number,
+    cwd = '/workspace'
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    if (!Number.isSafeInteger(mode) || mode < 0) {
+      return this.fail('EINVAL', path, 'invalid file mode');
+    }
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const realPath = this.resolveNodePath(resolved, true);
+          if (realPath instanceof TraceKernelFileSystemError) return Effect.fail(realPath);
+          const node = this.nodes.get(realPath);
+          if (!node) return this.fail('ENOENT', realPath, 'no such file or directory');
+          const normalizedMode = mode & 0o7777;
+          if (node.mode === normalizedMode) return Effect.void;
+          node.mode = normalizedMode;
+          const generation = this.beginMutation();
+          this.touchNode(node, generation, Date.now(), false);
+          this.notifyMutation(generation, 'change', this.pathsForNode(node));
+          return Effect.void;
+        })
+      ))
+    );
+  }
+
+  utimes(
+    path: string,
+    modifiedAt: number,
+    cwd = '/workspace'
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    if (!Number.isFinite(modifiedAt) || modifiedAt < 0) {
+      return this.fail('EINVAL', path, 'invalid modification timestamp');
+    }
+    return this.resolve(path, cwd).pipe(
+      Effect.flatMap((resolved) => this.mutex.withPermits(1)(
+        Effect.suspend(() => {
+          const realPath = this.resolveNodePath(resolved, true);
+          if (realPath instanceof TraceKernelFileSystemError) return Effect.fail(realPath);
+          const node = this.nodes.get(realPath);
+          if (!node) return this.fail('ENOENT', realPath, 'no such file or directory');
+          const generation = this.beginMutation();
+          node.generation = generation;
+          node.modifiedAt = modifiedAt;
+          node.changedAt = Date.now();
+          this.notifyMutation(generation, 'change', this.pathsForNode(node));
+          return Effect.void;
+        })
+      ))
+    );
+  }
+
   mkdir(
     path: string,
     options: TraceKernelMkdirOptions = {},
