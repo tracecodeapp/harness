@@ -276,7 +276,7 @@ async function main(): Promise<void> {
       duplicateKernelWait._tag === 'Left' &&
         'code' in duplicateKernelWait.left &&
         duplicateKernelWait.left.code === 'ECHILD' &&
-        session.processSnapshots().length === 0 &&
+        session.processSnapshots().filter((process) => process.visible).length === 0 &&
         !executionHandles.has(pid),
       `Shell wait did not reap logical PID 1's kernel child exactly once: ${JSON.stringify({
         duplicateKernelWait,

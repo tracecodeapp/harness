@@ -474,13 +474,17 @@ read with zero bytes without closing the terminal or poisoning later commands.
 VINTR/VQUIT bytes enter the kernel terminal line discipline, which flushes
 unread input and signals the authoritative foreground group. The compatibility
 frontend recognizes them only to avoid duplicating control bytes into the
-legacy runner pipe. Shell presentation, the product journal, and PID 0 host
-HTTP compatibility remain transitional. Runtime structured HTTP uses the same
-extracted session TCP descriptors and port namespace as raw runtime sockets.
+legacy runner pipe. Shell presentation and the product journal remain
+transitional. Public PID 0 host operations are physically backed by an
+invisible, protected TraceKernel service process, so host HTTP listeners and
+direct host descriptor syscalls use the same extracted session descriptor
+tables, TCP namespace, teardown, and limits as runtime processes. Runtime
+structured HTTP uses that same port namespace as raw runtime sockets.
 Foreground signal selection/delivery and resize terminate at the session-owned
 terminal; their product events are read-through diagnostics of kernel state.
-Host HTTP calls that have no runtime process context intentionally use the
-compatibility service; runtime HTTP and socket calls never do.
+The service process is hidden from unprivileged process enumeration but remains
+visible to trusted kernel diagnostics; PID 0 stays the stable public attribution
+identity rather than becoming a descriptor bypass.
 
 Runtime identity, signal selection and delivery, `setsid`, and `setpgid` also
 dispatch through the extracted session. The product process record is now a
@@ -898,10 +902,11 @@ risk. Product storage is now authoritative TKFS and the workspace owns an
 extracted session over that same object. Product process identity, TKFS, and
 runtime file/pipe/watch/TCP/terminal descriptors are now authoritative
 TraceKernel state. The product still has a legacy stdio feed, shell
-process-control presentation, journal/resource event attribution, and a PID 0
-host HTTP compatibility service. Runtime structured HTTP is no longer a
-separate authority: it binds, accepts, connects, reads, writes, half-closes,
-and closes through process-owned TraceKernel TCP descriptors.
+process-control presentation, and journal/resource event attribution. Host
+services now have an invisible protected process in the extracted session;
+public PID 0 is only their compatibility identity. Host and runtime structured
+HTTP are no longer separate authorities: both bind, accept, connect, read,
+write, half-close, and close through process-owned TraceKernel TCP descriptors.
 
 The workspace process object no longer owns mutable topology or lifecycle
 fields. PID, parent/group/session identity, scheduling state, terminal

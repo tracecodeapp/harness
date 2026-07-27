@@ -929,7 +929,9 @@ async function main(): Promise<void> {
       )}`
     );
     assertCondition(
-      authoritativeSession.processSnapshots().length === 0,
+      authoritativeSession
+        .processSnapshots()
+        .filter((process) => process.visible).length === 0,
       'Completed product runners remained in the authoritative TraceKernel process table.'
     );
   } finally {

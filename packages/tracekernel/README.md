@@ -44,6 +44,12 @@ half-closes, and teardown are kernel-owned. Runtime structured HTTP and raw TCP
 share this authoritative namespace and process-owned descriptor model; external
 browser fetch egress remains a distinct host protocol service.
 
+The project workspace represents trusted host services with an invisible,
+protected process in that same session. Public PID 0 remains the stable host
+identity, but its HTTP listeners and direct descriptor syscalls are physically
+owned by the service process. A host listener and a language runtime therefore
+cannot accidentally bind or connect through separate virtual networks.
+
 The browser JavaScript integration now maps the foundational event-driven
 `node:net` server/client surface onto those syscalls. It uses an asynchronous
 MessagePort request path for blocking socket operations while synchronous

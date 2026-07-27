@@ -329,6 +329,29 @@ async function main(): Promise<void> {
       await dispatch({ op: 'close', fd: rawServer.fd });
     }
 
+    const hostService = workspace.http.listen(
+      { host: '127.0.0.1', port: 3868 },
+      (request) => ({
+        status: 200,
+        body: `host-service:${request.path}\n`,
+      })
+    );
+    try {
+      await hostService.ready;
+      const processResponse = await workspace.runCommand(
+        'curl -s http://127.0.0.1:3868/from-process'
+      );
+      assertCondition(
+        processResponse.exitCode === 0 &&
+          processResponse.stdout === 'host-service:/from-process\n',
+        `Process-owned TCP could not reach the host service process: ${JSON.stringify(
+          processResponse
+        )}`
+      );
+    } finally {
+      hostService.close();
+    }
+
     const stalled = workspace.http.listen(
       { host: '127.0.0.1', port: 3862 },
       (request) =>
@@ -372,6 +395,7 @@ async function main(): Promise<void> {
       rawTcpClients: true,
       structuredClientsToRawTcp: true,
       unifiedPortOwnership: true,
+      hostServicesShareProcessNamespace: true,
       annotations: true,
       cancellation: true,
       malformedFramesRejectedBeforeHandlers: true,

@@ -777,6 +777,14 @@ interface RuntimeTraceKernelAuthority {
   readonly scope: Scope.CloseableScope;
   readonly host: TraceKernelHost;
   readonly session: TraceKernelSession;
+  /**
+   * Invisible kernel process that owns host-side descriptors and services.
+   *
+   * Keeping this process in the session means a workspace consumer and a
+   * language runtime share one descriptor table model and one network
+   * namespace instead of communicating across a PID-0 compatibility island.
+   */
+  readonly hostServiceProcess: TraceKernelProcess;
 }
 
 interface RuntimeKernelProcessLaunchHooks {
@@ -1619,7 +1627,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const authority = this.traceKernelAuthority;
     const process = context?.process
       ? this.kernelProcessFor(context.process)
-      : undefined;
+      : authority?.hostServiceProcess;
     if (!authority || !process) {
       return Promise.resolve({
         ok: false,
@@ -1641,7 +1649,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     context: RuntimeCommandExecutionContext | undefined,
     actor: RuntimeWorkspaceActor
   ): Promise<TraceKernelSyscallResult> | undefined {
-    if (!context?.process || !this.kernelProcessFor(context.process)) {
+    const kernelProcess = context?.process
+      ? this.kernelProcessFor(context.process)
+      : this.traceKernelAuthority?.hostServiceProcess;
+    if (!kernelProcess) {
       return undefined;
     }
     switch (request.op) {
@@ -1687,9 +1698,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         return this.dispatchExtractedTraceKernelSyscall(request, context);
       }
       case 'write': {
-        const kernelProcess = this.kernelProcessFor(
-          context.process as RuntimeKernelProcessRecord
-        )!;
+        if (!context) {
+          return this.dispatchExtractedTraceKernelSyscall(request, context);
+        }
         const descriptor = kernelProcess
           .snapshot()
           .descriptors.find(
@@ -3338,6 +3349,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         response = this.normalizeHttpResponse(await listener.handler(request));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        this.recordKernelEvent('net-error', listener.info.pid, {
+          id: listener.info.id,
+          protocol: listener.info.protocol,
+          phase: 'handler',
+          error: this.sanitizeHttpDiagnosticField(message),
+        });
         response = {
           status: 500,
           body: this.httpListenerErrorBody(
@@ -3439,13 +3456,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   /**
    * HTTP is a protocol adapter over the same process-owned TCP descriptors
-   * exposed to language runtimes. PID 0 remains a transitional host-only
-   * fallback until host services receive a dedicated TraceKernel process.
+   * exposed to language runtimes. Public PID 0 denotes the trusted host, while
+   * its physical descriptors belong to an invisible process in this session.
    */
   private traceKernelNetworkProcess(pid: number): TraceKernelProcess | undefined {
     return pid > 0
       ? this.processExecutionHandles.get(pid)?.kernelProcess
-      : undefined;
+      : this.traceKernelAuthority?.hostServiceProcess;
   }
 
   private async openHttpTcpSocket(pid: number): Promise<number> {
@@ -8446,7 +8463,25 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               ? {}
               : { maxProcesses: this.maxProcesses }),
           });
-          return { scope, host, session } satisfies RuntimeTraceKernelAuthority;
+          const hostServiceProcess = yield* session.spawn({
+            runtime: this.traceKernelControlledRuntime.runtime,
+            command: '[tracekernel-host]',
+            cwd: this.cwd,
+            env: this.baseEnv,
+            sessionId: 1,
+            processGroupId: 0,
+            owner: this.traceKernelPrincipal(SYSTEM_ACTOR),
+            protected: true,
+            visible: false,
+          });
+          yield* session.attachNullStandardIo(hostServiceProcess);
+          yield* hostServiceProcess.awaitStarted();
+          return {
+            scope,
+            host,
+            session,
+            hostServiceProcess,
+          } satisfies RuntimeTraceKernelAuthority;
         }),
         scope
       ));
