@@ -5,6 +5,7 @@ export * from './model';
 export * from './network';
 export * from './http1';
 export * from './syscalls';
+export * from './terminal';
 export * from './transport';
 export * from './vfs';
 export * from './watch';

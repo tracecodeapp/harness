@@ -93,6 +93,13 @@ export class TraceKernelWouldBlockError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class TraceKernelTerminalError extends Data.TaggedError(
+  'TraceKernelTerminalError'
+)<{
+  readonly code: 'EIO' | 'ENOTTY' | 'EPERM';
+  readonly message: string;
+}> {}
+
 export class TraceKernelDescriptorLimitError extends Data.TaggedError(
   'TraceKernelDescriptorLimitError'
 )<{
@@ -161,6 +168,7 @@ export type TraceKernelLifecycleError =
   | TraceKernelInvalidArgumentError
   | TraceKernelBadFileDescriptorError
   | TraceKernelBrokenPipeError
+  | TraceKernelTerminalError
   | TraceKernelDescriptorLimitError
   | TraceKernelNetworkError
   | TraceKernelInvalidDescriptorOperationError

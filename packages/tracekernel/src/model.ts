@@ -57,6 +57,7 @@ export interface TraceKernelProcessSnapshot {
   readonly ppid: number;
   readonly pgid: number;
   readonly sid: number;
+  readonly controllingTerminalId?: string;
   readonly phase: TraceKernelProcessPhase;
   readonly runtime: TraceKernelRuntimeName;
   readonly command: string;
@@ -126,6 +127,7 @@ export interface TraceKernelRuntimeProcessContext {
   readonly ppid: number;
   readonly pgid: number;
   readonly sid: number;
+  readonly controllingTerminalId?: string;
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd: string;

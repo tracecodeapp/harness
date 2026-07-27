@@ -8,6 +8,7 @@ import {
   TraceKernelDescriptorLimitError,
   TraceKernelInvalidArgumentError,
   TraceKernelInvalidDescriptorOperationError,
+  TraceKernelTerminalError,
   TraceKernelWouldBlockError,
 } from './errors';
 import type { TraceKernelStat } from './vfs';
@@ -17,6 +18,7 @@ export type TraceKernelDescriptorKind =
   | 'pipe-reader'
   | 'pipe-writer'
   | 'fs-watch'
+  | 'terminal'
   | 'tcp-socket';
 
 export interface TraceKernelDescriptorSnapshot {
@@ -39,6 +41,12 @@ export interface TraceKernelDescriptorReadiness {
   readonly error: boolean;
 }
 
+export interface TraceKernelDescriptorOperationContext {
+  readonly pid: number;
+  readonly pgid: number;
+  readonly sid: number;
+}
+
 export interface TraceKernelDescriptor {
   readonly kind: TraceKernelDescriptorKind;
   readonly resourceId: string;
@@ -47,15 +55,33 @@ export interface TraceKernelDescriptor {
    * It is never included in descriptor snapshots or syscall responses.
    */
   readonly resource?: unknown;
-  read?(maxBytes: number, position?: number): Effect.Effect<Uint8Array, Error>;
-  readNonblocking?(maxBytes: number, position?: number): Effect.Effect<Uint8Array, Error>;
-  write?(bytes: Uint8Array, position?: number): Effect.Effect<number, Error>;
-  writeNonblocking?(bytes: Uint8Array, position?: number): Effect.Effect<number, Error>;
+  read?(
+    maxBytes: number,
+    position?: number,
+    context?: TraceKernelDescriptorOperationContext
+  ): Effect.Effect<Uint8Array, Error>;
+  readNonblocking?(
+    maxBytes: number,
+    position?: number,
+    context?: TraceKernelDescriptorOperationContext
+  ): Effect.Effect<Uint8Array, Error>;
+  write?(
+    bytes: Uint8Array,
+    position?: number,
+    context?: TraceKernelDescriptorOperationContext
+  ): Effect.Effect<number, Error>;
+  writeNonblocking?(
+    bytes: Uint8Array,
+    position?: number,
+    context?: TraceKernelDescriptorOperationContext
+  ): Effect.Effect<number, Error>;
   readiness?(
-    events: TraceKernelPollEvents
+    events: TraceKernelPollEvents,
+    context?: TraceKernelDescriptorOperationContext
   ): Effect.Effect<TraceKernelDescriptorReadiness, Error>;
   awaitReadiness?(
-    events: TraceKernelPollEvents
+    events: TraceKernelPollEvents,
+    context?: TraceKernelDescriptorOperationContext
   ): Effect.Effect<TraceKernelDescriptorReadiness, Error>;
   stat?(): Effect.Effect<TraceKernelStat, Error>;
   truncate?(length: number): Effect.Effect<void, Error>;
@@ -76,16 +102,19 @@ export interface TraceKernelWritableDescriptor extends TraceKernelDescriptor {
 export type TraceKernelDescriptorReadError =
   | TraceKernelBadFileDescriptorError
   | TraceKernelInvalidDescriptorOperationError
+  | TraceKernelTerminalError
   | TraceKernelWouldBlockError;
 
 export type TraceKernelDescriptorWriteError =
   | TraceKernelBadFileDescriptorError
   | TraceKernelInvalidDescriptorOperationError
   | TraceKernelBrokenPipeError
+  | TraceKernelTerminalError
   | TraceKernelWouldBlockError;
 
 export interface TraceKernelDescriptorTableOptions {
   readonly maxDescriptors?: number;
+  readonly operationContext?: () => TraceKernelDescriptorOperationContext;
 }
 
 interface TraceKernelOpenDescriptionStatus {
@@ -133,12 +162,14 @@ export class TraceKernelDescriptorTable {
   private readonly closeOnExecDescriptors = new Set<number>();
   private nextFd = 3;
   readonly maxDescriptors: number;
+  private readonly operationContext?: () => TraceKernelDescriptorOperationContext;
 
   constructor(options: TraceKernelDescriptorTableOptions = {}) {
     const requested = Number(options.maxDescriptors ?? 1024);
     this.maxDescriptors = Number.isFinite(requested) && requested > 0
       ? Math.floor(requested)
       : 1024;
+    this.operationContext = options.operationContext;
   }
 
   install(
@@ -304,7 +335,7 @@ export class TraceKernelDescriptorTable {
       }));
     }
     if (descriptor.readiness) {
-      return descriptor.readiness(events).pipe(
+      return descriptor.readiness(events, this.operationContext?.()).pipe(
         Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
           fd,
           operation: 'poll',
@@ -336,7 +367,7 @@ export class TraceKernelDescriptorTable {
       }));
     }
     if (descriptor.awaitReadiness) {
-      return descriptor.awaitReadiness(events).pipe(
+      return descriptor.awaitReadiness(events, this.operationContext?.()).pipe(
         Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
           fd,
           operation: 'poll',
@@ -373,10 +404,12 @@ export class TraceKernelDescriptorTable {
       : descriptor.read;
     return read(
       Math.max(0, Math.floor(maxBytes)),
-      position === undefined ? undefined : Math.max(0, Math.floor(position))
+      position === undefined ? undefined : Math.max(0, Math.floor(position)),
+      this.operationContext?.()
     ).pipe(
       Effect.mapError((error) =>
         error instanceof TraceKernelBadFileDescriptorError ||
+        error instanceof TraceKernelTerminalError ||
         error instanceof TraceKernelWouldBlockError
         ? error
         : new TraceKernelBadFileDescriptorError({
@@ -412,10 +445,12 @@ export class TraceKernelDescriptorTable {
       : descriptor.write;
     return write(
       Uint8Array.from(bytes),
-      position === undefined ? undefined : Math.max(0, Math.floor(position))
+      position === undefined ? undefined : Math.max(0, Math.floor(position)),
+      this.operationContext?.()
     ).pipe(
       Effect.mapError((error) =>
         error instanceof TraceKernelBrokenPipeError ||
+        error instanceof TraceKernelTerminalError ||
         error instanceof TraceKernelWouldBlockError
         ? error
         : new TraceKernelBadFileDescriptorError({
