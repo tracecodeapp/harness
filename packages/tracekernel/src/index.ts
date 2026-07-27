@@ -1,4 +1,5 @@
 export * from './descriptors';
+export * from './controlled-runtime';
 export * from './errors';
 export * from './kernel';
 export * from './model';

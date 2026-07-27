@@ -393,6 +393,13 @@ aliases over hidden and readonly paths. Runtime process access remains internal
 until descriptor writes participate in the same quota/resource accounting as
 host writes.
 
+Existing product executors attach through `TraceKernelControlledRuntime`.
+TraceKernel allocates the PID and owns topology, descriptors, signal delivery,
+interruption, and lease cleanup; the host runner only reports its eventual
+execution result. This is the deliberate cutover seam for removing the
+workspace's transitional process identity without rewriting every language
+engine first.
+
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
 | Runtime API surface | 0.13 syscall |
