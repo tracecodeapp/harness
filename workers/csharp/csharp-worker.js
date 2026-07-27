@@ -2546,6 +2546,24 @@ function flushProjectOutput(stream) {
   if (!buffer.length) return;
   const bytes = new Uint8Array(buffer);
   buffer.length = 0;
+  if (activeTraceKernelClient && context.request?.source !== 'compile') {
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const written = activeTraceKernelClient.request({
+        op: 'write',
+        fd: stream === 'stderr' ? 2 : 1,
+        bytes: bytes.subarray(offset),
+      }).bytesWritten;
+      if (written <= 0 || written > bytes.byteLength - offset) {
+        throw new CSharpTraceKernelSyscallError(
+          'EIO',
+          `invalid TraceKernel stdio write length ${written}`
+        );
+      }
+      offset += written;
+    }
+    return;
+  }
   emitProjectOutput(
     stream,
     decodeUtf8(bytes),
@@ -2586,6 +2604,20 @@ function readProjectInputByte(devicePath = '/dev/stdin') {
   if (!context) return null;
   const inputDevice = kernelDeviceInputSource(devicePath, context.request);
   if (!inputDevice || inputDevice === '/dev/null') return null;
+  if (activeTraceKernelClient && context.request?.source !== 'compile') {
+    if (context.kernelStdinOffset >= context.kernelStdinBytes.byteLength) {
+      context.kernelStdinBytes = activeTraceKernelClient.request({
+        op: 'read',
+        fd: 0,
+        maxBytes: 64 * 1024,
+      }).bytes;
+      context.kernelStdinOffset = 0;
+    }
+    if (context.kernelStdinBytes.byteLength === 0) return null;
+    const byte = context.kernelStdinBytes[context.kernelStdinOffset];
+    context.kernelStdinOffset += 1;
+    return byte;
+  }
   if (context.stdinPipe) return readStdinPipeByte(context.stdinPipe);
   return null;
 }
@@ -4189,6 +4221,8 @@ async function handleMessage(message) {
       request,
       protocolToken: message.protocolToken,
       stdinPipe: stdinPipeState(request?.stdinPipe),
+      kernelStdinBytes: new Uint8Array(),
+      kernelStdinOffset: 0,
       stdoutBytes: [],
       stderrBytes: [],
       eventStdout: [],
@@ -4246,6 +4280,10 @@ async function handleMessage(message) {
       }
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
+      if (kernelClient && request?.source !== 'compile') {
+        result.stdout = '';
+        result.stderr = '';
+      }
       if (activeProjectIo.directDeviceOutput) {
         emitMissingDirectDeviceResultOutput(result, activeProjectIo);
         result.stdout = activeProjectIo.eventStdout.join('');

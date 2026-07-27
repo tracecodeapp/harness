@@ -781,6 +781,11 @@ interface RuntimeKernelProcessLaunchHooks {
   readonly kernelProcess?: TraceKernelProcess;
   readonly kernelProcessGroupId?: number;
   readonly kernelSessionId?: number;
+  /**
+   * The kernel spawn operation has already placed fd 0/1/2. Preserve those
+   * descriptors even when the child inherits a controlling-terminal context.
+   */
+  readonly preserveKernelStandardIo?: boolean;
   initialize?: (
     process: RuntimeKernelProcessRecord,
     context: RuntimeCommandExecutionContext
@@ -1339,7 +1344,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         includeHiddenFiles: includeHiddenFilesForCurrentCommand,
         snapshotProject: snapshotProjectForCurrentCommand,
       }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner, { kernelSyscalls: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
+      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
       defineCommand('bg', async (args, ctx) => this.runKernelJobPlacement(args, 'bg', ctx)),
       defineCommand('curl', async (args, ctx) => this.runKernelCurl(args, ctx)),
@@ -2330,7 +2335,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       rejectCreated = reject;
     });
     const descriptorStdio =
-      request.runtime === 'javascript' || request.runtime === 'cpp';
+      request.runtime === 'javascript' ||
+      request.runtime === 'cpp' ||
+      request.runtime === 'csharp';
     const stdinPipe = !descriptorStdio && request.stdio?.stdin === 'pipe'
       ? createRuntimeCommandStdinPipe()
       : !descriptorStdio && request.stdio?.stdin === 'inherit'
@@ -2438,6 +2445,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       parent,
       {
         kernelProcess: kernelSpawned.process,
+        preserveKernelStandardIo: request.stdio !== undefined,
         initialize: async (child, context) => {
           childContext = context;
           try {
@@ -9410,7 +9418,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       await Effect.runPromise(authority.session.ensureNullStandardIo(kernelProcess));
       await Effect.runPromise(kernelProcess.awaitStarted());
     }
-    if (terminalPresentation) {
+    if (terminalPresentation && !launchHooks?.preserveKernelStandardIo) {
       const terminal = await Effect.runPromise(
         authority.session.bootstrapSessionTerminal(kernelProcess, {
           name: '/dev/tty',

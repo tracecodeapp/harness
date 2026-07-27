@@ -193,6 +193,7 @@ async function main(): Promise<void> {
                 '    && currentIdentity.ParentProcessId == 1',
                 '    && currentIdentity.ProcessGroupId == currentIdentity.ProcessId',
                 '    && currentIdentity.SessionId == 1;',
+                'string standardInput = Console.ReadLine() ?? "";',
                 'ParentState.Value = 73;',
                 'var nonblockingPipe = TraceKernel.KernelPipe.Create(capacityChunks: 1, nonblocking: true);',
                 'bool emptyReadWouldBlock = false;',
@@ -502,6 +503,7 @@ async function main(): Promise<void> {
                 '    && !disarmed.Armed',
                 '    && managedTerminal',
                 '    && managedIdentity',
+                '    && standardInput == "kernel-stdin"',
                 '    && ParentState.Value == 73',
                 '    && descriptorFlags',
                 '    && managedNonblockingPipe',
@@ -697,9 +699,16 @@ async function main(): Promise<void> {
           ],
         });
         try {
-          const command = await workspace
-            .createTerminalSession()
-            .run('dotnet run --project App.csproj');
+          const terminal = workspace.createTerminalSession();
+          const pendingCommand = terminal.run('dotnet run --project App.csproj');
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+          if (
+            !terminal.writeStdin('kernel-stdin\n') ||
+            !terminal.endStdin()
+          ) {
+            throw new Error('C# terminal did not accept kernel-owned fd 0 input.');
+          }
+          const command = await pendingCommand;
           return {
             command,
             commandKeys: Object.keys(command ?? {}),
@@ -714,7 +723,8 @@ async function main(): Promise<void> {
 
       assertCondition(
         result.command.exitCode === 0 &&
-          result.command.stdout.endsWith('tkfs:true\n') &&
+          result.command.stdout === 'tkfs:true\n' &&
+          result.command.stderr === '' &&
           result.bytes === 'AAEJAwQ=',
         `C# System.IO did not use authoritative TKFS: ${JSON.stringify(result)} browserErrors=${JSON.stringify(browserErrors)}`
       );
@@ -727,6 +737,7 @@ async function main(): Promise<void> {
         synchronousSyscallTransport: true,
         systemIoTkfsMount: true,
         descriptorIo: true,
+        descriptorStandardIo: true,
         managedWatchdog: true,
         managedChildProcesses: true,
         managedProcessIdentity: true,
