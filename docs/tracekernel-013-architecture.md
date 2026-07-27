@@ -367,11 +367,22 @@ wire contract. TypeScript uses the same adapter after compilation; the compiler
 itself remains a host service and commits emitted files through the existing
 workspace transaction boundary.
 
-During the 0.12-to-0.13 migration, `RuntimeProjectWorkspace` remains the product
-filesystem authority and exposes a transitional TraceKernel syscall handler.
-That handler is deliberately behind the same transport-neutral request/result
-contract as the new session VFS. Moving workspace storage onto the 0.13 session
-VFS therefore replaces the handler, not each language adapter.
+`RuntimeProjectWorkspace` now uses TKFS as its physical backing store beneath
+the existing policy, quota, event, and shell compatibility wrapper. The product
+workspace and its internally owned extracted `TraceKernelSession` attach to the
+same TKFS object; there is no live file mirror. Runtime caches receive TKFS's
+own shared generation word.
+
+TKFS checkpoints separate namespace entries from inode records, preserving
+hard links, symlinks, metadata, and mutation generation. A host may hydrate a
+new session from that lossless image or attach one host-owned TKFS to exactly
+one live session. Session shutdown does not clear host-owned storage.
+
+The syscall dispatcher also canonicalizes existing paths and missing-path
+parents before applying the session filesystem policy. This closes symlink
+aliases over hidden and readonly paths. Runtime process access remains internal
+until descriptor writes participate in the same quota/resource accounting as
+host writes.
 
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
@@ -724,17 +735,20 @@ applied to files, terminals, and sockets.
 ## Remaining kernelization gates
 
 The syscall contract and language adapters are no longer the main migration
-risk. The product workspace still owns a transitional implementation of process,
-descriptor, filesystem, terminal, and network state behind that contract.
-Completing kernelization means replacing that compatibility handler with an
-extracted `TraceKernelSession` without introducing a second mutable copy.
+risk. Product storage is now authoritative TKFS and the workspace owns an
+extracted session over that same object. The product still has transitional
+process, descriptor, terminal, network, journal, quota, and event-observation
+managers behind the contract.
 
-That authority migration must preserve, in order:
+The remaining authority migration must preserve, in order:
 
-1. persistent workspace hydration and commit to the configured storage backend;
-2. editor/host mutations and runtime syscalls on one TKFS linearization source;
-3. hidden and readonly policy enforcement before mutations commit;
-4. process, descriptor, terminal, socket, journal, and resource-accounting
+1. commit TKFS checkpoints to the configured persistent storage backend and
+   hydrate them before any process starts;
+2. move quota preflight and mutation observation into the TKFS commit
+   linearization point, including writes/truncates through already-open fds;
+3. route product runtime syscalls through the extracted session policy already
+   enforcing canonical hidden/readonly paths;
+4. replace the transitional process, descriptor, terminal, socket, journal, and resource-accounting
    identity across terminal, `runCommand`, and language-initiated children;
 5. crash recovery that destroys or revalidates every mutable runtime lease while
    retaining only immutable host caches.
