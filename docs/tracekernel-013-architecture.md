@@ -432,11 +432,13 @@ Admission rollback kills an unpublished kernel child and closes every
 parent-side pipe endpoint, preserving the no-orphan/no-leak invariant even
 when the product scheduler rejects after kernel allocation.
 
-The product terminal byte pump and signal-character entry point,
+The product terminal byte pump and signal-character recognition entry point,
 process-lifecycle compatibility state, journal, and host-only structured HTTP
-adapter remain transitional. Host HTTP calls that have no runtime process
-context intentionally use the compatibility service; runtime socket calls
-never do.
+adapter remain transitional. Foreground signal selection/delivery and resize
+already terminate at the session-owned terminal; their product events are
+read-through diagnostics of kernel state. Host HTTP calls that have no runtime
+process context intentionally use the compatibility service; runtime socket
+calls never do.
 
 Runtime identity, signal selection and delivery, `setsid`, and `setpgid` also
 dispatch through the extracted session. The product process record is now a
@@ -819,9 +821,9 @@ journal/resource event attribution, and a host-only structured HTTP service.
 
 The remaining authority migration must preserve, in order:
 
-1. move terminal input/output pumping, resize events, and signal-character
-   delivery onto the session-owned terminal whose metadata and fd 0/1/2
-   descriptors are already authoritative;
+1. move terminal input/output pumping and signal-character recognition onto
+   the session-owned terminal whose metadata, resize, foreground signal
+   delivery, and fd 0/1/2 descriptors are already authoritative;
 2. route shell wait publication and job-control presentation through the
    extracted session without maintaining a second mutable lifecycle or
    topology projection; language wait selection and reaping are already

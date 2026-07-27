@@ -599,6 +599,15 @@ async function main(): Promise<void> {
         terminalResult.stdout === 'child-pipe\nchild-file\nchild-exit:7\n',
       `terminal-owned parent/child flow did not complete: ${JSON.stringify(terminalResult)}`
     );
+    terminal.resize(132, 48);
+    const resizedKernelTerminal = authoritativeSession.terminalSnapshots()[0];
+    assertCondition(
+      resizedKernelTerminal?.columns === 132 &&
+        resizedKernelTerminal.rows === 48,
+      `terminal resize did not update the authoritative terminal resource: ${JSON.stringify(
+        resizedKernelTerminal
+      )}`
+    );
     assertCondition(
       terminalRuntimeCount === 4 && detachedRuntimeCount === 4,
       `controlling-terminal inheritance did not match parent/child execution: ${JSON.stringify({
@@ -702,6 +711,7 @@ async function main(): Promise<void> {
     controllingTerminalInheritedByChildren: true,
     detachedCommandsReportEnotty: true,
     terminalInterruptTargetsForegroundProcessGroup: true,
+    kernelOwnedTerminalResize: true,
     terminalSignalCharacters: ['VINTR', 'VQUIT'],
   }, null, 2));
 }

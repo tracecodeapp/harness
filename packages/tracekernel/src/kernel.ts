@@ -1238,6 +1238,19 @@ export class TraceKernelSession {
     );
   }
 
+  resizeTerminal(
+    terminalId: string,
+    columns: number,
+    rows: number
+  ): Effect.Effect<TraceKernelTerminalSnapshot, Error> {
+    return this.terminalById(terminalId).pipe(
+      Effect.tap((terminal) =>
+        Effect.sync(() => terminal.resize(columns, rows))
+      ),
+      Effect.map((terminal) => terminal.snapshot())
+    );
+  }
+
   closeTerminal(terminalId: string): Effect.Effect<void, Error> {
     return Effect.gen(this, function* () {
       const terminal = yield* this.terminalById(terminalId);

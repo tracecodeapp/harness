@@ -209,6 +209,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       resolveCwd: (currentCwd: string, target: string) => Promise<string>;
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
       signalForeground?: (signal: 'SIGINT' | 'SIGQUIT') => boolean;
+      resizeTerminal?: (columns: number, rows: number) => void;
       jobRecords: () => readonly RuntimeProjectTerminalJobRecord[];
       isVerbose: () => boolean;
     },
@@ -266,6 +267,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   resize(columns: number, rows: number): void {
     this.terminalColumns = this.normalizeTerminalDimension(columns, this.terminalColumns, 'columns');
     this.terminalRows = this.normalizeTerminalDimension(rows, this.terminalRows, 'rows');
+    this.options.resizeTerminal?.(this.terminalColumns, this.terminalRows);
   }
 
   private normalizeTerminalDimension(value: number | undefined, fallback: number, name: string): number {

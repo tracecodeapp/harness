@@ -4697,9 +4697,41 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private signalTerminalForeground(
     signal: 'SIGINT' | 'SIGQUIT'
   ): boolean {
+    const authority = this.traceKernelAuthority;
+    const terminal = authority?.session.terminalSnapshots()[0];
+    if (authority && terminal && !terminal.closed) {
+      const count = authority.session.processSnapshots().filter(
+        (process) =>
+          process.sid === terminal.sessionId &&
+          process.pgid === terminal.foregroundProcessGroupId
+      ).length;
+      this.recordKernelEvent('process-group-signal', undefined, {
+        pgid: terminal.foregroundProcessGroupId,
+        signal,
+        count,
+        authority: 'tracekernel-terminal',
+      });
+      Effect.runFork(
+        authority.session.signalTerminalForeground(terminal.id, signal).pipe(
+          Effect.catchAll(() => Effect.void)
+        )
+      );
+      return true;
+    }
     const pgid = this.terminalForegroundPgid;
     if (pgid === 1) return false;
     return this.signalProcessGroup(pgid, signal).signaled > 0;
+  }
+
+  private resizeKernelTerminal(columns: number, rows: number): void {
+    const authority = this.traceKernelAuthority;
+    const terminal = authority?.session.terminalSnapshots()[0];
+    if (!authority || !terminal || terminal.closed) return;
+    Effect.runSync(
+      authority.session.resizeTerminal(terminal.id, columns, rows).pipe(
+        Effect.catchAll(() => Effect.void)
+      )
+    );
   }
 
   private signalRuntimeProcessSelector(
@@ -9221,6 +9253,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
         runCommand: (command, commandOptions) => this.runCommandAs(command, commandOptions, parent),
         signalForeground: (signal) => this.signalTerminalForeground(signal),
+        resizeTerminal: (columns, rows) =>
+          this.resizeKernelTerminal(columns, rows),
         jobRecords: () => this.terminalJobRecords(),
         isVerbose: () => this.terminalVerbose,
       },
