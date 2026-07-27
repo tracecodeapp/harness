@@ -1134,6 +1134,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processTable = new Map<number, RuntimeKernelProcessRecord>();
   private readonly processExecutionHandles =
     new Map<number, RuntimeKernelExecutionHandle>();
+  private readonly controlPlaneProcessDisposals = new Set<Promise<void>>();
   private readonly zombieProcessTable = new Map<number, RuntimeKernelZombieRecord>();
   private readonly processWaitRequests = new Set<number>();
   private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
@@ -2385,6 +2386,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     request: Extract<TraceKernelSyscallRequest, { op: 'spawn' }>,
     parentContext?: RuntimeCommandExecutionContext
   ): Promise<RuntimeKernelSpawnedChild> {
+    await this.awaitControlPlaneProcessDisposals();
     const command = [request.command, ...(request.args ?? [])]
       .map(shellQuote)
       .join(' ');
@@ -9576,6 +9578,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (unusable) return unusable;
     const inProcessWait = this.tryRunInProcessWaitCommand(command, parent);
     if (inProcessWait) return inProcessWait;
+    await this.awaitControlPlaneProcessDisposals();
     const actor = parent?.actor ?? this.createRuntimeActor();
     const admissionError = this.processAdmissionError(command);
     if (admissionError) {
@@ -10937,7 +10940,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           }
         }
         void this.kernelDescriptors.closeProcess(process.pid);
-        void Effect.runPromise(
+        const kernelDisposal = Effect.runPromise(
           kernelProcess.awaitStarted().pipe(
             Effect.zipRight(
               this.traceKernelControlledRuntime.complete(process.pid, {
@@ -10948,6 +10951,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             Effect.asVoid
           )
         ).catch(() => undefined);
+        this.controlPlaneProcessDisposals.add(kernelDisposal);
+        void kernelDisposal.finally(() => {
+          this.controlPlaneProcessDisposals.delete(kernelDisposal);
+        });
         this.processTable.delete(process.pid);
         this.processExecutionHandles.delete(process.pid);
         this.observeKernelReparentedChildren(process.pid);
@@ -10961,6 +10968,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }, undefined, process.actor);
       },
     };
+  }
+
+  private async awaitControlPlaneProcessDisposals(): Promise<void> {
+    while (this.controlPlaneProcessDisposals.size > 0) {
+      await Promise.allSettled([...this.controlPlaneProcessDisposals]);
+    }
   }
 
   private createKernel(): RuntimeWorkspaceKernel {
