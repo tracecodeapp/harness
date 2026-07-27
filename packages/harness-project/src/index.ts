@@ -721,18 +721,21 @@ interface RuntimeKernelProcessRecord {
   readonly actor: RuntimeWorkspaceActor;
   readonly signalPolicy: RuntimeWorkspaceProcessSignalPolicy;
   readonly startedAt: string;
-  state: RuntimeKernelProcessState;
-  signal?: string;
-  signalCode?: number;
+  readonly state: RuntimeKernelProcessState;
+  readonly signal?: string;
+  readonly signalCode?: number;
   readonly foreground: boolean;
-  waitRequested?: boolean;
-  exitCode?: number;
-  endedAt?: string;
+  readonly exitCode?: number;
+  readonly endedAt?: string;
 }
 
 interface RuntimeKernelExecutionHandle {
   readonly kernelProcess: TraceKernelProcess;
   readonly abortController?: AbortController;
+  pendingSignal?: {
+    readonly name: string;
+    readonly code: number;
+  };
 }
 
 interface RuntimeKernelFileDescriptorRecord {
@@ -742,8 +745,14 @@ interface RuntimeKernelFileDescriptorRecord {
 }
 
 interface RuntimeKernelZombieRecord {
-  process: RuntimeKernelProcessRecord;
-  expiresAtMs: number;
+  readonly process: RuntimeKernelProcessRecord;
+  readonly outcome: {
+    readonly exitCode: number;
+    readonly endedAt: string;
+    readonly signal?: string;
+    readonly signalCode?: number;
+  };
+  readonly expiresAtMs: number;
 }
 
 interface RuntimeKernelWatchdogRecord {
@@ -1103,6 +1112,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processExecutionHandles =
     new Map<number, RuntimeKernelExecutionHandle>();
   private readonly zombieProcessTable = new Map<number, RuntimeKernelZombieRecord>();
+  private readonly processWaitRequests = new Set<number>();
   private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
   private readonly anyProcessWaiters: Array<(process: RuntimeKernelProcessRecord) => void> = [];
   private readonly runtimeChildSelectorWaiters: Array<() => void> = [];
@@ -2530,14 +2540,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
       this.runtimeChildWaits.add(zombie.pid);
       try {
+        const outcome = this.zombieProcessTable.get(zombie.pid)?.outcome;
         this.zombieProcessTable.delete(zombie.pid);
-        zombie.state = 'exited';
+        this.processWaitRequests.delete(zombie.pid);
         if (!kernelAlreadyReaped) {
           await this.reapControlledTraceKernelChild(parent, zombie.pid);
         }
         this.recordKernelEvent('process-reap', zombie.pid, {
-          exitCode: zombie.exitCode ?? 0,
-          signal: zombie.signal,
+          exitCode: outcome?.exitCode ?? 0,
+          signal: outcome?.signal,
           parentPid: parent.pid,
         });
         return zombie;
@@ -4365,6 +4376,25 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       )
         ? '/dev/tty'
         : '?';
+    const signal = (): { readonly name: string; readonly code?: number } | undefined => {
+      const pending = this.processExecutionHandle(process)?.pendingSignal;
+      if (pending) return pending;
+      const zombie = this.zombieProcessTable.get(process.pid)?.outcome;
+      if (zombie?.signal) {
+        return {
+          name: zombie.signal,
+          ...(zombie.signalCode === undefined
+            ? {}
+            : { code: zombie.signalCode }),
+        };
+      }
+      const termination = snapshot().termination;
+      if (termination?.kind !== 'signal') return undefined;
+      return {
+        name: termination.signal,
+        code: TRACEKERNEL_SIGNAL_NUMBERS.get(termination.signal),
+      };
+    };
     Object.defineProperties(process, {
       ppid: {
         enumerable: true,
@@ -4398,6 +4428,47 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           return terminal?.foregroundProcessGroupId === current.pgid;
         },
       },
+      state: {
+        enumerable: true,
+        get: (): RuntimeKernelProcessState => {
+          if (this.processExecutionHandle(process)?.pendingSignal) {
+            return 'signaled';
+          }
+          const current = this.authoritativeProcessSnapshot(process);
+          if (current?.phase === 'exited') return 'zombie';
+          if (current?.schedulingState === 'queued') return 'queued';
+          if (current?.schedulingState === 'blocked') return 'blocked';
+          if (current) return 'running';
+          return this.zombieProcessTable.has(process.pid)
+            ? 'zombie'
+            : fallback.phase === 'exited'
+              ? 'zombie'
+              : fallback.schedulingState;
+        },
+      },
+      signal: {
+        enumerable: true,
+        get: () => signal()?.name,
+      },
+      signalCode: {
+        enumerable: true,
+        get: () => signal()?.code,
+      },
+      exitCode: {
+        enumerable: true,
+        get: () =>
+          this.authoritativeProcessSnapshot(process)?.termination?.exitCode ??
+          this.zombieProcessTable.get(process.pid)?.outcome.exitCode,
+      },
+      endedAt: {
+        enumerable: true,
+        get: () => {
+          const endedAt = this.authoritativeProcessSnapshot(process)?.endedAt;
+          return endedAt === undefined
+            ? this.zombieProcessTable.get(process.pid)?.outcome.endedAt
+            : new Date(endedAt).toISOString();
+        },
+      },
     });
     return process;
   }
@@ -4406,7 +4477,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     for (const [pid, zombie] of this.zombieProcessTable) {
       if (zombie.expiresAtMs > nowMs) continue;
       this.zombieProcessTable.delete(pid);
-      zombie.process.state = 'exited';
+      this.processWaitRequests.delete(pid);
       const authority = this.traceKernelAuthority;
       if (!authority) continue;
       const zombieSnapshot = this.authoritativeProcessSnapshot(zombie.process);
@@ -4796,9 +4867,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const snapshot = this.authoritativeProcessSnapshot(process);
     if (!signal || !snapshot || snapshot.phase === 'exited') return false;
     if (process.signalPolicy === 'system-only' && authority !== 'system') return false;
-    process.signal = signal.name;
-    process.signalCode = signal.code;
-    process.state = 'signaled';
+    const executionHandle = this.processExecutionHandle(process);
+    if (!executionHandle) return false;
+    executionHandle.pendingSignal = {
+      name: signal.name,
+      code: signal.code,
+    };
     this.recordKernelEvent('process-signal', process.pid, { signal: signal.name, signalCode: signal.code });
     const abortController = this.processExecutionHandle(process)?.abortController;
     if (abortController && !abortController.signal.aborted) {
@@ -5120,10 +5194,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               candidate !== undefined &&
               candidate.pid !== currentPid &&
               candidate.ppid === 1
-          );
+      );
       for (const candidate of candidates) {
         const productRecord = this.findProcessRecord(candidate.pid);
-        if (productRecord) productRecord.waitRequested = true;
+        if (productRecord) this.processWaitRequests.add(productRecord.pid);
       }
       const selected = await Effect.runPromise(
         Effect.either(authority.session.waitInitChild(pid ?? -1))
@@ -5147,24 +5221,28 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!process) {
       return { stdout: '', stderr: `${commandName}: no child process${pid === undefined ? '' : `: ${pid}`}\n`, exitCode: 10 };
     }
+    const outcome = this.zombieProcessTable.get(process.pid)?.outcome;
     this.zombieProcessTable.delete(process.pid);
-    process.state = 'exited';
+    this.processWaitRequests.delete(process.pid);
     if (!authority) {
       await this.reapControlledTraceKernelChild(
         this.findProcessRecord(process.ppid),
         process.pid
       );
     }
-    this.recordKernelEvent('process-reap', process.pid, { exitCode: process.exitCode ?? 0, signal: process.signal });
+    this.recordKernelEvent('process-reap', process.pid, {
+      exitCode: outcome?.exitCode ?? 0,
+      signal: outcome?.signal,
+    });
     return {
       stdout: [
         `pid\t${process.pid}`,
-        `exitCode\t${process.exitCode ?? 0}`,
-        ...(process.signal ? [`signal\t${process.signal}`] : []),
-        ...(process.signalCode !== undefined ? [`signalCode\t${process.signalCode}`] : []),
+        `exitCode\t${outcome?.exitCode ?? 0}`,
+        ...(outcome?.signal ? [`signal\t${outcome.signal}`] : []),
+        ...(outcome?.signalCode !== undefined ? [`signalCode\t${outcome.signalCode}`] : []),
       ].join('\n') + '\n',
       stderr: '',
-      exitCode: process.exitCode ?? 0,
+      exitCode: outcome?.exitCode ?? 0,
     };
   }
 
@@ -5620,7 +5698,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private renderProcFd(process: RuntimeKernelProcessRecord, fd: number): string | null {
-    const kernelDescriptor = this.kernelProcessFor(process)?.snapshot().descriptors.find(
+    const kernelSnapshot = this.authoritativeProcessSnapshot(process);
+    const kernelDescriptor = kernelSnapshot?.descriptors.find(
       (descriptor) => descriptor.fd === fd
     );
     if (kernelDescriptor) {
@@ -5645,11 +5724,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                   : `tkfs:[${kernelDescriptor.resourceId}]`;
       return `${target}\n`;
     }
+    if (kernelSnapshot) return null;
     return process.fds.find((entry) => entry.fd === fd)?.target.concat('\n') ?? null;
   }
 
   private renderProcFdInfo(process: RuntimeKernelProcessRecord, fd: number): string | null {
-    const kernelDescriptor = this.kernelProcessFor(process)?.snapshot().descriptors.find(
+    const kernelSnapshot = this.authoritativeProcessSnapshot(process);
+    const kernelDescriptor = kernelSnapshot?.descriptors.find(
       (descriptor) => descriptor.fd === fd
     );
     if (kernelDescriptor) {
@@ -5670,6 +5751,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         `target:\t${target}`,
       ].join('\n') + '\n';
     }
+    if (kernelSnapshot) return null;
     const descriptor = process.fds.find((entry) => entry.fd === fd);
     if (!descriptor) return null;
     return [
@@ -5683,9 +5765,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private processDescriptorNumbers(
     process: RuntimeKernelProcessRecord
   ): readonly number[] {
-    const kernelProcess = this.kernelProcessFor(process);
-    return kernelProcess
-      ? kernelProcess.snapshot().descriptors.map((descriptor) => descriptor.fd)
+    const kernelSnapshot = this.authoritativeProcessSnapshot(process);
+    return kernelSnapshot
+      ? kernelSnapshot.descriptors.map((descriptor) => descriptor.fd)
       : process.fds.map((descriptor) => descriptor.fd);
   }
 
@@ -9177,9 +9259,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       await Effect.runPromise(kernelProcess.wait()).catch(() => undefined);
       this.releaseForegroundProcessGroupMember(process);
       await this.kernelDescriptors.closeProcess(process.pid);
-      process.state = 'exited';
-      process.exitCode = 126;
-      process.endedAt = new Date().toISOString();
       throw error;
     }
     this.recordKernelEvent('process-queue', process.pid, {
@@ -9203,7 +9282,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           this.emitReturnedOutputEvents(output, commandContext);
           return { ...result, ...output };
         }
-        process.state = 'running';
         const schedulerSnapshot = this.commandScheduler.snapshot();
         this.recordKernelEvent('process-admit', process.pid, {
           running: schedulerSnapshot.running,
@@ -9233,9 +9311,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           const output = this.captureReturnedOutput(commandContext, directExecutableResult);
           this.emitReturnedOutputEvents(output, commandContext);
           if (commandContext.handledSignal && process.signal === commandContext.handledSignal) {
-            delete process.signal;
-            delete process.signalCode;
-            process.state = 'running';
+            delete this.processExecutionHandle(process)?.pendingSignal;
             this.recordKernelEvent('process-signal-handled', process.pid, {
               signal: commandContext.handledSignal,
             });
@@ -9282,9 +9358,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.emitReturnedOutputEvents(output, commandContext);
         processExitCode = result.exitCode;
         if (commandContext.handledSignal && process.signal === commandContext.handledSignal) {
-          delete process.signal;
-          delete process.signalCode;
-          process.state = 'running';
+          delete this.processExecutionHandle(process)?.pendingSignal;
           this.recordKernelEvent('process-signal-handled', process.pid, {
             signal: commandContext.handledSignal,
           });
@@ -9296,8 +9370,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             ? normalizeTraceKernelSignal(interruptedBy)
             : null;
           if (!process.signal && interruptedSignal) {
-            process.signal = interruptedSignal.name;
-            process.signalCode = interruptedSignal.code;
+            const executionHandle = this.processExecutionHandle(process);
+            if (executionHandle) {
+              executionHandle.pendingSignal = {
+                name: interruptedSignal.name,
+                code: interruptedSignal.code,
+              };
+            }
           }
           if (process.signal) {
             const signalResult = this.signalCommandResult(process);
@@ -9385,7 +9464,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const retainProcessOnExit =
         Boolean(process.signal) ||
         options.retainOnExit === true ||
-        process.waitRequested === true;
+        this.processWaitRequests.has(process.pid);
       this.clearRuntimeProcessWatchdog(process.pid);
       this.closeHttpListenersForProcess(process.pid);
       try {
@@ -9394,8 +9473,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         await this.kernelDescriptors.closeProcess(process.pid);
       }
       await launchHooks?.afterDescriptorClose?.(process, commandContext);
-      const terminationSignal = process.signal
-        ? normalizeTraceKernelSignal(process.signal)?.name
+      const pendingSignal = this.processExecutionHandle(process)?.pendingSignal;
+      const terminationSignal = pendingSignal
+        ? normalizeTraceKernelSignal(pendingSignal.name)?.name
         : undefined;
       await Effect.runPromise(
         this.traceKernelControlledRuntime.complete(process.pid, {
@@ -9417,35 +9497,49 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       clearKernelSignalHandler();
       cleanupExternalSignal?.();
-      process.state = retainProcessOnExit ? 'zombie' : 'exited';
-      process.exitCode = processExitCode;
-      process.endedAt = new Date().toISOString();
+      const outcome = {
+        exitCode: processExitCode,
+        endedAt: new Date().toISOString(),
+        ...(pendingSignal
+          ? {
+              signal: pendingSignal.name,
+              signalCode: pendingSignal.code,
+            }
+          : {}),
+      };
+      if (retainProcessOnExit) {
+        this.zombieProcessTable.set(process.pid, {
+          process,
+          outcome,
+          expiresAtMs: Date.now() + TRACEKERNEL_ZOMBIE_RETENTION_MS,
+        });
+      }
       this.processTable.delete(process.pid);
       this.processExecutionHandles.delete(process.pid);
       this.releaseForegroundProcessGroupMember(process);
       this.observeKernelReparentedChildren(process.pid);
       if (retainProcessOnExit) {
-        this.zombieProcessTable.set(process.pid, { process, expiresAtMs: Date.now() + TRACEKERNEL_ZOMBIE_RETENTION_MS });
         this.recordKernelEvent('process-zombie', process.pid, {
-          exitCode: process.exitCode,
-          signal: process.signal,
-          signalCode: process.signalCode,
+          exitCode: outcome.exitCode,
+          signal: outcome.signal,
+          signalCode: outcome.signalCode,
         });
         this.recordJournal({
           kind: 'process',
           op: 'exit',
           pid: process.pid,
-          exitCode: process.exitCode,
+          exitCode: outcome.exitCode,
           actor: this.journalActorId(process.actor),
         }, commandContext, process.actor);
         this.notifyZombieProcess(process);
       } else {
-        this.recordKernelEvent('process-exit', process.pid, { exitCode: process.exitCode });
+        this.processWaitRequests.delete(process.pid);
+        this.recordKernelEvent('process-exit', process.pid, { exitCode: outcome.exitCode });
         this.recordJournal({
           kind: 'process',
           op: 'exit',
           pid: process.pid,
-          exitCode: process.exitCode,
+          exitCode: outcome.exitCode,
           actor: this.journalActorId(process.actor),
         }, commandContext, process.actor);
       }
@@ -9785,6 +9879,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.processTable.clear();
     this.processExecutionHandles.clear();
     this.zombieProcessTable.clear();
+    this.processWaitRequests.clear();
     this.processWaiters.clear();
     this.anyProcessWaiters.splice(0);
     this.notifyRuntimeChildSelectorWaiters();
@@ -10335,9 +10430,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.processTable.delete(process.pid);
         this.processExecutionHandles.delete(process.pid);
         this.observeKernelReparentedChildren(process.pid);
-        process.state = 'exited';
-        process.exitCode = 0;
-        process.endedAt = new Date().toISOString();
         this.recordKernelEvent('process-exit', process.pid, { exitCode: 0, authority: 'system' });
         this.recordJournal({
           kind: 'process',

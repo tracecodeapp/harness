@@ -206,13 +206,12 @@ async function main(): Promise<void> {
         }
       )}`
     );
-    const originalState = productProcess.state;
     const rejectedTopologyMutations = [
       Reflect.set(productProcess, 'ppid', 99_991),
       Reflect.set(productProcess, 'pgid', 99_992),
       Reflect.set(productProcess, 'sid', 99_993),
+      Reflect.set(productProcess, 'state', 'zombie'),
     ];
-    productProcess.state = 'zombie';
     const [
       authoritativeStatus,
       authoritativeProcesses,
@@ -252,8 +251,6 @@ async function main(): Promise<void> {
         rejectedTopologyMutations,
       })}`
     );
-    productProcess.state = originalState;
-
     const killed = await workspace.runCommand(`kill -TERM ${pid}`);
     assertCondition(
       killed.exitCode === 0,
@@ -449,6 +446,7 @@ async function main(): Promise<void> {
     procPsAndJobsReadAuthoritativeProcessTable: true,
     kernelOwnedSchedulingState: true,
     immutableKernelBackedTopologyProjection: true,
+    immutableKernelBackedLifecycleProjection: true,
     processGroupControlIgnoresProductLifecycleProjection: true,
     hostExecutionHandlesSeparatedFromProcessProjection: true,
   }, null, 2));

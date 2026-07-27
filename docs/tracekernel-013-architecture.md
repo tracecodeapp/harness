@@ -886,27 +886,26 @@ TraceKernel state. The product still has a legacy stdio feed, shell
 process-control presentation, journal/resource event attribution, and a
 host-only structured HTTP service.
 
+The workspace process object no longer owns mutable topology or lifecycle
+fields. PID, parent/group/session identity, scheduling state, terminal
+placement, descriptor visibility, termination, and timestamps are immutable
+live projections of TraceKernel. Pending host-runner signal arbitration stays
+in the separate execution-handle registry, and a bounded zombie-coordination
+record retains only the already-kernel-decided outcome until product wait
+bookkeeping catches up.
+
 The remaining authority migration must preserve, in order:
 
 1. move every language adapter onto descriptor stdio, then remove the temporary
    legacy input dual feed and its control-byte suppression; metadata, resize,
    input/output bytes, one-shot EOF, line discipline, foreground signal
    delivery, and fd 0/1/2 descriptors are already authoritative;
-2. delete the remaining transitional product lifecycle fields used to
-   arbitrate host-runner completion and signal results; product topology is
-   already an immutable live projection of TraceKernel, process-group/child
-   controls read session snapshots, and host runtime handles, command
-   cancellation signals, and interruption controllers live outside the
-   presentation record;
-   scheduler state, shell/language wait selection and reaping, `/proc`, `ps`,
-   `jobs`, foreground-group/descriptor placement, and logical PID 1 ownership
-   already read or mutate authoritative state;
-3. attribute journal and resource events directly to the authoritative process
+2. attribute journal and resource events directly to the authoritative process
    and eliminate the remaining transitional lifecycle observations;
-4. migrate local structured HTTP onto TCP only after the HTTP conformance
+3. migrate local structured HTTP onto TCP only after the HTTP conformance
    corpus proves fragmented reads, backpressure, half-closes, cancellation, and
    concurrent connections; host-only fetch egress remains a protocol service;
-5. crash recovery that destroys or revalidates every mutable runtime lease while
+4. crash recovery that destroys or revalidates every mutable runtime lease while
    retaining only immutable host caches.
 
 Suspended job control (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`, and `SIGCONT`) is a
