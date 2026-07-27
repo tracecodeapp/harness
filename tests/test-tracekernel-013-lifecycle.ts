@@ -238,6 +238,17 @@ async function main(): Promise<void> {
         retainedTopLevelExit.termination?.kind === 'exit',
         'The retained top-level process did not exit normally.'
       );
+      assertCondition(
+        initWaitSession.processSnapshots().every(
+          (snapshot) => snapshot.pid !== retainedTopLevel.pid
+        ) &&
+          initWaitSession.processTableSnapshots().some(
+            (snapshot) =>
+              snapshot.pid === retainedTopLevel.pid &&
+              snapshot.phase === 'exited'
+          ),
+        'The authoritative process table did not expose the retained zombie separately from the live set.'
+      );
       const retainedCapacity = yield* Effect.flip(initWaitSession.spawn({
         runtime: 'test',
         command: 'blocked-by-zombie',
@@ -252,7 +263,10 @@ async function main(): Promise<void> {
       const initReaped = yield* initWaitSession.waitInitChild(-1);
       assertCondition(
         initReaped?.pid === retainedTopLevel.pid &&
-          initReaped.termination?.kind === 'exit',
+          initReaped.termination?.kind === 'exit' &&
+          initWaitSession.processTableSnapshots().every(
+            (snapshot) => snapshot.pid !== retainedTopLevel.pid
+          ),
         `Logical PID 1 did not reap its retained child: ${JSON.stringify(
           initReaped
         )}`
@@ -447,6 +461,7 @@ async function main(): Promise<void> {
     processCeilingReturnsEagain: true,
     processCapacityReleasedOnExit: true,
     logicalInitOwnsRetainedTopLevelWaits: true,
+    authoritativeProcessTableIncludesUnreapedZombies: true,
     parentTopologyInherited: true,
     orphanedChildrenReparented: true,
     missingParentsRejected: true,

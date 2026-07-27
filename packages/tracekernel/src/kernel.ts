@@ -900,7 +900,26 @@ export class TraceKernelSession {
   processSnapshots(
     requester: TraceKernelPrincipal = SYSTEM_PRINCIPAL
   ): readonly TraceKernelProcessSnapshot[] {
-    return [...this.processes.values()]
+    return this.visibleProcessSnapshots(this.processes.values(), requester);
+  }
+
+  processTableSnapshots(
+    requester: TraceKernelPrincipal = SYSTEM_PRINCIPAL
+  ): readonly TraceKernelProcessSnapshot[] {
+    return this.visibleProcessSnapshots(
+      new Map<number, TraceKernelProcess>([
+        ...this.processes,
+        ...this.exitedChildren,
+      ]).values(),
+      requester
+    );
+  }
+
+  private visibleProcessSnapshots(
+    processes: Iterable<TraceKernelProcess>,
+    requester: TraceKernelPrincipal
+  ): readonly TraceKernelProcessSnapshot[] {
+    return [...processes]
       .map((process) => process.snapshot())
       .filter((process) =>
         requester.kind === 'system' ||

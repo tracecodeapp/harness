@@ -65,6 +65,10 @@ reaps it through the same exact/any/group selector machinery used by ordinary
 parents. Scoped `execute()` and non-retained host work auto-reap. This keeps
 interactive shell jobs waitable without making every one-shot host command a
 zombie or delegating top-level reaping to a second product process table.
+Live-only inspection remains available for runtime coordination, while the
+actor-filtered authoritative process-table snapshot includes retained exited
+children until their parent reaps them. `/proc`, `ps`, and `jobs` can therefore
+migrate to kernel state without inferring zombies from completion callbacks.
 
 The process-bound `kill` syscall applies UNIX PID selectors inside the virtual
 session: a positive PID addresses one process, `0` addresses the caller's
