@@ -109,9 +109,18 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
     await page.fill('#dev-terminal-input', '../report');
     await page.press('#dev-terminal-input', 'Enter');
     await page.waitForFunction(
-      () => document.querySelector('#dev-terminal-output')?.textContent?.includes('Report title:') === true,
+      () => {
+        const output = document.querySelector('#dev-terminal-output')?.textContent ?? '';
+        return output.includes('Report title:') ||
+          output.includes('[process-exit] Finished C++ browser executable');
+      },
       undefined,
       { timeout: 180_000 }
+    );
+    const initialRunOutput = await page.locator('#dev-terminal-output').textContent();
+    assertCondition(
+      initialRunOutput?.includes('Report title:') === true,
+      `C++ terminal executable exited before accepting input: ${JSON.stringify(initialRunOutput)}`
     );
     await page.fill('#dev-terminal-input', 'Live stdin report');
     await page.press('#dev-terminal-input', 'Enter');
@@ -148,6 +157,8 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
         liveRunOutput.includes('Report title: Live stdin report') &&
         liveRunOutput.includes('Team name: TraceCode') &&
         liveRunOutput.includes('title=Live stdin report') &&
+        !liveRunOutput.includes('TraceKernel terminal descriptors are unavailable') &&
+        !liveRunOutput.includes('TraceKernel foreground process group is unavailable') &&
         !liveRunOutput.includes('TRACE_DEMO_STDIN_COLLECTED'),
       `project terminal should drive the C++ executable with live stdin: ${JSON.stringify(liveRunOutput)}`
     );

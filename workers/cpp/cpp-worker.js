@@ -61,6 +61,7 @@ const ENOTCONN = 53;
 const ENOTDIR = 54;
 const ENOTEMPTY = 55;
 const ENOTSUP = 58;
+const ENOTTY = 59;
 const EPERM = 63;
 const EROFS = 69;
 const ESRCH = 71;
@@ -363,6 +364,9 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   poll: 42,
   getsockopt: 43,
   identity: 44,
+  isatty: 45,
+  tcgetpgrp: 46,
+  tcsetpgrp: 47,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -778,6 +782,14 @@ class CppTraceKernelSyncClient {
         writer.i32(request.pid);
         writer.i32(request.pgid);
         break;
+      case 'isatty':
+      case 'tcgetpgrp':
+        writer.i32(request.fd);
+        break;
+      case 'tcsetpgrp':
+        writer.i32(request.fd);
+        writer.i32(request.pgid);
+        break;
       case 'ftruncate':
         writer.i32(request.fd);
         writer.f64(request.length);
@@ -1006,6 +1018,13 @@ class CppTraceKernelSyncClient {
         value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
         break;
       case 'setpgid':
+        value = { op: operation, pgid: reader.i32() };
+        break;
+      case 'isatty':
+        value = { op: operation, isTerminal: reader.u8() === 1 };
+        break;
+      case 'tcgetpgrp':
+      case 'tcsetpgrp':
         value = { op: operation, pgid: reader.i32() };
         break;
       case 'identity':
@@ -2148,6 +2167,7 @@ const CPP_TRACEKERNEL_ERRNO = Object.freeze({
   ENOTDIR,
   ENOTEMPTY,
   ENOTSUP,
+  ENOTTY,
   EPERM,
   EROFS,
   ESRCH,
@@ -2909,6 +2929,42 @@ class WasiProcess {
           if ((pid | 0) === 0 || (pid | 0) === (this.process.pid | 0)) {
             this.process.pgid = result.pgid;
           }
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_isatty: (fd) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const result = this.kernelClient.call({
+            op: 'isatty',
+            fd: fd | 0,
+          });
+          return result.isTerminal ? 1 : -ENOTTY;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_tcgetpgrp: (fd) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          return this.kernelClient.call({
+            op: 'tcgetpgrp',
+            fd: fd | 0,
+          }).pgid | 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_tcsetpgrp: (fd, pgid) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          this.kernelClient.call({
+            op: 'tcsetpgrp',
+            fd: fd | 0,
+            pgid: pgid | 0,
+          });
           return 0;
         } catch (error) {
           return -cppTraceKernelErrno(error);
@@ -11925,6 +11981,18 @@ pid_t getpgid(pid_t pid);
 pid_t getsid(pid_t pid);
 pid_t setsid(void);
 int setpgid(pid_t pid, pid_t pgroup);
+int __tracecode_isatty(int fd);
+pid_t __tracecode_tcgetpgrp(int fd);
+int __tracecode_tcsetpgrp(int fd, pid_t pgroup);
+
+/*
+ * WASI libc ships local tty stubs. Route source calls to the TraceKernel shim
+ * explicitly so the archive's weak compatibility implementation cannot win
+ * link resolution ahead of the kernel-backed definitions.
+ */
+#define isatty __tracecode_isatty
+#define tcgetpgrp __tracecode_tcgetpgrp
+#define tcsetpgrp __tracecode_tcsetpgrp
 
 #ifdef __cplusplus
 }
@@ -12045,6 +12113,12 @@ __attribute__((import_module("tracecode_kernel"), import_name("proc_setsid")))
 int __tracecode_proc_setsid(void);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_setpgid")))
 int __tracecode_proc_setpgid(int pid, int pgroup);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_isatty")))
+int __tracecode_proc_isatty(int fd);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_tcgetpgrp")))
+int __tracecode_proc_tcgetpgrp(int fd);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_tcsetpgrp")))
+int __tracecode_proc_tcsetpgrp(int fd, int pgroup);
 
 int fcntl(int fd, int command, ...) {
   int result;
@@ -12425,6 +12499,30 @@ pid_t setsid(void) {
 }
 int setpgid(pid_t pid, pid_t pgroup) {
   int result = __tracecode_proc_setpgid((int)pid, (int)pgroup);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+int isatty(int fd) {
+  int result = __tracecode_proc_isatty(fd);
+  if (result < 0) {
+    errno = -result;
+    return 0;
+  }
+  return result != 0;
+}
+pid_t tcgetpgrp(int fd) {
+  int result = __tracecode_proc_tcgetpgrp(fd);
+  if (result < 0) {
+    errno = -result;
+    return (pid_t)-1;
+  }
+  return (pid_t)result;
+}
+int tcsetpgrp(int fd, pid_t pgroup) {
+  int result = __tracecode_proc_tcsetpgrp(fd, (int)pgroup);
   if (result < 0) {
     errno = -result;
     return -1;
