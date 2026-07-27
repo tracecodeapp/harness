@@ -582,8 +582,8 @@ The initial 0.13 branch now establishes:
 - session-owned process supervision;
 - process-owned runtime leases released on exit, failure, signal, or teardown;
 - explicit process lifecycle and termination records;
-- lease-level graceful `SIGINT`/`SIGTERM` delivery with a kernel-owned deadline
-  and unconditional `SIGKILL` force interruption;
+- lease-level graceful `SIGHUP`/`SIGINT`/`SIGQUIT`/`SIGTERM` delivery with a
+  kernel-owned deadline and unconditional `SIGKILL` force interruption;
 - process-owned watchdog arm, pet, status, disarm, expiry, signal delivery, and
   teardown with a transport-neutral syscall and JavaScript adapter;
 - process environment isolation;
@@ -624,6 +624,15 @@ The initial 0.13 branch now establishes:
 - authoritative process-identity queries that expose live parent, process
   group, and session topology across runtime workers, including product-bridge
   orphan reparenting to PID 1;
+- session-owned controlling terminals with process-owned terminal descriptors,
+  foreground process-group transfer, background-read rejection, new-session
+  detachment, host/process byte streams, and kernel-owned terminal snapshots;
+- terminal job-control syscalls (`isatty`, `tcgetpgrp`, and `tcsetpgrp`) across
+  JavaScript/TypeScript, C/C++, Python, and C#, including ordinary runtime API
+  surfaces rather than TraceKernel-only test hooks;
+- authoritative terminal-generated `VINTR` and `VQUIT` delivery to the
+  foreground process group, plus `SIGHUP` delivery and controlling-session
+  detachment when the terminal closes;
 - a transport-neutral synchronous runtime adapter plus a bounded binary
   SharedArrayBuffer implementation for dedicated browser workers;
 - atomic versioned bulk reads and a bounded generation-validated runtime read
@@ -711,6 +720,36 @@ The initial 0.13 branch now establishes:
 The pipe is intentionally the first descriptor resource. It exercises blocking,
 interruption, endpoint lifecycle, and backpressure before the same contracts are
 applied to files, terminals, and sockets.
+
+## Remaining kernelization gates
+
+The syscall contract and language adapters are no longer the main migration
+risk. The product workspace still owns a transitional implementation of process,
+descriptor, filesystem, terminal, and network state behind that contract.
+Completing kernelization means replacing that compatibility handler with an
+extracted `TraceKernelSession` without introducing a second mutable copy.
+
+That authority migration must preserve, in order:
+
+1. persistent workspace hydration and commit to the configured storage backend;
+2. editor/host mutations and runtime syscalls on one TKFS linearization source;
+3. hidden and readonly policy enforcement before mutations commit;
+4. process, descriptor, terminal, socket, journal, and resource-accounting
+   identity across terminal, `runCommand`, and language-initiated children;
+5. crash recovery that destroys or revalidates every mutable runtime lease while
+   retaining only immutable host caches.
+
+Suspended job control (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`, and `SIGCONT`) is a
+separate runtime-contract gate. Browser hosts cannot honestly suspend arbitrary
+CPU-bound worker code by changing process-table metadata. TraceKernel must add a
+runtime lease suspend/resume capability, and each language adapter must prove
+that capability, before exposing those signals as supported.
+
+Terminal window-size ioctls and `SIGWINCH`, additional termios modes, positive
+socket deadlines, UDP, broader DNS/address-family behavior, and Unix-domain
+sockets remain later subsystem slices. TraceJVM should attach through the same
+session/process/descriptor contracts rather than adapting the legacy CheerpJ
+filesystem layout into the kernel.
 
 The governing invariant is:
 
