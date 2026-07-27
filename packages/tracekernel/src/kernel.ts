@@ -49,6 +49,7 @@ import type {
   TraceKernelFileSystemPolicy,
   TraceKernelPrincipal,
   TraceKernelProcessPhase,
+  TraceKernelProcessSchedulingState,
   TraceKernelProcessSnapshot,
   TraceKernelProcessSpec,
   TraceKernelProcessTermination,
@@ -125,6 +126,7 @@ interface MutableProcessRecord {
   sid: number;
   controllingTerminalId?: string;
   phase: TraceKernelProcessPhase;
+  schedulingState: TraceKernelProcessSchedulingState;
   runtime: TraceKernelRuntimeName;
   command: string;
   args: readonly string[];
@@ -159,6 +161,7 @@ function immutableSnapshot(record: MutableProcessRecord): TraceKernelProcessSnap
       ? {}
       : { controllingTerminalId: record.controllingTerminalId }),
     phase: record.phase,
+    schedulingState: record.schedulingState,
     runtime: record.runtime,
     command: record.command,
     args: Object.freeze([...record.args]),
@@ -229,6 +232,10 @@ export class TraceKernelProcess {
   setControllingTerminal(terminalId?: string): void {
     if (terminalId === undefined) delete this.record.controllingTerminalId;
     else this.record.controllingTerminalId = terminalId;
+  }
+
+  setSchedulingState(state: TraceKernelProcessSchedulingState): void {
+    this.record.schedulingState = state;
   }
 
   snapshot(): TraceKernelProcessSnapshot {
@@ -387,6 +394,7 @@ export class TraceKernelProcess {
     return Effect.sync(() => {
       this.runtimeLease = lease;
       this.record.phase = 'running';
+      this.record.schedulingState = 'running';
       this.record.startedAt = Date.now();
     }).pipe(
       Effect.andThen(Deferred.succeed(this.started, undefined)),
@@ -912,6 +920,16 @@ export class TraceKernelSession {
         ...this.exitedChildren,
       ]).values(),
       requester
+    );
+  }
+
+  setProcessSchedulingState(
+    process: TraceKernelProcess,
+    state: TraceKernelProcessSchedulingState
+  ): Effect.Effect<TraceKernelProcessSchedulingState, TraceKernelProcessStateError> {
+    return this.assertOwnedProcess(process).pipe(
+      Effect.tap(() => Effect.sync(() => process.setSchedulingState(state))),
+      Effect.as(state)
     );
   }
 
@@ -2314,6 +2332,7 @@ export class TraceKernelSession {
         ? {}
         : { controllingTerminalId }),
       phase: 'created',
+      schedulingState: 'queued',
       runtime: spec.runtime,
       command: spec.command,
       args: Object.freeze([...(spec.args ?? [])]),

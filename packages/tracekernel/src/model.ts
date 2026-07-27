@@ -15,6 +15,11 @@ export type TraceKernelProcessPhase =
   | 'exiting'
   | 'exited';
 
+export type TraceKernelProcessSchedulingState =
+  | 'queued'
+  | 'running'
+  | 'blocked';
+
 export type TraceKernelSignal =
   | 'SIGHUP'
   | 'SIGINT'
@@ -68,6 +73,7 @@ export interface TraceKernelProcessSnapshot {
   readonly sid: number;
   readonly controllingTerminalId?: string;
   readonly phase: TraceKernelProcessPhase;
+  readonly schedulingState: TraceKernelProcessSchedulingState;
   readonly runtime: TraceKernelRuntimeName;
   readonly command: string;
   readonly args: readonly string[];

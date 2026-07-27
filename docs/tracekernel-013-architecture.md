@@ -84,6 +84,15 @@ The lifecycle phase is:
 created -> starting -> running -> exiting -> exited
 ```
 
+Scheduling state is orthogonal to lifecycle. A live process is `queued`,
+`running`, or `blocked`; the host scheduler publishes those transitions through
+the owning session instead of maintaining the inspection authority itself.
+Starting a runtime lease defaults to `running`, while the product command
+scheduler explicitly publishes `queued` before admission and `running` when
+its callback begins. Process snapshots and scheduler diagnostics therefore
+remain truthful even though TraceKernel does not dictate a particular host
+scheduling algorithm.
+
 Normal exit, signal termination, and failure are termination causes recorded on
 the final process state.
 
@@ -486,11 +495,12 @@ standard descriptor placement is process state. Product `tty` and foreground
 fields are a temporary read-through presentation of those two kernel facts.
 
 `/proc`, `ps`, and `jobs` now enumerate the actor-filtered authoritative
-process-table snapshot. PID topology, command/cwd/environment, live versus
+process-table snapshot. PID topology, command/cwd/environment, scheduling
+state, live versus
 unreaped-zombie state, termination, descriptor count, and foreground-group
 membership are projected from TraceKernel on every read. Product records
-provide only fields the kernel does not yet model, such as scheduler-queue
-presentation, UI actor labels, and the compatibility tty label. Corrupting the
+provide only presentation fields such as UI actor labels and the compatibility
+tty label. Corrupting the
 product topology or lifecycle projection cannot change these inspection
 surfaces. Process-control commands still resolve their concrete host execution
 handle through the product record after selecting the authoritative PID.
@@ -882,11 +892,11 @@ The remaining authority migration must preserve, in order:
    legacy input dual feed and its control-byte suppression; metadata, resize,
    input/output bytes, one-shot EOF, line discipline, foreground signal
    delivery, and fd 0/1/2 descriptors are already authoritative;
-2. move scheduler-queue presentation and remaining host execution handles
-   behind kernel-owned process metadata, then delete the mutable product
-   topology/lifecycle projection; shell/language wait selection and reaping,
-   `/proc`, `ps`, `jobs`, foreground-group/descriptor placement, and logical
-   PID 1 ownership already read or mutate authoritative state;
+2. move remaining host execution handles behind kernel-owned process metadata,
+   then delete the mutable product topology/lifecycle projection;
+   scheduler state, shell/language wait selection and reaping, `/proc`, `ps`,
+   `jobs`, foreground-group/descriptor placement, and logical PID 1 ownership
+   already read or mutate authoritative state;
 3. attribute journal and resource events directly to the authoritative process
    and eliminate the remaining transitional lifecycle observations;
 4. migrate local structured HTTP onto TCP only after the HTTP conformance

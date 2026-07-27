@@ -699,7 +699,13 @@ function traceKernelTsv(value: unknown): string {
   return String(value ?? '').replace(/[\t\r\n]+/g, ' ');
 }
 
-type RuntimeKernelProcessState = 'queued' | 'running' | 'signaled' | 'zombie' | 'exited';
+type RuntimeKernelProcessState =
+  | 'queued'
+  | 'running'
+  | 'blocked'
+  | 'signaled'
+  | 'zombie'
+  | 'exited';
 type RuntimeKernelTtyName = RuntimeKernelDevicePath | '?';
 
 interface RuntimeKernelProcessRecord {
@@ -4457,10 +4463,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const state: RuntimeKernelProcessState =
         snapshot.phase === 'exited'
           ? 'zombie'
-          : record.state === 'queued'
+          : snapshot.schedulingState === 'queued'
             ? 'queued'
-            : record.state === 'signaled'
-              ? 'signaled'
+            : snapshot.schedulingState === 'blocked'
+              ? 'blocked'
               : 'running';
       return {
         ...record,
@@ -5504,6 +5510,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const state =
       process.state === 'queued'
         ? 'S (queued)'
+        : process.state === 'blocked'
+          ? 'S (blocked)'
         : process.state === 'running'
         ? 'R (running)'
         : process.state === 'signaled'
@@ -5692,16 +5700,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private renderProcScheduler(): string {
-    const active = this.activeProcessRecords();
+    const active = this.kernelPresentationProcessRecords();
     const scheduler = this.commandScheduler.snapshot();
     const processTableUsage = 1 + active.length;
     const queued = active.filter((process) => process.state === 'queued').length;
     const running = active.filter((process) => process.state === 'running').length;
+    const blocked = active.filter((process) => process.state === 'blocked').length;
     const zombies = active.filter((process) => process.state === 'zombie').length;
     return [
       `tasks\t${active.length}`,
       `queued\t${queued}`,
       `running\t${running}`,
+      `blocked\t${blocked}`,
       `zombies\t${zombies}`,
       `admitted\t${scheduler.running}`,
       `waiting\t${scheduler.queued}`,
@@ -6822,6 +6832,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private processStat(process: RuntimeKernelProcessRecord): string {
     const state = process.state === 'running'
       ? 'R'
+      : process.state === 'blocked'
+        ? 'S'
       : process.state === 'queued'
         ? 'S'
         : process.state === 'zombie'
@@ -8968,6 +8980,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
     }
     const kernelSnapshot = kernelProcess.snapshot();
+    const authority = this.traceKernelAuthority;
+    if (!authority) {
+      throw new Error('TraceKernel session authority is unavailable.');
+    }
+    await Effect.runPromise(
+      authority.session.setProcessSchedulingState(kernelProcess, 'queued')
+    );
     const pid = kernelProcess.pid;
     this.nextPid = Math.max(this.nextPid, pid + 1);
     const process: RuntimeKernelProcessRecord = {
@@ -9056,6 +9075,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     let processExitCode = 1;
     return this.commandScheduler.runCommand({ pid: process.pid, command, signal: abortController.signal }, async () => {
       try {
+        await Effect.runPromise(
+          authority.session.setProcessSchedulingState(kernelProcess, 'running')
+        );
         if (process.signal) {
           const result = this.signalCommandResult(process);
           const output = this.captureReturnedOutput(commandContext, result);

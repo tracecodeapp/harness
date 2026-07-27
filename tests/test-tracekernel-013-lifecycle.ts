@@ -201,6 +201,16 @@ async function main(): Promise<void> {
         command: 'block',
       });
       yield* admitted.awaitStarted();
+      assertCondition(
+        admitted.snapshot().schedulingState === 'running',
+        'A started process did not enter the kernel running state.'
+      );
+      yield* limitedSession.setProcessSchedulingState(admitted, 'blocked');
+      assertCondition(
+        admitted.snapshot().schedulingState === 'blocked',
+        'The host could not publish a blocked scheduling state.'
+      );
+      yield* limitedSession.setProcessSchedulingState(admitted, 'running');
       const rejected = yield* Effect.flip(limitedSession.spawn({
         runtime: 'test',
         command: 'block',
@@ -460,6 +470,7 @@ async function main(): Promise<void> {
     sessionTeardownTerminatedDescendants: true,
     processCeilingReturnsEagain: true,
     processCapacityReleasedOnExit: true,
+    kernelOwnedSchedulingState: true,
     logicalInitOwnsRetainedTopLevelWaits: true,
     authoritativeProcessTableIncludesUnreapedZombies: true,
     parentTopologyInherited: true,

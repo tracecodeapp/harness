@@ -167,7 +167,13 @@ async function main(): Promise<void> {
           ppid: number;
           pgid: number;
           sid: number;
-          state: 'queued' | 'running' | 'signaled' | 'zombie' | 'exited';
+          state:
+            | 'queued'
+            | 'running'
+            | 'blocked'
+            | 'signaled'
+            | 'zombie'
+            | 'exited';
         }>;
       }
     ).processTable.get(pid);
@@ -290,6 +296,108 @@ async function main(): Promise<void> {
     workspace.dispose();
   }
 
+  let releaseSchedulerA!: () => void;
+  const schedulerAReleased = new Promise<void>((resolve) => {
+    releaseSchedulerA = resolve;
+  });
+  let releaseSchedulerB!: () => void;
+  const schedulerBReleased = new Promise<void>((resolve) => {
+    releaseSchedulerB = resolve;
+  });
+  let markSchedulerAStarted!: () => void;
+  const schedulerAStarted = new Promise<void>((resolve) => {
+    markSchedulerAStarted = resolve;
+  });
+  let markSchedulerBStarted!: () => void;
+  const schedulerBStarted = new Promise<void>((resolve) => {
+    markSchedulerBStarted = resolve;
+  });
+  const schedulerWorkspace = await createRuntimeWorkspace({
+    kernel: { scheduler: { maxConcurrentCommands: 1 } },
+    files: [
+      { path: 'scheduler-a.js', contents: '// scheduler holder\n' },
+      { path: 'scheduler-b.js', contents: '// scheduler waiter\n' },
+    ],
+    nodeRunner: async (request) => {
+      if (request.scriptPath.endsWith('scheduler-a.js')) {
+        markSchedulerAStarted();
+        await schedulerAReleased;
+        return { stdout: 'a\n', stderr: '', exitCode: 0 };
+      }
+      markSchedulerBStarted();
+      await schedulerBReleased;
+      return { stdout: 'b\n', stderr: '', exitCode: 0 };
+    },
+  });
+  const schedulerSession = (
+    schedulerWorkspace as unknown as {
+      traceKernelAuthority?: { session: TraceKernelSession };
+    }
+  ).traceKernelAuthority?.session;
+  assertCondition(
+    schedulerSession,
+    'Scheduler workspace did not create a TraceKernel session.'
+  );
+  try {
+    const schedulerA = schedulerWorkspace.runCommand('node scheduler-a.js');
+    await schedulerAStarted;
+    const schedulerB = schedulerWorkspace.runCommand('node scheduler-b.js');
+    let queuedSnapshot = schedulerSession
+      .processSnapshots()
+      .find((snapshot) => snapshot.command === 'node scheduler-b.js');
+    for (let attempt = 0; attempt < 100 && !queuedSnapshot; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      queuedSnapshot = schedulerSession
+        .processSnapshots()
+        .find((snapshot) => snapshot.command === 'node scheduler-b.js');
+    }
+    const runningSnapshot = schedulerSession
+      .processSnapshots()
+      .find((snapshot) => snapshot.command === 'node scheduler-a.js');
+    assertCondition(
+      runningSnapshot?.schedulingState === 'running' &&
+        queuedSnapshot?.schedulingState === 'queued',
+      `Workspace scheduling was not published to TraceKernel: ${JSON.stringify({
+        runningSnapshot,
+        queuedSnapshot,
+      })}`
+    );
+    const queuedProcesses = await schedulerWorkspace.readFile(
+      '/proc/tracekernel/processes'
+    );
+    assertCondition(
+      queuedProcesses.includes(
+        `${queuedSnapshot.pid}\t1\t${queuedSnapshot.pid}\t1\tqueued\t`
+      ),
+      `/proc did not read queued state from TraceKernel: ${JSON.stringify(
+        queuedProcesses
+      )}`
+    );
+    releaseSchedulerA();
+    await schedulerBStarted;
+    const admittedSnapshot = schedulerSession
+      .processSnapshots()
+      .find((snapshot) => snapshot.pid === queuedSnapshot.pid);
+    assertCondition(
+      admittedSnapshot?.schedulingState === 'running',
+      `Scheduler admission did not update TraceKernel: ${JSON.stringify(
+        admittedSnapshot
+      )}`
+    );
+    releaseSchedulerB();
+    const [schedulerAResult, schedulerBResult] = await Promise.all([
+      schedulerA,
+      schedulerB,
+    ]);
+    assertCondition(
+      schedulerAResult.stdout === 'a\n' &&
+        schedulerBResult.stdout === 'b\n',
+      'Scheduler conformance commands did not complete.'
+    );
+  } finally {
+    schedulerWorkspace.dispose();
+  }
+
   console.log(JSON.stringify({
     schema: 'tracekernel-013-workspace-job-control-v1',
     kernelOwnedForegroundProcessGroup: true,
@@ -301,6 +409,7 @@ async function main(): Promise<void> {
     shellWaitReapsLogicalInitChildExactlyOnce: true,
     preExitShellWaitBeatsNormalAutoReap: true,
     procPsAndJobsReadAuthoritativeProcessTable: true,
+    kernelOwnedSchedulingState: true,
   }, null, 2));
 }
 
