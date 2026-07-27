@@ -147,6 +147,12 @@ export interface TraceKernelRuntimeResult {
   readonly exitCode: number;
   readonly stdout?: string;
   readonly stderr?: string;
+  /**
+   * Explicit runtime-observed termination. Controlled host runtimes use this
+   * to distinguish a kernel-delivered signal from an ordinary numeric exit
+   * such as `exit(143)`.
+   */
+  readonly termination?: TraceKernelProcessTermination;
 }
 
 /**

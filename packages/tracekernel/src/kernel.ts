@@ -399,10 +399,14 @@ export class TraceKernelProcess {
             message: error.message,
           }, '', error.message.length > 0 ? `${error.message}\n` : '')),
         onSuccess: (result) =>
-          Effect.sync(() => this.finish({
-            kind: 'exit',
-            exitCode: result.exitCode,
-          }, result.stdout ?? '', result.stderr ?? '')),
+          Effect.sync(() => this.finish(
+            result.termination ?? {
+              kind: 'exit',
+              exitCode: result.exitCode,
+            },
+            result.stdout ?? '',
+            result.stderr ?? ''
+          )),
       }),
       Effect.onInterrupt(() =>
         Effect.sync(() => {

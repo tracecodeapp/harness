@@ -697,6 +697,7 @@ async function main(): Promise<void> {
     distinctRuntimeProcessIdentity: true,
     processOwnedPipeInheritance: true,
     sharedFilesystemAcrossParentAndChild: true,
+    kernelOwnedWaitRecords: true,
     exactlyOnceChildReaping: true,
     controllingTerminalInheritedByChildren: true,
     detachedCommandsReportEnotty: true,

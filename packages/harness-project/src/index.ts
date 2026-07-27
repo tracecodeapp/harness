@@ -111,6 +111,7 @@ import {
   type TraceKernelPrincipal,
   type TraceKernelProcess,
   type TraceKernelSession,
+  type TraceKernelSignal,
   type TraceKernelSyscallErrorCode,
   type TraceKernelSyscallRequest,
   type TraceKernelSyscallResult,
@@ -960,17 +961,21 @@ interface RuntimeLazyCommand {
   load: () => Promise<Command>;
 }
 
-function normalizeTraceKernelSignal(value: string | undefined): { name: string; code: number } | null {
+function normalizeTraceKernelSignal(
+  value: string | undefined
+): { name: TraceKernelSignal; code: number } | null {
   const raw = (value ?? 'SIGTERM').trim().toUpperCase();
   if (!raw) return null;
   if (/^[0-9]+$/.test(raw)) {
     const code = Number(raw);
     const name = TRACEKERNEL_SIGNAL_NAMES_BY_NUMBER.get(code);
-    return name ? { name, code } : null;
+    return name ? { name: name as TraceKernelSignal, code } : null;
   }
   const name = raw.startsWith('SIG') ? raw : `SIG${raw}`;
   const code = TRACEKERNEL_SIGNAL_NUMBERS.get(name);
-  return code === undefined ? null : { name, code };
+  return code === undefined
+    ? null
+    : { name: name as TraceKernelSignal, code };
 }
 
 function runtimeCommandEnvChanges(
@@ -1749,42 +1754,29 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         case 'wait': {
           const process = this.runtimeSyscallProcess(context);
-          const child = await this.waitRuntimeSyscallChild(
-            process,
-            request.pid,
-            request.noHang === true
+          const result = await this.dispatchExtractedTraceKernelSyscall(
+            request,
+            context
           );
-          if (!child) {
-            return {
-              ok: true,
-              value: { op: 'wait', pid: request.pid },
-            };
+          if (
+            result.ok &&
+            result.value.op === 'wait' &&
+            result.value.termination
+          ) {
+            const projectedChild = await this.waitRuntimeSyscallChild(
+              process,
+              result.value.pid
+            );
+            if (!projectedChild || projectedChild.pid !== result.value.pid) {
+              throw Object.assign(
+                new Error(
+                  `ECHILD: kernel-reaped child ${result.value.pid} has no product lifecycle projection`
+                ),
+                { code: 'ECHILD' }
+              );
+            }
           }
-          const exitCode = child.exitCode ?? 1;
-          const signal = child.signal === 'SIGHUP' ||
-            child.signal === 'SIGINT' ||
-            child.signal === 'SIGQUIT' ||
-            child.signal === 'SIGTERM' ||
-            child.signal === 'SIGKILL'
-            ? child.signal
-            : undefined;
-          return {
-            ok: true,
-            value: {
-              op: 'wait',
-              pid: child.pid,
-              termination: signal
-                ? {
-                    kind: 'signal',
-                    signal,
-                    exitCode,
-                  }
-                : {
-                    kind: 'exit',
-                    exitCode,
-                  },
-            },
-          };
+          return result;
         }
         case 'socket': {
           const fd = await this.kernelNetwork.socket(
@@ -8902,9 +8894,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         await this.kernelDescriptors.closeProcess(process.pid);
       }
       await launchHooks?.afterDescriptorClose?.(process, commandContext);
+      const terminationSignal = process.signal
+        ? normalizeTraceKernelSignal(process.signal)?.name
+        : undefined;
       await Effect.runPromise(
         this.traceKernelControlledRuntime.complete(process.pid, {
           exitCode: processExitCode,
+          ...(terminationSignal
+            ? {
+                termination: {
+                  kind: 'signal' as const,
+                  signal: terminationSignal,
+                  exitCode: processExitCode,
+                },
+              }
+            : {}),
         })
       );
       await Effect.runPromise(kernelProcess.wait()).catch(() => undefined);

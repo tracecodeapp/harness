@@ -453,6 +453,13 @@ process completion and teardown, and delivers its configured signal through
 the same authoritative process signal path. Product shell diagnostics retain
 a compatibility presentation but no runtime watchdog timer.
 
+Language `wait` now lets the kernel select and reap the child first, including
+exact, any-child, caller-group, named-group, and nonblocking selectors. The
+product zombie table is reconciled afterward only for legacy shell/proc
+presentation. Controlled runtime results carry an optional explicit
+termination record, so cooperative host signal delivery remains
+`signal(SIGTERM)` rather than being collapsed into an unrelated `exit(143)`.
+
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
 | Runtime API surface | 0.13 syscall |
@@ -815,9 +822,10 @@ The remaining authority migration must preserve, in order:
 1. move terminal input/output pumping, resize events, and signal-character
    delivery onto the session-owned terminal whose metadata and fd 0/1/2
    descriptors are already authoritative;
-2. route product wait publication and shell job-control presentation through
-   the extracted session without maintaining a second mutable lifecycle or
-   topology projection;
+2. route shell wait publication and job-control presentation through the
+   extracted session without maintaining a second mutable lifecycle or
+   topology projection; language wait selection and reaping are already
+   authoritative;
 3. attribute journal and resource events directly to the authoritative process
    and eliminate the remaining transitional lifecycle observations;
 4. migrate local structured HTTP onto TCP only after the HTTP conformance
