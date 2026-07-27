@@ -414,13 +414,22 @@ export function sortRuntimeProjectPatchChanges(changes: readonly RuntimeProjectP
   const rank = (change: RuntimeProjectPatchChange): number => {
     if (change.kind === 'delete') return 0;
     if (change.kind === 'rmdir') return 1;
-    if (change.kind === 'mkdir') return 2;
-    return change.kind === 'write' || change.kind === 'symlink' || change.kind === 'directory' ? 3 : 4;
+    if (change.kind === 'write' || change.kind === 'symlink') return 2;
+    if (change.kind === 'mkdir') return 3;
+    return change.kind === 'directory' ? 4 : 5;
   };
   return [...changes].sort((left, right) => {
     const rankDelta = rank(left) - rank(right);
     if (rankDelta !== 0) return rankDelta;
     if (left.kind === 'rmdir' && right.kind === 'rmdir') return right.path.localeCompare(left.path);
+    // Content writes create missing ancestors. Apply new-directory metadata
+    // afterward, deepest first, so a recursive child mkdir cannot subsequently
+    // overwrite its parent's persisted mtime.
+    if (left.kind === 'mkdir' && right.kind === 'mkdir') {
+      const depthDelta =
+        right.path.split('/').length - left.path.split('/').length;
+      if (depthDelta !== 0) return depthDelta;
+    }
     return left.path.localeCompare(right.path);
   });
 }

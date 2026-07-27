@@ -2,6 +2,7 @@
 
 import * as Effect from 'effect/Effect';
 import { TraceKernelFileSystem } from '@tracecode/tracekernel';
+import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
 import { TraceKernelBackingFileSystem } from '../packages/harness-project/src/tkfs-backing-filesystem';
 
 function assertCondition(condition: boolean, message: string): void {
@@ -80,6 +81,28 @@ async function main(): Promise<void> {
     'Shell namespace enumeration did not use TKFS.'
   );
 
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'src/main.txt', contents: 'workspace authority\n' }],
+  });
+  await workspace.runCommand('ln src/main.txt src/alias.txt');
+  const workspaceImage = await workspace.exportTraceKernelFileSystemImage();
+  const checkpoint = await Effect.runPromise(
+    TraceKernelFileSystem.fromImage(workspaceImage)
+  );
+  await Effect.runPromise(
+    checkpoint.writeFile(
+      '/workspace/src/alias.txt',
+      new TextEncoder().encode('checkpoint inode\n'),
+      '/'
+    )
+  );
+  assertCondition(
+    text(await Effect.runPromise(checkpoint.readFile('/workspace/src/main.txt', '/'))) ===
+      'checkpoint inode\n',
+    'The product workspace checkpoint did not preserve authoritative inode state.'
+  );
+  workspace.dispose();
+
   console.log(JSON.stringify({
     schema: 'tracekernel-013-tkfs-backing-v1',
     oneBackingStore: true,
@@ -88,6 +111,7 @@ async function main(): Promise<void> {
     hardLinks: true,
     symlinks: true,
     metadata: true,
+    productWorkspaceCheckpoint: true,
   }, null, 2));
 }
 

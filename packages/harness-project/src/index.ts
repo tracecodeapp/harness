@@ -1,7 +1,7 @@
+import * as Effect from 'effect/Effect';
 import {
   Bash,
   defineCommand,
-  InMemoryFs,
 } from 'just-bash/browser';
 import {
   applyRuntimeCommandResultFiles,
@@ -92,12 +92,14 @@ import {
   encodeTraceKernelHttp1Response,
   makeTraceKernelPromiseSyscallHandler,
   makeTraceKernelSharedSyscallChannel,
+  TraceKernelFileSystem,
   TraceKernelHttp1Decoder,
   TraceKernelSharedSyscallServer,
   type TraceKernelHttp1Header,
   type TraceKernelHttp1Message,
   type TraceKernelHttp1Request,
   type TraceKernelHttp1Response,
+  type TraceKernelFileSystemImage,
   type TraceKernelSyscallErrorCode,
   type TraceKernelSyscallRequest,
   type TraceKernelSyscallResult,
@@ -276,6 +278,7 @@ import {
 } from './scheduler';
 import { RuntimeKernelDescriptorManager } from './runtime-kernel-descriptors';
 import { RuntimeKernelNetworkManager } from './runtime-kernel-network';
+import { TraceKernelBackingFileSystem } from './tkfs-backing-filesystem';
 import {
   RUNTIME_PROJECT_PATCH_HASH_PATTERN,
   RUNTIME_PROJECT_PATCH_VERSION,
@@ -1034,6 +1037,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly bash: Bash;
   private readonly bashOptions: BashOptions;
   private readonly baseEnv: Record<string, string>;
+  private readonly traceKernelFileSystem: TraceKernelFileSystem;
   private readonly fs: KernelObservedFileSystem;
   private readonly kernelDescriptors: RuntimeKernelDescriptorManager;
   private readonly kernelNetwork: RuntimeKernelNetworkManager;
@@ -1113,8 +1117,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.kernelControl = options.kernelControl;
     this.cppRunner = options.cppRunner;
     this.kernel = this.createKernel();
+    this.traceKernelFileSystem = Effect.runSync(TraceKernelFileSystem.make());
     this.fs = new KernelObservedFileSystem(
-      new InMemoryFs(),
+      new TraceKernelBackingFileSystem(this.traceKernelFileSystem),
       this.fsLocks,
       () => this.cwd,
       () => this.kernelInfo.workspaceAlias,
@@ -9270,6 +9275,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return this.snapshotFromCachedFiles(options);
   }
 
+  /**
+   * Capture the complete session filesystem for persistence or crash recovery.
+   *
+   * Unlike a public project snapshot this intentionally includes system paths,
+   * hidden entries, inode identity, links, and kernel mutation generations.
+   */
+  async exportTraceKernelFileSystemImage(): Promise<TraceKernelFileSystemImage> {
+    this.assertNotDestroyed();
+    return Effect.runPromise(this.traceKernelFileSystem.exportImage());
+  }
+
   private async snapshotForCommand(includeHidden: boolean): Promise<RuntimeProjectSnapshot> {
     this.assertNotDestroyed();
     return this.snapshotFromCachedFiles({ includeHidden });
@@ -10103,18 +10119,8 @@ export async function createRuntimeWorkspace(
       }
     });
   }
-  if (sessionDirectoryMetadata.length > 0) {
-    await workspace.withSuspendedReadonlyPolicy(async () => {
-      for (const directory of sessionDirectoryMetadata) {
-        await workspace.applyKernelFileChange({ ...directory, directory: true });
-      }
-    });
-  }
   for (const directory of suppliedDirectories) {
     await workspace.mkdir(directory);
-  }
-  for (const directory of suppliedDirectoryMetadata) {
-    await workspace.applyKernelFileChange({ ...directory, directory: true });
   }
   if (sessionFiles.length > 0) {
     await workspace.withSuspendedReadonlyPolicy(() => workspace.writeFiles(sessionFiles));
@@ -10144,6 +10150,20 @@ export async function createRuntimeWorkspace(
     }
   }
   for (const symlink of suppliedSymlinks) await workspace.applyKernelFileChange(symlink);
+  // Restore directory metadata only after descendants. Creating files and
+  // links correctly changes their parent directory's mtime in TKFS; applying a
+  // persisted directory timestamp before those entries would make hydration
+  // nondeterministic and invalidate snapshot manifests.
+  if (sessionDirectoryMetadata.length > 0) {
+    await workspace.withSuspendedReadonlyPolicy(async () => {
+      for (const directory of sessionDirectoryMetadata) {
+        await workspace.applyKernelFileChange({ ...directory, directory: true });
+      }
+    });
+  }
+  for (const directory of suppliedDirectoryMetadata) {
+    await workspace.applyKernelFileChange({ ...directory, directory: true });
+  }
   return workspace;
 }
 

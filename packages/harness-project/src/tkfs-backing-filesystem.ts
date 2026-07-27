@@ -20,6 +20,9 @@ type WriteOptions = Parameters<IFileSystem['writeFile']>[2];
 type DirectoryEntries = Awaited<
   ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>
 >;
+type ByteStringResult = Awaited<
+  ReturnType<NonNullable<IFileSystem['readFileBytes']>>
+>;
 
 function selectedEncoding(
   options: ReadOptions | WriteOptions | undefined,
@@ -132,11 +135,17 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     return runKernelEffect(this.traceKernelFileSystem.readFile(path, '/'));
   }
 
+  async readFileBytes(path: string): Promise<ByteStringResult> {
+    const bytes = await this.readFileBuffer(path);
+    return Array.from(bytes, (byte) => String.fromCharCode(byte)).join('') as unknown as ByteStringResult;
+  }
+
   async writeFile(
     path: string,
     content: FileContent,
     options?: WriteOptions
   ): Promise<void> {
+    await this.ensureParentDirectory(path);
     await runKernelEffect(
       this.traceKernelFileSystem.writeFile(path, contentBytes(content, options), '/')
     );
@@ -147,6 +156,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     content: FileContent,
     options?: WriteOptions
   ): Promise<void> {
+    await this.ensureParentDirectory(path);
     const file = await runKernelEffect(this.traceKernelFileSystem.prepareOpen(path, '/', {
       access: 'write',
       create: true,
@@ -243,6 +253,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   }
 
   async mv(src: string, dest: string): Promise<void> {
+    await this.ensureParentDirectory(dest);
     await runKernelEffect(this.traceKernelFileSystem.rename(src, dest, '/'));
   }
 
@@ -278,5 +289,12 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     await runKernelEffect(
       this.traceKernelFileSystem.utimes(path, mtime.getTime(), '/')
     );
+  }
+
+  private async ensureParentDirectory(path: string): Promise<void> {
+    const normalized = this.resolvePath('/', path);
+    const separator = normalized.lastIndexOf('/');
+    const parent = separator <= 0 ? '/' : normalized.slice(0, separator);
+    if (!(await this.exists(parent))) await this.mkdir(parent, { recursive: true });
   }
 }
