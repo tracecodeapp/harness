@@ -484,6 +484,59 @@ public sealed record ProcessIdentity(
 );
 
 [SupportedOSPlatform("browser")]
+public static class KernelTerminal
+{
+    public static bool IsTerminal(int descriptor)
+    {
+        ValidateDescriptor(descriptor);
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "isatty",
+            fd = descriptor,
+        });
+        return value.GetProperty("isTerminal").GetBoolean();
+    }
+
+    public static int GetForegroundProcessGroup(int descriptor = 0)
+    {
+        ValidateDescriptor(descriptor);
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "tcgetpgrp",
+            fd = descriptor,
+        });
+        return value.GetProperty("pgid").GetInt32();
+    }
+
+    public static int SetForegroundProcessGroup(
+        int processGroupId,
+        int descriptor = 0
+    )
+    {
+        ValidateDescriptor(descriptor);
+        if (processGroupId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(processGroupId));
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "tcsetpgrp",
+            fd = descriptor,
+            pgid = processGroupId,
+        });
+        return value.GetProperty("pgid").GetInt32();
+    }
+
+    private static void ValidateDescriptor(int descriptor)
+    {
+        if (descriptor < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor));
+        }
+    }
+}
+
+[SupportedOSPlatform("browser")]
 public sealed class KernelProcess
 {
     private ProcessTermination? termination;

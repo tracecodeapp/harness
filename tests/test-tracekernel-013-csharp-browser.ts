@@ -181,6 +181,14 @@ async function main(): Promise<void> {
                 'var petted = TraceKernel.Watchdog.Pet();',
                 'var disarmed = TraceKernel.Watchdog.Disarm();',
                 'var currentIdentity = TraceKernel.KernelProcess.GetCurrentIdentity();',
+                'int foregroundProcessGroup = TraceKernel.KernelTerminal.GetForegroundProcessGroup();',
+                'bool managedTerminal = TraceKernel.KernelTerminal.IsTerminal(0)',
+                '    && TraceKernel.KernelTerminal.IsTerminal(1)',
+                '    && TraceKernel.KernelTerminal.IsTerminal(2)',
+                '    && foregroundProcessGroup == currentIdentity.ProcessGroupId',
+                '    && TraceKernel.KernelTerminal.SetForegroundProcessGroup(',
+                '        foregroundProcessGroup',
+                '    ) == foregroundProcessGroup;',
                 'bool managedIdentity = currentIdentity.ProcessId > 1',
                 '    && currentIdentity.ParentProcessId == 1',
                 '    && currentIdentity.ProcessGroupId == currentIdentity.ProcessId',
@@ -492,6 +500,7 @@ async function main(): Promise<void> {
                 '    && armed.Signal == TraceKernel.KernelSignal.Kill',
                 '    && petted.Armed',
                 '    && !disarmed.Armed',
+                '    && managedTerminal',
                 '    && managedIdentity',
                 '    && ParentState.Value == 73',
                 '    && descriptorFlags',
@@ -688,9 +697,9 @@ async function main(): Promise<void> {
           ],
         });
         try {
-          const command = await workspace.runCommand(
-            'dotnet run --project App.csproj'
-          );
+          const command = await workspace
+            .createTerminalSession()
+            .run('dotnet run --project App.csproj');
           return {
             command,
             commandKeys: Object.keys(command ?? {}),
@@ -722,6 +731,7 @@ async function main(): Promise<void> {
         managedChildProcesses: true,
         managedProcessIdentity: true,
         managedProcessGroups: true,
+        managedTerminalJobControl: true,
         managedTopologyMutation: true,
         managedNonblockingWait: true,
         managedWaitSelectors: ['any', 'caller-pgid', 'named-pgid', 'ECHILD'],

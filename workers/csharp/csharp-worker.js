@@ -200,6 +200,9 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   poll: 42,
   getsockopt: 43,
   identity: 44,
+  isatty: 45,
+  tcgetpgrp: 46,
+  tcsetpgrp: 47,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -541,6 +544,14 @@ class CSharpTraceKernelSyncClient {
         if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
         break;
       case 'setsid':
+        break;
+      case 'isatty':
+      case 'tcgetpgrp':
+        writer.i32(request.fd);
+        break;
+      case 'tcsetpgrp':
+        writer.i32(request.fd);
+        writer.i32(request.pgid);
         break;
       case 'identity':
         writer.u8(request.pid === undefined ? 0 : 1);
@@ -916,6 +927,13 @@ class CSharpTraceKernelSyncClient {
     } else if (operation === 'setsid') {
       value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
     } else if (operation === 'setpgid') {
+      value = { op: operation, pgid: reader.i32() };
+    } else if (operation === 'isatty') {
+      value = { op: operation, isTerminal: reader.u8() === 1 };
+    } else if (
+      operation === 'tcgetpgrp' ||
+      operation === 'tcsetpgrp'
+    ) {
       value = { op: operation, pgid: reader.i32() };
     } else if (operation === 'identity') {
       value = {
