@@ -157,7 +157,9 @@ async function main(): Promise<void> {
                   'import os',
                   'import time',
                   'print("held:started", flush=True)',
-                  'time.sleep(5)',
+                  'deadline = time.time() + 10',
+                  'while not os.path.exists("shared.txt") and time.time() < deadline:',
+                  '    time.sleep(0.05)',
                   'print("held:" + ("visible" if os.path.exists("shared.txt") else "missing"), flush=True)',
                   '',
                 ].join('\n'),
@@ -240,8 +242,8 @@ async function main(): Promise<void> {
           `${engine}: JavaScript live write should reach the authoritative workspace: ${JSON.stringify(result)}`
         );
         assertCondition(
-          result.heldResult.exitCode === 0 && result.heldResult.stdout.includes('held:missing'),
-          `${engine}: an already-running Python process should retain its command-start snapshot: ${JSON.stringify(result)}`
+          result.heldResult.exitCode === 0 && result.heldResult.stdout.includes('held:visible'),
+          `${engine}: an already-running Python process should observe JavaScript's authoritative TKFS write: ${JSON.stringify(result)}`
         );
         assertCondition(
           result.laterPython.exitCode === 0 && result.laterPython.stdout === 'written-by-javascript\n',
@@ -255,10 +257,9 @@ async function main(): Promise<void> {
           `${engine}: parallel providers should preserve independent live writes: ${JSON.stringify(result)}`
         );
         assertCondition(
-          result.conflictingWrites.filter((command) => command.exitCode === 0).length === 1 &&
-            result.conflictingWrites.filter((command) => command.error?.code === 'ESTALE').length === 1 &&
+          result.conflictingWrites.every((command) => command.exitCode === 0) &&
             (result.conflictOutput === 'python\n' || result.conflictOutput === 'javascript\n'),
-          `${engine}: parallel providers writing one path should produce one complete winner and one ESTALE conflict: ${JSON.stringify(result)}`
+          `${engine}: parallel providers writing one path should commit atomically with one complete final value: ${JSON.stringify(result)}`
         );
         console.log(`PASS: ${engine} project live filesystem cross-provider contract`);
       } finally {
