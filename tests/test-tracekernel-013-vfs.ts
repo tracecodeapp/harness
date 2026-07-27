@@ -6,6 +6,7 @@ import * as Exit from 'effect/Exit';
 import * as Option from 'effect/Option';
 import {
   makeTraceKernelHost,
+  TraceKernelFileSystem,
   TraceKernelFileSystemError,
   type TraceKernelRuntimeProvider,
 } from '@tracecode/tracekernel';
@@ -125,6 +126,40 @@ async function main(): Promise<void> {
         `Concurrent append was not atomically serialized: ${JSON.stringify(appendResult)}`
       );
 
+      yield* session.mkdir('image-tree');
+      yield* session.writeFile('image-tree/source.txt', bytes('shared inode'));
+      yield* session.link('image-tree/source.txt', 'image-tree/alias.txt');
+      yield* session.symlink('source.txt', 'image-tree/current.txt');
+      const image = yield* session.fileSystem.exportImage();
+      const hydrated = yield* TraceKernelFileSystem.fromImage(image);
+      assertCondition(
+        text(yield* hydrated.readFile('/workspace/image-tree/current.txt')) === 'shared inode',
+        'Hydration did not preserve symbolic-link resolution.'
+      );
+      yield* hydrated.writeFile('/workspace/image-tree/alias.txt', bytes('updated inode'));
+      assertCondition(
+        text(yield* hydrated.readFile('/workspace/image-tree/source.txt')) === 'updated inode',
+        'Hydration did not preserve hard-link inode identity.'
+      );
+      yield* hydrated.unlink('/workspace/image-tree/source.txt');
+      assertCondition(
+        text(yield* hydrated.readFile('/workspace/image-tree/alias.txt')) === 'updated inode',
+        'Removing one hydrated hard link removed the shared inode.'
+      );
+      assertCondition(
+        hydrated.mutationGeneration > image.mutationGeneration,
+        'A hydrated filesystem did not continue the committed generation sequence.'
+      );
+      const exportedFile = image.inodes.find(
+        (inode) => inode.kind === 'file' && text(inode.contents) === 'shared inode'
+      );
+      assertCondition(exportedFile?.kind === 'file', 'Exported image omitted file inode contents.');
+      if (exportedFile?.kind === 'file') exportedFile.contents[0] = '!'.charCodeAt(0);
+      assertCondition(
+        text(yield* session.readFile('image-tree/source.txt')) === 'shared inode',
+        'Exported image bytes remained aliased to the authoritative filesystem.'
+      );
+
       const exclusive = yield* Effect.exit(session.openFile(writer, 'append.log', {
         access: 'write',
         create: true,
@@ -171,6 +206,9 @@ async function main(): Promise<void> {
     unlinkPreservesOpenNode: true,
     atomicAppend: true,
     generationAdvancesOnMutation: true,
+    losslessImageHydration: true,
+    imagePreservesHardLinks: true,
+    imagePreservesSymlinks: true,
     fileDescriptionsCloseOnProcessExit: true,
   }, null, 2));
 }

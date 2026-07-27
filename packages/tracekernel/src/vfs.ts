@@ -28,6 +28,60 @@ export interface TraceKernelFileSnapshot {
   readonly generation: number;
 }
 
+export const TRACEKERNEL_FILE_SYSTEM_IMAGE_SCHEMA =
+  'tracekernel-tkfs-image-v1' as const;
+
+interface TraceKernelFileSystemImageInodeBase {
+  readonly inode: number;
+  readonly kind: TraceKernelNodeKind;
+  readonly mode: number;
+  readonly generation: number;
+  readonly createdAt: number;
+  readonly modifiedAt: number;
+  readonly changedAt: number;
+}
+
+export interface TraceKernelFileSystemImageFile
+  extends TraceKernelFileSystemImageInodeBase {
+  readonly kind: 'file';
+  readonly contents: Uint8Array;
+}
+
+export interface TraceKernelFileSystemImageDirectory
+  extends TraceKernelFileSystemImageInodeBase {
+  readonly kind: 'directory';
+}
+
+export interface TraceKernelFileSystemImageSymlink
+  extends TraceKernelFileSystemImageInodeBase {
+  readonly kind: 'symlink';
+  readonly target: string;
+}
+
+export type TraceKernelFileSystemImageInode =
+  | TraceKernelFileSystemImageFile
+  | TraceKernelFileSystemImageDirectory
+  | TraceKernelFileSystemImageSymlink;
+
+export interface TraceKernelFileSystemImageEntry {
+  readonly path: string;
+  readonly inode: number;
+}
+
+/**
+ * A lossless, quiescent TKFS namespace image.
+ *
+ * Namespace entries and inode records are deliberately separate so hard links
+ * survive persistence and hydration as shared kernel objects. Byte arrays are
+ * defensively copied at both boundaries.
+ */
+export interface TraceKernelFileSystemImage {
+  readonly schema: typeof TRACEKERNEL_FILE_SYSTEM_IMAGE_SCHEMA;
+  readonly mutationGeneration: number;
+  readonly entries: readonly TraceKernelFileSystemImageEntry[];
+  readonly inodes: readonly TraceKernelFileSystemImageInode[];
+}
+
 export interface TraceKernelVersionedFile {
   readonly contents: Uint8Array;
   /**
@@ -149,6 +203,38 @@ export class TraceKernelFileSystem {
   static make(): Effect.Effect<TraceKernelFileSystem> {
     return Effect.makeSemaphore(1).pipe(
       Effect.map((mutex) => new TraceKernelFileSystem(mutex))
+    );
+  }
+
+  /**
+   * Construct a new authoritative filesystem from one committed image.
+   *
+   * Hydration is a construction boundary, not a live merge operation: after
+   * this succeeds, callers must send all mutations through the returned TKFS.
+   */
+  static fromImage(
+    image: TraceKernelFileSystemImage
+  ): Effect.Effect<TraceKernelFileSystem, TraceKernelFileSystemError> {
+    return Effect.makeSemaphore(1).pipe(
+      Effect.flatMap((mutex) =>
+        Effect.try({
+          try: () => {
+            const fileSystem = new TraceKernelFileSystem(mutex);
+            fileSystem.restoreImage(image);
+            return fileSystem;
+          },
+          catch: (error) =>
+            error instanceof TraceKernelFileSystemError
+              ? error
+              : new TraceKernelFileSystemError({
+                  code: 'EINVAL',
+                  path: '/',
+                  message: `EINVAL: invalid TKFS image: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                }),
+        })
+      )
     );
   }
 
@@ -731,6 +817,57 @@ export class TraceKernelFileSystem {
       .sort((left, right) => left.path.localeCompare(right.path));
   }
 
+  /**
+   * Capture namespace and inode state at the same semaphore linearization point
+   * used by syscalls. The returned image does not share mutable bytes with TKFS.
+   */
+  exportImage(): Effect.Effect<TraceKernelFileSystemImage> {
+    return this.mutex.withPermits(1)(
+      Effect.sync(() => {
+        const inodeNodes = new Map<number, TraceKernelNode>();
+        const entries = [...this.nodes.entries()]
+          .map(([path, node]) => {
+            inodeNodes.set(node.inode, node);
+            return Object.freeze({ path, inode: node.inode });
+          })
+          .sort((left, right) => left.path.localeCompare(right.path));
+        const inodes = [...inodeNodes.values()]
+          .sort((left, right) => left.inode - right.inode)
+          .map((node): TraceKernelFileSystemImageInode => {
+            const metadata = {
+              inode: node.inode,
+              mode: node.mode,
+              generation: node.generation,
+              createdAt: node.createdAt,
+              modifiedAt: node.modifiedAt,
+              changedAt: node.changedAt,
+            };
+            if (node.kind === 'file') {
+              return Object.freeze({
+                ...metadata,
+                kind: 'file',
+                contents: Uint8Array.from(node.contents),
+              });
+            }
+            if (node.kind === 'symlink') {
+              return Object.freeze({
+                ...metadata,
+                kind: 'symlink',
+                target: node.target,
+              });
+            }
+            return Object.freeze({ ...metadata, kind: 'directory' });
+          });
+        return Object.freeze({
+          schema: TRACEKERNEL_FILE_SYSTEM_IMAGE_SCHEMA,
+          mutationGeneration: this.mutationGeneration,
+          entries: Object.freeze(entries),
+          inodes: Object.freeze(inodes),
+        });
+      })
+    );
+  }
+
   clear(): void {
     if (this.nodes.size > 0) {
       const paths = [...this.nodes.keys()];
@@ -744,6 +881,120 @@ export class TraceKernelFileSystem {
 
   private installInitialDirectory(path: string): void {
     this.nodes.set(path, this.makeDirectory(0o777, 0, Date.now()));
+  }
+
+  private restoreImage(image: TraceKernelFileSystemImage): void {
+    if (image?.schema !== TRACEKERNEL_FILE_SYSTEM_IMAGE_SCHEMA) {
+      throw this.error('EINVAL', '/', 'unsupported TKFS image schema');
+    }
+    if (
+      !Number.isSafeInteger(image.mutationGeneration) ||
+      image.mutationGeneration < 0 ||
+      !Array.isArray(image.entries) ||
+      !Array.isArray(image.inodes)
+    ) {
+      throw this.error('EINVAL', '/', 'malformed TKFS image');
+    }
+
+    const restoredInodes = new Map<number, TraceKernelNode>();
+    let maximumInode = 0;
+    let maximumGeneration = 0;
+    for (const inode of image.inodes) {
+      if (
+        !Number.isSafeInteger(inode.inode) ||
+        inode.inode <= 0 ||
+        restoredInodes.has(inode.inode) ||
+        !Number.isSafeInteger(inode.mode) ||
+        inode.mode < 0 ||
+        !Number.isSafeInteger(inode.generation) ||
+        inode.generation < 0 ||
+        !this.validImageTimestamp(inode.createdAt) ||
+        !this.validImageTimestamp(inode.modifiedAt) ||
+        !this.validImageTimestamp(inode.changedAt)
+      ) {
+        throw this.error('EINVAL', '/', 'invalid TKFS inode record');
+      }
+      const base = {
+        inode: inode.inode,
+        mode: inode.mode,
+        generation: inode.generation,
+        createdAt: inode.createdAt,
+        modifiedAt: inode.modifiedAt,
+        changedAt: inode.changedAt,
+      };
+      let node: TraceKernelNode;
+      if (inode.kind === 'file') {
+        if (!(inode.contents instanceof Uint8Array)) {
+          throw this.error('EINVAL', '/', 'invalid TKFS file contents');
+        }
+        node = {
+          ...base,
+          kind: 'file',
+          contents: Uint8Array.from(inode.contents),
+        };
+      } else if (inode.kind === 'directory') {
+        node = { ...base, kind: 'directory' };
+      } else if (inode.kind === 'symlink' && typeof inode.target === 'string') {
+        node = { ...base, kind: 'symlink', target: inode.target };
+      } else {
+        throw this.error('EINVAL', '/', 'invalid TKFS inode kind');
+      }
+      restoredInodes.set(inode.inode, node);
+      maximumInode = Math.max(maximumInode, inode.inode);
+      maximumGeneration = Math.max(maximumGeneration, inode.generation);
+    }
+
+    const restoredNodes = new Map<string, TraceKernelNode>();
+    const referencedInodes = new Set<number>();
+    for (const entry of image.entries) {
+      if (
+        typeof entry.path !== 'string' ||
+        !entry.path.startsWith('/') ||
+        normalizeTraceKernelPath(entry.path, '/') !== entry.path ||
+        restoredNodes.has(entry.path)
+      ) {
+        throw this.error('EINVAL', '/', 'invalid TKFS namespace entry');
+      }
+      const node = restoredInodes.get(entry.inode);
+      if (!node) {
+        throw this.error('EINVAL', entry.path, 'TKFS entry references a missing inode');
+      }
+      if (
+        node.kind === 'directory' &&
+        [...restoredNodes.values()].some((candidate) => candidate === node)
+      ) {
+        throw this.error('EINVAL', entry.path, 'TKFS directories cannot have hard links');
+      }
+      restoredNodes.set(entry.path, node);
+      referencedInodes.add(entry.inode);
+    }
+
+    const root = restoredNodes.get('/');
+    if (!root || root.kind !== 'directory') {
+      throw this.error('EINVAL', '/', 'TKFS image requires a root directory');
+    }
+    for (const [path] of restoredNodes) {
+      if (path === '/') continue;
+      const parent = restoredNodes.get(parentPath(path));
+      if (!parent || parent.kind !== 'directory') {
+        throw this.error('EINVAL', path, 'TKFS entry has no directory parent');
+      }
+    }
+    if (referencedInodes.size !== restoredInodes.size) {
+      throw this.error('EINVAL', '/', 'TKFS image contains an unreferenced inode');
+    }
+    if (image.mutationGeneration < maximumGeneration) {
+      throw this.error('EINVAL', '/', 'TKFS mutation generation precedes inode state');
+    }
+
+    this.nodes.clear();
+    for (const [path, node] of restoredNodes) this.nodes.set(path, node);
+    this.nextInode = maximumInode + 1;
+    this.nextGeneration = image.mutationGeneration + 1;
+  }
+
+  private validImageTimestamp(value: number): boolean {
+    return Number.isFinite(value) && value >= 0;
   }
 
   private makeFile(
