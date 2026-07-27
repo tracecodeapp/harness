@@ -1521,8 +1521,8 @@ var package_default = {
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
     "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
-    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
-    "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
+    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-controlled-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-tkfs-backing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-job-control.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
+    "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-stdio.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
     "test:tracekernel-013-python-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-python-browser.ts",
     "test:tracekernel-013-csharp-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-csharp-browser.ts",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
@@ -9780,16 +9780,38 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     )) return;
     emitOutput(route.stream, data, route.outputDevice, route.sourceDevice);
   };
+  let kernelStdinClosed = false;
   const readDeviceBytes = (device, size) => {
     const inputRoute = runtimeKernelDeviceInputRoute(kernelDevices, device);
     if (!inputRoute) return new Uint8Array();
+    if (executionState.kernelSyscalls) {
+      if (kernelStdinClosed) return new Uint8Array();
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: "read",
+        fd: 0,
+        maxBytes: Math.max(0, Math.floor(size ?? 16 * 1024))
+      });
+      if (result.ok === false) {
+        throw Object.assign(new Error(result.error.message), {
+          code: result.error.code
+        });
+      }
+      if (result.value.op !== "read") {
+        throw Object.assign(
+          new Error(`EPROTO: expected read response, received ${result.value.op}`),
+          { code: "EPROTO" }
+        );
+      }
+      if (result.value.bytes.byteLength === 0) kernelStdinClosed = true;
+      return result.value.bytes;
+    }
     if (request.stdinPipe) {
       return readRuntimeCommandStdinPipeBytes(request.stdinPipe, size);
     }
     return new Uint8Array();
   };
-  const remainingDeviceBytes = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? request.stdinPipe ? runtimeCommandStdinPipeRemainingBytes(request.stdinPipe) : 0 : 0;
-  const deviceInputClosed = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true : true;
+  const remainingDeviceBytes = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? executionState.kernelSyscalls ? kernelStdinClosed ? 0 : 1 : request.stdinPipe ? runtimeCommandStdinPipeRemainingBytes(request.stdinPipe) : 0 : 0;
+  const deviceInputClosed = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? executionState.kernelSyscalls ? kernelStdinClosed : request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true : true;
   const readDevice = (device) => textFromBytes(readDeviceBytes(device));
   const kernelDescriptorIsTerminal = (fd2) => {
     if (!executionState.kernelSyscalls) {

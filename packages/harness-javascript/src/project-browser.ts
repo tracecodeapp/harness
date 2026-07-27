@@ -6011,9 +6011,31 @@ export async function runBrowserJavaScriptProjectRequest(
       emitOutput(route.stream, data, route.outputDevice, route.sourceDevice);
     };
 
+    let kernelStdinClosed = false;
     const readDeviceBytes = (device: RuntimeKernelDevicePath, size?: number): Uint8Array => {
       const inputRoute = runtimeKernelDeviceInputRoute(kernelDevices, device);
       if (!inputRoute) return new Uint8Array();
+      if (executionState.kernelSyscalls) {
+        if (kernelStdinClosed) return new Uint8Array();
+        const result = executionState.kernelSyscalls.dispatchSync({
+          op: 'read',
+          fd: 0,
+          maxBytes: Math.max(0, Math.floor(size ?? 16 * 1024)),
+        });
+        if (result.ok === false) {
+          throw Object.assign(new Error(result.error.message), {
+            code: result.error.code,
+          });
+        }
+        if (result.value.op !== 'read') {
+          throw Object.assign(
+            new Error(`EPROTO: expected read response, received ${result.value.op}`),
+            { code: 'EPROTO' }
+          );
+        }
+        if (result.value.bytes.byteLength === 0) kernelStdinClosed = true;
+        return result.value.bytes;
+      }
       if (request.stdinPipe) {
         return readRuntimeCommandStdinPipeBytes(request.stdinPipe, size);
       }
@@ -6021,14 +6043,18 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const remainingDeviceBytes = (device: RuntimeKernelDevicePath): number => (
       runtimeKernelDeviceInputRoute(kernelDevices, device)
-        ? request.stdinPipe
+        ? executionState.kernelSyscalls
+          ? kernelStdinClosed ? 0 : 1
+          : request.stdinPipe
           ? runtimeCommandStdinPipeRemainingBytes(request.stdinPipe)
           : 0
         : 0
     );
     const deviceInputClosed = (device: RuntimeKernelDevicePath): boolean => (
       runtimeKernelDeviceInputRoute(kernelDevices, device)
-        ? request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true
+        ? executionState.kernelSyscalls
+          ? kernelStdinClosed
+          : request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true
         : true
     );
     const readDevice = (device: RuntimeKernelDevicePath): string => textFromBytes(readDeviceBytes(device));
