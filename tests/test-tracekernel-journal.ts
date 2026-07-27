@@ -80,6 +80,26 @@ async function testProtectedProcessAttributionAndLineage(): Promise<void> {
       actor: { id: 'learner', kind: 'principal' },
       signalPolicy: 'system-only',
     });
+    const productProcess = (
+      workspace as unknown as {
+        processTable: Map<
+          number,
+          {
+            actor: unknown;
+            signalPolicy: string;
+          }
+        >;
+      }
+    ).processTable.get(hostProcess.pid);
+    assertCondition(
+      productProcess &&
+        !Reflect.set(productProcess, 'actor', {
+          id: 'forged',
+          kind: 'system',
+        }) &&
+        !Reflect.set(productProcess, 'signalPolicy', 'standard'),
+      'Kernel-owned actor and protection projections must reject product mutation'
+    );
     await hostProcess.writeFile('owned.txt', 'owned\n');
     const childResult = await hostProcess.runCommand('printf "child\\n" > child.txt');
     assertCondition(childResult.exitCode === 0, `process child command should succeed: ${JSON.stringify(childResult)}`);
@@ -105,6 +125,17 @@ async function testProtectedProcessAttributionAndLineage(): Promise<void> {
     assertCondition(
       childWrite?.pid === childExec?.pid && childWrite.actor === 'principal:learner',
       `child mutation should retain child PID and process actor: ${JSON.stringify(childWrite)}`
+    );
+    const kernelEvents = await workspace.readFile(
+      '/proc/tracekernel/events'
+    );
+    assertCondition(
+      kernelEvents.includes(
+        `"pid":${hostProcess.pid},"ppid":1,"pgid":${hostProcess.pid},"sid":1,"owner":"user:learner"`
+      ),
+      `resource events did not carry authoritative kernel identity: ${JSON.stringify(
+        kernelEvents
+      )}`
     );
 
     const denied = await workspace.runCommand(`kill ${hostProcess.pid}`);

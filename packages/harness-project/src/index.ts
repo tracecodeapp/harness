@@ -4365,6 +4365,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     process: RuntimeKernelProcessRecord,
     fallback: TraceKernelProcessSnapshot
   ): RuntimeKernelProcessRecord {
+    const fallbackActor = process.actor;
+    const fallbackStartedAt = process.startedAt;
     const snapshot = (): TraceKernelProcessSnapshot =>
       this.authoritativeProcessSnapshot(process) ?? fallback;
     const tty = (): RuntimeKernelTtyName =>
@@ -4407,6 +4409,37 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       sid: {
         enumerable: true,
         get: () => snapshot().sid,
+      },
+      command: {
+        enumerable: true,
+        get: () => snapshot().command,
+      },
+      cwd: {
+        enumerable: true,
+        get: () => snapshot().cwd,
+      },
+      env: {
+        enumerable: true,
+        get: () => snapshot().env,
+      },
+      actor: {
+        enumerable: true,
+        get: () =>
+          this.journalActorFromProcess(snapshot(), fallbackActor),
+      },
+      signalPolicy: {
+        enumerable: true,
+        get: () =>
+          snapshot().protected ? 'system-only' : 'standard',
+      },
+      startedAt: {
+        enumerable: true,
+        get: () => {
+          const startedAt = snapshot().startedAt;
+          return startedAt === undefined
+            ? fallbackStartedAt
+            : new Date(startedAt).toISOString();
+        },
       },
       tty: {
         enumerable: true,
@@ -4671,13 +4704,41 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
   }
 
-  private recordKernelEvent(type: string, pid?: number, detail?: Record<string, unknown>): void {
+  private recordKernelEvent(
+    type: string,
+    pid?: number,
+    detail?: Record<string, unknown>,
+    attributedProcess?: TraceKernelProcessSnapshot
+  ): void {
+    const process = attributedProcess ??
+      (pid === undefined
+        ? undefined
+        : this.authoritativeProcessSnapshot({ pid }));
     this.kernelEventLog.push({
       seq: this.nextKernelEventSeq++,
       time: new Date().toISOString(),
       type,
       ...(pid !== undefined ? { pid } : {}),
-      ...(detail ? { detail } : {}),
+      ...(
+        detail || process
+          ? {
+              detail: {
+                ...(detail ?? {}),
+                ...(process
+                  ? {
+                      process: {
+                        pid: process.pid,
+                        ppid: process.ppid,
+                        pgid: process.pgid,
+                        sid: process.sid,
+                        owner: `${process.owner.kind}:${process.owner.id}`,
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}
+      ),
     });
     if (this.kernelEventLog.length > TRACEKERNEL_EVENT_LOG_LIMIT) {
       this.kernelEventLog.splice(0, this.kernelEventLog.length - TRACEKERNEL_EVENT_LOG_LIMIT);
@@ -4695,14 +4756,90 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return actor ? `${actor.kind}:${actor.id}` : undefined;
   }
 
+  private journalActorFromProcess(
+    process: TraceKernelProcessSnapshot,
+    hintedActor?: RuntimeWorkspaceActor
+  ): RuntimeWorkspaceActor {
+    if (
+      hintedActor &&
+      hintedActor.id === process.owner.id &&
+      this.traceKernelPrincipal(hintedActor).kind === process.owner.kind
+    ) {
+      return hintedActor;
+    }
+    const kind: RuntimeWorkspaceActor['kind'] =
+      process.owner.kind === 'system'
+        ? 'system'
+        : process.owner.kind === 'user'
+          ? 'principal'
+          : process.owner.kind === 'agent'
+            ? 'runtime'
+            : 'test';
+    return {
+      id: process.owner.id,
+      kind,
+    };
+  }
+
+  private authoritativeJournalEntry(
+    entry: KernelJournalEntry,
+    process: TraceKernelProcessSnapshot,
+    actor: RuntimeWorkspaceActor
+  ): KernelJournalEntry {
+    const actorId = this.journalActorId(actor);
+    switch (entry.kind) {
+      case 'fs':
+        return {
+          ...entry,
+          pid: process.pid,
+          actor: actorId ?? 'system:system',
+        };
+      case 'process':
+        return {
+          ...entry,
+          pid: process.pid,
+          ...(entry.op === 'exec'
+            ? {
+                ppid: process.ppid,
+                cwd: process.cwd,
+              }
+            : {}),
+          ...(actorId ? { actor: actorId } : {}),
+        };
+      case 'http':
+        return {
+          ...entry,
+          pid: process.pid,
+          ...(actorId ? { actor: actorId } : {}),
+        };
+    }
+  }
+
   private recordJournal(
     entry: KernelJournalEntry,
     commandContext?: RuntimeCommandExecutionContext,
-    actor?: RuntimeWorkspaceActor
+    actor?: RuntimeWorkspaceActor,
+    attributedProcess?: TraceKernelProcessSnapshot
   ): KernelJournalRecord {
+    const process = attributedProcess ??
+      (commandContext?.process
+        ? this.authoritativeProcessSnapshot(commandContext.process)
+        : 'pid' in entry && entry.pid !== undefined
+          ? this.authoritativeProcessSnapshot({ pid: entry.pid })
+          : undefined);
+    const authoritativeActor = process
+      ? this.journalActorFromProcess(process, actor)
+      : actor;
+    const attributedEntry = process
+      ? this.authoritativeJournalEntry(
+          entry,
+          process,
+          authoritativeActor!
+        )
+      : entry;
     const record = {
       seq: this.nextJournalSeq++,
-      ...entry,
+      ...attributedEntry,
     } as KernelJournalRecord;
     this.kernelJournalLog.push(record);
     if (this.kernelJournalLog.length > TRACEKERNEL_EVENT_LOG_LIMIT) {
@@ -4711,7 +4848,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.handleRuntimeCommandEvent({
       type: 'kernel-journal',
       record,
-      ...(actor ? { actor } : {}),
+      ...(authoritativeActor ? { actor: authoritativeActor } : {}),
     }, commandContext);
     return record;
   }
@@ -9491,7 +9628,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             : {}),
         })
       );
-      await Effect.runPromise(kernelProcess.wait()).catch(() => undefined);
+      const finalKernelSnapshot = await Effect.runPromise(
+        kernelProcess.wait()
+      ).catch(() => undefined);
       if (!retainProcessOnExit) {
         await this.reapControlledTraceKernelChild(parent, process.pid);
       }
@@ -9523,25 +9662,30 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           exitCode: outcome.exitCode,
           signal: outcome.signal,
           signalCode: outcome.signalCode,
-        });
+        }, finalKernelSnapshot);
         this.recordJournal({
           kind: 'process',
           op: 'exit',
           pid: process.pid,
           exitCode: outcome.exitCode,
           actor: this.journalActorId(process.actor),
-        }, commandContext, process.actor);
+        }, commandContext, process.actor, finalKernelSnapshot);
         this.notifyZombieProcess(process);
       } else {
         this.processWaitRequests.delete(process.pid);
-        this.recordKernelEvent('process-exit', process.pid, { exitCode: outcome.exitCode });
+        this.recordKernelEvent(
+          'process-exit',
+          process.pid,
+          { exitCode: outcome.exitCode },
+          finalKernelSnapshot
+        );
         this.recordJournal({
           kind: 'process',
           op: 'exit',
           pid: process.pid,
           exitCode: outcome.exitCode,
           actor: this.journalActorId(process.actor),
-        }, commandContext, process.actor);
+        }, commandContext, process.actor, finalKernelSnapshot);
       }
     });
   }
@@ -10296,6 +10440,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       sessionId: 1,
       processGroupId: 0,
       owner: this.traceKernelPrincipal(options.actor),
+      protected: options.signalPolicy === 'system-only',
     }));
     Effect.runSync(authority.session.attachNullStandardIo(kernelProcess));
     const kernelSnapshot = kernelProcess.snapshot();

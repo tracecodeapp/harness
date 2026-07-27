@@ -894,18 +894,23 @@ in the separate execution-handle registry, and a bounded zombie-coordination
 record retains only the already-kernel-decided outcome until product wait
 bookkeeping catches up.
 
+Journal entries now resolve PID, parent lineage, cwd, actor, and protection
+through the authoritative process snapshot. Product actors and signal policy
+are immutable projections of the kernel owner/protection fields, and resource
+events carry the same PID/PPID/PGID/SID/owner attribution. The journal remains
+the product-facing ordered/redacted event view; it no longer trusts product
+process metadata to identify the actor that caused an operation.
+
 The remaining authority migration must preserve, in order:
 
 1. move every language adapter onto descriptor stdio, then remove the temporary
    legacy input dual feed and its control-byte suppression; metadata, resize,
    input/output bytes, one-shot EOF, line discipline, foreground signal
    delivery, and fd 0/1/2 descriptors are already authoritative;
-2. attribute journal and resource events directly to the authoritative process
-   and eliminate the remaining transitional lifecycle observations;
-3. migrate local structured HTTP onto TCP only after the HTTP conformance
+2. migrate local structured HTTP onto TCP only after the HTTP conformance
    corpus proves fragmented reads, backpressure, half-closes, cancellation, and
    concurrent connections; host-only fetch egress remains a protocol service;
-4. crash recovery that destroys or revalidates every mutable runtime lease while
+3. crash recovery that destroys or revalidates every mutable runtime lease while
    retaining only immutable host caches.
 
 Suspended job control (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`, and `SIGCONT`) is a
