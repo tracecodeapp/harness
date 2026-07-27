@@ -161,6 +161,56 @@ async function main(): Promise<void> {
         backgroundStatus
       )}`
     );
+    const productProcess = (
+      workspace as unknown as {
+        processTable: Map<number, {
+          ppid: number;
+          pgid: number;
+          sid: number;
+          state: 'queued' | 'running' | 'signaled' | 'zombie' | 'exited';
+        }>;
+      }
+    ).processTable.get(pid);
+    assertCondition(productProcess, 'Product process projection was unavailable.');
+    const originalProjection = {
+      ppid: productProcess.ppid,
+      pgid: productProcess.pgid,
+      sid: productProcess.sid,
+      state: productProcess.state,
+    };
+    productProcess.ppid = 99_991;
+    productProcess.pgid = 99_992;
+    productProcess.sid = 99_993;
+    productProcess.state = 'zombie';
+    const [authoritativeStatus, authoritativeProcesses, authoritativePs, authoritativeJobs] =
+      await Promise.all([
+        workspace.readFile(`/proc/${pid}/status`),
+        workspace.readFile('/proc/tracekernel/processes'),
+        workspace.runCommand('ps -ef'),
+        workspace.runCommand('jobs -l'),
+      ]);
+    assertCondition(
+      authoritativeStatus.includes('State:\tR (running)\n') &&
+        authoritativeStatus.includes('PPid:\t1\n') &&
+        authoritativeStatus.includes(`PGid:\t${pid}\n`) &&
+        authoritativeStatus.includes('Sid:\t1\n') &&
+        authoritativeProcesses.includes(
+          `${pid}\t1\t${pid}\t1\trunning\t?\t0\t/workspace\tnode job.js`
+        ) &&
+        authoritativePs.stdout.includes(
+          `${String(pid).padStart(5, ' ')}${String(1).padStart(6, ' ')}${String(pid).padStart(6, ' ')}${String(1).padStart(6, ' ')}`
+        ) &&
+        authoritativeJobs.stdout.includes(
+          `${pid}\tRunning\tbackground\t?\tnode job.js`
+        ),
+      `Process inspection trusted the corrupted product projection: ${JSON.stringify({
+        authoritativeStatus,
+        authoritativeProcesses,
+        authoritativePs,
+        authoritativeJobs,
+      })}`
+    );
+    Object.assign(productProcess, originalProjection);
 
     const killed = await workspace.runCommand(`kill -TERM ${pid}`);
     assertCondition(
@@ -250,6 +300,7 @@ async function main(): Promise<void> {
     shellJobLifecycleReaped: true,
     shellWaitReapsLogicalInitChildExactlyOnce: true,
     preExitShellWaitBeatsNormalAutoReap: true,
+    procPsAndJobsReadAuthoritativeProcessTable: true,
   }, null, 2));
 }
 

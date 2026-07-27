@@ -111,6 +111,7 @@ import {
   type TraceKernelHost,
   type TraceKernelPrincipal,
   type TraceKernelProcess,
+  type TraceKernelProcessSnapshot,
   type TraceKernelSession,
   type TraceKernelSignal,
   type TraceKernelSyscallErrorCode,
@@ -4425,6 +4426,90 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       .sort((left, right) => left.pid - right.pid);
   }
 
+  private kernelPresentationProcessRecords(
+    actor?: RuntimeWorkspaceActor
+  ): RuntimeKernelProcessRecord[] {
+    const authority = this.traceKernelAuthority;
+    if (!authority) return this.activeProcessRecords();
+    const terminals = new Map(
+      authority.session.terminalSnapshots().map((terminal) => [
+        terminal.id,
+        terminal,
+      ])
+    );
+    const project = (
+      snapshot: TraceKernelProcessSnapshot
+    ): RuntimeKernelProcessRecord | undefined => {
+      const record =
+        this.processTable.get(snapshot.pid) ??
+        this.zombieProcessTable.get(snapshot.pid)?.process;
+      if (!record) return undefined;
+      const terminal = snapshot.controllingTerminalId
+        ? terminals.get(snapshot.controllingTerminalId)
+        : undefined;
+      const terminationSignal =
+        snapshot.termination?.kind === 'signal'
+          ? snapshot.termination.signal
+          : undefined;
+      const signalCode = terminationSignal
+        ? TRACEKERNEL_SIGNAL_NUMBERS.get(terminationSignal)
+        : undefined;
+      const state: RuntimeKernelProcessState =
+        snapshot.phase === 'exited'
+          ? 'zombie'
+          : record.state === 'queued'
+            ? 'queued'
+            : record.state === 'signaled'
+              ? 'signaled'
+              : 'running';
+      return {
+        ...record,
+        ppid: snapshot.ppid,
+        pgid: snapshot.pgid,
+        sid: snapshot.sid,
+        command: snapshot.command,
+        cwd: snapshot.cwd,
+        env: snapshot.env,
+        state,
+        foreground:
+          record.tty !== '?' &&
+          terminal?.foregroundProcessGroupId === snapshot.pgid,
+        ...(snapshot.startedAt === undefined
+          ? {}
+          : { startedAt: new Date(snapshot.startedAt).toISOString() }),
+        ...(snapshot.endedAt === undefined
+          ? {}
+          : { endedAt: new Date(snapshot.endedAt).toISOString() }),
+        ...(snapshot.termination === undefined
+          ? {}
+          : { exitCode: snapshot.termination.exitCode }),
+        ...(terminationSignal === undefined
+          ? {}
+          : {
+              signal: terminationSignal,
+              ...(signalCode === undefined ? {} : { signalCode }),
+            }),
+      };
+    };
+    return authority.session
+      .processTableSnapshots(
+        actor === undefined ? undefined : this.traceKernelPrincipal(actor)
+      )
+      .map(project)
+      .filter(
+        (record): record is RuntimeKernelProcessRecord => record !== undefined
+      );
+  }
+
+  private findKernelPresentationProcessRecord(
+    pid: number,
+    actor?: RuntimeWorkspaceActor
+  ): RuntimeKernelProcessRecord | undefined {
+    return this.kernelPresentationProcessRecords(actor).find(
+      (process) => process.pid === pid
+    );
+  }
+
   /** PID 1 occupies a real process-table slot even though it is not mutable. */
   private processTableUsage(): number {
     return 1 + this.activeProcessRecords().length;
@@ -5301,14 +5386,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (procPath === '/proc/tracekernel/locks') return this.renderProcLocks();
     if (procPath === '/proc/tracekernel/net/listeners') return this.renderProcHttpListeners();
     if (procPath === '/proc/tracekernel/net/requests') return this.renderProcHttpRequests();
-    if (procPath === '/proc/tracekernel/processes') return this.renderProcProcesses();
+    if (procPath === '/proc/tracekernel/processes') return this.renderProcProcesses(context?.actor);
     if (procPath === '/proc/tracekernel/runtimes') return this.renderProcRuntimes();
     if (procPath === '/proc/tracekernel/sched') return this.renderProcScheduler();
 
     const match = procPath.match(/^\/proc\/([1-9][0-9]*)\/(status|cmdline|fd\/[0-9]+|fdinfo\/[0-9]+)$/);
     if (!match) return null;
-    const process = this.findProcessRecord(Number(match[1]));
-    if (!process || process.state === 'exited') return null;
+    const process = this.findKernelPresentationProcessRecord(
+      Number(match[1]),
+      context?.actor
+    );
+    if (!process) return null;
     const file = match[2];
     if (file === 'status') return this.renderProcStatus(process);
     if (file === 'cmdline') return `${process.command}\0`;
@@ -5325,7 +5413,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         { name: 'mounts', kind: 'file' },
         { name: 'self', kind: 'directory' },
         { name: 'tracekernel', kind: 'directory' },
-        ...this.activeProcessRecords().map((process) => ({ name: String(process.pid), kind: 'directory' as const })),
+        ...this.kernelPresentationProcessRecords(context?.actor).map((process) => ({ name: String(process.pid), kind: 'directory' as const })),
       ];
     }
     if (procPath === '/proc/self') {
@@ -5365,15 +5453,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     const fdDirMatch = procPath.match(/^\/proc\/([1-9][0-9]*)\/(fd|fdinfo)$/);
     if (fdDirMatch) {
-      const process = this.findProcessRecord(Number(fdDirMatch[1]));
-      if (!process || process.state === 'exited') return null;
+      const process = this.findKernelPresentationProcessRecord(
+        Number(fdDirMatch[1]),
+        context?.actor
+      );
+      if (!process) return null;
       return this.processDescriptorNumbers(process)
         .map((fd) => ({ name: String(fd), kind: 'file' as const }));
     }
     const match = procPath.match(/^\/proc\/([1-9][0-9]*)$/);
     if (!match) return null;
-    const process = this.findProcessRecord(Number(match[1]));
-    if (!process || process.state === 'exited') return null;
+    const process = this.findKernelPresentationProcessRecord(
+      Number(match[1]),
+      context?.actor
+    );
+    if (!process) return null;
     return [
       { name: 'cmdline', kind: 'file' },
       { name: 'fd', kind: 'directory' },
@@ -5530,8 +5624,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }, null, 2) + '\n';
   }
 
-  private renderProcProcesses(): string {
-    const rows = this.activeProcessRecords().map((process) =>
+  private renderProcProcesses(actor?: RuntimeWorkspaceActor): string {
+    const rows = this.kernelPresentationProcessRecords(actor).map((process) =>
       [
         process.pid,
         process.ppid,
@@ -6936,13 +7030,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return { stdout: '', stderr: '', exitCode: 0 };
   }
 
-  private runKernelPs(args: string[], _ctx: CommandContext): RuntimeCommandResult {
+  private runKernelPs(args: string[], ctx: CommandContext): RuntimeCommandResult {
     const supported = new Set(['', '-e', '-f', '-ef', 'aux']);
     const mode = args.join('');
     if (!supported.has(mode)) {
       return { stdout: '', stderr: 'usage: ps [-e|-f|-ef|aux]\n', exitCode: 2 };
     }
-    const processes = [this.principalProcessRecord(), ...this.activeProcessRecords()];
+    const processes = [
+      this.principalProcessRecord(),
+      ...this.kernelPresentationProcessRecords(
+        this.resolveCommandContext(ctx)?.actor
+      ),
+    ];
     if (mode === 'aux') {
       const rows = processes.map((process) => [
         this.kernelInfo.user.username.padEnd(8, ' '),
@@ -6987,7 +7086,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { stdout: '', stderr: 'usage: jobs [-l]\n', exitCode: 2 };
     }
     const currentPid = this.resolveCommandContext(ctx)?.process.pid;
-    const rows = this.kernelJobRecords(currentPid)
+    const rows = this.kernelPresentationProcessRecords(
+      this.resolveCommandContext(ctx)?.actor
+    )
+      .filter((process) => process.pid !== currentPid && process.pid !== 1)
       .map((process, index) => {
         const marker = process.foreground ? '+' : '-';
         const status = process.state === 'running' ? 'Running' : process.state === 'zombie' ? 'Done' : process.state;
@@ -7000,7 +7102,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private terminalJobRecords(): RuntimeProjectTerminalJobRecord[] {
-    return this.kernelJobRecords().map((process, index) => ({
+    return this.kernelPresentationProcessRecords().map((process, index) => ({
       index: index + 1,
       pid: process.pid,
       command: process.command,

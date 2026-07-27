@@ -485,6 +485,16 @@ controlling session: controlling-terminal identity is session topology, while
 standard descriptor placement is process state. Product `tty` and foreground
 fields are a temporary read-through presentation of those two kernel facts.
 
+`/proc`, `ps`, and `jobs` now enumerate the actor-filtered authoritative
+process-table snapshot. PID topology, command/cwd/environment, live versus
+unreaped-zombie state, termination, descriptor count, and foreground-group
+membership are projected from TraceKernel on every read. Product records
+provide only fields the kernel does not yet model, such as scheduler-queue
+presentation, UI actor labels, and the compatibility tty label. Corrupting the
+product topology or lifecycle projection cannot change these inspection
+surfaces. Process-control commands still resolve their concrete host execution
+handle through the product record after selecting the authoritative PID.
+
 Runtime watchdog arm, status, pet, disarm, and expiry are process-owned kernel
 operations as well. The deadline fiber is scoped to the session, is cleared by
 process completion and teardown, and delivers its configured signal through
@@ -872,11 +882,11 @@ The remaining authority migration must preserve, in order:
    legacy input dual feed and its control-byte suppression; metadata, resize,
    input/output bytes, one-shot EOF, line discipline, foreground signal
    delivery, and fd 0/1/2 descriptors are already authoritative;
-2. route shell wait publication, job listings, and `/proc` lifecycle
-   presentation through the extracted session without maintaining a second
-   mutable lifecycle or topology projection; language wait selection/reaping
-   and shell exact/any selection/reaping are already authoritative, as are
-   shell foreground-group/descriptor placement and logical PID 1 ownership;
+2. move scheduler-queue presentation and remaining host execution handles
+   behind kernel-owned process metadata, then delete the mutable product
+   topology/lifecycle projection; shell/language wait selection and reaping,
+   `/proc`, `ps`, `jobs`, foreground-group/descriptor placement, and logical
+   PID 1 ownership already read or mutate authoritative state;
 3. attribute journal and resource events directly to the authoritative process
    and eliminate the remaining transitional lifecycle observations;
 4. migrate local structured HTTP onto TCP only after the HTTP conformance
