@@ -146,6 +146,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     options?: WriteOptions
   ): Promise<void> {
     await this.ensureParentDirectory(path);
+    await this.removeFinalSymlink(path);
     await runKernelEffect(
       this.traceKernelFileSystem.writeFile(path, contentBytes(content, options), '/')
     );
@@ -157,6 +158,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     options?: WriteOptions
   ): Promise<void> {
     await this.ensureParentDirectory(path);
+    await this.removeFinalSymlink(path);
     const file = await runKernelEffect(this.traceKernelFileSystem.prepareOpen(path, '/', {
       access: 'write',
       create: true,
@@ -296,5 +298,20 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     const separator = normalized.lastIndexOf('/');
     const parent = separator <= 0 ? '/' : normalized.slice(0, separator);
     if (!(await this.exists(parent))) await this.mkdir(parent, { recursive: true });
+  }
+
+  /**
+   * The product workspace historically treats a host/editor write to a final
+   * symlink as replacement. Runtime syscalls bypass this compatibility method
+   * and retain POSIX follow-the-link behavior in TKFS.
+   */
+  private async removeFinalSymlink(path: string): Promise<void> {
+    try {
+      if ((await this.lstat(path)).isSymbolicLink) {
+        await runKernelEffect(this.traceKernelFileSystem.unlink(path, '/'));
+      }
+    } catch (error) {
+      if (!missingPathError(error)) throw error;
+    }
   }
 }

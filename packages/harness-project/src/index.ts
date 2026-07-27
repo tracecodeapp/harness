@@ -1131,7 +1131,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.kernelControl = options.kernelControl;
     this.cppRunner = options.cppRunner;
     this.kernel = this.createKernel();
-    this.traceKernelFileSystem = Effect.runSync(TraceKernelFileSystem.make());
+    const storageLimits = normalizeRuntimeWorkspaceStorageLimits(options.storageLimits);
+    this.traceKernelFileSystem = Effect.runSync(TraceKernelFileSystem.make({
+      quota: {
+        root: this.cwd,
+        maxBytes: storageLimits.maxWorkspaceBytes,
+        maxFileBytes: storageLimits.maxFileBytes,
+        maxEntries: storageLimits.maxEntryCount,
+      },
+    }));
     this.fs = new KernelObservedFileSystem(
       new TraceKernelBackingFileSystem(this.traceKernelFileSystem),
       this.fsLocks,
@@ -1149,7 +1157,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       },
       (context, device) => this.readDevice(device, context),
       (context, device, data) => this.writeDevice(device, data, context),
-      normalizeRuntimeWorkspaceStorageLimits(options.storageLimits)
+      storageLimits
     );
     this.kernelDescriptors = new RuntimeKernelDescriptorManager(this.fs);
     this.kernelNetwork = new RuntimeKernelNetworkManager(this.kernelDescriptors);
