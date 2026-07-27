@@ -1574,6 +1574,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'watch':
         this.assertActorFileCapability(actor, 'read', request.path);
         return this.dispatchExtractedTraceKernelSyscall(request, context);
+      case 'isatty':
+      case 'tcgetpgrp':
+        return this.dispatchExtractedTraceKernelSyscall(request, context);
+      case 'tcsetpgrp':
+        return this.dispatchExtractedTraceKernelSyscall(request, context).then(
+          (result) => {
+            if (
+              result.ok &&
+              result.value.op === 'tcsetpgrp'
+            ) {
+              this.setProcessGroupForeground(result.value.pgid, true);
+            }
+            return result;
+          }
+        );
       case 'bind':
       case 'listen':
         this.assertHttpCapability(actor, 'listen');
@@ -1792,52 +1807,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                   },
             },
           };
-        }
-        case 'isatty': {
-          const process = this.runtimeSyscallProcess(context);
-          const isTerminal = await this.runtimeDescriptorIsTerminal(
-            process,
-            request.fd
-          );
-          return { ok: true, value: { op: 'isatty', isTerminal } };
-        }
-        case 'tcgetpgrp': {
-          const process = this.runtimeSyscallProcess(context);
-          await this.assertRuntimeControllingTerminal(process, request.fd);
-          return {
-            ok: true,
-            value: { op: 'tcgetpgrp', pgid: this.terminalForegroundPgid },
-          };
-        }
-        case 'tcsetpgrp': {
-          const process = this.runtimeSyscallProcess(context);
-          await this.assertRuntimeControllingTerminal(process, request.fd);
-          const pgid = Math.trunc(request.pgid);
-          if (!Number.isSafeInteger(request.pgid) || pgid <= 0) {
-            throw Object.assign(
-              new Error(`EINVAL: invalid terminal foreground process group ${request.pgid}`),
-              { code: 'EINVAL' }
-            );
-          }
-          if (
-            !(
-              (pgid === 1 && process.sid === 1) ||
-              this.activeProcessRecords().some((candidate) =>
-                candidate.pgid === pgid &&
-                candidate.sid === process.sid &&
-                candidate.tty !== '?'
-              )
-            )
-          ) {
-            throw Object.assign(
-              new Error(
-                `EPERM: process group ${pgid} is not in terminal session ${process.sid}`
-              ),
-              { code: 'EPERM' }
-            );
-          }
-          this.setProcessGroupForeground(pgid, true);
-          return { ok: true, value: { op: 'tcsetpgrp', pgid } };
         }
         case 'socket': {
           const fd = await this.kernelNetwork.socket(
@@ -4851,36 +4820,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!survivingMember) {
       this.setProcessGroupForeground(process.pgid, false);
     }
-  }
-
-  private async runtimeDescriptorIsTerminal(
-    process: RuntimeKernelProcessRecord,
-    fd: number
-  ): Promise<boolean> {
-    const standard = process.fds.find((descriptor) => descriptor.fd === fd);
-    if (standard) return process.tty !== '?';
-    const descriptor = await this.kernelDescriptors.descriptor(
-      process.pid,
-      fd,
-      'isatty'
-    );
-    return descriptor.kind === 'terminal';
-  }
-
-  private async assertRuntimeControllingTerminal(
-    process: RuntimeKernelProcessRecord,
-    fd: number
-  ): Promise<void> {
-    if (
-      process.tty !== '?' &&
-      await this.runtimeDescriptorIsTerminal(process, fd)
-    ) {
-      return;
-    }
-    throw Object.assign(
-      new Error(`ENOTTY: descriptor ${fd} is not the controlling terminal`),
-      { code: 'ENOTTY' }
-    );
   }
 
   private async reapZombieProcess(pid?: number, commandName = 'tracekernelctl', currentPid?: number): Promise<RuntimeCommandResult> {
@@ -8654,6 +8593,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ...(parent?.env ?? this.baseEnv),
       ...(options.env ?? {}),
     });
+    const terminalPresentation = options.presentation === 'terminal';
+    const foreground = options.foreground ?? terminalPresentation;
     const kernelProcess = launchHooks?.kernelProcess ??
       await this.spawnControlledTraceKernelProcess({
         command,
@@ -8672,11 +8613,35 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       await Effect.runPromise(authority.session.ensureNullStandardIo(kernelProcess));
       await Effect.runPromise(kernelProcess.awaitStarted());
     }
+    if (terminalPresentation) {
+      const authority = this.traceKernelAuthority;
+      if (!authority) {
+        throw new Error('TraceKernel session authority is unavailable.');
+      }
+      const terminal = await Effect.runPromise(
+        authority.session.bootstrapSessionTerminal(kernelProcess, {
+          name: '/dev/tty',
+          columns: options.terminal?.columns,
+          rows: options.terminal?.rows,
+        })
+      );
+      await Effect.runPromise(
+        authority.session.replaceTerminalStdio(kernelProcess, terminal.id)
+      );
+      if (foreground) {
+        await Effect.runPromise(
+          authority.session.setTerminalForegroundProcessGroup(
+            kernelProcess,
+            0,
+            kernelProcess.snapshot().pgid
+          )
+        );
+        this.setProcessGroupForeground(kernelProcess.snapshot().pgid, true);
+      }
+    }
     const kernelSnapshot = kernelProcess.snapshot();
     const pid = kernelProcess.pid;
     this.nextPid = Math.max(this.nextPid, pid + 1);
-    const terminalPresentation = options.presentation === 'terminal';
-    const foreground = options.foreground ?? terminalPresentation;
     const process: RuntimeKernelProcessRecord = {
       pid,
       kernelProcess,

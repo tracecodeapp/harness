@@ -101,30 +101,65 @@ async function main(): Promise<void> {
     });
     if (request.terminal?.isTTY) {
       terminalRuntimeCount += 1;
+      const terminalDescriptors = authoritativeProcess?.descriptors.filter(
+        (descriptor) => descriptor.fd >= 0 && descriptor.fd <= 2
+      );
+      const terminalResourceIds = new Set(
+        terminalDescriptors?.map((descriptor) => descriptor.resourceId)
+      );
+      const terminalSnapshot = authoritativeSession?.terminalSnapshots().find(
+        (terminal) => terminal.id === authoritativeProcess?.controllingTerminalId
+      );
+      const foregroundTransfer = await dispatch(kernel, {
+        op: 'tcsetpgrp',
+        fd: 0,
+        pgid: request.process?.pgid ?? -1,
+      });
       assertCondition(
         tty.ok &&
           tty.value.op === 'isatty' &&
           tty.value.isTerminal &&
           foregroundGroup.ok &&
           foregroundGroup.value.op === 'tcgetpgrp' &&
-          foregroundGroup.value.pgid === request.process?.pgid,
+          foregroundGroup.value.pgid === request.process?.pgid &&
+          terminalDescriptors?.length === 3 &&
+          terminalDescriptors.every(
+            (descriptor) => descriptor.kind === 'terminal'
+          ) &&
+          terminalResourceIds.size === 1 &&
+          terminalSnapshot?.foregroundProcessGroupId === request.process?.pgid &&
+          foregroundTransfer.ok &&
+          foregroundTransfer.value.op === 'tcsetpgrp' &&
+          foregroundTransfer.value.pgid === request.process?.pgid,
         `terminal process did not receive authoritative foreground state: ${JSON.stringify({
           tty,
           foregroundGroup,
+          foregroundTransfer,
+          terminalDescriptors,
+          terminalSnapshot,
           process: request.process,
         })}`
       );
     } else {
       detachedRuntimeCount += 1;
+      const detachedStandardDescriptors =
+        authoritativeProcess?.descriptors.filter(
+          (descriptor) => descriptor.fd >= 0 && descriptor.fd <= 2
+        );
       assertCondition(
         tty.ok &&
           tty.value.op === 'isatty' &&
           !tty.value.isTerminal &&
           !foregroundGroup.ok &&
-          foregroundGroup.error.code === 'ENOTTY',
+          foregroundGroup.error.code === 'ENOTTY' &&
+          detachedStandardDescriptors?.length === 3 &&
+          detachedStandardDescriptors.every(
+            (descriptor) => descriptor.kind === 'device'
+          ),
         `detached process received a controlling terminal: ${JSON.stringify({
           tty,
           foregroundGroup,
+          detachedStandardDescriptors,
           process: request.process,
         })}`
       );
@@ -603,6 +638,7 @@ async function main(): Promise<void> {
     kernelOwnedPathSyscalls: true,
     kernelOwnedDescriptors: true,
     kernelOwnedProcessControls: true,
+    kernelOwnedTerminalDescriptors: true,
     distinctRuntimeProcessIdentity: true,
     processOwnedPipeInheritance: true,
     sharedFilesystemAcrossParentAndChild: true,

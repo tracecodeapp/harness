@@ -977,6 +977,58 @@ export class TraceKernelSession {
     });
   }
 
+  /**
+   * Establish or retrieve the host-provided console for an initial session.
+   *
+   * Browser workspaces have a kernel-owned bootstrap session whose leader is
+   * outside the user process table (the conventional PID 1 boundary). A
+   * top-level process in that session may therefore ask the host to establish
+   * its console without pretending that the process itself is the session
+   * leader. Runtime syscalls cannot invoke this host-only operation.
+   */
+  bootstrapSessionTerminal(
+    process: TraceKernelProcess,
+    options: TraceKernelTerminalOptions = {}
+  ): Effect.Effect<TraceKernelTerminal, Error> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const snapshot = process.snapshot();
+      const existingId = this.controllingTerminalsBySession.get(snapshot.sid);
+      if (existingId) {
+        const existing = yield* this.terminalById(existingId);
+        existing.resize(
+          options.columns ?? existing.snapshot().columns,
+          options.rows ?? existing.snapshot().rows
+        );
+        process.setControllingTerminal(existing.id);
+        return existing;
+      }
+      if (snapshot.sid !== snapshot.pid && snapshot.ppid !== 1) {
+        return yield* Effect.fail(new TraceKernelProcessPermissionError({
+          code: 'EPERM',
+          pid: process.pid,
+          requesterId: snapshot.owner.id,
+          message: `EPERM: process ${process.pid} cannot bootstrap terminal for session ${snapshot.sid}`,
+        }));
+      }
+      const resourceId = `tty-${this.nextResourceId++}`;
+      const terminal = yield* TraceKernelTerminal.make(
+        resourceId,
+        snapshot.sid,
+        snapshot.pgid,
+        options
+      );
+      this.resources.set(resourceId, terminal);
+      this.controllingTerminalsBySession.set(snapshot.sid, resourceId);
+      for (const candidate of this.processes.values()) {
+        if (candidate.snapshot().sid === snapshot.sid) {
+          candidate.setControllingTerminal(resourceId);
+        }
+      }
+      return terminal;
+    });
+  }
+
   openTerminal(
     process: TraceKernelProcess,
     terminalId: string,
@@ -1032,6 +1084,40 @@ export class TraceKernelSession {
           )
         )
       );
+    });
+  }
+
+  replaceTerminalStdio(
+    process: TraceKernelProcess,
+    terminalId: string
+  ): Effect.Effect<{
+    readonly stdinFd: 0;
+    readonly stdoutFd: 1;
+    readonly stderrFd: 2;
+  }, Error> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const terminal = yield* this.terminalById(terminalId);
+      const snapshot = process.snapshot();
+      if (
+        snapshot.sid !== terminal.sessionId ||
+        snapshot.controllingTerminalId !== terminal.id
+      ) {
+        return yield* Effect.fail(new TraceKernelTerminalError({
+          code: 'ENOTTY',
+          message: `ENOTTY: terminal ${terminal.name} does not control process ${process.pid}`,
+        }));
+      }
+      yield* process.descriptors.replaceMany([
+        { fd: 0, descriptor: terminal.descriptor('read') },
+        { fd: 1, descriptor: terminal.descriptor('write') },
+        { fd: 2, descriptor: terminal.descriptor('write') },
+      ]);
+      return Object.freeze({
+        stdinFd: 0 as const,
+        stdoutFd: 1 as const,
+        stderrFd: 2 as const,
+      });
     });
   }
 
@@ -2049,16 +2135,18 @@ export class TraceKernelSession {
       });
     }
     this.nextPid += 1;
+    const controllingTerminalId = !startsNewSession
+      ? parentSnapshot?.controllingTerminalId ??
+        this.controllingTerminalsBySession.get(sid)
+      : undefined;
     const record: MutableProcessRecord = {
       pid,
       ppid,
       pgid,
       sid,
-      ...(
-        !startsNewSession && parentSnapshot?.controllingTerminalId !== undefined
-          ? { controllingTerminalId: parentSnapshot.controllingTerminalId }
-          : {}
-      ),
+      ...(controllingTerminalId === undefined
+        ? {}
+        : { controllingTerminalId }),
       phase: 'created',
       runtime: spec.runtime,
       command: spec.command,

@@ -28,7 +28,9 @@ The controlled provider leaves PID, signal, descriptor, and lease authority in
 TraceKernel while the host reports completion from an existing runner.
 Detached controlled processes can attach real `/dev/null` standard descriptors
 at fd 0/1/2, reserving the conventional identities in the same table used by
-files, pipes, watches, terminals, and sockets.
+files, pipes, watches, terminals, and sockets. Terminal launches atomically
+replace all three identities with views of one session-owned controlling
+terminal before runtime code starts.
 
 The package now also contains the first session-local TCP foundation. Local
 socket descriptors, port bindings, listener backlogs, duplex streams,

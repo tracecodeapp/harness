@@ -118,6 +118,13 @@ export interface TraceKernelDescriptorTableOptions {
   readonly operationContext?: () => TraceKernelDescriptorOperationContext;
 }
 
+export interface TraceKernelDescriptorReplacement {
+  readonly fd: number;
+  readonly descriptor: TraceKernelDescriptor;
+  readonly closeOnExec?: boolean;
+  readonly nonblocking?: boolean;
+}
+
 interface TraceKernelOpenDescriptionStatus {
   nonblocking: boolean;
 }
@@ -238,6 +245,85 @@ export class TraceKernelDescriptorTable {
     if (options.closeOnExec) this.closeOnExecDescriptors.add(targetFd);
     if (targetFd === this.nextFd) this.resetNextFd();
     return targetFd;
+  }
+
+  /**
+   * Atomically replace a set of descriptor identities.
+   *
+   * Validation happens before the table changes. Once committed, every target
+   * refers to its new open description before any replaced description is
+   * closed, so observers cannot see partially remapped stdio.
+   */
+  replaceMany(
+    replacements: readonly TraceKernelDescriptorReplacement[]
+  ): Effect.Effect<
+    void,
+    TraceKernelBadFileDescriptorError | TraceKernelDescriptorLimitError
+  > {
+    return Effect.gen(this, function* () {
+      const targets = new Set<number>();
+      for (const replacement of replacements) {
+        const fd = Math.floor(replacement.fd);
+        if (
+          !Number.isSafeInteger(replacement.fd) ||
+          fd < 0 ||
+          targets.has(fd)
+        ) {
+          yield* Effect.forEach(
+            replacements,
+            ({ descriptor }) => descriptor.close(),
+            { concurrency: 'unbounded', discard: true }
+          );
+          return yield* Effect.fail(new TraceKernelBadFileDescriptorError({
+            fd,
+            operation: 'dup2',
+            message: targets.has(fd)
+              ? `EBADF: duplicate replacement descriptor ${fd}`
+              : `EBADF: invalid replacement descriptor ${replacement.fd}`,
+          }));
+        }
+        targets.add(fd);
+      }
+
+      const occupiedTargets = [...targets].filter((fd) =>
+        this.descriptors.has(fd)
+      ).length;
+      const resultingSize =
+        this.descriptors.size - occupiedTargets + replacements.length;
+      if (resultingSize > this.maxDescriptors) {
+        yield* Effect.forEach(
+          replacements,
+          ({ descriptor }) => descriptor.close(),
+          { concurrency: 'unbounded', discard: true }
+        );
+        return yield* Effect.fail(new TraceKernelDescriptorLimitError({
+          code: 'EMFILE',
+          maxDescriptors: this.maxDescriptors,
+          message: `EMFILE: descriptor replacement exceeds process descriptor limit ${this.maxDescriptors}`,
+        }));
+      }
+
+      const replaced = replacements.flatMap(({ fd }) => {
+        const descriptor = this.descriptors.get(fd);
+        return descriptor ? [descriptor] : [];
+      });
+      for (const replacement of replacements) {
+        this.descriptors.set(replacement.fd, replacement.descriptor);
+        if (replacement.closeOnExec) {
+          this.closeOnExecDescriptors.add(replacement.fd);
+        } else {
+          this.closeOnExecDescriptors.delete(replacement.fd);
+        }
+        statusFor(replacement.descriptor).nonblocking =
+          replacement.nonblocking === true;
+      }
+      this.resetNextFd();
+      yield* Effect.forEach(
+        replaced,
+        (descriptor) => descriptor.close(),
+        { concurrency: 'unbounded', discard: true }
+      );
+    });
   }
 
   snapshots(): readonly TraceKernelDescriptorSnapshot[] {

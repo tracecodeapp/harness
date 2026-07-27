@@ -409,8 +409,18 @@ Every controlled product process also receives kernel-owned detached standard
 descriptors: fd 0 is a `/dev/null` EOF reader and fd 1/2 are discard writers.
 They are real device descriptors, not reserved integers, so subsequent file,
 pipe, watch, and socket allocation begins at fd 3 in the single process table.
-Terminal processes will replace those entries atomically when the controlling
-terminal cutover lands.
+Terminal processes atomically replace those entries with read/write views of
+one session-owned terminal resource before user code starts. Validation occurs
+before the three-entry descriptor-table commit and replaced open descriptions
+close only after all new identities are visible.
+
+The workspace bootstrap session has a host-created console boundary because
+its conventional session leader is kernel PID 1, outside the user process
+table. A top-level process may bootstrap that console through a host-only API;
+runtime syscalls cannot acquire terminals this way. Later processes in the
+same session inherit controlling-terminal identity, while only processes
+launched with terminal presentation remap stdio. `isatty`, `tcgetpgrp`, and
+`tcsetpgrp` now read and mutate this kernel terminal and its process groups.
 
 Runtime regular files, pipes, filesystem watches, and local TCP sockets now
 share that same authoritative process descriptor table. `open`, descriptor
@@ -422,10 +432,11 @@ Admission rollback kills an unpublished kernel child and closes every
 parent-side pipe endpoint, preserving the no-orphan/no-leak invariant even
 when the product scheduler rejects after kernel allocation.
 
-The product terminal, process-control compatibility state, journal, and
-host-only structured HTTP adapter remain transitional. Host HTTP calls that
-have no runtime process context intentionally use the compatibility service;
-runtime socket calls never do.
+The product terminal byte pump and signal-character entry point,
+process-lifecycle compatibility state, journal, and host-only structured HTTP
+adapter remain transitional. Host HTTP calls that have no runtime process
+context intentionally use the compatibility service; runtime socket calls
+never do.
 
 Runtime identity, signal selection and delivery, `setsid`, and `setpgid` also
 dispatch through the extracted session. The product process record is now a
@@ -795,8 +806,9 @@ journal/resource event attribution, and a host-only structured HTTP service.
 
 The remaining authority migration must preserve, in order:
 
-1. replace terminal compatibility records with session-owned controlling
-   terminals and atomically remap fd 0/1/2 for terminal processes;
+1. move terminal input/output pumping, resize events, and signal-character
+   delivery onto the session-owned terminal whose metadata and fd 0/1/2
+   descriptors are already authoritative;
 2. route product wait publication and shell job-control presentation through
    the extracted session without maintaining a second mutable lifecycle or
    topology projection;
