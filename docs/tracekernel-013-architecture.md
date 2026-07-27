@@ -436,13 +436,16 @@ Terminal input is now published to the session-owned terminal queue, so runtime
 reads from kernel fd 0 block and resume on host input. During adapter migration
 the same bytes are also fed to the legacy runner stdin pipe; each adapter uses
 one input surface, and the dual feed can disappear after every language reads
-stdio through descriptors. Terminal output pumping, EOF, and signal-character
-recognition entry, process-lifecycle compatibility state, journal, and
-host-only structured HTTP adapter remain transitional. Foreground signal
-selection/delivery and resize already terminate at the session-owned terminal;
-their product events are read-through diagnostics of kernel state. Host HTTP
-calls that have no runtime process context intentionally use the compatibility
-service; runtime socket calls never do.
+stdio through descriptors. Runtime writes to kernel terminal fd 1/2 are drained
+from the shared terminal queue and published through the calling command's
+output controller, preserving PID/actor attribution without leaving a shadow
+queue. Input EOF, signal-character recognition entry, process-lifecycle
+compatibility state, journal, and host-only structured HTTP adapter remain
+transitional. Foreground signal selection/delivery and resize already terminate
+at the session-owned terminal; their product events are read-through
+diagnostics of kernel state. Host HTTP calls that have no runtime process
+context intentionally use the compatibility service; runtime socket calls
+never do.
 
 Runtime identity, signal selection and delivery, `setsid`, and `setpgid` also
 dispatch through the extracted session. The product process record is now a
@@ -825,10 +828,10 @@ journal/resource event attribution, and a host-only structured HTTP service.
 
 The remaining authority migration must preserve, in order:
 
-1. move terminal output pumping, input EOF, and signal-character recognition
-   onto the session-owned terminal, then remove the temporary legacy input
-   dual feed; metadata, resize, input bytes, foreground signal delivery, and
-   fd 0/1/2 descriptors are already authoritative;
+1. move input EOF and signal-character recognition onto the session-owned
+   terminal, then remove the temporary legacy input dual feed; metadata,
+   resize, input/output bytes, foreground signal delivery, and fd 0/1/2
+   descriptors are already authoritative;
 2. route shell wait publication and job-control presentation through the
    extracted session without maintaining a second mutable lifecycle or
    topology projection; language wait selection and reaping are already

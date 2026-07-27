@@ -250,6 +250,31 @@ async function main(): Promise<void> {
         exitCode: 0,
       };
     }
+    if (request.scriptPath.endsWith('terminal-output.js')) {
+      const stdout = await dispatch(kernel, {
+        op: 'write',
+        fd: 1,
+        bytes: new TextEncoder().encode('kernel-stdout\n'),
+      });
+      const stderr = await dispatch(kernel, {
+        op: 'write',
+        fd: 2,
+        bytes: new TextEncoder().encode('kernel-stderr\n'),
+      });
+      assertCondition(
+        stdout.ok &&
+          stdout.value.op === 'write' &&
+          stdout.value.bytesWritten === 14 &&
+          stderr.ok &&
+          stderr.value.op === 'write' &&
+          stderr.value.bytesWritten === 14,
+        `terminal output did not cross kernel fd 1/2: ${JSON.stringify({
+          stdout,
+          stderr,
+        })}`
+      );
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
     if (request.scriptPath.endsWith('interrupt-parent.js')) {
       request.signal?.addEventListener(
         'abort',
@@ -555,6 +580,10 @@ async function main(): Promise<void> {
         path: 'terminal-input.js',
         contents: '// authoritative terminal-input fixture\n',
       },
+      {
+        path: 'terminal-output.js',
+        contents: '// authoritative terminal-output fixture\n',
+      },
     ],
     nodeRunner,
   });
@@ -651,8 +680,17 @@ async function main(): Promise<void> {
         terminalInputResult
       )}`
     );
+    const terminalOutputResult = await terminal.run('node terminal-output.js');
     assertCondition(
-      terminalRuntimeCount === 5 && detachedRuntimeCount === 4,
+      terminalOutputResult.exitCode === 0 &&
+        terminalOutputResult.stdout === 'kernel-stdout\n' &&
+        terminalOutputResult.stderr === 'kernel-stderr\n',
+      `kernel terminal fd 1/2 did not publish attributed output: ${JSON.stringify(
+        terminalOutputResult
+      )}`
+    );
+    assertCondition(
+      terminalRuntimeCount === 6 && detachedRuntimeCount === 4,
       `controlling-terminal inheritance did not match parent/child execution: ${JSON.stringify({
         terminalRuntimeCount,
         detachedRuntimeCount,
@@ -756,6 +794,7 @@ async function main(): Promise<void> {
     terminalInterruptTargetsForegroundProcessGroup: true,
     kernelOwnedTerminalResize: true,
     kernelOwnedTerminalInput: true,
+    kernelOwnedTerminalOutput: true,
     terminalSignalCharacters: ['VINTR', 'VQUIT'],
   }, null, 2));
 }

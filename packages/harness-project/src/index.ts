@@ -1617,6 +1617,47 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         return this.dispatchExtractedTraceKernelSyscall(request, context);
       }
+      case 'write': {
+        const kernelProcess = (
+          context.process as RuntimeKernelProcessRecord
+        ).kernelProcess!;
+        const terminalDescriptor = kernelProcess
+          .snapshot()
+          .descriptors.find(
+            (descriptor) =>
+              descriptor.fd === request.fd &&
+              descriptor.kind === 'terminal'
+          );
+        const dispatched = this.dispatchExtractedTraceKernelSyscall(
+          request,
+          context
+        );
+        if (!terminalDescriptor) return dispatched;
+        return dispatched.then(async (result) => {
+          if (
+            result.ok &&
+            result.value.op === 'write' &&
+            result.value.bytesWritten > 0
+          ) {
+            await Effect.runPromise(
+              this.traceKernelAuthority!.session.readTerminalOutput(
+                terminalDescriptor.resourceId,
+                result.value.bytesWritten,
+                true
+              )
+            );
+            this.emitLocalRuntimeEvent({
+              type: 'output',
+              stream: request.fd === 2 ? 'stderr' : 'stdout',
+              device: request.fd === 2 ? '/dev/stderr' : '/dev/stdout',
+              data: new TextDecoder().decode(
+                request.bytes.slice(0, result.value.bytesWritten)
+              ),
+            }, context);
+          }
+          return result;
+        });
+      }
       case 'pipe':
       case 'socket':
       case 'accept':
@@ -1627,7 +1668,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'getpeername':
       case 'getsockopt':
       case 'read':
-      case 'write':
       case 'close':
       case 'dup':
       case 'dup2':
