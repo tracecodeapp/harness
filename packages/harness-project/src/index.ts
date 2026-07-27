@@ -1639,9 +1639,57 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     return Effect.runPromise(
       new TraceKernelSyscallDispatcher(authority.session, process).dispatch(
-        request
+        this.mapTraceKernelSyscallWorkspacePaths(request)
       )
     );
+  }
+
+  /**
+   * `/workspace` is a stable process-visible mount alias, not a second TKFS
+   * subtree. Resolve it at the syscall entrance so extracted runtimes and
+   * product filesystem calls address the same authoritative inode namespace.
+   */
+  private mapTraceKernelSyscallWorkspacePaths(
+    request: TraceKernelSyscallRequest
+  ): TraceKernelSyscallRequest {
+    const mapPath = (path: string): string =>
+      path.startsWith('/')
+        ? mapWorkspaceAlias(this.cwd, this.kernelInfo.workspaceAlias, path)
+        : path;
+    switch (request.op) {
+      case 'watch':
+      case 'open':
+      case 'stat':
+      case 'lstat':
+      case 'realpath':
+      case 'readdir':
+      case 'mkdir':
+      case 'rmdir':
+      case 'unlink':
+      case 'readlink':
+      case 'readFile':
+      case 'writeFile':
+        return { ...request, path: mapPath(request.path) };
+      case 'link':
+        return {
+          ...request,
+          existingPath: mapPath(request.existingPath),
+          newPath: mapPath(request.newPath),
+        };
+      case 'symlink':
+        return {
+          ...request,
+          linkPath: mapPath(request.linkPath),
+        };
+      case 'rename':
+        return {
+          ...request,
+          sourcePath: mapPath(request.sourcePath),
+          destinationPath: mapPath(request.destinationPath),
+        };
+      default:
+        return request;
+    }
   }
 
   private dispatchKernelOwnedDescriptorSyscall(

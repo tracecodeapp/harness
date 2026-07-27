@@ -849,6 +849,11 @@ The initial 0.13 branch now establishes:
   ordinary managed `System.IO` path and regular-file descriptor operations
   with authoritative TKFS; the mount preserves kernel-owned open-file offsets,
   truncate/rename behavior, cross-process visibility, and process-exit cleanup;
+  it mounts the process snapshot's actual workspace root rather than assuming
+  `/workspace`, while the extracted syscall entrance resolves that stable
+  process-visible alias for direct watch/path syscalls in every language;
+  compiler failures retain their result diagnostics when no descriptor output
+  was emitted instead of being erased merely because a kernel client exists;
   the public managed `TraceKernel.Watchdog` surface arms, pets, inspects, and
   disarms the process-owned kernel watchdog;
 - managed C# `KernelProcess`, `KernelDescriptor`, and `KernelPipe` surfaces for

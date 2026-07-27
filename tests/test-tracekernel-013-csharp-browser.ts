@@ -141,6 +141,7 @@ async function main(): Promise<void> {
         const { createBrowserProjectWorkspace } = await import('/project-harness.mjs');
         const workspace = await createBrowserProjectWorkspace({
           assetBaseUrl: '/workers',
+          cwd: '/home/user/workspace',
           providers: ['csharp', 'javascript'],
           projectWorkerIsolation: 'per-command',
           csharpProjectTimeoutMs: 180_000,
@@ -736,6 +737,7 @@ async function main(): Promise<void> {
         schema: 'tracekernel-013-csharp-conformance-v1',
         synchronousSyscallTransport: true,
         systemIoTkfsMount: true,
+        nonDefaultWorkspaceRoot: true,
         descriptorIo: true,
         descriptorStandardIo: true,
         managedWatchdog: true,

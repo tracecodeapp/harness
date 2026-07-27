@@ -1032,7 +1032,7 @@ class CSharpTraceKernelSyncClient {
       if (remaining <= 0) {
         throw new CSharpTraceKernelSyscallError(
           'ETIMEDOUT',
-          'shared syscall timed out'
+          `shared syscall timed out during ${request?.op ?? 'unknown'}${request?.fd === undefined ? '' : ` fd ${request.fd}`}`
         );
       }
       Atomics.wait(this.header, 0, state, remaining);
@@ -4254,10 +4254,17 @@ async function handleMessage(message) {
     let result;
     try {
       if (kernelClient) {
+        const kernelWorkspaceRoot =
+          typeof request?.project?.workspaceRoot === 'string' &&
+          request.project.workspaceRoot.startsWith('/')
+            ? request.project.workspaceRoot
+            : typeof request?.cwd === 'string' && request.cwd.startsWith('/')
+              ? request.cwd
+              : '/workspace';
         restoreTraceKernelMount = installCSharpTraceKernelMount(
           runtimeModule,
           kernelClient,
-          '/workspace'
+          kernelWorkspaceRoot
         );
       }
       try {
@@ -4280,7 +4287,11 @@ async function handleMessage(message) {
       }
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
-      if (kernelClient && request?.source !== 'compile') {
+      if (
+        kernelClient &&
+        request?.source !== 'compile' &&
+        activeProjectIo.directDeviceOutput
+      ) {
         result.stdout = '';
         result.stderr = '';
       }
