@@ -2088,6 +2088,9 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   poll: 42,
   getsockopt: 43,
   identity: 44,
+  isatty: 45,
+  tcgetpgrp: 46,
+  tcsetpgrp: 47,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
   Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
@@ -2506,6 +2509,14 @@ class PythonTraceKernelSyncClient {
         if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
         break;
       case 'setsid':
+        break;
+      case 'isatty':
+      case 'tcgetpgrp':
+        writer.i32(request.fd);
+        break;
+      case 'tcsetpgrp':
+        writer.i32(request.fd);
+        writer.i32(request.pgid);
         break;
       case 'identity':
         writer.u8(request.pid === undefined ? 0 : 1);
@@ -2940,6 +2951,13 @@ class PythonTraceKernelSyncClient {
       value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
     } else if (operation === 'setpgid') {
       value = { op: operation, pgid: reader.i32() };
+    } else if (operation === 'isatty') {
+      value = { op: operation, isTerminal: reader.u8() === 1 };
+    } else if (
+      operation === 'tcgetpgrp' ||
+      operation === 'tcsetpgrp'
+    ) {
+      value = { op: operation, pgid: reader.i32() };
     } else if (operation === 'identity') {
       value = {
         op: operation,
@@ -2983,6 +3001,7 @@ const PYTHON_TK_ERRNO = Object.freeze({
   ENOTDIR: 54,
   ENOTEMPTY: 55,
   ENOTSUP: 58,
+  ENOTTY: 59,
   EPERM: 63,
   EPIPE: 64,
   EROFS: 69,
@@ -3901,6 +3920,27 @@ async function executeProjectPythonUserCall(
       }
       return kernelFd;
     };
+    const kernelTerminalFdForLocalFd = (fd) => {
+      const localFd = Number(fd);
+      const stream = pyodide.FS.getStream(localFd);
+      const kernelFd = stream?.shared?.tracekernelFd;
+      if (Number.isSafeInteger(kernelFd) && kernelFd >= 0) {
+        return kernelFd;
+      }
+      // Pyodide owns its console streams locally, while the corresponding
+      // runtime-process descriptors remain authoritative in TraceKernel.
+      if (
+        Number.isSafeInteger(localFd) &&
+        localFd >= 0 &&
+        localFd <= 2
+      ) {
+        return localFd;
+      }
+      throw new PythonTraceKernelSyscallError(
+        'EBADF',
+        `Python descriptor ${fd} is not backed by TraceKernel`
+      );
+    };
     let pollMappings = null;
     const syscallRequest = (() => {
       switch (String(input.op ?? '')) {
@@ -4067,6 +4107,18 @@ async function executeProjectPythonUserCall(
         }
         case 'setsid':
           return { op: 'setsid' };
+        case 'isatty':
+        case 'tcgetpgrp':
+          return {
+            op: String(input.op),
+            fd: kernelTerminalFdForLocalFd(input.fd),
+          };
+        case 'tcsetpgrp':
+          return {
+            op: 'tcsetpgrp',
+            fd: kernelTerminalFdForLocalFd(input.fd),
+            pgid: Number(input.pgid),
+          };
         case 'setpgid':
           return {
             op: 'setpgid',
@@ -4815,6 +4867,26 @@ class _TraceKernelProcessApi:
             "noHang": bool(no_hang),
         })
 
+class _TraceKernelTerminalApi:
+    def isatty(self, fd):
+        return bool(_TraceKernelProcessApi._call({
+            "op": "isatty",
+            "fd": int(fd),
+        })["isTerminal"])
+
+    def foreground_process_group(self, fd=0):
+        return int(_TraceKernelProcessApi._call({
+            "op": "tcgetpgrp",
+            "fd": int(fd),
+        })["pgid"])
+
+    def set_foreground_process_group(self, pgid, fd=0):
+        return int(_TraceKernelProcessApi._call({
+            "op": "tcsetpgrp",
+            "fd": int(fd),
+            "pgid": int(pgid),
+        })["pgid"])
+
 class _TraceKernelSocketFile:
     def __init__(self, socket, mode="r", encoding=None, errors=None, newline=None):
         self._socket = socket
@@ -5146,6 +5218,7 @@ _tracekernel_module.WatchdogStatus = _TraceKernelWatchdogStatus
 _tracekernel_module.watchdog = _TraceKernelWatchdog()
 _tracekernel_module.fs = _TraceKernelFileSystem()
 _tracekernel_module.process = _TraceKernelProcessApi()
+_tracekernel_module.terminal = _TraceKernelTerminalApi()
 _tracekernel_module.socket = _TraceKernelSocket
 sys.modules["tracekernel"] = _tracekernel_module
 
@@ -5153,6 +5226,9 @@ _original_tracekernel_os_pipe = getattr(os, "pipe", None)
 _original_tracekernel_os_pipe2 = getattr(os, "pipe2", None)
 _original_tracekernel_os_get_blocking = getattr(os, "get_blocking", None)
 _original_tracekernel_os_set_blocking = getattr(os, "set_blocking", None)
+_original_tracekernel_os_isatty = getattr(os, "isatty", None)
+_original_tracekernel_os_tcgetpgrp = getattr(os, "tcgetpgrp", None)
+_original_tracekernel_os_tcsetpgrp = getattr(os, "tcsetpgrp", None)
 _original_tracekernel_o_cloexec = getattr(os, "O_CLOEXEC", None)
 _original_tracekernel_o_nonblock = getattr(os, "O_NONBLOCK", None)
 _tracekernel_o_cloexec = int(_original_tracekernel_o_cloexec or 0x80000)
@@ -5204,6 +5280,27 @@ def _restore_tracekernel_pipe_module():
             pass
     else:
         os.set_blocking = _original_tracekernel_os_set_blocking
+    if _original_tracekernel_os_isatty is None:
+        try:
+            delattr(os, "isatty")
+        except AttributeError:
+            pass
+    else:
+        os.isatty = _original_tracekernel_os_isatty
+    if _original_tracekernel_os_tcgetpgrp is None:
+        try:
+            delattr(os, "tcgetpgrp")
+        except AttributeError:
+            pass
+    else:
+        os.tcgetpgrp = _original_tracekernel_os_tcgetpgrp
+    if _original_tracekernel_os_tcsetpgrp is None:
+        try:
+            delattr(os, "tcsetpgrp")
+        except AttributeError:
+            pass
+    else:
+        os.tcsetpgrp = _original_tracekernel_os_tcsetpgrp
     if _original_tracekernel_o_cloexec is None:
         try:
             delattr(os, "O_CLOEXEC")
@@ -5240,6 +5337,13 @@ os.getpgid = _tracekernel_getpgid
 os.getsid = _tracekernel_getsid
 os.setsid = lambda: _tracekernel_module.process.setsid()
 os.setpgid = lambda pid, pgid: _tracekernel_module.process.setpgid(pid, pgid)
+os.isatty = lambda fd: _tracekernel_module.terminal.isatty(fd)
+os.tcgetpgrp = lambda fd: (
+    _tracekernel_module.terminal.foreground_process_group(fd)
+)
+os.tcsetpgrp = lambda fd, pgid: (
+    _tracekernel_module.terminal.set_foreground_process_group(pgid, fd)
+)
 os.WNOHANG = int(getattr(os, "WNOHANG", 1))
 def _tracekernel_wait_status(_termination):
     if _termination["kind"] == "signal":

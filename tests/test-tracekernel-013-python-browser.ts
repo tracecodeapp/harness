@@ -175,6 +175,24 @@ async function main(): Promise<void> {
               ].join('\n'),
             },
             {
+              path: 'terminal-control.py',
+              contents: [
+                'import os',
+                'from tracekernel import terminal',
+                'foreground = os.tcgetpgrp(0)',
+                'transferred = os.tcsetpgrp(0, foreground)',
+                'valid = (',
+                '    os.isatty(0) and os.isatty(1) and os.isatty(2)',
+                '    and terminal.isatty(0)',
+                '    and terminal.foreground_process_group() == foreground',
+                '    and transferred == foreground',
+                '    and terminal.set_foreground_process_group(foreground) == foreground',
+                ')',
+                'print(f"terminal:{str(valid).lower()}")',
+                '',
+              ].join('\n'),
+            },
+            {
               path: 'kernel-fs.py',
               contents: [
                 'from tracekernel import fs',
@@ -660,6 +678,9 @@ async function main(): Promise<void> {
           const descriptorInheritance = await workspace.runCommand(
             'python python-fd-parent.py'
           );
+          const terminalControl = await workspace
+            .createTerminalSession()
+            .run('python terminal-control.py');
           const orphanParent = await workspace.runCommand(
             'python orphan-parent.py'
           );
@@ -698,6 +719,7 @@ async function main(): Promise<void> {
             processGroupControl,
             socketControl,
             descriptorInheritance,
+            terminalControl,
             orphanParent,
             orphanPythonParent,
             orphanJavaScriptParent,
@@ -742,6 +764,13 @@ async function main(): Promise<void> {
           result.descriptorInheritance.stdout === 'fd-inheritance:true\n',
         `Python subprocess descriptor inheritance/remapping was not kernel-owned: ${JSON.stringify(
           result.descriptorInheritance
+        )}`
+      );
+      assertCondition(
+        result.terminalControl.exitCode === 0 &&
+          result.terminalControl.stdout === 'terminal:true\n',
+        `Python terminal controls did not use kernel-owned terminal state: ${JSON.stringify(
+          result.terminalControl
         )}`
       );
       assertCondition(
@@ -796,6 +825,12 @@ async function main(): Promise<void> {
           'os.getpid/getppid/getpgrp/getsid',
           'os.kill',
           'os.killpg',
+        ],
+        terminalJobControl: [
+          'os.isatty',
+          'os.tcgetpgrp',
+          'os.tcsetpgrp',
+          'tracekernel.terminal',
         ],
         childWait: [
           'Popen.poll',
