@@ -4734,6 +4734,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
   }
 
+  private writeKernelTerminalInput(data: string): boolean {
+    const authority = this.traceKernelAuthority;
+    const terminal = authority?.session.terminalSnapshots()[0];
+    if (!authority || !terminal || terminal.closed) return false;
+    Effect.runFork(
+      authority.session.writeTerminalInput(
+        terminal.id,
+        new TextEncoder().encode(data)
+      ).pipe(
+        Effect.catchAll(() => Effect.void)
+      )
+    );
+    return true;
+  }
+
   private signalRuntimeProcessSelector(
     caller: RuntimeKernelProcessRecord,
     targetPid: number,
@@ -9253,6 +9268,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
         runCommand: (command, commandOptions) => this.runCommandAs(command, commandOptions, parent),
         signalForeground: (signal) => this.signalTerminalForeground(signal),
+        writeTerminalInput: (data) => this.writeKernelTerminalInput(data),
         resizeTerminal: (columns, rows) =>
           this.resizeKernelTerminal(columns, rows),
         jobRecords: () => this.terminalJobRecords(),

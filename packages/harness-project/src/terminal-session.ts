@@ -209,6 +209,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       resolveCwd: (currentCwd: string, target: string) => Promise<string>;
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
       signalForeground?: (signal: 'SIGINT' | 'SIGQUIT') => boolean;
+      writeTerminalInput?: (data: string) => boolean;
       resizeTerminal?: (columns: number, rows: number) => void;
       jobRecords: () => readonly RuntimeProjectTerminalJobRecord[];
       isVerbose: () => boolean;
@@ -308,13 +309,14 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         signalCharacter === '\x03' ? 'SIGINT' : 'SIGQUIT'
       );
     }
-    if (!this.activeStdinPipe) return false;
-    this.activeStdinPipe.write(data);
-    if (this.currentInputState.mode === 'stdin') {
+    const kernelAccepted = this.options.writeTerminalInput?.(data) === true;
+    const legacyAccepted = this.activeStdinPipe !== null;
+    this.activeStdinPipe?.write(data);
+    if ((kernelAccepted || legacyAccepted) && this.currentInputState.mode === 'stdin') {
       this.activeStdinPrompt = '';
       this.setInputState('busy', 'stdin-submit');
     }
-    return true;
+    return kernelAccepted || legacyAccepted;
   }
 
   endStdin(): boolean {

@@ -54,6 +54,7 @@ async function main(): Promise<void> {
   }> = [];
   const interruptChildStartWaiters: Array<() => void> = [];
   const killChildStartWaiters: Array<() => void> = [];
+  const terminalInputStartWaiters: Array<() => void> = [];
   let authoritativeSession: TraceKernelSession | undefined;
   const waitForInterruptChildStart = (): Promise<void> =>
     new Promise<void>((resolve) => {
@@ -62,6 +63,10 @@ async function main(): Promise<void> {
   const waitForKillChildStart = (): Promise<void> =>
     new Promise<void>((resolve) => {
       killChildStartWaiters.push(resolve);
+    });
+  const waitForTerminalInputStart = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      terminalInputStartWaiters.push(resolve);
     });
 
   const nodeRunner: JavaScriptProjectCommandRunner = async (request) => {
@@ -225,6 +230,25 @@ async function main(): Promise<void> {
         });
       });
       return { stdout: '', stderr: '', exitCode: 0 };
+    }
+    if (request.scriptPath.endsWith('terminal-input.js')) {
+      terminalInputStartWaiters.shift()?.();
+      const input = await dispatch(kernel, {
+        op: 'read',
+        fd: 0,
+        maxBytes: 64,
+      });
+      assertCondition(
+        input.ok &&
+          input.value.op === 'read' &&
+          new TextDecoder().decode(input.value.bytes) === 'kernel-input',
+        `terminal input did not cross the kernel-owned fd 0: ${JSON.stringify(input)}`
+      );
+      return {
+        stdout: 'kernel-input\n',
+        stderr: '',
+        exitCode: 0,
+      };
     }
     if (request.scriptPath.endsWith('interrupt-parent.js')) {
       request.signal?.addEventListener(
@@ -527,6 +551,10 @@ async function main(): Promise<void> {
         path: 'kill-child.js',
         contents: '// authoritative signal-delivery fixture\n',
       },
+      {
+        path: 'terminal-input.js',
+        contents: '// authoritative terminal-input fixture\n',
+      },
     ],
     nodeRunner,
   });
@@ -608,8 +636,23 @@ async function main(): Promise<void> {
         resizedKernelTerminal
       )}`
     );
+    const terminalInputStarted = waitForTerminalInputStart();
+    const terminalInputRun = terminal.run('node terminal-input.js');
+    await terminalInputStarted;
     assertCondition(
-      terminalRuntimeCount === 4 && detachedRuntimeCount === 4,
+      terminal.writeStdin('kernel-input'),
+      'terminal input was not accepted by the kernel terminal bridge'
+    );
+    const terminalInputResult = await terminalInputRun;
+    assertCondition(
+      terminalInputResult.exitCode === 0 &&
+        terminalInputResult.stdout === 'kernel-input\n',
+      `kernel terminal fd 0 did not drive the runtime: ${JSON.stringify(
+        terminalInputResult
+      )}`
+    );
+    assertCondition(
+      terminalRuntimeCount === 5 && detachedRuntimeCount === 4,
       `controlling-terminal inheritance did not match parent/child execution: ${JSON.stringify({
         terminalRuntimeCount,
         detachedRuntimeCount,
@@ -712,6 +755,7 @@ async function main(): Promise<void> {
     detachedCommandsReportEnotty: true,
     terminalInterruptTargetsForegroundProcessGroup: true,
     kernelOwnedTerminalResize: true,
+    kernelOwnedTerminalInput: true,
     terminalSignalCharacters: ['VINTR', 'VQUIT'],
   }, null, 2));
 }
