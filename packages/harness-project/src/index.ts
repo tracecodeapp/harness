@@ -3099,27 +3099,27 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<void> {
     let fd: number | undefined;
     try {
-      fd = await this.kernelNetwork.socket(listener.info.pid);
+      fd = await this.openHttpTcpSocket(listener.info.pid);
       listener.listenerFd = fd;
       if (listener.closed || this.httpListeners.get(key) !== listener) {
-        await this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+        await this.closeHttpTcpDescriptor(listener.info.pid, fd);
         listener.listenerFd = undefined;
         return;
       }
       const localTransportHost =
         listener.info.host === '127.0.0.1' || listener.info.host === '0.0.0.0';
-      listener.transportAddress = await this.kernelNetwork.bind(
+      listener.transportAddress = await this.bindHttpTcpSocket(
         listener.info.pid,
         fd,
         localTransportHost
           ? { host: listener.info.host, port: listener.info.port }
           : { host: '127.0.0.1', port: 0 }
       );
-      await this.kernelNetwork.listen(listener.info.pid, fd, {
+      await this.listenHttpTcpSocket(listener.info.pid, fd, {
         backlog: TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS,
       });
       if (listener.closed || this.httpListeners.get(key) !== listener) {
-        await this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+        await this.closeHttpTcpDescriptor(listener.info.pid, fd);
         listener.listenerFd = undefined;
         listener.transportAddress = undefined;
         return;
@@ -3145,7 +3145,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       if (this.httpListeners.get(key) === listener) this.httpListeners.delete(key);
       listener.closed = true;
       if (fd !== undefined) {
-        await this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+        await this.closeHttpTcpDescriptor(listener.info.pid, fd);
       }
       listener.listenerFd = undefined;
       listener.transportAddress = undefined;
@@ -3178,9 +3178,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.retiredHttpListeners.add(listener);
     }
     if (listener.listenerFd !== undefined) {
-      void this.kernelDescriptors
-        .close(listener.info.pid, listener.listenerFd)
-        .catch(() => undefined);
+      void this.closeHttpTcpDescriptor(
+        listener.info.pid,
+        listener.listenerFd
+      );
     }
   }
 
@@ -3188,7 +3189,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.retiredHttpListeners.delete(listener);
     for (const [fd, controller] of listener.connectionControllers) {
       if (!controller.signal.aborted) controller.abort();
-      void this.kernelDescriptors.close(listener.info.pid, fd).catch(() => undefined);
+      void this.closeHttpTcpDescriptor(listener.info.pid, fd);
     }
     listener.connectionControllers.clear();
   }
@@ -3199,26 +3200,26 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const listenerFd = listener.listenerFd;
     if (listenerFd === undefined) return;
     while (!listener.closed) {
-      let accepted: Awaited<ReturnType<RuntimeKernelNetworkManager['accept']>>;
+      let accepted: {
+        readonly fd: number;
+        readonly localAddress: { readonly host: string; readonly port: number };
+        readonly remoteAddress: { readonly host: string; readonly port: number };
+      };
       try {
-        accepted = await this.kernelNetwork.accept(listener.info.pid, listenerFd);
+        accepted = await this.acceptHttpTcpSocket(listener.info.pid, listenerFd);
       } catch (error) {
         if (listener.closed) return;
         throw error;
       }
       if (listener.closed) {
-        await this.kernelDescriptors
-          .close(listener.info.pid, accepted.fd)
-          .catch(() => undefined);
+        await this.closeHttpTcpDescriptor(listener.info.pid, accepted.fd);
         return;
       }
       if (
         listener.connectionControllers.size >=
         TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS
       ) {
-        await this.kernelDescriptors
-          .close(listener.info.pid, accepted.fd)
-          .catch(() => undefined);
+        await this.closeHttpTcpDescriptor(listener.info.pid, accepted.fd);
         this.recordKernelEvent('net-reject', listener.info.pid, {
           id: listener.info.id,
           protocol: listener.info.protocol,
@@ -3250,9 +3251,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           if (listener.closed && listener.connectionControllers.size === 0) {
             this.retiredHttpListeners.delete(listener);
           }
-          void this.kernelDescriptors
-            .close(listener.info.pid, accepted.fd)
-            .catch(() => undefined);
+          void this.closeHttpTcpDescriptor(listener.info.pid, accepted.fd);
         });
     }
   }
@@ -3295,9 +3294,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const requestHeadTimedOut = new Promise<never>((_resolve, reject) => {
         requestHeadTimeout = setTimeout(() => {
           if (!controller.signal.aborted) controller.abort();
-          void this.kernelDescriptors
-            .close(listener.info.pid, fd)
-            .catch(() => undefined);
+          void this.closeHttpTcpDescriptor(listener.info.pid, fd);
           reject(Object.assign(
             new Error('ETIMEDOUT: HTTP request head timed out'),
             { code: 'ETIMEDOUT' }
@@ -3362,13 +3359,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       headers: this.http1Headers(response.rawHeaders, response.headers),
       body: runtimeHttpResponseBytes(response),
     }, this.traceKernelHttp1Limits());
-    await this.kernelDescriptors.write(
+    await this.writeHttpTcpDescriptor(
       listener.info.pid,
-      undefined,
       fd,
-      responseBytes
+      responseBytes,
+      undefined
     );
-    await this.kernelNetwork.shutdown(listener.info.pid, fd, 'write');
+    await this.shutdownHttpTcpSocket(listener.info.pid, fd, 'write');
   }
 
   private closeHttpListenersForProcess(pid: number): void {
@@ -3435,6 +3432,116 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return normalized;
   }
 
+  /**
+   * HTTP is a protocol adapter over the same process-owned TCP descriptors
+   * exposed to language runtimes. PID 0 remains a transitional host-only
+   * fallback until host services receive a dedicated TraceKernel process.
+   */
+  private traceKernelNetworkProcess(pid: number): TraceKernelProcess | undefined {
+    return pid > 0
+      ? this.processExecutionHandles.get(pid)?.kernelProcess
+      : undefined;
+  }
+
+  private async openHttpTcpSocket(pid: number): Promise<number> {
+    const process = this.traceKernelNetworkProcess(pid);
+    const authority = this.traceKernelAuthority;
+    if (!process || !authority) return this.kernelNetwork.socket(pid);
+    return Effect.runPromise(authority.session.createTcpSocket(process));
+  }
+
+  private async bindHttpTcpSocket(
+    pid: number,
+    fd: number,
+    address: Extract<TraceKernelSyscallRequest, { op: 'bind' }>['address']
+  ) {
+    const process = this.traceKernelNetworkProcess(pid);
+    const authority = this.traceKernelAuthority;
+    if (!process || !authority) return this.kernelNetwork.bind(pid, fd, address);
+    return Effect.runPromise(authority.session.bindTcp(process, fd, address));
+  }
+
+  private async listenHttpTcpSocket(
+    pid: number,
+    fd: number,
+    options?: Extract<TraceKernelSyscallRequest, { op: 'listen' }>['options']
+  ): Promise<void> {
+    const process = this.traceKernelNetworkProcess(pid);
+    const authority = this.traceKernelAuthority;
+    if (!process || !authority) {
+      await this.kernelNetwork.listen(pid, fd, options);
+      return;
+    }
+    await Effect.runPromise(authority.session.listenTcp(process, fd, options));
+  }
+
+  private async acceptHttpTcpSocket(pid: number, fd: number) {
+    const process = this.traceKernelNetworkProcess(pid);
+    const authority = this.traceKernelAuthority;
+    if (!process || !authority) return this.kernelNetwork.accept(pid, fd);
+    return Effect.runPromise(authority.session.acceptTcp(process, fd));
+  }
+
+  private async connectHttpTcpSocket(
+    pid: number,
+    fd: number,
+    address: Extract<TraceKernelSyscallRequest, { op: 'connect' }>['address']
+  ) {
+    const process = this.traceKernelNetworkProcess(pid);
+    const authority = this.traceKernelAuthority;
+    if (!process || !authority) return this.kernelNetwork.connect(pid, fd, address);
+    return Effect.runPromise(authority.session.connectTcp(process, fd, address));
+  }
+
+  private async shutdownHttpTcpSocket(
+    pid: number,
+    fd: number,
+    how: Extract<TraceKernelSyscallRequest, { op: 'shutdown' }>['how']
+  ): Promise<void> {
+    const process = this.traceKernelNetworkProcess(pid);
+    const authority = this.traceKernelAuthority;
+    if (!process || !authority) {
+      await this.kernelNetwork.shutdown(pid, fd, how);
+      return;
+    }
+    await Effect.runPromise(authority.session.shutdownTcp(process, fd, how));
+  }
+
+  private async readHttpTcpDescriptor(
+    pid: number,
+    fd: number,
+    maxBytes: number,
+    context?: RuntimeCommandExecutionContext
+  ): Promise<Uint8Array> {
+    const process = this.traceKernelNetworkProcess(pid);
+    return process
+      ? Effect.runPromise(process.read(fd, maxBytes))
+      : this.kernelDescriptors.read(pid, context, fd, maxBytes);
+  }
+
+  private async writeHttpTcpDescriptor(
+    pid: number,
+    fd: number,
+    bytes: Uint8Array,
+    context?: RuntimeCommandExecutionContext
+  ): Promise<number> {
+    const process = this.traceKernelNetworkProcess(pid);
+    return process
+      ? Effect.runPromise(process.write(fd, bytes))
+      : this.kernelDescriptors.write(pid, context, fd, bytes);
+  }
+
+  private async closeHttpTcpDescriptor(pid: number, fd: number): Promise<void> {
+    const process = this.traceKernelNetworkProcess(pid);
+    if (process) {
+      await Effect.runPromise(
+        process.close(fd).pipe(Effect.catchAll(() => Effect.void))
+      );
+      return;
+    }
+    await this.kernelDescriptors.close(pid, fd).catch(() => undefined);
+  }
+
   private readHttp1Message(
     kind: 'request',
     pid: number,
@@ -3455,11 +3562,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<TraceKernelHttp1Message> {
     const decoder = new TraceKernelHttp1Decoder(kind, this.traceKernelHttp1Limits());
     while (true) {
-      const bytes = await this.kernelDescriptors.read(
+      const bytes = await this.readHttpTcpDescriptor(
         pid,
-        context,
         fd,
-        TRACEKERNEL_HTTP_TCP_READ_BYTES
+        TRACEKERNEL_HTTP_TCP_READ_BYTES,
+        context
       );
       if (bytes.byteLength === 0) {
         return decoder.finish();
@@ -3514,16 +3621,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
     const onAbort = (): void => {
       if (fd !== undefined) {
-        void this.kernelDescriptors.close(pid, fd).catch(() => undefined);
+        void this.closeHttpTcpDescriptor(pid, fd);
       }
       abortReject?.(abortError);
     };
     try {
-      fd = await this.kernelNetwork.socket(pid);
+      fd = await this.openHttpTcpSocket(pid);
       signal.addEventListener('abort', onAbort, { once: true });
       if (signal.aborted) onAbort();
       await Promise.race([
-        this.kernelNetwork.connect(pid, fd, {
+        this.connectHttpTcpSocket(pid, fd, {
           host: this.normalizeHttpConnectHost(url.hostname),
           port: this.normalizeHttpConnectPort(url.port ? Number(url.port) : 80),
         }),
@@ -3540,11 +3647,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         body: runtimeHttpRequestBytes(request),
       }, this.traceKernelHttp1Limits());
       await Promise.race([
-        this.kernelDescriptors.write(pid, commandContext, fd, bytes),
+        this.writeHttpTcpDescriptor(pid, fd, bytes, commandContext),
         aborted,
       ]);
       await Promise.race([
-        this.kernelNetwork.shutdown(pid, fd, 'write'),
+        this.shutdownHttpTcpSocket(pid, fd, 'write'),
         aborted,
       ]);
       const response = await Promise.race([
@@ -3555,7 +3662,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     } finally {
       signal.removeEventListener('abort', onAbort);
       if (fd !== undefined) {
-        await this.kernelDescriptors.close(pid, fd).catch(() => undefined);
+        await this.closeHttpTcpDescriptor(pid, fd);
       }
     }
   }
@@ -3603,20 +3710,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
     const onAbort = (): void => {
       if (clientFd !== undefined) {
-        void this.kernelDescriptors.close(clientPid, clientFd).catch(() => undefined);
+        void this.closeHttpTcpDescriptor(clientPid, clientFd);
       }
       abortReject?.(abortError);
     };
 
     try {
-      clientFd = await this.kernelNetwork.socket(clientPid);
-      const localAddress = await this.kernelNetwork.bind(clientPid, clientFd, {
+      clientFd = await this.openHttpTcpSocket(clientPid);
+      const localAddress = await this.bindHttpTcpSocket(clientPid, clientFd, {
         host: '127.0.0.1',
         port: 0,
       });
       clientPort = localAddress.port;
       this.httpTcpDispatches.set(clientPort, dispatchContext);
-      await this.kernelNetwork.connect(clientPid, clientFd, {
+      await this.connectHttpTcpSocket(clientPid, clientFd, {
         host: transportAddress.host === '0.0.0.0'
           ? '127.0.0.1'
           : transportAddress.host,
@@ -3633,13 +3740,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         headers: requestHeaders,
         body: runtimeHttpRequestBytes(request),
       }, this.traceKernelHttp1Limits());
-      await this.kernelDescriptors.write(
+      await this.writeHttpTcpDescriptor(
         clientPid,
-        commandContext,
         clientFd,
-        requestBytes
+        requestBytes,
+        commandContext
       );
-      await this.kernelNetwork.shutdown(clientPid, clientFd, 'write');
+      await this.shutdownHttpTcpSocket(clientPid, clientFd, 'write');
 
       handlerSignal.addEventListener('abort', onAbort, { once: true });
       if (handlerSignal.aborted) onAbort();
@@ -3664,7 +3771,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.httpTcpDispatches.delete(clientPort);
       }
       if (clientFd !== undefined) {
-        await this.kernelDescriptors.close(clientPid, clientFd).catch(() => undefined);
+        await this.closeHttpTcpDescriptor(clientPid, clientFd);
       }
     }
   }

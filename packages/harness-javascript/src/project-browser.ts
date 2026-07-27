@@ -5186,11 +5186,33 @@ class BrowserJavaScriptProjectWorkerClient {
       try {
         const handle = pending.kernelHttp.listen(message.options, (request) => this.dispatchWorkerKernelHttpRequest(commandId, message.listenerId, request));
         pending.httpListeners.set(message.listenerId, handle);
-        this.postWorkerMessage(commandId, 'kernel-http-listen-result', {
-          type: 'kernel-http-listen-result',
-          listenerId: message.listenerId,
-          info: handle.info,
-        } satisfies RuntimeKernelHttpProtocolMessage);
+        const publishReady = (info = handle.info): void => {
+          if (
+            !this.pendingMessages.has(commandId) ||
+            pending.httpListeners.get(message.listenerId) !== handle
+          ) {
+            return;
+          }
+          this.postWorkerMessage(commandId, 'kernel-http-listen-result', {
+            type: 'kernel-http-listen-result',
+            listenerId: message.listenerId,
+            info,
+          } satisfies RuntimeKernelHttpProtocolMessage);
+        };
+        if (handle.ready) {
+          void handle.ready.then(publishReady, (error) => {
+            if (pending.httpListeners.get(message.listenerId) === handle) {
+              pending.httpListeners.delete(message.listenerId);
+            }
+            handle.close();
+            this.postKernelHttpError(commandId, {
+              listenerId: message.listenerId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        } else {
+          publishReady();
+        }
       } catch (error) {
         this.postKernelHttpError(commandId, {
           listenerId: message.listenerId,
