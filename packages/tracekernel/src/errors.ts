@@ -147,7 +147,8 @@ export type TraceKernelFileSystemErrorCode =
   | 'ENOENT'
   | 'ENOTDIR'
   | 'ENOTEMPTY'
-  | 'EPERM';
+  | 'EPERM'
+  | 'EROFS';
 
 export class TraceKernelFileSystemError extends Data.TaggedError(
   'TraceKernelFileSystemError'

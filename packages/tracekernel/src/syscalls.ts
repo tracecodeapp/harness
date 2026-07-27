@@ -516,11 +516,14 @@ export class TraceKernelSyscallDispatcher {
           }))
         );
       case 'watch':
-        return this.session.watchFile(
-          this.process,
-          request.path,
-          request.options
-        ).pipe(
+        return this.authorizeFileSystem([
+          { path: request.path, permission: 'read' },
+        ]).pipe(
+          Effect.zipRight(this.session.watchFile(
+            this.process,
+            request.path,
+            request.options
+          )),
           Effect.map((fd) => ({ op: 'watch' as const, fd }))
         );
       case 'watchdog':
@@ -706,7 +709,22 @@ export class TraceKernelSyscallDispatcher {
           }))
         );
       case 'open':
-        return this.session.openFile(this.process, request.path, request.options).pipe(
+        return this.authorizeFileSystem([
+          ...(request.options?.access === 'read-write'
+            ? [
+                { path: request.path, permission: 'read' as const },
+                { path: request.path, permission: 'write' as const },
+              ]
+            : [{
+                path: request.path,
+                permission: request.options?.access === 'write'
+                  ? 'write' as const
+                  : 'read' as const,
+              }]),
+        ]).pipe(
+          Effect.zipRight(
+            this.session.openFile(this.process, request.path, request.options)
+          ),
           Effect.map((fd) => ({ op: 'open' as const, fd }))
         );
       case 'read':
@@ -773,54 +791,72 @@ export class TraceKernelSyscallDispatcher {
           Effect.as({ op: 'ftruncate' as const })
         );
       case 'stat':
-        return this.session.stat(request.path).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'metadata' }]).pipe(
+          Effect.zipRight(this.session.stat(request.path)),
           Effect.map((stat) => ({ op: 'stat' as const, stat }))
         );
       case 'lstat':
-        return this.session.lstat(request.path).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'metadata' }]).pipe(
+          Effect.zipRight(this.session.lstat(request.path)),
           Effect.map((stat) => ({ op: 'lstat' as const, stat }))
         );
       case 'realpath':
-        return this.session.realpath(request.path).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'metadata' }]).pipe(
+          Effect.zipRight(this.session.realpath(request.path)),
           Effect.map((path) => ({ op: 'realpath' as const, path }))
         );
       case 'readdir':
-        return this.session.readdir(request.path).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'read' }]).pipe(
+          Effect.zipRight(this.session.readdir(request.path)),
           Effect.map((entries) => ({ op: 'readdir' as const, entries }))
         );
       case 'mkdir':
-        return this.session.mkdir(request.path, request.options).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'write' }]).pipe(
+          Effect.zipRight(this.session.mkdir(request.path, request.options)),
           Effect.as({ op: 'mkdir' as const })
         );
       case 'rmdir':
-        return this.session.rmdir(request.path).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'delete' }]).pipe(
+          Effect.zipRight(this.session.rmdir(request.path)),
           Effect.as({ op: 'rmdir' as const })
         );
       case 'unlink':
-        return this.session.unlink(request.path).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'delete' }]).pipe(
+          Effect.zipRight(this.session.unlink(request.path)),
           Effect.as({ op: 'unlink' as const })
         );
       case 'link':
-        return this.session.link(request.existingPath, request.newPath).pipe(
+        return this.authorizeFileSystem([
+          { path: request.existingPath, permission: 'read' },
+          { path: request.newPath, permission: 'write' },
+        ]).pipe(
+          Effect.zipRight(this.session.link(request.existingPath, request.newPath)),
           Effect.as({ op: 'link' as const })
         );
       case 'symlink':
-        return this.session.symlink(request.target, request.linkPath).pipe(
+        return this.authorizeFileSystem([{ path: request.linkPath, permission: 'write' }]).pipe(
+          Effect.zipRight(this.session.symlink(request.target, request.linkPath)),
           Effect.as({ op: 'symlink' as const })
         );
       case 'readlink':
-        return this.session.readlink(request.path).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'read' }]).pipe(
+          Effect.zipRight(this.session.readlink(request.path)),
           Effect.map((target) => ({ op: 'readlink' as const, target }))
         );
       case 'rename':
-        return this.session.rename(request.sourcePath, request.destinationPath).pipe(
+        return this.authorizeFileSystem([
+          { path: request.sourcePath, permission: 'delete' },
+          { path: request.destinationPath, permission: 'write' },
+        ]).pipe(
+          Effect.zipRight(this.session.rename(request.sourcePath, request.destinationPath)),
           Effect.as({ op: 'rename' as const })
         );
       case 'readFile':
-        return this.session.fileSystem.readFileVersioned(
-          request.path,
-          this.process.snapshot().cwd
-        ).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'read' }]).pipe(
+          Effect.zipRight(this.session.fileSystem.readFileVersioned(
+            request.path,
+            this.process.snapshot().cwd
+          )),
           Effect.map(({ contents, cacheGeneration }) => ({
             op: 'readFile' as const,
             bytes: contents,
@@ -828,14 +864,24 @@ export class TraceKernelSyscallDispatcher {
           }))
         );
       case 'writeFile':
-        return this.session.fileSystem.writeFile(
-          request.path,
-          request.bytes,
-          this.process.snapshot().cwd
-        ).pipe(
+        return this.authorizeFileSystem([{ path: request.path, permission: 'write' }]).pipe(
+          Effect.zipRight(this.session.fileSystem.writeFile(
+            request.path,
+            request.bytes,
+            this.process.snapshot().cwd
+          )),
           Effect.as({ op: 'writeFile' as const })
         );
     }
+  }
+
+  private authorizeFileSystem(
+    accesses: readonly {
+      readonly path: string;
+      readonly permission: 'read' | 'write' | 'delete' | 'metadata';
+    }[]
+  ): Effect.Effect<void, Error> {
+    return this.session.authorizeFileSystem(this.process, accesses);
   }
 
   private pollDescriptors(

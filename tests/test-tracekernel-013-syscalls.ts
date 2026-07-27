@@ -5,6 +5,7 @@ import * as Fiber from 'effect/Fiber';
 import * as Option from 'effect/Option';
 import {
   makeTraceKernelHost,
+  TraceKernelFileSystemError,
   TraceKernelSyscallDispatcher,
   type TraceKernelRuntimeProvider,
   type TraceKernelSyscallResult,
@@ -996,6 +997,64 @@ async function main(): Promise<void> {
         yield* limitedSyscalls.dispatch({ op: 'close', fd: onlySocket.value.fd });
       }
       yield* limitedProcess.signal('SIGTERM');
+
+      const authorizedPaths: string[] = [];
+      const policySession = yield* host.openSession({
+        fileSystemPolicy: {
+          authorize: (request) => {
+            authorizedPaths.push(...request.accesses.map((access) => access.path));
+            const denied = request.accesses.find(
+              (access) => access.path === '/workspace/protected.txt'
+            );
+            return denied
+              ? Effect.fail(new TraceKernelFileSystemError({
+                  code: 'EACCES',
+                  path: denied.path,
+                  message: `EACCES: denied ${denied.permission} ${denied.path}`,
+                }))
+              : Effect.void;
+          },
+        },
+      });
+      yield* policySession.writeFile(
+        'protected.txt',
+        new TextEncoder().encode('protected')
+      );
+      yield* policySession.symlink('protected.txt', 'alias.txt');
+      const policyProcess = yield* policySession.spawn({
+        runtime: 'syscall-test',
+        command: 'policy-syscall-client',
+        owner: { id: 'policy-runtime', kind: 'user' },
+      });
+      yield* policyProcess.awaitStarted();
+      const policySyscalls = new TraceKernelSyscallDispatcher(
+        policySession,
+        policyProcess
+      );
+      const deniedAliasRead = yield* policySyscalls.dispatch({
+        op: 'readFile',
+        path: 'alias.txt',
+      });
+      assertCondition(
+        !deniedAliasRead.ok && deniedAliasRead.error.code === 'EACCES',
+        `Filesystem policy did not deny a canonicalized symlink target: ${JSON.stringify(
+          deniedAliasRead
+        )}`
+      );
+      const allowedWrite = yield* policySyscalls.dispatch({
+        op: 'writeFile',
+        path: 'allowed.txt',
+        bytes: new TextEncoder().encode('allowed'),
+      });
+      success(allowedWrite);
+      assertCondition(
+        authorizedPaths.includes('/workspace/protected.txt') &&
+          authorizedPaths.includes('/workspace/allowed.txt'),
+        `Filesystem policy did not receive canonical paths: ${JSON.stringify(
+          authorizedPaths
+        )}`
+      );
+      yield* policyProcess.signal('SIGTERM');
     })
   ));
 
@@ -1016,6 +1075,7 @@ async function main(): Promise<void> {
     concurrentWaitersReapDistinctChildren: true,
     typedErrorsMappedToPosixWireErrors: true,
     descriptorLimitsCrossWireAsEmfile: true,
+    filesystemPolicyCanonicalizesSymlinks: true,
     effectDoesNotCrossRuntimeBoundary: true,
   }, null, 2));
 }

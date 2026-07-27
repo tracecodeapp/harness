@@ -40,6 +40,9 @@ import {
 } from './network';
 import type {
   TraceKernelHostOptions,
+  TraceKernelFileSystemAccess,
+  TraceKernelFileSystemPermission,
+  TraceKernelFileSystemPolicy,
   TraceKernelPrincipal,
   TraceKernelProcessPhase,
   TraceKernelProcessSnapshot,
@@ -506,7 +509,8 @@ export class TraceKernelSession {
     readonly maxDescriptorsPerProcess: number,
     readonly maxProcesses: number,
     readonly signalGracePeriodMs: number,
-    private readonly ownsFileSystem: boolean
+    private readonly ownsFileSystem: boolean,
+    private readonly fileSystemPolicy?: TraceKernelFileSystemPolicy
   ) {
     this.stopWatchingFileSystemMutations = fileSystem.watchMutations((mutation) => {
       Effect.runSync(this.watchRegistry.publish(mutation));
@@ -1723,6 +1727,31 @@ export class TraceKernelSession {
     });
   }
 
+  authorizeFileSystem(
+    process: TraceKernelProcess,
+    accesses: readonly {
+      readonly path: string;
+      readonly permission: TraceKernelFileSystemPermission;
+    }[]
+  ): Effect.Effect<void, Error> {
+    if (!this.fileSystemPolicy || accesses.length === 0) return Effect.void;
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const snapshot = process.snapshot();
+      const normalized = yield* Effect.forEach(
+        accesses,
+        (access): Effect.Effect<TraceKernelFileSystemAccess, Error> =>
+          this.normalizePolicyAccess(access.path, access.permission, snapshot.cwd)
+      );
+      yield* this.fileSystemPolicy!.authorize(Object.freeze({
+        pid: snapshot.pid,
+        cwd: snapshot.cwd,
+        owner: snapshot.owner,
+        accesses: Object.freeze(normalized),
+      }));
+    });
+  }
+
   watchFile(
     process: TraceKernelProcess,
     path: string,
@@ -1949,6 +1978,34 @@ export class TraceKernelSession {
     );
     this.processes.set(pid, process);
     return process;
+  }
+
+  private normalizePolicyAccess(
+    path: string,
+    permission: TraceKernelFileSystemPermission,
+    cwd: string
+  ): Effect.Effect<TraceKernelFileSystemAccess, Error> {
+    return Effect.gen(this, function* () {
+      const requestedPath = yield* this.fileSystem.resolve(path, cwd);
+      const resolved = yield* Effect.either(this.fileSystem.realpath(requestedPath, '/'));
+      if (resolved._tag === 'Right') {
+        return Object.freeze({
+          requestedPath,
+          path: resolved.right,
+          permission,
+        });
+      }
+      if (resolved.left.code !== 'ENOENT') return yield* Effect.fail(resolved.left);
+      const separator = requestedPath.lastIndexOf('/');
+      const parent = separator <= 0 ? '/' : requestedPath.slice(0, separator);
+      const name = requestedPath.slice(separator + 1);
+      const realParent = yield* this.fileSystem.realpath(parent, '/');
+      return Object.freeze({
+        requestedPath,
+        path: realParent === '/' ? `/${name}` : `${realParent}/${name}`,
+        permission,
+      });
+    });
   }
 
   private unregisterProcess(pid: number): void {
@@ -2217,7 +2274,8 @@ export class TraceKernelHost {
                 normalizeDescriptorLimit(options.maxDescriptorsPerProcess),
                 normalizeProcessLimit(options.maxProcesses),
                 normalizeSignalGracePeriod(options.signalGracePeriodMs),
-                ownsFileSystem
+                ownsFileSystem,
+                options.fileSystemPolicy
               );
               this.sessions.set(id, session);
               return session;

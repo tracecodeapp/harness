@@ -204,4 +204,38 @@ export interface TraceKernelSessionOptions {
    * can start. After openSession succeeds, the session is the mutable authority.
    */
   readonly fileSystemImage?: TraceKernelFileSystemImage;
+  readonly fileSystemPolicy?: TraceKernelFileSystemPolicy;
+}
+
+export type TraceKernelFileSystemPermission =
+  | 'read'
+  | 'write'
+  | 'delete'
+  | 'metadata';
+
+export interface TraceKernelFileSystemAccess {
+  /** Lexically normalized path requested by the process. */
+  readonly requestedPath: string;
+  /** Existing realpath, or real parent plus a missing final component. */
+  readonly path: string;
+  readonly permission: TraceKernelFileSystemPermission;
+}
+
+export interface TraceKernelFileSystemPolicyRequest {
+  readonly pid: number;
+  readonly cwd: string;
+  readonly owner: TraceKernelPrincipal;
+  readonly accesses: readonly TraceKernelFileSystemAccess[];
+}
+
+/**
+ * Session syscall authorization boundary.
+ *
+ * Policies decide access; TKFS remains the state/linearization mechanism.
+ * Host/editor APIs enforce their own principal policy before calling TKFS.
+ */
+export interface TraceKernelFileSystemPolicy {
+  authorize(
+    request: TraceKernelFileSystemPolicyRequest
+  ): Effect.Effect<void, Error>;
 }
