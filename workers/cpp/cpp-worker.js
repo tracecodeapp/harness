@@ -2640,6 +2640,11 @@ class WasiProcess {
       [2, this.stdioEntryForDevice('/dev/stderr')],
       [3, { kind: 'dir', path: this.cwd, offset: 0, readable: true, writable: false, preopen: '/' }],
     ]);
+    if (this.kernelClient) {
+      for (const fd of [0, 1, 2]) {
+        this.fds.get(fd).kernelFd = fd;
+      }
+    }
     this.nextFd = 4;
     this.memory = null;
     this.mem = null;
@@ -4021,6 +4026,19 @@ class WasiProcess {
         return cppTraceKernelErrno(error);
       }
     }
+    if (entry.kind === 'stdio' && entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        const written = this.kernelClient.call({
+          op: 'write',
+          fd: entry.kernelFd,
+          bytes: concatBytes(chunks),
+        }).bytesWritten;
+        this.mem.writeU32(nwrittenOut, written);
+        return ESUCCESS;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
 
     if (entry.kind === 'stdio' && entry.outputDevice) {
       if (entry.outputDevice === '/dev/null') {
@@ -4089,6 +4107,27 @@ class WasiProcess {
       return ESUCCESS;
     }
     if (entry.kind === 'pipe' && entry.kernelFd !== undefined && this.kernelClient) {
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.kernelClient.call({
+            op: 'read',
+            fd: entry.kernelFd,
+            maxBytes: len,
+          }).bytes;
+          this.mem.writeBytes(ptr, chunk);
+          total += chunk.length;
+          if (chunk.length < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nreadOut, total);
+      return ESUCCESS;
+    }
+    if (entry.kind === 'stdio' && entry.kernelFd !== undefined && this.kernelClient) {
       let total = 0;
       try {
         for (let index = 0; index < iovsLen; index += 1) {
@@ -4314,9 +4353,11 @@ class WasiProcess {
   }
 
   fd_close(fd) {
-    if (fd <= 2) return ESUCCESS;
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
+    if (fd <= 2 && (entry.kernelFd === undefined || !this.kernelClient)) {
+      return ESUCCESS;
+    }
     if (entry.kind === 'socket') this.closeSocket(entry);
     if (
       entry.kind !== 'socket' &&
@@ -13406,7 +13447,7 @@ async function handleProjectCpp(request, messageId, kernelSyscallChannel) {
     program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], runtimeFs, {
       cwd: `/${requestCwdRelative(request)}`,
       kernelCwd: request?.cwd || projectWorkspaceRoots(request)[0] || '/workspace',
-      stdinPipe: request?.stdinPipe,
+      stdinPipe: kernelClient ? undefined : request?.stdinPipe,
       env: request?.env || { USER: 'tracecode' },
       kernelDevices: projectKernelDevices(request?.project),
       kernelHttp,

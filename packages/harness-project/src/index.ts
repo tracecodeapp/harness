@@ -1328,7 +1328,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
       ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
-      ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner, { kernelSyscalls: true }), this.cwd, {
+      ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, {
         recordExecutablePath: (path) => this.registerVirtualExecutable({ path, kind: 'cpp' }),
         entrypoint: this.entrypoint,
         onFileChange: observeFileChange,
@@ -2329,7 +2329,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       resolveCreated = resolve;
       rejectCreated = reject;
     });
-    const descriptorStdio = request.runtime === 'javascript';
+    const descriptorStdio =
+      request.runtime === 'javascript' || request.runtime === 'cpp';
     const stdinPipe = !descriptorStdio && request.stdio?.stdin === 'pipe'
       ? createRuntimeCommandStdinPipe()
       : !descriptorStdio && request.stdio?.stdin === 'inherit'

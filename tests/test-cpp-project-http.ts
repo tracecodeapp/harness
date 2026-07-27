@@ -27,6 +27,9 @@ import type {
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpRequest,
 } from '../packages/harness-core/src/runtime-project';
+import {
+  createRuntimeCommandStdinPipeFromText,
+} from '../packages/harness-core/src/runtime-project';
 
 const EXTERNAL_COMPILER_URL = 'http://tracecode-cpp-test.invalid/compile';
 
@@ -41,7 +44,10 @@ const CPP_TKFS_PROGRAM = [
   '  std::ofstream output("generated.txt", std::ios::binary | std::ios::trunc);',
   '  output << "kernel-write";',
   '  output.close();',
-  '  std::cout << seed;',
+  '  std::string line;',
+  '  std::getline(std::cin, line);',
+  '  std::cout << seed << "stdin:" << line << "\\n";',
+  '  std::cerr << "kernel-stderr\\n";',
   '  return 0;',
   '}',
   '',
@@ -926,12 +932,15 @@ async function main(): Promise<void> {
         tkfsCompile.exitCode === 0,
         `C++ TKFS fixture should compile: ${JSON.stringify(tkfsCompile)}`
       );
-      const tkfsRun = await tkfsWorkspace.runCommand('./a.out');
+      const tkfsRun = await tkfsWorkspace.runCommand('./a.out', {
+        stdinPipe: createRuntimeCommandStdinPipeFromText('kernel-stdin\n'),
+      });
       assertCondition(
         tkfsRun.exitCode === 0 &&
-          tkfsRun.stdout === 'kernel-read\n' &&
+          tkfsRun.stdout === 'kernel-read\nstdin:kernel-stdin\n' &&
+          tkfsRun.stderr === 'kernel-stderr\n' &&
           await tkfsWorkspace.readFile('generated.txt') === 'kernel-write',
-        `C++ WASI should read and write the authoritative TraceKernel filesystem: ${JSON.stringify({
+        `C++ WASI should use the authoritative TraceKernel filesystem and stdio descriptors: ${JSON.stringify({
           run: tkfsRun,
           snapshot: await tkfsWorkspace.snapshot(),
         })}`
