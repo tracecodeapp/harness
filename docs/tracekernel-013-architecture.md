@@ -427,6 +427,15 @@ host-only structured HTTP adapter remain transitional. Host HTTP calls that
 have no runtime process context intentionally use the compatibility service;
 runtime socket calls never do.
 
+Runtime identity, signal selection and delivery, `setsid`, and `setpgid` also
+dispatch through the extracted session. The product process record is now a
+read-through compatibility projection after topology changes rather than the
+decision-maker for those operations. Foreground compatibility state releases
+a process group only after its final live terminal member exits; one child
+cannot detach its surviving group peers. Product-level wait publication and
+shell job-control presentation remain until the terminal/lifecycle cutovers
+can remove the projection entirely.
+
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
 | Runtime API surface | 0.13 syscall |
@@ -788,8 +797,9 @@ The remaining authority migration must preserve, in order:
 
 1. replace terminal compatibility records with session-owned controlling
    terminals and atomically remap fd 0/1/2 for terminal processes;
-2. route identity, process-group/session, signal, and wait operations through
-   the extracted session without maintaining a second mutable topology;
+2. route product wait publication and shell job-control presentation through
+   the extracted session without maintaining a second mutable lifecycle or
+   topology projection;
 3. attribute journal and resource events directly to the authoritative process
    and eliminate the remaining transitional lifecycle observations;
 4. migrate local structured HTTP onto TCP only after the HTTP conformance

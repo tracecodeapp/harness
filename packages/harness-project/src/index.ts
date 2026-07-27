@@ -1622,6 +1622,53 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
   }
 
+  private dispatchKernelOwnedProcessControlSyscall(
+    request: TraceKernelSyscallRequest,
+    context: RuntimeCommandExecutionContext | undefined
+  ): Promise<TraceKernelSyscallResult> | undefined {
+    if (!context?.process.kernelProcess) return undefined;
+    switch (request.op) {
+      case 'identity':
+      case 'kill':
+      case 'setsid':
+      case 'setpgid':
+        return this.dispatchExtractedTraceKernelSyscall(request, context).then(
+          (result) => {
+            if (
+              result.ok &&
+              (request.op === 'setsid' || request.op === 'setpgid')
+            ) {
+              this.synchronizeProductProcessTopology(
+                context.process as RuntimeKernelProcessRecord
+              );
+            }
+            return result;
+          }
+        );
+      default:
+        return undefined;
+    }
+  }
+
+  private synchronizeProductProcessTopology(
+    process: RuntimeKernelProcessRecord
+  ): void {
+    const snapshot = process.kernelProcess?.snapshot();
+    if (!snapshot) return;
+    process.ppid = snapshot.ppid;
+    process.pgid = snapshot.pgid;
+    process.sid = snapshot.sid;
+    if (snapshot.controllingTerminalId === undefined) {
+      process.tty = '?';
+      process.foreground = false;
+    } else {
+      process.foreground =
+        process.tty !== '?' &&
+        process.pgid === this.terminalForegroundPgid;
+    }
+    this.notifyRuntimeChildSelectorWaiters();
+  }
+
   private async dispatchRuntimeKernelSyscall(
     request: TraceKernelSyscallRequest,
     context?: RuntimeCommandExecutionContext
@@ -1638,6 +1685,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         actor
       );
       if (descriptorResult) return descriptorResult;
+      const processControlResult =
+        this.dispatchKernelOwnedProcessControlSyscall(request, context);
+      if (processControlResult) return processControlResult;
       switch (request.op) {
         case 'watch': {
           const process = this.runtimeSyscallProcess(context);
@@ -1742,108 +1792,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                   },
             },
           };
-        }
-        case 'identity': {
-          const caller = this.runtimeSyscallProcess(context);
-          const requestedPid = request.pid === undefined || request.pid === 0
-            ? caller.pid
-            : Math.trunc(request.pid);
-          if (
-            !Number.isSafeInteger(request.pid ?? 0) ||
-            requestedPid <= 0
-          ) {
-            throw Object.assign(
-              new Error(`ESRCH: invalid process identity target ${request.pid}`),
-              { code: 'ESRCH' }
-            );
-          }
-          const process = this.findProcessRecord(requestedPid);
-          if (!process) {
-            throw Object.assign(
-              new Error(`ESRCH: process ${requestedPid} does not exist`),
-              { code: 'ESRCH' }
-            );
-          }
-          return {
-            ok: true,
-            value: {
-              op: 'identity',
-              pid: process.pid,
-              ppid: process.ppid,
-              pgid: process.pgid,
-              sid: process.sid,
-            },
-          };
-        }
-        case 'kill': {
-          const process = this.runtimeSyscallProcess(context);
-          this.signalRuntimeProcessSelector(process, request.pid, request.signal);
-          return { ok: true, value: { op: 'kill' } };
-        }
-        case 'setsid': {
-          const process = this.runtimeSyscallProcess(context);
-          if (process.pgid === process.pid) {
-            throw Object.assign(
-              new Error(
-                `EPERM: process ${process.pid} is already a process-group leader`
-              ),
-              { code: 'EPERM' }
-            );
-          }
-          process.sid = process.pid;
-          process.pgid = process.pid;
-          process.tty = '?';
-          process.foreground = false;
-          this.notifyRuntimeChildSelectorWaiters();
-          return {
-            ok: true,
-            value: { op: 'setsid', sid: process.sid, pgid: process.pgid },
-          };
-        }
-        case 'setpgid': {
-          const process = this.runtimeSyscallProcess(context);
-          const targetPid = Math.trunc(request.pid);
-          const requestedGroup = Math.trunc(request.pgid);
-          if (
-            !Number.isSafeInteger(request.pid) ||
-            !Number.isSafeInteger(request.pgid) ||
-            targetPid < 0 ||
-            requestedGroup < 0
-          ) {
-            throw Object.assign(
-              new Error(`EINVAL: invalid setpgid(${request.pid}, ${request.pgid})`),
-              { code: 'EINVAL' }
-            );
-          }
-          if (targetPid !== 0 && targetPid !== process.pid) {
-            throw Object.assign(
-              new Error('EPERM: a running process may only change its own process group'),
-              { code: 'EPERM' }
-            );
-          }
-          if (process.sid === process.pid) {
-            throw Object.assign(
-              new Error(`EPERM: session leader ${process.pid} cannot change process group`),
-              { code: 'EPERM' }
-            );
-          }
-          const pgid = requestedGroup === 0 ? process.pid : requestedGroup;
-          if (
-            pgid !== process.pid &&
-            !this.activeProcessRecords().some((candidate) =>
-              candidate.pgid === pgid && candidate.sid === process.sid
-            )
-          ) {
-            throw Object.assign(
-              new Error(
-                `EINVAL: process group ${pgid} does not exist in session ${process.sid}`
-              ),
-              { code: 'EINVAL' }
-            );
-          }
-          process.pgid = pgid;
-          this.notifyRuntimeChildSelectorWaiters();
-          return { ok: true, value: { op: 'setpgid', pgid } };
         }
         case 'isatty': {
           const process = this.runtimeSyscallProcess(context);
@@ -4886,6 +4834,22 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       process.foreground =
         process.tty !== '?' &&
         process.pgid === this.terminalForegroundPgid;
+    }
+  }
+
+  private releaseForegroundProcessGroupMember(
+    process: RuntimeKernelProcessRecord
+  ): void {
+    if (this.terminalForegroundPgid !== process.pgid) return;
+    const survivingMember = this.activeProcessRecords().some(
+      (candidate) =>
+        candidate.pid !== process.pid &&
+        candidate.pgid === process.pgid &&
+        candidate.tty !== '?' &&
+        candidate.state !== 'exited'
+    );
+    if (!survivingMember) {
+      this.setProcessGroupForeground(process.pgid, false);
     }
   }
 
@@ -8781,9 +8745,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         )
       );
       await Effect.runPromise(kernelProcess.wait()).catch(() => undefined);
-      if (this.terminalForegroundPgid === process.pgid) {
-        this.setProcessGroupForeground(process.pgid, false);
-      }
+      this.releaseForegroundProcessGroupMember(process);
       await this.kernelDescriptors.closeProcess(process.pid);
       process.state = 'exited';
       process.exitCode = 126;
@@ -9012,9 +8974,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       process.exitCode = processExitCode;
       process.endedAt = new Date().toISOString();
       this.processTable.delete(process.pid);
-      if (this.terminalForegroundPgid === process.pgid) {
-        this.setProcessGroupForeground(process.pgid, false);
-      }
+      this.releaseForegroundProcessGroupMember(process);
       this.reparentRuntimeChildren(process.pid);
       if (retainProcessOnExit) {
         this.zombieProcessTable.set(process.pid, { process, expiresAtMs: Date.now() + TRACEKERNEL_ZOMBIE_RETENTION_MS });

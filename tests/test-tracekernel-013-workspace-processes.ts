@@ -53,10 +53,15 @@ async function main(): Promise<void> {
     readonly signal: string;
   }> = [];
   const interruptChildStartWaiters: Array<() => void> = [];
+  const killChildStartWaiters: Array<() => void> = [];
   let authoritativeSession: TraceKernelSession | undefined;
   const waitForInterruptChildStart = (): Promise<void> =>
     new Promise<void>((resolve) => {
       interruptChildStartWaiters.push(resolve);
+    });
+  const waitForKillChildStart = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      killChildStartWaiters.push(resolve);
     });
 
   const nodeRunner: JavaScriptProjectCommandRunner = async (request) => {
@@ -76,6 +81,19 @@ async function main(): Promise<void> {
       ppid: request.process?.ppid ?? -1,
     });
     const kernel = syscalls(request);
+    const identity = await dispatch(kernel, { op: 'identity' });
+    assertCondition(
+      identity.ok &&
+        identity.value.op === 'identity' &&
+        identity.value.pid === request.process?.pid &&
+        identity.value.ppid === request.process?.ppid &&
+        identity.value.pgid === request.process?.pgid &&
+        identity.value.sid === request.process?.sid,
+      `runtime identity did not come from its authoritative process record: ${JSON.stringify({
+        identity,
+        process: request.process,
+      })}`
+    );
     const tty = await dispatch(kernel, { op: 'isatty', fd: 0 });
     const foregroundGroup = await dispatch(kernel, {
       op: 'tcgetpgrp',
@@ -131,6 +149,45 @@ async function main(): Promise<void> {
           recordTerminalInterrupt();
           resolve();
         }, { once: true });
+      });
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
+    if (request.scriptPath.endsWith('topology-child.js')) {
+      const createdSession = await dispatch(kernel, { op: 'setsid' });
+      const detachedIdentity = await dispatch(kernel, { op: 'identity' });
+      const kernelSnapshot = authoritativeSession?.processSnapshots().find(
+        (process) => process.pid === request.process?.pid
+      );
+      assertCondition(
+        createdSession.ok &&
+          createdSession.value.op === 'setsid' &&
+          createdSession.value.sid === request.process?.pid &&
+          createdSession.value.pgid === request.process?.pid &&
+          detachedIdentity.ok &&
+          detachedIdentity.value.op === 'identity' &&
+          detachedIdentity.value.sid === request.process?.pid &&
+          detachedIdentity.value.pgid === request.process?.pid &&
+          kernelSnapshot?.sid === request.process?.pid &&
+          kernelSnapshot.pgid === request.process?.pid &&
+          kernelSnapshot.controllingTerminalId === undefined,
+        `setsid did not update the authoritative process topology: ${JSON.stringify({
+          createdSession,
+          detachedIdentity,
+          kernelSnapshot,
+        })}`
+      );
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
+    if (request.scriptPath.endsWith('kill-child.js')) {
+      killChildStartWaiters.shift()?.();
+      await new Promise<void>((resolve) => {
+        if (request.signal?.aborted) {
+          resolve();
+          return;
+        }
+        request.signal?.addEventListener('abort', () => resolve(), {
+          once: true,
+        });
       });
       return { stdout: '', stderr: '', exitCode: 0 };
     }
@@ -274,6 +331,67 @@ async function main(): Promise<void> {
       !waitedTwice.ok && waitedTwice.error.code === 'ECHILD',
       `reaped child did not return ECHILD: ${JSON.stringify(waitedTwice)}`
     );
+    const topologyChild = await dispatch(kernel, {
+      op: 'spawn',
+      runtime: 'javascript',
+      command: 'node',
+      args: ['topology-child.js'],
+    });
+    assertCondition(
+      topologyChild.ok && topologyChild.value.op === 'spawn',
+      `parent could not spawn its topology child: ${JSON.stringify(topologyChild)}`
+    );
+    if (!topologyChild.ok || topologyChild.value.op !== 'spawn') {
+      return { stdout: '', stderr: 'topology spawn failed\n', exitCode: 1 };
+    }
+    const topologyWait = await dispatch(kernel, {
+      op: 'wait',
+      pid: topologyChild.value.pid,
+    });
+    assertCondition(
+      topologyWait.ok &&
+        topologyWait.value.op === 'wait' &&
+        topologyWait.value.termination?.kind === 'exit' &&
+        topologyWait.value.termination.exitCode === 0,
+      `detached topology child did not exit cleanly: ${JSON.stringify(topologyWait)}`
+    );
+
+    const killChildStarted = waitForKillChildStart();
+    const killChild = await dispatch(kernel, {
+      op: 'spawn',
+      runtime: 'javascript',
+      command: 'node',
+      args: ['kill-child.js'],
+    });
+    assertCondition(
+      killChild.ok && killChild.value.op === 'spawn',
+      `parent could not spawn its signal target: ${JSON.stringify(killChild)}`
+    );
+    if (!killChild.ok || killChild.value.op !== 'spawn') {
+      return { stdout: '', stderr: 'kill spawn failed\n', exitCode: 1 };
+    }
+    await killChildStarted;
+    const killed = await dispatch(kernel, {
+      op: 'kill',
+      pid: killChild.value.pid,
+      signal: 'SIGTERM',
+    });
+    const killedWait = await dispatch(kernel, {
+      op: 'wait',
+      pid: killChild.value.pid,
+    });
+    assertCondition(
+      killed.ok &&
+        killed.value.op === 'kill' &&
+        killedWait.ok &&
+        killedWait.value.op === 'wait' &&
+        killedWait.value.termination?.kind === 'signal' &&
+        killedWait.value.termination.signal === 'SIGTERM',
+      `kernel signal delivery did not own child termination: ${JSON.stringify({
+        killed,
+        killedWait,
+      })}`
+    );
     const childFile = await dispatch(kernel, {
       op: 'readFile',
       path: 'child-owned.txt',
@@ -311,6 +429,14 @@ async function main(): Promise<void> {
       {
         path: 'interrupt-child.js',
         contents: '// terminal foreground process-group child fixture\n',
+      },
+      {
+        path: 'topology-child.js',
+        contents: '// authoritative setsid fixture\n',
+      },
+      {
+        path: 'kill-child.js',
+        contents: '// authoritative signal-delivery fixture\n',
       },
     ],
     nodeRunner,
@@ -385,7 +511,7 @@ async function main(): Promise<void> {
       `terminal-owned parent/child flow did not complete: ${JSON.stringify(terminalResult)}`
     );
     assertCondition(
-      terminalRuntimeCount === 2 && detachedRuntimeCount === 2,
+      terminalRuntimeCount === 4 && detachedRuntimeCount === 4,
       `controlling-terminal inheritance did not match parent/child execution: ${JSON.stringify({
         terminalRuntimeCount,
         detachedRuntimeCount,
@@ -476,6 +602,7 @@ async function main(): Promise<void> {
     kernelOwnedProductPids: true,
     kernelOwnedPathSyscalls: true,
     kernelOwnedDescriptors: true,
+    kernelOwnedProcessControls: true,
     distinctRuntimeProcessIdentity: true,
     processOwnedPipeInheritance: true,
     sharedFilesystemAcrossParentAndChild: true,
