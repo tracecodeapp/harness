@@ -26,6 +26,12 @@ Effect, fibers, and services never cross that boundary.
 Host-owned execution engines can attach with `TraceKernelControlledRuntime`.
 The controlled provider leaves PID, signal, descriptor, and lease authority in
 TraceKernel while the host reports completion from an existing runner.
+TraceKernel brackets every mutable lease itself and passes its exactly-once
+release a kernel-classified disposition. A normally completed lease is still
+destroyed unless it implements `revalidate()` and that reset check succeeds;
+execution failure, signal termination, interruption, and failed validation can
+never authorize pool reuse. Provider initialization remains lazily memoized, so
+immutable assets survive recovery without retaining process-visible state.
 Detached controlled processes can attach real `/dev/null` standard descriptors
 at fd 0/1/2, reserving the conventional identities in the same table used by
 files, pipes, watches, terminals, and sockets. Terminal launches atomically
@@ -34,9 +40,9 @@ terminal before runtime code starts.
 
 The package now also contains the first session-local TCP foundation. Local
 socket descriptors, port bindings, listener backlogs, duplex streams,
-half-closes, and teardown are kernel-owned. Existing structured HTTP adapters
-are intentionally still separate until they can be migrated onto the byte
-stream model with protocol conformance coverage.
+half-closes, and teardown are kernel-owned. Runtime structured HTTP and raw TCP
+share this authoritative namespace and process-owned descriptor model; external
+browser fetch egress remains a distinct host protocol service.
 
 The browser JavaScript integration now maps the foundational event-driven
 `node:net` server/client surface onto those syscalls. It uses an asynchronous

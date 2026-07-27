@@ -28,19 +28,17 @@ async function main(): Promise<void> {
     runtime: 'blocking-test',
     initialize: Effect.succeed({
       acquire: () =>
-        Effect.acquireRelease(
-          Effect.sync(() => {
-            const id = `blocking-lease-${++leaseAcquireCount}`;
-            return {
-              id,
-              runtime: 'blocking-test',
-              execute: () => Effect.never,
-            };
-          }),
-          () => Effect.sync(() => {
-            leaseReleaseCount += 1;
-          })
-        ),
+        Effect.sync(() => {
+          const id = `blocking-lease-${++leaseAcquireCount}`;
+          return {
+            id,
+            runtime: 'blocking-test',
+            execute: () => Effect.never,
+            release: () => Effect.sync(() => {
+              leaseReleaseCount += 1;
+            }),
+          };
+        }),
     }),
   };
 

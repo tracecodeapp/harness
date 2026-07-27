@@ -27,14 +27,12 @@ async function main(): Promise<void> {
     runtime: 'watch-test',
     initialize: Effect.succeed({
       acquire: (process) =>
-        Effect.acquireRelease(
-          Effect.succeed({
-            id: `watch-${process.pid}`,
-            runtime: 'watch-test',
-            execute: () => Effect.never,
-          }),
-          () => Effect.void
-        ),
+        Effect.succeed({
+          id: `watch-${process.pid}`,
+          runtime: 'watch-test',
+          execute: () => Effect.never,
+          release: () => Effect.void,
+        }),
     }),
   };
 

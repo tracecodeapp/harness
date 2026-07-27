@@ -1,3 +1,4 @@
+import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
@@ -55,6 +56,7 @@ import type {
   TraceKernelProcessTermination,
   TraceKernelRuntimeFactory,
   TraceKernelRuntimeLease,
+  TraceKernelRuntimeLeaseReleaseDisposition,
   TraceKernelRuntimeName,
   TraceKernelRuntimeProcessContext,
   TraceKernelRuntimeProvider,
@@ -436,6 +438,15 @@ export class TraceKernelProcess {
             result.stderr ?? ''
           )),
       }),
+      Effect.catchAllCause((cause) =>
+        Cause.isInterruptedOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.sync(() => this.finish({
+              kind: 'failure',
+              exitCode: 1,
+              message: 'Runtime execution failed.',
+            }, '', 'Runtime execution failed.\n'))
+      ),
       Effect.onInterrupt(() =>
         Effect.sync(() => {
           const signal = this.requestedSignal ?? 'SIGTERM';
@@ -621,25 +632,41 @@ export class TraceKernelSession {
       );
       process.markStarting();
 
-      const program = Effect.scoped(
+      const program = Effect.acquireUseRelease(
         this.host.acquireRuntimeLease(
           spec.runtime,
           this.runtimeContext(process)
-        ).pipe(
-          Effect.flatMap((lease) => process.execute(lease)),
-          Effect.catchAll((error) =>
-            process.failBeforeExecution(error).pipe(
-              Effect.map(() => process.snapshot())
+        ),
+        (lease) =>
+          process.execute(lease).pipe(
+            Effect.flatMap((snapshot) =>
+              this.revalidateRuntimeLease(lease, snapshot).pipe(
+                Effect.map((disposition) => ({ snapshot, disposition }))
+              )
             )
           ),
-          Effect.flatMap((snapshot) =>
-            this.flushProcessStandardOutput(process, snapshot).pipe(
-              Effect.catchAll(() => Effect.void),
-              Effect.as(snapshot)
-            )
+        (lease, exit) =>
+          lease.release(
+            Exit.isSuccess(exit)
+              ? exit.value.disposition
+              : Object.freeze({
+                  kind: 'destroy',
+                  reason: 'interrupted',
+                })
           )
-        )
       ).pipe(
+        Effect.map(({ snapshot }) => snapshot),
+        Effect.catchAll((error) =>
+          process.failBeforeExecution(error).pipe(
+            Effect.map(() => process.snapshot())
+          )
+        ),
+        Effect.flatMap((snapshot) =>
+          this.flushProcessStandardOutput(process, snapshot).pipe(
+            Effect.catchAll(() => Effect.void),
+            Effect.as(snapshot)
+          )
+        ),
         Effect.ensuring(this.clearProcessWatchdog(process)),
         Effect.ensuring(process.descriptors.closeAll()),
         Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
@@ -2032,6 +2059,50 @@ export class TraceKernelSession {
     });
   }
 
+  private revalidateRuntimeLease(
+    lease: TraceKernelRuntimeLease,
+    snapshot: TraceKernelProcessSnapshot
+  ): Effect.Effect<TraceKernelRuntimeLeaseReleaseDisposition> {
+    const termination = snapshot.termination;
+    if (!termination || termination.kind === 'failure') {
+      return Effect.succeed(Object.freeze({
+        kind: 'destroy',
+        reason: 'execution-failure',
+        ...(termination?.kind === 'failure' && termination.message
+          ? { message: termination.message }
+          : {}),
+      }));
+    }
+    if (termination.kind === 'signal') {
+      return Effect.succeed(Object.freeze({
+        kind: 'destroy',
+        reason: 'signaled',
+        message: termination.signal,
+      }));
+    }
+    if (!lease.revalidate) {
+      return Effect.succeed(Object.freeze({
+        kind: 'destroy',
+        reason: 'unvalidated',
+      }));
+    }
+    return lease.revalidate().pipe(
+      Effect.match({
+        onFailure: (error): TraceKernelRuntimeLeaseReleaseDisposition =>
+          Object.freeze({
+            kind: 'destroy',
+            reason: 'revalidation-failure',
+            message: error.message,
+          }),
+        onSuccess: (): TraceKernelRuntimeLeaseReleaseDisposition =>
+          Object.freeze({
+            kind: 'reuse',
+            reason: 'revalidated',
+          }),
+      })
+    );
+  }
+
   resourceIds(): readonly string[] {
     return [
       ...this.resources.keys(),
@@ -2812,8 +2883,7 @@ export class TraceKernelHost {
     process: TraceKernelRuntimeProcessContext
   ): Effect.Effect<
     TraceKernelRuntimeLease,
-    TraceKernelRuntimeUnavailableError | Error,
-    Scope.Scope
+    TraceKernelRuntimeUnavailableError | Error
   > {
     return Effect.suspend(() => {
       if (this.closed) {

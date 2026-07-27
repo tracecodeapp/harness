@@ -1,5 +1,4 @@
 import type * as Effect from 'effect/Effect';
-import type * as Scope from 'effect/Scope';
 import type { TraceKernelDescriptorSnapshot } from './descriptors';
 import type {
   TraceKernelFileSystem,
@@ -166,11 +165,28 @@ export interface TraceKernelRuntimeResult {
   readonly termination?: TraceKernelProcessTermination;
 }
 
+export type TraceKernelRuntimeLeaseReleaseDisposition =
+  | {
+      readonly kind: 'reuse';
+      readonly reason: 'revalidated';
+    }
+  | {
+      readonly kind: 'destroy';
+      readonly reason:
+        | 'unvalidated'
+        | 'execution-failure'
+        | 'signaled'
+        | 'interrupted'
+        | 'revalidation-failure';
+      readonly message?: string;
+    };
+
 /**
  * Mutable language execution state held for one process.
  *
- * Implementations acquire leases with `Effect.acquireRelease`; release/reset
- * therefore remains attached to the scope that owns the process.
+ * TraceKernel owns the acquire/use/release bracket. A lease is never reusable
+ * merely because execution returned: it must expose `revalidate` and that
+ * check must succeed. All other outcomes receive a destroy disposition.
  */
 export interface TraceKernelRuntimeLease {
   readonly id: string;
@@ -184,12 +200,25 @@ export interface TraceKernelRuntimeLease {
    * deadline and force-interrupts the process if execution does not finish.
    */
   signal?(signal: Exclude<TraceKernelSignal, 'SIGKILL'>): Effect.Effect<void, Error>;
+  /**
+   * Reset and prove that no process-visible mutable state survived execution.
+   * Omit this for ephemeral leases; TraceKernel will destroy them after use.
+   */
+  revalidate?(): Effect.Effect<void, Error>;
+  /**
+   * Exactly-once finalizer. Providers may return a lease to a pool only for a
+   * `reuse` disposition. Every `destroy` disposition must retire its mutable
+   * execution state rather than making it available to another process.
+   */
+  release(
+    disposition: TraceKernelRuntimeLeaseReleaseDisposition
+  ): Effect.Effect<void>;
 }
 
 export interface TraceKernelRuntimeFactory {
   acquire(
     process: TraceKernelRuntimeProcessContext
-  ): Effect.Effect<TraceKernelRuntimeLease, Error, Scope.Scope>;
+  ): Effect.Effect<TraceKernelRuntimeLease, Error>;
 }
 
 /**

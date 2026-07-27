@@ -26,16 +26,14 @@ async function main(): Promise<void> {
     runtime: 'vfs-test',
     initialize: Effect.succeed({
       acquire: (process) =>
-        Effect.acquireRelease(
-          Effect.succeed({
-            id: `vfs-lease-${process.pid}`,
-            runtime: 'vfs-test',
-            execute: () => Effect.never,
-          }),
-          () => Effect.sync(() => {
+        Effect.succeed({
+          id: `vfs-lease-${process.pid}`,
+          runtime: 'vfs-test',
+          execute: () => Effect.never,
+          release: () => Effect.sync(() => {
             leaseReleaseCount += 1;
-          })
-        ),
+          }),
+        }),
     }),
   };
 

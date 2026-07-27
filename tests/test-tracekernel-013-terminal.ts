@@ -38,14 +38,12 @@ async function main(): Promise<void> {
     runtime: 'terminal-test',
     initialize: Effect.succeed({
       acquire: (process) =>
-        Effect.acquireRelease(
-          Effect.succeed({
-            id: `terminal-lease-${process.pid}`,
-            runtime: 'terminal-test',
-            execute: () => Effect.never,
-          }),
-          () => Effect.void
-        ),
+        Effect.succeed({
+          id: `terminal-lease-${process.pid}`,
+          runtime: 'terminal-test',
+          execute: () => Effect.never,
+          release: () => Effect.void,
+        }),
     }),
   };
 

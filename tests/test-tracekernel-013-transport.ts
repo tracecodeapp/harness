@@ -589,14 +589,12 @@ async function main(): Promise<void> {
     runtime: 'transport-test',
     initialize: Effect.succeed({
       acquire: (process) =>
-        Effect.acquireRelease(
-          Effect.succeed({
-            id: `transport-lease-${process.pid}`,
-            runtime: 'transport-test',
-            execute: () => Effect.never,
-          }),
-          () => Effect.void
-        ),
+        Effect.succeed({
+          id: `transport-lease-${process.pid}`,
+          runtime: 'transport-test',
+          execute: () => Effect.never,
+          release: () => Effect.void,
+        }),
     }),
   };
   let cachedBenchmarkResult = {

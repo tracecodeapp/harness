@@ -39,14 +39,12 @@ async function main(): Promise<void> {
     runtime: 'namespace-test',
     initialize: Effect.succeed({
       acquire: (process) =>
-        Effect.acquireRelease(
-          Effect.succeed({
-            id: `namespace-lease-${process.pid}`,
-            runtime: 'namespace-test',
-            execute: () => Effect.never,
-          }),
-          () => Effect.void
-        ),
+        Effect.succeed({
+          id: `namespace-lease-${process.pid}`,
+          runtime: 'namespace-test',
+          execute: () => Effect.never,
+          release: () => Effect.void,
+        }),
     }),
   };
 

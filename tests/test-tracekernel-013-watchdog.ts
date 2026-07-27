@@ -24,14 +24,12 @@ async function main(): Promise<void> {
     runtime: 'watchdog-test',
     initialize: Effect.succeed({
       acquire: (process) =>
-        Effect.acquireRelease(
-          Effect.succeed({
-            id: `watchdog-lease-${process.pid}`,
-            runtime: 'watchdog-test',
-            execute: () => Effect.never,
-          }),
-          () => Effect.void
-        ),
+        Effect.succeed({
+          id: `watchdog-lease-${process.pid}`,
+          runtime: 'watchdog-test',
+          execute: () => Effect.never,
+          release: () => Effect.void,
+        }),
     }),
   };
 

@@ -20,6 +20,7 @@ async function main(): Promise<void> {
   let acquireCount = 0;
   let releaseCount = 0;
   const releasedLeaseIds: string[] = [];
+  const releaseReasons: string[] = [];
   const deliveredSignals: Array<{ pid: number; signal: string }> = [];
 
   const provider: TraceKernelRuntimeProvider = {
@@ -28,8 +29,7 @@ async function main(): Promise<void> {
       initializeCount += 1;
       return {
         acquire: (process) =>
-          Effect.acquireRelease(
-            Effect.gen(function* () {
+          Effect.gen(function* () {
               acquireCount += 1;
               const leaseId = `lease-${acquireCount}`;
               const gracefulExit = yield* Deferred.make<void>();
@@ -73,14 +73,14 @@ async function main(): Promise<void> {
                       )
                     ),
                 } : {}),
+                release: (disposition) =>
+                  Effect.sync(() => {
+                    releaseCount += 1;
+                    releasedLeaseIds.push(leaseId);
+                    releaseReasons.push(disposition.reason);
+                  }),
               };
-            }),
-            (lease) =>
-              Effect.sync(() => {
-                releaseCount += 1;
-                releasedLeaseIds.push(lease.id);
-              })
-          ),
+          }),
       };
     }),
   };
@@ -458,6 +458,12 @@ async function main(): Promise<void> {
   assertCondition(acquireCount === 17, `Expected seventeen leases, acquired ${acquireCount}.`);
   assertCondition(releaseCount === 17, `Expected seventeen lease releases, observed ${releaseCount}.`);
   assertCondition(new Set(releasedLeaseIds).size === releasedLeaseIds.length, 'A runtime lease was released more than once.');
+  assertCondition(
+    releaseReasons.includes('unvalidated') &&
+      releaseReasons.includes('execution-failure') &&
+      releaseReasons.includes('interrupted'),
+    `Lease release did not preserve kernel outcome classification: ${JSON.stringify(releaseReasons)}`
+  );
 
   console.log(JSON.stringify({
     schema: 'tracekernel-013-lifecycle-v1',
@@ -465,6 +471,7 @@ async function main(): Promise<void> {
     acquireCount,
     releaseCount,
     exactlyOnceLeaseRelease: true,
+    kernelClassifiedLeaseRelease: true,
     concurrentInitializationDeduplicated: true,
     signalInterruptionMappedToProcessExit: true,
     sessionTeardownTerminatedDescendants: true,

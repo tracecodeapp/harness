@@ -127,7 +127,16 @@ A lease represents mutable language execution state assigned to one process.
 Immutable initialization may be shared at host level; mutable state may be
 reused only after a complete, proven reset.
 
-Safe isolation is the default. Unsafe reuse requires explicit opt-in.
+TraceKernel owns the acquire/use/release bracket and classifies the release
+disposition exactly once. A normal process exit is not proof of cleanliness:
+the lease must implement `revalidate()`, complete its reset, and pass validation
+before the kernel permits `reuse`. Missing validation, runtime failure, signal
+termination, interruption, or failed validation produces `destroy`. Provider
+initialization stays lazily memoized across those failures so downloaded assets
+and immutable compiled modules remain available.
+
+Safe isolation is therefore the default. Pool reuse requires an explicit,
+successful validation contract rather than an optimistic provider finalizer.
 
 ## Effect boundary
 
@@ -136,8 +145,8 @@ definition of kernel semantics.
 
 TraceKernel uses Effect for:
 
-- `Scope` and `acquireRelease` around hosts, sessions, processes, descriptors,
-  and runtime leases;
+- `Scope`, `acquireRelease`, and `acquireUseRelease` around hosts, sessions,
+  processes, descriptors, and runtime leases;
 - lazy, concurrency-safe runtime initialization;
 - interruption and supervised background fibers;
 - bounded queues, deferred results, and synchronization;
@@ -735,7 +744,12 @@ The initial 0.13 branch now establishes:
 - scoped host and session resources;
 - lazy, concurrency-deduplicated runtime provider initialization;
 - session-owned process supervision;
-- process-owned runtime leases released on exit, failure, signal, or teardown;
+- process-owned runtime leases released exactly once on exit, failure, signal,
+  or teardown;
+- kernel-classified lease recovery: clean reuse only after successful reset
+  validation, with crash, interruption, missing validation, and failed
+  validation forced to destroy while immutable provider initialization remains
+  cached;
 - explicit process lifecycle and termination records;
 - lease-level graceful `SIGHUP`/`SIGINT`/`SIGQUIT`/`SIGTERM` delivery with a
   kernel-owned deadline and unconditional `SIGKILL` force interruption;
@@ -876,7 +890,7 @@ The pipe is intentionally the first descriptor resource. It exercises blocking,
 interruption, endpoint lifecycle, and backpressure before the same contracts are
 applied to files, terminals, and sockets.
 
-## Remaining kernelization gates
+## Remaining adapter and subsystem gates
 
 The syscall contract and language adapters are no longer the main migration
 risk. Product storage is now authoritative TKFS and the workspace owns an
@@ -901,17 +915,19 @@ events carry the same PID/PPID/PGID/SID/owner attribution. The journal remains
 the product-facing ordered/redacted event view; it no longer trusts product
 process metadata to identify the actor that caused an operation.
 
-The remaining authority migration must preserve, in order:
+The current JavaScript/TypeScript, C++, C#, and Python adapters use
+process-owned descriptor stdio. Runtime structured HTTP and raw TCP now share
+the same authoritative session network namespace. TraceKernel also owns lease
+recovery disposition, allowing reuse only after successful revalidation.
 
-1. move every language adapter onto descriptor stdio, then remove the temporary
-   legacy input dual feed and its control-byte suppression; metadata, resize,
-   input/output bytes, one-shot EOF, line discipline, foreground signal
-   delivery, and fd 0/1/2 descriptors are already authoritative;
-2. migrate local structured HTTP onto TCP only after the HTTP conformance
-   corpus proves fragmented reads, backpressure, half-closes, cancellation, and
-   concurrent connections; host-only fetch egress remains a protocol service;
-3. crash recovery that destroys or revalidates every mutable runtime lease while
-   retaining only immutable host caches.
+The remaining adapter migration is intentionally narrower:
+
+1. attach TraceJVM through the same process, descriptor, TKFS, socket, and lease
+   contracts rather than adapting the legacy CheerpJ filesystem layout;
+2. remove the temporary legacy stdio feed only after every shipping legacy
+   runtime has either migrated or been retired;
+3. make any adapter that wants pooling implement and prove its reset validation;
+   adapters without it remain safe because their leases receive `destroy`.
 
 Suspended job control (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`, and `SIGCONT`) is a
 separate runtime-contract gate. Browser hosts cannot honestly suspend arbitrary

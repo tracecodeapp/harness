@@ -2,6 +2,7 @@ import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import type {
   TraceKernelRuntimeLease,
+  TraceKernelRuntimeLeaseReleaseDisposition,
   TraceKernelRuntimeProcessContext,
   TraceKernelRuntimeProvider,
   TraceKernelRuntimeResult,
@@ -46,10 +47,7 @@ export class TraceKernelControlledRuntime {
       runtime,
       initialize: Effect.succeed({
         acquire: (context: TraceKernelRuntimeProcessContext) =>
-          Effect.acquireRelease(
-            this.attach(context),
-            (lease) => this.release(context.pid, lease)
-          ),
+          this.attach(context),
       }),
     });
   }
@@ -154,19 +152,19 @@ export class TraceKernelControlledRuntime {
               error instanceof Error ? error : new Error(String(error)),
           });
         },
+        release: (disposition) =>
+          this.release(context.pid, disposition),
       };
     });
   }
 
   private release(
     pid: number,
-    lease: TraceKernelRuntimeLease
+    _disposition: TraceKernelRuntimeLeaseReleaseDisposition
   ): Effect.Effect<void> {
     return Effect.sync(() => {
       const entry = this.entries.get(pid);
-      if (entry && lease.id === `${this.runtime}-${pid}`) {
-        this.entries.delete(pid);
-      }
+      if (entry) this.entries.delete(pid);
     });
   }
 }

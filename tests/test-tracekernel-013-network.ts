@@ -51,14 +51,12 @@ async function main(): Promise<void> {
     runtime: 'network-test',
     initialize: Effect.succeed({
       acquire: (process) =>
-        Effect.acquireRelease(
-          Effect.succeed({
-            id: `network-lease-${process.pid}`,
-            runtime: 'network-test',
-            execute: () => Effect.never,
-          }),
-          () => Effect.void
-        ),
+        Effect.succeed({
+          id: `network-lease-${process.pid}`,
+          runtime: 'network-test',
+          execute: () => Effect.never,
+          release: () => Effect.void,
+        }),
     }),
   };
 

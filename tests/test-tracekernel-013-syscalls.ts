@@ -27,8 +27,7 @@ async function main(): Promise<void> {
     runtime: 'syscall-test',
     initialize: Effect.succeed({
       acquire: (process) =>
-        Effect.acquireRelease(
-          Effect.succeed({
+        Effect.succeed({
             id: `syscall-lease-${process.pid}`,
             runtime: 'syscall-test',
             execute: () =>
@@ -62,9 +61,8 @@ async function main(): Promise<void> {
                     })
                   )
                 : Effect.never,
-          }),
-          () => Effect.void
-        ),
+            release: () => Effect.void,
+        }),
     }),
   };
 
