@@ -229,7 +229,6 @@ class WorkerKernelAsyncSyscallClient {
   private closed = false;
   private readonly pending = new Map<string, {
     resolve: (result: TraceKernelSyscallResult) => void;
-    reject: (error: Error) => void;
   }>();
 
   constructor(
@@ -239,17 +238,23 @@ class WorkerKernelAsyncSyscallClient {
     ) => void
   ) {}
 
+  private closedResult(): TraceKernelSyscallResult {
+    return {
+      ok: false,
+      error: {
+        code: 'EIO',
+        message: 'ECLOSED: async syscall client is closed',
+      },
+    };
+  }
+
   dispatch(request: TraceKernelSyscallRequest): Promise<TraceKernelSyscallResult> {
     if (this.closed) {
-      return Promise.reject(
-        Object.assign(new Error('ECLOSED: async syscall client is closed'), {
-          code: 'ECLOSED',
-        })
-      );
+      return Promise.resolve(this.closedResult());
     }
     const requestId = `async-syscall-${this.nextRequestId++}`;
-    return new Promise<TraceKernelSyscallResult>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
+    return new Promise<TraceKernelSyscallResult>((resolve) => {
+      this.pending.set(requestId, { resolve });
       this.postProtocolMessage(requestId, request);
     });
   }
@@ -263,11 +268,8 @@ class WorkerKernelAsyncSyscallClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    const error = Object.assign(
-      new Error('ECLOSED: async syscall client is closed'),
-      { code: 'ECLOSED' }
-    );
-    for (const pending of this.pending.values()) pending.reject(error);
+    const result = this.closedResult();
+    for (const pending of this.pending.values()) pending.resolve(result);
     this.pending.clear();
   }
 }
