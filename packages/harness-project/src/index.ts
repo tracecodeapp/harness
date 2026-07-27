@@ -96,6 +96,7 @@ import {
   makeTraceKernelSharedSyscallChannel,
   makeTraceKernelHost,
   TraceKernelFileSystem,
+  TraceKernelFileSystemError,
   TraceKernelHttp1Decoder,
   TraceKernelSharedSyscallServer,
   type TraceKernelHttp1Header,
@@ -103,6 +104,7 @@ import {
   type TraceKernelHttp1Request,
   type TraceKernelHttp1Response,
   type TraceKernelFileSystemImage,
+  type TraceKernelFileSystemPolicy,
   type TraceKernelHost,
   type TraceKernelSession,
   type TraceKernelSyscallErrorCode,
@@ -7614,6 +7616,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             cwd: this.cwd,
             env: this.baseEnv,
             fileSystem: this.traceKernelFileSystem,
+            fileSystemPolicy: this.createTraceKernelFileSystemPolicy(),
             ...(this.maxProcesses === null
               ? {}
               : { maxProcesses: this.maxProcesses }),
@@ -7638,6 +7641,43 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!authority) return;
     this.traceKernelAuthority = undefined;
     await Effect.runPromise(Scope.close(authority.scope, Exit.void));
+  }
+
+  private createTraceKernelFileSystemPolicy(): TraceKernelFileSystemPolicy {
+    return {
+      authorize: (request) => Effect.try({
+        try: () => {
+          if (request.owner.kind === 'system') return;
+          for (const access of request.accesses) {
+            if (access.permission === 'read' || access.permission === 'metadata') {
+              this.assertWorkspacePathVisible(
+                access.path,
+                access.permission === 'read' ? 'read' : 'stat'
+              );
+            } else if (access.permission === 'delete') {
+              this.assertWorkspaceSubtreeWritable(access.path, 'delete');
+            } else {
+              this.assertWorkspacePathWritable(access.path, 'write');
+            }
+          }
+        },
+        catch: (error) => {
+          const candidate = error as { code?: unknown };
+          const code =
+            candidate.code === 'EROFS' ||
+            candidate.code === 'ENOENT' ||
+            candidate.code === 'EACCES' ||
+            candidate.code === 'EPERM'
+              ? candidate.code
+              : 'EACCES';
+          return new TraceKernelFileSystemError({
+            code,
+            path: request.accesses[0]?.path ?? request.cwd,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        },
+      }),
+    };
   }
 
   async writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
