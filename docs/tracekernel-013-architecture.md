@@ -391,9 +391,7 @@ The syscall dispatcher also canonicalizes existing paths and missing-path
 parents before applying the session filesystem policy. This closes symlink
 aliases over hidden and readonly paths. Product runtime path syscalls now
 terminate in that extracted session and use the calling process cwd; their
-commits are therefore direct, process-side TKFS mutations. Regular-file
-`open`/fd operations remain on the transitional descriptor manager until
-standard streams and inherited descriptor identity move together.
+commits are therefore direct, process-side TKFS mutations.
 
 Existing product executors attach through `TraceKernelControlledRuntime`.
 TraceKernel allocates the PID and owns topology, descriptors, signal delivery,
@@ -405,8 +403,7 @@ engine first.
 Product command runners and language-initiated children now use those
 kernel-allocated PIDs and topology records. Non-zombie child completion is
 reaped from the session alongside the product wait model, so process capacity
-is released once. The product's descriptor, terminal, socket, and journal
-managers are still transitional and are the next ownership cutover.
+is released once.
 
 Every controlled product process also receives kernel-owned detached standard
 descriptors: fd 0 is a `/dev/null` EOF reader and fd 1/2 are discard writers.
@@ -414,6 +411,21 @@ They are real device descriptors, not reserved integers, so subsequent file,
 pipe, watch, and socket allocation begins at fd 3 in the single process table.
 Terminal processes will replace those entries atomically when the controlling
 terminal cutover lands.
+
+Runtime regular files, pipes, filesystem watches, and local TCP sockets now
+share that same authoritative process descriptor table. `open`, descriptor
+I/O, duplication, polling, metadata, socket operations, and child descriptor
+inheritance dispatch through the extracted session. Structured child stdio is
+created before the runtime lease starts, so fd mappings and ordered
+dup/close actions are visible to the child from its first instruction.
+Admission rollback kills an unpublished kernel child and closes every
+parent-side pipe endpoint, preserving the no-orphan/no-leak invariant even
+when the product scheduler rejects after kernel allocation.
+
+The product terminal, process-control compatibility state, journal, and
+host-only structured HTTP adapter remain transitional. Host HTTP calls that
+have no runtime process context intentionally use the compatibility service;
+runtime socket calls never do.
 
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
@@ -767,24 +779,22 @@ applied to files, terminals, and sockets.
 
 The syscall contract and language adapters are no longer the main migration
 risk. Product storage is now authoritative TKFS and the workspace owns an
-extracted session over that same object. The product still has transitional
-process, descriptor, terminal, network, journal, quota, and event-observation
-managers behind the contract.
+extracted session over that same object. Product process identity, TKFS, and
+runtime file/pipe/watch/TCP descriptors are now authoritative TraceKernel
+state. The product still has transitional terminal and process-control state,
+journal/resource event attribution, and a host-only structured HTTP service.
 
 The remaining authority migration must preserve, in order:
 
-1. commit TKFS checkpoints to the configured persistent storage backend and
-   hydrate them before any process starts;
-2. attribute direct session mutation events and journal records to the
-   authoritative process while replacing transitional open-file snapshots with
-   TKFS open-file descriptions;
-3. route product fd, terminal, socket, process-control, and watch syscalls
-   through the extracted session; path syscalls already use its canonical
-   hidden/readonly policy;
-4. replace the transitional descriptor, terminal, socket, journal, and
-   resource-accounting identity across terminal, `runCommand`, and
-   language-initiated children now that their PID/topology identity is
-   kernel-owned;
+1. replace terminal compatibility records with session-owned controlling
+   terminals and atomically remap fd 0/1/2 for terminal processes;
+2. route identity, process-group/session, signal, and wait operations through
+   the extracted session without maintaining a second mutable topology;
+3. attribute journal and resource events directly to the authoritative process
+   and eliminate the remaining transitional lifecycle observations;
+4. migrate local structured HTTP onto TCP only after the HTTP conformance
+   corpus proves fragmented reads, backpressure, half-closes, cancellation, and
+   concurrent connections; host-only fetch egress remains a protocol service;
 5. crash recovery that destroys or revalidates every mutable runtime lease while
    retaining only immutable host caches.
 

@@ -748,6 +748,7 @@ interface RuntimeTraceKernelAuthority {
 }
 
 interface RuntimeKernelProcessLaunchHooks {
+  readonly kernelProcess?: TraceKernelProcess;
   readonly kernelProcessGroupId?: number;
   readonly kernelSessionId?: number;
   initialize?: (
@@ -1206,8 +1207,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                     ppid: commandContext.process.ppid,
                     pgid: commandContext.process.pgid,
                     sid: commandContext.process.sid,
-                    descriptors: this.kernelDescriptors.descriptorNumbers(
-                      commandContext.process.pid
+                    descriptors: this.processDescriptorNumbers(
+                      commandContext.process as RuntimeKernelProcessRecord
                     ),
                   },
                 }
@@ -1563,6 +1564,64 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
   }
 
+  private dispatchKernelOwnedDescriptorSyscall(
+    request: TraceKernelSyscallRequest,
+    context: RuntimeCommandExecutionContext | undefined,
+    actor: RuntimeWorkspaceActor
+  ): Promise<TraceKernelSyscallResult> | undefined {
+    if (!context?.process.kernelProcess) return undefined;
+    switch (request.op) {
+      case 'watch':
+        this.assertActorFileCapability(actor, 'read', request.path);
+        return this.dispatchExtractedTraceKernelSyscall(request, context);
+      case 'bind':
+      case 'listen':
+        this.assertHttpCapability(actor, 'listen');
+        return this.dispatchExtractedTraceKernelSyscall(request, context);
+      case 'connect':
+        this.assertHttpCapability(actor, 'dispatch');
+        return this.dispatchExtractedTraceKernelSyscall(request, context);
+      case 'open': {
+        const access = request.options?.access ?? 'read';
+        if (access === 'read' || access === 'read-write') {
+          this.assertActorFileCapability(actor, 'read', request.path);
+        }
+        if (
+          access === 'write' ||
+          access === 'read-write' ||
+          request.options?.create ||
+          request.options?.truncate ||
+          request.options?.append
+        ) {
+          this.assertActorFileCapability(actor, 'write', request.path);
+        }
+        return this.dispatchExtractedTraceKernelSyscall(request, context);
+      }
+      case 'pipe':
+      case 'socket':
+      case 'accept':
+      case 'send':
+      case 'recv':
+      case 'shutdown':
+      case 'getsockname':
+      case 'getpeername':
+      case 'getsockopt':
+      case 'read':
+      case 'write':
+      case 'close':
+      case 'dup':
+      case 'dup2':
+      case 'dup3':
+      case 'fcntl':
+      case 'poll':
+      case 'fstat':
+      case 'ftruncate':
+        return this.dispatchExtractedTraceKernelSyscall(request, context);
+      default:
+        return undefined;
+    }
+  }
+
   private async dispatchRuntimeKernelSyscall(
     request: TraceKernelSyscallRequest,
     context?: RuntimeCommandExecutionContext
@@ -1573,6 +1632,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       context.liveKernelSyscallDepth = (context.liveKernelSyscallDepth ?? 0) + 1;
     }
     try {
+      const descriptorResult = this.dispatchKernelOwnedDescriptorSyscall(
+        request,
+        context,
+        actor
+      );
+      if (descriptorResult) return descriptorResult;
       switch (request.op) {
         case 'watch': {
           const process = this.runtimeSyscallProcess(context);
@@ -2271,6 +2336,40 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       stdoutFd?: number;
       stderrFd?: number;
     } = {};
+    const authority = this.traceKernelAuthority;
+    const parentKernelProcess = parent.kernelProcess;
+    if (!authority || !parentKernelProcess) {
+      throw Object.assign(
+        new Error('ESRCH: parent is not attached to the authoritative TraceKernel session'),
+        { code: 'ESRCH' }
+      );
+    }
+    const kernelChildSpec = {
+      runtime: this.traceKernelControlledRuntime.runtime,
+      command: request.command,
+      args: request.args,
+      cwd: request.cwd,
+      env: request.env,
+      inheritDescriptors: request.inheritDescriptors,
+      descriptorMappings: request.descriptorMappings,
+      descriptorActions: request.descriptorActions,
+      processGroupId: request.processGroupId,
+      sessionId: request.sessionId,
+    };
+    const kernelSpawned = request.stdio
+      ? await Effect.runPromise(
+          authority.session.spawnChildWithStdio(
+            parentKernelProcess,
+            kernelChildSpec,
+            request.stdio
+          )
+        )
+      : {
+          process: await Effect.runPromise(
+            authority.session.spawnChild(parentKernelProcess, kernelChildSpec)
+          ),
+        };
+    Object.assign(parentStdio, kernelSpawned.stdio ?? {});
     let childContext: RuntimeCommandExecutionContext | undefined;
     let stdinPump: Promise<void> | undefined;
     let outputTail = Promise.resolve();
@@ -2293,11 +2392,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const bytes = new TextEncoder().encode(data);
       outputTail = outputTail.then(async () => {
         try {
-          await this.kernelDescriptors.write(
-            childContext!.process.pid,
-            childContext,
-            fd,
-            bytes
+          const childProcess = childContext!.process.kernelProcess;
+          if (!childProcess) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+          await Effect.runPromise(
+            childProcess.write(
+              fd,
+              bytes
+            )
           );
         } catch (error) {
           const code = (error as { code?: unknown } | null)?.code;
@@ -2328,6 +2429,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       },
       parent,
       {
+        kernelProcess: kernelSpawned.process,
         kernelSessionId: request.sessionId === 0 ? 0 : parent.sid,
         kernelProcessGroupId:
           request.sessionId === 0 || request.processGroupId === 0
@@ -2374,49 +2476,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             child.foreground =
               child.tty !== '?' &&
               child.pgid === this.terminalForegroundPgid;
-            if (request.inheritDescriptors !== undefined) {
-              const replacedStdioFds = new Set<number>(
-                ([
-                  [0, request.stdio?.stdin],
-                  [1, request.stdio?.stdout],
-                  [2, request.stdio?.stderr],
-                ] as const)
-                  .filter(([, mode]) => mode === 'pipe' || mode === 'ignore')
-                  .map(([fd]) => fd)
-              );
-              const inherited = (
-                request.inheritDescriptors === 'all'
-                  ? this.kernelDescriptors.descriptorNumbers(parent.pid)
-                  : request.inheritDescriptors
-              ).filter((fd) => !replacedStdioFds.has(fd));
-              await this.kernelDescriptors.inherit(
-                child.pid,
-                parent.pid,
-                inherited
-              );
-            }
-            if (request.descriptorMappings && request.descriptorMappings.length > 0) {
-              await this.kernelDescriptors.inheritMapped(
-                child.pid,
-                parent.pid,
-                request.descriptorMappings
-              );
-            }
             if (request.stdio?.stdin === 'pipe' && stdinPipe) {
-              const pipe = await this.kernelDescriptors.createPipeBetween(
-                { pid: child.pid, fd: 0 },
-                { pid: parent.pid },
-                { capacityChunks: 16 }
-              );
-              parentStdio.stdinFd = pipe.writeFd;
               stdinPump = (async () => {
                 try {
                   while (true) {
-                    const bytes = await this.kernelDescriptors.read(
-                      child.pid,
-                      context,
-                      0,
-                      16 * 1024
+                    const kernelChild = child.kernelProcess;
+                    if (!kernelChild) {
+                      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+                    }
+                    const bytes = await Effect.runPromise(
+                      kernelChild.read(0, 16 * 1024)
                     );
                     if (bytes.byteLength === 0) break;
                     await writeRuntimeCommandStdinPipeBytes(stdinPipe, bytes);
@@ -2430,37 +2499,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               })();
               void stdinPump.catch(() => undefined);
             }
-            if (request.stdio?.stdout === 'pipe') {
-              const pipe = await this.kernelDescriptors.createPipeBetween(
-                { pid: parent.pid },
-                { pid: child.pid, fd: 1 },
-                { capacityChunks: 16 }
-              );
-              parentStdio.stdoutFd = pipe.readFd;
-            }
-            if (request.stdio?.stderr === 'pipe') {
-              const pipe = await this.kernelDescriptors.createPipeBetween(
-                { pid: parent.pid },
-                { pid: child.pid, fd: 2 },
-                { capacityChunks: 16 }
-              );
-              parentStdio.stderrFd = pipe.readFd;
-            }
-            for (const action of request.descriptorActions ?? []) {
-              if (action.op === 'dup2') {
-                await this.kernelDescriptors.dup2(
-                  child.pid,
-                  action.fd,
-                  action.targetFd
-                );
-              } else {
-                await this.kernelDescriptors.close(child.pid, action.fd);
-              }
-            }
           } catch (error) {
-            await Promise.all(
-              Object.values(parentStdio).map((fd) =>
-                this.kernelDescriptors.close(parent.pid, fd).catch(() => undefined)
+            await Effect.runPromise(
+              Effect.forEach(
+                Object.values(parentStdio),
+                (fd) =>
+                parentKernelProcess.close(fd).pipe(
+                  Effect.catchAll(() => Effect.void)
+                ),
+                { concurrency: 'unbounded', discard: true }
               )
             );
             throw error;
@@ -2483,10 +2530,31 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         },
       }
     );
+    let unadmittedCleanupStarted = false;
+    const rejectUnadmittedChild = async (error: unknown): Promise<void> => {
+      if (created || unadmittedCleanupStarted) return;
+      unadmittedCleanupStarted = true;
+      await Effect.runPromise(
+        Effect.forEach(
+          Object.values(parentStdio),
+          (fd) =>
+            parentKernelProcess.close(fd).pipe(
+              Effect.catchAll(() => Effect.void)
+            ),
+          { concurrency: 'unbounded', discard: true }
+        )
+      );
+      await Effect.runPromise(kernelSpawned.process.signal('SIGKILL'))
+        .catch(() => undefined);
+      await Effect.runPromise(kernelSpawned.process.wait())
+        .catch(() => undefined);
+      await this.reapControlledTraceKernelChild(parent, kernelSpawned.process.pid);
+      rejectCreated(error);
+    };
     void completion.then(
-      (result) => {
+      async (result) => {
         if (!created) {
-          rejectCreated(Object.assign(
+          await rejectUnadmittedChild(Object.assign(
             new Error(
               result.error?.message ??
               `EIO: child process '${command}' completed before admission`
@@ -2495,8 +2563,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           ));
         }
       },
-      (error) => {
-        if (!created) rejectCreated(error);
+      async (error) => {
+        if (!created) await rejectUnadmittedChild(error);
       }
     );
     return childCreated;
@@ -5213,10 +5281,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ];
     }
     if (procPath === '/proc/self/fd') {
-      return this.currentProcSelfRecord(context).fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
+      return this.processDescriptorNumbers(this.currentProcSelfRecord(context))
+        .map((fd) => ({ name: String(fd), kind: 'file' as const }));
     }
     if (procPath === '/proc/self/fdinfo') {
-      return this.currentProcSelfRecord(context).fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
+      return this.processDescriptorNumbers(this.currentProcSelfRecord(context))
+        .map((fd) => ({ name: String(fd), kind: 'file' as const }));
     }
     if (procPath === '/proc/tracekernel') {
       return [
@@ -5240,7 +5310,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (fdDirMatch) {
       const process = this.findProcessRecord(Number(fdDirMatch[1]));
       if (!process || process.state === 'exited') return null;
-      return process.fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
+      return this.processDescriptorNumbers(process)
+        .map((fd) => ({ name: String(fd), kind: 'file' as const }));
     }
     const match = procPath.match(/^\/proc\/([1-9][0-9]*)$/);
     if (!match) return null;
@@ -5296,7 +5367,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       `PPid:\t${process.ppid}`,
       `PGid:\t${process.pgid}`,
       `Sid:\t${process.sid}`,
-      `FDSize:\t${process.fds.length}`,
+      `FDSize:\t${this.processDescriptorNumbers(process).length}`,
       `Tty:\t${process.tty}`,
       `Foreground:\t${process.foreground ? 1 : 0}`,
       'Uid:\t1000\t1000\t1000\t1000',
@@ -5313,10 +5384,56 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private renderProcFd(process: RuntimeKernelProcessRecord, fd: number): string | null {
+    const kernelDescriptor = process.kernelProcess?.snapshot().descriptors.find(
+      (descriptor) => descriptor.fd === fd
+    );
+    if (kernelDescriptor) {
+      const target =
+        kernelDescriptor.kind === 'device'
+          ? fd === 0
+            ? '/dev/stdin'
+            : fd === 1
+              ? '/dev/stdout'
+              : fd === 2
+                ? '/dev/stderr'
+                : '/dev/null'
+          : kernelDescriptor.kind === 'terminal'
+            ? '/dev/tty'
+            : kernelDescriptor.kind === 'tcp-socket'
+              ? `socket:[${kernelDescriptor.resourceId}]`
+              : kernelDescriptor.kind === 'pipe-reader' ||
+                  kernelDescriptor.kind === 'pipe-writer'
+                ? `pipe:[${kernelDescriptor.resourceId}]`
+                : kernelDescriptor.kind === 'fs-watch'
+                  ? `anon_inode:[${kernelDescriptor.resourceId}]`
+                  : `tkfs:[${kernelDescriptor.resourceId}]`;
+      return `${target}\n`;
+    }
     return process.fds.find((entry) => entry.fd === fd)?.target.concat('\n') ?? null;
   }
 
   private renderProcFdInfo(process: RuntimeKernelProcessRecord, fd: number): string | null {
+    const kernelDescriptor = process.kernelProcess?.snapshot().descriptors.find(
+      (descriptor) => descriptor.fd === fd
+    );
+    if (kernelDescriptor) {
+      const target = this.renderProcFd(process, fd)?.trim() ?? '';
+      const flags =
+        kernelDescriptor.kind === 'device' && fd === 0
+          ? 'r'
+          : kernelDescriptor.kind === 'device' && (fd === 1 || fd === 2)
+            ? 'w'
+            : 'rw';
+      return [
+        'pos:\t0',
+        `flags:\t${flags}`,
+        `close_on_exec:\t${kernelDescriptor.closeOnExec ? 1 : 0}`,
+        `nonblocking:\t${kernelDescriptor.nonblocking ? 1 : 0}`,
+        `kind:\t${kernelDescriptor.kind}`,
+        `resource:\t${kernelDescriptor.resourceId}`,
+        `target:\t${target}`,
+      ].join('\n') + '\n';
+    }
     const descriptor = process.fds.find((entry) => entry.fd === fd);
     if (!descriptor) return null;
     return [
@@ -5325,6 +5442,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       `mnt_id:\tdev`,
       `target:\t${descriptor.target}`,
     ].join('\n') + '\n';
+  }
+
+  private processDescriptorNumbers(
+    process: RuntimeKernelProcessRecord
+  ): readonly number[] {
+    return process.kernelProcess
+      ? process.kernelProcess.snapshot().descriptors.map((descriptor) => descriptor.fd)
+      : process.fds.map((descriptor) => descriptor.fd);
   }
 
   private renderProcCommands(): string {
@@ -8565,15 +8690,24 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ...(parent?.env ?? this.baseEnv),
       ...(options.env ?? {}),
     });
-    const kernelProcess = await this.spawnControlledTraceKernelProcess({
-      command,
-      cwd: commandCwd,
-      env: processEnv,
-      actor,
-      parent,
-      processGroupId: launchHooks?.kernelProcessGroupId,
-      sessionId: launchHooks?.kernelSessionId,
-    });
+    const kernelProcess = launchHooks?.kernelProcess ??
+      await this.spawnControlledTraceKernelProcess({
+        command,
+        cwd: commandCwd,
+        env: processEnv,
+        actor,
+        parent,
+        processGroupId: launchHooks?.kernelProcessGroupId,
+        sessionId: launchHooks?.kernelSessionId,
+      });
+    if (launchHooks?.kernelProcess) {
+      const authority = this.traceKernelAuthority;
+      if (!authority) {
+        throw new Error('TraceKernel session authority is unavailable.');
+      }
+      await Effect.runPromise(authority.session.ensureNullStandardIo(kernelProcess));
+      await Effect.runPromise(kernelProcess.awaitStarted());
+    }
     const kernelSnapshot = kernelProcess.snapshot();
     const pid = kernelProcess.pid;
     this.nextPid = Math.max(this.nextPid, pid + 1);

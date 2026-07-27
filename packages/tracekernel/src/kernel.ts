@@ -1395,6 +1395,49 @@ export class TraceKernelSession {
     });
   }
 
+  ensureNullStandardIo(
+    process: TraceKernelProcess
+  ): Effect.Effect<{
+    readonly stdinFd: 0;
+    readonly stdoutFd: 1;
+    readonly stderrFd: 2;
+  }, Error> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const existing = new Set(
+        process.descriptors.snapshots().map((descriptor) => descriptor.fd)
+      );
+      const installed: number[] = [];
+      return yield* Effect.gen(this, function* () {
+        if (!existing.has(0)) {
+          installed.push(yield* this.openNullDevice(process, 'read', 0));
+        }
+        if (!existing.has(1)) {
+          installed.push(yield* this.openNullDevice(process, 'write', 1));
+        }
+        if (!existing.has(2)) {
+          installed.push(yield* this.openNullDevice(process, 'write', 2));
+        }
+        return Object.freeze({
+          stdinFd: 0 as const,
+          stdoutFd: 1 as const,
+          stderrFd: 2 as const,
+        });
+      }).pipe(
+        Effect.onError(() =>
+          Effect.forEach(
+            installed,
+            (installedFd) =>
+              process.close(installedFd).pipe(
+                Effect.catchAll(() => Effect.void)
+              ),
+            { concurrency: 'unbounded', discard: true }
+          )
+        )
+      );
+    });
+  }
+
   configureProcessWatchdog(
     process: TraceKernelProcess,
     action: 'arm' | 'pet' | 'disarm' | 'status',

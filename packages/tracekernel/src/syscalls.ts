@@ -723,6 +723,13 @@ export class TraceKernelSyscallDispatcher {
                   ? 'write' as const
                   : 'read' as const,
               }]),
+          ...(
+            request.options?.create ||
+            request.options?.truncate ||
+            request.options?.append
+              ? [{ path: request.path, permission: 'write' as const }]
+              : []
+          ),
         ]).pipe(
           Effect.zipRight(
             this.session.openFile(this.process, request.path, request.options)

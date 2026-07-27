@@ -159,6 +159,15 @@ async function main(): Promise<void> {
 
     if (request.scriptPath.endsWith('child.js')) {
       const writeFd = Number(request.args.at(-1));
+      const childDescriptor = authoritativeSession?.processSnapshots()
+        .find((process) => process.pid === request.process?.pid)
+        ?.descriptors.find((descriptor) => descriptor.fd === writeFd);
+      assertCondition(
+        childDescriptor?.kind === 'pipe-writer',
+        `the inherited child fd was not owned by its TraceKernel process: ${JSON.stringify(
+          childDescriptor
+        )}`
+      );
       const written = await dispatch(kernel, {
         op: 'write',
         fd: writeFd,
@@ -197,6 +206,21 @@ async function main(): Promise<void> {
     if (!pipe.ok || pipe.value.op !== 'pipe') {
       return { stdout: '', stderr: 'pipe failed\n', exitCode: 1 };
     }
+    const { readFd, writeFd } = pipe.value;
+    const parentPipeDescriptors = authoritativeSession?.processSnapshots()
+      .find((process) => process.pid === request.process?.pid)
+      ?.descriptors.filter((descriptor) =>
+        descriptor.fd === readFd ||
+        descriptor.fd === writeFd
+      );
+    assertCondition(
+      parentPipeDescriptors?.length === 2 &&
+        parentPipeDescriptors.some((descriptor) => descriptor.kind === 'pipe-reader') &&
+        parentPipeDescriptors.some((descriptor) => descriptor.kind === 'pipe-writer'),
+      `pipe descriptors were not installed in the authoritative process table: ${JSON.stringify(
+        parentPipeDescriptors
+      )}`
+    );
 
     const spawned = await dispatch(kernel, {
       op: 'spawn',
@@ -451,6 +475,7 @@ async function main(): Promise<void> {
     languageInitiatedSpawn: true,
     kernelOwnedProductPids: true,
     kernelOwnedPathSyscalls: true,
+    kernelOwnedDescriptors: true,
     distinctRuntimeProcessIdentity: true,
     processOwnedPipeInheritance: true,
     sharedFilesystemAcrossParentAndChild: true,
