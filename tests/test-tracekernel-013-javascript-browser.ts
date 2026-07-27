@@ -713,6 +713,22 @@ async function main(): Promise<void> {
                 '',
               ].join('\n'),
             },
+            {
+              path: 'terminal-control.js',
+              contents: [
+                'const { terminal } = require("node:tracekernel");',
+                'const foreground = terminal.foregroundProcessGroup();',
+                'console.log(JSON.stringify({',
+                '  stdin: process.stdin.isTTY,',
+                '  stdout: process.stdout.isTTY,',
+                '  stderr: process.stderr.isTTY,',
+                '  api: terminal.isatty(0),',
+                '  foreground,',
+                '  transferred: terminal.setForegroundProcessGroup(foreground) === foreground,',
+                '}));',
+                '',
+              ].join('\n'),
+            },
             { path: 'isolation-private.txt', contents: 'parent-descriptor' },
             {
               path: 'isolation-child.js',
@@ -1050,6 +1066,9 @@ async function main(): Promise<void> {
           const kernelWatchReaderResult = await kernelWatchReader;
           const watchdogControl = await workspace.runCommand('node watchdog-control.js');
           const watchdogExpiry = await workspace.runCommand('node watchdog-expire.js');
+          const terminalControl = await workspace
+            .createTerminalSession()
+            .run('node terminal-control.js');
           const processIsolation = await workspace.runCommand('node isolation-parent.js');
           const javascript = await workspace.runCommand('node conformance.js');
           const descriptors = await workspace.runCommand('node descriptor-conformance.js');
@@ -1107,6 +1126,7 @@ async function main(): Promise<void> {
             kernelWatchWriter,
             watchdogControl,
             watchdogExpiry,
+            terminalControl,
             processIsolation,
             javascript,
             descriptors,
@@ -1205,6 +1225,15 @@ async function main(): Promise<void> {
           result.watchdogExpiry.exitCode === 137 &&
           result.watchdogExpiry.error?.detail?.signal === 'SIGKILL',
         `The JavaScript watchdog API did not preserve controls or kernel-enforced expiry: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        result.terminalControl.exitCode === 0 &&
+          result.terminalControl.stdout.includes('"stdin":true') &&
+          result.terminalControl.stdout.includes('"stdout":true') &&
+          result.terminalControl.stdout.includes('"stderr":true') &&
+          result.terminalControl.stdout.includes('"api":true') &&
+          result.terminalControl.stdout.includes('"transferred":true'),
+        `The JavaScript terminal API did not use kernel-owned terminal state: ${JSON.stringify(result.terminalControl)}`
       );
       assertCondition(
         result.processIsolation.exitCode === 0 &&
@@ -1349,6 +1378,8 @@ async function main(): Promise<void> {
           'host-and-peer-watch-delivery',
           'kernel-watchdog-arm-pet-disarm',
           'kernel-watchdog-expiry-signal',
+          'kernel-controlling-terminal',
+          'kernel-foreground-process-group',
           'heap-and-global-isolation',
           'environment-copy-on-spawn',
           'descriptor-non-inheritance',

@@ -1180,7 +1180,8 @@ function createReadableStdinDevice(
   remainingBytes: () => number,
   isClosed: () => boolean = () => true,
   schedulePoll: (callback: () => void, delay: number) => unknown = (callback, delay) => setTimeout(callback, delay),
-  terminal?: RuntimeProjectCommandRequest['terminal']
+  terminal?: RuntimeProjectCommandRequest['terminal'],
+  kernelIsTerminal?: boolean
 ) {
   let encoding: string | undefined;
   let flowScheduled = false;
@@ -1259,7 +1260,7 @@ function createReadableStdinDevice(
   const stream = {
     fd: 0,
     readable: true,
-    isTTY: terminal?.isTTY === true,
+    isTTY: kernelIsTerminal ?? terminal?.isTTY === true,
     get isRaw() {
       return rawMode;
     },
@@ -1969,6 +1970,38 @@ function createTraceKernelApi(
     });
   };
 
+  const dispatchTerminal = <
+    Operation extends 'isatty' | 'tcgetpgrp' | 'tcsetpgrp'
+  >(
+    request: Extract<TraceKernelSyscallRequest, { op: Operation }>
+  ): Extract<TraceKernelSyscallValue, { op: Operation }> => {
+    const operation = (request as { readonly op: Operation }).op;
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error('ENOSYS: TraceKernel terminal controls are unavailable'),
+        { code: 'ENOSYS' }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code,
+      });
+    }
+    if (result.value.op !== operation) {
+      throw Object.assign(
+        new Error(
+          `EPROTO: expected ${operation} response, received ${result.value.op}`
+        ),
+        { code: 'EPROTO' }
+      );
+    }
+    return result.value as Extract<
+      TraceKernelSyscallValue,
+      { op: Operation }
+    >;
+  };
+
   return Object.freeze({
     watchdog: Object.freeze({
       arm: (
@@ -1992,6 +2025,14 @@ function createTraceKernelApi(
         op: 'watchdog',
         action: 'status',
       }),
+    }),
+    terminal: Object.freeze({
+      isatty: (fd: number): boolean =>
+        dispatchTerminal({ op: 'isatty', fd }).isTerminal,
+      foregroundProcessGroup: (fd = 0): number =>
+        dispatchTerminal({ op: 'tcgetpgrp', fd }).pgid,
+      setForegroundProcessGroup: (pgid: number, fd = 0): number =>
+        dispatchTerminal({ op: 'tcsetpgrp', fd, pgid }).pgid,
     }),
   });
 }
@@ -5989,6 +6030,18 @@ export async function runBrowserJavaScriptProjectRequest(
         : true
     );
     const readDevice = (device: RuntimeKernelDevicePath): string => textFromBytes(readDeviceBytes(device));
+    const kernelDescriptorIsTerminal = (fd: number): boolean => {
+      if (!executionState.kernelSyscalls) {
+        return request.terminal?.isTTY === true;
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: 'isatty',
+        fd,
+      });
+      return result.ok &&
+        result.value.op === 'isatty' &&
+        result.value.isTerminal;
+    };
 
     const consoleApi = {
       log: (...values: unknown[]) => {
@@ -6024,7 +6077,7 @@ export async function runBrowserJavaScriptProjectRequest(
       const stream = {
         fd,
         writable: true,
-        isTTY: request.terminal?.isTTY === true,
+        isTTY: kernelDescriptorIsTerminal(fd),
         columns: request.terminal?.columns,
         rows: request.terminal?.rows,
         getColorDepth: () => request.terminal?.colorLevel === 3
@@ -6124,7 +6177,8 @@ export async function runBrowserJavaScriptProjectRequest(
       () => remainingDeviceBytes('/dev/stdin'),
       () => deviceInputClosed('/dev/stdin'),
       eventLoopApi.setTimeout,
-      request.terminal
+      request.terminal,
+      kernelDescriptorIsTerminal(0)
     );
     const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
     const processListeners = new Map<string, Array<(...args: unknown[]) => void>>();

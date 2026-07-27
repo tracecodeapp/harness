@@ -85,7 +85,10 @@ var OP_CODES = {
   dup3: 41,
   poll: 42,
   getsockopt: 43,
-  identity: 44
+  identity: 44,
+  isatty: 45,
+  tcgetpgrp: 46,
+  tcsetpgrp: 47
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -121,6 +124,7 @@ var SYSCALL_ERROR_CODES = /* @__PURE__ */ new Set([
   "ENOTDIR",
   "ENOTCONN",
   "ENOTEMPTY",
+  "ENOTTY",
   "EPERM",
   "EPIPE",
   "EPROTO",
@@ -368,6 +372,14 @@ function encodeTraceKernelSyscallRequest(request) {
       break;
     case "setpgid":
       writer.i32(request.pid);
+      writer.i32(request.pgid);
+      break;
+    case "isatty":
+    case "tcgetpgrp":
+      writer.i32(request.fd);
+      break;
+    case "tcsetpgrp":
+      writer.i32(request.fd);
       writer.i32(request.pgid);
       break;
     case "socket":
@@ -739,6 +751,21 @@ function decodeTraceKernelSyscallResult(bytes) {
     case "setpgid":
       value = { op: "setpgid", pgid: reader.i32() };
       break;
+    case "isatty": {
+      const isTerminal = reader.u8();
+      if (isTerminal > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid isatty result ${isTerminal}`
+        );
+      }
+      value = { op: "isatty", isTerminal: isTerminal === 1 };
+      break;
+    }
+    case "tcgetpgrp":
+    case "tcsetpgrp":
+      value = { op: operation, pgid: reader.i32() };
+      break;
     case "identity":
       value = {
         op: "identity",
@@ -1018,6 +1045,24 @@ var TraceKernelRuntimeFileClient = class {
       this.transport.dispatchSync({ op: "identity" }),
       "identity"
     );
+  }
+  isatty(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "isatty", fd: fd2 }),
+      "isatty"
+    ).isTerminal;
+  }
+  tcgetpgrp(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "tcgetpgrp", fd: fd2 }),
+      "tcgetpgrp"
+    ).pgid;
+  }
+  tcsetpgrp(fd2, pgid) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "tcsetpgrp", fd: fd2, pgid }),
+      "tcsetpgrp"
+    ).pgid;
   }
   socket() {
     return this.expectSuccess(
@@ -1451,7 +1496,7 @@ var package_default = {
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
     "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
-    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
+    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
     "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
     "test:tracekernel-013-python-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-python-browser.ts",
     "test:tracekernel-013-csharp-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-csharp-browser.ts",
@@ -6233,7 +6278,7 @@ function createZlibApi() {
     inflateSync: (input) => browserBufferFromBytes(fflate.inflateSync(bytesFromNodeValue(input)))
   };
 }
-function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => true, schedulePoll = (callback, delay) => setTimeout(callback, delay), terminal) {
+function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => true, schedulePoll = (callback, delay) => setTimeout(callback, delay), terminal, kernelIsTerminal) {
   let encoding;
   let flowScheduled = false;
   let pollScheduled = false;
@@ -6308,7 +6353,7 @@ function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => t
   const stream = {
     fd: 0,
     readable: true,
-    isTTY: terminal?.isTTY === true,
+    isTTY: kernelIsTerminal ?? terminal?.isTTY === true,
     get isRaw() {
       return rawMode;
     },
@@ -6945,6 +6990,30 @@ function createTraceKernelApi(executionState) {
       ...result.value.deadlineAt === void 0 ? {} : { deadlineAt: result.value.deadlineAt }
     });
   };
+  const dispatchTerminal = (request) => {
+    const operation = request.op;
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error("ENOSYS: TraceKernel terminal controls are unavailable"),
+        { code: "ENOSYS" }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    if (result.value.op !== operation) {
+      throw Object.assign(
+        new Error(
+          `EPROTO: expected ${operation} response, received ${result.value.op}`
+        ),
+        { code: "EPROTO" }
+      );
+    }
+    return result.value;
+  };
   return Object.freeze({
     watchdog: Object.freeze({
       arm: (timeoutMs, options = {}) => dispatchWatchdog({
@@ -6965,6 +7034,11 @@ function createTraceKernelApi(executionState) {
         op: "watchdog",
         action: "status"
       })
+    }),
+    terminal: Object.freeze({
+      isatty: (fd2) => dispatchTerminal({ op: "isatty", fd: fd2 }).isTerminal,
+      foregroundProcessGroup: (fd2 = 0) => dispatchTerminal({ op: "tcgetpgrp", fd: fd2 }).pgid,
+      setForegroundProcessGroup: (pgid, fd2 = 0) => dispatchTerminal({ op: "tcsetpgrp", fd: fd2, pgid }).pgid
     })
   });
 }
@@ -9692,6 +9766,16 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const remainingDeviceBytes = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? request.stdinPipe ? runtimeCommandStdinPipeRemainingBytes(request.stdinPipe) : 0 : 0;
   const deviceInputClosed = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true : true;
   const readDevice = (device) => textFromBytes(readDeviceBytes(device));
+  const kernelDescriptorIsTerminal = (fd2) => {
+    if (!executionState.kernelSyscalls) {
+      return request.terminal?.isTTY === true;
+    }
+    const result = executionState.kernelSyscalls.dispatchSync({
+      op: "isatty",
+      fd: fd2
+    });
+    return result.ok && result.value.op === "isatty" && result.value.isTerminal;
+  };
   const consoleApi = {
     log: (...values) => {
       writeDevice("/dev/stdout", `${formatConsoleValues(values)}
@@ -9727,7 +9811,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     const stream = {
       fd: fd2,
       writable: true,
-      isTTY: request.terminal?.isTTY === true,
+      isTTY: kernelDescriptorIsTerminal(fd2),
       columns: request.terminal?.columns,
       rows: request.terminal?.rows,
       getColorDepth: () => request.terminal?.colorLevel === 3 ? 24 : request.terminal?.colorLevel === 2 ? 8 : request.terminal?.colorLevel === 1 ? 4 : 1,
@@ -9820,7 +9904,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     () => remainingDeviceBytes("/dev/stdin"),
     () => deviceInputClosed("/dev/stdin"),
     eventLoopApi.setTimeout,
-    request.terminal
+    request.terminal,
+    kernelDescriptorIsTerminal(0)
   );
   const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
   const processListeners = /* @__PURE__ */ new Map();
