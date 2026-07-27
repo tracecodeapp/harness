@@ -15,10 +15,18 @@ export type TraceKernelControlledRuntimeSignalHandler = (
   signal: CatchableTraceKernelSignal
 ) => Promise<void> | void;
 
+export interface TraceKernelControlledRuntimeLeaseHandler {
+  revalidate?(): Promise<void> | void;
+  release(
+    disposition: TraceKernelRuntimeLeaseReleaseDisposition
+  ): Promise<void> | void;
+}
+
 interface TraceKernelControlledRuntimeEntry {
   readonly context: TraceKernelRuntimeProcessContext;
   readonly completion: Deferred.Deferred<TraceKernelRuntimeResult, Error>;
   signalHandler?: TraceKernelControlledRuntimeSignalHandler;
+  leaseHandler?: TraceKernelControlledRuntimeLeaseHandler;
 }
 
 /**
@@ -110,6 +118,29 @@ export class TraceKernelControlledRuntime {
     });
   }
 
+  setLeaseHandler(
+    pid: number,
+    handler: TraceKernelControlledRuntimeLeaseHandler
+  ): Effect.Effect<() => void, Error> {
+    return Effect.suspend(() => {
+      const entry = this.entries.get(pid);
+      if (!entry) {
+        return Effect.fail(
+          new Error(`TraceKernel process ${pid} has no attached ${this.runtime} runtime lease.`)
+        );
+      }
+      if (entry.leaseHandler && entry.leaseHandler !== handler) {
+        return Effect.fail(
+          new Error(`TraceKernel process ${pid} already has a controlled lease handler.`)
+        );
+      }
+      entry.leaseHandler = handler;
+      return Effect.succeed(() => {
+        if (entry.leaseHandler === handler) delete entry.leaseHandler;
+      });
+    });
+  }
+
   attachedPids(): readonly number[] {
     return Object.freeze([...this.entries.keys()].sort((left, right) => left - right));
   }
@@ -152,6 +183,21 @@ export class TraceKernelControlledRuntime {
               error instanceof Error ? error : new Error(String(error)),
           });
         },
+        revalidate: () => {
+          const current = this.entries.get(context.pid);
+          if (current !== entry || !entry.leaseHandler?.revalidate) {
+            return Effect.fail(
+              new Error(
+                `TraceKernel process ${context.pid} has no controlled runtime revalidation handler.`
+              )
+            );
+          }
+          return Effect.tryPromise({
+            try: () => Promise.resolve(entry.leaseHandler!.revalidate!()),
+            catch: (error) =>
+              error instanceof Error ? error : new Error(String(error)),
+          });
+        },
         release: (disposition) =>
           this.release(context.pid, disposition),
       };
@@ -160,11 +206,17 @@ export class TraceKernelControlledRuntime {
 
   private release(
     pid: number,
-    _disposition: TraceKernelRuntimeLeaseReleaseDisposition
+    disposition: TraceKernelRuntimeLeaseReleaseDisposition
   ): Effect.Effect<void> {
-    return Effect.sync(() => {
+    return Effect.suspend(() => {
       const entry = this.entries.get(pid);
-      if (entry) this.entries.delete(pid);
+      if (!entry) return Effect.void;
+      this.entries.delete(pid);
+      if (!entry.leaseHandler) return Effect.void;
+      return Effect.tryPromise({
+        try: () => Promise.resolve(entry.leaseHandler!.release(disposition)),
+        catch: () => undefined,
+      }).pipe(Effect.catchAll(() => Effect.void));
     });
   }
 }

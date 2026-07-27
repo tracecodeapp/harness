@@ -17,6 +17,7 @@ import type {
   RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
@@ -4955,6 +4956,7 @@ class BrowserJavaScriptProjectWorkerClient {
   private messageId = 0;
   private httpRequestId = 0;
   private readonly pendingMessages = new Map<string, BrowserJavaScriptProjectPendingMessage>();
+  private engineLeaseTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly workerUrl: string,
@@ -4979,6 +4981,7 @@ class BrowserJavaScriptProjectWorkerClient {
     const {
       signal: _signal,
       onEvent: _requestOnEvent,
+      engineLease: _engineLease,
       kernelHttp,
       kernelSyscalls,
       ...workerRequest
@@ -4999,6 +5002,55 @@ class BrowserJavaScriptProjectWorkerClient {
   warmup(): Promise<void> {
     this.getWorker();
     return this.workerReadyPromise ?? Promise.resolve();
+  }
+
+  async acquireReusableEngineLease(controller: RuntimeProjectEngineLeaseController): Promise<void> {
+    const predecessor = this.engineLeaseTail;
+    let releaseTurn!: () => void;
+    const releaseGate = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    this.engineLeaseTail = predecessor
+      .catch(() => undefined)
+      .then(() => releaseGate);
+    await predecessor.catch(() => undefined);
+
+    let validatedWorker: BrowserJavaScriptProjectWorkerLike | null = null;
+    try {
+      controller.attach({
+        revalidate: async () => {
+          const worker = this.worker;
+          if (!worker) throw new Error('JavaScript worker is not running after execution.');
+          if (this.pendingMessages.size !== 0) {
+            throw new Error(
+              `JavaScript worker still owns ${this.pendingMessages.size} pending request(s).`
+            );
+          }
+          if (!this.workerReadyPromise) {
+            throw new Error('JavaScript worker has no readiness promise.');
+          }
+          await this.workerReadyPromise;
+          if (this.worker !== worker) {
+            throw new Error('JavaScript worker generation changed during revalidation.');
+          }
+          validatedWorker = worker;
+        },
+        release: (disposition) => {
+          try {
+            if (disposition.kind === 'reuse') return;
+            if (validatedWorker && this.worker !== validatedWorker) return;
+            this.terminateAndReset(
+              new Error(`JavaScript engine lease destroyed: ${disposition.reason}`)
+            );
+          } finally {
+            releaseTurn();
+          }
+        },
+      });
+    } catch (error) {
+      releaseTurn();
+      throw error;
+    }
   }
 
   terminate(): void {
@@ -5474,7 +5526,7 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
         finishPhase: 'process-exit',
         finishMessage: 'Browser Node exited',
         applyFileChange: options.applyFileChange,
-        run: async (workerRequest, onEvent) => {
+        run: async (workerRequest, onEvent, engineLease) => {
           const prepared = options.prewarm ? prepareWorker() : null;
           if (prepared && standby === prepared) standby = null;
           refill();
@@ -5485,12 +5537,24 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
                 projectUserAuthorityMode: 'permanent',
               }, options.workerFactory);
           clients.add(client);
+          let attachedToKernel = false;
           try {
             if (!prepared) await options.assetPreflight?.();
+            if (engineLease) {
+              engineLease.attach({
+                release: () => {
+                  clients.delete(client);
+                  client.terminate();
+                },
+              });
+              attachedToKernel = true;
+            }
             return await client.executeProject(workerRequest, timeoutMs, onEvent);
           } finally {
-            clients.delete(client);
-            client.terminate();
+            if (!attachedToKernel) {
+              clients.delete(client);
+              client.terminate();
+            }
           }
         },
       });
@@ -5513,8 +5577,9 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
       finishPhase: 'process-exit',
       finishMessage: 'Browser Node exited',
       applyFileChange: options.applyFileChange,
-      run: async (workerRequest, onEvent) => {
+      run: async (workerRequest, onEvent, engineLease) => {
         await options.assetPreflight?.();
+        if (engineLease) await client.acquireReusableEngineLease(engineLease);
         return client.executeProject(workerRequest, timeoutMs, onEvent);
       },
     });

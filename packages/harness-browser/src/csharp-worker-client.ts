@@ -29,6 +29,7 @@ import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
+  RuntimeProjectEngineLeaseController,
 } from '@tracecode/harness-core';
 import { isDevEnvironment } from './browser-client-env';
 import {
@@ -541,11 +542,14 @@ export class CSharpWorkerClient {
     request: CSharpProjectCommandRequest,
     timeoutMs = this.executionTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
-    signal: AbortSignal | undefined = request.signal
+    signal: AbortSignal | undefined = request.signal,
+    engineLease?: RuntimeProjectEngineLeaseController
   ): Promise<CSharpProjectCommandResult> {
+    if (engineLease) await this.core.acquireReusableEngineLease(engineLease);
     const {
       signal: _signal,
       onEvent: _requestOnEvent,
+      engineLease: _engineLease,
       kernelHttp,
       kernelSyscalls,
       ...workerRequest

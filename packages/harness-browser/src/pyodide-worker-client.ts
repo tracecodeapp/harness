@@ -32,6 +32,7 @@ import type {
   RuntimeFile,
   RuntimeExecutionLimits,
   RuntimeProjectCommandRequest,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectSnapshot,
   RuntimeTraceCall,
 } from '@tracecode/harness-core';
@@ -436,11 +437,14 @@ export class PythonWorkerClient {
     request: PythonProjectCommandRequest,
     timeoutMs: number = PROJECT_EXECUTION_TIMEOUT_MS,
     onEvent?: RuntimeCommandEventHandler,
-    signal: AbortSignal | undefined = request.signal
+    signal: AbortSignal | undefined = request.signal,
+    engineLease?: RuntimeProjectEngineLeaseController
   ): Promise<PythonProjectCommandResult> {
+    if (engineLease) await this.core.acquireReusableEngineLease(engineLease);
     const {
       signal: _signal,
       onEvent: _requestOnEvent,
+      engineLease: _engineLease,
       kernelHttp,
       kernelSyscalls,
       ...workerRequest

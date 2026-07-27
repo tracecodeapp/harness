@@ -7,6 +7,7 @@ import type {
   RuntimeFileMutationPhase,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
@@ -81,7 +82,8 @@ export function createBrowserCSharpProjectRunner(
       request: CSharpProjectCommandRequest,
       timeoutMs?: number,
       onEvent?: RuntimeCommandEventHandler,
-      signal?: AbortSignal
+      signal?: AbortSignal,
+      engineLease?: RuntimeProjectEngineLeaseController
     ): Promise<CSharpProjectCommandResult>;
   },
   options: BrowserCSharpProjectRunnerOptions = {}
@@ -105,7 +107,14 @@ export function createBrowserCSharpProjectRunner(
       finishPhase: request.source === 'compile' ? 'compile-end' : 'process-exit',
       finishMessage: request.source === 'compile' ? 'Finished C# browser compile' : 'Finished C# browser run',
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectCSharp(workerRequest, timeoutMs, onEvent, workerRequest.signal),
+      run: (workerRequest, onEvent, engineLease) =>
+        workerClient.executeProjectCSharp(
+          workerRequest,
+          timeoutMs,
+          onEvent,
+          workerRequest.signal,
+          engineLease
+        ),
     });
   };
 }

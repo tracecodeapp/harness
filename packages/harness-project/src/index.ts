@@ -177,6 +177,8 @@ import type {
   RuntimeTraceKernelConfig,
   RuntimeTraceKernelSchedulerConfig,
   RuntimeProjectCommandRequest,
+  RuntimeProjectEngineLeaseAttachment,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectCommandOptions,
   RuntimeProjectCommandRunner,
   RuntimeProjectHiddenCommandAccess,
@@ -1277,6 +1279,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                 : {}
             ),
             ...(commandContext?.terminal ? { terminal: commandContext.terminal } : {}),
+            ...(commandContext?.engineLease
+              ? { engineLease: commandContext.engineLease }
+              : {}),
             ...(signal ? { signal } : {}),
             kernelHttp: this.createKernelHttpBridge(commandContext),
             ...(kernelSyscalls ? { kernelSyscalls } : {}),
@@ -9577,11 +9582,29 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       foreground,
     };
     this.bindAuthoritativeProcessProjection(process, kernelSnapshot);
+    let engineAttachment: RuntimeProjectEngineLeaseAttachment | undefined;
+    let engineLeaseReleased = false;
+    const engineLease: RuntimeProjectEngineLeaseController = Object.freeze({
+      attach: (attachment: RuntimeProjectEngineLeaseAttachment) => {
+        if (engineLeaseReleased) {
+          throw new Error(
+            `Runtime engine lease for process ${process.pid} was already released.`
+          );
+        }
+        if (engineAttachment) {
+          throw new Error(
+            `Runtime engine lease for process ${process.pid} is already attached.`
+          );
+        }
+        engineAttachment = attachment;
+      },
+    });
     let commandContext!: RuntimeCommandExecutionContext;
     commandContext = {
       eventHandler: this.createCommandEventHandler(options),
       actor,
       process,
+      engineLease,
       signal: abortController.signal,
       stdinPipe,
       terminal: options.terminal,
@@ -9620,6 +9643,24 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
       )
     );
+    const clearKernelLeaseHandler = await Effect.runPromise(
+      this.traceKernelControlledRuntime.setLeaseHandler(process.pid, {
+        revalidate: async () => {
+          if (!engineAttachment?.revalidate) {
+            throw new Error(
+              `Runtime engine for process ${process.pid} does not support validated reuse.`
+            );
+          }
+          await engineAttachment.revalidate();
+        },
+        release: async (disposition) => {
+          engineLeaseReleased = true;
+          const attachment = engineAttachment;
+          engineAttachment = undefined;
+          await attachment?.release(disposition);
+        },
+      })
+    );
     if (terminalPresentation && foreground) {
       this.setProcessGroupForeground(process.pgid, true);
     }
@@ -9637,6 +9678,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         )
       );
       await Effect.runPromise(kernelProcess.wait()).catch(() => undefined);
+      clearKernelLeaseHandler();
       await this.closeHostStandardIo(executionHandle);
       this.releaseForegroundProcessGroupMember(process);
       await this.kernelDescriptors.closeProcess(process.pid);
@@ -9882,6 +9924,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         await this.reapControlledTraceKernelChild(parent, process.pid);
       }
       clearKernelSignalHandler();
+      clearKernelLeaseHandler();
       cleanupExternalSignal?.();
       const outcome = {
         exitCode: processExitCode,
@@ -10365,6 +10408,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           pgid: processSnapshot?.pgid ?? request.commandContext.process.pgid,
           sid: processSnapshot?.sid ?? request.commandContext.process.sid,
         },
+        ...(request.commandContext.engineLease
+          ? { engineLease: request.commandContext.engineLease }
+          : {}),
         ...(request.commandContext.terminal
           ? { terminal: request.commandContext.terminal }
           : {}),

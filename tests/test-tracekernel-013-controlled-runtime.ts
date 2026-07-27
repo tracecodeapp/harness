@@ -4,6 +4,7 @@ import * as Effect from 'effect/Effect';
 import {
   makeTraceKernelHost,
   TraceKernelControlledRuntime,
+  type TraceKernelRuntimeLeaseReleaseDisposition,
 } from '@tracecode/tracekernel';
 
 function assertCondition(condition: boolean, message: string): void {
@@ -13,6 +14,8 @@ function assertCondition(condition: boolean, message: string): void {
 async function main(): Promise<void> {
   const controlled = new TraceKernelControlledRuntime('host-runner');
   const deliveredSignals: string[] = [];
+  const releaseDispositions: TraceKernelRuntimeLeaseReleaseDisposition[] = [];
+  let revalidationCount = 0;
 
   await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
@@ -57,7 +60,16 @@ async function main(): Promise<void> {
         return Effect.runPromise(controlled.complete(process.pid, {
           exitCode: 143,
           stderr: 'terminated by host runner\n',
+          termination: { kind: 'signal', signal },
         })).then(() => undefined);
+      });
+      yield* controlled.setLeaseHandler(process.pid, {
+        revalidate: () => {
+          revalidationCount += 1;
+        },
+        release: (disposition) => {
+          releaseDispositions.push(disposition);
+        },
       });
       yield* process.signal('SIGTERM');
       const snapshot = yield* process.wait();
@@ -66,14 +78,44 @@ async function main(): Promise<void> {
         'TraceKernel did not deliver the signal to the controlled host executor.'
       );
       assertCondition(
-        snapshot.termination?.kind === 'exit' &&
-          snapshot.termination.exitCode === 143 &&
+        snapshot.termination?.kind === 'signal' &&
+          snapshot.termination.signal === 'SIGTERM' &&
           snapshot.stderr === 'terminated by host runner\n',
         `The controlled executor result did not finish the kernel process: ${JSON.stringify(snapshot)}`
       );
       assertCondition(
         controlled.attachedPids().length === 0,
         'The controlled runtime lease remained attached after process exit.'
+      );
+
+      const reusableProcess = yield* session.spawn({
+        runtime: controlled.runtime,
+        command: 'healthy-product-runner',
+        cwd: '/workspace',
+      });
+      yield* reusableProcess.awaitStarted();
+      yield* controlled.awaitAttached(reusableProcess.pid);
+      yield* controlled.setLeaseHandler(reusableProcess.pid, {
+        revalidate: () => {
+          revalidationCount += 1;
+        },
+        release: (disposition) => {
+          releaseDispositions.push(disposition);
+        },
+      });
+      yield* controlled.complete(reusableProcess.pid, { exitCode: 0 });
+      yield* reusableProcess.wait();
+      assertCondition(
+        revalidationCount === 1 &&
+          releaseDispositions.length === 2 &&
+          releaseDispositions[0]?.kind === 'destroy' &&
+          releaseDispositions[0].reason === 'signaled' &&
+          releaseDispositions[1]?.kind === 'reuse' &&
+          releaseDispositions[1].reason === 'revalidated',
+        `TraceKernel did not enforce destroy-on-signal and explicit revalidation before reuse: ${JSON.stringify({
+          revalidationCount,
+          releaseDispositions,
+        })}`
       );
     })
   ));
@@ -85,6 +127,7 @@ async function main(): Promise<void> {
     kernelOwnedStandardDescriptors: true,
     signalDelivery: true,
     leaseCleanup: true,
+    engineLeaseDisposition: true,
   }, null, 2));
 }
 

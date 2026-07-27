@@ -1724,8 +1724,9 @@ export interface RuntimeProjectWorkerBridgeOptions<
   finishDetail?: (result: Result) => Record<string, unknown>;
   applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
   run(
-    request: Omit<Request, 'onEvent'>,
-    onEvent: RuntimeCommandEventHandler
+    request: Omit<Request, 'onEvent' | 'engineLease'>,
+    onEvent: RuntimeCommandEventHandler,
+    engineLease: RuntimeProjectEngineLeaseController | undefined
   ): Promise<Result>;
 }
 
@@ -1743,10 +1744,14 @@ export async function runRuntimeProjectWorkerBridge<
     liveIo.handleRuntimeEvent(event);
   };
   io.status(options.startPhase, options.startMessage, options.startDetail);
-  const { onEvent: _onEvent, ...workerRequest } = options.request;
+  const {
+    onEvent: _onEvent,
+    engineLease: _engineLease,
+    ...workerRequest
+  } = options.request;
   let result: Result;
   try {
-    result = await options.run(workerRequest, forwardWorkerEvent);
+    result = await options.run(workerRequest, forwardWorkerEvent, options.request.engineLease);
     liveIo.close();
     await liveIo.flush();
   } catch (error) {
@@ -1965,6 +1970,40 @@ export interface RuntimeProjectProcessInfo {
   descriptors?: readonly number[];
 }
 
+export type RuntimeProjectEngineLeaseReleaseDisposition =
+  | {
+      readonly kind: 'reuse';
+      readonly reason: 'revalidated';
+    }
+  | {
+      readonly kind: 'destroy';
+      readonly reason:
+        | 'unvalidated'
+        | 'execution-failure'
+        | 'signaled'
+        | 'interrupted'
+        | 'revalidation-failure';
+      readonly message?: string;
+    };
+
+/**
+ * Host-only mutable engine resource attached to one kernel process.
+ *
+ * This object is stripped before a worker request is posted. TraceKernel calls
+ * `revalidate` before a possible reuse disposition and calls `release`
+ * exactly once after process execution.
+ */
+export interface RuntimeProjectEngineLeaseAttachment {
+  revalidate?(): Promise<void> | void;
+  release(
+    disposition: RuntimeProjectEngineLeaseReleaseDisposition
+  ): Promise<void> | void;
+}
+
+export interface RuntimeProjectEngineLeaseController {
+  attach(attachment: RuntimeProjectEngineLeaseAttachment): void;
+}
+
 export interface RuntimeProjectCommandRequest<
   Source extends string = RuntimeProjectCommandSource
 > {
@@ -1975,6 +2014,8 @@ export interface RuntimeProjectCommandRequest<
   cwd: string;
   env: Record<string, string>;
   process?: RuntimeProjectProcessInfo;
+  /** Host-only actual worker/interpreter lease; never crosses the worker boundary. */
+  engineLease?: RuntimeProjectEngineLeaseController;
   terminal?: RuntimeProjectTerminalCapabilities;
   stdinPipe?: RuntimeCommandStdinSharedBuffer;
   project: RuntimeProjectSnapshot;

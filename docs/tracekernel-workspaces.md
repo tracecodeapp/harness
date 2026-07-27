@@ -161,6 +161,15 @@ after one command; a worker that has run user code is never returned to an idle
 pool. Shared workers are trusted-only and require both
 `projectWorkerIsolation: 'shared'` and `trustedSharedWorkerReuse: true`.
 
+For TraceKernel-backed commands, worker retirement is part of the process
+runtime lease rather than a wrapper cleanup convention. The kernel classifies
+the result and releases the physical worker exactly once. A trusted shared
+JavaScript, Python, or C# worker is retained only after it is still ready, its
+generation is unchanged, and its request registry is empty. Commands sharing
+one interpreter are serialized through kernel release, so a second PID cannot
+enter the engine while the first still owns it. C++ user execution remains
+one-command-per-worker; only its trusted compiler coordinator survives.
+
 Heavy runtime startup can be hidden with an opt-in one-shot prewarm depth:
 
 ```ts

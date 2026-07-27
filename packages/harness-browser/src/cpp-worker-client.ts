@@ -27,6 +27,7 @@ import type {
   RuntimeCommandResult,
   RuntimeKernelHttpBridge,
   RuntimeProjectCommandRequest,
+  RuntimeProjectEngineLeaseController,
 } from '@tracecode/harness-core';
 import {
   createEmptyRuntimeTrace,
@@ -1201,12 +1202,18 @@ export class CppWorkerClient {
     request: CppProjectCommandRequest,
     timeoutMs = this.executionTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
-    signal: AbortSignal | undefined = request.signal
+    signal: AbortSignal | undefined = request.signal,
+    engineLease?: RuntimeProjectEngineLeaseController
   ): Promise<CppProjectCommandResult> {
+    // C++ execution workers are already one-command resources. The retained
+    // compiler coordinator is trusted host infrastructure, not process state,
+    // so TraceKernel observes a destroy-only engine lease here.
+    engineLease?.attach({ release: () => undefined });
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       const {
         signal: _signal,
         onEvent: _requestOnEvent,
+        engineLease: _engineLease,
         kernelHttp,
         kernelSyscalls,
         ...workerRequest

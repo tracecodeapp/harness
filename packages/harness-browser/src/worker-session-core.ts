@@ -33,6 +33,7 @@ import type {
   RuntimeKernelHttpListenerHandle,
   RuntimeKernelHttpResponse,
   RuntimeKernelSyscallBridge,
+  RuntimeProjectEngineLeaseController,
 } from '@tracecode/harness-core';
 import type { KernelHttpSyncServerBridge } from './kernel-http-sync';
 import type { BrowserWorkerLike } from './execution-host';
@@ -126,6 +127,7 @@ export interface WorkerSessionCoreConfig {
 
 export class WorkerSessionCore {
   private session: WorkerSession | null = null;
+  private engineLeaseTail: Promise<void> = Promise.resolve();
   readonly pendingMessages = new Map<MessageId, WorkerSessionPendingMessage>();
   private messageId = 0;
   /** Runs when a session closes (with the close reason), before pending rejection; clients clear memos here. */
@@ -139,6 +141,64 @@ export class WorkerSessionCore {
 
   get isWorkerRunning(): boolean {
     return this.session !== null;
+  }
+
+  /**
+   * Bind this reusable worker generation to one TraceKernel process.
+   *
+   * The attachment is host-only. TraceKernel asks the client to prove that
+   * the request registry is empty and that the same ready worker generation
+   * is still alive before it may issue a reuse disposition. Every other
+   * disposition closes the session through its scoped finalizer.
+   */
+  async acquireReusableEngineLease(controller: RuntimeProjectEngineLeaseController): Promise<void> {
+    const predecessor = this.engineLeaseTail;
+    let releaseTurn!: () => void;
+    const releaseGate = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    this.engineLeaseTail = predecessor
+      .catch(() => undefined)
+      .then(() => releaseGate);
+    await predecessor.catch(() => undefined);
+
+    let validatedSession: WorkerSession | null = null;
+    try {
+      controller.attach({
+        revalidate: async () => {
+          const session = this.session;
+          if (!session) {
+            throw new Error(`${this.config.runtimeLabel} worker is not running after execution.`);
+          }
+          if (this.pendingMessages.size !== 0) {
+            throw new Error(
+              `${this.config.runtimeLabel} worker still owns ${this.pendingMessages.size} pending request(s).`
+            );
+          }
+          await session.ready.promise;
+          if (this.session !== session) {
+            throw new Error(`${this.config.runtimeLabel} worker generation changed during revalidation.`);
+          }
+          validatedSession = session;
+        },
+        release: (disposition) => {
+          try {
+            if (disposition.kind === 'reuse') return;
+            if (validatedSession && this.session !== validatedSession) return;
+            this.closeSession(
+              new WorkerTerminatedError(
+                `${this.config.runtimeLabel} engine lease destroyed: ${disposition.reason}`
+              )
+            );
+          } finally {
+            releaseTurn();
+          }
+        },
+      });
+    } catch (error) {
+      releaseTurn();
+      throw error;
+    }
   }
 
   /**

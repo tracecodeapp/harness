@@ -7,6 +7,7 @@ import type {
   RuntimeFileMutationPhase,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
@@ -38,7 +39,8 @@ export function createBrowserCppProjectRunner(
       request: CppProjectCommandRequest,
       timeoutMs?: number,
       onEvent?: RuntimeCommandEventHandler,
-      signal?: AbortSignal
+      signal?: AbortSignal,
+      engineLease?: RuntimeProjectEngineLeaseController
     ): Promise<CppProjectCommandResult>;
   },
   options: BrowserCppProjectRunnerOptions = {}
@@ -54,7 +56,14 @@ export function createBrowserCppProjectRunner(
       finishMessage: request.source === 'compile' ? 'Finished C++ browser compile' : 'Finished C++ browser executable',
       finishDetail: (result) => ({ source: request.source, exitCode: result.exitCode }),
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectCpp(workerRequest, timeoutMs, onEvent, workerRequest.signal),
+      run: (workerRequest, onEvent, engineLease) =>
+        workerClient.executeProjectCpp(
+          workerRequest,
+          timeoutMs,
+          onEvent,
+          workerRequest.signal,
+          engineLease
+        ),
     });
   };
 }

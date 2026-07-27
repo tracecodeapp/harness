@@ -1,5 +1,6 @@
 import type {
   Language,
+  RuntimeProjectEngineLeaseController,
   RuntimeWorkspace,
 } from '@tracecode/harness-core';
 import type { CreateRuntimeWorkspaceOptions } from '../../harness-project/src/index';
@@ -120,7 +121,11 @@ interface PrewarmableProjectWorker {
 }
 
 interface OneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorker> {
-  run<Result>(signal: AbortSignal | undefined, execute: (client: Client) => Promise<Result>): Promise<Result>;
+  run<Result>(
+    signal: AbortSignal | undefined,
+    engineLease: RuntimeProjectEngineLeaseController | undefined,
+    execute: (client: Client) => Promise<Result>
+  ): Promise<Result>;
   terminate(): void;
 }
 
@@ -338,17 +343,31 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
   refill();
 
   return {
-    async run<Result>(signal: AbortSignal | undefined, execute: (client: Client) => Promise<Result>): Promise<Result> {
+    async run<Result>(
+      signal: AbortSignal | undefined,
+      engineLease: RuntimeProjectEngineLeaseController | undefined,
+      execute: (client: Client) => Promise<Result>
+    ): Promise<Result> {
       refillEnabled = true;
       refill();
       const leaseGeneration = generation;
       const entry = await acquire(leaseGeneration, signal);
+      let attachedToKernel = false;
       const onAbort = () => retire(entry);
       signal?.addEventListener('abort', onAbort, { once: true });
       try {
         if (signal?.aborted) {
           retire(entry);
           throw projectPoolAbortError();
+        }
+        if (engineLease) {
+          engineLease.attach({
+            release: () => {
+              retire(entry);
+              refill();
+            },
+          });
+          attachedToKernel = true;
         }
         const result = await execute(entry.client);
         if (
@@ -361,8 +380,10 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
         return result;
       } finally {
         signal?.removeEventListener('abort', onAbort);
-        retire(entry);
-        refill();
+        if (!attachedToKernel) {
+          retire(entry);
+          refill();
+        }
       }
     },
     terminate() {
@@ -382,8 +403,10 @@ function createPerCommandPythonWorkerClient(
 ): Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'> {
   const pool = createOneShotPrewarmedWorkerPool('Python', prewarmDepth, createClient);
   return {
-    async executeProjectPython(request, timeoutMs, onEvent, signal) {
-      return pool.run(signal, (client) => client.executeProjectPython(request, timeoutMs, onEvent, signal));
+    async executeProjectPython(request, timeoutMs, onEvent, signal, engineLease) {
+      return pool.run(signal, engineLease, (client) =>
+        client.executeProjectPython(request, timeoutMs, onEvent, signal)
+      );
     },
     terminate() {
       pool.terminate();
@@ -401,7 +424,7 @@ function createPerCommandJavaWorkerClient(
     async executeProjectJava(request, timeoutMs, onEvent, signal) {
       validateRuntimeAssets?.();
       return runJavaSafeStorageExclusive(() =>
-        pool.run(signal, async (client) => {
+        pool.run(signal, undefined, async (client) => {
           await client.resetPersistentStorage();
           return client.executeProjectJava(request, timeoutMs, onEvent, signal);
         })
@@ -486,8 +509,10 @@ function createPerCommandCSharpWorkerClient(
 ): Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'> {
   const pool = createOneShotPrewarmedWorkerPool('C#', prewarmDepth, createClient);
   return {
-    async executeProjectCSharp(request, timeoutMs, onEvent, signal) {
-      return pool.run(signal, (client) => client.executeProjectCSharp(request, timeoutMs, onEvent, signal));
+    async executeProjectCSharp(request, timeoutMs, onEvent, signal, engineLease) {
+      return pool.run(signal, engineLease, (client) =>
+        client.executeProjectCSharp(request, timeoutMs, onEvent, signal)
+      );
     },
     terminate() {
       pool.terminate();
@@ -501,8 +526,10 @@ function createPerCommandCppWorkerClient(
 ): Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'> {
   const pool = createOneShotPrewarmedWorkerPool('C++', prewarmDepth, createClient);
   return {
-    async executeProjectCpp(request, timeoutMs, onEvent, signal) {
-      return pool.run(signal, (client) => client.executeProjectCpp(request, timeoutMs, onEvent, signal));
+    async executeProjectCpp(request, timeoutMs, onEvent, signal, engineLease) {
+      return pool.run(signal, engineLease, (client) =>
+        client.executeProjectCpp(request, timeoutMs, onEvent, signal)
+      );
     },
     terminate() {
       pool.terminate();

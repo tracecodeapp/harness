@@ -7,6 +7,7 @@ import type {
   RuntimeCommandEventHandler,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
@@ -40,7 +41,8 @@ export interface PyodidePythonProjectWorkerClient {
     request: PythonProjectCommandRequest,
     timeoutMs?: number,
     onEvent?: RuntimeCommandEventHandler,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    engineLease?: RuntimeProjectEngineLeaseController
   ): Promise<PythonProjectCommandResult>;
 }
 
@@ -64,7 +66,14 @@ export function createBrowserPythonProjectRunner(
       finishPhase: 'process-exit',
       finishMessage: 'Finished Python browser project command',
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectPython(workerRequest, options.timeoutMs, onEvent, workerRequest.signal),
+      run: (workerRequest, onEvent, engineLease) =>
+        workerClient.executeProjectPython(
+          workerRequest,
+          options.timeoutMs,
+          onEvent,
+          workerRequest.signal,
+          engineLease
+        ),
     });
 }
 

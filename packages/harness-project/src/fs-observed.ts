@@ -166,6 +166,7 @@ export interface RuntimeCommandExecutionContext {
     readonly pid: number;
     [key: string]: any;
   };
+  readonly engineLease?: import('@tracecode/harness-core').RuntimeProjectEngineLeaseController;
   readonly signal: AbortSignal;
   readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
   readonly terminal?: RuntimeCommandOptions['terminal'];

@@ -922,6 +922,13 @@ The current JavaScript/TypeScript, C++, C#, and Python adapters use
 process-owned descriptor stdio. Runtime structured HTTP and raw TCP now share
 the same authoritative session network namespace. TraceKernel also owns lease
 recovery disposition, allowing reuse only after successful revalidation.
+That disposition now reaches the physical JavaScript, Python, C#, and C++
+browser worker ownership paths. One-shot pools retire their actual client on
+kernel release. Trusted shared JavaScript, Python, and C# engines serialize
+processes until release and revalidate worker readiness, generation identity,
+and an empty request registry before reuse. C++ execution workers remain
+unconditionally disposable; its retained compiler coordinator is immutable
+host infrastructure rather than process state.
 
 The remaining adapter migration is intentionally narrower:
 

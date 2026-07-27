@@ -654,6 +654,61 @@ async function main(): Promise<void> {
     }
     console.log('PASS: browser project workspace isolates concurrent project runtime commands');
 
+    const sharedSerialWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-shared-serialization',
+      projectWorkerIsolation: 'shared',
+      trustedSharedWorkerReuse: true,
+      pythonProjectTimeoutMs: 5000,
+      files: [
+        { path: 'hold.py', contents: 'print("hold")\n' },
+        { path: 'client.py', contents: 'print("client")\n' },
+      ],
+    });
+    try {
+      const beforeWorkerCount = workerInstances.length;
+      const heldStarted = new Promise<void>((resolve) => {
+        heldPythonProjectStarted = resolve;
+      });
+      const held = sharedSerialWorkspace.runCommand('python3 hold.py');
+      await heldStarted;
+      let clientSettled = false;
+      const client = sharedSerialWorkspace.runCommand('python3 client.py').then((result) => {
+        clientSettled = true;
+        return result;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      const sharedWorkers = workerInstances
+        .slice(beforeWorkerCount)
+        .filter((worker) => String(worker.url).startsWith('/project-shared-serialization/pyodide-worker.js'));
+      const projectMessagesBeforeRelease = sharedWorkers.flatMap((worker) =>
+        worker.messages.filter((message) => message.type === 'execute-project-python')
+      );
+      assertCondition(sharedWorkers.length === 1, 'Trusted shared execution should own one interpreter worker');
+      assertCondition(
+        !clientSettled && projectMessagesBeforeRelease.length === 1,
+        'A second PID must not enter a shared interpreter before the prior kernel lease is released'
+      );
+      releaseHeldPythonProject?.();
+      releaseHeldPythonProject = undefined;
+      const [heldResult, clientResult] = await Promise.all([held, client]);
+      const projectMessagesAfterRelease = sharedWorkers.flatMap((worker) =>
+        worker.messages.filter((message) => message.type === 'execute-project-python')
+      );
+      assertCondition(
+        heldResult.exitCode === 0 &&
+          clientResult.exitCode === 0 &&
+          projectMessagesAfterRelease.length === 2 &&
+          sharedWorkers[0]?.terminated === false,
+        'A healthy released engine lease should admit the next PID on the same trusted worker'
+      );
+    } finally {
+      heldPythonProjectStarted = undefined;
+      releaseHeldPythonProject = undefined;
+      sharedSerialWorkspace.dispose();
+    }
+    console.log('PASS: trusted shared project workers serialize PIDs through kernel engine leases');
+
     const beforeAuthorityWorkerCount = workerInstances.length;
     const authorityProjectWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-authority',
