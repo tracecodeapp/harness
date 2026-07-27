@@ -1,4 +1,6 @@
 import * as Effect from 'effect/Effect';
+import * as Exit from 'effect/Exit';
+import * as Scope from 'effect/Scope';
 import {
   Bash,
   defineCommand,
@@ -92,6 +94,7 @@ import {
   encodeTraceKernelHttp1Response,
   makeTraceKernelPromiseSyscallHandler,
   makeTraceKernelSharedSyscallChannel,
+  makeTraceKernelHost,
   TraceKernelFileSystem,
   TraceKernelHttp1Decoder,
   TraceKernelSharedSyscallServer,
@@ -100,6 +103,8 @@ import {
   type TraceKernelHttp1Request,
   type TraceKernelHttp1Response,
   type TraceKernelFileSystemImage,
+  type TraceKernelHost,
+  type TraceKernelSession,
   type TraceKernelSyscallErrorCode,
   type TraceKernelSyscallRequest,
   type TraceKernelSyscallResult,
@@ -729,6 +734,12 @@ interface RuntimeKernelWatchdogRecord {
   readonly timer: ReturnType<typeof setTimeout>;
 }
 
+interface RuntimeTraceKernelAuthority {
+  readonly scope: Scope.CloseableScope;
+  readonly host: TraceKernelHost;
+  readonly session: TraceKernelSession;
+}
+
 interface RuntimeKernelProcessLaunchHooks {
   initialize?: (
     process: RuntimeKernelProcessRecord,
@@ -1038,6 +1049,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly bashOptions: BashOptions;
   private readonly baseEnv: Record<string, string>;
   private readonly traceKernelFileSystem: TraceKernelFileSystem;
+  private traceKernelAuthority?: RuntimeTraceKernelAuthority;
   private readonly fs: KernelObservedFileSystem;
   private readonly kernelDescriptors: RuntimeKernelDescriptorManager;
   private readonly kernelNetwork: RuntimeKernelNetworkManager;
@@ -7594,6 +7606,44 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       await fs.chmod('/tmp', 0o1777);
       await fs.chmod('/var/tmp', 0o1777);
     }, 'directory-create');
+    await this.ensureTraceKernelAuthority();
+  }
+
+  private async ensureTraceKernelAuthority(): Promise<void> {
+    if (this.traceKernelAuthority) return;
+    const scope = Effect.runSync(Scope.make());
+    try {
+      const authority = await Effect.runPromise(Scope.extend(
+        Effect.gen(this, function* () {
+          const host = yield* makeTraceKernelHost();
+          const session = yield* host.openSession({
+            cwd: this.cwd,
+            env: this.baseEnv,
+            fileSystem: this.traceKernelFileSystem,
+            ...(this.maxProcesses === null
+              ? {}
+              : { maxProcesses: this.maxProcesses }),
+          });
+          return { scope, host, session } satisfies RuntimeTraceKernelAuthority;
+        }),
+        scope
+      ));
+      if (this.destroyed) {
+        await Effect.runPromise(Scope.close(scope, Exit.void));
+        throw new Error('Runtime workspace was destroyed while TraceKernel initialized.');
+      }
+      this.traceKernelAuthority = authority;
+    } catch (error) {
+      await Effect.runPromise(Scope.close(scope, Exit.fail(error))).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async closeTraceKernelAuthority(): Promise<void> {
+    const authority = this.traceKernelAuthority;
+    if (!authority) return;
+    this.traceKernelAuthority = undefined;
+    await Effect.runPromise(Scope.close(authority.scope, Exit.void));
   }
 
   async writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
@@ -9142,6 +9192,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       actor: SYSTEM_ACTOR,
     });
     this.eventWatchers.clear();
+    await this.closeTraceKernelAuthority();
     await this.withSuspendedReadonlyPolicy(() =>
       this.fs.withBaseMutation([this.cwd], (fs) => fs.rm(this.cwd, { force: true, recursive: true }), 'recursive-delete')
     );
@@ -9479,6 +9530,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
     this.clearAllRuntimeProcessWatchdogs();
+    const authority = this.traceKernelAuthority;
+    this.traceKernelAuthority = undefined;
+    if (authority) {
+      void Effect.runPromise(Scope.close(authority.scope, Exit.void)).catch(() => undefined);
+    }
     void Promise.all([
       this.kernelDescriptors.dispose(),
       this.kernelNetwork.dispose(),
