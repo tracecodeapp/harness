@@ -1228,6 +1228,12 @@ export class TraceKernelSession {
     });
   }
 
+  sendTerminalInputEof(terminalId: string): Effect.Effect<void, Error> {
+    return this.terminalById(terminalId).pipe(
+      Effect.flatMap((terminal) => terminal.signalInputEof())
+    );
+  }
+
   readTerminalOutput(
     terminalId: string,
     maxBytes: number,

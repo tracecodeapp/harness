@@ -55,6 +55,7 @@ async function main(): Promise<void> {
   const interruptChildStartWaiters: Array<() => void> = [];
   const killChildStartWaiters: Array<() => void> = [];
   const terminalInputStartWaiters: Array<() => void> = [];
+  const terminalEofStartWaiters: Array<() => void> = [];
   let authoritativeSession: TraceKernelSession | undefined;
   const waitForInterruptChildStart = (): Promise<void> =>
     new Promise<void>((resolve) => {
@@ -67,6 +68,10 @@ async function main(): Promise<void> {
   const waitForTerminalInputStart = (): Promise<void> =>
     new Promise<void>((resolve) => {
       terminalInputStartWaiters.push(resolve);
+    });
+  const waitForTerminalEofStart = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      terminalEofStartWaiters.push(resolve);
     });
 
   const nodeRunner: JavaScriptProjectCommandRunner = async (request) => {
@@ -274,6 +279,21 @@ async function main(): Promise<void> {
         })}`
       );
       return { stdout: '', stderr: '', exitCode: 0 };
+    }
+    if (request.scriptPath.endsWith('terminal-eof.js')) {
+      terminalEofStartWaiters.shift()?.();
+      const input = await dispatch(kernel, {
+        op: 'read',
+        fd: 0,
+        maxBytes: 64,
+      });
+      assertCondition(
+        input.ok &&
+          input.value.op === 'read' &&
+          input.value.bytes.byteLength === 0,
+        `terminal EOF did not produce a one-shot fd 0 EOF: ${JSON.stringify(input)}`
+      );
+      return { stdout: 'kernel-eof\n', stderr: '', exitCode: 0 };
     }
     if (request.scriptPath.endsWith('interrupt-parent.js')) {
       request.signal?.addEventListener(
@@ -584,6 +604,10 @@ async function main(): Promise<void> {
         path: 'terminal-output.js',
         contents: '// authoritative terminal-output fixture\n',
       },
+      {
+        path: 'terminal-eof.js',
+        contents: '// authoritative terminal-EOF fixture\n',
+      },
     ],
     nodeRunner,
   });
@@ -689,8 +713,38 @@ async function main(): Promise<void> {
         terminalOutputResult
       )}`
     );
+    const terminalEofStarted = waitForTerminalEofStart();
+    const terminalEofRun = terminal.run('node terminal-eof.js');
+    await terminalEofStarted;
     assertCondition(
-      terminalRuntimeCount === 6 && detachedRuntimeCount === 4,
+      terminal.endStdin() && !terminal.endStdin(),
+      'terminal EOF should be delivered to the active command exactly once'
+    );
+    const terminalEofResult = await terminalEofRun;
+    assertCondition(
+      terminalEofResult.exitCode === 0 &&
+        terminalEofResult.stdout === 'kernel-eof\n',
+      `kernel terminal EOF did not release fd 0: ${JSON.stringify(
+        terminalEofResult
+      )}`
+    );
+    const reusableInputStarted = waitForTerminalInputStart();
+    const reusableInputRun = terminal.run('node terminal-input.js');
+    await reusableInputStarted;
+    assertCondition(
+      terminal.writeStdin('kernel-input'),
+      'terminal did not accept input after a one-shot EOF'
+    );
+    const reusableInputResult = await reusableInputRun;
+    assertCondition(
+      reusableInputResult.exitCode === 0 &&
+        reusableInputResult.stdout === 'kernel-input\n',
+      `terminal EOF incorrectly closed later input: ${JSON.stringify(
+        reusableInputResult
+      )}`
+    );
+    assertCondition(
+      terminalRuntimeCount === 8 && detachedRuntimeCount === 4,
       `controlling-terminal inheritance did not match parent/child execution: ${JSON.stringify({
         terminalRuntimeCount,
         detachedRuntimeCount,
@@ -795,6 +849,7 @@ async function main(): Promise<void> {
     kernelOwnedTerminalResize: true,
     kernelOwnedTerminalInput: true,
     kernelOwnedTerminalOutput: true,
+    kernelOwnedTerminalEof: true,
     terminalSignalCharacters: ['VINTR', 'VQUIT'],
   }, null, 2));
 }

@@ -32,6 +32,7 @@ export interface TraceKernelTerminalSnapshot {
 interface TerminalByteStream {
   chunks: Uint8Array[];
   remainder: Uint8Array;
+  eofPending: number;
   changed: Deferred.Deferred<void>;
 }
 
@@ -80,8 +81,18 @@ export class TraceKernelTerminal {
         foregroundProcessGroupId,
         normalizeDimension(options.columns, 80),
         normalizeDimension(options.rows, 24),
-        { chunks: [], remainder: new Uint8Array(0), changed: inputChanged },
-        { chunks: [], remainder: new Uint8Array(0), changed: outputChanged }
+        {
+          chunks: [],
+          remainder: new Uint8Array(0),
+          eofPending: 0,
+          changed: inputChanged,
+        },
+        {
+          chunks: [],
+          remainder: new Uint8Array(0),
+          eofPending: 0,
+          changed: outputChanged,
+        }
       );
     });
   }
@@ -155,6 +166,20 @@ export class TraceKernelTerminal {
     return this.writeStream(this.input, bytes);
   }
 
+  signalInputEof(): Effect.Effect<void, TraceKernelTerminalError> {
+    return Effect.suspend(() => {
+      if (this.closed) {
+        return Effect.fail(new TraceKernelTerminalError({
+          code: 'EIO',
+          message: `EIO: terminal ${this.name} is closed`,
+        }));
+      }
+      this.input.eofPending += 1;
+      this.wake(this.input);
+      return Effect.void;
+    });
+  }
+
   readOutput(
     maxBytes: number,
     nonblocking = false
@@ -166,6 +191,7 @@ export class TraceKernelTerminal {
     return Effect.sync(() => {
       this.input.chunks.length = 0;
       this.input.remainder = new Uint8Array(0);
+      this.input.eofPending = 0;
       this.wake(this.input);
     });
   }
@@ -186,7 +212,7 @@ export class TraceKernelTerminal {
   ): Effect.Effect<Uint8Array, TraceKernelTerminalError | TraceKernelWouldBlockError> {
     const accessError = this.processAccessError(context, 'read');
     if (accessError) return Effect.fail(accessError);
-    return this.readStream(this.input, maxBytes, nonblocking);
+    return this.readStream(this.input, maxBytes, nonblocking, true);
   }
 
   private writeOutput(
@@ -220,13 +246,18 @@ export class TraceKernelTerminal {
   private readStream(
     stream: TerminalByteStream,
     maxBytes: number,
-    nonblocking: boolean
+    nonblocking: boolean,
+    consumeEof = false
   ): Effect.Effect<Uint8Array, TraceKernelTerminalError | TraceKernelWouldBlockError> {
     const requested = Math.max(0, Math.floor(maxBytes));
     if (requested === 0) return Effect.succeed(new Uint8Array(0));
     return Effect.suspend(() => {
       const available = this.takeBytes(stream, requested);
       if (available) return Effect.succeed(available);
+      if (consumeEof && stream.eofPending > 0) {
+        stream.eofPending -= 1;
+        return Effect.succeed(new Uint8Array(0));
+      }
       if (this.closed) return Effect.succeed(new Uint8Array(0));
       if (nonblocking) {
         return Effect.fail(new TraceKernelWouldBlockError({
@@ -237,7 +268,9 @@ export class TraceKernelTerminal {
       }
       const changed = stream.changed;
       return Deferred.await(changed).pipe(
-        Effect.andThen(this.readStream(stream, requested, false))
+        Effect.andThen(
+          this.readStream(stream, requested, false, consumeEof)
+        )
       );
     });
   }
@@ -269,6 +302,7 @@ export class TraceKernelTerminal {
       return Object.freeze({
       read: events.read && readable && readableByProcess && (
         this.closed ||
+        this.input.eofPending > 0 ||
         this.input.remainder.byteLength > 0 ||
         this.input.chunks.length > 0
       ),

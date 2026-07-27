@@ -439,13 +439,17 @@ one input surface, and the dual feed can disappear after every language reads
 stdio through descriptors. Runtime writes to kernel terminal fd 1/2 are drained
 from the shared terminal queue and published through the calling command's
 output controller, preserving PID/actor attribution without leaving a shadow
-queue. Input EOF, signal-character recognition entry, process-lifecycle
-compatibility state, journal, and host-only structured HTTP adapter remain
-transitional. Foreground signal selection/delivery and resize already terminate
-at the session-owned terminal; their product events are read-through
-diagnostics of kernel state. Host HTTP calls that have no runtime process
-context intentionally use the compatibility service; runtime socket calls
-never do.
+queue. Input EOF is a one-shot terminal marker: it releases one blocked fd 0
+read with zero bytes without closing the terminal or poisoning later commands.
+VINTR/VQUIT bytes enter the kernel terminal line discipline, which flushes
+unread input and signals the authoritative foreground group. The compatibility
+frontend recognizes them only to avoid duplicating control bytes into the
+legacy runner pipe. Process-lifecycle compatibility state, journal, and
+host-only structured HTTP adapter remain transitional. Foreground signal
+selection/delivery and resize terminate at the session-owned terminal; their
+product events are read-through diagnostics of kernel state. Host HTTP calls
+that have no runtime process context intentionally use the compatibility
+service; runtime socket calls never do.
 
 Runtime identity, signal selection and delivery, `setsid`, and `setpgid` also
 dispatch through the extracted session. The product process record is now a
@@ -822,16 +826,17 @@ applied to files, terminals, and sockets.
 The syscall contract and language adapters are no longer the main migration
 risk. Product storage is now authoritative TKFS and the workspace owns an
 extracted session over that same object. Product process identity, TKFS, and
-runtime file/pipe/watch/TCP descriptors are now authoritative TraceKernel
-state. The product still has transitional terminal and process-control state,
-journal/resource event attribution, and a host-only structured HTTP service.
+runtime file/pipe/watch/TCP/terminal descriptors are now authoritative
+TraceKernel state. The product still has a legacy stdio feed, shell
+process-control presentation, journal/resource event attribution, and a
+host-only structured HTTP service.
 
 The remaining authority migration must preserve, in order:
 
-1. move input EOF and signal-character recognition onto the session-owned
-   terminal, then remove the temporary legacy input dual feed; metadata,
-   resize, input/output bytes, foreground signal delivery, and fd 0/1/2
-   descriptors are already authoritative;
+1. move every language adapter onto descriptor stdio, then remove the temporary
+   legacy input dual feed and its control-byte suppression; metadata, resize,
+   input/output bytes, one-shot EOF, line discipline, foreground signal
+   delivery, and fd 0/1/2 descriptors are already authoritative;
 2. route shell wait publication and job-control presentation through the
    extracted session without maintaining a second mutable lifecycle or
    topology projection; language wait selection and reaping are already

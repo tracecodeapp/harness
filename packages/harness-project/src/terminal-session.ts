@@ -210,6 +210,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
       signalForeground?: (signal: 'SIGINT' | 'SIGQUIT') => boolean;
       writeTerminalInput?: (data: string) => boolean;
+      endTerminalInput?: () => boolean;
       resizeTerminal?: (columns: number, rows: number) => void;
       jobRecords: () => readonly RuntimeProjectTerminalJobRecord[];
       isVerbose: () => boolean;
@@ -305,6 +306,11 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       (character) => character === '\x03' || character === '\x1c'
     );
     if (signalCharacter) {
+      if (this.activeTerminalSignalDelivered) return false;
+      if (this.options.writeTerminalInput?.(signalCharacter)) {
+        this.activeTerminalSignalDelivered = true;
+        return true;
+      }
       return this.signalForeground(
         signalCharacter === '\x03' ? 'SIGINT' : 'SIGQUIT'
       );
@@ -320,9 +326,12 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   }
 
   endStdin(): boolean {
-    if (!this.activeStdinPipe || !this.activeRun || this.activeStdinEnded) return false;
+    if (!this.activeRun || this.activeStdinEnded) return false;
+    const kernelAccepted = this.options.endTerminalInput?.() === true;
+    const legacyAccepted = this.activeStdinPipe !== null;
+    if (!kernelAccepted && !legacyAccepted) return false;
     this.activeStdinEnded = true;
-    this.activeStdinPipe.close();
+    this.activeStdinPipe?.close();
     this.activeStdinPrompt = '';
     this.setInputState('busy', 'stdin-eof');
     return true;

@@ -4778,11 +4778,40 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const authority = this.traceKernelAuthority;
     const terminal = authority?.session.terminalSnapshots()[0];
     if (!authority || !terminal || terminal.closed) return false;
+    const signalByte = new TextEncoder().encode(data).find(
+      (byte) => byte === 0x03 || byte === 0x1c
+    );
+    if (signalByte !== undefined) {
+      const signal = signalByte === 0x03 ? 'SIGINT' : 'SIGQUIT';
+      const count = authority.session.processSnapshots().filter(
+        (process) =>
+          process.sid === terminal.sessionId &&
+          process.pgid === terminal.foregroundProcessGroupId
+      ).length;
+      this.recordKernelEvent('process-group-signal', undefined, {
+        pgid: terminal.foregroundProcessGroupId,
+        signal,
+        count,
+        authority: 'tracekernel-terminal-line-discipline',
+      });
+    }
     Effect.runFork(
       authority.session.writeTerminalInput(
         terminal.id,
         new TextEncoder().encode(data)
       ).pipe(
+        Effect.catchAll(() => Effect.void)
+      )
+    );
+    return true;
+  }
+
+  private endKernelTerminalInput(): boolean {
+    const authority = this.traceKernelAuthority;
+    const terminal = authority?.session.terminalSnapshots()[0];
+    if (!authority || !terminal || terminal.closed) return false;
+    Effect.runFork(
+      authority.session.sendTerminalInputEof(terminal.id).pipe(
         Effect.catchAll(() => Effect.void)
       )
     );
@@ -9309,6 +9338,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         runCommand: (command, commandOptions) => this.runCommandAs(command, commandOptions, parent),
         signalForeground: (signal) => this.signalTerminalForeground(signal),
         writeTerminalInput: (data) => this.writeKernelTerminalInput(data),
+        endTerminalInput: () => this.endKernelTerminalInput(),
         resizeTerminal: (columns, rows) =>
           this.resizeKernelTerminal(columns, rows),
         jobRecords: () => this.terminalJobRecords(),
