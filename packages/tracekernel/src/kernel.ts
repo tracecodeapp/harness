@@ -1124,6 +1124,36 @@ export class TraceKernelSession {
     );
   }
 
+  closeTerminal(terminalId: string): Effect.Effect<void, Error> {
+    return Effect.gen(this, function* () {
+      const terminal = yield* this.terminalById(terminalId);
+      const terminalSnapshot = terminal.snapshot();
+      if (terminalSnapshot.closed) return;
+
+      const foregroundMembers = [...this.processes.values()].filter(
+        (candidate) => {
+          const snapshot = candidate.snapshot();
+          return snapshot.sid === terminalSnapshot.sessionId &&
+            snapshot.pgid === terminalSnapshot.foregroundProcessGroupId;
+        }
+      );
+      yield* terminal.dispose();
+      this.controllingTerminalsBySession.delete(terminalSnapshot.sessionId);
+      for (const candidate of this.processes.values()) {
+        if (
+          candidate.snapshot().controllingTerminalId === terminal.id
+        ) {
+          candidate.setControllingTerminal(undefined);
+        }
+      }
+      yield* Effect.forEach(
+        foregroundMembers,
+        (member) => member.signal('SIGHUP'),
+        { concurrency: 'unbounded', discard: true }
+      );
+    });
+  }
+
   terminalSnapshots(): readonly TraceKernelTerminalSnapshot[] {
     return [...this.resources.values()]
       .filter(

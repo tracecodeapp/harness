@@ -226,9 +226,37 @@ async function main(): Promise<void> {
         'Terminal interrupt escaped the selected foreground process group.'
       );
 
-      yield* foregroundChild.signal('SIGKILL');
+      yield* session.setTerminalForegroundProcessGroup(
+        shell,
+        0,
+        shell.snapshot().pgid
+      );
+      yield* session.closeTerminal(terminal.id);
+      const [hungUpShell, hungUpForegroundChild] = yield* Effect.all([
+        shell.wait(),
+        foregroundChild.wait(),
+      ], { concurrency: 'unbounded' });
+      assertCondition(
+        hungUpShell.termination?.kind === 'signal' &&
+          hungUpShell.termination.signal === 'SIGHUP' &&
+          hungUpShell.termination.exitCode === 129 &&
+          hungUpForegroundChild.termination?.kind === 'signal' &&
+          hungUpForegroundChild.termination.signal === 'SIGHUP' &&
+          hungUpForegroundChild.termination.exitCode === 129,
+        `Terminal hangup did not signal its foreground process group: ${JSON.stringify({
+          shell: hungUpShell.termination,
+          child: hungUpForegroundChild.termination,
+        })}`
+      );
+      assertCondition(
+        terminal.snapshot().closed &&
+          shell.snapshot().controllingTerminalId === undefined &&
+          foregroundChild.snapshot().controllingTerminalId === undefined &&
+          detached.snapshot().phase === 'running',
+        'Terminal hangup did not detach the controlling session without escaping it.'
+      );
+
       yield* detached.signal('SIGKILL');
-      yield* shell.signal('SIGKILL');
     })
   ));
 
@@ -241,6 +269,7 @@ async function main(): Promise<void> {
     foregroundGroupTransfer: true,
     newSessionDetachment: true,
     foregroundSignalDelivery: true,
+    hangupSignalsForegroundGroup: true,
     terminalSyscallContract: true,
   }, null, 2));
 }
