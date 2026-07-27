@@ -447,6 +447,12 @@ cannot detach its surviving group peers. Product-level wait publication and
 shell job-control presentation remain until the terminal/lifecycle cutovers
 can remove the projection entirely.
 
+Runtime watchdog arm, status, pet, disarm, and expiry are process-owned kernel
+operations as well. The deadline fiber is scoped to the session, is cleared by
+process completion and teardown, and delivers its configured signal through
+the same authoritative process signal path. Product shell diagnostics retain
+a compatibility presentation but no runtime watchdog timer.
+
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
 | Runtime API surface | 0.13 syscall |

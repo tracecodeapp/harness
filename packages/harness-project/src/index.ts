@@ -1647,6 +1647,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'kill':
       case 'setsid':
       case 'setpgid':
+      case 'watchdog':
         return this.dispatchExtractedTraceKernelSyscall(request, context).then(
           (result) => {
             if (
@@ -1714,29 +1715,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             request.options
           );
           return { ok: true, value: { op: 'watch', fd } };
-        }
-        case 'watchdog': {
-          const process = this.runtimeSyscallProcess(context);
-          const watchdog = this.configureRuntimeProcessWatchdog(
-            process,
-            request.action,
-            request.timeoutMs,
-            request.signal
-          );
-          return {
-            ok: true,
-            value: {
-              op: 'watchdog',
-              armed: watchdog !== undefined,
-              ...(watchdog
-                ? {
-                    timeoutMs: watchdog.timeoutMs,
-                    signal: watchdog.signal,
-                    deadlineAt: watchdog.deadlineAt,
-                  }
-                : {}),
-            },
-          };
         }
         case 'pipe': {
           const process = this.runtimeSyscallProcess(context);

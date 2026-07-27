@@ -287,6 +287,60 @@ async function main(): Promise<void> {
       };
     }
 
+    const armedWatchdog = await dispatch(kernel, {
+      op: 'watchdog',
+      action: 'arm',
+      timeoutMs: 5_000,
+      signal: 'SIGKILL',
+    });
+    const watchdogStatus = await dispatch(kernel, {
+      op: 'watchdog',
+      action: 'status',
+    });
+    const pettedWatchdog = await dispatch(kernel, {
+      op: 'watchdog',
+      action: 'pet',
+    });
+    const disarmedWatchdog = await dispatch(kernel, {
+      op: 'watchdog',
+      action: 'disarm',
+    });
+    const disarmedStatus = await dispatch(kernel, {
+      op: 'watchdog',
+      action: 'status',
+    });
+    assertCondition(
+      armedWatchdog.ok &&
+        armedWatchdog.value.op === 'watchdog' &&
+        armedWatchdog.value.armed &&
+        armedWatchdog.value.timeoutMs === 5_000 &&
+        armedWatchdog.value.signal === 'SIGKILL' &&
+        watchdogStatus.ok &&
+        watchdogStatus.value.op === 'watchdog' &&
+        watchdogStatus.value.armed &&
+        pettedWatchdog.ok &&
+        pettedWatchdog.value.op === 'watchdog' &&
+        pettedWatchdog.value.armed &&
+        (pettedWatchdog.value.deadlineAt ?? 0) >=
+          (watchdogStatus.value.deadlineAt ?? 0) &&
+        disarmedWatchdog.ok &&
+        disarmedWatchdog.value.op === 'watchdog' &&
+        !disarmedWatchdog.value.armed &&
+        disarmedStatus.ok &&
+        disarmedStatus.value.op === 'watchdog' &&
+        !disarmedStatus.value.armed &&
+        authoritativeSession?.processSnapshots().find(
+          (process) => process.pid === request.process?.pid
+        )?.watchdog === undefined,
+      `runtime watchdog state was not owned by its kernel process: ${JSON.stringify({
+        armedWatchdog,
+        watchdogStatus,
+        pettedWatchdog,
+        disarmedWatchdog,
+        disarmedStatus,
+      })}`
+    );
+
     const pipe = await dispatch(kernel, {
       op: 'pipe',
       options: { capacityChunks: 2 },
@@ -639,6 +693,7 @@ async function main(): Promise<void> {
     kernelOwnedDescriptors: true,
     kernelOwnedProcessControls: true,
     kernelOwnedTerminalDescriptors: true,
+    kernelOwnedWatchdogs: true,
     distinctRuntimeProcessIdentity: true,
     processOwnedPipeInheritance: true,
     sharedFilesystemAcrossParentAndChild: true,
