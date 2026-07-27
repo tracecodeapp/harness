@@ -1026,14 +1026,13 @@ export class TraceKernelSession {
   isTerminal(
     process: TraceKernelProcess,
     fd: number
-  ): Effect.Effect<boolean, TraceKernelProcessStateError> {
+  ): Effect.Effect<
+    boolean,
+    TraceKernelProcessStateError | TraceKernelBadFileDescriptorError
+  > {
     return this.assertOwnedProcess(process).pipe(
       Effect.andThen(process.descriptors.lookup(fd)),
-      Effect.match({
-        onFailure: () => false,
-        onSuccess: (descriptor) =>
-          descriptor.resource instanceof TraceKernelTerminal,
-      })
+      Effect.map((descriptor) => descriptor.resource instanceof TraceKernelTerminal)
     );
   }
 

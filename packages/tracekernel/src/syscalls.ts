@@ -11,6 +11,7 @@ import {
   TraceKernelProcessLimitError,
   TraceKernelProcessPermissionError,
   TraceKernelProcessStateError,
+  TraceKernelTerminalError,
   TraceKernelWouldBlockError,
 } from './errors';
 import type { TraceKernelProcess, TraceKernelSession } from './kernel';
@@ -100,6 +101,13 @@ export type TraceKernelSyscallRequest =
   | {
       readonly op: 'setpgid';
       readonly pid: number;
+      readonly pgid: number;
+    }
+  | { readonly op: 'isatty'; readonly fd: number }
+  | { readonly op: 'tcgetpgrp'; readonly fd: number }
+  | {
+      readonly op: 'tcsetpgrp';
+      readonly fd: number;
       readonly pgid: number;
     }
   | {
@@ -305,6 +313,9 @@ export type TraceKernelSyscallValue =
   | { readonly op: 'kill' }
   | { readonly op: 'setsid'; readonly sid: number; readonly pgid: number }
   | { readonly op: 'setpgid'; readonly pgid: number }
+  | { readonly op: 'isatty'; readonly isTerminal: boolean }
+  | { readonly op: 'tcgetpgrp'; readonly pgid: number }
+  | { readonly op: 'tcsetpgrp'; readonly pgid: number }
   | { readonly op: 'socket'; readonly fd: number }
   | { readonly op: 'bind'; readonly address: TraceKernelTcpAddress }
   | { readonly op: 'listen' }
@@ -397,6 +408,7 @@ export type TraceKernelSyscallErrorCode =
   | 'ENOTDIR'
   | 'ENOTCONN'
   | 'ENOTEMPTY'
+  | 'ENOTTY'
   | 'EPERM'
   | 'EPIPE'
   | 'EPROTO'
@@ -437,6 +449,9 @@ function syscallWireError(error: unknown): TraceKernelSyscallWireError {
   }
   if (error instanceof TraceKernelWouldBlockError) {
     return Object.freeze({ code: 'EAGAIN', message: error.message });
+  }
+  if (error instanceof TraceKernelTerminalError) {
+    return Object.freeze({ code: error.code, message: error.message });
   }
   if (error instanceof TraceKernelChildProcessError) {
     return Object.freeze({ code: 'ECHILD', message: error.message });
@@ -611,6 +626,28 @@ export class TraceKernelSyscallDispatcher {
           request.pgid
         ).pipe(
           Effect.map((pgid) => ({ op: 'setpgid' as const, pgid }))
+        );
+      case 'isatty':
+        return this.session.isTerminal(this.process, request.fd).pipe(
+          Effect.map((isTerminal) => ({
+            op: 'isatty' as const,
+            isTerminal,
+          }))
+        );
+      case 'tcgetpgrp':
+        return this.session.terminalForegroundProcessGroup(
+          this.process,
+          request.fd
+        ).pipe(
+          Effect.map((pgid) => ({ op: 'tcgetpgrp' as const, pgid }))
+        );
+      case 'tcsetpgrp':
+        return this.session.setTerminalForegroundProcessGroup(
+          this.process,
+          request.fd,
+          request.pgid
+        ).pipe(
+          Effect.map((pgid) => ({ op: 'tcsetpgrp' as const, pgid }))
         );
       case 'socket':
         return this.session.createTcpSocket(this.process).pipe(

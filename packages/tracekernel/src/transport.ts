@@ -58,6 +58,9 @@ const OP_CODES = {
   poll: 42,
   getsockopt: 43,
   identity: 44,
+  isatty: 45,
+  tcgetpgrp: 46,
+  tcsetpgrp: 47,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -97,6 +100,7 @@ const SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'ENOTDIR',
   'ENOTCONN',
   'ENOTEMPTY',
+  'ENOTTY',
   'EPERM',
   'EPIPE',
   'EPROTO',
@@ -444,6 +448,14 @@ export function encodeTraceKernelSyscallRequest(
       break;
     case 'setpgid':
       writer.i32(request.pid);
+      writer.i32(request.pgid);
+      break;
+    case 'isatty':
+    case 'tcgetpgrp':
+      writer.i32(request.fd);
+      break;
+    case 'tcsetpgrp':
+      writer.i32(request.fd);
       writer.i32(request.pgid);
       break;
     case 'socket':
@@ -844,6 +856,13 @@ export function decodeTraceKernelSyscallRequest(
       break;
     case 'setpgid':
       request = { op: 'setpgid', pid: reader.i32(), pgid: reader.i32() };
+      break;
+    case 'isatty':
+    case 'tcgetpgrp':
+      request = { op: operation, fd: reader.i32() };
+      break;
+    case 'tcsetpgrp':
+      request = { op: 'tcsetpgrp', fd: reader.i32(), pgid: reader.i32() };
       break;
     case 'identity': {
       const hasPid = reader.u8();
@@ -1282,6 +1301,13 @@ export function encodeTraceKernelSyscallResult(
     case 'setpgid':
       writer.i32(value.pgid);
       break;
+    case 'isatty':
+      writer.u8(value.isTerminal ? 1 : 0);
+      break;
+    case 'tcgetpgrp':
+    case 'tcsetpgrp':
+      writer.i32(value.pgid);
+      break;
     case 'bind':
       writeAddress(writer, value.address);
       break;
@@ -1577,6 +1603,21 @@ export function decodeTraceKernelSyscallResult(
       break;
     case 'setpgid':
       value = { op: 'setpgid', pgid: reader.i32() };
+      break;
+    case 'isatty': {
+      const isTerminal = reader.u8();
+      if (isTerminal > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid isatty result ${isTerminal}`
+        );
+      }
+      value = { op: 'isatty', isTerminal: isTerminal === 1 };
+      break;
+    }
+    case 'tcgetpgrp':
+    case 'tcsetpgrp':
+      value = { op: operation, pgid: reader.i32() };
       break;
     case 'identity':
       value = {
@@ -2078,6 +2119,27 @@ export class TraceKernelRuntimeFileClient {
       this.transport.dispatchSync({ op: 'identity' }),
       'identity'
     );
+  }
+
+  isatty(fd: number): boolean {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: 'isatty', fd }),
+      'isatty'
+    ).isTerminal;
+  }
+
+  tcgetpgrp(fd: number): number {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: 'tcgetpgrp', fd }),
+      'tcgetpgrp'
+    ).pgid;
+  }
+
+  tcsetpgrp(fd: number, pgid: number): number {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: 'tcsetpgrp', fd, pgid }),
+      'tcsetpgrp'
+    ).pgid;
   }
 
   socket(): number {

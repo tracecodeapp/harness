@@ -6,6 +6,7 @@ import * as Exit from 'effect/Exit';
 import * as Option from 'effect/Option';
 import {
   makeTraceKernelHost,
+  TraceKernelSyscallDispatcher,
   TraceKernelTerminalError,
   type TraceKernelRuntimeProvider,
 } from '@tracecode/tracekernel';
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
         rows: 40,
       });
       yield* session.attachTerminalStdio(shell, terminal.id);
+      const shellSyscalls = new TraceKernelSyscallDispatcher(session, shell);
 
       assertCondition(
         shell.snapshot().controllingTerminalId === terminal.id,
@@ -84,6 +86,47 @@ async function main(): Promise<void> {
           shell.snapshot().pgid,
         'A new terminal did not foreground its acquiring process group.'
       );
+      const ttyResult = yield* shellSyscalls.dispatch({ op: 'isatty', fd: 0 });
+      const foregroundResult = yield* shellSyscalls.dispatch({
+        op: 'tcgetpgrp',
+        fd: 0,
+      });
+      assertCondition(
+        ttyResult.ok &&
+          ttyResult.value.op === 'isatty' &&
+          ttyResult.value.isTerminal &&
+          foregroundResult.ok &&
+          foregroundResult.value.op === 'tcgetpgrp' &&
+          foregroundResult.value.pgid === shell.snapshot().pgid,
+        `Terminal inspection syscalls did not use kernel state: ${JSON.stringify({
+          ttyResult,
+          foregroundResult,
+        })}`
+      );
+      const ordinaryFd = yield* session.openFile(shell, 'ordinary.txt', {
+        access: 'write',
+        create: true,
+      });
+      const ordinaryTty = yield* shellSyscalls.dispatch({
+        op: 'isatty',
+        fd: ordinaryFd,
+      });
+      const ordinaryForeground = yield* shellSyscalls.dispatch({
+        op: 'tcgetpgrp',
+        fd: ordinaryFd,
+      });
+      assertCondition(
+        ordinaryTty.ok &&
+          ordinaryTty.value.op === 'isatty' &&
+          !ordinaryTty.value.isTerminal &&
+          !ordinaryForeground.ok &&
+          ordinaryForeground.error.code === 'ENOTTY',
+        `Non-terminal descriptors returned the wrong tty contract: ${JSON.stringify({
+          ordinaryTty,
+          ordinaryForeground,
+        })}`
+      );
+      yield* shell.close(ordinaryFd);
 
       const foregroundChild = yield* session.spawnChild(shell, {
         runtime: 'terminal-test',
@@ -121,10 +164,16 @@ async function main(): Promise<void> {
         'EIO'
       );
 
-      yield* session.setTerminalForegroundProcessGroup(
-        shell,
-        0,
-        backgroundChild.snapshot().pgid
+      const foregroundTransfer = yield* shellSyscalls.dispatch({
+        op: 'tcsetpgrp',
+        fd: 0,
+        pgid: backgroundChild.snapshot().pgid,
+      });
+      assertCondition(
+        foregroundTransfer.ok &&
+          foregroundTransfer.value.op === 'tcsetpgrp' &&
+          foregroundTransfer.value.pgid === backgroundChild.snapshot().pgid,
+        `tcsetpgrp did not transfer terminal ownership: ${JSON.stringify(foregroundTransfer)}`
       );
       assertCondition(
         decoder.decode(yield* backgroundChild.read(0, 64)) === 'foreground-only',
@@ -192,6 +241,7 @@ async function main(): Promise<void> {
     foregroundGroupTransfer: true,
     newSessionDetachment: true,
     foregroundSignalDelivery: true,
+    terminalSyscallContract: true,
   }, null, 2));
 }
 
