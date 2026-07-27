@@ -1051,6 +1051,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly bashOptions: BashOptions;
   private readonly baseEnv: Record<string, string>;
   private readonly traceKernelFileSystem: TraceKernelFileSystem;
+  private readonly traceKernelBackingFileSystem: TraceKernelBackingFileSystem;
+  private readonly stopObservingExternalTraceKernelMutations: RuntimeWorkspaceUnsubscribe;
   private traceKernelAuthority?: RuntimeTraceKernelAuthority;
   private readonly fs: KernelObservedFileSystem;
   private readonly kernelDescriptors: RuntimeKernelDescriptorManager;
@@ -1140,8 +1142,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         maxEntries: storageLimits.maxEntryCount,
       },
     }));
+    this.traceKernelBackingFileSystem = new TraceKernelBackingFileSystem(
+      this.traceKernelFileSystem
+    );
     this.fs = new KernelObservedFileSystem(
-      new TraceKernelBackingFileSystem(this.traceKernelFileSystem),
+      this.traceKernelBackingFileSystem,
       this.fsLocks,
       () => this.cwd,
       () => this.kernelInfo.workspaceAlias,
@@ -1159,6 +1164,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       (context, device, data) => this.writeDevice(device, data, context),
       storageLimits
     );
+    this.stopObservingExternalTraceKernelMutations =
+      this.traceKernelBackingFileSystem.watchExternalMutations((mutation) => {
+        this.fs.observeExternalTraceKernelMutation(mutation);
+      });
     this.kernelDescriptors = new RuntimeKernelDescriptorManager(this.fs);
     this.kernelNetwork = new RuntimeKernelNetworkManager(this.kernelDescriptors);
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
@@ -9244,6 +9253,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.kernelSyscallGenerationUnsubscribe = undefined;
     await this.kernelDescriptors.dispose();
     await this.kernelNetwork.dispose();
+    this.stopObservingExternalTraceKernelMutations();
+    this.traceKernelBackingFileSystem.dispose();
     this.clearAllRuntimeProcessWatchdogs();
     this.processTable.clear();
     this.zombieProcessTable.clear();
@@ -9571,6 +9582,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.eventWatchers.clear();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
+    this.stopObservingExternalTraceKernelMutations();
+    this.traceKernelBackingFileSystem.dispose();
     this.clearAllRuntimeProcessWatchdogs();
     const authority = this.traceKernelAuthority;
     this.traceKernelAuthority = undefined;

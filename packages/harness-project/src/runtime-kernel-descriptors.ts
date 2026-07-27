@@ -80,6 +80,7 @@ export class RuntimeKernelDescriptorManager {
       Effect.runSync(this.watchRegistry.publish({
         generation: mutation.generation,
         eventType: mutation.kind === 'file-write' ? 'change' : 'rename',
+        operation: mutation.kind === 'file-write' ? 'write' : 'rename',
         paths: mutation.paths,
       }));
     });

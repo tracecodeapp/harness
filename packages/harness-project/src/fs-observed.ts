@@ -97,6 +97,7 @@ import type {
   RuntimeCommandOptions,
   RuntimeProjectLiveIoController,
 } from '@tracecode/harness-core';
+import type { TraceKernelFileSystemMutation } from '@tracecode/tracekernel';
 import type {
   CppProjectCommandRunner,
   CSharpProjectCommandRunner,
@@ -1160,6 +1161,7 @@ class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
   private totalWorkspaceBytes = 0;
   private totalWorkspaceEntries = 0;
   private initialized = false;
+  private invalidationEpoch = 0;
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -1175,30 +1177,41 @@ class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
       release = resolve;
     });
     await previous;
+    let initializedEpoch = this.invalidationEpoch;
     try {
       await this.ensureInitialized();
+      initializedEpoch = this.invalidationEpoch;
       return await fn();
     } finally {
+      if (initializedEpoch !== this.invalidationEpoch) {
+        this.initialized = false;
+      }
       release();
     }
   }
 
   private async ensureInitialized(): Promise<void> {
-    if (this.initialized) return;
-    await this.rebuildLedger();
-    this.initialized = true;
+    while (!this.initialized) {
+      const epoch = this.invalidationEpoch;
+      await this.rebuildLedger();
+      if (epoch === this.invalidationEpoch) this.initialized = true;
+    }
+  }
+
+  invalidateLedger(): void {
+    this.invalidationEpoch += 1;
+    this.initialized = false;
   }
 
   async storageUsage(): Promise<RuntimeWorkspaceStorageUsage> {
-    await this.ensureInitialized();
-    return {
+    return this.withMutationLock(async () => ({
       usedBytes: this.totalWorkspaceBytes,
       capacityBytes: this.limits.maxWorkspaceBytes,
       availableBytes: Math.max(0, this.limits.maxWorkspaceBytes - this.totalWorkspaceBytes),
       usedEntries: this.totalWorkspaceEntries,
       capacityEntries: this.limits.maxEntryCount,
       availableEntries: Math.max(0, this.limits.maxEntryCount - this.totalWorkspaceEntries),
-    };
+    }));
   }
 
   private async rebuildLedger(): Promise<void> {
@@ -1755,6 +1768,72 @@ export class KernelObservedFileSystem implements IFileSystem {
     return () => {
       this.beforeMutationObservers.delete(listener);
     };
+  }
+
+  /**
+   * Reconcile a mutation committed directly through the extracted TKFS
+   * session. The commit is already authoritative, so this path updates
+   * derived generations and accounting without running pre-mutation hooks or
+   * fabricating a host command actor.
+   */
+  observeExternalTraceKernelMutation(
+    mutation: TraceKernelFileSystemMutation
+  ): void {
+    this.quotaFileSystem.invalidateLedger();
+    const paths = mutation.paths.map((path) =>
+      normalizeFsLockPath(this.mapPath(path))
+    );
+    const kind = this.externalMutationKind(mutation);
+
+    if (mutation.operation === 'clear') {
+      this.inodes.clear();
+    } else if (mutation.operation === 'rename') {
+      const [source, destination] = paths;
+      if (source && destination) {
+        const movedPaths = [...this.inodes.keys()].filter(
+          (path) => path === source || path.startsWith(`${source}/`)
+        );
+        for (const path of [...this.inodes.keys()]) {
+          if (path === destination || path.startsWith(`${destination}/`)) {
+            this.inodes.delete(path);
+          }
+        }
+        this.moveInodeSubtree(source, destination, movedPaths);
+      }
+    } else if (
+      mutation.operation === 'unlink' ||
+      mutation.operation === 'rmdir'
+    ) {
+      for (const path of [...this.inodes.keys()]) {
+        if (paths.some((root) => path === root || path.startsWith(`${root}/`))) {
+          this.inodes.delete(path);
+        }
+      }
+    }
+
+    this.recordMutation(undefined, paths, kind);
+  }
+
+  private externalMutationKind(
+    mutation: TraceKernelFileSystemMutation
+  ): RuntimeFileSystemMutationKind {
+    switch (mutation.operation) {
+      case 'mkdir':
+        return 'directory-create';
+      case 'rmdir':
+      case 'unlink':
+        return 'delete';
+      case 'rename':
+        return 'rename';
+      case 'clear':
+        return 'recursive-delete';
+      case 'link':
+      case 'symlink':
+      case 'open-create':
+        return 'file-create';
+      default:
+        return 'file-write';
+    }
   }
 
   inodeForPath(path: string): number {

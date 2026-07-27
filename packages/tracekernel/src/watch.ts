@@ -22,10 +22,38 @@ export interface TraceKernelWatchOptions {
   readonly capacityEvents?: number;
 }
 
+export type TraceKernelFileSystemMutationOperation =
+  | 'chmod'
+  | 'utimes'
+  | 'mkdir'
+  | 'rmdir'
+  | 'write'
+  | 'link'
+  | 'symlink'
+  | 'unlink'
+  | 'rename'
+  | 'open-create'
+  | 'open-truncate'
+  | 'truncate'
+  | 'clear';
+
+/**
+ * Optional in-process attribution for a committed TKFS mutation.
+ *
+ * Identity is intentionally opaque. It lets host adapters distinguish their
+ * own writes from process syscalls without relying on async timing or exposing
+ * authority-bearing data to runtimes.
+ */
+export interface TraceKernelFileSystemMutationContext {
+  readonly origin?: object;
+}
+
 export interface TraceKernelFileSystemMutation {
   readonly generation: number;
   readonly eventType: Exclude<TraceKernelWatchEventType, 'overflow'>;
+  readonly operation: TraceKernelFileSystemMutationOperation;
   readonly paths: readonly string[];
+  readonly origin?: object;
 }
 
 const WATCH_FRAME_MAGIC = Uint8Array.from([0x54, 0x4b, 0x57, 0x31]);

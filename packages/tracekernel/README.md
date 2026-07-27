@@ -13,6 +13,11 @@ The session-owned virtual filesystem is called **TKFS** internally and
 not a persistent disk format: storage and persistence backends remain separate
 concerns.
 
+Filesystem quota enforcement and mutation publication linearize with each TKFS
+commit. Mutation records include the semantic operation plus optional opaque
+host-side origin identity so product adapters can reconcile process writes
+without timing heuristics or duplicate observation.
+
 Runtime-facing syscall contracts are ordinary data. The package includes a
 bounded binary SharedArrayBuffer transport for synchronous APIs in dedicated
 browser workers, but runtime adapters depend on a transport-neutral interface.

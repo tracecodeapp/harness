@@ -2,6 +2,7 @@ import * as Effect from 'effect/Effect';
 import * as Either from 'effect/Either';
 import {
   TraceKernelFileSystem,
+  type TraceKernelFileSystemMutation,
   type TraceKernelStat,
 } from '@tracecode/tracekernel';
 import type {
@@ -124,7 +125,38 @@ async function runKernelEffect<Value, Failure>(
  * linearizes in the supplied TKFS.
  */
 export class TraceKernelBackingFileSystem implements IFileSystem {
-  constructor(readonly traceKernelFileSystem: TraceKernelFileSystem) {}
+  private readonly mutationOrigin = Object.freeze({});
+  private readonly externalMutationWatchers =
+    new Set<(mutation: TraceKernelFileSystemMutation) => void>();
+  private readonly stopWatchingMutations: () => void;
+
+  constructor(readonly traceKernelFileSystem: TraceKernelFileSystem) {
+    this.stopWatchingMutations = traceKernelFileSystem.watchMutations((mutation) => {
+      if (mutation.origin === this.mutationOrigin) return;
+      for (const watcher of this.externalMutationWatchers) {
+        try {
+          watcher(mutation);
+        } catch {
+          // External observation is a cache/durability hook. The TKFS commit is
+          // already authoritative and cannot be rolled back here.
+        }
+      }
+    });
+  }
+
+  watchExternalMutations(
+    listener: (mutation: TraceKernelFileSystemMutation) => void
+  ): () => void {
+    this.externalMutationWatchers.add(listener);
+    return () => {
+      this.externalMutationWatchers.delete(listener);
+    };
+  }
+
+  dispose(): void {
+    this.stopWatchingMutations();
+    this.externalMutationWatchers.clear();
+  }
 
   async readFile(path: string, options?: ReadOptions): Promise<string> {
     const bytes = await this.readFileBuffer(path);
@@ -148,7 +180,12 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     await this.ensureParentDirectory(path);
     await this.removeFinalSymlink(path);
     await runKernelEffect(
-      this.traceKernelFileSystem.writeFile(path, contentBytes(content, options), '/')
+      this.traceKernelFileSystem.writeFile(
+        path,
+        contentBytes(content, options),
+        '/',
+        { origin: this.mutationOrigin }
+      )
     );
   }
 
@@ -159,13 +196,24 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   ): Promise<void> {
     await this.ensureParentDirectory(path);
     await this.removeFinalSymlink(path);
-    const file = await runKernelEffect(this.traceKernelFileSystem.prepareOpen(path, '/', {
-      access: 'write',
-      create: true,
-      append: true,
-    }));
+    const file = await runKernelEffect(this.traceKernelFileSystem.prepareOpen(
+      path,
+      '/',
+      {
+        access: 'write',
+        create: true,
+        append: true,
+      },
+      { origin: this.mutationOrigin }
+    ));
     await runKernelEffect(
-      this.traceKernelFileSystem.writeAt(file, 0, contentBytes(content, options), true)
+      this.traceKernelFileSystem.writeAt(
+        file,
+        0,
+        contentBytes(content, options),
+        true,
+        { origin: this.mutationOrigin }
+      )
     );
   }
 
@@ -188,7 +236,11 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   }
 
   async mkdir(path: string, options?: MkdirOptions): Promise<void> {
-    await runKernelEffect(this.traceKernelFileSystem.mkdir(path, options, '/'));
+    await runKernelEffect(
+      this.traceKernelFileSystem.mkdir(path, options, '/', {
+        origin: this.mutationOrigin,
+      })
+    );
   }
 
   async readdir(path: string): Promise<string[]> {
@@ -215,7 +267,11 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
       throw error;
     }
     if (!stat.isDirectory) {
-      await runKernelEffect(this.traceKernelFileSystem.unlink(path, '/'));
+      await runKernelEffect(
+        this.traceKernelFileSystem.unlink(path, '/', {
+          origin: this.mutationOrigin,
+        })
+      );
       return;
     }
     if (options.recursive) {
@@ -223,7 +279,11 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
         await this.rm(this.resolvePath(path, entry), { recursive: true, force: false });
       }
     }
-    await runKernelEffect(this.traceKernelFileSystem.rmdir(path, '/'));
+    await runKernelEffect(
+      this.traceKernelFileSystem.rmdir(path, '/', {
+        origin: this.mutationOrigin,
+      })
+    );
   }
 
   async cp(src: string, dest: string, options: CpOptions = {}): Promise<void> {
@@ -256,7 +316,11 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
 
   async mv(src: string, dest: string): Promise<void> {
     await this.ensureParentDirectory(dest);
-    await runKernelEffect(this.traceKernelFileSystem.rename(src, dest, '/'));
+    await runKernelEffect(
+      this.traceKernelFileSystem.rename(src, dest, '/', {
+        origin: this.mutationOrigin,
+      })
+    );
   }
 
   resolvePath(base: string, path: string): string {
@@ -268,15 +332,27 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   }
 
   async chmod(path: string, mode: number): Promise<void> {
-    await runKernelEffect(this.traceKernelFileSystem.chmod(path, mode, '/'));
+    await runKernelEffect(
+      this.traceKernelFileSystem.chmod(path, mode, '/', {
+        origin: this.mutationOrigin,
+      })
+    );
   }
 
   async symlink(target: string, linkPath: string): Promise<void> {
-    await runKernelEffect(this.traceKernelFileSystem.symlink(target, linkPath, '/'));
+    await runKernelEffect(
+      this.traceKernelFileSystem.symlink(target, linkPath, '/', {
+        origin: this.mutationOrigin,
+      })
+    );
   }
 
   async link(existingPath: string, newPath: string): Promise<void> {
-    await runKernelEffect(this.traceKernelFileSystem.link(existingPath, newPath, '/'));
+    await runKernelEffect(
+      this.traceKernelFileSystem.link(existingPath, newPath, '/', {
+        origin: this.mutationOrigin,
+      })
+    );
   }
 
   async readlink(path: string): Promise<string> {
@@ -289,7 +365,9 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
 
   async utimes(path: string, _atime: Date, mtime: Date): Promise<void> {
     await runKernelEffect(
-      this.traceKernelFileSystem.utimes(path, mtime.getTime(), '/')
+      this.traceKernelFileSystem.utimes(path, mtime.getTime(), '/', {
+        origin: this.mutationOrigin,
+      })
     );
   }
 
@@ -308,7 +386,11 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   private async removeFinalSymlink(path: string): Promise<void> {
     try {
       if ((await this.lstat(path)).isSymbolicLink) {
-        await runKernelEffect(this.traceKernelFileSystem.unlink(path, '/'));
+        await runKernelEffect(
+          this.traceKernelFileSystem.unlink(path, '/', {
+            origin: this.mutationOrigin,
+          })
+        );
       }
     } catch (error) {
       if (!missingPathError(error)) throw error;

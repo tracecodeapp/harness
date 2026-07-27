@@ -14,6 +14,16 @@ const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 async function main(): Promise<void> {
   const tkfs = await Effect.runPromise(TraceKernelFileSystem.make());
   const fs = new TraceKernelBackingFileSystem(tkfs);
+  const externalMutations: Array<{
+    operation: string;
+    paths: readonly string[];
+  }> = [];
+  const stopWatchingExternalMutations = fs.watchExternalMutations((mutation) => {
+    externalMutations.push({
+      operation: mutation.operation,
+      paths: mutation.paths,
+    });
+  });
 
   await fs.mkdir('/workspace/tree/nested', { recursive: true });
   await fs.writeFile('/workspace/tree/nested/data.txt', '68656c6c6f', 'hex');
@@ -29,6 +39,12 @@ async function main(): Promise<void> {
   assertCondition(
     await fs.readFile('/workspace/from-kernel.txt') === 'kernel',
     'A direct TKFS write was not immediately visible through the shell adapter.'
+  );
+  assertCondition(
+    externalMutations.length === 1 &&
+      externalMutations[0]?.operation === 'write' &&
+      externalMutations[0]?.paths.includes('/workspace/from-kernel.txt') === true,
+    'The shell adapter did not distinguish a direct kernel mutation from its own writes.'
   );
   await fs.writeFile('/workspace/from-shell.txt', 'shell');
   assertCondition(
@@ -80,10 +96,46 @@ async function main(): Promise<void> {
     fs.getAllPaths().includes('/workspace/tree/nested/alias.txt'),
     'Shell namespace enumeration did not use TKFS.'
   );
+  assertCondition(
+    externalMutations.length === 1,
+    'Host adapter mutations were incorrectly reported as external kernel commits.'
+  );
+  stopWatchingExternalMutations();
+  fs.dispose();
 
   const workspace = await createRuntimeWorkspace({
     files: [{ path: 'src/main.txt', contents: 'workspace authority\n' }],
   });
+  const cachedWorkspaceSnapshot = await workspace.snapshot();
+  const workspaceTkfs = (
+    workspace as unknown as {
+      traceKernelFileSystem: TraceKernelFileSystem;
+    }
+  ).traceKernelFileSystem;
+  await Effect.runPromise(
+    workspaceTkfs.writeFile(
+      '/workspace/src/process.txt',
+      new TextEncoder().encode('direct'),
+      '/'
+    )
+  );
+  const externallyMutatedSnapshot = await workspace.snapshot();
+  assertCondition(
+    externallyMutatedSnapshot.files.some(
+      (file) => file.path === 'src/process.txt' && file.contents === 'direct'
+    ),
+    'A direct TKFS commit did not invalidate the product snapshot cache.'
+  );
+  if (!cachedWorkspaceSnapshot.storage || !externallyMutatedSnapshot.storage) {
+    throw new Error('Product snapshots did not expose storage accounting.');
+  }
+  assertCondition(
+    externallyMutatedSnapshot.storage.usedBytes ===
+      cachedWorkspaceSnapshot.storage.usedBytes + 6 &&
+      externallyMutatedSnapshot.storage.usedEntries ===
+        cachedWorkspaceSnapshot.storage.usedEntries + 1,
+    'A direct TKFS commit did not invalidate product storage accounting.'
+  );
   await workspace.runCommand('ln src/main.txt src/alias.txt');
   const workspaceImage = await workspace.exportTraceKernelFileSystemImage();
   const checkpoint = await Effect.runPromise(
@@ -111,6 +163,8 @@ async function main(): Promise<void> {
     hardLinks: true,
     symlinks: true,
     metadata: true,
+    mutationOrigins: true,
+    externalMutationReconciliation: true,
     productWorkspaceCheckpoint: true,
   }, null, 2));
 }

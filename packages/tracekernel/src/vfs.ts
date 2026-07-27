@@ -1,6 +1,10 @@
 import * as Effect from 'effect/Effect';
 import type { TraceKernelDescriptor } from './descriptors';
-import type { TraceKernelFileSystemMutation } from './watch';
+import type {
+  TraceKernelFileSystemMutation,
+  TraceKernelFileSystemMutationContext,
+  TraceKernelFileSystemMutationOperation,
+} from './watch';
 import {
   TraceKernelFileSystemError,
   type TraceKernelFileSystemErrorCode,
@@ -400,7 +404,8 @@ export class TraceKernelFileSystem {
   chmod(
     path: string,
     mode: number,
-    cwd = '/workspace'
+    cwd = '/workspace',
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     if (!Number.isSafeInteger(mode) || mode < 0) {
       return this.fail('EINVAL', path, 'invalid file mode');
@@ -417,7 +422,7 @@ export class TraceKernelFileSystem {
           node.mode = normalizedMode;
           const generation = this.beginMutation();
           this.touchNode(node, generation, Date.now(), false);
-          this.notifyMutation(generation, 'change', this.pathsForNode(node));
+          this.notifyMutation(generation, 'change', 'chmod', this.pathsForNode(node), mutationContext);
           return Effect.void;
         })
       ))
@@ -427,7 +432,8 @@ export class TraceKernelFileSystem {
   utimes(
     path: string,
     modifiedAt: number,
-    cwd = '/workspace'
+    cwd = '/workspace',
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     if (!Number.isFinite(modifiedAt) || modifiedAt < 0) {
       return this.fail('EINVAL', path, 'invalid modification timestamp');
@@ -443,7 +449,7 @@ export class TraceKernelFileSystem {
           node.generation = generation;
           node.modifiedAt = modifiedAt;
           node.changedAt = Date.now();
-          this.notifyMutation(generation, 'change', this.pathsForNode(node));
+          this.notifyMutation(generation, 'change', 'utimes', this.pathsForNode(node), mutationContext);
           return Effect.void;
         })
       ))
@@ -453,7 +459,8 @@ export class TraceKernelFileSystem {
   mkdir(
     path: string,
     options: TraceKernelMkdirOptions = {},
-    cwd = '/workspace'
+    cwd = '/workspace',
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
@@ -493,14 +500,18 @@ export class TraceKernelFileSystem {
             ));
           }
           this.touchDirectory(cursor, generation, timestamp);
-          this.notifyMutation(generation, 'rename', missing);
+          this.notifyMutation(generation, 'rename', 'mkdir', missing, mutationContext);
           return Effect.void;
         })
       ))
     );
   }
 
-  rmdir(path: string, cwd = '/workspace'): Effect.Effect<void, TraceKernelFileSystemError> {
+  rmdir(
+    path: string,
+    cwd = '/workspace',
+    mutationContext?: TraceKernelFileSystemMutationContext
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
@@ -516,7 +527,7 @@ export class TraceKernelFileSystem {
           this.nodes.delete(directoryPath);
           const generation = this.beginMutation();
           this.touchDirectory(parentPath(directoryPath), generation, Date.now());
-          this.notifyMutation(generation, 'rename', [directoryPath]);
+          this.notifyMutation(generation, 'rename', 'rmdir', [directoryPath], mutationContext);
           return Effect.void;
         })
       ))
@@ -554,7 +565,8 @@ export class TraceKernelFileSystem {
   writeFile(
     path: string,
     contents: Uint8Array,
-    cwd = '/workspace'
+    cwd = '/workspace',
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
@@ -593,7 +605,7 @@ export class TraceKernelFileSystem {
             ));
             this.touchNode(parent, generation, timestamp, true);
           }
-          this.notifyMutation(generation, existing ? 'change' : 'rename', [filePath]);
+          this.notifyMutation(generation, existing ? 'change' : 'rename', 'write', [filePath], mutationContext);
           return Effect.void;
         })
       ))
@@ -603,7 +615,8 @@ export class TraceKernelFileSystem {
   link(
     existingPath: string,
     newPath: string,
-    cwd = '/workspace'
+    cwd = '/workspace',
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     return Effect.all([
       this.resolve(existingPath, cwd),
@@ -641,7 +654,7 @@ export class TraceKernelFileSystem {
           const timestamp = Date.now();
           this.touchNode(existing, generation, timestamp, false);
           this.touchNode(parent, generation, timestamp, true);
-          this.notifyMutation(generation, 'rename', [newResult]);
+          this.notifyMutation(generation, 'rename', 'link', [newResult], mutationContext);
           return Effect.void;
         })
       ))
@@ -651,7 +664,8 @@ export class TraceKernelFileSystem {
   symlink(
     target: string,
     linkPath: string,
-    cwd = '/workspace'
+    cwd = '/workspace',
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     return Effect.try({
       try: () => {
@@ -684,7 +698,7 @@ export class TraceKernelFileSystem {
           const timestamp = Date.now();
           this.nodes.set(linkResult, this.makeSymlink(target, generation, timestamp));
           this.touchNode(parent, generation, timestamp, true);
-          this.notifyMutation(generation, 'rename', [linkResult]);
+          this.notifyMutation(generation, 'rename', 'symlink', [linkResult], mutationContext);
           return Effect.void;
         })
       ))
@@ -707,7 +721,11 @@ export class TraceKernelFileSystem {
     );
   }
 
-  unlink(path: string, cwd = '/workspace'): Effect.Effect<void, TraceKernelFileSystemError> {
+  unlink(
+    path: string,
+    cwd = '/workspace',
+    mutationContext?: TraceKernelFileSystemMutationContext
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
@@ -719,7 +737,7 @@ export class TraceKernelFileSystem {
           this.nodes.delete(entryPath);
           const generation = this.beginMutation();
           this.touchDirectory(parentPath(entryPath), generation, Date.now());
-          this.notifyMutation(generation, 'rename', [entryPath]);
+          this.notifyMutation(generation, 'rename', 'unlink', [entryPath], mutationContext);
           return Effect.void;
         })
       ))
@@ -729,7 +747,8 @@ export class TraceKernelFileSystem {
   rename(
     sourcePath: string,
     destinationPath: string,
-    cwd = '/workspace'
+    cwd = '/workspace',
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     return Effect.all([
       this.resolve(sourcePath, cwd),
@@ -805,7 +824,7 @@ export class TraceKernelFileSystem {
           this.touchNode(sourceNode, generation, timestamp, false);
           this.touchDirectory(parentPath(source), generation, timestamp);
           this.touchNode(destinationParent, generation, timestamp, true);
-          this.notifyMutation(generation, 'rename', [source, destination]);
+          this.notifyMutation(generation, 'rename', 'rename', [source, destination], mutationContext);
           return Effect.void;
         })
       ))
@@ -815,7 +834,8 @@ export class TraceKernelFileSystem {
   prepareOpen(
     path: string,
     cwd: string,
-    options: TraceKernelOpenFileOptions
+    options: TraceKernelOpenFileOptions,
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<TraceKernelOpenFileNode, TraceKernelFileSystemError> {
     const access = options.access ?? 'read';
     return this.resolve(path, cwd).pipe(
@@ -845,7 +865,7 @@ export class TraceKernelFileSystem {
             const file = this.makeFile(new Uint8Array(0), 0o666, generation, timestamp);
             this.nodes.set(filePath, file);
             this.touchNode(parent, generation, timestamp, true);
-            this.notifyMutation(generation, 'rename', [filePath]);
+            this.notifyMutation(generation, 'rename', 'open-create', [filePath], mutationContext);
             return Effect.succeed(new TraceKernelOpenFileNode(filePath, file));
           }
           if (existing.kind === 'directory') {
@@ -866,7 +886,7 @@ export class TraceKernelFileSystem {
             existing.contents = new Uint8Array(0);
             const generation = this.beginMutation();
             this.touchNode(existing, generation, Date.now(), true);
-            this.notifyMutation(generation, 'change', this.pathsForNode(existing));
+            this.notifyMutation(generation, 'change', 'open-truncate', this.pathsForNode(existing), mutationContext);
           }
           return Effect.succeed(new TraceKernelOpenFileNode(filePath, existing));
         })
@@ -892,7 +912,8 @@ export class TraceKernelFileSystem {
 
   truncateOpen(
     file: TraceKernelOpenFileNode,
-    length: number
+    length: number,
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
@@ -905,7 +926,7 @@ export class TraceKernelFileSystem {
         file.node.contents = next;
         const generation = this.beginMutation();
         this.touchNode(file.node, generation, Date.now(), true);
-        this.notifyMutation(generation, 'change', this.pathsForNode(file.node));
+        this.notifyMutation(generation, 'change', 'truncate', this.pathsForNode(file.node), mutationContext);
         return Effect.void;
       })
     );
@@ -915,7 +936,8 @@ export class TraceKernelFileSystem {
     file: TraceKernelOpenFileNode,
     offset: number,
     bytes: Uint8Array,
-    append: boolean
+    append: boolean,
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<number, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
@@ -931,7 +953,7 @@ export class TraceKernelFileSystem {
         if (bytes.byteLength > 0) {
           const generation = this.beginMutation();
           this.touchNode(node, generation, Date.now(), true);
-          this.notifyMutation(generation, 'change', this.pathsForNode(node));
+          this.notifyMutation(generation, 'change', 'write', this.pathsForNode(node), mutationContext);
         }
         return Effect.succeed(writeOffset + bytes.byteLength);
       })
@@ -1000,12 +1022,12 @@ export class TraceKernelFileSystem {
     );
   }
 
-  clear(): void {
+  clear(mutationContext?: TraceKernelFileSystemMutationContext): void {
     if (this.nodes.size > 0) {
       const paths = [...this.nodes.keys()];
       const generation = this.beginMutation();
       this.nodes.clear();
-      this.notifyMutation(generation, 'rename', paths);
+      this.notifyMutation(generation, 'rename', 'clear', paths, mutationContext);
       return;
     }
     this.nodes.clear();
@@ -1405,13 +1427,17 @@ export class TraceKernelFileSystem {
   private notifyMutation(
     generation: number,
     eventType: TraceKernelFileSystemMutation['eventType'],
-    paths: readonly string[]
+    operation: TraceKernelFileSystemMutationOperation,
+    paths: readonly string[],
+    context?: TraceKernelFileSystemMutationContext
   ): void {
     if (paths.length === 0) return;
     const mutation = Object.freeze({
       generation,
       eventType,
+      operation,
       paths: Object.freeze([...new Set(paths)]),
+      ...(context?.origin ? { origin: context.origin } : {}),
     });
     for (const watcher of this.mutationWatchers) {
       try {

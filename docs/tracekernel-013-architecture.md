@@ -371,7 +371,16 @@ workspace transaction boundary.
 the existing policy, quota, event, and shell compatibility wrapper. The product
 workspace and its internally owned extracted `TraceKernelSession` attach to the
 same TKFS object; there is no live file mirror. Runtime caches receive TKFS's
-own shared generation word.
+own shared generation word. TKFS quota checks run inside the same critical
+section as namespace and open-file-description mutations, including hard-link
+accounting and already-open fd writes.
+
+Every committed TKFS mutation carries its semantic operation and an optional
+opaque in-process origin. The host compatibility adapter tags its own commits;
+all untagged session/process commits invalidate product snapshot generations
+and storage ledgers immediately. Origin is identity-only and never crosses the
+runtime syscall boundary, avoiding async timing heuristics and duplicate host
+observation.
 
 TKFS checkpoints separate namespace entries from inode records, preserving
 hard links, symlinks, metadata, and mutation generation. A host may hydrate a
@@ -744,9 +753,10 @@ The remaining authority migration must preserve, in order:
 
 1. commit TKFS checkpoints to the configured persistent storage backend and
    hydrate them before any process starts;
-2. move quota preflight and mutation observation into the TKFS commit
-   linearization point, including writes/truncates through already-open fds;
-3. route product runtime syscalls through the extracted session policy already
+2. attribute direct session mutation events and journal records to the
+   authoritative process while replacing transitional open-file snapshots with
+   TKFS open-file descriptions;
+3. route every product runtime syscall through the extracted session policy already
    enforcing canonical hidden/readonly paths;
 4. replace the transitional process, descriptor, terminal, socket, journal, and resource-accounting
    identity across terminal, `runCommand`, and language-initiated children;
