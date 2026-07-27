@@ -178,6 +178,7 @@ async function main(): Promise<void> {
               path: 'terminal-control.py',
               contents: [
                 'import os',
+                'import sys',
                 'from tracekernel import terminal',
                 'foreground = os.tcgetpgrp(0)',
                 'transferred = os.tcsetpgrp(0, foreground)',
@@ -188,7 +189,9 @@ async function main(): Promise<void> {
                 '    and transferred == foreground',
                 '    and terminal.set_foreground_process_group(foreground) == foreground',
                 ')',
-                'print(f"terminal:{str(valid).lower()}")',
+                'standard_input = input()',
+                'print(f"terminal:{str(valid).lower()}:{standard_input}")',
+                'print("kernel-stderr", file=sys.stderr)',
                 '',
               ].join('\n'),
             },
@@ -678,9 +681,20 @@ async function main(): Promise<void> {
           const descriptorInheritance = await workspace.runCommand(
             'python python-fd-parent.py'
           );
-          const terminalControl = await workspace
-            .createTerminalSession()
-            .run('python terminal-control.py');
+          const terminal = workspace.createTerminalSession();
+          const pendingTerminalControl = terminal.run(
+            'python terminal-control.py'
+          );
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+          if (
+            !terminal.writeStdin('kernel-stdin\n') ||
+            !terminal.endStdin()
+          ) {
+            throw new Error(
+              'Python terminal did not accept kernel-owned fd 0 input.'
+            );
+          }
+          const terminalControl = await pendingTerminalControl;
           const orphanParent = await workspace.runCommand(
             'python orphan-parent.py'
           );
@@ -768,7 +782,9 @@ async function main(): Promise<void> {
       );
       assertCondition(
         result.terminalControl.exitCode === 0 &&
-          result.terminalControl.stdout === 'terminal:true\n',
+          result.terminalControl.stdout ===
+            'terminal:true:kernel-stdin\n' &&
+          result.terminalControl.stderr === 'kernel-stderr\n',
         `Python terminal controls did not use kernel-owned terminal state: ${JSON.stringify(
           result.terminalControl
         )}`
@@ -816,6 +832,7 @@ async function main(): Promise<void> {
         synchronousSyscallTransport: true,
         explicitTkfsControls: true,
         nativeTkfsMount: true,
+        descriptorStandardIo: true,
         childProcesses: ['javascript', 'python'],
         dynamicProcessIdentity: ['python', 'javascript', 'orphan-reparenting'],
         processGroups: [

@@ -1970,12 +1970,15 @@ function readStdinPipeByte(state) {
   }
 }
 
-function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
+function installPyodideProjectStdioBridge(kernelDevices, stdinPipe, kernelClient) {
   if (!pyodide) return () => {};
 
   const devices = normalizeProjectKernelDevices(kernelDevices);
   const kernelPolicy = self.TraceRuntimeKernelPolicy;
   const stdinPipeReader = stdinPipeState(stdinPipe);
+  let kernelStdinBytes = new Uint8Array();
+  let kernelStdinOffset = 0;
+  let kernelStdinClosed = false;
   const previousReadProjectStdinByte = self.__tracecodeReadProjectStdinByte;
   delete self.__tracecodeProjectProviderOutput;
   const deviceInputSource = (device) => (
@@ -1986,6 +1989,24 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
   const readProjectStdinByte = (device = '/dev/stdin') => {
     const inputDevice = deviceInputSource(device);
     if (!inputDevice || inputDevice === '/dev/null') return -1;
+    if (kernelClient) {
+      if (
+        kernelStdinOffset >= kernelStdinBytes.byteLength &&
+        !kernelStdinClosed
+      ) {
+        kernelStdinBytes = kernelClient.request({
+          op: 'read',
+          fd: 0,
+          maxBytes: 64 * 1024,
+        }).bytes;
+        kernelStdinOffset = 0;
+        kernelStdinClosed = kernelStdinBytes.byteLength === 0;
+      }
+      if (kernelStdinClosed) return -1;
+      const byte = kernelStdinBytes[kernelStdinOffset];
+      kernelStdinOffset += 1;
+      return byte;
+    }
     if (stdinPipeReader) return readStdinPipeByte(stdinPipeReader);
     return -1;
   };
@@ -3768,6 +3789,30 @@ async function executeProjectPythonUserCall(
     }
     trustedPythonWorkerPostMessage({ id: messageId, type: 'project-event', payload: budgetedPayload, protocolToken });
   };
+  self.__tracecodeWriteProjectOutput = (stream, value) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel standard output is unavailable'
+      );
+    }
+    const bytes = new TextEncoder().encode(String(value ?? ''));
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const written = kernelClient.request({
+        op: 'write',
+        fd: stream === 'stderr' ? 2 : 1,
+        bytes: bytes.subarray(offset),
+      }).bytesWritten;
+      if (written <= 0 || written > bytes.byteLength - offset) {
+        throw new PythonTraceKernelSyscallError(
+          'EIO',
+          `invalid TraceKernel stdio write length ${written}`
+        );
+      }
+      offset += written;
+    }
+  };
   self.__tracecodeRuntimeKernelOpenTarget = (payload) => {
     const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
     const policy = self.TraceRuntimeKernelPolicy;
@@ -4298,7 +4343,8 @@ async function executeProjectPythonUserCall(
   };
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
-    request?.stdinPipe
+    request?.stdinPipe,
+    kernelClient
   );
   const projectCode = `
 import base64
@@ -7086,15 +7132,21 @@ class _TraceProjectStream(io.StringIO):
         _budgeted_text = self._budget_text(_text)
         _device = str(_output_device or ("/dev/stderr" if self._stream == "stderr" else "/dev/stdout"))
         if _budgeted_text:
-            _event = {
-                "type": "output",
-                "stream": self._stream,
-                "device": _device,
-                "data": _budgeted_text,
-            }
-            if _source_device and _source_device != _device:
-                _event["sourceDevice"] = _source_device
-            _emit_project_event(_event)
+            if _tracekernel_fs_mounted:
+                getattr(_js_self, "__tracecodeWriteProjectOutput")(
+                    self._stream,
+                    _budgeted_text,
+                )
+            else:
+                _event = {
+                    "type": "output",
+                    "stream": self._stream,
+                    "device": _device,
+                    "data": _budgeted_text,
+                }
+                if _source_device and _source_device != _device:
+                    _event["sourceDevice"] = _source_device
+                _emit_project_event(_event)
             super().write(_budgeted_text)
         return len(_text)
 
@@ -8733,7 +8785,10 @@ json.dumps({
     }
     const resultJson = await pyodide.runPythonAsync(projectCode);
     const result = JSON.parse(resultJson);
-    if (projectOutputEvents.length > 0) {
+    if (kernelClient) {
+      result.stdout = '';
+      result.stderr = '';
+    } else if (projectOutputEvents.length > 0) {
       result.stdout = projectOutputEvents
         .filter((event) => event.stream === 'stdout')
         .map((event) => String(event.data ?? ''))
@@ -8748,6 +8803,7 @@ json.dumps({
     restoreTraceKernelFileSystemMount();
     restoreProviderStdioBridge();
     delete self.__tracecodeProjectEvent;
+    delete self.__tracecodeWriteProjectOutput;
     delete self.__tracecodeRuntimeKernelOpenTarget;
     delete self.__tracecodeRuntimeKernelMutationTarget;
     delete self.__tracecodeInstallProjectFsMutationEvents;

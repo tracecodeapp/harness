@@ -1328,7 +1328,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const snapshotProjectForCurrentCommand = (_ctx: CommandContext, includeHiddenFiles: boolean) =>
       this.snapshotForCommand(includeHiddenFiles);
     const exposedCustomCommands: CustomCommand[] = [
-      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner, { kernelSyscalls: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
+      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
@@ -2337,7 +2337,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const descriptorStdio =
       request.runtime === 'javascript' ||
       request.runtime === 'cpp' ||
-      request.runtime === 'csharp';
+      request.runtime === 'csharp' ||
+      request.runtime === 'python';
     const stdinPipe = !descriptorStdio && request.stdio?.stdin === 'pipe'
       ? createRuntimeCommandStdinPipe()
       : !descriptorStdio && request.stdio?.stdin === 'inherit'
