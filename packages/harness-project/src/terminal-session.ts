@@ -208,7 +208,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       kernelInfo: RuntimeKernelInfo;
       resolveCwd: (currentCwd: string, target: string) => Promise<string>;
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
-      interruptForeground?: () => boolean;
+      signalForeground?: (signal: 'SIGINT' | 'SIGQUIT') => boolean;
       jobRecords: () => readonly RuntimeProjectTerminalJobRecord[];
       isVerbose: () => boolean;
     },
@@ -277,20 +277,36 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   }
 
   interrupt(): boolean {
+    return this.signalForeground('SIGINT');
+  }
+
+  private signalForeground(signal: 'SIGINT' | 'SIGQUIT'): boolean {
     if (!this.activeRun || this.activeTerminalSignalDelivered) return false;
-    if (this.options.interruptForeground?.()) {
+    if (this.options.signalForeground?.(signal)) {
       this.activeTerminalSignalDelivered = true;
       return true;
     }
     const controller = this.activeCommandAbortController;
     if (!controller || controller.signal.aborted) return false;
-    controller.abort({ signal: 'SIGINT', signalCode: 2 });
+    controller.abort({
+      signal,
+      signalCode: signal === 'SIGINT' ? 2 : 3,
+    });
     this.activeTerminalSignalDelivered = true;
     return true;
   }
 
   writeStdin(data: string): boolean {
-    if (!this.activeStdinPipe || !this.activeRun || this.activeStdinEnded) return false;
+    if (!this.activeRun || this.activeStdinEnded) return false;
+    const signalCharacter = [...data].find(
+      (character) => character === '\x03' || character === '\x1c'
+    );
+    if (signalCharacter) {
+      return this.signalForeground(
+        signalCharacter === '\x03' ? 'SIGINT' : 'SIGQUIT'
+      );
+    }
+    if (!this.activeStdinPipe) return false;
     this.activeStdinPipe.write(data);
     if (this.currentInputState.mode === 'stdin') {
       this.activeStdinPrompt = '';

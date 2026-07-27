@@ -51,10 +51,11 @@ async function main(): Promise<void> {
     readonly scriptPath: string;
     readonly signal: string;
   }> = [];
-  let interruptChildStarted!: () => void;
-  const interruptChildStartedPromise = new Promise<void>((resolve) => {
-    interruptChildStarted = resolve;
-  });
+  const interruptChildStartWaiters: Array<() => void> = [];
+  const waitForInterruptChildStart = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      interruptChildStartWaiters.push(resolve);
+    });
 
   const nodeRunner: JavaScriptProjectCommandRunner = async (request) => {
     observedProcesses.push({
@@ -107,7 +108,7 @@ async function main(): Promise<void> {
       });
     };
     if (request.scriptPath.endsWith('interrupt-child.js')) {
-      interruptChildStarted();
+      interruptChildStartWaiters.shift()?.();
       await new Promise<void>((resolve) => {
         if (request.signal?.aborted) {
           recordTerminalInterrupt();
@@ -323,8 +324,9 @@ async function main(): Promise<void> {
     );
 
     const interruptTerminal = workspace.createTerminalSession();
+    const interruptChildStarted = waitForInterruptChildStart();
     const interruptedRun = interruptTerminal.run('node interrupt-parent.js');
-    await interruptChildStartedPromise;
+    await interruptChildStarted;
     assertCondition(
       interruptTerminal.interrupt() &&
         !interruptTerminal.interrupt(),
@@ -353,12 +355,38 @@ async function main(): Promise<void> {
         terminalInterruptSignals
       )}`
     );
+
+    const quitTerminal = workspace.createTerminalSession();
+    const quitChildStarted = waitForInterruptChildStart();
+    const quitRun = quitTerminal.run('node interrupt-parent.js');
+    await quitChildStarted;
+    const quitDeliveriesStart = terminalInterruptSignals.length;
+    assertCondition(
+      quitTerminal.writeStdin('\x1c') &&
+        !quitTerminal.writeStdin('\x1c'),
+      'terminal VQUIT should be consumed and delivered to the foreground group exactly once'
+    );
+    const quitResult = await quitRun;
+    const quitDeliveries = terminalInterruptSignals.slice(
+      quitDeliveriesStart
+    );
+    assertCondition(
+      quitResult.exitCode === 131 &&
+        quitResult.error?.detail?.signal === 'SIGQUIT' &&
+        quitDeliveries.length === 2 &&
+        quitDeliveries.every((delivery) => delivery.signal === 'SIGQUIT'),
+      `terminal VQUIT did not reach every foreground process-group member: ${JSON.stringify({
+        result: quitResult,
+        deliveries: quitDeliveries,
+      })}`
+    );
     const interruptEvents = await workspace.readFile(
       '/proc/tracekernel/events'
     );
     assertCondition(
       interruptEvents.includes('process-group-signal') &&
         interruptEvents.includes('"signal":"SIGINT"') &&
+        interruptEvents.includes('"signal":"SIGQUIT"') &&
         interruptEvents.includes('"count":2'),
       `terminal interrupt did not journal authoritative group delivery: ${JSON.stringify(
         interruptEvents
@@ -378,6 +406,7 @@ async function main(): Promise<void> {
     controllingTerminalInheritedByChildren: true,
     detachedCommandsReportEnotty: true,
     terminalInterruptTargetsForegroundProcessGroup: true,
+    terminalSignalCharacters: ['VINTR', 'VQUIT'],
   }, null, 2));
 }
 
