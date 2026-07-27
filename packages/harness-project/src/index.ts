@@ -4835,6 +4835,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return { signaled, denied };
   }
 
+  private interruptTerminalForeground(): boolean {
+    const pgid = this.terminalForegroundPgid;
+    if (pgid === 1) return false;
+    return this.signalProcessGroup(pgid, 'SIGINT').signaled > 0;
+  }
+
   private signalRuntimeProcessSelector(
     caller: RuntimeKernelProcessRecord,
     targetPid: number,
@@ -9083,6 +9089,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         kernelInfo: this.kernelInfo,
         resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
         runCommand: (command, commandOptions) => this.runCommandAs(command, commandOptions, parent),
+        interruptForeground: () => this.interruptTerminalForeground(),
         jobRecords: () => this.terminalJobRecords(),
         isVerbose: () => this.terminalVerbose,
       },

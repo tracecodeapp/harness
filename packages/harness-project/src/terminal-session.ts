@@ -199,6 +199,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   private currentUmask: number;
   private readonly commandHistory: string[] = [];
   private activeCommandAbortController: AbortController | null = null;
+  private activeTerminalSignalDelivered = false;
   private readonly onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 
   constructor(
@@ -207,6 +208,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       kernelInfo: RuntimeKernelInfo;
       resolveCwd: (currentCwd: string, target: string) => Promise<string>;
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
+      interruptForeground?: () => boolean;
       jobRecords: () => readonly RuntimeProjectTerminalJobRecord[];
       isVerbose: () => boolean;
     },
@@ -275,9 +277,15 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   }
 
   interrupt(): boolean {
+    if (!this.activeRun || this.activeTerminalSignalDelivered) return false;
+    if (this.options.interruptForeground?.()) {
+      this.activeTerminalSignalDelivered = true;
+      return true;
+    }
     const controller = this.activeCommandAbortController;
     if (!controller || controller.signal.aborted) return false;
     controller.abort({ signal: 'SIGINT', signalCode: 2 });
+    this.activeTerminalSignalDelivered = true;
     return true;
   }
 
@@ -390,6 +398,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     options: RuntimeProjectTerminalRunOptions
   ): Promise<RuntimeCommandResult> {
     this.activeRun = true;
+    this.activeTerminalSignalDelivered = false;
 
     const previousStdinPipe = this.activeStdinPipe;
     const previousStdinEnded = this.activeStdinEnded;
@@ -440,6 +449,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       this.activeStdinPrompt = previousStdinPrompt;
       this.activeCommand = previousCommand;
       this.activeRun = false;
+      this.activeTerminalSignalDelivered = false;
       this.setInputState('command', 'command-finish');
     }
   }
@@ -449,6 +459,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     options: RuntimeProjectTerminalRunOptions
   ): Promise<RuntimeCommandResult> {
     this.activeRun = true;
+    this.activeTerminalSignalDelivered = false;
 
     const previousStdinPipe = this.activeStdinPipe;
     const previousStdinEnded = this.activeStdinEnded;
@@ -500,6 +511,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         this.activeCommandAbortController = null;
       }
       this.activeRun = false;
+      this.activeTerminalSignalDelivered = false;
       this.setInputState('command', 'command-finish');
     }
   }

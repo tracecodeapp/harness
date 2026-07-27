@@ -47,6 +47,14 @@ async function main(): Promise<void> {
   }> = [];
   let terminalRuntimeCount = 0;
   let detachedRuntimeCount = 0;
+  const terminalInterruptSignals: Array<{
+    readonly scriptPath: string;
+    readonly signal: string;
+  }> = [];
+  let interruptChildStarted!: () => void;
+  const interruptChildStartedPromise = new Promise<void>((resolve) => {
+    interruptChildStarted = resolve;
+  });
 
   const nodeRunner: JavaScriptProjectCommandRunner = async (request) => {
     observedProcesses.push({
@@ -89,6 +97,51 @@ async function main(): Promise<void> {
           process: request.process,
         })}`
       );
+    }
+
+    const recordTerminalInterrupt = (): void => {
+      const reason = request.signal?.reason as { signal?: unknown } | undefined;
+      terminalInterruptSignals.push({
+        scriptPath: request.scriptPath,
+        signal: typeof reason?.signal === 'string' ? reason.signal : 'unknown',
+      });
+    };
+    if (request.scriptPath.endsWith('interrupt-child.js')) {
+      interruptChildStarted();
+      await new Promise<void>((resolve) => {
+        if (request.signal?.aborted) {
+          recordTerminalInterrupt();
+          resolve();
+          return;
+        }
+        request.signal?.addEventListener('abort', () => {
+          recordTerminalInterrupt();
+          resolve();
+        }, { once: true });
+      });
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
+    if (request.scriptPath.endsWith('interrupt-parent.js')) {
+      request.signal?.addEventListener(
+        'abort',
+        recordTerminalInterrupt,
+        { once: true }
+      );
+      const spawned = await dispatch(kernel, {
+        op: 'spawn',
+        runtime: 'javascript',
+        command: 'node',
+        args: ['interrupt-child.js'],
+      });
+      assertCondition(
+        spawned.ok && spawned.value.op === 'spawn',
+        `interrupt parent could not spawn its process-group peer: ${JSON.stringify(spawned)}`
+      );
+      if (!spawned.ok || spawned.value.op !== 'spawn') {
+        return { stdout: '', stderr: 'spawn failed\n', exitCode: 1 };
+      }
+      await dispatch(kernel, { op: 'wait', pid: spawned.value.pid });
+      return { stdout: '', stderr: '', exitCode: 0 };
     }
 
     if (request.scriptPath.endsWith('child.js')) {
@@ -214,6 +267,14 @@ async function main(): Promise<void> {
     files: [
       { path: 'parent.js', contents: '// parent runtime fixture\n' },
       { path: 'child.js', contents: '// child runtime fixture\n' },
+      {
+        path: 'interrupt-parent.js',
+        contents: '// terminal foreground process-group fixture\n',
+      },
+      {
+        path: 'interrupt-child.js',
+        contents: '// terminal foreground process-group child fixture\n',
+      },
     ],
     nodeRunner,
   });
@@ -260,6 +321,49 @@ async function main(): Promise<void> {
         detachedRuntimeCount,
       })}`
     );
+
+    const interruptTerminal = workspace.createTerminalSession();
+    const interruptedRun = interruptTerminal.run('node interrupt-parent.js');
+    await interruptChildStartedPromise;
+    assertCondition(
+      interruptTerminal.interrupt() &&
+        !interruptTerminal.interrupt(),
+      'terminal interrupt should target its foreground process group exactly once'
+    );
+    const interruptedResult = await interruptedRun;
+    assertCondition(
+      interruptedResult.exitCode === 130 &&
+        interruptedResult.error?.detail?.signal === 'SIGINT',
+      `terminal foreground process-group interrupt did not own parent termination: ${JSON.stringify(
+        interruptedResult
+      )}`
+    );
+    assertCondition(
+      terminalInterruptSignals.length === 2 &&
+        terminalInterruptSignals.every((delivery) =>
+          delivery.signal === 'SIGINT'
+        ) &&
+        terminalInterruptSignals.some((delivery) =>
+          delivery.scriptPath.endsWith('interrupt-parent.js')
+        ) &&
+        terminalInterruptSignals.some((delivery) =>
+          delivery.scriptPath.endsWith('interrupt-child.js')
+        ),
+      `terminal interrupt did not reach every foreground process-group member: ${JSON.stringify(
+        terminalInterruptSignals
+      )}`
+    );
+    const interruptEvents = await workspace.readFile(
+      '/proc/tracekernel/events'
+    );
+    assertCondition(
+      interruptEvents.includes('process-group-signal') &&
+        interruptEvents.includes('"signal":"SIGINT"') &&
+        interruptEvents.includes('"count":2'),
+      `terminal interrupt did not journal authoritative group delivery: ${JSON.stringify(
+        interruptEvents
+      )}`
+    );
   } finally {
     workspace.dispose();
   }
@@ -273,6 +377,7 @@ async function main(): Promise<void> {
     exactlyOnceChildReaping: true,
     controllingTerminalInheritedByChildren: true,
     detachedCommandsReportEnotty: true,
+    terminalInterruptTargetsForegroundProcessGroup: true,
   }, null, 2));
 }
 
