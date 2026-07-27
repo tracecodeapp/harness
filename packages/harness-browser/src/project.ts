@@ -136,6 +136,12 @@ interface OneShotPoolEntry<Client extends PrewarmableProjectWorker> {
   state: 'warming' | 'idle' | 'leased' | 'retired';
 }
 
+interface KernelRetainedPoolBinding<Client extends PrewarmableProjectWorker> {
+  readonly ready: Promise<OneShotPoolEntry<Client>>;
+  tail: Promise<void>;
+  released: boolean;
+}
+
 interface OneShotWarmOutcome {
   success: boolean;
   error?: Error;
@@ -206,7 +212,16 @@ function projectPoolAbortError(): Error {
 function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorker>(
   label: string,
   depth: number,
-  createClient: () => Client
+  createClient: () => Client,
+  options: {
+    /**
+     * Keeps the trusted outer client attached to one kernel PID across repeated
+     * provider invocations. The client remains process-owned and is retired by
+     * the kernel lease; only clients that provide their own disposable user-code
+     * execution boundary may opt in.
+     */
+    retainClientForKernelLease?: boolean;
+  } = {}
 ): OneShotPrewarmedWorkerPool<Client> {
   let generation = 1;
   let nextToken = 0;
@@ -215,6 +230,10 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
   const idle: Array<OneShotPoolEntry<Client>> = [];
   const warming = new Map<number, Promise<OneShotWarmOutcome>>();
   const active = new Map<number, OneShotPoolEntry<Client>>();
+  const kernelBindings = new WeakMap<
+    RuntimeProjectEngineLeaseController,
+    KernelRetainedPoolBinding<Client>
+  >();
 
   const retire = (entry: OneShotPoolEntry<Client>) => {
     if (entry.state === 'retired') return;
@@ -342,6 +361,100 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
 
   refill();
 
+  const executeWithEntry = async <Result>(
+    entry: OneShotPoolEntry<Client>,
+    leaseGeneration: number,
+    signal: AbortSignal | undefined,
+    execute: (client: Client) => Promise<Result>
+  ): Promise<Result> => {
+    const onAbort = () => retire(entry);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      if (signal?.aborted) {
+        retire(entry);
+        throw projectPoolAbortError();
+      }
+      const result = await execute(entry.client);
+      if (
+        leaseGeneration !== generation ||
+        entry.state !== 'leased' ||
+        active.get(entry.token) !== entry
+      ) {
+        throw new Error(`${label} project worker lease was retired before its result settled.`);
+      }
+      return result;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
+  };
+
+  const runWithKernelRetainedClient = async <Result>(
+    signal: AbortSignal | undefined,
+    engineLease: RuntimeProjectEngineLeaseController,
+    execute: (client: Client) => Promise<Result>
+  ): Promise<Result> => {
+    let binding = kernelBindings.get(engineLease);
+    if (!binding) {
+      const leaseGeneration = generation;
+      let resolveReady!: (entry: OneShotPoolEntry<Client>) => void;
+      let rejectReady!: (error: unknown) => void;
+      const ready = new Promise<OneShotPoolEntry<Client>>((resolve, reject) => {
+        resolveReady = resolve;
+        rejectReady = reject;
+      });
+      binding = {
+        ready,
+        tail: Promise.resolve(),
+        released: false,
+      };
+      kernelBindings.set(engineLease, binding);
+      const createdBinding = binding;
+      void (async () => {
+        let entry: OneShotPoolEntry<Client> | undefined;
+        try {
+          entry = await acquire(leaseGeneration, signal);
+          if (createdBinding.released) {
+            retire(entry);
+            throw new Error(`${label} project worker lease was released before attachment.`);
+          }
+          engineLease.attach({
+            release: () => {
+              createdBinding.released = true;
+              if (kernelBindings.get(engineLease) === createdBinding) {
+                kernelBindings.delete(engineLease);
+              }
+              retire(entry!);
+              refill();
+            },
+          });
+          resolveReady(entry);
+        } catch (error) {
+          createdBinding.released = true;
+          if (kernelBindings.get(engineLease) === createdBinding) {
+            kernelBindings.delete(engineLease);
+          }
+          if (entry) retire(entry);
+          rejectReady(error);
+        }
+      })();
+    }
+
+    const retainedBinding = binding;
+    const leaseGeneration = generation;
+    const run = retainedBinding.tail.then(async () => {
+      const entry = await retainedBinding.ready;
+      if (retainedBinding.released) {
+        throw new Error(`${label} project worker lease was released before execution.`);
+      }
+      return executeWithEntry(entry, leaseGeneration, signal, execute);
+    });
+    retainedBinding.tail = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  };
+
   return {
     async run<Result>(
       signal: AbortSignal | undefined,
@@ -350,16 +463,13 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
     ): Promise<Result> {
       refillEnabled = true;
       refill();
+      if (engineLease && options.retainClientForKernelLease) {
+        return runWithKernelRetainedClient(signal, engineLease, execute);
+      }
       const leaseGeneration = generation;
       const entry = await acquire(leaseGeneration, signal);
       let attachedToKernel = false;
-      const onAbort = () => retire(entry);
-      signal?.addEventListener('abort', onAbort, { once: true });
       try {
-        if (signal?.aborted) {
-          retire(entry);
-          throw projectPoolAbortError();
-        }
         if (engineLease) {
           engineLease.attach({
             release: () => {
@@ -369,17 +479,8 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
           });
           attachedToKernel = true;
         }
-        const result = await execute(entry.client);
-        if (
-          leaseGeneration !== generation ||
-          entry.state !== 'leased' ||
-          active.get(entry.token) !== entry
-        ) {
-          throw new Error(`${label} project worker lease was retired before its result settled.`);
-        }
-        return result;
+        return await executeWithEntry(entry, leaseGeneration, signal, execute);
       } finally {
-        signal?.removeEventListener('abort', onAbort);
         if (!attachedToKernel) {
           retire(entry);
           refill();
@@ -524,7 +625,9 @@ function createPerCommandCppWorkerClient(
   prewarmDepth: number,
   createClient: () => CppWorkerClient
 ): Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'> {
-  const pool = createOneShotPrewarmedWorkerPool('C++', prewarmDepth, createClient);
+  const pool = createOneShotPrewarmedWorkerPool('C++', prewarmDepth, createClient, {
+    retainClientForKernelLease: true,
+  });
   return {
     async executeProjectCpp(request, timeoutMs, onEvent, signal, engineLease) {
       return pool.run(signal, engineLease, (client) =>

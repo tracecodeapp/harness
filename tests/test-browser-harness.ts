@@ -772,7 +772,13 @@ async function main(): Promise<void> {
       await authorityProjectWorkspace.runCommand('node main.js');
       await authorityProjectWorkspace.runCommand('java Main');
       await authorityProjectWorkspace.runCommand('dotnet run --project App.csproj');
-      await authorityProjectWorkspace.runCommand('clang++ main.cpp -o app');
+      const cppChainedResult = await authorityProjectWorkspace.runCommand(
+        'clang++ main.cpp -o app && ./app'
+      );
+      assertCondition(
+        cppChainedResult.exitCode === 0,
+        `One C++ kernel PID must retain its trusted compiler coordinator across compile and run: ${JSON.stringify(cppChainedResult)}`
+      );
       const authorityWorkers = workerInstances.slice(beforeAuthorityWorkerCount);
       for (const [runtime, workerName, messageType] of [
         ['Python', 'pyodide-worker.js', 'execute-project-python'],
@@ -803,9 +809,21 @@ async function main(): Promise<void> {
             candidate.messages.some((message) => message.type === 'warmup')
           );
           const cppCommandWorkerIndex = authorityWorkers.indexOf(worker!);
+          const cppExecutionWorkers = authorityWorkers.filter((candidate) =>
+            String(candidate.url).includes('cpp-worker.js') &&
+            candidate.messages.some((message) => message.type === 'execute-project-cpp')
+          );
           assertCondition(
             cppWarmupWorkerIndex >= 0 && cppCommandWorkerIndex > cppWarmupWorkerIndex,
             'C++ toolchain warmup must start before the disposable user execution worker'
+          );
+          assertCondition(
+            cppExecutionWorkers.length === 2 &&
+              cppExecutionWorkers.every((candidate) =>
+                candidate.messages.filter((message) => message.type === 'execute-project-cpp').length === 1 &&
+                candidate.terminated
+              ),
+            'One C++ kernel PID must reuse only its trusted coordinator while compile and run use distinct retired execution workers'
           );
         }
         if (runtime === 'Java') {
