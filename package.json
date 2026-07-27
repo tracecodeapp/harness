@@ -140,6 +140,7 @@
     "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-stdio.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
     "test:tracekernel-013-python-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-python-browser.ts",
     "test:tracekernel-013-csharp-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-csharp-browser.ts",
+    "test:tracekernel-013-tracejvm-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-tracejvm-browser.ts",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
@@ -218,6 +219,7 @@
     "check:browser-project-performance": "node scripts/check-browser-project-performance.mjs"
   },
   "devDependencies": {
+    "@tracecode/tracejvm": "link:../tracejvm",
     "@types/node": "^20.0.0",
     "esbuild": "0.27.3",
     "playwright": "^1.53.2",
@@ -225,6 +227,14 @@
     "tsup": "^8.5.0",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@tracecode/tracejvm": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@tracecode/tracejvm": {
+      "optional": true
+    }
   },
   "pnpm": {
     "overrides": {
