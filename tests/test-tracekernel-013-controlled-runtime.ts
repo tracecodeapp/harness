@@ -60,7 +60,7 @@ async function main(): Promise<void> {
         return Effect.runPromise(controlled.complete(process.pid, {
           exitCode: 143,
           stderr: 'terminated by host runner\n',
-          termination: { kind: 'signal', signal },
+          termination: { kind: 'signal', signal, exitCode: 143 },
         })).then(() => undefined);
       });
       yield* controlled.setLeaseHandler(process.pid, {

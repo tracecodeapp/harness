@@ -44,6 +44,12 @@ function testJavaHttpResponseManifest(status: number, headers: Record<string, st
 const workerInstances: MockWorker[] = [];
 let heldPythonProjectStarted: (() => void) | undefined;
 let releaseHeldPythonProject: (() => void) | undefined;
+
+function releaseHeldPythonProjectCommand(): void {
+  const release = releaseHeldPythonProject;
+  releaseHeldPythonProject = undefined;
+  release?.();
+}
 let holdPythonWarmupForUrlPrefix: string | undefined;
 let javaHttpTimeoutServerStarted: (() => void) | undefined;
 let javaHttpTimeoutRequestBuffer: SharedArrayBuffer | undefined;
@@ -643,8 +649,7 @@ async function main(): Promise<void> {
       assertCondition(client.exitCode === 0, `Browser project workspace should run a second Python command while the first is active: ${JSON.stringify(client)}`);
       assertCondition(client.stdout === 'execute-project-python:client.py\n', `Second Python project command should complete normally: ${client.stdout}`);
       assertCondition(projectPythonWorkers.length >= 2, `Browser project workspace should create separate Python workers for concurrent commands: ${projectPythonWorkers.length}`);
-      releaseHeldPythonProject?.();
-      releaseHeldPythonProject = undefined;
+      releaseHeldPythonProjectCommand();
       const heldResult = await held;
       assertCondition(heldResult.exitCode === 0 && heldResult.stdout === 'held-python-finished\n', `Held Python command should finish after release: ${JSON.stringify(heldResult)}`);
     } finally {
@@ -689,8 +694,7 @@ async function main(): Promise<void> {
         !clientSettled && projectMessagesBeforeRelease.length === 1,
         'A second PID must not enter a shared interpreter before the prior kernel lease is released'
       );
-      releaseHeldPythonProject?.();
-      releaseHeldPythonProject = undefined;
+      releaseHeldPythonProjectCommand();
       const [heldResult, clientResult] = await Promise.all([held, client]);
       const projectMessagesAfterRelease = sharedWorkers.flatMap((worker) =>
         worker.messages.filter((message) => message.type === 'execute-project-python')
