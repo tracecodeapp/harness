@@ -164,6 +164,8 @@ async function main(): Promise<void> {
     const productProcess = (
       workspace as unknown as {
         processTable: Map<number, {
+          kernelProcess?: unknown;
+          abortController?: unknown;
           ppid: number;
           pgid: number;
           sid: number;
@@ -178,6 +180,32 @@ async function main(): Promise<void> {
       }
     ).processTable.get(pid);
     assertCondition(productProcess, 'Product process projection was unavailable.');
+    const executionHandles = (
+      workspace as unknown as {
+        processExecutionHandles: Map<
+          number,
+          {
+            kernelProcess: { readonly pid: number };
+            abortController?: AbortController;
+          }
+        >;
+      }
+    ).processExecutionHandles;
+    const executionHandle = executionHandles.get(pid);
+    assertCondition(
+      !Object.prototype.hasOwnProperty.call(productProcess, 'kernelProcess') &&
+        !Object.prototype.hasOwnProperty.call(productProcess, 'abortController') &&
+        executionHandle?.kernelProcess.pid === pid &&
+        executionHandle.abortController instanceof AbortController,
+      `Host execution handles leaked into the mutable product process projection: ${JSON.stringify(
+        {
+          productKeys: Object.keys(productProcess),
+          executionPid: executionHandle?.kernelProcess.pid,
+          hasAbortController:
+            executionHandle?.abortController instanceof AbortController,
+        }
+      )}`
+    );
     const originalProjection = {
       ppid: productProcess.ppid,
       pgid: productProcess.pgid,
@@ -243,10 +271,12 @@ async function main(): Promise<void> {
       duplicateKernelWait._tag === 'Left' &&
         'code' in duplicateKernelWait.left &&
         duplicateKernelWait.left.code === 'ECHILD' &&
-        session.processSnapshots().length === 0,
+        session.processSnapshots().length === 0 &&
+        !executionHandles.has(pid),
       `Shell wait did not reap logical PID 1's kernel child exactly once: ${JSON.stringify({
         duplicateKernelWait,
         processes: session.processSnapshots(),
+        retainedExecutionHandle: executionHandles.has(pid),
       })}`
     );
 

@@ -710,7 +710,6 @@ type RuntimeKernelTtyName = RuntimeKernelDevicePath | '?';
 
 interface RuntimeKernelProcessRecord {
   readonly pid: number;
-  readonly kernelProcess?: TraceKernelProcess;
   ppid: number;
   pgid: number;
   sid: number;
@@ -722,7 +721,6 @@ interface RuntimeKernelProcessRecord {
   readonly actor: RuntimeWorkspaceActor;
   readonly signalPolicy: RuntimeWorkspaceProcessSignalPolicy;
   readonly startedAt: string;
-  readonly abortController?: AbortController;
   state: RuntimeKernelProcessState;
   signal?: string;
   signalCode?: number;
@@ -731,6 +729,11 @@ interface RuntimeKernelProcessRecord {
   waitRequested?: boolean;
   exitCode?: number;
   endedAt?: string;
+}
+
+interface RuntimeKernelExecutionHandle {
+  readonly kernelProcess: TraceKernelProcess;
+  readonly abortController?: AbortController;
 }
 
 interface RuntimeKernelFileDescriptorRecord {
@@ -1098,6 +1101,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly skillFiles = new Map<string, RuntimeFile>();
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly processTable = new Map<number, RuntimeKernelProcessRecord>();
+  private readonly processExecutionHandles =
+    new Map<number, RuntimeKernelExecutionHandle>();
   private readonly zombieProcessTable = new Map<number, RuntimeKernelZombieRecord>();
   private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
   private readonly anyProcessWaiters: Array<(process: RuntimeKernelProcessRecord) => void> = [];
@@ -1205,7 +1210,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           ? commandContext?.stdinPipe
           : undefined;
         const stdinPipe = request.stdinPipe ?? activeStdinPipe;
-        const signal = commandContext?.process.abortController?.signal ?? request.signal;
+        const signal = commandContext?.process
+          ? this.processExecutionHandle(commandContext.process)?.abortController?.signal ??
+            request.signal
+          : request.signal;
         const runtimeIo = commandContext?.runtimeIo;
         let acceptingRunnerEvents = true;
         let result: RuntimeCommandResult;
@@ -1406,7 +1414,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private withCurrentKernelSignal(ctx: CommandContext): CommandContext {
-    const signal = this.resolveCommandContext(ctx)?.process.abortController?.signal;
+    const process = this.resolveCommandContext(ctx)?.process;
+    const signal = process
+      ? this.processExecutionHandle(process)?.abortController?.signal
+      : undefined;
     return signal && signal !== ctx.signal ? { ...ctx, signal } : ctx;
   }
 
@@ -1562,7 +1573,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     context: RuntimeCommandExecutionContext | undefined
   ): Promise<TraceKernelSyscallResult> {
     const authority = this.traceKernelAuthority;
-    const process = context?.process.kernelProcess;
+    const process = context?.process
+      ? this.kernelProcessFor(context.process)
+      : undefined;
     if (!authority || !process) {
       return Promise.resolve({
         ok: false,
@@ -1584,7 +1597,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     context: RuntimeCommandExecutionContext | undefined,
     actor: RuntimeWorkspaceActor
   ): Promise<TraceKernelSyscallResult> | undefined {
-    if (!context?.process.kernelProcess) return undefined;
+    if (!context?.process || !this.kernelProcessFor(context.process)) {
+      return undefined;
+    }
     switch (request.op) {
       case 'watch':
         this.assertActorFileCapability(actor, 'read', request.path);
@@ -1628,9 +1643,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         return this.dispatchExtractedTraceKernelSyscall(request, context);
       }
       case 'write': {
-        const kernelProcess = (
+        const kernelProcess = this.kernelProcessFor(
           context.process as RuntimeKernelProcessRecord
-        ).kernelProcess!;
+        )!;
         const terminalDescriptor = kernelProcess
           .snapshot()
           .descriptors.find(
@@ -1696,7 +1711,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     request: TraceKernelSyscallRequest,
     context: RuntimeCommandExecutionContext | undefined
   ): Promise<TraceKernelSyscallResult> | undefined {
-    if (!context?.process.kernelProcess) return undefined;
+    if (!context?.process || !this.kernelProcessFor(context.process)) {
+      return undefined;
+    }
     switch (request.op) {
       case 'identity':
       case 'kill':
@@ -1724,7 +1741,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private synchronizeProductProcessTopology(
     process: RuntimeKernelProcessRecord
   ): void {
-    const snapshot = process.kernelProcess?.snapshot();
+    const snapshot = this.kernelProcessFor(process)?.snapshot();
     if (!snapshot) return;
     process.ppid = snapshot.ppid;
     process.pgid = snapshot.pgid;
@@ -2274,7 +2291,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       stderrFd?: number;
     } = {};
     const authority = this.traceKernelAuthority;
-    const parentKernelProcess = parent.kernelProcess;
+    const parentKernelProcess = this.kernelProcessFor(parent);
     if (!authority || !parentKernelProcess) {
       throw Object.assign(
         new Error('ESRCH: parent is not attached to the authoritative TraceKernel session'),
@@ -2329,7 +2346,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const bytes = new TextEncoder().encode(data);
       outputTail = outputTail.then(async () => {
         try {
-          const childProcess = childContext!.process.kernelProcess;
+          const childProcess = this.kernelProcessFor(
+            childContext!.process as RuntimeKernelProcessRecord
+          );
           if (!childProcess) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
           await Effect.runPromise(
             childProcess.write(
@@ -2417,7 +2436,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               stdinPump = (async () => {
                 try {
                   while (true) {
-                    const kernelChild = child.kernelProcess;
+                    const kernelChild = this.kernelProcessFor(child);
                     if (!kernelChild) {
                       throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
                     }
@@ -4383,11 +4402,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const parent =
         this.processTable.get(zombie.process.ppid) ??
         this.zombieProcessTable.get(zombie.process.ppid)?.process;
-      const liveParent = parent?.kernelProcess &&
+      const parentKernelProcess = parent
+        ? this.kernelProcessFor(parent)
+        : undefined;
+      const liveParent = parentKernelProcess &&
         authority.session.processSnapshots().some(
-          (snapshot) => snapshot.pid === parent.kernelProcess?.pid
+          (snapshot) => snapshot.pid === parentKernelProcess.pid
         )
-        ? parent.kernelProcess
+        ? parentKernelProcess
         : undefined;
       Effect.runFork(
         (
@@ -4430,6 +4452,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     ]
       .filter((process) => process.state !== 'exited')
       .sort((left, right) => left.pid - right.pid);
+  }
+
+  private processExecutionHandle(
+    process: { readonly pid: number }
+  ): RuntimeKernelExecutionHandle | undefined {
+    return this.processExecutionHandles.get(process.pid);
+  }
+
+  private kernelProcessFor(
+    process: { readonly pid: number }
+  ): TraceKernelProcess | undefined {
+    return this.processExecutionHandle(process)?.kernelProcess;
   }
 
   private kernelPresentationProcessRecords(
@@ -4745,8 +4779,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     process.signalCode = signal.code;
     process.state = 'signaled';
     this.recordKernelEvent('process-signal', process.pid, { signal: signal.name, signalCode: signal.code });
-    if (!process.abortController?.signal.aborted) {
-      process.abortController?.abort({ signal: signal.name, signalCode: signal.code, pid: process.pid });
+    const abortController = this.processExecutionHandle(process)?.abortController;
+    if (abortController && !abortController.signal.aborted) {
+      abortController.abort({ signal: signal.name, signalCode: signal.code, pid: process.pid });
     }
     return true;
   }
@@ -5543,7 +5578,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private renderProcFd(process: RuntimeKernelProcessRecord, fd: number): string | null {
-    const kernelDescriptor = process.kernelProcess?.snapshot().descriptors.find(
+    const kernelDescriptor = this.kernelProcessFor(process)?.snapshot().descriptors.find(
       (descriptor) => descriptor.fd === fd
     );
     if (kernelDescriptor) {
@@ -5572,7 +5607,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private renderProcFdInfo(process: RuntimeKernelProcessRecord, fd: number): string | null {
-    const kernelDescriptor = process.kernelProcess?.snapshot().descriptors.find(
+    const kernelDescriptor = this.kernelProcessFor(process)?.snapshot().descriptors.find(
       (descriptor) => descriptor.fd === fd
     );
     if (kernelDescriptor) {
@@ -5606,8 +5641,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private processDescriptorNumbers(
     process: RuntimeKernelProcessRecord
   ): readonly number[] {
-    return process.kernelProcess
-      ? process.kernelProcess.snapshot().descriptors.map((descriptor) => descriptor.fd)
+    const kernelProcess = this.kernelProcessFor(process);
+    return kernelProcess
+      ? kernelProcess.snapshot().descriptors.map((descriptor) => descriptor.fd)
       : process.fds.map((descriptor) => descriptor.fd);
   }
 
@@ -7156,39 +7192,43 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       | RuntimeKernelProcessRecord
       | undefined;
     const authority = this.traceKernelAuthority;
-    if (authority && caller?.kernelProcess && process.kernelProcess) {
+    const callerKernelProcess = caller
+      ? this.kernelProcessFor(caller)
+      : undefined;
+    const targetKernelProcess = this.kernelProcessFor(process);
+    if (authority && callerKernelProcess && targetKernelProcess) {
       if (foreground) {
         const wasDetached = process.tty === '?';
         const terminal = authority.session.terminalSnapshots()[0] ??
           await Effect.runPromise(
-            authority.session.bootstrapSessionTerminal(caller.kernelProcess, {
+            authority.session.bootstrapSessionTerminal(callerKernelProcess, {
               name: '/dev/tty',
             })
           );
         if (
-          !caller.kernelProcess.snapshot().descriptors.some(
+          !callerKernelProcess.snapshot().descriptors.some(
             (descriptor) =>
               descriptor.fd === 0 && descriptor.kind === 'terminal'
           )
         ) {
           await Effect.runPromise(
             authority.session.replaceTerminalStdio(
-              caller.kernelProcess,
+              callerKernelProcess,
               terminal.id
             )
           );
         }
         await Effect.runPromise(
           authority.session.replaceTerminalStdio(
-            process.kernelProcess,
+            targetKernelProcess,
             terminal.id
           )
         );
         await Effect.runPromise(
           authority.session.setTerminalForegroundProcessGroup(
-            caller.kernelProcess,
+            callerKernelProcess,
             0,
-            process.kernelProcess.snapshot().pgid
+            targetKernelProcess.snapshot().pgid
           )
         );
         process.terminalAttachedByJobControl ||= wasDetached;
@@ -7197,7 +7237,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       } else {
         if (process.terminalAttachedByJobControl) {
           await Effect.runPromise(
-            authority.session.replaceNullStandardIo(process.kernelProcess)
+            authority.session.replaceNullStandardIo(targetKernelProcess)
           );
           process.tty = '?';
           process.terminalAttachedByJobControl = false;
@@ -7207,7 +7247,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           await Effect.runPromise(
             authority.session.releaseTerminalForegroundToHost(
               terminal.id,
-              process.kernelProcess.snapshot().pgid
+              targetKernelProcess.snapshot().pgid
             )
           );
         }
@@ -7927,7 +7967,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!authority) {
       throw new Error('TraceKernel session authority is unavailable.');
     }
-    const parentPid = options.parent?.kernelProcess?.pid;
+    const parentPid = options.parent
+      ? this.kernelProcessFor(options.parent)?.pid
+      : undefined;
     const process = await Effect.runPromise(authority.session.spawn({
       runtime: this.traceKernelControlledRuntime.runtime,
       command: options.command,
@@ -7958,9 +8000,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<void> {
     const authority = this.traceKernelAuthority;
     if (!authority) return;
+    const parentKernelProcess = parent
+      ? this.kernelProcessFor(parent)
+      : undefined;
     await Effect.runPromise(
-      parent?.kernelProcess
-        ? authority.session.waitChild(parent.kernelProcess, childPid, {
+      parentKernelProcess
+        ? authority.session.waitChild(parentKernelProcess, childPid, {
             noHang: true,
           })
         : authority.session.waitInitChild(childPid, { noHang: true })
@@ -8991,7 +9036,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.nextPid = Math.max(this.nextPid, pid + 1);
     const process: RuntimeKernelProcessRecord = {
       pid,
-      kernelProcess,
       ppid: kernelSnapshot.ppid,
       pgid: kernelSnapshot.pgid,
       sid: kernelSnapshot.sid,
@@ -9003,7 +9047,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       actor,
       signalPolicy: 'standard',
       startedAt: new Date().toISOString(),
-      abortController,
       state: 'queued',
       foreground,
     };
@@ -9031,6 +9074,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
     const commandFs = new CommandBoundFileSystem(this.fs, commandContext);
     registerCommandContext(commandFs, commandContext);
+    this.processExecutionHandles.set(process.pid, {
+      kernelProcess,
+      abortController,
+    });
     this.processTable.set(process.pid, process);
     options.onProcessStart?.(process.pid);
     const clearKernelSignalHandler = await Effect.runPromise(
@@ -9049,6 +9096,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       launchHooks?.ready?.(process);
     } catch (error) {
       this.processTable.delete(process.pid);
+      this.processExecutionHandles.delete(process.pid);
       clearKernelSignalHandler();
       await Effect.runPromise(
         this.traceKernelControlledRuntime.fail(
@@ -9303,6 +9351,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       process.exitCode = processExitCode;
       process.endedAt = new Date().toISOString();
       this.processTable.delete(process.pid);
+      this.processExecutionHandles.delete(process.pid);
       this.releaseForegroundProcessGroupMember(process);
       this.reparentRuntimeChildren(process.pid);
       if (retainProcessOnExit) {
@@ -9664,6 +9713,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.traceKernelBackingFileSystem.dispose();
     this.clearAllRuntimeProcessWatchdogs();
     this.processTable.clear();
+    this.processExecutionHandles.clear();
     this.zombieProcessTable.clear();
     this.processWaiters.clear();
     this.anyProcessWaiters.splice(0);
@@ -9737,7 +9787,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ? request.executable.slice(2)
       : request.executable;
     const kernelSyscalls = this.createKernelSyscallBridge(request.commandContext);
-    const signal = request.commandContext.process.abortController?.signal;
+    const signal = this.processExecutionHandle(
+      request.commandContext.process
+    )?.abortController?.signal;
     let result: RuntimeCommandResult;
     try {
       result = await this.cppRunner({
@@ -10083,7 +10135,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.nextPid = Math.max(this.nextPid, pid + 1);
     const process: RuntimeKernelProcessRecord = {
       pid,
-      kernelProcess,
       ppid: kernelSnapshot.ppid,
       pgid: kernelSnapshot.pgid,
       sid: kernelSnapshot.sid,
@@ -10098,6 +10149,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       state: 'running',
       foreground: false,
     };
+    this.processExecutionHandles.set(process.pid, { kernelProcess });
     this.processTable.set(process.pid, process);
     let clearKernelSignalHandler: (() => void) | undefined;
     void Effect.runPromise(
@@ -10205,6 +10257,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           )
         ).catch(() => undefined);
         this.processTable.delete(process.pid);
+        this.processExecutionHandles.delete(process.pid);
         this.reparentRuntimeChildren(process.pid);
         process.state = 'exited';
         process.exitCode = 0;

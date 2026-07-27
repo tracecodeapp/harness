@@ -892,8 +892,11 @@ The remaining authority migration must preserve, in order:
    legacy input dual feed and its control-byte suppression; metadata, resize,
    input/output bytes, one-shot EOF, line discipline, foreground signal
    delivery, and fd 0/1/2 descriptors are already authoritative;
-2. move remaining host execution handles behind kernel-owned process metadata,
-   then delete the mutable product topology/lifecycle projection;
+2. delete the mutable product topology/lifecycle projection; host runtime
+   handles and interruption controllers now live in a separate PID-keyed
+   execution registry, never on the presentation record, while TraceKernel
+   remains the source of process identity, topology, lifecycle, scheduling,
+   and descriptors;
    scheduler state, shell/language wait selection and reaping, `/proc`, `ps`,
    `jobs`, foreground-group/descriptor placement, and logical PID 1 ownership
    already read or mutate authoritative state;
