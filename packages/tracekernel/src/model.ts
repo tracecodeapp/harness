@@ -1,7 +1,10 @@
 import type * as Effect from 'effect/Effect';
 import type * as Scope from 'effect/Scope';
 import type { TraceKernelDescriptorSnapshot } from './descriptors';
-import type { TraceKernelFileSystemImage } from './vfs';
+import type {
+  TraceKernelFileSystem,
+  TraceKernelFileSystemImage,
+} from './vfs';
 
 export type TraceKernelRuntimeName = string;
 
@@ -191,6 +194,11 @@ export interface TraceKernelSessionOptions {
   readonly maxDescriptorsPerProcess?: number;
   readonly maxProcesses?: number;
   readonly signalGracePeriodMs?: number;
+  /**
+   * Existing authority used by host/editor adapters and this session together.
+   * A host permits at most one live session to claim a supplied filesystem.
+   */
+  readonly fileSystem?: TraceKernelFileSystem;
   /**
    * Committed state used to construct the session-owned TKFS before any process
    * can start. After openSession succeeds, the session is the mutable authority.

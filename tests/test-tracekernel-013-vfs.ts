@@ -6,6 +6,7 @@ import * as Exit from 'effect/Exit';
 import * as Option from 'effect/Option';
 import {
   makeTraceKernelHost,
+  TraceKernelFileSystem,
   TraceKernelFileSystemError,
   type TraceKernelRuntimeProvider,
 } from '@tracecode/tracekernel';
@@ -174,6 +175,44 @@ async function main(): Promise<void> {
         'Exported image bytes remained aliased to the authoritative filesystem.'
       );
 
+      const externallyOwnedFileSystem = yield* TraceKernelFileSystem.make();
+      yield* externallyOwnedFileSystem.writeFile(
+        '/workspace/host.txt',
+        bytes('host authority'),
+        '/'
+      );
+      const attachedSession = yield* host.openSession({
+        fileSystem: externallyOwnedFileSystem,
+      });
+      assertCondition(
+        text(yield* attachedSession.readFile('host.txt')) === 'host authority',
+        'A session did not attach to the host-owned filesystem authority.'
+      );
+      const duplicateAttachment = yield* Effect.exit(host.openSession({
+        fileSystem: externallyOwnedFileSystem,
+      }));
+      assertCondition(
+        Exit.isFailure(duplicateAttachment),
+        'One host allowed two live sessions to claim the same filesystem.'
+      );
+      if (Exit.isFailure(duplicateAttachment)) {
+        const failure = Cause.failureOption(duplicateAttachment.cause);
+        assertCondition(
+          Option.isSome(failure) &&
+            failure.value instanceof TraceKernelFileSystemError &&
+            failure.value.code === 'EBUSY',
+          `Duplicate filesystem attachment failed incorrectly: ${Cause.pretty(
+            duplicateAttachment.cause
+          )}`
+        );
+      }
+      yield* attachedSession.shutdown();
+      assertCondition(
+        text(yield* externallyOwnedFileSystem.readFile('/workspace/host.txt', '/')) ===
+          'host authority',
+        'Session shutdown cleared its host-owned filesystem.'
+      );
+
       const exclusive = yield* Effect.exit(session.openFile(writer, 'append.log', {
         access: 'write',
         create: true,
@@ -224,6 +263,7 @@ async function main(): Promise<void> {
     imagePreservesHardLinks: true,
     imagePreservesSymlinks: true,
     imagePreservesMetadata: true,
+    hostOwnedAuthorityAttachment: true,
     fileDescriptionsCloseOnProcessExit: true,
   }, null, 2));
 }

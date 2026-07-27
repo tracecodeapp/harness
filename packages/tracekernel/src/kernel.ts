@@ -505,7 +505,8 @@ export class TraceKernelSession {
     readonly env: Readonly<Record<string, string>>,
     readonly maxDescriptorsPerProcess: number,
     readonly maxProcesses: number,
-    readonly signalGracePeriodMs: number
+    readonly signalGracePeriodMs: number,
+    private readonly ownsFileSystem: boolean
   ) {
     this.stopWatchingFileSystemMutations = fileSystem.watchMutations((mutation) => {
       Effect.runSync(this.watchRegistry.publish(mutation));
@@ -1830,8 +1831,11 @@ export class TraceKernelSession {
           this.processWatchdogs.clear();
           this.controllingTerminalsBySession.clear();
           this.resources.clear();
-          this.fileSystem.clear();
-          this.host.unregisterSession(this.id);
+          if (this.ownsFileSystem) this.fileSystem.clear();
+          this.host.unregisterSession(
+            this.id,
+            this.ownsFileSystem ? undefined : this.fileSystem
+          );
         }))
       );
     });
@@ -2143,6 +2147,7 @@ export class TraceKernelSession {
 
 export class TraceKernelHost {
   private readonly sessions = new Map<string, TraceKernelSession>();
+  private readonly claimedFileSystems = new WeakSet<TraceKernelFileSystem>();
   private nextSessionId = 1;
   private closed = false;
 
@@ -2164,9 +2169,18 @@ export class TraceKernelHost {
         }));
       }
       const cwd = options.cwd ?? '/workspace';
-      const fileSystem = options.fileSystemImage
-        ? yield* TraceKernelFileSystem.fromImage(options.fileSystemImage)
-        : yield* TraceKernelFileSystem.make();
+      if (options.fileSystem && options.fileSystemImage) {
+        return yield* Effect.fail(new TraceKernelFileSystemError({
+          code: 'EINVAL',
+          path: cwd,
+          message: 'EINVAL: fileSystem and fileSystemImage are mutually exclusive',
+        }));
+      }
+      const ownsFileSystem = options.fileSystem === undefined;
+      const fileSystem = options.fileSystem ??
+        (options.fileSystemImage
+          ? yield* TraceKernelFileSystem.fromImage(options.fileSystemImage)
+          : yield* TraceKernelFileSystem.make());
       const cwdStat = yield* fileSystem.stat(cwd, '/');
       if (cwdStat.kind !== 'directory') {
         return yield* Effect.fail(new TraceKernelFileSystemError({
@@ -2178,22 +2192,48 @@ export class TraceKernelHost {
       const networkNamespace = yield* TraceKernelNetworkNamespace.make();
       const sessionScope = yield* Scope.make();
       return yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const id = `session-${this.nextSessionId++}`;
-          const session = new TraceKernelSession(
-            id,
-            this,
-            sessionScope,
-            fileSystem,
-            networkNamespace,
-            cwd,
-            Object.freeze({ ...(options.env ?? {}) }),
-            normalizeDescriptorLimit(options.maxDescriptorsPerProcess),
-            normalizeProcessLimit(options.maxProcesses),
-            normalizeSignalGracePeriod(options.signalGracePeriodMs)
-          );
-          this.sessions.set(id, session);
-          return session;
+        Effect.try({
+          try: () => {
+            if (!ownsFileSystem) {
+              if (this.claimedFileSystems.has(fileSystem)) {
+                throw new TraceKernelFileSystemError({
+                  code: 'EBUSY',
+                  path: cwd,
+                  message: 'EBUSY: TKFS is already claimed by a live session',
+                });
+              }
+              this.claimedFileSystems.add(fileSystem);
+            }
+            const id = `session-${this.nextSessionId++}`;
+            try {
+              const session = new TraceKernelSession(
+                id,
+                this,
+                sessionScope,
+                fileSystem,
+                networkNamespace,
+                cwd,
+                Object.freeze({ ...(options.env ?? {}) }),
+                normalizeDescriptorLimit(options.maxDescriptorsPerProcess),
+                normalizeProcessLimit(options.maxProcesses),
+                normalizeSignalGracePeriod(options.signalGracePeriodMs),
+                ownsFileSystem
+              );
+              this.sessions.set(id, session);
+              return session;
+            } catch (error) {
+              if (!ownsFileSystem) this.claimedFileSystems.delete(fileSystem);
+              throw error;
+            }
+          },
+          catch: (error) =>
+            error instanceof TraceKernelFileSystemError
+              ? error
+              : new TraceKernelFileSystemError({
+                  code: 'EINVAL',
+                  path: cwd,
+                  message: error instanceof Error ? error.message : String(error),
+                }),
         }),
         (session) => session.shutdown()
       );
@@ -2245,8 +2285,9 @@ export class TraceKernelHost {
     });
   }
 
-  unregisterSession(id: string): void {
+  unregisterSession(id: string, fileSystem?: TraceKernelFileSystem): void {
     this.sessions.delete(id);
+    if (fileSystem) this.claimedFileSystems.delete(fileSystem);
   }
 }
 
