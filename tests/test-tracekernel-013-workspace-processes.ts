@@ -45,6 +45,8 @@ async function main(): Promise<void> {
     readonly pid: number;
     readonly ppid: number;
   }> = [];
+  let terminalRuntimeCount = 0;
+  let detachedRuntimeCount = 0;
 
   const nodeRunner: JavaScriptProjectCommandRunner = async (request) => {
     observedProcesses.push({
@@ -53,6 +55,41 @@ async function main(): Promise<void> {
       ppid: request.process?.ppid ?? -1,
     });
     const kernel = syscalls(request);
+    const tty = await dispatch(kernel, { op: 'isatty', fd: 0 });
+    const foregroundGroup = await dispatch(kernel, {
+      op: 'tcgetpgrp',
+      fd: 0,
+    });
+    if (request.terminal?.isTTY) {
+      terminalRuntimeCount += 1;
+      assertCondition(
+        tty.ok &&
+          tty.value.op === 'isatty' &&
+          tty.value.isTerminal &&
+          foregroundGroup.ok &&
+          foregroundGroup.value.op === 'tcgetpgrp' &&
+          foregroundGroup.value.pgid === request.process?.pgid,
+        `terminal process did not receive authoritative foreground state: ${JSON.stringify({
+          tty,
+          foregroundGroup,
+          process: request.process,
+        })}`
+      );
+    } else {
+      detachedRuntimeCount += 1;
+      assertCondition(
+        tty.ok &&
+          tty.value.op === 'isatty' &&
+          !tty.value.isTerminal &&
+          !foregroundGroup.ok &&
+          foregroundGroup.error.code === 'ENOTTY',
+        `detached process received a controlling terminal: ${JSON.stringify({
+          tty,
+          foregroundGroup,
+          process: request.process,
+        })}`
+      );
+    }
 
     if (request.scriptPath.endsWith('child.js')) {
       const writeFd = Number(request.args.at(-1));
@@ -208,6 +245,21 @@ async function main(): Promise<void> {
         events.includes(`process-reap\t${child.pid}\t`),
       `kernel events did not retain the child lifecycle: ${JSON.stringify(events)}`
     );
+
+    const terminal = workspace.createTerminalSession();
+    const terminalResult = await terminal.run('node parent.js');
+    assertCondition(
+      terminalResult.exitCode === 0 &&
+        terminalResult.stdout === 'child-pipe\nchild-file\nchild-exit:7\n',
+      `terminal-owned parent/child flow did not complete: ${JSON.stringify(terminalResult)}`
+    );
+    assertCondition(
+      terminalRuntimeCount === 2 && detachedRuntimeCount === 2,
+      `controlling-terminal inheritance did not match parent/child execution: ${JSON.stringify({
+        terminalRuntimeCount,
+        detachedRuntimeCount,
+      })}`
+    );
   } finally {
     workspace.dispose();
   }
@@ -219,6 +271,8 @@ async function main(): Promise<void> {
     processOwnedPipeInheritance: true,
     sharedFilesystemAcrossParentAndChild: true,
     exactlyOnceChildReaping: true,
+    controllingTerminalInheritedByChildren: true,
+    detachedCommandsReportEnotty: true,
   }, null, 2));
 }
 
