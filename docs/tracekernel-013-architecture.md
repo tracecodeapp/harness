@@ -496,8 +496,13 @@ termination record, so cooperative host signal delivery remains
 Top-level product commands opt into logical-PID-1 retention. Normal completion
 auto-reaps that kernel child; shell-retained jobs remain waitable, and the
 compatibility `wait` command's final reap now terminates at PID 1 in the
-extracted session. Product zombie selection and formatted wait publication are
-still transitional.
+extracted session. Shell exact/any selection also starts in PID 1; the selected
+kernel PID is reconciled with product completion only to publish the legacy
+formatted result. A wait requested before host execution completes marks the
+candidate waitable before entering the kernel, preventing normal host
+auto-reaping from racing PID 1. Expired compatibility zombies are likewise
+reaped from their authoritative parent instead of leaking kernel capacity.
+Formatted wait publication remains transitional.
 
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
@@ -863,11 +868,11 @@ The remaining authority migration must preserve, in order:
    legacy input dual feed and its control-byte suppression; metadata, resize,
    input/output bytes, one-shot EOF, line discipline, foreground signal
    delivery, and fd 0/1/2 descriptors are already authoritative;
-2. route shell wait selection/publication, job listings, and `/proc` lifecycle
+2. route shell wait publication, job listings, and `/proc` lifecycle
    presentation through the extracted session without maintaining a second
    mutable lifecycle or topology projection; language wait selection/reaping
-   and shell foreground-group/descriptor placement are already authoritative,
-   and logical PID 1 now owns the shell's final kernel reap;
+   and shell exact/any selection/reaping are already authoritative, as are
+   shell foreground-group/descriptor placement and logical PID 1 ownership;
 3. attribute journal and resource events directly to the authoritative process
    and eliminate the remaining transitional lifecycle observations;
 4. migrate local structured HTTP onto TCP only after the HTTP conformance

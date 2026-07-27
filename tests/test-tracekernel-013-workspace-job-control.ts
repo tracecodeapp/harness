@@ -20,8 +20,21 @@ async function main(): Promise<void> {
   const signaled = new Promise<void>((resolve) => {
     markSignaled = resolve;
   });
+  let markNormalStarted!: () => void;
+  const normalStarted = new Promise<void>((resolve) => {
+    markNormalStarted = resolve;
+  });
+  let releaseNormal!: () => void;
+  const normalReleased = new Promise<void>((resolve) => {
+    releaseNormal = resolve;
+  });
 
   const nodeRunner: JavaScriptProjectCommandRunner = async (request) => {
+    if (request.scriptPath.endsWith('normal-job.js')) {
+      markNormalStarted();
+      await normalReleased;
+      return { stdout: 'normal-exit\n', stderr: '', exitCode: 23 };
+    }
     markStarted();
     await new Promise<void>((resolve) => {
       const finish = (): void => {
@@ -42,6 +55,10 @@ async function main(): Promise<void> {
       {
         path: 'job.js',
         contents: '// long-running job-control fixture\n',
+      },
+      {
+        path: 'normal-job.js',
+        contents: '// normally completing wait fixture\n',
       },
     ],
     nodeRunner,
@@ -176,6 +193,49 @@ async function main(): Promise<void> {
         processes: session.processSnapshots(),
       })}`
     );
+
+    const normalRunning = workspace.runCommand('node normal-job.js');
+    await normalStarted;
+    const normalProcessTable = await workspace.readFile(
+      '/proc/tracekernel/processes'
+    );
+    const normalProcessLine = normalProcessTable
+      .split('\n')
+      .find((line) => line.endsWith('\tnode normal-job.js'));
+    const normalPid = Number(normalProcessLine?.split('\t')[0]);
+    assertCondition(
+      Number.isSafeInteger(normalPid) && normalPid > 1,
+      `Could not find the normally completing job: ${JSON.stringify(
+        normalProcessTable
+      )}`
+    );
+    const normalWait = workspace.runCommand(`wait ${normalPid}`);
+    releaseNormal();
+    const [normalResult, normalWaited] = await Promise.all([
+      normalRunning,
+      normalWait,
+    ]);
+    assertCondition(
+      normalResult.exitCode === 23 &&
+        normalResult.stdout === 'normal-exit\n' &&
+        normalWaited.exitCode === 23 &&
+        normalWaited.stdout.includes(`pid\t${normalPid}\n`),
+      `A pre-exit shell wait raced normal auto-reaping: ${JSON.stringify({
+        normalResult,
+        normalWaited,
+      })}`
+    );
+    const duplicateNormalWait = await Effect.runPromise(
+      Effect.either(session.waitInitChild(normalPid, { noHang: true }))
+    );
+    assertCondition(
+      duplicateNormalWait._tag === 'Left' &&
+        'code' in duplicateNormalWait.left &&
+        duplicateNormalWait.left.code === 'ECHILD',
+      `Normally completing shell wait was not exactly once: ${JSON.stringify(
+        duplicateNormalWait
+      )}`
+    );
   } finally {
     workspace.dispose();
   }
@@ -189,6 +249,7 @@ async function main(): Promise<void> {
     productStatusReadsThroughKernelPlacement: true,
     shellJobLifecycleReaped: true,
     shellWaitReapsLogicalInitChildExactlyOnce: true,
+    preExitShellWaitBeatsNormalAutoReap: true,
   }, null, 2));
 }
 

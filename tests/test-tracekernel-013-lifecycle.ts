@@ -249,9 +249,7 @@ async function main(): Promise<void> {
           retainedCapacity
         )}`
       );
-      const initReaped = yield* initWaitSession.waitInitChild(
-        retainedTopLevel.pid
-      );
+      const initReaped = yield* initWaitSession.waitInitChild(-1);
       assertCondition(
         initReaped?.pid === retainedTopLevel.pid &&
           initReaped.termination?.kind === 'exit',
