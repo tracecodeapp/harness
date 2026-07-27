@@ -106,6 +106,7 @@ import {
   type TraceKernelHttp1Message,
   type TraceKernelHttp1Request,
   type TraceKernelHttp1Response,
+  type TraceKernelHostStandardIo,
   type TraceKernelFileSystemImage,
   type TraceKernelFileSystemPolicy,
   type TraceKernelHost,
@@ -732,6 +733,13 @@ interface RuntimeKernelProcessRecord {
 interface RuntimeKernelExecutionHandle {
   readonly kernelProcess: TraceKernelProcess;
   readonly abortController?: AbortController;
+  readonly hostStandardIo?: TraceKernelHostStandardIo;
+  hostOutputContext?: RuntimeCommandExecutionContext;
+  hostStdinPumpStarted?: boolean;
+  stopHostStdinPump?: boolean;
+  hostStdinPump?: Promise<void>;
+  hostStdoutDrain?: Promise<void>;
+  hostStderrDrain?: Promise<void>;
   pendingSignal?: {
     readonly name: string;
     readonly code: number;
@@ -1211,10 +1219,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.kernelNetwork = new RuntimeKernelNetworkManager(this.kernelDescriptors);
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>,
-      options: { kernelSyscalls?: boolean } = {}
+      options: {
+        kernelSyscalls?: boolean;
+        descriptorStdio?: boolean;
+      } = {}
     ): RuntimeProjectCommandRunner<Request> => (
       async (request, ctx?: CommandContext) => {
         const commandContext = this.resolveCommandContext(ctx);
+        const {
+          stdinPipe: _legacyRequestStdinPipe,
+          ...requestWithoutLegacyStdin
+        } = request;
         const activeStdinPipe = request.source !== 'compile' && request.source !== 'stdin'
           ? commandContext?.stdinPipe
           : undefined;
@@ -1229,12 +1244,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const kernelSyscalls = options.kernelSyscalls
           ? this.createKernelSyscallBridge(commandContext)
           : undefined;
+        if (options.descriptorStdio && commandContext) {
+          this.startHostStandardInputPump(commandContext);
+        }
         const processSnapshot = commandContext?.process
           ? this.authoritativeProcessSnapshot(commandContext.process)
           : undefined;
         try {
           result = await runner({
-            ...request,
+            ...(options.descriptorStdio ? requestWithoutLegacyStdin : request),
             ...(commandContext?.process && processSnapshot
               ? {
                   process: {
@@ -1248,7 +1266,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                   },
                 }
               : {}),
-            ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
+            ...(
+              stdinPipe && !options.descriptorStdio
+                ? { stdinPipe: { buffer: stdinPipe.buffer } }
+                : {}
+            ),
             ...(commandContext?.terminal ? { terminal: commandContext.terminal } : {}),
             ...(signal ? { signal } : {}),
             kernelHttp: this.createKernelHttpBridge(commandContext),
@@ -1302,7 +1324,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.snapshotForCommand(includeHiddenFiles);
     const exposedCustomCommands: CustomCommand[] = [
       ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner, { kernelSyscalls: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
-      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner, { kernelSyscalls: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
+      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
       ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
@@ -1658,39 +1680,73 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const kernelProcess = this.kernelProcessFor(
           context.process as RuntimeKernelProcessRecord
         )!;
-        const terminalDescriptor = kernelProcess
+        const descriptor = kernelProcess
           .snapshot()
           .descriptors.find(
-            (descriptor) =>
-              descriptor.fd === request.fd &&
-              descriptor.kind === 'terminal'
+            (candidate) => candidate.fd === request.fd
           );
+        const currentHandle = this.processExecutionHandle(
+          context.process as RuntimeKernelProcessRecord
+        );
+        const hostOutputHandle = currentHandle?.hostStandardIo &&
+          (
+            descriptor?.resourceId === currentHandle.hostStandardIo.stdoutResourceId ||
+            descriptor?.resourceId === currentHandle.hostStandardIo.stderrResourceId
+          )
+          ? currentHandle
+          : [...this.processExecutionHandles.values()].find((candidate) =>
+              descriptor?.resourceId === candidate.hostStandardIo?.stdoutResourceId ||
+              descriptor?.resourceId === candidate.hostStandardIo?.stderrResourceId
+            );
+        const hostStandardIo = hostOutputHandle?.hostStandardIo;
+        const outputStream =
+          descriptor?.kind === 'terminal'
+            ? request.fd === 2 ? 'stderr' as const : 'stdout' as const
+            : descriptor?.resourceId === hostStandardIo?.stdoutResourceId
+              ? 'stdout' as const
+              : descriptor?.resourceId === hostStandardIo?.stderrResourceId
+                ? 'stderr' as const
+                : undefined;
         const dispatched = this.dispatchExtractedTraceKernelSyscall(
           request,
           context
         );
-        if (!terminalDescriptor) return dispatched;
+        if (!outputStream || !descriptor) return dispatched;
         return dispatched.then(async (result) => {
           if (
             result.ok &&
             result.value.op === 'write' &&
             result.value.bytesWritten > 0
           ) {
-            await Effect.runPromise(
-              this.traceKernelAuthority!.session.readTerminalOutput(
-                terminalDescriptor.resourceId,
-                result.value.bytesWritten,
-                true
+            if (descriptor.kind === 'terminal') {
+              await Effect.runPromise(
+                this.traceKernelAuthority!.session.readTerminalOutput(
+                  descriptor.resourceId,
+                  result.value.bytesWritten,
+                  true
+                )
+              );
+            }
+            const outputContext =
+              descriptor.kind === 'terminal'
+                ? context
+                : hostOutputHandle?.hostOutputContext ?? context;
+            const data = this.captureDeviceOutput(
+              outputContext,
+              outputStream,
+              new TextDecoder().decode(
+                request.bytes.slice(0, result.value.bytesWritten)
               )
             );
-            this.emitLocalRuntimeEvent({
-              type: 'output',
-              stream: request.fd === 2 ? 'stderr' : 'stdout',
-              device: request.fd === 2 ? '/dev/stderr' : '/dev/stdout',
-              data: new TextDecoder().decode(
-                request.bytes.slice(0, result.value.bytesWritten)
-              ),
-            }, context);
+            if (data) {
+              this.emitLocalRuntimeEvent({
+                type: 'output',
+                stream: outputStream,
+                device: outputStream === 'stderr' ? '/dev/stderr' : '/dev/stdout',
+                data,
+                actor: context.actor,
+              }, outputContext);
+            }
           }
           return result;
         });
@@ -2273,9 +2329,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       resolveCreated = resolve;
       rejectCreated = reject;
     });
-    const stdinPipe = request.stdio?.stdin === 'pipe'
+    const descriptorStdio = request.runtime === 'javascript';
+    const stdinPipe = !descriptorStdio && request.stdio?.stdin === 'pipe'
       ? createRuntimeCommandStdinPipe()
-      : request.stdio?.stdin === 'inherit'
+      : !descriptorStdio && request.stdio?.stdin === 'inherit'
         ? parentContext?.stdinPipe
         : undefined;
     const parentStdio: {
@@ -2383,7 +2440,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         initialize: async (child, context) => {
           childContext = context;
           try {
-            if (request.stdio?.stdin === 'pipe' && stdinPipe) {
+            if (!descriptorStdio && request.stdio?.stdin === 'pipe' && stdinPipe) {
               stdinPump = (async () => {
                 try {
                   while (true) {
@@ -4566,6 +4623,67 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     process: { readonly pid: number }
   ): RuntimeKernelExecutionHandle | undefined {
     return this.processExecutionHandles.get(process.pid);
+  }
+
+  private startHostStandardOutputDrains(
+    handle: RuntimeKernelExecutionHandle
+  ): void {
+    const stdio = handle.hostStandardIo;
+    if (!stdio || handle.hostStdoutDrain || handle.hostStderrDrain) return;
+    const drain = async (
+      read: (maxBytes: number) => Effect.Effect<Uint8Array, Error>
+    ): Promise<void> => {
+      while (true) {
+        const bytes = await Effect.runPromise(read(64 * 1024));
+        if (bytes.byteLength === 0) return;
+      }
+    };
+    handle.hostStdoutDrain = drain(stdio.readStdout);
+    handle.hostStderrDrain = drain(stdio.readStderr);
+  }
+
+  private startHostStandardInputPump(
+    context: RuntimeCommandExecutionContext
+  ): void {
+    const handle = this.processExecutionHandle(context.process);
+    const stdio = handle?.hostStandardIo;
+    if (!handle || !stdio || handle.hostStdinPumpStarted) return;
+    handle.hostStdinPumpStarted = true;
+    handle.hostStdinPump = (async () => {
+      try {
+        const stdinPipe = context.stdinPipe;
+        if (!stdinPipe) return;
+        while (!handle.stopHostStdinPump) {
+          const bytes = readRuntimeCommandStdinPipeBytes(stdinPipe);
+          if (bytes.byteLength > 0) {
+            await Effect.runPromise(stdio.writeStdin(bytes));
+            continue;
+          }
+          if (runtimeCommandStdinPipeClosed(stdinPipe)) return;
+          await new Promise<void>((resolve) => setTimeout(resolve, 8));
+        }
+      } catch (error) {
+        const code = (error as { code?: unknown } | null)?.code;
+        if (code !== 'EPIPE' && code !== 'EBADF') throw error;
+      } finally {
+        await Effect.runPromise(stdio.closeStdin());
+      }
+    })();
+  }
+
+  private async closeHostStandardIo(
+    handle: RuntimeKernelExecutionHandle | undefined
+  ): Promise<void> {
+    const stdio = handle?.hostStandardIo;
+    if (!handle || !stdio) return;
+    handle.stopHostStdinPump = true;
+    await Effect.runPromise(stdio.closeStdin());
+    await handle.hostStdinPump;
+    await Promise.all([
+      handle.hostStdoutDrain,
+      handle.hostStderrDrain,
+    ]);
+    await Effect.runPromise(stdio.close());
   }
 
   private kernelProcessFor(
@@ -8781,7 +8899,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ? contextOrActor
       : undefined;
     if (commandContext) {
-      this.captureDeviceOutput(commandContext, route.stream, data);
+      data = this.captureDeviceOutput(commandContext, route.stream, data);
+      if (!data) return;
     }
     this.emitLocalRuntimeEvent({
       type: 'output',
@@ -8797,10 +8916,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     context: RuntimeCommandExecutionContext,
     stream: RuntimeCommandEventStream,
     data: string
-  ): void {
+  ): string {
     const chunk = this.captureCommandOutput(context, stream, data);
     if (stream === 'stdout') context.deviceStdout += chunk;
     if (stream === 'stderr') context.deviceStderr += chunk;
+    return chunk;
   }
 
   private captureCommandOutput(
@@ -8828,8 +8948,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>
   ): Pick<RuntimeCommandResult, 'stdout' | 'stderr'> {
     return {
-      stdout: this.captureCommandOutput(context, 'stdout', result.stdout),
-      stderr: this.captureCommandOutput(context, 'stderr', result.stderr),
+      stdout:
+        this.captureCommandOutput(context, 'stdout', result.stdout) +
+        context.deviceStdout,
+      stderr:
+        this.captureCommandOutput(context, 'stderr', result.stderr) +
+        context.deviceStderr,
     };
   }
 
@@ -9277,19 +9401,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         processGroupId: launchHooks?.kernelProcessGroupId,
         sessionId: launchHooks?.kernelSessionId,
       });
+    const authority = this.traceKernelAuthority;
+    if (!authority) {
+      throw new Error('TraceKernel session authority is unavailable.');
+    }
     if (launchHooks?.kernelProcess) {
-      const authority = this.traceKernelAuthority;
-      if (!authority) {
-        throw new Error('TraceKernel session authority is unavailable.');
-      }
       await Effect.runPromise(authority.session.ensureNullStandardIo(kernelProcess));
       await Effect.runPromise(kernelProcess.awaitStarted());
     }
     if (terminalPresentation) {
-      const authority = this.traceKernelAuthority;
-      if (!authority) {
-        throw new Error('TraceKernel session authority is unavailable.');
-      }
       const terminal = await Effect.runPromise(
         authority.session.bootstrapSessionTerminal(kernelProcess, {
           name: '/dev/tty',
@@ -9311,11 +9431,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.setProcessGroupForeground(kernelProcess.snapshot().pgid, true);
       }
     }
+    const hostStandardIo =
+      !terminalPresentation && !launchHooks?.kernelProcess
+        ? await Effect.runPromise(
+            authority.session.attachHostStandardIo(kernelProcess)
+          )
+        : undefined;
     const kernelSnapshot = kernelProcess.snapshot();
-    const authority = this.traceKernelAuthority;
-    if (!authority) {
-      throw new Error('TraceKernel session authority is unavailable.');
-    }
     await Effect.runPromise(
       authority.session.setProcessSchedulingState(kernelProcess, 'queued')
     );
@@ -9363,10 +9485,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
     const commandFs = new CommandBoundFileSystem(this.fs, commandContext);
     registerCommandContext(commandFs, commandContext);
-    this.processExecutionHandles.set(process.pid, {
+    const executionHandle: RuntimeKernelExecutionHandle = {
       kernelProcess,
       abortController,
-    });
+      ...(hostStandardIo ? { hostStandardIo } : {}),
+    };
+    executionHandle.hostOutputContext = commandContext;
+    this.processExecutionHandles.set(process.pid, executionHandle);
+    this.startHostStandardOutputDrains(executionHandle);
     this.processTable.set(process.pid, process);
     options.onProcessStart?.(process.pid);
     const clearKernelSignalHandler = await Effect.runPromise(
@@ -9394,6 +9520,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         )
       );
       await Effect.runPromise(kernelProcess.wait()).catch(() => undefined);
+      await this.closeHostStandardIo(executionHandle);
       this.releaseForegroundProcessGroupMember(process);
       await this.kernelDescriptors.closeProcess(process.pid);
       throw error;
@@ -9522,8 +9649,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           }
         }
         return {
-          stdout: `${output.stdout}${commandContext.deviceStdout}`,
-          stderr: `${output.stderr}${commandContext.deviceStderr}`,
+          stdout: output.stdout,
+          stderr: output.stderr,
           exitCode: result.exitCode,
           ...(commandContext.kernelError ? { error: commandContext.kernelError } : {}),
           ...(!commandContext.kernelError && (result as RuntimeCommandResult).error ? { error: (result as RuntimeCommandResult).error } : {}),
@@ -9631,6 +9758,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const finalKernelSnapshot = await Effect.runPromise(
         kernelProcess.wait()
       ).catch(() => undefined);
+      await this.closeHostStandardIo(
+        this.processExecutionHandle(process)
+      );
       if (!retainProcessOnExit) {
         await this.reapControlledTraceKernelChild(parent, process.pid);
       }
@@ -10102,6 +10232,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const processSnapshot = this.authoritativeProcessSnapshot(
       request.commandContext.process
     );
+    this.startHostStandardInputPump(request.commandContext);
     let result: RuntimeCommandResult;
     try {
       result = await this.cppRunner({
@@ -10117,7 +10248,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           pgid: processSnapshot?.pgid ?? request.commandContext.process.pgid,
           sid: processSnapshot?.sid ?? request.commandContext.process.sid,
         },
-        ...(request.stdinPipe ? { stdinPipe: { buffer: request.stdinPipe.buffer } } : {}),
         ...(request.commandContext.terminal
           ? { terminal: request.commandContext.terminal }
           : {}),

@@ -8,6 +8,9 @@ import type {
   RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
 } from '../packages/harness-core/src/runtime-project';
+import {
+  createRuntimeCommandStdinPipeFromText,
+} from '../packages/harness-core/src/runtime-project';
 import type {
   TraceKernelSession,
   TraceKernelSyscallRequest,
@@ -156,6 +159,19 @@ async function main(): Promise<void> {
         authoritativeProcess?.descriptors.filter(
           (descriptor) => descriptor.fd >= 0 && descriptor.fd <= 2
         );
+      const detachedStdioKinds = new Map(
+        detachedStandardDescriptors?.map((descriptor) => [
+          descriptor.fd,
+          descriptor.kind,
+        ])
+      );
+      const hasHostAttachedStandardIo =
+        detachedStdioKinds.get(0) === 'pipe-reader' &&
+        detachedStdioKinds.get(1) === 'pipe-writer' &&
+        detachedStdioKinds.get(2) === 'pipe-writer';
+      const hasNullStandardIo = detachedStandardDescriptors?.every(
+        (descriptor) => descriptor.kind === 'device'
+      );
       assertCondition(
         tty.ok &&
           tty.value.op === 'isatty' &&
@@ -163,10 +179,12 @@ async function main(): Promise<void> {
           !foregroundGroup.ok &&
           foregroundGroup.error.code === 'ENOTTY' &&
           detachedStandardDescriptors?.length === 3 &&
-          detachedStandardDescriptors.every(
-            (descriptor) => descriptor.kind === 'device'
+          (
+            request.process?.ppid === 1
+              ? hasHostAttachedStandardIo
+              : hasNullStandardIo
           ),
-        `detached process received a controlling terminal: ${JSON.stringify({
+        `detached process standard descriptors did not match its host/child boundary: ${JSON.stringify({
           tty,
           foregroundGroup,
           detachedStandardDescriptors,
@@ -294,6 +312,53 @@ async function main(): Promise<void> {
         `terminal EOF did not produce a one-shot fd 0 EOF: ${JSON.stringify(input)}`
       );
       return { stdout: 'kernel-eof\n', stderr: '', exitCode: 0 };
+    }
+    if (request.scriptPath.endsWith('detached-stdio.js')) {
+      assertCondition(
+        request.stdinPipe === undefined,
+        'descriptor-capable JavaScript received the legacy stdin transport'
+      );
+      const input = await dispatch(kernel, {
+        op: 'read',
+        fd: 0,
+        maxBytes: 64,
+      });
+      const eof = await dispatch(kernel, {
+        op: 'read',
+        fd: 0,
+        maxBytes: 64,
+      });
+      const stdout = await dispatch(kernel, {
+        op: 'write',
+        fd: 1,
+        bytes: new TextEncoder().encode('detached-stdout\n'),
+      });
+      const stderr = await dispatch(kernel, {
+        op: 'write',
+        fd: 2,
+        bytes: new TextEncoder().encode('detached-stderr\n'),
+      });
+      assertCondition(
+        input.ok &&
+          input.value.op === 'read' &&
+          new TextDecoder().decode(input.value.bytes) === 'detached-input' &&
+          eof.ok &&
+          eof.value.op === 'read' &&
+          eof.value.bytes.byteLength === 0 &&
+          stdout.ok &&
+          stdout.value.op === 'write' &&
+          stdout.value.bytesWritten === 16 &&
+          stderr.ok &&
+          stderr.value.op === 'write' &&
+          stderr.value.bytesWritten === 16,
+        `detached stdio did not cross kernel fd 0/1/2: ${JSON.stringify({
+          input,
+          eof,
+          stdout,
+          stderr,
+        })}`
+      );
+      return { stdout: '', stderr: '', exitCode: 0 };
     }
     if (request.scriptPath.endsWith('interrupt-parent.js')) {
       request.signal?.addEventListener(
@@ -608,6 +673,10 @@ async function main(): Promise<void> {
         path: 'terminal-eof.js',
         contents: '// authoritative terminal-EOF fixture\n',
       },
+      {
+        path: 'detached-stdio.js',
+        contents: '// authoritative detached-stdio fixture\n',
+      },
     ],
     nodeRunner,
   });
@@ -635,6 +704,45 @@ async function main(): Promise<void> {
     });
 
   try {
+    const detachedEvents: Array<{
+      type: string;
+      stream?: string;
+      data?: string;
+      actor?: { id?: string };
+    }> = [];
+    const detachedStdioResult = await workspace.runCommand(
+      'node detached-stdio.js',
+      {
+        stdinPipe: createRuntimeCommandStdinPipeFromText('detached-input'),
+        onEvent: (event) => {
+          detachedEvents.push(event);
+        },
+      }
+    );
+    assertCondition(
+      detachedStdioResult.exitCode === 0 &&
+        detachedStdioResult.stdout === 'detached-stdout\n' &&
+        detachedStdioResult.stderr === 'detached-stderr\n' &&
+        detachedEvents.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'detached-stdout\n' &&
+            typeof event.actor?.id === 'string'
+        ) &&
+        detachedEvents.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stderr' &&
+            event.data === 'detached-stderr\n' &&
+            typeof event.actor?.id === 'string'
+        ),
+      `detached host stdio was not captured at the kernel boundary: ${JSON.stringify({
+        result: detachedStdioResult,
+        events: detachedEvents,
+      })}`
+    );
+
     const result = await workspace.runCommand('node parent.js');
     assertCondition(
       result.exitCode === 0 &&
@@ -744,7 +852,7 @@ async function main(): Promise<void> {
       )}`
     );
     assertCondition(
-      terminalRuntimeCount === 8 && detachedRuntimeCount === 4,
+      terminalRuntimeCount === 8 && detachedRuntimeCount === 5,
       `controlling-terminal inheritance did not match parent/child execution: ${JSON.stringify({
         terminalRuntimeCount,
         detachedRuntimeCount,
@@ -850,6 +958,7 @@ async function main(): Promise<void> {
     kernelOwnedTerminalInput: true,
     kernelOwnedTerminalOutput: true,
     kernelOwnedTerminalEof: true,
+    kernelOwnedDetachedStdio: true,
     terminalSignalCharacters: ['VINTR', 'VQUIT'],
   }, null, 2));
 }
