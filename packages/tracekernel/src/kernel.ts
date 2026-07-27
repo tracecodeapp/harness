@@ -2181,6 +2181,13 @@ export class TraceKernelSession {
     accesses: readonly {
       readonly path: string;
       readonly permission: TraceKernelFileSystemPermission;
+      /** Whether policy canonicalization follows the final symlink. */
+      readonly followFinal?: boolean;
+      /**
+       * Resolve the nearest existing ancestor and preserve the unresolved
+       * suffix. Only recursive namespace operations should set this.
+       */
+      readonly allowMissingSuffix?: boolean;
     }[]
   ): Effect.Effect<void, Error> {
     if (!this.fileSystemPolicy || accesses.length === 0) return Effect.void;
@@ -2190,7 +2197,13 @@ export class TraceKernelSession {
       const normalized = yield* Effect.forEach(
         accesses,
         (access): Effect.Effect<TraceKernelFileSystemAccess, Error> =>
-          this.normalizePolicyAccess(access.path, access.permission, snapshot.cwd)
+          this.normalizePolicyAccess(
+            access.path,
+            access.permission,
+            snapshot.cwd,
+            access.followFinal !== false,
+            access.allowMissingSuffix === true
+          )
       );
       yield* this.fileSystemPolicy!.authorize(Object.freeze({
         pid: snapshot.pid,
@@ -2444,28 +2457,48 @@ export class TraceKernelSession {
   private normalizePolicyAccess(
     path: string,
     permission: TraceKernelFileSystemPermission,
-    cwd: string
+    cwd: string,
+    followFinal = true,
+    allowMissingSuffix = false
   ): Effect.Effect<TraceKernelFileSystemAccess, Error> {
     return Effect.gen(this, function* () {
       const requestedPath = yield* this.fileSystem.resolve(path, cwd);
-      const resolved = yield* Effect.either(this.fileSystem.realpath(requestedPath, '/'));
-      if (resolved._tag === 'Right') {
-        return Object.freeze({
-          requestedPath,
-          path: resolved.right,
-          permission,
-        });
+      const finalSeparator = requestedPath.lastIndexOf('/');
+      let candidate = followFinal || requestedPath === '/'
+        ? requestedPath
+        : finalSeparator <= 0
+          ? '/'
+          : requestedPath.slice(0, finalSeparator);
+      const missingSuffix: string[] = followFinal || requestedPath === '/'
+        ? []
+        : [requestedPath.slice(finalSeparator + 1)];
+      while (true) {
+        const resolved = yield* Effect.either(
+          this.fileSystem.realpath(candidate, '/')
+        );
+        if (resolved._tag === 'Right') {
+          const canonicalPath = missingSuffix.length === 0
+            ? resolved.right
+            : resolved.right === '/'
+              ? `/${missingSuffix.join('/')}`
+              : `${resolved.right}/${missingSuffix.join('/')}`;
+          return Object.freeze({
+            requestedPath,
+            path: canonicalPath,
+            permission,
+          });
+        }
+        if (resolved.left.code !== 'ENOENT') {
+          return yield* Effect.fail(resolved.left);
+        }
+        if (!allowMissingSuffix && missingSuffix.length > 0) {
+          return yield* Effect.fail(resolved.left);
+        }
+        if (candidate === '/') return yield* Effect.fail(resolved.left);
+        const separator = candidate.lastIndexOf('/');
+        missingSuffix.unshift(candidate.slice(separator + 1));
+        candidate = separator <= 0 ? '/' : candidate.slice(0, separator);
       }
-      if (resolved.left.code !== 'ENOENT') return yield* Effect.fail(resolved.left);
-      const separator = requestedPath.lastIndexOf('/');
-      const parent = separator <= 0 ? '/' : requestedPath.slice(0, separator);
-      const name = requestedPath.slice(separator + 1);
-      const realParent = yield* this.fileSystem.realpath(parent, '/');
-      return Object.freeze({
-        requestedPath,
-        path: realParent === '/' ? `/${name}` : `${realParent}/${name}`,
-        permission,
-      });
     });
   }
 

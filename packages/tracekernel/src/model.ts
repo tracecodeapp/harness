@@ -233,7 +233,11 @@ export type TraceKernelFileSystemPermission =
 export interface TraceKernelFileSystemAccess {
   /** Lexically normalized path requested by the process. */
   readonly requestedPath: string;
-  /** Existing realpath, or real parent plus a missing final component. */
+  /**
+   * Existing realpath, or the canonical nearest existing ancestor plus the
+   * unresolved suffix admitted by the syscall (one basename normally; the
+   * complete missing suffix for recursive namespace creation).
+   */
   readonly path: string;
   readonly permission: TraceKernelFileSystemPermission;
 }

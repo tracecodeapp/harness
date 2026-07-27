@@ -808,7 +808,11 @@ export class TraceKernelSyscallDispatcher {
           Effect.map((stat) => ({ op: 'stat' as const, stat }))
         );
       case 'lstat':
-        return this.authorizeFileSystem([{ path: request.path, permission: 'metadata' }]).pipe(
+        return this.authorizeFileSystem([{
+          path: request.path,
+          permission: 'metadata',
+          followFinal: false,
+        }]).pipe(
           Effect.zipRight(this.session.fileSystem.lstat(
             request.path,
             this.process.snapshot().cwd
@@ -832,7 +836,12 @@ export class TraceKernelSyscallDispatcher {
           Effect.map((entries) => ({ op: 'readdir' as const, entries }))
         );
       case 'mkdir':
-        return this.authorizeFileSystem([{ path: request.path, permission: 'write' }]).pipe(
+        return this.authorizeFileSystem([{
+          path: request.path,
+          permission: 'write',
+          followFinal: false,
+          allowMissingSuffix: request.options?.recursive === true,
+        }]).pipe(
           Effect.zipRight(this.session.fileSystem.mkdir(
             request.path,
             request.options,
@@ -841,7 +850,11 @@ export class TraceKernelSyscallDispatcher {
           Effect.as({ op: 'mkdir' as const })
         );
       case 'rmdir':
-        return this.authorizeFileSystem([{ path: request.path, permission: 'delete' }]).pipe(
+        return this.authorizeFileSystem([{
+          path: request.path,
+          permission: 'delete',
+          followFinal: false,
+        }]).pipe(
           Effect.zipRight(this.session.fileSystem.rmdir(
             request.path,
             this.process.snapshot().cwd
@@ -849,7 +862,11 @@ export class TraceKernelSyscallDispatcher {
           Effect.as({ op: 'rmdir' as const })
         );
       case 'unlink':
-        return this.authorizeFileSystem([{ path: request.path, permission: 'delete' }]).pipe(
+        return this.authorizeFileSystem([{
+          path: request.path,
+          permission: 'delete',
+          followFinal: false,
+        }]).pipe(
           Effect.zipRight(this.session.fileSystem.unlink(
             request.path,
             this.process.snapshot().cwd
@@ -858,8 +875,16 @@ export class TraceKernelSyscallDispatcher {
         );
       case 'link':
         return this.authorizeFileSystem([
-          { path: request.existingPath, permission: 'read' },
-          { path: request.newPath, permission: 'write' },
+          {
+            path: request.existingPath,
+            permission: 'read',
+            followFinal: false,
+          },
+          {
+            path: request.newPath,
+            permission: 'write',
+            followFinal: false,
+          },
         ]).pipe(
           Effect.zipRight(this.session.fileSystem.link(
             request.existingPath,
@@ -869,7 +894,11 @@ export class TraceKernelSyscallDispatcher {
           Effect.as({ op: 'link' as const })
         );
       case 'symlink':
-        return this.authorizeFileSystem([{ path: request.linkPath, permission: 'write' }]).pipe(
+        return this.authorizeFileSystem([{
+          path: request.linkPath,
+          permission: 'write',
+          followFinal: false,
+        }]).pipe(
           Effect.zipRight(this.session.fileSystem.symlink(
             request.target,
             request.linkPath,
@@ -878,7 +907,11 @@ export class TraceKernelSyscallDispatcher {
           Effect.as({ op: 'symlink' as const })
         );
       case 'readlink':
-        return this.authorizeFileSystem([{ path: request.path, permission: 'read' }]).pipe(
+        return this.authorizeFileSystem([{
+          path: request.path,
+          permission: 'read',
+          followFinal: false,
+        }]).pipe(
           Effect.zipRight(this.session.fileSystem.readlink(
             request.path,
             this.process.snapshot().cwd
@@ -887,8 +920,16 @@ export class TraceKernelSyscallDispatcher {
         );
       case 'rename':
         return this.authorizeFileSystem([
-          { path: request.sourcePath, permission: 'delete' },
-          { path: request.destinationPath, permission: 'write' },
+          {
+            path: request.sourcePath,
+            permission: 'delete',
+            followFinal: false,
+          },
+          {
+            path: request.destinationPath,
+            permission: 'write',
+            followFinal: false,
+          },
         ]).pipe(
           Effect.zipRight(this.session.fileSystem.rename(
             request.sourcePath,
@@ -925,6 +966,8 @@ export class TraceKernelSyscallDispatcher {
     accesses: readonly {
       readonly path: string;
       readonly permission: 'read' | 'write' | 'delete' | 'metadata';
+      readonly followFinal?: boolean;
+      readonly allowMissingSuffix?: boolean;
     }[]
   ): Effect.Effect<void, Error> {
     return this.session.authorizeFileSystem(this.process, accesses);

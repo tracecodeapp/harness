@@ -1021,6 +1021,10 @@ async function main(): Promise<void> {
         new TextEncoder().encode('protected')
       );
       yield* policySession.symlink('protected.txt', 'alias.txt');
+      yield* policySession.mkdir('canonical-parent');
+      yield* policySession.symlink('canonical-parent', 'directory-alias');
+      yield* policySession.symlink('policy-loop-b', 'policy-loop-a');
+      yield* policySession.symlink('policy-loop-a', 'policy-loop-b');
       const policyProcess = yield* policySession.spawn({
         runtime: 'syscall-test',
         command: 'policy-syscall-client',
@@ -1047,9 +1051,51 @@ async function main(): Promise<void> {
         bytes: new TextEncoder().encode('allowed'),
       });
       success(allowedWrite);
+      const recursiveMkdir = yield* policySyscalls.dispatch({
+        op: 'mkdir',
+        path: 'directory-alias/missing/nested',
+        options: { recursive: true },
+      });
+      success(recursiveMkdir);
+      const recursiveDirectory = yield* policySession.fileSystem.stat(
+        'canonical-parent/missing/nested'
+      );
+      assertCondition(
+        recursiveDirectory.kind === 'directory',
+        'Recursive mkdir did not create the authorized missing suffix.'
+      );
+      const nonRecursiveMkdir = yield* policySyscalls.dispatch({
+        op: 'mkdir',
+        path: 'non-recursive-parent/nested',
+      });
+      assertCondition(
+        !nonRecursiveMkdir.ok && nonRecursiveMkdir.error.code === 'ENOENT',
+        `Non-recursive mkdir admitted a missing parent: ${JSON.stringify(
+          nonRecursiveMkdir
+        )}`
+      );
+      const cyclicLinkStat = yield* policySyscalls.dispatch({
+        op: 'lstat',
+        path: 'policy-loop-a',
+      });
+      success(cyclicLinkStat);
+      assertCondition(
+        cyclicLinkStat.value.op === 'lstat' &&
+          cyclicLinkStat.value.stat.kind === 'symlink',
+        'Filesystem policy followed the final symlink for lstat.'
+      );
+      const cyclicLinkUnlink = yield* policySyscalls.dispatch({
+        op: 'unlink',
+        path: 'policy-loop-a',
+      });
+      success(cyclicLinkUnlink);
       assertCondition(
         authorizedPaths.includes('/workspace/protected.txt') &&
-          authorizedPaths.includes('/workspace/allowed.txt'),
+          authorizedPaths.includes('/workspace/allowed.txt') &&
+          authorizedPaths.includes(
+            '/workspace/canonical-parent/missing/nested'
+          ) &&
+          authorizedPaths.includes('/workspace/policy-loop-a'),
         `Filesystem policy did not receive canonical paths: ${JSON.stringify(
           authorizedPaths
         )}`
