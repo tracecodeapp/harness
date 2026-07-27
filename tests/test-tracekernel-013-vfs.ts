@@ -213,6 +213,64 @@ async function main(): Promise<void> {
         'Session shutdown cleared its host-owned filesystem.'
       );
 
+      const quotaFileSystem = yield* TraceKernelFileSystem.make({
+        quota: {
+          root: '/workspace',
+          maxBytes: 8,
+          maxFileBytes: 6,
+          maxEntries: 3,
+        },
+      });
+      yield* quotaFileSystem.mkdir('/workspace/data', {}, '/');
+      const oversizedFile = yield* Effect.exit(
+        quotaFileSystem.writeFile('/workspace/oversized.txt', bytes('1234567'), '/')
+      );
+      assertCondition(Exit.isFailure(oversizedFile), 'TKFS accepted a file over maxFileBytes.');
+      if (Exit.isFailure(oversizedFile)) {
+        const failure = Cause.failureOption(oversizedFile.cause);
+        assertCondition(
+          Option.isSome(failure) &&
+            failure.value instanceof TraceKernelFileSystemError &&
+            failure.value.code === 'EFBIG',
+          `Oversized TKFS file failed incorrectly: ${Cause.pretty(oversizedFile.cause)}`
+        );
+      }
+      yield* quotaFileSystem.writeFile('/workspace/data/value.txt', bytes('1234'), '/');
+      yield* quotaFileSystem.link(
+        '/workspace/data/value.txt',
+        '/workspace/data/alias.txt',
+        '/'
+      );
+      const quotaOpenFile = yield* quotaFileSystem.prepareOpen(
+        '/workspace/data/alias.txt',
+        '/',
+        { access: 'write' }
+      );
+      const linkedResize = yield* Effect.exit(
+        quotaFileSystem.writeAt(quotaOpenFile, 4, bytes('5'), false)
+      );
+      assertCondition(
+        Exit.isFailure(linkedResize),
+        'An open-fd write bypassed aggregate hard-link quota accounting.'
+      );
+      if (Exit.isFailure(linkedResize)) {
+        const failure = Cause.failureOption(linkedResize.cause);
+        assertCondition(
+          Option.isSome(failure) &&
+            failure.value instanceof TraceKernelFileSystemError &&
+            failure.value.code === 'ENOSPC',
+          `Hard-link quota write failed incorrectly: ${Cause.pretty(linkedResize.cause)}`
+        );
+      }
+      assertCondition(
+        text(yield* quotaFileSystem.readFile('/workspace/data/value.txt', '/')) === '1234',
+        'A rejected quota write partially changed the shared inode.'
+      );
+      const entryLimit = yield* Effect.exit(
+        quotaFileSystem.mkdir('/workspace/extra', {}, '/')
+      );
+      assertCondition(Exit.isFailure(entryLimit), 'TKFS accepted an entry over maxEntries.');
+
       const exclusive = yield* Effect.exit(session.openFile(writer, 'append.log', {
         access: 'write',
         create: true,
@@ -264,6 +322,8 @@ async function main(): Promise<void> {
     imagePreservesSymlinks: true,
     imagePreservesMetadata: true,
     hostOwnedAuthorityAttachment: true,
+    quotaPreflightsOpenFileWrites: true,
+    quotaCountsHardLinks: true,
     fileDescriptionsCloseOnProcessExit: true,
   }, null, 2));
 }

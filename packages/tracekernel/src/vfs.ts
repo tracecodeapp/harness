@@ -22,6 +22,18 @@ export interface TraceKernelMkdirOptions {
   readonly mode?: number;
 }
 
+export interface TraceKernelFileSystemQuota {
+  /** Absolute subtree whose descendants are counted. The root itself is free. */
+  readonly root: string;
+  readonly maxBytes: number;
+  readonly maxFileBytes: number;
+  readonly maxEntries: number;
+}
+
+export interface TraceKernelFileSystemOptions {
+  readonly quota?: TraceKernelFileSystemQuota;
+}
+
 export interface TraceKernelFileSnapshot {
   readonly path: string;
   readonly contents: Uint8Array;
@@ -195,14 +207,29 @@ export class TraceKernelFileSystem {
   private readonly mutationWatchers =
     new Set<(mutation: TraceKernelFileSystemMutation) => void>();
 
-  private constructor(private readonly mutex: Effect.Semaphore) {
+  private constructor(
+    private readonly mutex: Effect.Semaphore,
+    private readonly quota?: TraceKernelFileSystemQuota
+  ) {
+    if (quota) this.validateQuota(quota);
     this.installInitialDirectory('/');
     this.installInitialDirectory('/workspace');
   }
 
-  static make(): Effect.Effect<TraceKernelFileSystem> {
+  static make(
+    options: TraceKernelFileSystemOptions = {}
+  ): Effect.Effect<TraceKernelFileSystem, TraceKernelFileSystemError> {
     return Effect.makeSemaphore(1).pipe(
-      Effect.map((mutex) => new TraceKernelFileSystem(mutex))
+      Effect.flatMap((mutex) => Effect.try({
+        try: () => new TraceKernelFileSystem(mutex, options.quota),
+        catch: (error) => error instanceof TraceKernelFileSystemError
+          ? error
+          : new TraceKernelFileSystemError({
+              code: 'EINVAL',
+              path: options.quota?.root ?? '/',
+              message: error instanceof Error ? error.message : String(error),
+            }),
+      }))
     );
   }
 
@@ -213,13 +240,14 @@ export class TraceKernelFileSystem {
    * this succeeds, callers must send all mutations through the returned TKFS.
    */
   static fromImage(
-    image: TraceKernelFileSystemImage
+    image: TraceKernelFileSystemImage,
+    options: TraceKernelFileSystemOptions = {}
   ): Effect.Effect<TraceKernelFileSystem, TraceKernelFileSystemError> {
     return Effect.makeSemaphore(1).pipe(
       Effect.flatMap((mutex) =>
         Effect.try({
           try: () => {
-            const fileSystem = new TraceKernelFileSystem(mutex);
+            const fileSystem = new TraceKernelFileSystem(mutex, options.quota);
             fileSystem.restoreImage(image);
             return fileSystem;
           },
@@ -453,6 +481,8 @@ export class TraceKernelFileSystem {
             return this.fail('ENOENT', parentPath(directoryPath), 'parent directory does not exist');
           }
 
+          const quotaError = this.additionalQuotaError(missing, 0);
+          if (quotaError) return Effect.fail(quotaError);
           const generation = this.beginMutation();
           const timestamp = Date.now();
           for (const directoryPath of missing.reverse()) {
@@ -541,6 +571,14 @@ export class TraceKernelFileSystem {
           const parent = this.requireDirectory(parentPath(filePath));
           if (parent instanceof TraceKernelFileSystemError) return Effect.fail(parent);
 
+          const quotaError = existing
+            ? this.quotaResizeError(existing, contents.byteLength)
+            : this.additionalQuotaError(
+                [filePath],
+                contents.byteLength,
+                contents.byteLength
+              );
+          if (quotaError) return Effect.fail(quotaError);
           const generation = this.beginMutation();
           const timestamp = Date.now();
           if (existing) {
@@ -590,6 +628,14 @@ export class TraceKernelFileSystem {
           const parent = this.requireDirectory(parentPath(newResult));
           if (parent instanceof TraceKernelFileSystemError) return Effect.fail(parent);
 
+          const quotaError = this.additionalQuotaError(
+            [newResult],
+            existing.kind === 'file'
+              ? existing.contents.byteLength
+              : new TextEncoder().encode(existing.target).byteLength,
+            existing.kind === 'file' ? existing.contents.byteLength : undefined
+          );
+          if (quotaError) return Effect.fail(quotaError);
           this.nodes.set(newResult, existing);
           const generation = this.beginMutation();
           const timestamp = Date.now();
@@ -629,6 +675,11 @@ export class TraceKernelFileSystem {
           const parent = this.requireDirectory(parentPath(linkResult));
           if (parent instanceof TraceKernelFileSystemError) return Effect.fail(parent);
 
+          const quotaError = this.additionalQuotaError(
+            [linkResult],
+            new TextEncoder().encode(target).byteLength
+          );
+          if (quotaError) return Effect.fail(quotaError);
           const generation = this.beginMutation();
           const timestamp = Date.now();
           this.nodes.set(linkResult, this.makeSymlink(target, generation, timestamp));
@@ -734,6 +785,14 @@ export class TraceKernelFileSystem {
 
           const movedEntries = [...this.nodes.entries()]
             .filter(([path]) => path === source || path.startsWith(`${source}/`));
+          const projected = new Map(this.nodes);
+          if (destinationNode) projected.delete(destination);
+          for (const [path] of movedEntries) projected.delete(path);
+          for (const [path, node] of movedEntries) {
+            projected.set(`${destination}${path.slice(source.length)}`, node);
+          }
+          const quotaError = this.quotaNamespaceError(projected);
+          if (quotaError) return Effect.fail(quotaError);
           if (destinationNode) this.nodes.delete(destination);
           for (const [path] of movedEntries) this.nodes.delete(path);
           for (const [path, node] of movedEntries) {
@@ -779,6 +838,8 @@ export class TraceKernelFileSystem {
             }
             const parent = this.requireDirectory(parentPath(filePath));
             if (parent instanceof TraceKernelFileSystemError) return Effect.fail(parent);
+            const quotaError = this.additionalQuotaError([filePath], 0, 0);
+            if (quotaError) return Effect.fail(quotaError);
             const generation = this.beginMutation();
             const timestamp = Date.now();
             const file = this.makeFile(new Uint8Array(0), 0o666, generation, timestamp);
@@ -800,6 +861,8 @@ export class TraceKernelFileSystem {
             if (access === 'read') {
               return this.fail('EACCES', resolved, 'read-only descriptor cannot truncate file');
             }
+            const quotaError = this.quotaResizeError(existing, 0);
+            if (quotaError) return Effect.fail(quotaError);
             existing.contents = new Uint8Array(0);
             const generation = this.beginMutation();
             this.touchNode(existing, generation, Date.now(), true);
@@ -832,15 +895,18 @@ export class TraceKernelFileSystem {
     length: number
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
-      Effect.sync(() => {
+      Effect.suspend(() => {
         const nextLength = Math.max(0, Math.floor(length));
-        if (file.node.contents.byteLength === nextLength) return;
+        if (file.node.contents.byteLength === nextLength) return Effect.void;
+        const quotaError = this.quotaResizeError(file.node, nextLength);
+        if (quotaError) return Effect.fail(quotaError);
         const next = new Uint8Array(nextLength);
         next.set(file.node.contents.slice(0, nextLength));
         file.node.contents = next;
         const generation = this.beginMutation();
         this.touchNode(file.node, generation, Date.now(), true);
         this.notifyMutation(generation, 'change', this.pathsForNode(file.node));
+        return Effect.void;
       })
     );
   }
@@ -852,10 +918,12 @@ export class TraceKernelFileSystem {
     append: boolean
   ): Effect.Effect<number, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
-      Effect.sync(() => {
+      Effect.suspend(() => {
         const node = file.node;
         const writeOffset = append ? node.contents.byteLength : offset;
         const nextLength = Math.max(node.contents.byteLength, writeOffset + bytes.byteLength);
+        const quotaError = this.quotaResizeError(node, nextLength);
+        if (quotaError) return Effect.fail(quotaError);
         const next = new Uint8Array(nextLength);
         next.set(node.contents);
         next.set(bytes, writeOffset);
@@ -865,7 +933,7 @@ export class TraceKernelFileSystem {
           this.touchNode(node, generation, Date.now(), true);
           this.notifyMutation(generation, 'change', this.pathsForNode(node));
         }
-        return writeOffset + bytes.byteLength;
+        return Effect.succeed(writeOffset + bytes.byteLength);
       })
     );
   }
@@ -1055,6 +1123,108 @@ export class TraceKernelFileSystem {
     for (const [path, node] of restoredNodes) this.nodes.set(path, node);
     this.nextInode = maximumInode + 1;
     this.nextGeneration = image.mutationGeneration + 1;
+    const quotaError = this.quotaNamespaceError(this.nodes);
+    if (quotaError) throw quotaError;
+  }
+
+  private validateQuota(quota: TraceKernelFileSystemQuota): void {
+    if (
+      !quota.root.startsWith('/') ||
+      normalizeTraceKernelPath(quota.root, '/') !== quota.root ||
+      !Number.isSafeInteger(quota.maxBytes) ||
+      quota.maxBytes < 0 ||
+      !Number.isSafeInteger(quota.maxFileBytes) ||
+      quota.maxFileBytes < 0 ||
+      !Number.isSafeInteger(quota.maxEntries) ||
+      quota.maxEntries < 0
+    ) {
+      throw this.error('EINVAL', quota.root, 'invalid TKFS quota');
+    }
+  }
+
+  private quotaCountsPath(path: string): boolean {
+    if (!this.quota || path === this.quota.root) return false;
+    return path.startsWith(`${this.quota.root}/`);
+  }
+
+  private additionalQuotaError(
+    paths: readonly string[],
+    bytes: number,
+    fileBytes?: number
+  ): TraceKernelFileSystemError | undefined {
+    if (!this.quota) return undefined;
+    if (fileBytes !== undefined && fileBytes > this.quota.maxFileBytes) {
+      return this.error('EFBIG', paths[0] ?? this.quota.root, 'file exceeds TKFS quota');
+    }
+    const counted = paths.filter((path) => this.quotaCountsPath(path)).length;
+    if (counted === 0) return undefined;
+    const usage = this.quotaUsage(this.nodes);
+    if (usage.entries + counted > this.quota.maxEntries) {
+      return this.error('ENOSPC', paths[0] ?? this.quota.root, 'TKFS entry quota exceeded');
+    }
+    if (usage.bytes + bytes * counted > this.quota.maxBytes) {
+      return this.error('ENOSPC', paths[0] ?? this.quota.root, 'TKFS byte quota exceeded');
+    }
+    return undefined;
+  }
+
+  private quotaResizeError(
+    node: TraceKernelFileNode,
+    nextSize: number
+  ): TraceKernelFileSystemError | undefined {
+    if (!this.quota) return undefined;
+    const countedPaths = [...this.nodes.entries()]
+      .filter(([path, candidate]) => candidate === node && this.quotaCountsPath(path))
+      .map(([path]) => path);
+    if (countedPaths.length === 0) return undefined;
+    if (nextSize > this.quota.maxFileBytes) {
+      return this.error('EFBIG', countedPaths[0]!, 'file exceeds TKFS quota');
+    }
+    const usage = this.quotaUsage(this.nodes);
+    const nextBytes =
+      usage.bytes + (nextSize - node.contents.byteLength) * countedPaths.length;
+    if (nextBytes > this.quota.maxBytes) {
+      return this.error('ENOSPC', countedPaths[0]!, 'TKFS byte quota exceeded');
+    }
+    return undefined;
+  }
+
+  private quotaNamespaceError(
+    nodes: ReadonlyMap<string, TraceKernelNode>
+  ): TraceKernelFileSystemError | undefined {
+    if (!this.quota) return undefined;
+    const usage = this.quotaUsage(nodes);
+    if (usage.largestFileBytes > this.quota.maxFileBytes) {
+      return this.error('EFBIG', this.quota.root, 'file exceeds TKFS quota');
+    }
+    if (usage.entries > this.quota.maxEntries) {
+      return this.error('ENOSPC', this.quota.root, 'TKFS entry quota exceeded');
+    }
+    if (usage.bytes > this.quota.maxBytes) {
+      return this.error('ENOSPC', this.quota.root, 'TKFS byte quota exceeded');
+    }
+    return undefined;
+  }
+
+  private quotaUsage(nodes: ReadonlyMap<string, TraceKernelNode>): {
+    readonly bytes: number;
+    readonly entries: number;
+    readonly largestFileBytes: number;
+  } {
+    let bytes = 0;
+    let entries = 0;
+    let largestFileBytes = 0;
+    for (const [path, node] of nodes) {
+      if (!this.quotaCountsPath(path)) continue;
+      entries += 1;
+      if (node.kind === 'file') {
+        bytes += node.contents.byteLength;
+        largestFileBytes = Math.max(largestFileBytes, node.contents.byteLength);
+      } else if (node.kind === 'symlink') {
+        bytes += new TextEncoder().encode(node.target).byteLength;
+      }
+    }
+    return { bytes, entries, largestFileBytes };
   }
 
   private validImageTimestamp(value: number): boolean {
