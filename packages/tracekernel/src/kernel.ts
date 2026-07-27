@@ -1920,6 +1920,7 @@ export class TraceKernelSession {
     const startsNewSession = spec.sessionId === 0;
     const inheritedSid = parentSnapshot?.sid ?? pid;
     if (
+      parent &&
       spec.sessionId !== undefined &&
       !startsNewSession &&
       spec.sessionId !== inheritedSid
@@ -1930,7 +1931,11 @@ export class TraceKernelSession {
         message: `EINVAL: child session ${spec.sessionId} does not match parent session ${inheritedSid}`,
       });
     }
-    const sid = startsNewSession ? pid : inheritedSid;
+    const sid = startsNewSession
+      ? pid
+      : parent
+        ? inheritedSid
+        : spec.sessionId ?? inheritedSid;
     const pgid = startsNewSession || spec.processGroupId === 0
       ? pid
       : spec.processGroupId ?? parentSnapshot?.pgid ?? pid;

@@ -9,6 +9,7 @@ import type {
   RuntimeProjectCommandRequest,
 } from '../packages/harness-core/src/runtime-project';
 import type {
+  TraceKernelSession,
   TraceKernelSyscallRequest,
   TraceKernelSyscallResult,
 } from '../packages/tracekernel/src/index';
@@ -52,12 +53,23 @@ async function main(): Promise<void> {
     readonly signal: string;
   }> = [];
   const interruptChildStartWaiters: Array<() => void> = [];
+  let authoritativeSession: TraceKernelSession | undefined;
   const waitForInterruptChildStart = (): Promise<void> =>
     new Promise<void>((resolve) => {
       interruptChildStartWaiters.push(resolve);
     });
 
   const nodeRunner: JavaScriptProjectCommandRunner = async (request) => {
+    const authoritativeProcess = authoritativeSession?.processSnapshots().find(
+      (process) => process.pid === request.process?.pid
+    );
+    assertCondition(
+      authoritativeProcess &&
+        authoritativeProcess.ppid === request.process?.ppid &&
+        authoritativeProcess.pgid === request.process?.pgid &&
+        authoritativeProcess.sid === request.process?.sid,
+      `product runner PID ${request.process?.pid ?? 'unknown'} was not owned by the extracted TraceKernel session`
+    );
     observedProcesses.push({
       scriptPath: request.scriptPath,
       pid: request.process?.pid ?? -1,
@@ -279,6 +291,15 @@ async function main(): Promise<void> {
     ],
     nodeRunner,
   });
+  authoritativeSession = (
+    workspace as unknown as {
+      traceKernelAuthority?: { session: TraceKernelSession };
+    }
+  ).traceKernelAuthority?.session;
+  assertCondition(
+    authoritativeSession,
+    'The product workspace did not own an extracted TraceKernel session.'
+  );
 
   try {
     const result = await workspace.runCommand('node parent.js');
@@ -392,6 +413,10 @@ async function main(): Promise<void> {
         interruptEvents
       )}`
     );
+    assertCondition(
+      authoritativeSession.processSnapshots().length === 0,
+      'Completed product runners remained in the authoritative TraceKernel process table.'
+    );
   } finally {
     workspace.dispose();
   }
@@ -399,6 +424,7 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({
     schema: 'tracekernel-013-workspace-processes-v1',
     languageInitiatedSpawn: true,
+    kernelOwnedProductPids: true,
     distinctRuntimeProcessIdentity: true,
     processOwnedPipeInheritance: true,
     sharedFilesystemAcrossParentAndChild: true,

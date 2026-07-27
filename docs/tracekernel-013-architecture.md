@@ -400,6 +400,12 @@ execution result. This is the deliberate cutover seam for removing the
 workspace's transitional process identity without rewriting every language
 engine first.
 
+Product command runners and language-initiated children now use those
+kernel-allocated PIDs and topology records. Non-zombie child completion is
+reaped from the session alongside the product wait model, so process capacity
+is released once. The product's descriptor, terminal, socket, and journal
+managers are still transitional and are the next ownership cutover.
+
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
 | Runtime API surface | 0.13 syscall |
@@ -765,8 +771,10 @@ The remaining authority migration must preserve, in order:
    TKFS open-file descriptions;
 3. route every product runtime syscall through the extracted session policy already
    enforcing canonical hidden/readonly paths;
-4. replace the transitional process, descriptor, terminal, socket, journal, and resource-accounting
-   identity across terminal, `runCommand`, and language-initiated children;
+4. replace the transitional descriptor, terminal, socket, journal, and
+   resource-accounting identity across terminal, `runCommand`, and
+   language-initiated children now that their PID/topology identity is
+   kernel-owned;
 5. crash recovery that destroys or revalidates every mutable runtime lease while
    retaining only immutable host caches.
 
