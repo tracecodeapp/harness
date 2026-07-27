@@ -109,6 +109,11 @@ export interface TraceKernelProcessSpec {
   readonly env?: Readonly<Record<string, string>>;
   readonly parentPid?: number;
   /**
+   * Retain a top-level process as a waitable child of logical PID 1 after it
+   * exits. Explicit children are always waitable by their materialized parent.
+   */
+  readonly retainOnExit?: boolean;
+  /**
    * Descriptors to duplicate from the explicit live parent. Inherited
    * descriptors retain their numeric fd and share the same open-resource
    * description. Omitted means no inheritance.

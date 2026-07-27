@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import * as Effect from 'effect/Effect';
 import {
   createRuntimeWorkspace,
   type JavaScriptProjectCommandRunner,
@@ -162,11 +163,18 @@ async function main(): Promise<void> {
         waited.stdout.includes('signal\tSIGTERM\n'),
       `wait did not reap the job: ${JSON.stringify(waited)}`
     );
+    const duplicateKernelWait = await Effect.runPromise(
+      Effect.either(session.waitInitChild(pid, { noHang: true }))
+    );
     assertCondition(
-      session.processSnapshots().length === 0,
-      `Job-control commands leaked kernel processes: ${JSON.stringify(
-        session.processSnapshots()
-      )}`
+      duplicateKernelWait._tag === 'Left' &&
+        'code' in duplicateKernelWait.left &&
+        duplicateKernelWait.left.code === 'ECHILD' &&
+        session.processSnapshots().length === 0,
+      `Shell wait did not reap logical PID 1's kernel child exactly once: ${JSON.stringify({
+        duplicateKernelWait,
+        processes: session.processSnapshots(),
+      })}`
     );
   } finally {
     workspace.dispose();
@@ -180,6 +188,7 @@ async function main(): Promise<void> {
     controllingTerminalRemainsSessionOwned: true,
     productStatusReadsThroughKernelPlacement: true,
     shellJobLifecycleReaped: true,
+    shellWaitReapsLogicalInitChildExactlyOnce: true,
   }, null, 2));
 }
 

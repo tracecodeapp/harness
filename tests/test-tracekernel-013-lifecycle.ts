@@ -227,6 +227,47 @@ async function main(): Promise<void> {
         'Process capacity was not released after termination.'
       );
 
+      const initWaitSession = yield* host.openSession({ maxProcesses: 1 });
+      const retainedTopLevel = yield* initWaitSession.spawn({
+        runtime: 'test',
+        command: 'retained-top-level',
+        retainOnExit: true,
+      });
+      const retainedTopLevelExit = yield* retainedTopLevel.wait();
+      assertCondition(
+        retainedTopLevelExit.termination?.kind === 'exit',
+        'The retained top-level process did not exit normally.'
+      );
+      const retainedCapacity = yield* Effect.flip(initWaitSession.spawn({
+        runtime: 'test',
+        command: 'blocked-by-zombie',
+      }));
+      assertCondition(
+        retainedCapacity instanceof TraceKernelProcessLimitError &&
+          retainedCapacity.code === 'EAGAIN',
+        `A retained PID 1 child did not occupy process capacity: ${String(
+          retainedCapacity
+        )}`
+      );
+      const initReaped = yield* initWaitSession.waitInitChild(
+        retainedTopLevel.pid
+      );
+      assertCondition(
+        initReaped?.pid === retainedTopLevel.pid &&
+          initReaped.termination?.kind === 'exit',
+        `Logical PID 1 did not reap its retained child: ${JSON.stringify(
+          initReaped
+        )}`
+      );
+      const afterInitReap = yield* initWaitSession.execute({
+        runtime: 'test',
+        command: 'after-init-reap',
+      });
+      assertCondition(
+        afterInitReap.termination?.kind === 'exit',
+        'PID 1 wait did not release process capacity.'
+      );
+
       const treeSession = yield* host.openSession();
       const parent = yield* treeSession.spawn({
         runtime: 'test',
@@ -392,8 +433,8 @@ async function main(): Promise<void> {
   ));
 
   assertCondition(initializeCount === 1, 'Provider initialization should remain memoized for the host lifetime.');
-  assertCondition(acquireCount === 15, `Expected fifteen leases, acquired ${acquireCount}.`);
-  assertCondition(releaseCount === 15, `Expected fifteen lease releases, observed ${releaseCount}.`);
+  assertCondition(acquireCount === 17, `Expected seventeen leases, acquired ${acquireCount}.`);
+  assertCondition(releaseCount === 17, `Expected seventeen lease releases, observed ${releaseCount}.`);
   assertCondition(new Set(releasedLeaseIds).size === releasedLeaseIds.length, 'A runtime lease was released more than once.');
 
   console.log(JSON.stringify({
@@ -407,6 +448,7 @@ async function main(): Promise<void> {
     sessionTeardownTerminatedDescendants: true,
     processCeilingReturnsEagain: true,
     processCapacityReleasedOnExit: true,
+    logicalInitOwnsRetainedTopLevelWaits: true,
     parentTopologyInherited: true,
     orphanedChildrenReparented: true,
     missingParentsRejected: true,

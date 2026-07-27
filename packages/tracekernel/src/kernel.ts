@@ -482,6 +482,7 @@ export class TraceKernelProcess {
 export class TraceKernelSession {
   private readonly processes = new Map<number, TraceKernelProcess>();
   private readonly exitedChildren = new Map<number, TraceKernelProcess>();
+  private readonly initRetainedProcesses = new Set<number>();
   private readonly waitingChildren = new Set<number>();
   private readonly reapedBeforeUnregister = new Set<number>();
   private readonly childWaiters = new Set<Deferred.Deferred<void>>();
@@ -729,6 +730,34 @@ export class TraceKernelSession {
     TraceKernelProcessSnapshot | undefined,
     TraceKernelProcessStateError | TraceKernelChildProcessError
   > {
+    return Effect.gen(this, function* () {
+      const selector = Math.trunc(pid);
+      if (!Number.isSafeInteger(pid)) {
+        return yield* Effect.fail(new TraceKernelChildProcessError({
+          code: 'ECHILD',
+          pid: selector,
+          message: `ECHILD: invalid child selector ${pid}`,
+        }));
+      }
+      yield* this.assertOwnedProcess(parent);
+      const snapshot = parent.snapshot();
+      return yield* this.waitChildSelection(
+        snapshot.pid,
+        snapshot.pgid,
+        selector,
+        options,
+        false
+      );
+    });
+  }
+
+  waitInitChild(
+    pid: number,
+    options: { readonly noHang?: boolean } = {}
+  ): Effect.Effect<
+    TraceKernelProcessSnapshot | undefined,
+    TraceKernelProcessStateError | TraceKernelChildProcessError
+  > {
     return Effect.suspend(() => {
       const selector = Math.trunc(pid);
       if (!Number.isSafeInteger(pid)) {
@@ -738,29 +767,35 @@ export class TraceKernelSession {
           message: `ECHILD: invalid child selector ${pid}`,
         }));
       }
-      return this.waitChildSelection(parent, selector, options);
+      return this.waitChildSelection(1, 1, selector, options, true);
     });
   }
 
   private waitChildSelection(
-    parent: TraceKernelProcess,
+    parentPid: number,
+    parentProcessGroupId: number,
     selector: number,
-    options: { readonly noHang?: boolean }
+    options: { readonly noHang?: boolean },
+    requireInitRetention: boolean
   ): Effect.Effect<
     TraceKernelProcessSnapshot | undefined,
     TraceKernelProcessStateError | TraceKernelChildProcessError
   > {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(parent);
       const changed = yield* Deferred.make<void>();
       this.childWaiters.add(changed);
-      const candidates = this.waitableChildren(parent, selector);
+      const candidates = this.waitableChildren(
+        parentPid,
+        parentProcessGroupId,
+        selector,
+        requireInitRetention
+      );
       if (candidates.length === 0) {
         this.childWaiters.delete(changed);
         return yield* Effect.fail(new TraceKernelChildProcessError({
           code: 'ECHILD',
           pid: selector,
-          message: `ECHILD: selector ${selector} has no unreaped children of process ${parent.pid}`,
+          message: `ECHILD: selector ${selector} has no unreaped children of process ${parentPid}`,
         }));
       }
       const child = candidates.find(
@@ -776,29 +811,43 @@ export class TraceKernelSession {
             this.childWaiters.delete(changed);
           }))
         );
-        return yield* this.waitChildSelection(parent, selector, options);
+        return yield* this.waitChildSelection(
+          parentPid,
+          parentProcessGroupId,
+          selector,
+          options,
+          requireInitRetention
+        );
       }
       this.childWaiters.delete(changed);
       this.waitingChildren.add(child.pid);
+      let reaped = false;
       if (this.processes.has(child.pid)) {
         this.reapedBeforeUnregister.add(child.pid);
       }
       return yield* child.wait().pipe(
         Effect.tap(() => Effect.sync(() => {
+          reaped = true;
           this.exitedChildren.delete(child.pid);
+          this.initRetainedProcesses.delete(child.pid);
         })),
         Effect.ensuring(Effect.sync(() => {
           this.waitingChildren.delete(child.pid);
+          if (!reaped) {
+            this.reapedBeforeUnregister.delete(child.pid);
+            Effect.runSync(this.notifyChildWaiters());
+          }
         }))
       );
     });
   }
 
   private waitableChildren(
-    parent: TraceKernelProcess,
-    selector: number
+    parentPid: number,
+    parentProcessGroupId: number,
+    selector: number,
+    requireInitRetention: boolean
   ): readonly TraceKernelProcess[] {
-    const parentSnapshot = parent.snapshot();
     const children = new Map<number, TraceKernelProcess>([
       ...this.processes,
       ...this.exitedChildren,
@@ -807,16 +856,20 @@ export class TraceKernelSession {
       .filter((child) => {
         const snapshot = child.snapshot();
         if (
-          snapshot.ppid !== parent.pid ||
+          snapshot.ppid !== parentPid ||
           this.waitingChildren.has(snapshot.pid) ||
-          this.reapedBeforeUnregister.has(snapshot.pid)
+          this.reapedBeforeUnregister.has(snapshot.pid) ||
+          (
+            requireInitRetention &&
+            !this.initRetainedProcesses.has(snapshot.pid)
+          )
         ) {
           return false;
         }
         if (selector > 0) return snapshot.pid === selector;
         if (selector === -1) return true;
         const processGroupId = selector === 0
-          ? parentSnapshot.pgid
+          ? parentProcessGroupId
           : -selector;
         return snapshot.pgid === processGroupId;
       })
@@ -830,12 +883,17 @@ export class TraceKernelSession {
       TraceKernelSessionClosedError |
       TraceKernelProcessLimitError |
       TraceKernelProcessStateError |
+      TraceKernelChildProcessError |
       TraceKernelInvalidArgumentError |
       TraceKernelDescriptorInheritanceError
   > {
     return Effect.gen(this, function* () {
       const process = yield* this.spawn(spec);
-      return yield* process.wait();
+      const snapshot = yield* process.wait();
+      if (snapshot.ppid === 1 && spec.retainOnExit === true) {
+        yield* this.waitInitChild(snapshot.pid);
+      }
+      return snapshot;
     });
   }
 
@@ -2124,6 +2182,7 @@ export class TraceKernelSession {
           this.stopWatchingFileSystemMutations();
           this.processes.clear();
           this.exitedChildren.clear();
+          this.initRetainedProcesses.clear();
           this.waitingChildren.clear();
           this.reapedBeforeUnregister.clear();
           this.childWaiters.clear();
@@ -2254,6 +2313,9 @@ export class TraceKernelSession {
       this.signalGracePeriodMs
     );
     this.processes.set(pid, process);
+    if (ppid === 1 && spec.retainOnExit === true) {
+      this.initRetainedProcesses.add(pid);
+    }
     return process;
   }
 
@@ -2291,9 +2353,20 @@ export class TraceKernelSession {
     const alreadyReaped = this.reapedBeforeUnregister.delete(pid);
     if (exited) {
       const snapshot = exited.snapshot();
-      if (snapshot.ppid !== 1 && !alreadyReaped) {
+      if (
+        snapshot.phase === 'exited' &&
+        !alreadyReaped &&
+        (
+          snapshot.ppid !== 1 ||
+          this.initRetainedProcesses.has(pid)
+        )
+      ) {
         this.exitedChildren.set(pid, exited);
+      } else {
+        this.initRetainedProcesses.delete(pid);
       }
+    } else {
+      this.initRetainedProcesses.delete(pid);
     }
     for (const process of this.processes.values()) {
       process.reparent(pid, 1);

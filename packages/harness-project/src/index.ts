@@ -7753,7 +7753,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       cwd: options.cwd,
       env: options.env,
       ...(parentPid === undefined
-        ? { sessionId: options.sessionId ?? 1 }
+        ? {
+            sessionId: options.sessionId ?? 1,
+            retainOnExit: true,
+          }
         : {
             parentPid,
             ...(options.sessionId === undefined
@@ -7773,11 +7776,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     childPid: number
   ): Promise<void> {
     const authority = this.traceKernelAuthority;
-    if (!authority || !parent?.kernelProcess) return;
+    if (!authority) return;
     await Effect.runPromise(
-      authority.session.waitChild(parent.kernelProcess, childPid, {
-        noHang: true,
-      })
+      parent?.kernelProcess
+        ? authority.session.waitChild(parent.kernelProcess, childPid, {
+            noHang: true,
+          })
+        : authority.session.waitInitChild(childPid, { noHang: true })
     ).catch(() => undefined);
   }
 

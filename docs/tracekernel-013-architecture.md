@@ -58,6 +58,14 @@ overrides them. When a parent exits before its child, the child remains alive
 and is reparented to the session's logical init PID 1; nonexistent parents fail
 with `ESRCH` before process admission.
 
+Logical PID 1 is also a real wait owner even though the workspace bootstrap
+process is not materialized as a runtime lease. A top-level spawn may request
+retention after exit; its zombie then consumes process capacity until the host
+reaps it through the same exact/any/group selector machinery used by ordinary
+parents. Scoped `execute()` and non-retained host work auto-reap. This keeps
+interactive shell jobs waitable without making every one-shot host command a
+zombie or delegating top-level reaping to a second product process table.
+
 The process-bound `kill` syscall applies UNIX PID selectors inside the virtual
 session: a positive PID addresses one process, `0` addresses the caller's
 process group, a negative value below `-1` addresses that PGID, and `-1`
@@ -485,6 +493,11 @@ product zombie table is reconciled afterward only for legacy shell/proc
 presentation. Controlled runtime results carry an optional explicit
 termination record, so cooperative host signal delivery remains
 `signal(SIGTERM)` rather than being collapsed into an unrelated `exit(143)`.
+Top-level product commands opt into logical-PID-1 retention. Normal completion
+auto-reaps that kernel child; shell-retained jobs remain waitable, and the
+compatibility `wait` command's final reap now terminates at PID 1 in the
+extracted session. Product zombie selection and formatted wait publication are
+still transitional.
 
 The browser runtime uses the binary SharedArrayBuffer channel for:
 
@@ -850,10 +863,11 @@ The remaining authority migration must preserve, in order:
    legacy input dual feed and its control-byte suppression; metadata, resize,
    input/output bytes, one-shot EOF, line discipline, foreground signal
    delivery, and fd 0/1/2 descriptors are already authoritative;
-2. route shell wait publication, job listings, and `/proc` lifecycle
+2. route shell wait selection/publication, job listings, and `/proc` lifecycle
    presentation through the extracted session without maintaining a second
    mutable lifecycle or topology projection; language wait selection/reaping
-   and shell foreground-group/descriptor placement are already authoritative;
+   and shell foreground-group/descriptor placement are already authoritative,
+   and logical PID 1 now owns the shell's final kernel reap;
 3. attribute journal and resource events directly to the authoritative process
    and eliminate the remaining transitional lifecycle observations;
 4. migrate local structured HTTP onto TCP only after the HTTP conformance
