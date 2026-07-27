@@ -252,9 +252,12 @@ language filesystem adapter
 The synchronous browser channel has one in-flight syscall per runtime worker.
 It uses a bounded binary request/response frame and an atomic
 idle/request/processing/response/closed state machine. The worker sends only a
-lightweight wakeup over its `MessagePort`; syscall bodies remain in shared
-memory. A timeout or teardown closes the channel so a late host response cannot
-be mistaken for a later process's response.
+lightweight wakeup over the dedicated worker's normal host message channel;
+syscall bodies remain in shared memory. A transferred `MessagePort` is
+deliberately not used for this wakeup because some engines queue its delivery
+behind the worker blocked in `Atomics.wait`. A timeout or teardown closes the
+channel so a late host response cannot be mistaken for a later process's
+response.
 
 Bulk file reads return the file bytes and the session cache generation from one
 TKFS critical section. Runtime adapters may keep a byte-bounded, entry-bounded
