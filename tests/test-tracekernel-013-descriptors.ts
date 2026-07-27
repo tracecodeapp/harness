@@ -195,6 +195,48 @@ async function main(): Promise<void> {
       assertCondition(session.resourceIds().length === 0, 'Process teardown stranded a pipe resource.');
       assertCondition(session.processSnapshots().length === 0, 'Terminated pipe processes remained registered.');
 
+      const hostAttached = yield* session.spawn({
+        runtime: 'blocking-test',
+        command: 'host-attached-stdio',
+      });
+      yield* hostAttached.awaitStarted();
+      const hostStdio = yield* session.attachHostStandardIo(hostAttached);
+      assertCondition(
+        JSON.stringify(
+          hostAttached.snapshot().descriptors.map(({ fd, kind }) => ({ fd, kind }))
+        ) === JSON.stringify([
+          { fd: 0, kind: 'pipe-reader' },
+          { fd: 1, kind: 'pipe-writer' },
+          { fd: 2, kind: 'pipe-writer' },
+        ]),
+        `Host standard I/O did not install process-owned pipe descriptors: ${JSON.stringify(
+          hostAttached.snapshot().descriptors
+        )}`
+      );
+      yield* hostStdio.writeStdin(encoder.encode('host-input'));
+      assertCondition(
+        decoder.decode(yield* hostAttached.read(0, 64)) === 'host-input',
+        'Host stdin did not enter the process through fd 0.'
+      );
+      yield* hostAttached.write(1, encoder.encode('host-stdout'));
+      yield* hostAttached.write(2, encoder.encode('host-stderr'));
+      assertCondition(
+        decoder.decode(yield* hostStdio.readStdout(64)) === 'host-stdout' &&
+          decoder.decode(yield* hostStdio.readStderr(64)) === 'host-stderr',
+        'Process fd 1/2 output did not reach the host pipe endpoints.'
+      );
+      yield* hostStdio.closeStdin();
+      assertCondition(
+        (yield* hostAttached.read(0, 64)).byteLength === 0,
+        'Closing host stdin did not produce process EOF.'
+      );
+      yield* hostAttached.signal('SIGTERM');
+      yield* hostStdio.close();
+      assertCondition(
+        session.resourceIds().length === 0,
+        'Host standard-I/O teardown stranded pipe resources.'
+      );
+
       const limitedSession = yield* host.openSession({
         maxDescriptorsPerProcess: 2,
       });
@@ -454,8 +496,8 @@ async function main(): Promise<void> {
     })
   ));
 
-  assertCondition(leaseAcquireCount === 7, `Expected seven runtime leases, acquired ${leaseAcquireCount}.`);
-  assertCondition(leaseReleaseCount === 7, `Expected seven runtime lease releases, observed ${leaseReleaseCount}.`);
+  assertCondition(leaseAcquireCount === 8, `Expected eight runtime leases, acquired ${leaseAcquireCount}.`);
+  assertCondition(leaseReleaseCount === 8, `Expected eight runtime lease releases, observed ${leaseReleaseCount}.`);
 
   console.log(JSON.stringify({
     schema: 'tracekernel-013-descriptors-v1',
@@ -472,6 +514,7 @@ async function main(): Promise<void> {
     atomicDup2Replacement: true,
     atomicDup3CloseOnExec: true,
     closeOnExecPipeCreation: true,
+    hostAttachedStandardIoPipes: true,
     failedInstallsReleaseResources: true,
     defaultDescriptorNonInheritance: true,
     closeOnExecDescriptorFiltering: true,

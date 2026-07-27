@@ -119,6 +119,26 @@ interface TraceKernelRuntimeProviderSlot {
   readonly initialize: Effect.Effect<TraceKernelRuntimeFactory, Error>;
 }
 
+/**
+ * Host-owned ends of a process's non-terminal standard-I/O pipes.
+ *
+ * The process exclusively owns fd 0/1/2. The host may feed stdin and drain
+ * stdout/stderr without acquiring a synthetic process identity or bypassing
+ * the descriptor resources installed in the process table.
+ */
+export interface TraceKernelHostStandardIo {
+  readonly stdinResourceId: string;
+  readonly stdoutResourceId: string;
+  readonly stderrResourceId: string;
+  writeStdin(bytes: Uint8Array): Effect.Effect<number, Error>;
+  closeStdin(): Effect.Effect<void>;
+  readStdout(maxBytes: number): Effect.Effect<Uint8Array, Error>;
+  readStderr(maxBytes: number): Effect.Effect<Uint8Array, Error>;
+  closeStdout(): Effect.Effect<void>;
+  closeStderr(): Effect.Effect<void>;
+  close(): Effect.Effect<void>;
+}
+
 interface MutableProcessRecord {
   pid: number;
   ppid: number;
@@ -1703,6 +1723,70 @@ export class TraceKernelSession {
         stdinFd: 0 as const,
         stdoutFd: 1 as const,
         stderrFd: 2 as const,
+      });
+    });
+  }
+
+  attachHostStandardIo(
+    process: TraceKernelProcess,
+    options: TraceKernelPipeOptions = {}
+  ): Effect.Effect<TraceKernelHostStandardIo, Error> {
+    return Effect.gen(this, function* () {
+      yield* this.assertOwnedProcess(process);
+      const createPipe = (stream: 'stdin' | 'stdout' | 'stderr') =>
+        TraceKernelPipe.make(
+          `host-${stream}-${process.pid}-${this.nextResourceId++}`,
+          options,
+          (closedId) => this.resources.delete(closedId)
+        ).pipe(
+          Effect.tap((pipe) =>
+            Effect.sync(() => this.resources.set(pipe.id, pipe))
+          )
+        );
+      const stdin = yield* createPipe('stdin');
+      const stdout = yield* createPipe('stdout').pipe(
+        Effect.tapError(() => stdin.dispose())
+      );
+      const stderr = yield* createPipe('stderr').pipe(
+        Effect.tapError(() =>
+          Effect.all([stdin.dispose(), stdout.dispose()], {
+            concurrency: 'unbounded',
+            discard: true,
+          })
+        )
+      );
+      const hostStdin = stdin.writer();
+      const hostStdout = stdout.reader();
+      const hostStderr = stderr.reader();
+      yield* process.descriptors.replaceMany([
+        { fd: 0, descriptor: stdin.reader() },
+        { fd: 1, descriptor: stdout.writer() },
+        { fd: 2, descriptor: stderr.writer() },
+      ]).pipe(
+        Effect.tapError(() =>
+          Effect.all(
+            [hostStdin.close(), hostStdout.close(), hostStderr.close()],
+            { concurrency: 'unbounded', discard: true }
+          )
+        )
+      );
+      return Object.freeze({
+        stdinResourceId: stdin.id,
+        stdoutResourceId: stdout.id,
+        stderrResourceId: stderr.id,
+        writeStdin: (bytes: Uint8Array) => hostStdin.write(bytes),
+        closeStdin: () => hostStdin.close(),
+        readStdout: (maxBytes: number) =>
+          hostStdout.read(Math.max(0, Math.floor(maxBytes))),
+        readStderr: (maxBytes: number) =>
+          hostStderr.read(Math.max(0, Math.floor(maxBytes))),
+        closeStdout: () => hostStdout.close(),
+        closeStderr: () => hostStderr.close(),
+        close: () =>
+          Effect.all(
+            [hostStdin.close(), hostStdout.close(), hostStderr.close()],
+            { concurrency: 'unbounded', discard: true }
+          ),
       });
     });
   }
