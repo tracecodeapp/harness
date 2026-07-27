@@ -1,6 +1,7 @@
 import type * as Effect from 'effect/Effect';
 import type * as Scope from 'effect/Scope';
 import type { TraceKernelDescriptorSnapshot } from './descriptors';
+import type { TraceKernelFileSystemImage } from './vfs';
 
 export type TraceKernelRuntimeName = string;
 
@@ -190,4 +191,9 @@ export interface TraceKernelSessionOptions {
   readonly maxDescriptorsPerProcess?: number;
   readonly maxProcesses?: number;
   readonly signalGracePeriodMs?: number;
+  /**
+   * Committed state used to construct the session-owned TKFS before any process
+   * can start. After openSession succeeds, the session is the mutable authority.
+   */
+  readonly fileSystemImage?: TraceKernelFileSystemImage;
 }

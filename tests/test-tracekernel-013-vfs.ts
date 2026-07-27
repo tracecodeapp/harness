@@ -6,7 +6,6 @@ import * as Exit from 'effect/Exit';
 import * as Option from 'effect/Option';
 import {
   makeTraceKernelHost,
-  TraceKernelFileSystem,
   TraceKernelFileSystemError,
   type TraceKernelRuntimeProvider,
 } from '@tracecode/tracekernel';
@@ -131,19 +130,23 @@ async function main(): Promise<void> {
       yield* session.link('image-tree/source.txt', 'image-tree/alias.txt');
       yield* session.symlink('source.txt', 'image-tree/current.txt');
       const image = yield* session.fileSystem.exportImage();
-      const hydrated = yield* TraceKernelFileSystem.fromImage(image);
+      const hydratedSession = yield* host.openSession({
+        cwd: '/workspace/image-tree',
+        fileSystemImage: image,
+      });
+      const hydrated = hydratedSession.fileSystem;
       assertCondition(
-        text(yield* hydrated.readFile('/workspace/image-tree/current.txt')) === 'shared inode',
+        text(yield* hydratedSession.readFile('current.txt')) === 'shared inode',
         'Hydration did not preserve symbolic-link resolution.'
       );
-      yield* hydrated.writeFile('/workspace/image-tree/alias.txt', bytes('updated inode'));
+      yield* hydratedSession.writeFile('alias.txt', bytes('updated inode'));
       assertCondition(
-        text(yield* hydrated.readFile('/workspace/image-tree/source.txt')) === 'updated inode',
+        text(yield* hydratedSession.readFile('source.txt')) === 'updated inode',
         'Hydration did not preserve hard-link inode identity.'
       );
-      yield* hydrated.unlink('/workspace/image-tree/source.txt');
+      yield* hydratedSession.unlink('source.txt');
       assertCondition(
-        text(yield* hydrated.readFile('/workspace/image-tree/alias.txt')) === 'updated inode',
+        text(yield* hydratedSession.readFile('alias.txt')) === 'updated inode',
         'Removing one hydrated hard link removed the shared inode.'
       );
       assertCondition(

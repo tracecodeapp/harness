@@ -18,6 +18,7 @@ import {
   TraceKernelBadFileDescriptorError,
   TraceKernelChildProcessError,
   TraceKernelDescriptorLimitError,
+  TraceKernelFileSystemError,
   TraceKernelHostClosedError,
   TraceKernelInvalidArgumentError,
   TraceKernelProcessLimitError,
@@ -2151,16 +2152,31 @@ export class TraceKernelHost {
 
   openSession(
     options: TraceKernelSessionOptions = {}
-  ): Effect.Effect<TraceKernelSession, TraceKernelHostClosedError, Scope.Scope> {
+  ): Effect.Effect<
+    TraceKernelSession,
+    TraceKernelHostClosedError | TraceKernelFileSystemError,
+    Scope.Scope
+  > {
     return Effect.gen(this, function* () {
       if (this.closed) {
         return yield* Effect.fail(new TraceKernelHostClosedError({
           message: 'TraceKernel host is closed.',
         }));
       }
-      const sessionScope = yield* Scope.make();
-      const fileSystem = yield* TraceKernelFileSystem.make();
+      const cwd = options.cwd ?? '/workspace';
+      const fileSystem = options.fileSystemImage
+        ? yield* TraceKernelFileSystem.fromImage(options.fileSystemImage)
+        : yield* TraceKernelFileSystem.make();
+      const cwdStat = yield* fileSystem.stat(cwd, '/');
+      if (cwdStat.kind !== 'directory') {
+        return yield* Effect.fail(new TraceKernelFileSystemError({
+          code: 'ENOTDIR',
+          path: cwd,
+          message: `ENOTDIR: session cwd is not a directory ${JSON.stringify(cwd)}`,
+        }));
+      }
       const networkNamespace = yield* TraceKernelNetworkNamespace.make();
+      const sessionScope = yield* Scope.make();
       return yield* Effect.acquireRelease(
         Effect.sync(() => {
           const id = `session-${this.nextSessionId++}`;
@@ -2170,7 +2186,7 @@ export class TraceKernelHost {
             sessionScope,
             fileSystem,
             networkNamespace,
-            options.cwd ?? '/workspace',
+            cwd,
             Object.freeze({ ...(options.env ?? {}) }),
             normalizeDescriptorLimit(options.maxDescriptorsPerProcess),
             normalizeProcessLimit(options.maxProcesses),
