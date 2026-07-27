@@ -38,7 +38,6 @@ interface WorkerMessage {
   >;
   kernelSyscallChannel?: RuntimeKernelSyscallBridge['channel'];
   kernelSyscallGenerationBuffer?: SharedArrayBuffer;
-  port?: MessagePort;
 }
 
 const workerScope = self as typeof self & {
@@ -372,7 +371,6 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     runnerOptions,
     kernelSyscallChannel,
     kernelSyscallGenerationBuffer,
-    port,
   } = event.data;
   if (!id) return;
 
@@ -386,15 +384,6 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   if (typeof protocolToken !== 'string' || protocolToken.length === 0) {
     postWorkerMessage({ id, type: 'error', payload: { error: 'Missing JavaScript project worker protocol token.' } });
     return;
-  }
-
-  const commandPort = port ?? null;
-  const postToHost = commandPort ? commandPort.postMessage.bind(commandPort) : postWorkerMessage;
-  commandPort?.start?.();
-  if (commandPort) {
-    commandPort.onmessage = (messageEvent: MessageEvent<WorkerMessage>) => {
-      handleKernelHttpHostMessage(messageEvent.data);
-    };
   }
 
   const request = payload as JavaScriptProjectCommandRequest;
@@ -412,7 +401,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     syscallClient = new TraceKernelSharedSyscallClient(
       kernelSyscallChannel,
       () => postCommandMessage(
-        postToHost,
+        postWorkerMessage,
         id,
         protocolToken,
         'kernel-syscall',
@@ -434,7 +423,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     executionState.kernelSyscalls = syscallClient;
     asyncSyscallClient = new WorkerKernelAsyncSyscallClient(
       (requestId, request) => postCommandMessage(
-        postToHost,
+        postWorkerMessage,
         id,
         protocolToken,
         'kernel-syscall-async',
@@ -444,7 +433,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     executionState.kernelNetwork = asyncSyscallClient;
   }
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
-    postCommandMessage(postToHost, id, protocolToken, message.type, message);
+    postCommandMessage(postWorkerMessage, id, protocolToken, message.type, message);
   });
   activeHttpBridges.set(id, {
     bridge: kernelHttp,
@@ -470,7 +459,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
         ) {
           return;
         }
-        postCommandMessage(postToHost, id, protocolToken, 'project-event', runtimeEvent);
+        postCommandMessage(postWorkerMessage, id, protocolToken, 'project-event', runtimeEvent);
       },
     },
     options,
@@ -478,13 +467,11 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   ).then(
     (result: RuntimeCommandResult) => {
       clearActiveCommand();
-      postCommandMessage(postToHost, id, protocolToken, 'execute-result', result);
-      commandPort?.close();
+      postCommandMessage(postWorkerMessage, id, protocolToken, 'execute-result', result);
     },
     (error) => {
       clearActiveCommand();
-      postCommandMessage(postToHost, id, protocolToken, 'error', { error: errorMessage(error) });
-      commandPort?.close();
+      postCommandMessage(postWorkerMessage, id, protocolToken, 'error', { error: errorMessage(error) });
     }
   );
 };

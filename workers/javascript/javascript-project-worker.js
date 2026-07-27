@@ -14009,8 +14009,7 @@ workerScope.onmessage = (event) => {
     protocolToken,
     runnerOptions,
     kernelSyscallChannel,
-    kernelSyscallGenerationBuffer,
-    port
+    kernelSyscallGenerationBuffer
   } = event.data;
   if (!id) return;
   if (handleKernelHttpHostMessage(event.data)) return;
@@ -14021,14 +14020,6 @@ workerScope.onmessage = (event) => {
   if (typeof protocolToken !== "string" || protocolToken.length === 0) {
     postWorkerMessage({ id, type: "error", payload: { error: "Missing JavaScript project worker protocol token." } });
     return;
-  }
-  const commandPort = port ?? null;
-  const postToHost = commandPort ? commandPort.postMessage.bind(commandPort) : postWorkerMessage;
-  commandPort?.start?.();
-  if (commandPort) {
-    commandPort.onmessage = (messageEvent) => {
-      handleKernelHttpHostMessage(messageEvent.data);
-    };
   }
   const request = payload;
   const options = {
@@ -14045,7 +14036,7 @@ workerScope.onmessage = (event) => {
     syscallClient = new TraceKernelSharedSyscallClient(
       kernelSyscallChannel,
       () => postCommandMessage(
-        postToHost,
+        postWorkerMessage,
         id,
         protocolToken,
         "kernel-syscall",
@@ -14065,7 +14056,7 @@ workerScope.onmessage = (event) => {
     executionState.kernelSyscalls = syscallClient;
     asyncSyscallClient = new WorkerKernelAsyncSyscallClient(
       (requestId, request2) => postCommandMessage(
-        postToHost,
+        postWorkerMessage,
         id,
         protocolToken,
         "kernel-syscall-async",
@@ -14075,7 +14066,7 @@ workerScope.onmessage = (event) => {
     executionState.kernelNetwork = asyncSyscallClient;
   }
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
-    postCommandMessage(postToHost, id, protocolToken, message.type, message);
+    postCommandMessage(postWorkerMessage, id, protocolToken, message.type, message);
   });
   activeHttpBridges.set(id, {
     bridge: kernelHttp,
@@ -14097,7 +14088,7 @@ workerScope.onmessage = (event) => {
         if (runtimeEvent.type === "status" && (runtimeEvent.phase === "process-start" || runtimeEvent.phase === "process-exit")) {
           return;
         }
-        postCommandMessage(postToHost, id, protocolToken, "project-event", runtimeEvent);
+        postCommandMessage(postWorkerMessage, id, protocolToken, "project-event", runtimeEvent);
       }
     },
     options,
@@ -14105,13 +14096,11 @@ workerScope.onmessage = (event) => {
   ).then(
     (result) => {
       clearActiveCommand();
-      postCommandMessage(postToHost, id, protocolToken, "execute-result", result);
-      commandPort?.close();
+      postCommandMessage(postWorkerMessage, id, protocolToken, "execute-result", result);
     },
     (error) => {
       clearActiveCommand();
-      postCommandMessage(postToHost, id, protocolToken, "error", { error: errorMessage(error) });
-      commandPort?.close();
+      postCommandMessage(postWorkerMessage, id, protocolToken, "error", { error: errorMessage(error) });
     }
   );
 };

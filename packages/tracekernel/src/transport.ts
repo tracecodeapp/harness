@@ -1838,8 +1838,10 @@ export function makeTraceKernelPromiseSyscallHandler(
 /**
  * Dedicated-worker synchronous syscall client.
  *
- * `signalHost` should post a small notification over MessagePort. Request and
- * response bodies stay in the bounded binary SharedArrayBuffer frame.
+ * `signalHost` should post a small notification over the dedicated worker's
+ * host-observable message channel. It must not depend on a transferred port
+ * whose delivery can be queued behind this worker's `Atomics.wait`. Request
+ * and response bodies stay in the bounded binary SharedArrayBuffer frame.
  */
 export class TraceKernelSharedSyscallClient implements TraceKernelSyncSyscallTransport {
   private readonly header: Int32Array;

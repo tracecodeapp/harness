@@ -4894,7 +4894,6 @@ interface BrowserJavaScriptProjectWorkerMessage {
   >;
   kernelSyscallChannel?: RuntimeKernelSyscallBridge['channel'];
   kernelSyscallGenerationBuffer?: SharedArrayBuffer;
-  port?: MessagePort;
 }
 
 interface BrowserJavaScriptProjectPendingMessage {
@@ -4904,7 +4903,6 @@ interface BrowserJavaScriptProjectPendingMessage {
   onEvent?: (event: RuntimeCommandEvent) => void;
   kernelHttp?: RuntimeKernelHttpBridge;
   kernelSyscalls?: RuntimeKernelSyscallBridge;
-  port?: MessagePort;
   httpListeners: Map<string, RuntimeKernelHttpListenerHandle>;
   httpRequests: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
   httpDispatchAbortControllers: Map<string, AbortController>;
@@ -5168,14 +5166,7 @@ class BrowserJavaScriptProjectWorkerClient {
     const worker = this.getWorker();
     const id = String(++this.messageId);
     const protocolToken = createBrowserJavaScriptProjectProtocolToken();
-    const channel = typeof MessageChannel === 'function' ? new MessageChannel() : null;
     return new Promise<RuntimeCommandResult>((resolve, reject) => {
-      if (channel) {
-        channel.port1.onmessage = (event: MessageEvent<BrowserJavaScriptProjectWorkerMessage>) => {
-          this.handleWorkerMessage(event.data);
-        };
-        channel.port1.start?.();
-      }
       const pending: BrowserJavaScriptProjectPendingMessage = {
         protocolToken,
         resolve,
@@ -5183,7 +5174,6 @@ class BrowserJavaScriptProjectWorkerClient {
         ...(onEvent ? { onEvent } : {}),
         ...(kernelHttp ? { kernelHttp } : {}),
         ...(kernelSyscalls ? { kernelSyscalls } : {}),
-        ...(channel ? { port: channel.port1 } : {}),
         httpListeners: new Map(),
         httpRequests: new Map(),
         httpDispatchAbortControllers: new Map(),
@@ -5203,13 +5193,8 @@ class BrowserJavaScriptProjectWorkerClient {
                 : {}),
             }
           : {}),
-        ...(channel ? { port: channel.port2 } : {}),
       };
-      if (channel) {
-        worker.postMessage(message, [channel.port2]);
-      } else {
-        worker.postMessage(message);
-      }
+      worker.postMessage(message);
       if (signal) {
         const onAbort = (): void => {
           if (!this.pendingMessages.has(id)) return;
@@ -5375,10 +5360,6 @@ class BrowserJavaScriptProjectWorkerClient {
       payload,
       protocolToken: pending.protocolToken,
     };
-    if (pending.port) {
-      pending.port.postMessage(message);
-      return;
-    }
     this.worker?.postMessage(message);
   }
 
@@ -5401,7 +5382,6 @@ class BrowserJavaScriptProjectWorkerClient {
     pending.httpRequests.clear();
     for (const abortController of pending.httpDispatchAbortControllers.values()) abortController.abort();
     pending.httpDispatchAbortControllers.clear();
-    pending.port?.close();
   }
 
   private executeWithTimeout(
