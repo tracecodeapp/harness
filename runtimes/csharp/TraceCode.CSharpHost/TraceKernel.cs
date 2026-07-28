@@ -490,6 +490,10 @@ public sealed record TerminalWindowSize(int Rows, int Columns);
 [SupportedOSPlatform("browser")]
 public static class KernelTerminal
 {
+    public static event Action? WindowSizeChanged;
+
+    internal static void RaiseWindowSizeChanged() => WindowSizeChanged?.Invoke();
+
     public static bool IsTerminal(int descriptor)
     {
         ValidateDescriptor(descriptor);
@@ -564,6 +568,7 @@ public static class KernelTerminal
             rows,
             columns,
         });
+        KernelInterop.DispatchPendingSignals();
         return ReadWindowSize(value);
     }
 
@@ -1437,6 +1442,18 @@ internal static partial class KernelInterop
 
     [JSImport("kernelSyscall", "tracecode")]
     private static partial string KernelSyscall(string requestJson);
+
+    [JSImport("pollKernelSignal", "tracecode")]
+    private static partial int PollKernelSignal();
+
+    [SupportedOSPlatform("browser")]
+    internal static void DispatchPendingSignals()
+    {
+        if (PollKernelSignal() == 28)
+        {
+            KernelTerminal.RaiseWindowSizeChanged();
+        }
+    }
 
     [SupportedOSPlatform("browser")]
     internal static JsonElement Call(object request)

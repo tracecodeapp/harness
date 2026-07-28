@@ -11,6 +11,8 @@ let runtimeModule = null;
 let runtimeFsHooksInstalled = false;
 let activeProjectIo = null;
 let activeTraceKernelClient = null;
+let activeKernelSignalState = null;
+let activeKernelSignalSequence = 0;
 const activeProtocolTokens = new Map();
 const pendingCompilerArtifactCacheRequests = new Map();
 let materializedKernelVirtualFilePaths = new Set();
@@ -1538,6 +1540,14 @@ function invokeCSharpTraceKernelSyscall(requestJson) {
       },
     });
   }
+}
+
+function pollCSharpKernelSignal() {
+  if (!activeKernelSignalState) return 0;
+  const sequence = Atomics.load(activeKernelSignalState, 0);
+  if (sequence === activeKernelSignalSequence) return 0;
+  activeKernelSignalSequence = sequence;
+  return Atomics.load(activeKernelSignalState, 1) | 0;
 }
 
 function projectUtf8Bytes(value) {
@@ -3157,6 +3167,7 @@ async function loadRuntime(assetBaseUrl) {
         emitProjectEvent: emitProjectEventJson,
         readProjectInputByte: () => readProjectInputByte('/dev/stdin') ?? -1,
         kernelSyscall: invokeCSharpTraceKernelSyscall,
+        pollKernelSignal: pollCSharpKernelSignal,
       });
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;
@@ -4291,6 +4302,11 @@ async function handleMessage(message) {
       }
       activeProjectIo = projectIo;
       activeTraceKernelClient = kernelClient;
+      activeKernelSignalState =
+        message.kernelSignalMailbox?.buffer instanceof SharedArrayBuffer
+          ? new Int32Array(message.kernelSignalMailbox.buffer)
+          : null;
+      activeKernelSignalSequence = 0;
       try {
         result = await withCSharpUserAuthorityLockdown(
           () => JSON.parse(executeProjectExport(JSON.stringify({
@@ -4325,6 +4341,8 @@ async function handleMessage(message) {
       flushProjectOutput('stderr');
       activeProjectIo = null;
       activeTraceKernelClient = null;
+      activeKernelSignalState = null;
+      activeKernelSignalSequence = 0;
       restoreTraceKernelMount();
       kernelClient?.close();
     }
@@ -4352,6 +4370,7 @@ self.addEventListener('message', (event) => {
     payload,
     protocolToken,
     kernelSyscallChannel,
+    kernelSignalMailbox,
   } = event.data || {};
   if (type === 'compiler-artifact-cache-response') {
     const pending = pendingCompilerArtifactCacheRequests.get(event.data?.requestId);
@@ -4385,6 +4404,7 @@ self.addEventListener('message', (event) => {
         payload,
         protocolToken,
         kernelSyscallChannel,
+        kernelSignalMailbox,
       });
       const transported = type === 'execute-with-tracing'
         ? prepareCSharpTraceEventTransfer(result, payload?.traceEventTransport)
