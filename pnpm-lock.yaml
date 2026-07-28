@@ -64,9 +64,6 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
     devDependencies:
-      '@tracecode/tracejvm':
-        specifier: link:../tracejvm
-        version: link:../tracejvm
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.37
@@ -214,10 +211,6 @@ importers:
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
-    devDependencies:
-      '@tracecode/tracejvm':
-        specifier: link:../../../tracejvm
-        version: link:../../../tracejvm
 
   packages/harness-javascript:
     dependencies:

@@ -16,20 +16,89 @@ import {
   runtimeSignalExitCode,
   withRuntimeProjectCommandRunnerCapabilities,
 } from '@tracecode/harness-core';
-import type {
-  TraceJVMBinaryFile,
-  TraceJVMCompileRequest,
-  TraceJVMCompileResult,
-  TraceJVMExecuteResult,
-  TraceJVMRunRequest,
-} from '@tracecode/tracejvm';
 
 type JavaProjectRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
 
+/**
+ * Structural TraceJVM boundary consumed by the Harness adapter.
+ *
+ * These types deliberately live in Harness: TraceJVM is an optional,
+ * independently released runtime, and building Harness must not require a
+ * sibling checkout or an installed TraceJVM package. A compatible TraceJVM
+ * client satisfies this contract without either project importing the other.
+ */
+export interface TraceJVMProjectBinaryFile {
+  readonly path: string;
+  readonly content: Uint8Array;
+}
+
+export interface TraceJVMProjectSourceFile {
+  readonly path: string;
+  readonly content: string;
+}
+
+export interface TraceJVMProjectIsolationReport {
+  readonly status: 'not-applicable' | 'clean' | 'tainted';
+  readonly restored: readonly string[];
+  readonly taintReasons: readonly string[];
+  readonly hardBoundaryRecommended: boolean;
+}
+
+export interface TraceJVMProjectExecuteResult {
+  readonly status:
+    | 'completed'
+    | 'compile-error'
+    | 'runtime-error'
+    | 'cancelled';
+  readonly exitCode: number;
+  readonly value?: string | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timings: {
+    readonly runtimeInitMs: number;
+    readonly queueMs: number;
+    readonly compileAndRunMs: number;
+    readonly totalMs: number;
+  };
+  readonly isolation: TraceJVMProjectIsolationReport;
+  readonly retirementRecommended: boolean;
+  readonly diagnostics?: unknown;
+}
+
+export interface TraceJVMProjectCompileRequest {
+  readonly sources: readonly TraceJVMProjectSourceFile[];
+  readonly classpath?: readonly TraceJVMProjectBinaryFile[];
+  readonly signal?: AbortSignal;
+  readonly onStdout?: (chunk: string) => void;
+  readonly onStderr?: (chunk: string) => void;
+}
+
+export interface TraceJVMProjectCompileResult
+  extends TraceJVMProjectExecuteResult {
+  readonly program?: {
+    readonly files: readonly TraceJVMProjectBinaryFile[];
+  };
+}
+
+export interface TraceJVMProjectRunRequest {
+  readonly program: {
+    readonly files: readonly TraceJVMProjectBinaryFile[];
+  };
+  readonly classpath?: readonly TraceJVMProjectBinaryFile[];
+  readonly mainClass: string;
+  readonly args?: readonly string[];
+  readonly systemProperties?: Readonly<Record<string, string>>;
+  readonly signal?: AbortSignal;
+  readonly onStdout?: (chunk: string) => void;
+  readonly onStderr?: (chunk: string) => void;
+}
+
 export interface TraceJVMProjectClient {
   initialize?(signal?: AbortSignal): Promise<{ initializeMs: number }>;
-  compile(request: TraceJVMCompileRequest): Promise<TraceJVMCompileResult>;
-  run(request: TraceJVMRunRequest): Promise<TraceJVMExecuteResult>;
+  compile(
+    request: TraceJVMProjectCompileRequest
+  ): Promise<TraceJVMProjectCompileResult>;
+  run(request: TraceJVMProjectRunRequest): Promise<TraceJVMProjectExecuteResult>;
   /**
    * TraceJVM currently requires a hard Worker boundary for complete disposal.
    * A client handed to this adapter is always terminated after one invocation.
@@ -83,7 +152,7 @@ export const TRACEJVM_PROJECT_CAPABILITIES = Object.freeze({
 export interface TraceJVMProjectExecutionReport {
   readonly pid?: number;
   readonly source: JavaProjectRequest['source'];
-  readonly result: TraceJVMExecuteResult;
+  readonly result: TraceJVMProjectExecuteResult;
 }
 
 export interface TraceJVMProjectRunnerOptions {
@@ -283,10 +352,10 @@ function parseCompileInvocation(args: readonly string[]): ParsedCompileInvocatio
 function classpathFiles(
   request: JavaProjectRequest,
   specification: string | undefined
-): TraceJVMBinaryFile[] {
+): TraceJVMProjectBinaryFile[] {
   const files = projectFileMap(request);
   const entries = (specification ?? '.').split(':').filter(Boolean);
-  const output: TraceJVMBinaryFile[] = [];
+  const output: TraceJVMProjectBinaryFile[] = [];
   for (const entry of entries) {
     const path = resolveProjectPath(request, entry);
     const exact = files.get(path);
@@ -310,7 +379,7 @@ function classpathFiles(
 }
 
 function mapOutcome(
-  result: TraceJVMExecuteResult,
+  result: TraceJVMProjectExecuteResult,
   files?: RuntimeFile[]
 ): RuntimeCommandResult {
   return {

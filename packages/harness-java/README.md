@@ -60,6 +60,11 @@ const workspace = await createBrowserProjectWorkspace({
 });
 ```
 
+Harness does not declare TraceJVM as a package or peer dependency. The adapter
+consumes a small exported structural client contract so Harness can build and
+ship independently; applications that select this provider install and inject
+their chosen compatible TraceJVM release explicitly.
+
 The 0.13 adapter binds one coordinator to the TraceKernel PID but admits each
 `javac` or `java` invocation to a fresh Worker. Compilation artifacts are
 committed to TKFS and subsequent commands read them from TKFS, including

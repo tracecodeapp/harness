@@ -1757,7 +1757,6 @@ var package_default = {
     "check:browser-project-performance": "node scripts/check-browser-project-performance.mjs"
   },
   devDependencies: {
-    "@tracecode/tracejvm": "link:../tracejvm",
     "@types/node": "^20.0.0",
     esbuild: "0.27.3",
     playwright: "^1.53.2",
@@ -1765,14 +1764,6 @@ var package_default = {
     tsup: "^8.5.0",
     tsx: "^4.21.0",
     typescript: "^5.0.0"
-  },
-  peerDependencies: {
-    "@tracecode/tracejvm": ">=0.1.0"
-  },
-  peerDependenciesMeta: {
-    "@tracecode/tracejvm": {
-      optional: true
-    }
   },
   pnpm: {
     overrides: {

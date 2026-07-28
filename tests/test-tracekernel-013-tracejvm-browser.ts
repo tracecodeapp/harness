@@ -46,6 +46,9 @@ try {
     target: 'es2022',
     outfile: bundlePath,
     logLevel: 'silent',
+    alias: {
+      '@tracecode/tracejvm': resolve(traceJVMRoot, 'src/index.ts'),
+    },
   });
   const bundle = readFileSync(bundlePath);
   const server = createServer((request, response) => {
