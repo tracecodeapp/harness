@@ -115,6 +115,7 @@ import {
   type TraceKernelProcessSnapshot,
   type TraceKernelSession,
   type TraceKernelSignal,
+  type TraceKernelTerminalSnapshot,
   type TraceKernelSyscallErrorCode,
   type TraceKernelSyscallRequest,
   type TraceKernelSyscallResult,
@@ -736,6 +737,7 @@ interface RuntimeKernelExecutionHandle {
   readonly kernelProcess: TraceKernelProcess;
   readonly abortController?: AbortController;
   readonly hostStandardIo?: TraceKernelHostStandardIo;
+  descriptorStdio?: boolean;
   hostOutputContext?: RuntimeCommandExecutionContext;
   hostStdinPumpStarted?: boolean;
   stopHostStdinPump?: boolean;
@@ -1239,8 +1241,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         kernelSyscalls?: boolean;
         descriptorStdio?: boolean;
       } = {}
-    ): RuntimeProjectCommandRunner<Request> => (
-      async (request, ctx?: CommandContext) => {
+    ): RuntimeProjectCommandRunner<Request> => {
+      const descriptorStdio =
+        options.descriptorStdio === true &&
+        runner.capabilities?.descriptorStdio !== false;
+      return (async (request, ctx?: CommandContext) => {
         const commandContext = this.resolveCommandContext(ctx);
         const {
           stdinPipe: _legacyRequestStdinPipe,
@@ -1260,7 +1265,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const kernelSyscalls = options.kernelSyscalls
           ? this.createKernelSyscallBridge(commandContext)
           : undefined;
-        if (options.descriptorStdio && commandContext) {
+        const executionHandle = commandContext
+          ? this.processExecutionHandle(commandContext.process)
+          : undefined;
+        if (executionHandle) {
+          executionHandle.descriptorStdio = descriptorStdio;
+        }
+        if (descriptorStdio && commandContext) {
           this.startHostStandardInputPump(commandContext);
         }
         const processSnapshot = commandContext?.process
@@ -1268,7 +1279,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           : undefined;
         try {
           result = await runner({
-            ...(options.descriptorStdio ? requestWithoutLegacyStdin : request),
+            ...(descriptorStdio ? requestWithoutLegacyStdin : request),
             ...(commandContext?.process && processSnapshot
               ? {
                   process: {
@@ -1283,7 +1294,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                 }
               : {}),
             ...(
-              stdinPipe && !options.descriptorStdio
+              stdinPipe && !descriptorStdio
                 ? { stdinPipe: { buffer: stdinPipe.buffer } }
                 : {}
             ),
@@ -1320,8 +1331,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         await this.flushRuntimeEventQueue();
         return result;
-      }
-    ) as RuntimeProjectCommandRunner<Request>;
+      }) as RuntimeProjectCommandRunner<Request>;
+    };
     const observeFileChange: RuntimeFileChangeObserver = (change, phase, context) => {
       this.emitLocalRuntimeEvent({ type: 'file-change', change, phase }, context);
     };
@@ -5490,13 +5501,31 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
   }
 
-  private writeKernelTerminalInput(data: string): boolean {
+  private kernelTerminalInputRoute(
+    terminal: TraceKernelTerminalSnapshot
+  ): 'kernel' | 'legacy' {
+    const hasDescriptorConsumer = this.traceKernelAuthority?.session
+      .processSnapshots()
+      .some((process) =>
+        process.sid === terminal.sessionId &&
+        process.pgid === terminal.foregroundProcessGroupId &&
+        this.processExecutionHandles.get(process.pid)?.descriptorStdio === true
+      ) === true;
+    return hasDescriptorConsumer ? 'kernel' : 'legacy';
+  }
+
+  private writeKernelTerminalInput(
+    data: string
+  ): 'kernel' | 'legacy' | 'rejected' {
     const authority = this.traceKernelAuthority;
     const terminal = authority?.session.terminalSnapshots()[0];
-    if (!authority || !terminal || terminal.closed) return false;
+    if (!authority || !terminal || terminal.closed) return 'rejected';
     const signalByte = new TextEncoder().encode(data).find(
       (byte) => byte === 0x03 || byte === 0x1c
     );
+    if (signalByte === undefined && this.kernelTerminalInputRoute(terminal) === 'legacy') {
+      return 'legacy';
+    }
     if (signalByte !== undefined) {
       const signal = signalByte === 0x03 ? 'SIGINT' : 'SIGQUIT';
       const count = authority.session.processSnapshots().filter(
@@ -5519,19 +5548,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         Effect.catchAll(() => Effect.void)
       )
     );
-    return true;
+    return 'kernel';
   }
 
-  private endKernelTerminalInput(): boolean {
+  private endKernelTerminalInput(): 'kernel' | 'legacy' | 'rejected' {
     const authority = this.traceKernelAuthority;
     const terminal = authority?.session.terminalSnapshots()[0];
-    if (!authority || !terminal || terminal.closed) return false;
+    if (!authority || !terminal || terminal.closed) return 'rejected';
+    if (this.kernelTerminalInputRoute(terminal) === 'legacy') return 'legacy';
     Effect.runFork(
       authority.session.sendTerminalInputEof(terminal.id).pipe(
         Effect.catchAll(() => Effect.void)
       )
     );
-    return true;
+    return 'kernel';
   }
 
   private signalRuntimeProcessSelector(
@@ -10350,8 +10380,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
         runCommand: (command, commandOptions) => this.runCommandAs(command, commandOptions, parent),
         signalForeground: (signal) => this.signalTerminalForeground(signal),
-        writeTerminalInput: (data) => this.writeKernelTerminalInput(data),
-        endTerminalInput: () => this.endKernelTerminalInput(),
+        terminalInputRouter: {
+          write: (data) => this.writeKernelTerminalInput(data),
+          end: () => this.endKernelTerminalInput(),
+        },
         resizeTerminal: (columns, rows) =>
           this.resizeKernelTerminal(columns, rows),
         jobRecords: () => this.terminalJobRecords(),
@@ -10492,6 +10524,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const processSnapshot = this.authoritativeProcessSnapshot(
       request.commandContext.process
     );
+    const executionHandle = this.processExecutionHandle(
+      request.commandContext.process
+    );
+    if (executionHandle) {
+      executionHandle.descriptorStdio = true;
+    }
     this.startHostStandardInputPump(request.commandContext);
     let result: RuntimeCommandResult;
     try {

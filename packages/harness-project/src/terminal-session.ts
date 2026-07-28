@@ -209,8 +209,10 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       resolveCwd: (currentCwd: string, target: string) => Promise<string>;
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
       signalForeground?: (signal: 'SIGINT' | 'SIGQUIT') => boolean;
-      writeTerminalInput?: (data: string) => boolean;
-      endTerminalInput?: () => boolean;
+      terminalInputRouter?: {
+        write(data: string): 'kernel' | 'legacy' | 'rejected';
+        end(): 'kernel' | 'legacy' | 'rejected';
+      };
       resizeTerminal?: (columns: number, rows: number) => void;
       jobRecords: () => readonly RuntimeProjectTerminalJobRecord[];
       isVerbose: () => boolean;
@@ -307,7 +309,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     );
     if (signalCharacter) {
       if (this.activeTerminalSignalDelivered) return false;
-      if (this.options.writeTerminalInput?.(signalCharacter)) {
+      if (this.options.terminalInputRouter?.write(signalCharacter) === 'kernel') {
         this.activeTerminalSignalDelivered = true;
         return true;
       }
@@ -315,23 +317,28 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         signalCharacter === '\x03' ? 'SIGINT' : 'SIGQUIT'
       );
     }
-    const kernelAccepted = this.options.writeTerminalInput?.(data) === true;
-    const legacyAccepted = this.activeStdinPipe !== null;
-    this.activeStdinPipe?.write(data);
-    if ((kernelAccepted || legacyAccepted) && this.currentInputState.mode === 'stdin') {
+    const route = this.options.terminalInputRouter?.write(data) ??
+      (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
+    if (route === 'legacy') {
+      this.activeStdinPipe?.write(data);
+    }
+    const accepted = route !== 'rejected';
+    if (accepted && this.currentInputState.mode === 'stdin') {
       this.activeStdinPrompt = '';
       this.setInputState('busy', 'stdin-submit');
     }
-    return kernelAccepted || legacyAccepted;
+    return accepted;
   }
 
   endStdin(): boolean {
     if (!this.activeRun || this.activeStdinEnded) return false;
-    const kernelAccepted = this.options.endTerminalInput?.() === true;
-    const legacyAccepted = this.activeStdinPipe !== null;
-    if (!kernelAccepted && !legacyAccepted) return false;
+    const route = this.options.terminalInputRouter?.end() ??
+      (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
+    if (route === 'rejected') return false;
     this.activeStdinEnded = true;
-    this.activeStdinPipe?.close();
+    if (route === 'legacy') {
+      this.activeStdinPipe?.close();
+    }
     this.activeStdinPrompt = '';
     this.setInputState('busy', 'stdin-eof');
     return true;

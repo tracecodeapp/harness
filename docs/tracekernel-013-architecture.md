@@ -465,11 +465,15 @@ Admission rollback kills an unpublished kernel child and closes every
 parent-side pipe endpoint, preserving the no-orphan/no-leak invariant even
 when the product scheduler rejects after kernel allocation.
 
-Terminal input is now published to the session-owned terminal queue, so runtime
-reads from kernel fd 0 block and resume on host input. During adapter migration
-the same bytes are also fed to the legacy runner stdin pipe; each adapter uses
-one input surface, and the dual feed can disappear after every language reads
-stdio through descriptors. Runtime writes to kernel terminal fd 1/2 are drained
+For descriptor-capable runtimes, terminal input is published only to the
+session-owned terminal queue, so reads from kernel fd 0 block and resume on
+host input without a shadow runner stdin feed. A runner must explicitly
+declare descriptor-stdio support; the trusted main-thread JavaScript
+compatibility lane instead receives only its legacy input pipe because it
+cannot synchronously block on the shared kernel transport. Routing is selected
+per active process, so no runner receives both input surfaces and a failed
+kernel delivery never silently falls back. Runtime writes to kernel terminal
+fd 1/2 are drained
 from the shared terminal queue and published through the calling command's
 output controller, preserving PID/actor attribution without leaving a shadow
 queue. Input EOF is a one-shot terminal marker: it releases one blocked fd 0
@@ -966,9 +970,7 @@ unconditionally instead of pooling mutable VM state.
 
 The remaining adapter migration is intentionally narrower:
 
-1. remove the temporary legacy stdio feed only after every shipping legacy
-   runtime has either migrated or been retired;
-2. make any adapter that wants pooling implement and prove its reset validation;
+1. make any adapter that wants pooling implement and prove its reset validation;
    adapters without it remain safe because their leases receive `destroy`.
 
 Suspended job control (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`, and `SIGCONT`) is a

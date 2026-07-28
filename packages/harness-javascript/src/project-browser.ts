@@ -4925,7 +4925,7 @@ function createBrowserJavaScriptProjectProtocolToken(): string {
 }
 
 function createBrowserJavaScriptProjectPolicyFailureRunner(diagnostic: string): JavaScriptProjectCommandRunner {
-  return (request) => {
+  return withDescriptorStdioCapability((request) => {
     const stderr = 'node: JavaScript runtime is unavailable\n';
     const io = createRuntimeProjectIoBridge(request.onEvent);
     io.output('stderr', stderr);
@@ -4941,7 +4941,18 @@ function createBrowserJavaScriptProjectPolicyFailureRunner(diagnostic: string): 
         detail: { diagnostic },
       },
     });
-  };
+  }, false);
+}
+
+function withDescriptorStdioCapability<
+  Runner extends JavaScriptProjectCommandRunner,
+>(runner: Runner, descriptorStdio: boolean): Runner {
+  return Object.assign(runner, {
+    capabilities: Object.freeze({
+      ...runner.capabilities,
+      descriptorStdio,
+    }),
+  });
 }
 
 class BrowserJavaScriptProjectWorkerClient {
@@ -5538,13 +5549,16 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
           }
         },
       });
-    return Object.assign(runner, { dispose });
+    return withDescriptorStdioCapability(
+      Object.assign(runner, { dispose }),
+      true
+    );
   }
   const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
     allowDynamicEval: options.allowDynamicEval,
     projectUserAuthorityMode: 'temporary',
   }, options.workerFactory);
-  return (request) =>
+  return withDescriptorStdioCapability((request) =>
     runRuntimeProjectWorkerBridge({
       request,
       startPhase: 'process-start',
@@ -5562,7 +5576,7 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
         if (engineLease) await client.acquireReusableEngineLease(engineLease);
         return client.executeProject(workerRequest, timeoutMs, onEvent);
       },
-    });
+    }), true);
 }
 
 export function createBrowserJavaScriptProjectRunner(
@@ -5584,7 +5598,7 @@ export function createBrowserJavaScriptProjectRunner(
     );
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return async (request) => {
+  return withDescriptorStdioCapability(async (request) => {
     const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
     const hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -5670,7 +5684,7 @@ export function createBrowserJavaScriptProjectRunner(
     } finally {
       cleanup();
     }
-  };
+  }, false);
 }
 
 export async function runBrowserJavaScriptProjectRequest(

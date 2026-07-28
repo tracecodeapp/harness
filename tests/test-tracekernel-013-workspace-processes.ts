@@ -9,7 +9,9 @@ import type {
   RuntimeProjectCommandRequest,
 } from '../packages/harness-core/src/runtime-project';
 import {
+  createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
+  runtimeCommandStdinPipeRemainingBytes,
 } from '../packages/harness-core/src/runtime-project';
 import type {
   TraceKernelSession,
@@ -798,7 +800,10 @@ async function main(): Promise<void> {
       )}`
     );
     const terminalInputStarted = waitForTerminalInputStart();
-    const terminalInputRun = terminal.run('node terminal-input.js');
+    const legacyTerminalInput = createRuntimeCommandStdinPipe();
+    const terminalInputRun = terminal.run('node terminal-input.js', {
+      stdinPipe: legacyTerminalInput,
+    });
     await terminalInputStarted;
     assertCondition(
       terminal.writeStdin('kernel-input'),
@@ -811,6 +816,10 @@ async function main(): Promise<void> {
       `kernel terminal fd 0 did not drive the runtime: ${JSON.stringify(
         terminalInputResult
       )}`
+    );
+    assertCondition(
+      runtimeCommandStdinPipeRemainingBytes(legacyTerminalInput) === 0,
+      'kernel terminal input was also published to the legacy stdin transport'
     );
     const terminalOutputResult = await terminal.run('node terminal-output.js');
     assertCondition(

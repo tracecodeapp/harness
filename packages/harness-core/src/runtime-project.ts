@@ -2026,9 +2026,20 @@ export interface RuntimeProjectCommandRequest<
   onEvent?: RuntimeCommandEventHandler;
 }
 
+export interface RuntimeProjectCommandRunnerCapabilities {
+  /**
+   * The concrete runner can consume fd 0/1/2 through the supplied kernel
+   * syscall bridge. Runners without this capability retain the compatibility
+   * stdin transport and returned-output path.
+   */
+  readonly descriptorStdio?: boolean;
+}
+
 export type RuntimeProjectCommandRunner<
   Request extends RuntimeProjectCommandRequest<string> = RuntimeProjectCommandRequest
-> = (request: Request) => Promise<RuntimeCommandResult>;
+> = ((request: Request) => Promise<RuntimeCommandResult>) & {
+  readonly capabilities?: RuntimeProjectCommandRunnerCapabilities;
+};
 
 export interface RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
