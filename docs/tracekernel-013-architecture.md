@@ -926,7 +926,7 @@ The pipe is intentionally the first descriptor resource. It exercises blocking,
 interruption, endpoint lifecycle, and backpressure before the same contracts are
 applied to files, terminals, and sockets.
 
-## Remaining adapter and subsystem gates
+## Adapter and subsystem status
 
 The syscall contract and language adapters are no longer the main migration
 risk. Product storage is now authoritative TKFS and the workspace owns an
@@ -968,10 +968,12 @@ immutable host infrastructure rather than process state. TraceJVM likewise
 admits a fresh Worker for every `javac` or `java` invocation and destroys it
 unconditionally instead of pooling mutable VM state.
 
-The remaining adapter migration is intentionally narrower:
-
-1. make any adapter that wants pooling implement and prove its reset validation;
-   adapters without it remain safe because their leases receive `destroy`.
+There is no remaining worker-pooling migration gate. Reusable JavaScript,
+Python, and C# workers serialize kernel leases and prove readiness, generation
+identity, and an empty request registry before reuse. C++ and TraceJVM
+execution workers are destroy-only. Any future adapter that wants pooling must
+implement and prove the same reset validation; an adapter without it remains
+safe because its lease receives `destroy`.
 
 Suspended job control (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`, and `SIGCONT`) is a
 separate runtime-contract gate. Browser hosts cannot honestly suspend arbitrary
