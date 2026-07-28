@@ -1,9 +1,10 @@
 import * as Effect from 'effect/Effect';
 import type { TraceKernelNetworkErrorCode } from './errors';
-import type { TraceKernelSignal } from './model';
+import type { TraceKernelProcessPhase, TraceKernelSignal } from './model';
 import type { TraceKernelSyscallDispatcher } from './syscalls';
 import type {
   TraceKernelSyscallErrorCode,
+  TraceKernelProcessInfo,
   TraceKernelSyscallRequest,
   TraceKernelSyscallResult,
   TraceKernelSyscallValue,
@@ -63,6 +64,8 @@ const OP_CODES = {
   tcgetpgrp: 46,
   tcsetpgrp: 47,
   seek: 48,
+  processInfo: 49,
+  processList: 50,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -349,6 +352,87 @@ function readAddress(
   });
 }
 
+function processPhaseCode(phase: TraceKernelProcessPhase): number {
+  return phase === 'created'
+    ? 1
+    : phase === 'starting'
+      ? 2
+      : phase === 'running'
+        ? 3
+        : phase === 'exiting'
+          ? 4
+          : 5;
+}
+
+function readProcessPhase(reader: BinaryFrameReader): TraceKernelProcessPhase {
+  const code = reader.u8();
+  if (code < 1 || code > 5) {
+    throw new TraceKernelTransportError(
+      'EPROTO',
+      `invalid process phase code ${code}`
+    );
+  }
+  return code === 1
+    ? 'created'
+    : code === 2
+      ? 'starting'
+      : code === 3
+        ? 'running'
+        : code === 4
+          ? 'exiting'
+          : 'exited';
+}
+
+function writeProcessInfo(
+  writer: BinaryFrameWriter,
+  process: TraceKernelProcessInfo
+): void {
+  writer.i32(process.pid);
+  writer.i32(process.ppid);
+  writer.i32(process.pgid);
+  writer.i32(process.sid);
+  writer.u8(processPhaseCode(process.phase));
+  writer.string(process.runtime);
+  writer.string(process.command);
+  writer.u32(process.args.length);
+  for (const argument of process.args) writer.string(argument);
+  writer.u8(process.startedAt === undefined ? 0 : 1);
+  if (process.startedAt !== undefined) writer.f64(process.startedAt);
+}
+
+function readProcessInfo(reader: BinaryFrameReader): TraceKernelProcessInfo {
+  const pid = reader.i32();
+  const ppid = reader.i32();
+  const pgid = reader.i32();
+  const sid = reader.i32();
+  const phase = readProcessPhase(reader);
+  const runtime = reader.string();
+  const command = reader.string();
+  const argumentCount = reader.u32();
+  const args: string[] = [];
+  for (let index = 0; index < argumentCount; index += 1) {
+    args.push(reader.string());
+  }
+  const hasStartedAt = reader.u8();
+  if (hasStartedAt > 1) {
+    throw new TraceKernelTransportError(
+      'EPROTO',
+      `invalid process start-time flag ${hasStartedAt}`
+    );
+  }
+  return Object.freeze({
+    pid,
+    ppid,
+    pgid,
+    sid,
+    phase,
+    runtime,
+    command,
+    args: Object.freeze(args),
+    ...(hasStartedAt ? { startedAt: reader.f64() } : {}),
+  });
+}
+
 function writeSpawnStdioMode(
   writer: BinaryFrameWriter,
   mode: 'pipe' | 'inherit' | 'ignore' | undefined
@@ -472,8 +556,11 @@ export function encodeTraceKernelSyscallRequest(
       writer.u8(request.noHang ? 1 : 0);
       break;
     case 'identity':
+    case 'processInfo':
       writer.u8(request.pid === undefined ? 0 : 1);
       if (request.pid !== undefined) writer.i32(request.pid);
+      break;
+    case 'processList':
       break;
     case 'kill':
       writer.i32(request.pid);
@@ -913,6 +1000,23 @@ export function decodeTraceKernelSyscallRequest(
       };
       break;
     }
+    case 'processInfo': {
+      const hasPid = reader.u8();
+      if (hasPid > 1) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid process info pid presence flag ${hasPid}`
+        );
+      }
+      request = {
+        op: 'processInfo',
+        ...(hasPid === 1 ? { pid: reader.i32() } : {}),
+      };
+      break;
+    }
+    case 'processList':
+      request = { op: 'processList' };
+      break;
     case 'socket':
       request = { op: 'socket' };
       break;
@@ -1316,6 +1420,15 @@ export function encodeTraceKernelSyscallResult(
       writer.i32(value.pgid);
       writer.i32(value.sid);
       break;
+    case 'processInfo':
+      writeProcessInfo(writer, value.process);
+      break;
+    case 'processList':
+      writer.u32(value.processes.length);
+      for (const process of value.processes) {
+        writeProcessInfo(writer, process);
+      }
+      break;
     case 'socket':
     case 'open':
     case 'dup':
@@ -1669,6 +1782,24 @@ export function decodeTraceKernelSyscallResult(
         sid: reader.i32(),
       };
       break;
+    case 'processInfo':
+      value = {
+        op: 'processInfo',
+        process: readProcessInfo(reader),
+      };
+      break;
+    case 'processList': {
+      const processCount = reader.u32();
+      const processes: TraceKernelProcessInfo[] = [];
+      for (let index = 0; index < processCount; index += 1) {
+        processes.push(readProcessInfo(reader));
+      }
+      value = {
+        op: 'processList',
+        processes: Object.freeze(processes),
+      };
+      break;
+    }
     case 'bind':
       value = { op: 'bind', address: readAddress(reader) };
       break;

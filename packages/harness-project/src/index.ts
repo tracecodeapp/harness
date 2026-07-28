@@ -1855,6 +1855,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     switch (request.op) {
       case 'identity':
+      case 'processInfo':
+      case 'processList':
       case 'kill':
       case 'setsid':
       case 'setpgid':

@@ -17,7 +17,9 @@ import {
 import type { TraceKernelProcess, TraceKernelSession } from './kernel';
 import type {
   TraceKernelDescriptorMapping,
+  TraceKernelProcessPhase,
   TraceKernelProcessTermination,
+  TraceKernelRuntimeName,
   TraceKernelSignal,
   TraceKernelSpawnDescriptorAction,
   TraceKernelWatchdogSignal,
@@ -50,6 +52,18 @@ export interface TraceKernelSpawnParentStdio {
   readonly stdoutFd?: number;
   /** Parent-owned reader connected to the child's fd 2. */
   readonly stderrFd?: number;
+}
+
+export interface TraceKernelProcessInfo {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly pgid: number;
+  readonly sid: number;
+  readonly phase: TraceKernelProcessPhase;
+  readonly runtime: TraceKernelRuntimeName;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly startedAt?: number;
 }
 
 export type TraceKernelSyscallRequest =
@@ -92,6 +106,8 @@ export type TraceKernelSyscallRequest =
       readonly noHang?: boolean;
     }
   | { readonly op: 'identity'; readonly pid?: number }
+  | { readonly op: 'processInfo'; readonly pid?: number }
+  | { readonly op: 'processList' }
   | {
       readonly op: 'kill';
       readonly pid: number;
@@ -315,6 +331,14 @@ export type TraceKernelSyscallValue =
       readonly ppid: number;
       readonly pgid: number;
       readonly sid: number;
+    }
+  | {
+      readonly op: 'processInfo';
+      readonly process: TraceKernelProcessInfo;
+    }
+  | {
+      readonly op: 'processList';
+      readonly processes: readonly TraceKernelProcessInfo[];
     }
   | { readonly op: 'kill' }
   | { readonly op: 'setsid'; readonly sid: number; readonly pgid: number }
@@ -616,6 +640,23 @@ export class TraceKernelSyscallDispatcher {
           Effect.map((identity) => ({
             op: 'identity' as const,
             ...identity,
+          }))
+        );
+      case 'processInfo':
+        return this.session.processInfo(
+          this.process,
+          request.pid
+        ).pipe(
+          Effect.map((process) => ({
+            op: 'processInfo' as const,
+            process,
+          }))
+        );
+      case 'processList':
+        return this.session.processList(this.process).pipe(
+          Effect.map((processes) => ({
+            op: 'processList' as const,
+            processes,
           }))
         );
       case 'kill':

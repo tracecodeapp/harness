@@ -78,6 +78,7 @@ import {
   type TraceKernelStat,
 } from './vfs';
 import type {
+  TraceKernelProcessInfo,
   TraceKernelSpawnParentStdio,
   TraceKernelSpawnStdio,
 } from './syscalls';
@@ -201,6 +202,24 @@ function immutableSnapshot(record: MutableProcessRecord): TraceKernelProcessSnap
     stderr: record.stderr,
     descriptors: Object.freeze([]),
     ...(record.watchdog ? { watchdog: Object.freeze({ ...record.watchdog }) } : {}),
+  });
+}
+
+function processInfoProjection(
+  snapshot: TraceKernelProcessSnapshot
+): TraceKernelProcessInfo {
+  return Object.freeze({
+    pid: snapshot.pid,
+    ppid: snapshot.ppid,
+    pgid: snapshot.pgid,
+    sid: snapshot.sid,
+    phase: snapshot.phase,
+    runtime: snapshot.runtime,
+    command: snapshot.command,
+    args: snapshot.args,
+    ...(snapshot.startedAt === undefined
+      ? {}
+      : { startedAt: snapshot.startedAt }),
   });
 }
 
@@ -1062,6 +1081,43 @@ export class TraceKernelSession {
         sid: snapshot.sid,
       };
     });
+  }
+
+  processInfo(
+    caller: TraceKernelProcess,
+    requestedPid?: number
+  ): Effect.Effect<
+    TraceKernelProcessInfo,
+    TraceKernelProcessStateError
+  > {
+    return Effect.gen(this, function* () {
+      const identity = yield* this.processIdentity(caller, requestedPid);
+      const target =
+        this.processes.get(identity.pid) ?? this.exitedChildren.get(identity.pid);
+      if (!target) {
+        return yield* Effect.fail(new TraceKernelProcessStateError({
+          pid: identity.pid,
+          message: `ESRCH: process ${identity.pid} does not exist in session ${this.id}`,
+        }));
+      }
+      return processInfoProjection(target.snapshot());
+    });
+  }
+
+  processList(
+    caller: TraceKernelProcess
+  ): Effect.Effect<
+    readonly TraceKernelProcessInfo[],
+    TraceKernelProcessStateError
+  > {
+    return this.assertOwnedProcess(caller).pipe(
+      Effect.map(() =>
+        Object.freeze(
+          this.processTableSnapshots(caller.snapshot().owner)
+            .map(processInfoProjection)
+        )
+      )
+    );
   }
 
   createProcessSession(

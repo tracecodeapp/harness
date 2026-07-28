@@ -123,6 +123,40 @@ async function main(): Promise<void> {
           parentIdentity
         )}`
       );
+      const processInfo = yield* childTopologySyscalls.dispatch({
+        op: 'processInfo',
+        pid: process.pid,
+      });
+      success(processInfo);
+      assertCondition(
+        processInfo.value.op === 'processInfo' &&
+          processInfo.value.process.pid === process.pid &&
+          processInfo.value.process.phase === 'running' &&
+          processInfo.value.process.runtime === 'syscall-test' &&
+          processInfo.value.process.command === 'syscall-client' &&
+          processInfo.value.process.startedAt !== undefined,
+        `processInfo did not project the authoritative process lifecycle: ${JSON.stringify(
+          processInfo
+        )}`
+      );
+      const processList = yield* childTopologySyscalls.dispatch({
+        op: 'processList',
+      });
+      success(processList);
+      assertCondition(
+        processList.value.op === 'processList' &&
+          processList.value.processes.some(
+            (entry) =>
+              entry.pid === process.pid &&
+              entry.phase === 'running'
+          ) &&
+          processList.value.processes.some(
+            (entry) => entry.pid === mutableTopologyChild.pid
+          ),
+        `processList did not expose the caller-visible process table: ${JSON.stringify(
+          processList
+        )}`
+      );
       const createdSession = yield* childTopologySyscalls.dispatch({ op: 'setsid' });
       success(createdSession);
       assertCondition(

@@ -213,6 +213,9 @@ async function main(): Promise<void> {
     { op: 'wait', pid: 101, noHang: true },
     { op: 'identity' },
     { op: 'identity', pid: 101 },
+    { op: 'processInfo' },
+    { op: 'processInfo', pid: 101 },
+    { op: 'processList' },
     { op: 'kill', pid: 102, signal: 'SIGHUP' },
     { op: 'kill', pid: 102, signal: 'SIGTERM' },
     { op: 'kill', pid: 102, signal: 'SIGQUIT' },
@@ -358,6 +361,52 @@ async function main(): Promise<void> {
     {
       ok: true,
       value: { op: 'identity', pid: 100, ppid: 1, pgid: 100, sid: 1 },
+    },
+    {
+      ok: true,
+      value: {
+        op: 'processInfo',
+        process: {
+          pid: 100,
+          ppid: 1,
+          pgid: 100,
+          sid: 1,
+          phase: 'running',
+          runtime: 'javascript',
+          command: 'node',
+          args: ['main.js'],
+          startedAt: 1_723_456_789_012,
+        },
+      },
+    },
+    {
+      ok: true,
+      value: {
+        op: 'processList',
+        processes: [
+          {
+            pid: 100,
+            ppid: 1,
+            pgid: 100,
+            sid: 1,
+            phase: 'running',
+            runtime: 'javascript',
+            command: 'node',
+            args: ['main.js'],
+            startedAt: 1_723_456_789_012,
+          },
+          {
+            pid: 101,
+            ppid: 100,
+            pgid: 100,
+            sid: 1,
+            phase: 'exited',
+            runtime: 'java',
+            command: 'java',
+            args: ['Child'],
+          },
+        ],
+      },
     },
     {
       ok: true,
