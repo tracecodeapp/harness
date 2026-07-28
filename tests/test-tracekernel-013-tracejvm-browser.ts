@@ -124,7 +124,7 @@ try {
           result.socketRun.exitCode !== 0 ||
           result.socketRun.stdout !== 'socket:pong\n' ||
           result.processRun.exitCode !== 0 ||
-          !/^process:\d+:true:true:true:true:true:1:true:false:java-child\n$/u.test(
+          !/^process:\d+:true:true:true:true:true:true:1:true:false:java-child\n$/u.test(
             result.processRun.stdout
           ) ||
           result.childFile !== 'java-child' ||
@@ -132,7 +132,7 @@ try {
           result.interrupted.stderr !== '' ||
           result.restarted.exitCode !== 0 ||
           result.restarted.stdout !== '1:missing:missing:restarted\n' ||
-          result.workerCount !== 10 ||
+          result.workerCount !== 11 ||
           !reportStatuses.includes('compile:completed:not-applicable') ||
           !reportStatuses.includes('run:runtime-error:clean') ||
           !reportStatuses.includes('run:completed:tainted') ||

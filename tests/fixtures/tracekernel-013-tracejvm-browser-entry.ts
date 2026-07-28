@@ -60,6 +60,16 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '      return;',
         '    }',
         '    if (args.length > 0 && args[0].equals("process")) {',
+        '      Process sleeper = new ProcessBuilder("java", "-cp", "build", "Sleeper").start();',
+        '      String sleeperReady = new java.io.BufferedReader(new java.io.InputStreamReader(sleeper.getInputStream())).readLine();',
+        '      java.util.concurrent.CompletableFuture<Process> sleeperExit = sleeper.onExit();',
+        '      boolean destroyAccepted = sleeper.toHandle().destroy();',
+        '      Process completedSleeper = sleeperExit.get();',
+        '      boolean signalMatches = sleeperReady.equals("sleeper-ready")',
+        '          && destroyAccepted',
+        '          && completedSleeper == sleeper',
+        '          && sleeper.exitValue() == 143',
+        '          && !sleeper.isAlive();',
         '      ProcessBuilder childBuilder = new ProcessBuilder("java", "-cp", "build", "Child", "trace-😀").redirectErrorStream(true);',
         '      childBuilder.environment().put("TRACE_CHILD", "child-😀");',
         '      Process child = childBuilder.start();',
@@ -79,7 +89,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '      String childFile = java.nio.file.Files.exists(java.nio.file.Path.of("process-child.txt"))',
         '          ? java.nio.file.Files.readString(java.nio.file.Path.of("process-child.txt"))',
         '          : "missing";',
-        '      System.out.println("process:" + child.pid() + ":" + aliveBefore + ":" + listedAsChild + ":" + parentMatches + ":" + infoMatches + ":" + environmentMatches + ":" + childExit + ":" + childFailure + ":" + aliveAfter + ":" + childFile);',
+        '      System.out.println("process:" + child.pid() + ":" + signalMatches + ":" + aliveBefore + ":" + listedAsChild + ":" + parentMatches + ":" + infoMatches + ":" + environmentMatches + ":" + childExit + ":" + childFailure + ":" + aliveAfter + ":" + childFile);',
         '      return;',
         '    }',
         '    if (args.length > 0 && args[0].equals("filesystem")) {',
@@ -173,6 +183,16 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '  }',
         '}',
       ].join('\n'),
+    }, {
+      path: 'Sleeper.java',
+      contents: [
+        'public final class Sleeper {',
+        '  public static void main(String[] args) throws Exception {',
+        '    System.out.println("sleeper-ready");',
+        '    while (true) Thread.sleep(1000);',
+        '  }',
+        '}',
+      ].join('\n'),
     }],
     traceJVM: {
       createClient(context) {
@@ -209,7 +229,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
 
   try {
     const compile = await workspace.runCommand(
-      'javac -d build Main.java Child.java'
+      'javac -d build Main.java Child.java Sleeper.java'
     );
     if (compile.exitCode !== 0) {
       throw new Error(`TraceJVM compile failed: ${JSON.stringify(compile)}`);
