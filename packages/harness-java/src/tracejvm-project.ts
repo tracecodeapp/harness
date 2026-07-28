@@ -558,8 +558,8 @@ async function executeWithClient(
  * javac still receives an immutable TKFS snapshot and commits its artifacts as
  * a final filesystem diff. Java application filesystem calls use the generic,
  * process-scoped host above, so concurrent runtimes observe the same
- * authoritative TraceKernel state. Descriptor stdio and sockets remain
- * intentionally separate capabilities.
+ * authoritative TraceKernel state. Standard descriptors, process pipes,
+ * sockets, selectors, and watch services use that same host boundary.
  */
 export function createTraceJVMProjectRunner(
   options: TraceJVMProjectRunnerOptions

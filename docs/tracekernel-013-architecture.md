@@ -890,11 +890,13 @@ The initial 0.13 branch now establishes:
   host boundary rather than the legacy CheerpJ filesystem: ordinary Java file
   and random-access APIs use authoritative TKFS, standard descriptors and
   process pipes are kernel-owned, blocking Java socket calls suspend individual
-  Java threads over kernel TCP, and `ProcessBuilder` creates isolated
-  kernel-supervised Java children; `ProcessHandle` identity, parent/child
-  discovery, metadata, signals, asynchronous exit notification, and liveness
-  come from the kernel process table, while `System.getenv()` and child
-  environment inheritance come from the current process record;
+  Java threads over kernel TCP, selectors multiplex kernel descriptor
+  readiness, ordinary `WatchService` registrations consume kernel watch
+  descriptors and observe cross-runtime TKFS changes, and `ProcessBuilder`
+  creates isolated kernel-supervised children; `ProcessHandle` identity,
+  parent/child discovery, metadata, signals, asynchronous exit notification,
+  and liveness come from the kernel process table, while `System.getenv()` and
+  child environment inheritance come from the current process record;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic
@@ -940,24 +942,24 @@ events carry the same PID/PPID/PGID/SID/owner attribution. The journal remains
 the product-facing ordered/redacted event view; it no longer trusts product
 process metadata to identify the actor that caused an operation.
 
-The current JavaScript/TypeScript, C++, C#, and Python adapters use
-process-owned descriptor stdio. Runtime structured HTTP and raw TCP now share
-the same authoritative session network namespace. TraceKernel also owns lease
-recovery disposition, allowing reuse only after successful revalidation.
-That disposition now reaches the physical JavaScript, Python, C#, and C++
-browser worker ownership paths. One-shot pools retire their actual client on
-kernel release. Trusted shared JavaScript, Python, and C# engines serialize
-processes until release and revalidate worker readiness, generation identity,
-and an empty request registry before reuse. C++ execution workers remain
-unconditionally disposable; its retained compiler coordinator is immutable
-host infrastructure rather than process state.
+The current JavaScript/TypeScript, C++, C#, Python, and independent TraceJVM
+adapters use process-owned descriptor stdio. Runtime structured HTTP and raw
+TCP now share the same authoritative session network namespace. TraceKernel
+also owns lease recovery disposition, allowing reuse only after successful
+revalidation. That disposition now reaches the physical JavaScript, Python,
+C#, and C++ browser worker ownership paths. One-shot pools retire their actual
+client on kernel release. Trusted shared JavaScript, Python, and C# engines
+serialize processes until release and revalidate worker readiness, generation
+identity, and an empty request registry before reuse. C++ execution workers
+remain unconditionally disposable; its retained compiler coordinator is
+immutable host infrastructure rather than process state. TraceJVM likewise
+admits a fresh Worker for every `javac` or `java` invocation and destroys it
+unconditionally instead of pooling mutable VM state.
 
 The remaining adapter migration is intentionally narrower:
 
-1. finish TraceJVM's less common kernel surfaces: Java watch services,
-   selector-style multi-descriptor readiness, and an intentional Java API for
-   watchdog and terminal/process-group controls that have no standard Java
-   equivalent;
+1. define an intentional Java API for watchdog and terminal/process-group
+   controls that have no standard Java equivalent;
 2. remove the temporary legacy stdio feed only after every shipping legacy
    runtime has either migrated or been retired;
 3. make any adapter that wants pooling implement and prove its reset validation;

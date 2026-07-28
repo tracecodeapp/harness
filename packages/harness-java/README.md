@@ -65,8 +65,14 @@ The 0.13 adapter binds one coordinator to the TraceKernel PID but admits each
 committed to TKFS and subsequent commands read them from TKFS, including
 commands chained inside one kernel process.
 
-This is intentionally a value adapter, not yet the final Java syscall adapter.
-TraceJVM's current public host boundary does not expose application filesystem,
-descriptor/stdin, or socket operations. Java application code therefore does
-not yet claim live TKFS or socket support; those capabilities require a
-TraceJVM host-port extension and corresponding kernel conformance tests.
+Compilation remains value-oriented: `javac` receives an immutable TKFS snapshot
+and commits its output as a final diff. Running Java programs use TraceJVM's
+process-scoped host port for live kernel operations. Ordinary Java file and
+random-access APIs use authoritative TKFS; stdin, stdout, stderr, pipes, and
+socket channels use process-owned descriptors; `ProcessBuilder` creates
+kernel-supervised children; selectors multiplex kernel readiness; and ordinary
+`WatchService` registrations observe live cross-runtime TKFS changes.
+
+TraceJVM is independent of CheerpJ and its private filesystem/layout. The
+adapter remains default-off, requires a fresh disposable Worker for every
+invocation, and never reuses mutable VM state across kernel process leases.
