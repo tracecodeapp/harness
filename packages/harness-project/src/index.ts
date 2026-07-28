@@ -8103,7 +8103,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.cwd,
     ];
     await this.fs.withBaseMutation(systemDirectories, async (fs) => {
-      for (const path of systemDirectories) await fs.mkdir(path, { recursive: true });
+      for (const path of systemDirectories) {
+        await fs.mkdir(path, { recursive: true });
+        await fs.chmod(path, 0o755);
+      }
       await fs.chmod('/tmp', 0o1777);
       await fs.chmod('/var/tmp', 0o1777);
     }, 'directory-create');
