@@ -112,6 +112,21 @@ async function main(): Promise<void> {
       yield* reader.close(firstPipe.readFd);
       assertCondition(session.resourceIds().length === 0, 'Fully closed pipe remained in the resource registry.');
 
+      const writeClosePipe = yield* session.createPipe(reader, writer);
+      const readBeforeEof = yield* Effect.fork(
+        reader.read(writeClosePipe.readFd, 64)
+      );
+      yield* Effect.yieldNow();
+      yield* writer.write(writeClosePipe.writeFd, encoder.encode('before-eof'));
+      yield* writer.close(writeClosePipe.writeFd);
+      assertCondition(
+        decoder.decode(yield* Fiber.join(readBeforeEof)) ===
+          'before-eof' &&
+          (yield* reader.read(writeClosePipe.readFd, 64)).byteLength === 0,
+        'Closing a writer immediately after writing lost buffered pipe data.'
+      );
+      yield* reader.close(writeClosePipe.readFd);
+
       const nonblockingPipe = yield* session.createPipe(reader, writer, {
         capacityChunks: 1,
         nonblocking: true,

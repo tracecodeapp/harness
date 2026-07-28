@@ -940,11 +940,6 @@ export class TraceKernelDescriptorTable {
   }
 }
 
-type PipeReadEvent =
-  | { readonly kind: 'data'; readonly bytes: Uint8Array }
-  | { readonly kind: 'writer-closed' }
-  | { readonly kind: 'reader-closed' };
-
 export interface TraceKernelPipeOptions {
   readonly capacityChunks?: number;
   /** Install both endpoint descriptors with FD_CLOEXEC. */
@@ -1094,34 +1089,22 @@ export class TraceKernelPipe {
   }
 
   private awaitReadEvent(maxBytes: number): Effect.Effect<Uint8Array, TraceKernelBadFileDescriptorError> {
-    if (this.writerIsClosed) {
+    return Effect.suspend(() => {
+      const changed = this.readinessChanged;
+      if (this.readerIsClosed) return this.readerClosedError();
       return Queue.poll(this.chunks).pipe(
-        Effect.map((available) => Option.isSome(available)
-          ? this.takeBytes(available.value, maxBytes)
-          : new Uint8Array(0))
+        Effect.flatMap((available) => {
+          if (Option.isSome(available)) {
+            return Effect.succeed(this.takeBytes(available.value, maxBytes));
+          }
+          if (this.readerIsClosed) return this.readerClosedError();
+          if (this.writerIsClosed) return Effect.succeed(new Uint8Array(0));
+          return Deferred.await(changed).pipe(
+            Effect.andThen(this.awaitReadEvent(maxBytes))
+          );
+        })
       );
-    }
-    return Effect.raceAll([
-      Queue.take(this.chunks).pipe(
-        Effect.map((bytes): PipeReadEvent => ({ kind: 'data', bytes }))
-      ),
-      Deferred.await(this.writerClosed).pipe(
-        Effect.as<PipeReadEvent>({ kind: 'writer-closed' })
-      ),
-      Deferred.await(this.readerClosed).pipe(
-        Effect.as<PipeReadEvent>({ kind: 'reader-closed' })
-      ),
-    ]).pipe(
-      Effect.flatMap((event) => {
-        if (event.kind === 'data') return Effect.succeed(this.takeBytes(event.bytes, maxBytes));
-        if (event.kind === 'reader-closed') return this.readerClosedError();
-        return Queue.poll(this.chunks).pipe(
-          Effect.map((available) => Option.isSome(available)
-            ? this.takeBytes(available.value, maxBytes)
-            : new Uint8Array(0))
-        );
-      })
-    );
+    });
   }
 
   private write(bytes: Uint8Array): Effect.Effect<number, TraceKernelBrokenPipeError> {
