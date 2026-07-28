@@ -57,6 +57,7 @@ async function main(): Promise<void> {
 
       yield* controlled.setSignalHandler(process.pid, (signal) => {
         deliveredSignals.push(signal);
+        if (signal === 'SIGWINCH') return;
         return Effect.runPromise(controlled.complete(process.pid, {
           exitCode: 143,
           stderr: 'terminated by host runner\n',
