@@ -50,6 +50,7 @@ const ECONNABORTED = 13;
 const ECONNREFUSED = 14;
 const ECHILD = 12;
 const EEXIST = 20;
+const EFAULT = 21;
 const EINVAL = 28;
 const EINPROGRESS = 26;
 const EIO = 29;
@@ -367,6 +368,8 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   isatty: 45,
   tcgetpgrp: 46,
   tcsetpgrp: 47,
+  tcgetwinsize: 52,
+  tcsetwinsize: 53,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -788,11 +791,17 @@ class CppTraceKernelSyncClient {
         break;
       case 'isatty':
       case 'tcgetpgrp':
+      case 'tcgetwinsize':
         writer.i32(request.fd);
         break;
       case 'tcsetpgrp':
         writer.i32(request.fd);
         writer.i32(request.pgid);
+        break;
+      case 'tcsetwinsize':
+        writer.i32(request.fd);
+        writer.u32(request.rows);
+        writer.u32(request.columns);
         break;
       case 'ftruncate':
         writer.i32(request.fd);
@@ -1040,6 +1049,14 @@ class CppTraceKernelSyncClient {
       case 'tcgetpgrp':
       case 'tcsetpgrp':
         value = { op: operation, pgid: reader.i32() };
+        break;
+      case 'tcgetwinsize':
+      case 'tcsetwinsize':
+        value = {
+          op: operation,
+          rows: reader.u32(),
+          columns: reader.u32(),
+        };
         break;
       case 'identity':
         value = {
@@ -2991,6 +3008,35 @@ class WasiProcess {
             op: 'tcsetpgrp',
             fd: fd | 0,
             pgid: pgid | 0,
+          });
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_tcgetwinsize: (fd, rowsPtr, columnsPtr) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        if (!rowsPtr || !columnsPtr) return -EFAULT;
+        try {
+          const result = this.kernelClient.call({
+            op: 'tcgetwinsize',
+            fd: fd | 0,
+          });
+          this.mem.writeU16(rowsPtr >>> 0, result.rows);
+          this.mem.writeU16(columnsPtr >>> 0, result.columns);
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_tcsetwinsize: (fd, rows, columns) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          this.kernelClient.call({
+            op: 'tcsetwinsize',
+            fd: fd | 0,
+            rows: rows >>> 0,
+            columns: columns >>> 0,
           });
           return 0;
         } catch (error) {
@@ -11674,6 +11720,7 @@ const CPP_KERNEL_PROCESS_SHIM_FILENAME = 'tracecode_process.c';
 const CPP_KERNEL_PROCESS_HEADER_FILENAME = 'tracecode_process.h';
 const CPP_KERNEL_POLL_HEADER_FILENAME = 'poll.h';
 const CPP_KERNEL_SELECT_HEADER_FILENAME = 'sys/select.h';
+const CPP_KERNEL_IOCTL_HEADER_FILENAME = 'tracecode_ioctl.h';
 const CPP_KERNEL_SPAWN_HEADER_FILENAME = 'spawn.h';
 const CPP_KERNEL_WAIT_HEADER_FILENAME = 'sys/wait.h';
 const CPP_KERNEL_CONTROL_HEADER_FILENAME = 'tracekernel.h';
@@ -12064,6 +12111,43 @@ int __tracecode_tcsetpgrp(int fd, pid_t pgroup);
 #endif
 `;
 
+const CPP_KERNEL_IOCTL_HEADER_SOURCE = String.raw`#ifndef TRACECODE_IOCTL_H
+#define TRACECODE_IOCTL_H
+
+/*
+ * WASI has no terminal ioctl syscall. Provide the POSIX window-size surface
+ * and route it to the TraceKernel descriptor that owns the controlling tty.
+ */
+#ifndef _SYS_IOCTL_H
+#define _SYS_IOCTL_H
+struct winsize {
+  unsigned short ws_row;
+  unsigned short ws_col;
+  unsigned short ws_xpixel;
+  unsigned short ws_ypixel;
+};
+#endif
+
+#ifndef TIOCGWINSZ
+#define TIOCGWINSZ 0x5413UL
+#endif
+#ifndef TIOCSWINSZ
+#define TIOCSWINSZ 0x5414UL
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+int __tracecode_ioctl(int fd, unsigned long request, ...);
+#ifdef __cplusplus
+}
+#endif
+
+#define ioctl __tracecode_ioctl
+
+#endif
+`;
+
 const CPP_KERNEL_POLL_HEADER_SOURCE = String.raw`#ifndef _POLL_H
 #define _POLL_H
 
@@ -12182,6 +12266,10 @@ __attribute__((import_module("tracecode_kernel"), import_name("proc_tcgetpgrp"))
 int __tracecode_proc_tcgetpgrp(int fd);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_tcsetpgrp")))
 int __tracecode_proc_tcsetpgrp(int fd, int pgroup);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_tcgetwinsize")))
+int __tracecode_proc_tcgetwinsize(int fd, unsigned short* rows, unsigned short* columns);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_tcsetwinsize")))
+int __tracecode_proc_tcsetwinsize(int fd, unsigned short rows, unsigned short columns);
 
 int fcntl(int fd, int command, ...) {
   int result;
@@ -12592,6 +12680,43 @@ int tcsetpgrp(int fd, pid_t pgroup) {
   }
   return 0;
 }
+int __tracecode_ioctl(int fd, unsigned long request, ...) {
+  struct winsize* size;
+  int result;
+  va_list arguments;
+  va_start(arguments, request);
+  size = va_arg(arguments, struct winsize*);
+  va_end(arguments);
+  if (size == 0) {
+    errno = EFAULT;
+    return -1;
+  }
+  if (request == TIOCGWINSZ) {
+    result = __tracecode_proc_tcgetwinsize(
+      fd,
+      &size->ws_row,
+      &size->ws_col
+    );
+    if (result == 0) {
+      size->ws_xpixel = 0;
+      size->ws_ypixel = 0;
+    }
+  } else if (request == TIOCSWINSZ) {
+    result = __tracecode_proc_tcsetwinsize(
+      fd,
+      size->ws_row,
+      size->ws_col
+    );
+  } else {
+    errno = ENOTTY;
+    return -1;
+  }
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
 `;
 
 const CPP_KERNEL_CONTROL_HEADER_SOURCE = String.raw`#ifndef TRACEKERNEL_H
@@ -12708,6 +12833,9 @@ function projectWithCppKernelShims(project) {
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_SELECT_HEADER_FILENAME)) {
     additions.push({ path: CPP_KERNEL_SELECT_HEADER_FILENAME, contents: CPP_KERNEL_SELECT_HEADER_SOURCE });
   }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_IOCTL_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_IOCTL_HEADER_FILENAME, contents: CPP_KERNEL_IOCTL_HEADER_SOURCE });
+  }
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_SPAWN_HEADER_FILENAME)) {
     additions.push({ path: CPP_KERNEL_SPAWN_HEADER_FILENAME, contents: CPP_KERNEL_SPAWN_HEADER_SOURCE });
   }
@@ -12735,6 +12863,9 @@ function cppProjectArgsWithKernelShims(args, project) {
   }
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_HEADER_FILENAME)) {
     injected.push('-include', CPP_KERNEL_PROCESS_HEADER_FILENAME);
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_IOCTL_HEADER_FILENAME)) {
+    injected.push('-include', CPP_KERNEL_IOCTL_HEADER_FILENAME);
   }
   injected.push('-idirafter', '.');
   const linking = !args.some((arg) => arg === '-c' || arg === '-S' || arg === '-E');

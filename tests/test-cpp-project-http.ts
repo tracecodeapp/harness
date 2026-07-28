@@ -155,6 +155,28 @@ const CPP_WATCHDOG_EXPIRY_PROGRAM = [
   '',
 ].join('\n');
 
+const CPP_TERMINAL_WINDOW_SIZE_PROGRAM = [
+  '#include <sys/ioctl.h>',
+  '#include <unistd.h>',
+  '#include <cstdio>',
+  'int main() {',
+  '  winsize initial {};',
+  '  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &initial) != 0) return 1;',
+  '  winsize resized { 66, 166, 0, 0 };',
+  '  if (ioctl(STDIN_FILENO, TIOCSWINSZ, &resized) != 0) return 2;',
+  '  winsize observed {};',
+  '  if (ioctl(STDERR_FILENO, TIOCGWINSZ, &observed) != 0) return 3;',
+  '  const bool valid = initial.ws_row == 55 && initial.ws_col == 144 &&',
+  '    initial.ws_xpixel == 0 && initial.ws_ypixel == 0 &&',
+  '    observed.ws_row == 66 && observed.ws_col == 166;',
+  '  std::printf("terminal-size:%s:%u:%u:%u:%u\\n",',
+  '    valid ? "pass" : "fail",',
+  '    initial.ws_row, initial.ws_col, observed.ws_row, observed.ws_col);',
+  '  return valid ? 0 : 4;',
+  '}',
+  '',
+].join('\n');
+
 const CPP_CROSS_LANGUAGE_FS_PROGRAM = [
   '#include <fcntl.h>',
   '#include <sys/stat.h>',
@@ -970,6 +992,7 @@ async function main(): Promise<void> {
         { path: 'posix-descriptor-action.cpp', contents: CPP_POSIX_DESCRIPTOR_ACTION_PROGRAM },
         { path: 'watchdog-control.cpp', contents: CPP_WATCHDOG_CONTROL_PROGRAM },
         { path: 'watchdog-expiry.cpp', contents: CPP_WATCHDOG_EXPIRY_PROGRAM },
+        { path: 'terminal-window-size.cpp', contents: CPP_TERMINAL_WINDOW_SIZE_PROGRAM },
         { path: 'cpp-watches.txt', contents: 'before-js' },
         { path: 'js-watches.txt', contents: 'before-cpp' },
         {
@@ -1359,6 +1382,52 @@ async function main(): Promise<void> {
             'through-inherited-fd',
         `C++ posix_spawn file actions should remap a kernel fd into a JavaScript child: ${JSON.stringify(
           posixDescriptorRun
+        )}`
+      );
+
+      const terminalWindowSizeCompile = await crossLanguageWorkspace.runCommand(
+        'clang++ terminal-window-size.cpp -o a.out'
+      );
+      assertCondition(
+        terminalWindowSizeCompile.exitCode === 0,
+        `C++ terminal window-size fixture should compile: ${JSON.stringify(
+          terminalWindowSizeCompile
+        )}`
+      );
+      const terminalWindowExecutable = (
+        await crossLanguageWorkspace.snapshot()
+      ).files.find((file) => file.path === 'a.out');
+      assertCondition(
+        terminalWindowExecutable !== undefined,
+        'C++ terminal window-size fixture should emit a.out'
+      );
+      const terminalWindowBytes = terminalWindowExecutable.encoding === 'base64'
+        ? Buffer.from(terminalWindowExecutable.contents, 'base64')
+        : Buffer.from(terminalWindowExecutable.contents, 'utf8');
+      const terminalWindowImports = WebAssembly.Module.imports(
+        await WebAssembly.compile(terminalWindowBytes)
+      );
+      for (const name of ['proc_tcgetwinsize', 'proc_tcsetwinsize']) {
+        assertCondition(
+          terminalWindowImports.some(
+            (item) =>
+              item.module === 'tracecode_kernel' &&
+              item.name === name
+          ),
+          `ordinary C++ ioctl should import ${name}: ${JSON.stringify(
+            terminalWindowImports
+          )}`
+        );
+      }
+      const terminalSession = crossLanguageWorkspace.createTerminalSession();
+      terminalSession.resize(144, 55);
+      const terminalWindowSizeRun = await terminalSession.run('./a.out');
+      assertCondition(
+        terminalWindowSizeRun.exitCode === 0 &&
+          terminalWindowSizeRun.stdout ===
+            'terminal-size:pass:55:144:66:166\n',
+        `C++ TIOCGWINSZ/TIOCSWINSZ should use the kernel terminal: ${JSON.stringify(
+          terminalWindowSizeRun
         )}`
       );
 
