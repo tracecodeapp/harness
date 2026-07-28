@@ -965,6 +965,10 @@ services now have an invisible protected process in the extracted session;
 public PID 0 is only their compatibility identity. Host and runtime structured
 HTTP are no longer separate authorities: both bind, accept, connect, read,
 write, half-close, and close through process-owned TraceKernel TCP descriptors.
+The former product-owned descriptor registry and TCP namespace have been
+removed rather than retained as a fallback. A missing kernel process attachment
+is now an `ESRCH` integration failure; it cannot silently select another
+filesystem, descriptor table, or network namespace.
 
 The workspace process object no longer owns mutable topology or lifecycle
 fields. PID, parent/group/session identity, scheduling state, terminal
@@ -980,6 +984,12 @@ are immutable projections of the kernel owner/protection fields, and resource
 events carry the same PID/PPID/PGID/SID/owner attribution. The journal remains
 the product-facing ordered/redacted event view; it no longer trusts product
 process metadata to identify the actor that caused an operation.
+
+Process capacity diagnostics and admission preflights read the session's
+live-plus-unreaped process table and kernel-owned limit. The duplicate
+product-side watchdog timers and mutable foreground-process-group cache have
+also been removed. Watchdog deadlines live on the kernel process, while
+foreground ownership lives on the controlling terminal resource.
 
 The current JavaScript/TypeScript, C++, C#, Python, and independent TraceJVM
 adapters use process-owned descriptor stdio. Runtime structured HTTP and raw

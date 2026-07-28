@@ -296,8 +296,6 @@ import {
   normalizeRuntimeSchedulerConfig,
   type RuntimeCommandSchedulerOptions,
 } from './scheduler';
-import { RuntimeKernelDescriptorManager } from './runtime-kernel-descriptors';
-import { RuntimeKernelNetworkManager } from './runtime-kernel-network';
 import { TraceKernelBackingFileSystem } from './tkfs-backing-filesystem';
 import {
   RUNTIME_PROJECT_PATCH_HASH_PATTERN,
@@ -830,14 +828,6 @@ interface RuntimeKernelZombieRecord {
   readonly expiresAtMs: number;
 }
 
-interface RuntimeKernelWatchdogRecord {
-  readonly token: symbol;
-  readonly timeoutMs: number;
-  readonly signal: 'SIGTERM' | 'SIGKILL';
-  readonly deadlineAt: number;
-  readonly timer: ReturnType<typeof setTimeout>;
-}
-
 interface RuntimeTraceKernelAuthority {
   readonly scope: Scope.CloseableScope;
   readonly host: TraceKernelHost;
@@ -1179,8 +1169,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly stopObservingExternalTraceKernelMutations: RuntimeWorkspaceUnsubscribe;
   private traceKernelAuthority?: RuntimeTraceKernelAuthority;
   private readonly fs: KernelObservedFileSystem;
-  private readonly kernelDescriptors: RuntimeKernelDescriptorManager;
-  private readonly kernelNetwork: RuntimeKernelNetworkManager;
   // Cached RuntimeFile objects are immutable; consumers must shallow-copy arrays before filtering.
   private snapshotCache: { version: number; files: RuntimeFile[]; directories: string[]; directoryMetadata: RuntimeDirectory[]; symlinks: RuntimeSymlink[]; kernelFiles: RuntimeFile[] } | null = null;
   private readonly fsLocks = new RuntimeFileSystemLockCoordinator();
@@ -1206,7 +1194,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly anyProcessWaiters: Array<(process: RuntimeKernelProcessRecord) => void> = [];
   private readonly runtimeChildSelectorWaiters: Array<() => void> = [];
   private readonly runtimeChildWaits = new Set<number>();
-  private readonly processWatchdogs = new Map<number, RuntimeKernelWatchdogRecord>();
   private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
   private readonly kernelJournalLog: KernelJournalRecord[] = [];
   private readonly httpListeners = new Map<string, RuntimeKernelHttpListenerRecord>();
@@ -1221,8 +1208,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonlySuspendDepth = 0;
   private nextCommandId = 1;
   private nextPid = 100;
-  /** Controlling /dev/tty foreground process group for the workspace shell session. */
-  private terminalForegroundPgid = 1;
   private nextKernelEventSeq = 1;
   private nextJournalSeq = 1;
   private nextHttpListenerSeq = 1;
@@ -1296,8 +1281,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.traceKernelBackingFileSystem.watchExternalMutations((mutation) => {
         this.fs.observeExternalTraceKernelMutation(mutation);
       });
-    this.kernelDescriptors = new RuntimeKernelDescriptorManager(this.fs);
-    this.kernelNetwork = new RuntimeKernelNetworkManager(this.kernelDescriptors);
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>,
       options: {
@@ -1790,17 +1773,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'tcgetwinsize':
         return this.dispatchExtractedTraceKernelSyscall(request, context);
       case 'tcsetpgrp':
-        return this.dispatchExtractedTraceKernelSyscall(request, context).then(
-          (result) => {
-            if (
-              result.ok &&
-              result.value.op === 'tcsetpgrp'
-            ) {
-              this.setProcessGroupForeground(result.value.pgid, true);
-            }
-            return result;
-          }
-        );
+        return this.dispatchExtractedTraceKernelSyscall(request, context);
       case 'tcsetwinsize':
         return this.dispatchExtractedTraceKernelSyscall(request, context);
       case 'bind':
@@ -1963,7 +1936,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     context?: RuntimeCommandExecutionContext
   ): Promise<TraceKernelSyscallResult> {
     const actor = context?.actor ?? SYSTEM_ACTOR;
-    const workspacePath = (path: string): string => this.toWorkspacePath(path);
     if (context) {
       context.liveKernelSyscallDepth = (context.liveKernelSyscallDepth ?? 0) + 1;
     }
@@ -1978,32 +1950,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.dispatchKernelOwnedProcessControlSyscall(request, context);
       if (processControlResult) return processControlResult;
       switch (request.op) {
-        case 'watch': {
-          const process = this.runtimeSyscallProcess(context);
-          this.assertActorFileCapability(actor, 'read', request.path);
-          const fd = await this.kernelDescriptors.watch(
-            process.pid,
-            context,
-            workspacePath(request.path),
-            request.options
-          );
-          return { ok: true, value: { op: 'watch', fd } };
-        }
-        case 'pipe': {
-          const process = this.runtimeSyscallProcess(context);
-          const pipe = await this.kernelDescriptors.createPipe(
-            process.pid,
-            request.options
-          );
-          return {
-            ok: true,
-            value: {
-              op: 'pipe',
-              readFd: pipe.readFd,
-              writeFd: pipe.writeFd,
-            },
-          };
-        }
         case 'spawn': {
           const process = this.runtimeSyscallProcess(context);
           const spawned = await this.spawnRuntimeSyscallChild(
@@ -2048,325 +1994,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           }
           return result;
         }
-        case 'socket': {
-          const fd = await this.kernelNetwork.socket(
-            context?.process.pid ?? 0
-          );
-          return { ok: true, value: { op: 'socket', fd } };
-        }
-        case 'bind': {
-          this.assertHttpCapability(actor, 'listen');
-          const address = await this.kernelNetwork.bind(
-            context?.process.pid ?? 0,
-            request.fd,
-            request.address
-          );
-          return { ok: true, value: { op: 'bind', address } };
-        }
-        case 'listen':
-          this.assertHttpCapability(actor, 'listen');
-          await this.kernelNetwork.listen(
-            context?.process.pid ?? 0,
-            request.fd,
-            request.options
-          );
-          return { ok: true, value: { op: 'listen' } };
-        case 'accept': {
-          this.assertHttpCapability(actor, 'listen');
-          const accepted = await this.kernelNetwork.accept(
-            context?.process.pid ?? 0,
-            request.fd
-          );
-          return {
-            ok: true,
-            value: {
-              op: 'accept',
-              fd: accepted.fd,
-              localAddress: accepted.localAddress,
-              remoteAddress: accepted.remoteAddress,
-            },
-          };
-        }
-        case 'connect': {
-          this.assertHttpCapability(actor, 'dispatch');
-          const connected = await this.kernelNetwork.connect(
-            context?.process.pid ?? 0,
-            request.fd,
-            request.address
-          );
-          return {
-            ok: true,
-            value: {
-              op: 'connect',
-              localAddress: connected.localAddress,
-              remoteAddress: connected.remoteAddress,
-            },
-          };
-        }
-        case 'send': {
-          const bytesWritten = await this.kernelDescriptors.write(
-            context?.process.pid ?? 0,
-            context,
-            request.fd,
-            request.bytes
-          );
-          return { ok: true, value: { op: 'send', bytesWritten } };
-        }
-        case 'recv': {
-          const bytes = await this.kernelDescriptors.read(
-            context?.process.pid ?? 0,
-            context,
-            request.fd,
-            request.maxBytes
-          );
-          return { ok: true, value: { op: 'recv', bytes } };
-        }
-        case 'shutdown':
-          await this.kernelNetwork.shutdown(
-            context?.process.pid ?? 0,
-            request.fd,
-            request.how
-          );
-          return { ok: true, value: { op: 'shutdown' } };
-        case 'getsockname': {
-          const address = await this.kernelNetwork.localAddress(
-            context?.process.pid ?? 0,
-            request.fd
-          );
-          return { ok: true, value: { op: 'getsockname', address } };
-        }
-        case 'getpeername': {
-          const address = await this.kernelNetwork.remoteAddress(
-            context?.process.pid ?? 0,
-            request.fd
-          );
-          return { ok: true, value: { op: 'getpeername', address } };
-        }
-        case 'getsockopt': {
-          const error = await this.kernelNetwork.socketError(
-            context?.process.pid ?? 0,
-            request.fd
-          );
-          return {
-            ok: true,
-            value: {
-              op: 'getsockopt',
-              ...(error === undefined ? {} : { error }),
-            },
-          };
-        }
-        case 'open': {
-          const access = request.options?.access ?? 'read';
-          if (access === 'read' || access === 'read-write') {
-            this.assertActorFileCapability(actor, 'read', request.path);
-          }
-          if (
-            access === 'write' ||
-            access === 'read-write' ||
-            request.options?.create ||
-            request.options?.truncate ||
-            request.options?.append
-          ) {
-            this.assertActorFileCapability(actor, 'write', request.path);
-          }
-          const fd = await this.kernelDescriptors.open(
-            context?.process.pid ?? 0,
-            context,
-            workspacePath(request.path),
-            request.options
-          );
-          return { ok: true, value: { op: 'open', fd } };
-        }
-        case 'read': {
-          const bytes = await this.kernelDescriptors.read(
-            context?.process.pid ?? 0,
-            context,
-            request.fd,
-            request.maxBytes,
-            request.position
-          );
-          return { ok: true, value: { op: 'read', bytes } };
-        }
-        case 'write': {
-          const bytesWritten = await this.kernelDescriptors.write(
-            context?.process.pid ?? 0,
-            context,
-            request.fd,
-            request.bytes,
-            request.position
-          );
-          return { ok: true, value: { op: 'write', bytesWritten } };
-        }
-        case 'seek': {
-          const offset = await this.kernelDescriptors.seek(
-            context?.process.pid ?? 0,
-            request.fd,
-            request.offset,
-            request.whence
-          );
-          return { ok: true, value: { op: 'seek', offset } };
-        }
-        case 'close':
-          await this.kernelDescriptors.close(context?.process.pid ?? 0, request.fd);
-          return { ok: true, value: { op: 'close' } };
-        case 'dup': {
-          const fd = await this.kernelDescriptors.dup(
-            context?.process.pid ?? 0,
-            request.fd
-          );
-          return { ok: true, value: { op: 'dup', fd } };
-        }
-        case 'dup2': {
-          const fd = await this.kernelDescriptors.dup2(
-            context?.process.pid ?? 0,
-            request.fd,
-            request.targetFd
-          );
-          return { ok: true, value: { op: 'dup2', fd } };
-        }
-        case 'dup3': {
-          const fd = await this.kernelDescriptors.dup3(
-            context?.process.pid ?? 0,
-            request.fd,
-            request.targetFd,
-            request.closeOnExec
-          );
-          return {
-            ok: true,
-            value: {
-              op: 'dup3',
-              fd,
-              closeOnExec: request.closeOnExec,
-            },
-          };
-        }
-        case 'fcntl': {
-          const pid = context?.process.pid ?? 0;
-          if (request.action === 'set-close-on-exec') {
-            await this.kernelDescriptors.setCloseOnExec(
-              pid,
-              request.fd,
-              request.closeOnExec === true
-            );
-          } else if (request.action === 'set-nonblocking') {
-            await this.kernelDescriptors.setNonblocking(
-              pid,
-              request.fd,
-              request.nonblocking === true
-            );
-          }
-          const closeOnExec = await this.kernelDescriptors.getCloseOnExec(
-            pid,
-            request.fd
-          );
-          const nonblocking = await this.kernelDescriptors.getNonblocking(
-            pid,
-            request.fd
-          );
-          return {
-            ok: true,
-            value: { op: 'fcntl', closeOnExec, nonblocking },
-          };
-        }
-        case 'poll': {
-          if (
-            request.timeoutMs !== undefined &&
-            (!Number.isFinite(request.timeoutMs) || request.timeoutMs < 0)
-          ) {
-            throw Object.assign(
-              new Error(`EINVAL: invalid poll timeout ${request.timeoutMs}`),
-              { code: 'EINVAL' }
-            );
-          }
-          const pid = context?.process.pid ?? 0;
-          const timeout = request.timeoutMs === undefined
-            ? undefined
-            : Math.max(0, Math.floor(request.timeoutMs));
-          const startedAt = Date.now();
-          const snapshot = async () => {
-            const results = await Promise.all(request.entries.map(async (entry) => {
-              try {
-                const readiness = await this.kernelDescriptors.readiness(
-                  pid,
-                  entry.fd,
-                  {
-                    read: entry.read === true,
-                    write: entry.write === true,
-                  }
-                );
-                return {
-                  fd: entry.fd,
-                  ...readiness,
-                  invalid: false,
-                };
-              } catch {
-                return {
-                  fd: entry.fd,
-                  read: false,
-                  write: false,
-                  hangup: false,
-                  error: false,
-                  invalid: true,
-                };
-              }
-            }));
-            return results.filter((entry) =>
-              entry.read ||
-              entry.write ||
-              entry.hangup ||
-              entry.error ||
-              entry.invalid
-            );
-          };
-          while (true) {
-            const ready = await snapshot();
-            if (ready.length > 0 || timeout === 0) {
-              return { ok: true, value: { op: 'poll', entries: ready } };
-            }
-            const elapsed = Date.now() - startedAt;
-            const remaining = timeout === undefined
-              ? undefined
-              : timeout - elapsed;
-            if (remaining !== undefined && remaining <= 0) {
-              return { ok: true, value: { op: 'poll', entries: [] } };
-            }
-            const waits = request.entries.map((entry) =>
-              this.kernelDescriptors.awaitReadiness(
-                pid,
-                entry.fd,
-                {
-                  read: entry.read === true,
-                  write: entry.write === true,
-                }
-              ).catch(() => undefined)
-            );
-            const awakened = waits.length === 0
-              ? new Promise<void>(() => undefined)
-              : Promise.race(waits).then(() => undefined);
-            await (remaining === undefined
-              ? awakened
-              : Promise.race([
-                  awakened,
-                  new Promise<void>((resolve) => setTimeout(resolve, remaining)),
-                ]));
-          }
-        }
-        case 'fstat': {
-          const stat = await this.kernelDescriptors.fstat(
-            context?.process.pid ?? 0,
-            context,
-            request.fd
-          );
-          return { ok: true, value: { op: 'fstat', stat } };
-        }
-        case 'ftruncate':
-          await this.kernelDescriptors.ftruncate(
-            context?.process.pid ?? 0,
-            context,
-            request.fd,
-            request.length
-          );
-          return { ok: true, value: { op: 'ftruncate' } };
         case 'readFile': {
           this.assertActorFileCapability(actor, 'read', request.path);
           return this.dispatchExtractedTraceKernelSyscall(request, context);
@@ -3609,10 +3236,25 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       : this.traceKernelAuthority?.hostServiceProcess;
   }
 
-  private async openHttpTcpSocket(pid: number): Promise<number> {
-    const process = this.traceKernelNetworkProcess(pid);
+  private requireTraceKernelNetworkProcess(pid: number): {
+    readonly authority: RuntimeTraceKernelAuthority;
+    readonly process: TraceKernelProcess;
+  } {
     const authority = this.traceKernelAuthority;
-    if (!process || !authority) return this.kernelNetwork.socket(pid);
+    const process = this.traceKernelNetworkProcess(pid);
+    if (!authority || !process) {
+      throw Object.assign(
+        new Error(
+          `ESRCH: process ${pid} is not attached to the authoritative TraceKernel network namespace`
+        ),
+        { code: 'ESRCH' }
+      );
+    }
+    return { authority, process };
+  }
+
+  private async openHttpTcpSocket(pid: number): Promise<number> {
+    const { authority, process } = this.requireTraceKernelNetworkProcess(pid);
     return Effect.runPromise(authority.session.createTcpSocket(process));
   }
 
@@ -3621,9 +3263,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     fd: number,
     address: Extract<TraceKernelSyscallRequest, { op: 'bind' }>['address']
   ) {
-    const process = this.traceKernelNetworkProcess(pid);
-    const authority = this.traceKernelAuthority;
-    if (!process || !authority) return this.kernelNetwork.bind(pid, fd, address);
+    const { authority, process } = this.requireTraceKernelNetworkProcess(pid);
     return Effect.runPromise(authority.session.bindTcp(process, fd, address));
   }
 
@@ -3632,19 +3272,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     fd: number,
     options?: Extract<TraceKernelSyscallRequest, { op: 'listen' }>['options']
   ): Promise<void> {
-    const process = this.traceKernelNetworkProcess(pid);
-    const authority = this.traceKernelAuthority;
-    if (!process || !authority) {
-      await this.kernelNetwork.listen(pid, fd, options);
-      return;
-    }
+    const { authority, process } = this.requireTraceKernelNetworkProcess(pid);
     await Effect.runPromise(authority.session.listenTcp(process, fd, options));
   }
 
   private async acceptHttpTcpSocket(pid: number, fd: number) {
-    const process = this.traceKernelNetworkProcess(pid);
-    const authority = this.traceKernelAuthority;
-    if (!process || !authority) return this.kernelNetwork.accept(pid, fd);
+    const { authority, process } = this.requireTraceKernelNetworkProcess(pid);
     return Effect.runPromise(authority.session.acceptTcp(process, fd));
   }
 
@@ -3653,9 +3286,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     fd: number,
     address: Extract<TraceKernelSyscallRequest, { op: 'connect' }>['address']
   ) {
-    const process = this.traceKernelNetworkProcess(pid);
-    const authority = this.traceKernelAuthority;
-    if (!process || !authority) return this.kernelNetwork.connect(pid, fd, address);
+    const { authority, process } = this.requireTraceKernelNetworkProcess(pid);
     return Effect.runPromise(authority.session.connectTcp(process, fd, address));
   }
 
@@ -3664,12 +3295,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     fd: number,
     how: Extract<TraceKernelSyscallRequest, { op: 'shutdown' }>['how']
   ): Promise<void> {
-    const process = this.traceKernelNetworkProcess(pid);
-    const authority = this.traceKernelAuthority;
-    if (!process || !authority) {
-      await this.kernelNetwork.shutdown(pid, fd, how);
-      return;
-    }
+    const { authority, process } = this.requireTraceKernelNetworkProcess(pid);
     await Effect.runPromise(authority.session.shutdownTcp(process, fd, how));
   }
 
@@ -3677,35 +3303,27 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     pid: number,
     fd: number,
     maxBytes: number,
-    context?: RuntimeCommandExecutionContext
+    _context?: RuntimeCommandExecutionContext
   ): Promise<Uint8Array> {
-    const process = this.traceKernelNetworkProcess(pid);
-    return process
-      ? Effect.runPromise(process.read(fd, maxBytes))
-      : this.kernelDescriptors.read(pid, context, fd, maxBytes);
+    const { process } = this.requireTraceKernelNetworkProcess(pid);
+    return Effect.runPromise(process.read(fd, maxBytes));
   }
 
   private async writeHttpTcpDescriptor(
     pid: number,
     fd: number,
     bytes: Uint8Array,
-    context?: RuntimeCommandExecutionContext
+    _context?: RuntimeCommandExecutionContext
   ): Promise<number> {
-    const process = this.traceKernelNetworkProcess(pid);
-    return process
-      ? Effect.runPromise(process.write(fd, bytes))
-      : this.kernelDescriptors.write(pid, context, fd, bytes);
+    const { process } = this.requireTraceKernelNetworkProcess(pid);
+    return Effect.runPromise(process.write(fd, bytes));
   }
 
   private async closeHttpTcpDescriptor(pid: number, fd: number): Promise<void> {
-    const process = this.traceKernelNetworkProcess(pid);
-    if (process) {
-      await Effect.runPromise(
-        process.close(fd).pipe(Effect.catchAll(() => Effect.void))
-      );
-      return;
-    }
-    await this.kernelDescriptors.close(pid, fd).catch(() => undefined);
+    const { process } = this.requireTraceKernelNetworkProcess(pid);
+    await Effect.runPromise(
+      process.close(fd).pipe(Effect.catchAll(() => Effect.void))
+    );
   }
 
   private readHttp1Message(
@@ -5075,13 +4693,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
   }
 
-  /** PID 1 occupies a real process-table slot even though it is not mutable. */
+  /** Read the authoritative live-plus-unreaped process capacity from TraceKernel. */
   private processTableUsage(): number {
-    return 1 + this.activeProcessRecords().length;
+    return this.traceKernelAuthority?.session.processTableSnapshots().length ??
+      1 + this.activeProcessRecords().length;
+  }
+
+  private processTableLimit(): number | null {
+    return this.traceKernelAuthority?.session.maxProcesses ??
+      this.maxProcesses;
   }
 
   private processAdmissionError(command: string): RuntimeKernelAdmissionRejectedError | null {
-    if (this.maxProcesses === null || this.processTableUsage() < this.maxProcesses) return null;
+    const limit = this.processTableLimit();
+    if (limit === null || this.processTableUsage() < limit) return null;
     return new RuntimeKernelAdmissionRejectedError(
       command,
       `EAGAIN: resource temporarily unavailable, fork '${command}'`,
@@ -5100,7 +4725,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       errno: error.errno,
       syscall: error.syscall,
       activeProcesses: this.processTableUsage(),
-      maxProcesses: this.maxProcesses ?? 'unlimited',
+      maxProcesses: this.processTableLimit() ?? 'unlimited',
       ...(actor ? { actor: this.journalActorId(actor) } : {}),
     });
   }
@@ -5433,91 +5058,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return true;
   }
 
-  private configureRuntimeProcessWatchdog(
-    process: RuntimeKernelProcessRecord,
-    action: 'arm' | 'pet' | 'disarm' | 'status',
-    timeoutMs?: number,
-    requestedSignal?: 'SIGTERM' | 'SIGKILL'
-  ): RuntimeKernelWatchdogRecord | undefined {
-    const current = this.processWatchdogs.get(process.pid);
-    if (action === 'status') return current;
-    if (action === 'disarm') {
-      this.clearRuntimeProcessWatchdog(process.pid);
-      this.recordKernelEvent('watchdog-disarm', process.pid);
-      return undefined;
-    }
-
-    const effectiveTimeoutMs = action === 'pet' ? current?.timeoutMs : timeoutMs;
-    if (
-      effectiveTimeoutMs === undefined ||
-      !Number.isSafeInteger(effectiveTimeoutMs) ||
-      effectiveTimeoutMs <= 0
-    ) {
-      throw Object.assign(
-        new Error(
-          action === 'pet'
-            ? 'EINVAL: cannot pet a disarmed watchdog'
-            : 'EINVAL: watchdog timeout must be a positive integer'
-        ),
-        { code: 'EINVAL' }
-      );
-    }
-    const signal = action === 'pet'
-      ? current?.signal
-      : requestedSignal ?? 'SIGTERM';
-    if (!signal) {
-      throw Object.assign(
-        new Error('EINVAL: cannot pet a disarmed watchdog'),
-        { code: 'EINVAL' }
-      );
-    }
-
-    this.clearRuntimeProcessWatchdog(process.pid);
-    const token = Symbol(`watchdog-${process.pid}`);
-    const deadlineAt = Date.now() + effectiveTimeoutMs;
-    const timer = setTimeout(() => {
-      if (this.processWatchdogs.get(process.pid)?.token !== token) return;
-      this.processWatchdogs.delete(process.pid);
-      this.recordKernelEvent('watchdog-expire', process.pid, {
-        timeoutMs: effectiveTimeoutMs,
-        signal,
-      });
-      this.signalProcess(process, signal);
-    }, effectiveTimeoutMs);
-    const watchdog = {
-      token,
-      timeoutMs: effectiveTimeoutMs,
-      signal,
-      deadlineAt,
-      timer,
-    } as const;
-    this.processWatchdogs.set(process.pid, watchdog);
-    this.recordKernelEvent(
-      action === 'pet' ? 'watchdog-pet' : 'watchdog-arm',
-      process.pid,
-      {
-        timeoutMs: effectiveTimeoutMs,
-        signal,
-        deadlineAt,
-      }
-    );
-    return watchdog;
-  }
-
-  private clearRuntimeProcessWatchdog(pid: number): void {
-    const watchdog = this.processWatchdogs.get(pid);
-    if (!watchdog) return;
-    this.processWatchdogs.delete(pid);
-    clearTimeout(watchdog.timer);
-  }
-
-  private clearAllRuntimeProcessWatchdogs(): void {
-    for (const watchdog of this.processWatchdogs.values()) {
-      clearTimeout(watchdog.timer);
-    }
-    this.processWatchdogs.clear();
-  }
-
   private signalProcessGroup(
     pgid: number,
     signalName = 'SIGTERM',
@@ -5568,9 +5108,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       );
       return true;
     }
-    const pgid = this.terminalForegroundPgid;
-    if (pgid === 1) return false;
-    return this.signalProcessGroup(pgid, signal).signaled > 0;
+    return false;
   }
 
   private resizeKernelTerminal(columns: number, rows: number): void {
@@ -5719,34 +5257,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         signal: normalizeTraceKernelSignal(signalName)?.name,
         count: delivered,
       });
-    }
-  }
-
-  private setProcessGroupForeground(pgid: number, foreground: boolean): void {
-    if (foreground) {
-      this.terminalForegroundPgid = pgid;
-    } else if (this.terminalForegroundPgid === pgid) {
-      this.terminalForegroundPgid = 1;
-    }
-  }
-
-  private releaseForegroundProcessGroupMember(
-    process: RuntimeKernelProcessRecord
-  ): void {
-    const snapshot = this.authoritativeProcessSnapshot(process);
-    if (!snapshot || this.terminalForegroundPgid !== snapshot.pgid) return;
-    const survivingMember = this.activeProcessRecords().some(
-      (candidate) => {
-        const candidateSnapshot = this.authoritativeProcessSnapshot(candidate);
-        return candidateSnapshot !== undefined &&
-          candidateSnapshot.pid !== snapshot.pid &&
-          candidateSnapshot.pgid === snapshot.pgid &&
-          candidateSnapshot.controllingTerminalId !== undefined &&
-          candidateSnapshot.phase !== 'exited';
-      }
-    );
-    if (!survivingMember) {
-      this.setProcessGroupForeground(snapshot.pgid, false);
     }
   }
 
@@ -6433,7 +5943,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private renderProcScheduler(): string {
     const active = this.kernelPresentationProcessRecords();
     const scheduler = this.commandScheduler.snapshot();
-    const processTableUsage = 1 + active.length;
+    const processTableUsage = this.processTableUsage();
+    const processTableLimit = this.processTableLimit();
     const queued = active.filter((process) => process.state === 'queued').length;
     const running = active.filter((process) => process.state === 'running').length;
     const blocked = active.filter((process) => process.state === 'blocked').length;
@@ -6447,8 +5958,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       `admitted\t${scheduler.running}`,
       `waiting\t${scheduler.queued}`,
       `processes\t${processTableUsage}`,
-      `max_processes\t${this.maxProcesses ?? 'unlimited'}`,
-      `available_processes\t${this.maxProcesses === null ? 'unlimited' : Math.max(0, this.maxProcesses - processTableUsage)}`,
+      `max_processes\t${processTableLimit ?? 'unlimited'}`,
+      `available_processes\t${processTableLimit === null ? 'unlimited' : Math.max(0, processTableLimit - processTableUsage)}`,
       `max_concurrent\t${scheduler.maxConcurrentCommands}`,
       `max_queued\t${scheduler.maxQueuedCommands ?? 'unlimited'}`,
       `next_pid\t${this.nextPid}`,
@@ -7372,7 +6883,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           `scheduler.queued=${scheduler.queued}`,
           `scheduler.maxQueued=${scheduler.maxQueuedCommands ?? 'unlimited'}`,
           `processes.active=${this.processTableUsage()}`,
-          `processes.max=${this.maxProcesses ?? 'unlimited'}`,
+          `processes.max=${this.processTableLimit() ?? 'unlimited'}`,
           ...(this.kernelInfo.workspaceAlias ? [`alias=${this.kernelInfo.workspaceAlias}`] : []),
         ].join('\n') + '\n',
         stderr: '',
@@ -7935,10 +7446,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             targetKernelProcess.snapshot().pgid
           )
         );
-        this.setProcessGroupForeground(
-          targetKernelProcess.snapshot().pgid,
-          true
-        );
       } else {
         const targetSnapshot = targetKernelProcess.snapshot();
         if (
@@ -7962,13 +7469,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             )
           );
         }
-        this.setProcessGroupForeground(targetSnapshot.pgid, false);
       }
     } else {
-      this.setProcessGroupForeground(
-        this.authoritativeProcessSnapshot(process)?.pgid ?? process.pgid,
-        foreground
-      );
+      return {
+        stdout: '',
+        stderr: `${commandName}: job ${process.pid} is not attached to TraceKernel\n`,
+        exitCode: 3,
+      };
     }
     const placement =
       this.findKernelPresentationProcessRecord(process.pid) ?? process;
@@ -9763,7 +9270,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             kernelProcess.snapshot().pgid
           )
         );
-        this.setProcessGroupForeground(kernelProcess.snapshot().pgid, true);
       }
     }
     const hostStandardIo =
@@ -9875,9 +9381,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         },
       })
     );
-    if (terminalPresentation && foreground) {
-      this.setProcessGroupForeground(process.pgid, true);
-    }
     try {
       await launchHooks?.initialize?.(process, commandContext);
       launchHooks?.ready?.(process);
@@ -9895,8 +9398,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       await Effect.runPromise(kernelProcess.wait()).catch(() => undefined);
       clearKernelLeaseHandler();
       await this.closeHostStandardIo(executionHandle);
-      this.releaseForegroundProcessGroupMember(process);
-      await this.kernelDescriptors.closeProcess(process.pid);
       throw error;
     }
     this.recordKernelEvent('process-queue', process.pid, {
@@ -10103,12 +9604,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         Boolean(process.signal) ||
         options.retainOnExit === true ||
         this.processWaitRequests.has(process.pid);
-      this.clearRuntimeProcessWatchdog(process.pid);
       this.closeHttpListenersForProcess(process.pid);
       try {
         await launchHooks?.beforeDescriptorClose?.(process, commandContext);
       } finally {
-        await this.kernelDescriptors.closeProcess(process.pid);
       }
       await launchHooks?.afterDescriptorClose?.(process, commandContext);
       const pendingSignal = this.processExecutionHandle(process)?.pendingSignal;
@@ -10165,7 +9664,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.processTable.delete(process.pid);
       executionHandle.signalChannel?.close();
       this.processExecutionHandles.delete(process.pid);
-      this.releaseForegroundProcessGroupMember(process);
       this.observeKernelReparentedChildren(process.pid);
       if (retainProcessOnExit) {
         this.recordKernelEvent('process-zombie', process.pid, {
@@ -10527,11 +10025,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
-    await this.kernelDescriptors.dispose();
-    await this.kernelNetwork.dispose();
     this.stopObservingExternalTraceKernelMutations();
     this.traceKernelBackingFileSystem.dispose();
-    this.clearAllRuntimeProcessWatchdogs();
     this.processTable.clear();
     this.processExecutionHandles.clear();
     this.zombieProcessTable.clear();
@@ -10879,16 +10374,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.kernelSyscallGenerationUnsubscribe = undefined;
     this.stopObservingExternalTraceKernelMutations();
     this.traceKernelBackingFileSystem.dispose();
-    this.clearAllRuntimeProcessWatchdogs();
     const authority = this.traceKernelAuthority;
     this.traceKernelAuthority = undefined;
     if (authority) {
       void Effect.runPromise(Scope.close(authority.scope, Exit.void)).catch(() => undefined);
     }
-    void Promise.all([
-      this.kernelDescriptors.dispose(),
-      this.kernelNetwork.dispose(),
-    ]);
     // Native/just-bash workspaces currently own no external resources.
   }
 
@@ -11084,7 +10574,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             this.signalProcess(child, 'SIGTERM', 'system');
           }
         }
-        void this.kernelDescriptors.closeProcess(process.pid);
         const kernelDisposal = Effect.runPromise(
           kernelProcess.awaitStarted().pipe(
             Effect.zipRight(
