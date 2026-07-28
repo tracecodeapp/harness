@@ -47,6 +47,8 @@ export interface TraceJVMProjectHost {
 }
 
 export interface TraceJVMProjectClientContext {
+  /** Absolute kernel working directory for this process invocation. */
+  readonly cwd: string;
   /**
    * Process identity owning every descriptor and syscall issued by this
    * invocation.
@@ -68,7 +70,7 @@ export type TraceJVMProjectClientFactory =
 export const TRACEJVM_PROJECT_CAPABILITIES = Object.freeze({
   provider: 'tracejvm',
   javaVersion: '23',
-  filesystem: 'snapshot-input-final-diff',
+  filesystem: 'live-kernel-syscalls',
   descriptorStdio: false,
   terminalStdin: false,
   sockets: false,
@@ -551,10 +553,11 @@ async function executeWithClient(
  * Adapts TraceJVM's value-oriented public API to TraceKernel's javac/java
  * command boundary.
  *
- * This first boundary deliberately uses immutable TKFS snapshots for inputs and
- * commits javac artifacts as a final kernel filesystem diff. TraceJVM does not
- * yet expose an application filesystem, descriptor, stdin, or socket host, so
- * this adapter does not claim live syscall support for Java application code.
+ * javac still receives an immutable TKFS snapshot and commits its artifacts as
+ * a final filesystem diff. Java application filesystem calls use the generic,
+ * process-scoped host above, so concurrent runtimes observe the same
+ * authoritative TraceKernel state. Descriptor stdio and sockets remain
+ * intentionally separate capabilities.
  */
 export function createTraceJVMProjectRunner(
   options: TraceJVMProjectRunnerOptions
@@ -607,6 +610,7 @@ export function createTraceJVMProjectRunner(
       try {
         if (bounded.signal?.aborted) return cancelledResult(bounded.signal);
         client = await options.createClient(Object.freeze({
+          cwd: request.cwd,
           process: request.process,
           host: createProcessHost(request),
         }));

@@ -9,6 +9,8 @@ declare global {
     compile: { stdout: string; stderr: string; exitCode: number };
     firstRun: { stdout: string; stderr: string; exitCode: number };
     secondRun: { stdout: string; stderr: string; exitCode: number };
+    filesystemRun: { stdout: string; stderr: string; exitCode: number };
+    sharedFile: string;
     interrupted: {
       stdout: string;
       stderr: string;
@@ -42,7 +44,22 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       contents: [
         'public final class Main {',
         '  private static int count = 0;',
-        '  public static void main(String[] args) {',
+        '  public static void main(String[] args) throws Exception {',
+        '    if (args.length > 0 && args[0].equals("filesystem")) {',
+        '      java.nio.file.Path path = java.nio.file.Path.of("shared.txt");',
+        '      String prior = java.nio.file.Files.readString(path);',
+        '      java.nio.file.Files.writeString(path, prior + "|java");',
+        '      java.nio.file.Path nested = java.nio.file.Path.of("kernel-dir", "nested");',
+        '      java.nio.file.Files.createDirectories(nested);',
+        '      java.nio.file.Files.writeString(nested.resolve("child.txt"), "child");',
+        '      String listed;',
+        '      try (var entries = java.nio.file.Files.list(java.nio.file.Path.of("kernel-dir"))) {',
+        '        listed = entries.map(entry -> entry.getFileName().toString()).sorted().findFirst().orElse("missing");',
+        '      }',
+        '      boolean millisecondTime = path.toFile().lastModified() > 1_000_000_000_000L;',
+        '      System.out.println("fs:" + prior + ":" + listed + ":" + millisecondTime);',
+        '      return;',
+        '    }',
         '    count += 1;',
         '    String mode = System.getProperty("mode", "missing");',
         '    String leaked = System.getProperty("tracejvm.leak", "missing");',
@@ -55,6 +72,9 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '  }',
         '}',
       ].join('\n'),
+    }, {
+      path: 'shared.txt',
+      contents: 'snapshot-value',
     }],
     traceJVM: {
       createClient(context) {
@@ -67,6 +87,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
               },
               wasmUrl: '/tracejvm/bjvm_main.wasm',
             },
+            workingDirectory: context.cwd,
             runtimeProfile: 'core',
             retirementAfterExecutions: 1,
           },
@@ -99,6 +120,11 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     const secondRun = await workspace.runCommand(
       'java -cp build Main second'
     );
+    await workspace.writeFile('shared.txt', 'js-before-java');
+    const filesystemRun = await workspace.runCommand(
+      'java -cp build Main filesystem'
+    );
+    const sharedFile = await workspace.readFile('shared.txt');
 
     const controller = new AbortController();
     let resolveReady!: () => void;
@@ -138,6 +164,8 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       compile,
       firstRun,
       secondRun,
+      filesystemRun,
+      sharedFile,
       interrupted,
       restarted,
       classFileBase64,

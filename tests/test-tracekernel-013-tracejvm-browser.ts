@@ -114,15 +114,18 @@ try {
           result.firstRun.stdout !== '1:first:missing:first\n' ||
           result.secondRun.exitCode !== 0 ||
           result.secondRun.stdout !== '1:missing:missing:second\n' ||
+          result.filesystemRun.exitCode !== 0 ||
+          result.filesystemRun.stdout !== 'fs:js-before-java:nested:true\n' ||
+          result.sharedFile !== 'js-before-java|java' ||
           result.interrupted.exitCode !== 130 ||
           result.interrupted.stderr !== '' ||
           result.restarted.exitCode !== 0 ||
           result.restarted.stdout !== '1:missing:missing:restarted\n' ||
-          result.workerCount !== 5 ||
+          result.workerCount !== 6 ||
           !reportStatuses.includes('compile:completed:not-applicable') ||
           reportStatuses.filter(
             (status) => status === 'run:completed:clean'
-          ).length !== 3
+          ).length !== 4
         ) {
           throw new Error(
             `${engine} failed the TraceKernel/TraceJVM adapter boundary: ${JSON.stringify(result)}`
