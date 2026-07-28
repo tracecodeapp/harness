@@ -531,7 +531,14 @@ export class JavaWorkerClient {
     onEvent?: RuntimeCommandEventHandler,
     signal: AbortSignal | undefined = request.signal
   ): Promise<JavaWorkerProjectResult> {
-    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+    const {
+      signal: _signal,
+      onEvent: _requestOnEvent,
+      kernelHttp,
+      kernelSyscalls,
+      kernelSignals,
+      ...workerRequest
+    } = request;
     const program = this.initGateEffect().pipe(
       Effect.andThen(
         this.core.withExecutionDeadline(
@@ -545,7 +552,10 @@ export class JavaWorkerClient {
             },
             null,
             onEvent,
-            kernelHttp
+            kernelHttp,
+            undefined,
+            kernelSyscalls,
+            kernelSignals
           ),
           timeoutMs
         )

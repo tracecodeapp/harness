@@ -27,6 +27,7 @@ import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeKernelHttpBridge,
+  RuntimeKernelSignalBridge,
   RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseController,
@@ -262,7 +263,8 @@ export class CSharpWorkerClient {
     timeoutMs: number | null = MESSAGE_TIMEOUT_MS,
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
-    kernelSyscalls?: RuntimeKernelSyscallBridge
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge
   ): Effect.Effect<T, Error> {
     return this.core.sendMessageEffect<T>(
       type,
@@ -271,7 +273,8 @@ export class CSharpWorkerClient {
       onEvent,
       kernelHttp,
       undefined,
-      kernelSyscalls
+      kernelSyscalls,
+      kernelSignals
     ).pipe(
       Effect.tapError((error) =>
         Effect.sync(() => {
@@ -552,6 +555,7 @@ export class CSharpWorkerClient {
       engineLease: _engineLease,
       kernelHttp,
       kernelSyscalls,
+      kernelSignals,
       ...workerRequest
     } = request;
     const program = this.warmupEffect().pipe(
@@ -571,7 +575,8 @@ export class CSharpWorkerClient {
             null,
             onEvent,
             kernelHttp,
-            kernelSyscalls
+            kernelSyscalls,
+            kernelSignals
           ),
           timeoutMs
         )

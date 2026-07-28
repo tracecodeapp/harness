@@ -447,6 +447,7 @@ export class PythonWorkerClient {
       engineLease: _engineLease,
       kernelHttp,
       kernelSyscalls,
+      kernelSignals,
       ...workerRequest
     } = request;
 
@@ -465,7 +466,8 @@ export class PythonWorkerClient {
             onEvent,
             kernelHttp,
             undefined,
-            kernelSyscalls
+            kernelSyscalls,
+            kernelSignals
           ),
           timeoutMs
         )

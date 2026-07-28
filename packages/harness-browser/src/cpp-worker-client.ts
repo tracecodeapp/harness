@@ -1216,6 +1216,7 @@ export class CppWorkerClient {
         engineLease: _engineLease,
         kernelHttp,
         kernelSyscalls,
+        kernelSignals,
         ...workerRequest
       } = request;
       if (!this.externalCompilerUrl && workerRequest.source === 'compile') {
@@ -1234,7 +1235,8 @@ export class CppWorkerClient {
           onEvent,
           kernelHttp,
           () => this.assertLifecycleGeneration(lifecycleGeneration),
-          kernelSyscalls
+          kernelSyscalls,
+          kernelSignals
         ),
         timeoutMs,
         'compile-run',

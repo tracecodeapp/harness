@@ -32,6 +32,7 @@ import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpListenerHandle,
   RuntimeKernelHttpResponse,
+  RuntimeKernelSignalBridge,
   RuntimeKernelSyscallBridge,
   RuntimeProjectEngineLeaseController,
 } from '@tracecode/harness-core';
@@ -435,7 +436,8 @@ export class WorkerSessionCore {
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
     validateLifecycle?: () => void,
-    kernelSyscalls?: RuntimeKernelSyscallBridge
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
       yield* Effect.try({
@@ -468,7 +470,8 @@ export class WorkerSessionCore {
         payload,
         onEvent,
         kernelHttp,
-        kernelSyscalls
+        kernelSyscalls,
+        kernelSignals
       );
       if (timeoutMs === null) {
         return yield* reply;
@@ -500,7 +503,8 @@ export class WorkerSessionCore {
     payload?: unknown,
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
-    kernelSyscalls?: RuntimeKernelSyscallBridge
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge
   ): Effect.Effect<T, Error> {
     return Effect.async<T, Error>((resume) => {
       const id = String(++this.messageId);
@@ -544,6 +548,9 @@ export class WorkerSessionCore {
                   : {}),
               }
             : {}),
+          ...(kernelSignals
+            ? { kernelSignalMailbox: kernelSignals.mailbox }
+            : {}),
         });
       } catch (error) {
         const entry = this.pendingMessages.get(id);
@@ -573,7 +580,8 @@ export class WorkerSessionCore {
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
     validateLifecycle?: () => void,
-    kernelSyscalls?: RuntimeKernelSyscallBridge
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge
   ): Promise<T> {
     return this.runClientEffect(
       this.sendMessageEffect<T>(
@@ -583,7 +591,8 @@ export class WorkerSessionCore {
         onEvent,
         kernelHttp,
         validateLifecycle,
-        kernelSyscalls
+        kernelSyscalls,
+        kernelSignals
       )
     );
   }

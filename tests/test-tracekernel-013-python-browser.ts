@@ -178,9 +178,12 @@ async function main(): Promise<void> {
               path: 'terminal-control.py',
               contents: [
                 'import os',
+                'import signal',
                 'import sys',
                 'import termios',
                 'from tracekernel import terminal',
+                'resize_signals = []',
+                'signal.signal(signal.SIGWINCH, lambda signum, frame: resize_signals.append(signum))',
                 'foreground = os.tcgetpgrp(0)',
                 'transferred = os.tcsetpgrp(0, foreground)',
                 'initial_os_size = os.get_terminal_size(1)',
@@ -201,6 +204,7 @@ async function main(): Promise<void> {
                 '    and terminal.window_size() == (66, 166)',
                 '    and terminal.set_window_size(77, 177) == (77, 177)',
                 '    and termios.tcgetwinsize(2) == (77, 177)',
+                '    and resize_signals == [signal.SIGWINCH, signal.SIGWINCH]',
                 ')',
                 'standard_input = input()',
                 'print(f"terminal:{str(valid).lower()}:{standard_input}")',
@@ -865,6 +869,7 @@ async function main(): Promise<void> {
           'os.get_terminal_size',
           'termios.tcgetwinsize/tcsetwinsize',
           'tracekernel.terminal.window_size',
+          'signal.SIGWINCH-safe-point-delivery',
           'tracekernel.terminal',
         ],
         childWait: [

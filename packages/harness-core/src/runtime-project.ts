@@ -463,6 +463,15 @@ export interface RuntimeKernelSignalNotification {
   readonly code: number;
 }
 
+export interface RuntimeKernelSignalMailbox {
+  /**
+   * Int32 layout: [monotonic sequence, latest signal number].
+   * Standard POSIX notifications may coalesce before the runtime's next safe
+   * point; they are not an ordered application event log.
+   */
+  readonly buffer: SharedArrayBuffer;
+}
+
 /**
  * Host-owned, non-terminating process notification stream.
  *
@@ -472,6 +481,7 @@ export interface RuntimeKernelSignalNotification {
  * process and its engine lease alive.
  */
 export interface RuntimeKernelSignalBridge {
+  readonly mailbox: RuntimeKernelSignalMailbox;
   subscribe(
     listener: (notification: RuntimeKernelSignalNotification) => void
   ): () => void;

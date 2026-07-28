@@ -3778,7 +3778,8 @@ async function executeProjectPythonUserCall(
   request,
   messageId,
   protocolToken,
-  kernelSyscallChannel
+  kernelSyscallChannel,
+  kernelSignalMailbox
 ) {
   const requestJson = JSON.stringify(request ?? {});
   const httpBridge = new TraceKernelHttpBridge(messageId, protocolToken);
@@ -3794,6 +3795,11 @@ async function executeProjectPythonUserCall(
       )
     : null;
   const traceKernelFileSystemMounted = kernelClient !== null;
+  const kernelSignalState =
+    kernelSignalMailbox?.buffer instanceof SharedArrayBuffer
+      ? new Int32Array(kernelSignalMailbox.buffer)
+      : null;
+  let kernelSignalSequence = 0;
   activeProjectHttpBridges.set(messageId, httpBridge);
   const projectEventBudget = createProjectEventBudget();
   const projectOutputEvents = [];
@@ -3829,6 +3835,13 @@ async function executeProjectPythonUserCall(
       }
       offset += written;
     }
+  };
+  self.__tracecodePollKernelSignal = () => {
+    if (!kernelSignalState) return 0;
+    const sequence = Atomics.load(kernelSignalState, 0);
+    if (sequence === kernelSignalSequence) return 0;
+    kernelSignalSequence = sequence;
+    return Atomics.load(kernelSignalState, 1);
   };
   self.__tracecodeRuntimeKernelOpenTarget = (payload) => {
     const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
@@ -4383,6 +4396,7 @@ import math
 import os
 import runpy
 import shutil
+import signal
 import stat
 import sys
 import traceback
@@ -4404,6 +4418,19 @@ _workspace_root = _normalize_virtual_root(_project_info.get("workspaceRoot") or 
 _workspace_alias_value = _project_info.get("workspaceAlias")
 _workspace_alias = _normalize_virtual_root(_workspace_alias_value) if _workspace_alias_value else None
 _tracekernel_fs_mounted = ${traceKernelFileSystemMounted ? 'True' : 'False'}
+_tracekernel_sigwinch = int(getattr(signal, "SIGWINCH", 28))
+def _tracekernel_poll_signals():
+    _signal_number = int(
+        getattr(_js_self, "__tracecodePollKernelSignal")()
+    )
+    if _signal_number == 0:
+        return
+    if _signal_number != _tracekernel_sigwinch:
+        return
+    _handler = signal.getsignal(_signal_number)
+    if callable(_handler):
+        _handler(_signal_number, None)
+
 if not _tracekernel_fs_mounted:
     shutil.rmtree(_root, ignore_errors=True)
     os.makedirs(_root, exist_ok=True)
@@ -4835,6 +4862,7 @@ class _TraceKernelProcessApi:
                 int(getattr(errno, _code, errno.EIO)),
                 _message,
             )
+        _tracekernel_poll_signals()
         return _response.get("value") or {}
 
     @staticmethod
@@ -8918,6 +8946,7 @@ json.dumps({
     delete self.__tracecodeKernelFileSystem;
     delete self.__tracecodeKernelProcess;
     delete self.__tracecodeKernelSocket;
+    delete self.__tracecodePollKernelSignal;
     delete self.__tracecodeCreateKernelPipe;
     delete self.__tracecodeInstallKernelSocket;
     kernelClient?.close();
@@ -8929,7 +8958,8 @@ async function executeProjectPython(
   request,
   messageId,
   protocolToken,
-  kernelSyscallChannel
+  kernelSyscallChannel,
+  kernelSignalMailbox
 ) {
   await loadPyodideInstance();
   return withPythonUserAuthorityLockdown(
@@ -8937,7 +8967,8 @@ async function executeProjectPython(
       request,
       messageId,
       protocolToken,
-      kernelSyscallChannel
+      kernelSyscallChannel,
+      kernelSignalMailbox
     ),
     request?.projectUserAuthorityMode ?? 'temporary'
   );
@@ -8964,6 +8995,7 @@ async function processMessage(data) {
     payload,
     protocolToken,
     kernelSyscallChannel,
+    kernelSignalMailbox,
   } = data;
   try {
     if (id && typeof protocolToken !== 'string') {
@@ -9031,7 +9063,8 @@ async function processMessage(data) {
           payload,
           id,
           protocolToken,
-          kernelSyscallChannel
+          kernelSyscallChannel,
+          kernelSignalMailbox
         );
         analyzerInitialized = false;
         trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });

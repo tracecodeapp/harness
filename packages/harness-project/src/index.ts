@@ -755,6 +755,9 @@ interface RuntimeKernelExecutionHandle {
 }
 
 class RuntimeKernelProcessSignalChannel implements RuntimeKernelSignalBridge {
+  readonly mailbox = Object.freeze({
+    buffer: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2),
+  });
   private readonly listeners = new Set<
     (notification: RuntimeKernelSignalNotification) => void
   >();
@@ -782,6 +785,10 @@ class RuntimeKernelProcessSignalChannel implements RuntimeKernelSignalBridge {
     notification: RuntimeKernelSignalNotification
   ): 'delivered' | 'queued' | 'closed' {
     if (this.closed) return 'closed';
+    const mailbox = new Int32Array(this.mailbox.buffer);
+    Atomics.store(mailbox, 1, notification.code);
+    Atomics.add(mailbox, 0, 1);
+    Atomics.notify(mailbox, 0);
     if (this.listeners.size === 0) {
       // Signals are not an unbounded event log. Retaining the short startup
       // window prevents a resize racing runner subscription from disappearing.
