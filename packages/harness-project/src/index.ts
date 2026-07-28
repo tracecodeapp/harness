@@ -4998,7 +4998,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private signalCommandError(process: RuntimeKernelProcessRecord): RuntimeCommandError | undefined {
-    if (!process.signal) return undefined;
+    const signal = this.runtimeTerminationSignal(process);
+    if (!signal) return undefined;
     const message = `EINTR: interrupted system call, wait4 '${process.pid}'`;
     return {
       code: 'EINTR',
@@ -5008,21 +5009,34 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       message,
       detail: {
         pid: process.pid,
-        signal: process.signal,
-        ...(process.signalCode !== undefined ? { signalCode: process.signalCode } : {}),
+        signal: signal.name,
+        ...(signal.code !== undefined ? { signalCode: signal.code } : {}),
       },
     };
   }
 
   private signalCommandResult(process: RuntimeKernelProcessRecord): RuntimeCommandResult {
     const error = this.signalCommandError(process);
+    const signal = this.runtimeTerminationSignal(process);
     return {
       stdout: '',
       // wait4/EINTR describes TraceKernel's parent-side bookkeeping. A real
       // foreground shell does not print that syscall detail as child stderr.
       stderr: '',
-      exitCode: 128 + (process.signalCode ?? 15),
+      exitCode: 128 + (signal?.code ?? 15),
       ...(error ? { error } : {}),
+    };
+  }
+
+  private runtimeTerminationSignal(
+    process: RuntimeKernelProcessRecord
+  ): { readonly name: string; readonly code?: number } | undefined {
+    const delivered = this.processExecutionHandle(process)?.pendingSignal;
+    if (delivered) return delivered;
+    if (!process.signal) return undefined;
+    return {
+      name: process.signal,
+      ...(process.signalCode === undefined ? {} : { code: process.signalCode }),
     };
   }
 
@@ -9381,7 +9395,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         await Effect.runPromise(
           authority.session.setProcessSchedulingState(kernelProcess, 'running')
         );
-        if (process.signal) {
+        if (this.runtimeTerminationSignal(process)) {
           const result = this.signalCommandResult(process);
           const output = this.captureReturnedOutput(commandContext, result);
           processExitCode = result.exitCode;
@@ -9416,13 +9430,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           await this.flushRuntimeEventQueue(commandContext);
           const output = this.captureReturnedOutput(commandContext, directExecutableResult);
           this.emitReturnedOutputEvents(output, commandContext);
-          if (commandContext.handledSignal && process.signal === commandContext.handledSignal) {
+          const deliveredSignal = this.processExecutionHandle(process)?.pendingSignal;
+          if (
+            commandContext.handledSignal &&
+            deliveredSignal?.name === commandContext.handledSignal
+          ) {
             delete this.processExecutionHandle(process)?.pendingSignal;
             this.recordKernelEvent('process-signal-handled', process.pid, {
               signal: commandContext.handledSignal,
             });
           }
-          if (process.signal) {
+          if (this.runtimeTerminationSignal(process)) {
             const signalResult = this.signalCommandResult(process);
             processExitCode = signalResult.exitCode;
             return {
@@ -9463,7 +9481,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const output = this.captureReturnedOutput(commandContext, result);
         this.emitReturnedOutputEvents(output, commandContext);
         processExitCode = result.exitCode;
-        if (commandContext.handledSignal && process.signal === commandContext.handledSignal) {
+        const deliveredSignal = this.processExecutionHandle(process)?.pendingSignal;
+        if (
+          commandContext.handledSignal &&
+          deliveredSignal?.name === commandContext.handledSignal
+        ) {
           delete this.processExecutionHandle(process)?.pendingSignal;
           this.recordKernelEvent('process-signal-handled', process.pid, {
             signal: commandContext.handledSignal,
@@ -9475,7 +9497,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           const interruptedSignal = typeof interruptedBy === 'string'
             ? normalizeTraceKernelSignal(interruptedBy)
             : null;
-          if (!process.signal && interruptedSignal) {
+          if (!this.runtimeTerminationSignal(process) && interruptedSignal) {
             const executionHandle = this.processExecutionHandle(process);
             if (executionHandle) {
               executionHandle.pendingSignal = {
@@ -9484,7 +9506,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               };
             }
           }
-          if (process.signal) {
+          if (this.runtimeTerminationSignal(process)) {
             const signalResult = this.signalCommandResult(process);
             processExitCode = signalResult.exitCode;
             return signalResult;
@@ -9496,13 +9518,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           exitCode: result.exitCode,
           ...(commandContext.kernelError ? { error: commandContext.kernelError } : {}),
           ...(!commandContext.kernelError && (result as RuntimeCommandResult).error ? { error: (result as RuntimeCommandResult).error } : {}),
-          ...(!commandContext.kernelError && !(result as RuntimeCommandResult).error && process.signal ? { error: this.signalCommandError(process) } : {}),
+          ...(!commandContext.kernelError && !(result as RuntimeCommandResult).error && this.runtimeTerminationSignal(process) ? { error: this.signalCommandError(process) } : {}),
         };
       } catch (error) {
-        if (!process.signal && abortController.signal.aborted) {
+        if (!this.runtimeTerminationSignal(process) && abortController.signal.aborted) {
           this.deliverRuntimeSignal(process, 'SIGTERM');
         }
-        if (process.signal) {
+        if (this.runtimeTerminationSignal(process)) {
           const result = this.signalCommandResult(process);
           const output = this.captureReturnedOutput(commandContext, result);
           processExitCode = result.exitCode;
@@ -9527,7 +9549,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         throw error;
       }
     }).catch((error) => {
-      if (process.signal) {
+      if (this.runtimeTerminationSignal(process)) {
         const result = this.signalCommandResult(process);
         const output = this.captureReturnedOutput(commandContext, result);
         processExitCode = result.exitCode;
@@ -9557,7 +9579,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       // Arbitrate termination once more at the scheduler boundary so the
       // kernel's unhandled signal owns the exit status, regardless of which
       // promise continuation won inside the runner.
-      if (!process.signal) return result;
+      if (!this.runtimeTerminationSignal(process)) return result;
       const signalResult = this.signalCommandResult(process);
       processExitCode = signalResult.exitCode;
       return {
@@ -9568,7 +9590,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       };
     }).finally(async () => {
       const retainProcessOnExit =
-        Boolean(process.signal) ||
+        Boolean(this.runtimeTerminationSignal(process)) ||
         options.retainOnExit === true ||
         this.processWaitRequests.has(process.pid);
       this.closeHttpListenersForProcess(process.pid);

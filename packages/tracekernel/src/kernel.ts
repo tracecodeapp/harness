@@ -235,6 +235,7 @@ export class TraceKernelProcess {
   private fiber?: Fiber.RuntimeFiber<TraceKernelProcessSnapshot, never>;
   private runtimeLease?: TraceKernelRuntimeLease;
   private requestedSignal?: TraceKernelTerminatingSignal;
+  private pendingSignal?: TraceKernelTerminatingSignal;
   readonly descriptors: TraceKernelDescriptorTable;
 
   constructor(
@@ -285,9 +286,9 @@ export class TraceKernelProcess {
   snapshot(): TraceKernelProcessSnapshot {
     return Object.freeze({
       ...immutableSnapshot(this.record),
-      ...(this.requestedSignal === undefined
+      ...(this.pendingSignal === undefined
         ? {}
-        : { pendingSignal: this.requestedSignal }),
+        : { pendingSignal: this.pendingSignal }),
       descriptors: Object.freeze([...this.descriptors.snapshots()]),
     });
   }
@@ -396,6 +397,7 @@ export class TraceKernelProcess {
         );
       }
       this.requestedSignal = signal;
+      this.pendingSignal = signal;
       const fiber = this.fiber;
       const runtimeLease = this.runtimeLease;
       if (
@@ -411,6 +413,13 @@ export class TraceKernelProcess {
         Effect.as<'completed'>('completed')
       );
       const deliveryFailed = runtimeLease.signal(signal).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (this.pendingSignal === signal) {
+              this.pendingSignal = undefined;
+            }
+          })
+        ),
         Effect.matchEffect({
           onFailure: () => Effect.succeed<'delivery-failed'>('delivery-failed'),
           onSuccess: () => Effect.never,
@@ -550,6 +559,7 @@ export class TraceKernelProcess {
     stderr: string
   ): TraceKernelProcessSnapshot {
     if (this.record.phase === 'exited') return this.snapshot();
+    this.pendingSignal = undefined;
     this.record.phase = 'exiting';
     this.record.termination = termination;
     this.record.stdout = stdout;

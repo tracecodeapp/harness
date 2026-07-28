@@ -381,7 +381,8 @@ async function main(): Promise<void> {
       assertCondition(
         gracefulSnapshot.termination?.kind === 'exit' &&
           gracefulSnapshot.termination.exitCode === 0 &&
-          gracefulSnapshot.stdout === 'graceful:clean-exit\n',
+          gracefulSnapshot.stdout === 'graceful:clean-exit\n' &&
+          gracefulSnapshot.pendingSignal === undefined,
         `A runtime-handled signal lost the graceful process result: ${JSON.stringify(gracefulSnapshot)}`
       );
 

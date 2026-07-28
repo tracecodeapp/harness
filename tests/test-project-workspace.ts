@@ -1641,15 +1641,15 @@ async function testWorkspaceTraceKernelKillProcess(): Promise<void> {
   await signalDeliveredPromise;
   const status = await workspace.readFile(`/proc/${pid}/status`);
   assertCondition(
-    status.includes('State:\tX (signaled)\n') &&
-      status.includes('Signal:\tSIGTERM\n') &&
-      status.includes('SignalCode:\t15\n'),
-    `signaled process should expose signal state through proc: ${JSON.stringify(status)}`
+    status.includes('State:\tR (running)\n') &&
+      !status.includes('Signal:\t') &&
+      !status.includes('SignalCode:\t'),
+    `a delivered signal should stop appearing as pending while the runtime resolves its disposition: ${JSON.stringify(status)}`
   );
   const sched = await workspace.readFile('/proc/tracekernel/sched');
   assertCondition(
-    sched.includes(`task\t${pid}\tsignaled\tnode sleep.js`),
-    `scheduler proc file should show signaled task: ${JSON.stringify(sched)}`
+    sched.includes(`task\t${pid}\trunning\tnode sleep.js`),
+    `scheduler proc file should keep a signal-delivery grace period runnable: ${JSON.stringify(sched)}`
   );
 
   releaseAfterSignal();
