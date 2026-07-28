@@ -1721,6 +1721,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         return this.dispatchExtractedTraceKernelSyscall(request, context);
       case 'isatty':
       case 'tcgetpgrp':
+      case 'tcgetwinsize':
         return this.dispatchExtractedTraceKernelSyscall(request, context);
       case 'tcsetpgrp':
         return this.dispatchExtractedTraceKernelSyscall(request, context).then(
@@ -1734,6 +1735,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             return result;
           }
         );
+      case 'tcsetwinsize':
+        return this.dispatchExtractedTraceKernelSyscall(request, context);
       case 'bind':
       case 'listen':
         this.assertHttpCapability(actor, 'listen');

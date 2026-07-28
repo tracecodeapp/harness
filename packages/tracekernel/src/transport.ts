@@ -67,6 +67,8 @@ const OP_CODES = {
   processInfo: 49,
   processList: 50,
   environment: 51,
+  tcgetwinsize: 52,
+  tcsetwinsize: 53,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -576,11 +578,17 @@ export function encodeTraceKernelSyscallRequest(
       break;
     case 'isatty':
     case 'tcgetpgrp':
+    case 'tcgetwinsize':
       writer.i32(request.fd);
       break;
     case 'tcsetpgrp':
       writer.i32(request.fd);
       writer.i32(request.pgid);
+      break;
+    case 'tcsetwinsize':
+      writer.i32(request.fd);
+      writer.u32(request.rows);
+      writer.u32(request.columns);
       break;
     case 'socket':
       break;
@@ -983,10 +991,19 @@ export function decodeTraceKernelSyscallRequest(
       break;
     case 'isatty':
     case 'tcgetpgrp':
+    case 'tcgetwinsize':
       request = { op: operation, fd: reader.i32() };
       break;
     case 'tcsetpgrp':
       request = { op: 'tcsetpgrp', fd: reader.i32(), pgid: reader.i32() };
+      break;
+    case 'tcsetwinsize':
+      request = {
+        op: 'tcsetwinsize',
+        fd: reader.i32(),
+        rows: reader.u32(),
+        columns: reader.u32(),
+      };
       break;
     case 'identity': {
       const hasPid = reader.u8();
@@ -1484,6 +1501,11 @@ export function encodeTraceKernelSyscallResult(
     case 'tcsetpgrp':
       writer.i32(value.pgid);
       break;
+    case 'tcgetwinsize':
+    case 'tcsetwinsize':
+      writer.u32(value.rows);
+      writer.u32(value.columns);
+      break;
     case 'bind':
       writeAddress(writer, value.address);
       break;
@@ -1786,6 +1808,14 @@ export function decodeTraceKernelSyscallResult(
     case 'tcgetpgrp':
     case 'tcsetpgrp':
       value = { op: operation, pgid: reader.i32() };
+      break;
+    case 'tcgetwinsize':
+    case 'tcsetwinsize':
+      value = {
+        op: operation,
+        rows: reader.u32(),
+        columns: reader.u32(),
+      };
       break;
     case 'identity':
       value = {
@@ -2343,6 +2373,34 @@ export class TraceKernelRuntimeFileClient {
       this.transport.dispatchSync({ op: 'tcsetpgrp', fd, pgid }),
       'tcsetpgrp'
     ).pgid;
+  }
+
+  tcgetwinsize(fd: number): {
+    readonly rows: number;
+    readonly columns: number;
+  } {
+    const value = this.expectSuccess(
+      this.transport.dispatchSync({ op: 'tcgetwinsize', fd }),
+      'tcgetwinsize'
+    );
+    return { rows: value.rows, columns: value.columns };
+  }
+
+  tcsetwinsize(
+    fd: number,
+    rows: number,
+    columns: number
+  ): { readonly rows: number; readonly columns: number } {
+    const value = this.expectSuccess(
+      this.transport.dispatchSync({
+        op: 'tcsetwinsize',
+        fd,
+        rows,
+        columns,
+      }),
+      'tcsetwinsize'
+    );
+    return { rows: value.rows, columns: value.columns };
   }
 
   socket(): number {

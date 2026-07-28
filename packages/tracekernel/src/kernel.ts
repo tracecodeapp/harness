@@ -1399,6 +1399,51 @@ export class TraceKernelSession {
     });
   }
 
+  terminalWindowSize(
+    process: TraceKernelProcess,
+    fd: number
+  ): Effect.Effect<{ readonly rows: number; readonly columns: number }, Error> {
+    return this.controllingTerminalForDescriptor(process, fd).pipe(
+      Effect.map((terminal) => {
+        const snapshot = terminal.snapshot();
+        return Object.freeze({
+          rows: snapshot.rows,
+          columns: snapshot.columns,
+        });
+      })
+    );
+  }
+
+  setTerminalWindowSize(
+    process: TraceKernelProcess,
+    fd: number,
+    rows: number,
+    columns: number
+  ): Effect.Effect<{ readonly rows: number; readonly columns: number }, Error> {
+    return Effect.gen(this, function* () {
+      const terminal = yield* this.controllingTerminalForDescriptor(process, fd);
+      const normalizedRows = Math.trunc(rows);
+      const normalizedColumns = Math.trunc(columns);
+      if (
+        !Number.isSafeInteger(rows) ||
+        !Number.isSafeInteger(columns) ||
+        normalizedRows <= 0 ||
+        normalizedColumns <= 0
+      ) {
+        return yield* Effect.fail(new TraceKernelInvalidArgumentError({
+          code: 'EINVAL',
+          argument: 'windowSize',
+          message: `EINVAL: invalid terminal window size ${columns}x${rows}`,
+        }));
+      }
+      terminal.resize(normalizedColumns, normalizedRows);
+      return Object.freeze({
+        rows: normalizedRows,
+        columns: normalizedColumns,
+      });
+    });
+  }
+
   signalTerminalForeground(
     terminalId: string,
     signal: TraceKernelSignal

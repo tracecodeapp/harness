@@ -127,6 +127,13 @@ export type TraceKernelSyscallRequest =
       readonly fd: number;
       readonly pgid: number;
     }
+  | { readonly op: 'tcgetwinsize'; readonly fd: number }
+  | {
+      readonly op: 'tcsetwinsize';
+      readonly fd: number;
+      readonly rows: number;
+      readonly columns: number;
+    }
   | {
       readonly op: 'socket';
     }
@@ -351,6 +358,8 @@ export type TraceKernelSyscallValue =
   | { readonly op: 'isatty'; readonly isTerminal: boolean }
   | { readonly op: 'tcgetpgrp'; readonly pgid: number }
   | { readonly op: 'tcsetpgrp'; readonly pgid: number }
+  | { readonly op: 'tcgetwinsize'; readonly rows: number; readonly columns: number }
+  | { readonly op: 'tcsetwinsize'; readonly rows: number; readonly columns: number }
   | { readonly op: 'socket'; readonly fd: number }
   | { readonly op: 'bind'; readonly address: TraceKernelTcpAddress }
   | { readonly op: 'listen' }
@@ -713,6 +722,30 @@ export class TraceKernelSyscallDispatcher {
           request.pgid
         ).pipe(
           Effect.map((pgid) => ({ op: 'tcsetpgrp' as const, pgid }))
+        );
+      case 'tcgetwinsize':
+        return this.session.terminalWindowSize(
+          this.process,
+          request.fd
+        ).pipe(
+          Effect.map(({ rows, columns }) => ({
+            op: 'tcgetwinsize' as const,
+            rows,
+            columns,
+          }))
+        );
+      case 'tcsetwinsize':
+        return this.session.setTerminalWindowSize(
+          this.process,
+          request.fd,
+          request.rows,
+          request.columns
+        ).pipe(
+          Effect.map(({ rows, columns }) => ({
+            op: 'tcsetwinsize' as const,
+            rows,
+            columns,
+          }))
         );
       case 'socket':
         return this.session.createTcpSocket(this.process).pipe(

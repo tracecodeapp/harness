@@ -225,6 +225,8 @@ async function main(): Promise<void> {
     { op: 'isatty', fd: 0 },
     { op: 'tcgetpgrp', fd: 0 },
     { op: 'tcsetpgrp', fd: 0, pgid: 102 },
+    { op: 'tcgetwinsize', fd: 0 },
+    { op: 'tcsetwinsize', fd: 0, rows: 40, columns: 120 },
     { op: 'socket' },
     { op: 'bind', fd: 3, address: { host: '127.0.0.1', port: 8080 } },
     { op: 'listen', fd: 3, options: { backlog: 8, capacityChunks: 4 } },
@@ -450,6 +452,14 @@ async function main(): Promise<void> {
     { ok: true, value: { op: 'isatty', isTerminal: false } },
     { ok: true, value: { op: 'tcgetpgrp', pgid: 101 } },
     { ok: true, value: { op: 'tcsetpgrp', pgid: 102 } },
+    {
+      ok: true,
+      value: { op: 'tcgetwinsize', rows: 40, columns: 120 },
+    },
+    {
+      ok: true,
+      value: { op: 'tcsetwinsize', rows: 55, columns: 144 },
+    },
     { ok: true, value: { op: 'socket', fd: 3 } },
     {
       ok: true,

@@ -89,16 +89,38 @@ async function main(): Promise<void> {
         op: 'tcgetpgrp',
         fd: 0,
       });
+      const initialWindowSize = yield* shellSyscalls.dispatch({
+        op: 'tcgetwinsize',
+        fd: 0,
+      });
+      const resizedWindow = yield* shellSyscalls.dispatch({
+        op: 'tcsetwinsize',
+        fd: 0,
+        rows: 55,
+        columns: 144,
+      });
       assertCondition(
         ttyResult.ok &&
           ttyResult.value.op === 'isatty' &&
           ttyResult.value.isTerminal &&
           foregroundResult.ok &&
           foregroundResult.value.op === 'tcgetpgrp' &&
-          foregroundResult.value.pgid === shell.snapshot().pgid,
+          foregroundResult.value.pgid === shell.snapshot().pgid &&
+          initialWindowSize.ok &&
+          initialWindowSize.value.op === 'tcgetwinsize' &&
+          initialWindowSize.value.rows === 40 &&
+          initialWindowSize.value.columns === 120 &&
+          resizedWindow.ok &&
+          resizedWindow.value.op === 'tcsetwinsize' &&
+          resizedWindow.value.rows === 55 &&
+          resizedWindow.value.columns === 144 &&
+          terminal.snapshot().rows === 55 &&
+          terminal.snapshot().columns === 144,
         `Terminal inspection syscalls did not use kernel state: ${JSON.stringify({
           ttyResult,
           foregroundResult,
+          initialWindowSize,
+          resizedWindow,
         })}`
       );
       const ordinaryFd = yield* session.openFile(shell, 'ordinary.txt', {
@@ -113,15 +135,22 @@ async function main(): Promise<void> {
         op: 'tcgetpgrp',
         fd: ordinaryFd,
       });
+      const ordinaryWindowSize = yield* shellSyscalls.dispatch({
+        op: 'tcgetwinsize',
+        fd: ordinaryFd,
+      });
       assertCondition(
         ordinaryTty.ok &&
           ordinaryTty.value.op === 'isatty' &&
           !ordinaryTty.value.isTerminal &&
           !ordinaryForeground.ok &&
-          ordinaryForeground.error.code === 'ENOTTY',
+          ordinaryForeground.error.code === 'ENOTTY' &&
+          !ordinaryWindowSize.ok &&
+          ordinaryWindowSize.error.code === 'ENOTTY',
         `Non-terminal descriptors returned the wrong tty contract: ${JSON.stringify({
           ordinaryTty,
           ordinaryForeground,
+          ordinaryWindowSize,
         })}`
       );
       yield* shell.close(ordinaryFd);
@@ -227,8 +256,8 @@ async function main(): Promise<void> {
       const terminalSnapshot = session.terminalSnapshots()[0];
       assertCondition(
         terminalSnapshot?.name === '/dev/tty' &&
-          terminalSnapshot.columns === 120 &&
-          terminalSnapshot.rows === 40 &&
+          terminalSnapshot.columns === 144 &&
+          terminalSnapshot.rows === 55 &&
           terminalSnapshot.foregroundProcessGroupId === backgroundChild.snapshot().pgid,
         `Terminal snapshot is incomplete: ${JSON.stringify(terminalSnapshot)}`
       );
@@ -324,6 +353,7 @@ async function main(): Promise<void> {
     defaultSignalLineDiscipline: ['VINTR', 'VQUIT'],
     hangupSignalsForegroundGroup: true,
     terminalSyscallContract: true,
+    terminalWindowSizeSyscalls: true,
   }, null, 2));
 }
 
