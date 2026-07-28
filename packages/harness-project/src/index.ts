@@ -9259,7 +9259,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             kernelProcess.snapshot().pgid
           )
         );
-      } else {
+      } else if (
+        !parent ||
+        parent.pgid !== kernelProcess.snapshot().pgid
+      ) {
         await Effect.runPromise(
           authority.session.releaseTerminalForegroundToHost(
             terminal.id,
