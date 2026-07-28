@@ -440,15 +440,19 @@ function createProcessHost(
           { name: 'ENOSYS' }
         );
       }
-      const payload = hostRequest.payload;
-      if (payload !== undefined && !isRecord(payload)) {
+      const rawPayload = hostRequest.payload;
+      if (rawPayload !== undefined && !isRecord(rawPayload)) {
         throw Object.assign(
           new Error('TraceJVM POSIX syscall payload must be an object.'),
           { name: 'EINVAL' }
         );
       }
+      // tsup's declaration bundler does not preserve the predicate narrowing
+      // across this generic public request boundary. The runtime guard above
+      // establishes the record shape before the wire payload is spread.
+      const payload = (rawPayload ?? {}) as Record<string, unknown>;
       const result = await kernelSyscalls.dispatch({
-        ...(payload ?? {}),
+        ...payload,
         op: hostRequest.operation,
       });
       return unwrapKernelSyscallValue(hostRequest.operation, result);
