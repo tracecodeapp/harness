@@ -124,7 +124,7 @@ try {
           result.socketRun.exitCode !== 0 ||
           result.socketRun.stdout !== 'socket:pong\n' ||
           result.processRun.exitCode !== 0 ||
-          !/^process:\d+:true:true:true:1:true:false:java-child\n$/u.test(
+          !/^process:\d+:true:true:true:true:1:true:false:java-child\n$/u.test(
             result.processRun.stdout
           ) ||
           result.childFile !== 'java-child' ||
