@@ -1972,7 +1972,12 @@ function createTraceKernelApi(
   };
 
   const dispatchTerminal = <
-    Operation extends 'isatty' | 'tcgetpgrp' | 'tcsetpgrp'
+    Operation extends
+      | 'isatty'
+      | 'tcgetpgrp'
+      | 'tcsetpgrp'
+      | 'tcgetwinsize'
+      | 'tcsetwinsize'
   >(
     request: Extract<TraceKernelSyscallRequest, { op: Operation }>
   ): Extract<TraceKernelSyscallValue, { op: Operation }> => {
@@ -2034,6 +2039,23 @@ function createTraceKernelApi(
         dispatchTerminal({ op: 'tcgetpgrp', fd }).pgid,
       setForegroundProcessGroup: (pgid: number, fd = 0): number =>
         dispatchTerminal({ op: 'tcsetpgrp', fd, pgid }).pgid,
+      windowSize: (fd = 0): Readonly<{ rows: number; columns: number }> => {
+        const size = dispatchTerminal({ op: 'tcgetwinsize', fd });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      },
+      setWindowSize: (
+        rows: number,
+        columns: number,
+        fd = 0
+      ): Readonly<{ rows: number; columns: number }> => {
+        const size = dispatchTerminal({
+          op: 'tcsetwinsize',
+          fd,
+          rows,
+          columns,
+        });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      },
     }),
   });
 }
@@ -6151,6 +6173,38 @@ export async function runBrowserJavaScriptProjectRequest(
         result.value.op === 'isatty' &&
         result.value.isTerminal;
     };
+    const kernelDescriptorWindowSize = (
+      fd: number
+    ): { readonly rows?: number; readonly columns?: number } => {
+      if (!executionState.kernelSyscalls) {
+        return {
+          rows: request.terminal?.rows,
+          columns: request.terminal?.columns,
+        };
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: 'tcgetwinsize',
+        fd,
+      });
+      if (result.ok === false) {
+        if (result.error.code === 'ENOTTY') return {};
+        throw Object.assign(new Error(result.error.message), {
+          code: result.error.code,
+        });
+      }
+      if (result.value.op !== 'tcgetwinsize') {
+        throw Object.assign(
+          new Error(
+            `EPROTO: expected tcgetwinsize response, received ${result.value.op}`
+          ),
+          { code: 'EPROTO' }
+        );
+      }
+      return {
+        rows: result.value.rows,
+        columns: result.value.columns,
+      };
+    };
 
     const consoleApi = {
       log: (...values: unknown[]) => {
@@ -6187,8 +6241,16 @@ export async function runBrowserJavaScriptProjectRequest(
         fd,
         writable: true,
         isTTY: kernelDescriptorIsTerminal(fd),
-        columns: request.terminal?.columns,
-        rows: request.terminal?.rows,
+        get columns() {
+          return kernelDescriptorWindowSize(fd).columns;
+        },
+        get rows() {
+          return kernelDescriptorWindowSize(fd).rows;
+        },
+        getWindowSize: (): [number | undefined, number | undefined] => {
+          const size = kernelDescriptorWindowSize(fd);
+          return [size.columns, size.rows];
+        },
         getColorDepth: () => request.terminal?.colorLevel === 3
           ? 24
           : request.terminal?.colorLevel === 2

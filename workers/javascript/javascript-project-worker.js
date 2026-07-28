@@ -93,7 +93,9 @@ var OP_CODES = {
   seek: 48,
   processInfo: 49,
   processList: 50,
-  environment: 51
+  environment: 51,
+  tcgetwinsize: 52,
+  tcsetwinsize: 53
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -459,11 +461,17 @@ function encodeTraceKernelSyscallRequest(request) {
       break;
     case "isatty":
     case "tcgetpgrp":
+    case "tcgetwinsize":
       writer.i32(request.fd);
       break;
     case "tcsetpgrp":
       writer.i32(request.fd);
       writer.i32(request.pgid);
+      break;
+    case "tcsetwinsize":
+      writer.i32(request.fd);
+      writer.u32(request.rows);
+      writer.u32(request.columns);
       break;
     case "socket":
       break;
@@ -849,6 +857,14 @@ function decodeTraceKernelSyscallResult(bytes) {
     case "tcsetpgrp":
       value = { op: operation, pgid: reader.i32() };
       break;
+    case "tcgetwinsize":
+    case "tcsetwinsize":
+      value = {
+        op: operation,
+        rows: reader.u32(),
+        columns: reader.u32()
+      };
+      break;
     case "identity":
       value = {
         op: "identity",
@@ -1179,6 +1195,25 @@ var TraceKernelRuntimeFileClient = class {
       this.transport.dispatchSync({ op: "tcsetpgrp", fd: fd2, pgid }),
       "tcsetpgrp"
     ).pgid;
+  }
+  tcgetwinsize(fd2) {
+    const value = this.expectSuccess(
+      this.transport.dispatchSync({ op: "tcgetwinsize", fd: fd2 }),
+      "tcgetwinsize"
+    );
+    return { rows: value.rows, columns: value.columns };
+  }
+  tcsetwinsize(fd2, rows, columns) {
+    const value = this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "tcsetwinsize",
+        fd: fd2,
+        rows,
+        columns
+      }),
+      "tcsetwinsize"
+    );
+    return { rows: value.rows, columns: value.columns };
   }
   socket() {
     return this.expectSuccess(
@@ -7175,7 +7210,20 @@ function createTraceKernelApi(executionState) {
     terminal: Object.freeze({
       isatty: (fd2) => dispatchTerminal({ op: "isatty", fd: fd2 }).isTerminal,
       foregroundProcessGroup: (fd2 = 0) => dispatchTerminal({ op: "tcgetpgrp", fd: fd2 }).pgid,
-      setForegroundProcessGroup: (pgid, fd2 = 0) => dispatchTerminal({ op: "tcsetpgrp", fd: fd2, pgid }).pgid
+      setForegroundProcessGroup: (pgid, fd2 = 0) => dispatchTerminal({ op: "tcsetpgrp", fd: fd2, pgid }).pgid,
+      windowSize: (fd2 = 0) => {
+        const size = dispatchTerminal({ op: "tcgetwinsize", fd: fd2 });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      },
+      setWindowSize: (rows, columns, fd2 = 0) => {
+        const size = dispatchTerminal({
+          op: "tcsetwinsize",
+          fd: fd2,
+          rows,
+          columns
+        });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      }
     })
   });
 }
@@ -9935,6 +9983,36 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     });
     return result.ok && result.value.op === "isatty" && result.value.isTerminal;
   };
+  const kernelDescriptorWindowSize = (fd2) => {
+    if (!executionState.kernelSyscalls) {
+      return {
+        rows: request.terminal?.rows,
+        columns: request.terminal?.columns
+      };
+    }
+    const result = executionState.kernelSyscalls.dispatchSync({
+      op: "tcgetwinsize",
+      fd: fd2
+    });
+    if (result.ok === false) {
+      if (result.error.code === "ENOTTY") return {};
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    if (result.value.op !== "tcgetwinsize") {
+      throw Object.assign(
+        new Error(
+          `EPROTO: expected tcgetwinsize response, received ${result.value.op}`
+        ),
+        { code: "EPROTO" }
+      );
+    }
+    return {
+      rows: result.value.rows,
+      columns: result.value.columns
+    };
+  };
   const consoleApi = {
     log: (...values) => {
       writeDevice("/dev/stdout", `${formatConsoleValues(values)}
@@ -9971,8 +10049,16 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       fd: fd2,
       writable: true,
       isTTY: kernelDescriptorIsTerminal(fd2),
-      columns: request.terminal?.columns,
-      rows: request.terminal?.rows,
+      get columns() {
+        return kernelDescriptorWindowSize(fd2).columns;
+      },
+      get rows() {
+        return kernelDescriptorWindowSize(fd2).rows;
+      },
+      getWindowSize: () => {
+        const size = kernelDescriptorWindowSize(fd2);
+        return [size.columns, size.rows];
+      },
       getColorDepth: () => request.terminal?.colorLevel === 3 ? 24 : request.terminal?.colorLevel === 2 ? 8 : request.terminal?.colorLevel === 1 ? 4 : 1,
       hasColors: () => (request.terminal?.colorLevel ?? 0) > 0,
       get closed() {
