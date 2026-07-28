@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness-browser",
-  "version": "0.13.0-alpha.0",
+  "version": "0.13.0-beta1",
   "description": "Browser harness factory and runtime clients for TraceCode.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness-native",
-  "version": "0.13.0-alpha.0",
+  "version": "0.13.0-beta1",
   "type": "module",
   "description": "Native Node runtime clients and project runners for TraceCode harness batch execution.",
   "homepage": "https://tracecode.app",
