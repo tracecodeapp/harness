@@ -284,6 +284,10 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       ].join('\n'),
     }],
     traceJVM: {
+      // This conformance source intentionally exercises the entire adapter
+      // surface and Firefox needs longer than the product's normal 20s command
+      // budget to compile it in the browser.
+      timeoutMs: 60_000,
       createClient(context) {
         workerCount += 1;
         return new TraceJVMWorkerClient({
