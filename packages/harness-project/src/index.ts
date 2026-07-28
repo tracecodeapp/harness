@@ -9254,6 +9254,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             kernelProcess.snapshot().pgid
           )
         );
+      } else {
+        await Effect.runPromise(
+          authority.session.releaseTerminalForegroundToHost(
+            terminal.id,
+            kernelProcess.snapshot().pgid
+          )
+        );
       }
     }
     const hostStandardIo =
