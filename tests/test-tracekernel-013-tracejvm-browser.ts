@@ -143,7 +143,7 @@ try {
           result.controlsRun.exitCode !== 0 ||
           result.controlsRun.stdout !== 'controls:true:true:true:true\n' ||
           result.terminalControlsRun.exitCode !== 0 ||
-          result.terminalControlsRun.stdout !== 'terminal:true\n' ||
+          result.terminalControlsRun.stdout !== 'terminal:true:true\n' ||
           result.watchdogExpiry.exitCode !== 137 ||
           result.childFile !== 'java-child' ||
           result.interrupted.exitCode !== 130 ||

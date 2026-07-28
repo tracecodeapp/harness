@@ -67,10 +67,19 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '    if (args.length > 0 && args[0].equals("terminal-controls")) {',
         '      var identity = io.tracecode.tracekernel.TraceKernel.currentProcess();',
         '      long foreground = io.tracecode.tracekernel.TraceKernel.terminalForegroundProcessGroup(0);',
+        '      var initialSize = io.tracecode.tracekernel.TraceKernel.terminalWindowSize(1);',
+        '      var resized = io.tracecode.tracekernel.TraceKernel.setTerminalWindowSize(',
+        '          2, 66, 166);',
         '      long transferred = io.tracecode.tracekernel.TraceKernel.setTerminalForegroundProcessGroup(',
         '          0, identity.processGroupId());',
         '      System.out.println("terminal:" + (foreground == identity.processGroupId()',
-        '          && transferred == identity.processGroupId()));',
+        '          && transferred == identity.processGroupId())',
+        '          + ":" + (initialSize.rows() == 55',
+        '          && initialSize.columns() == 144',
+        '          && resized.rows() == 66',
+        '          && resized.columns() == 166',
+        '          && io.tracecode.tracekernel.TraceKernel.terminalWindowSize(0)',
+        '              .equals(resized)));',
         '      return;',
         '    }',
         '    if (args.length > 0 && args[0].equals("controls")) {',
@@ -445,9 +454,11 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     const controlsRun = await workspace.runCommand(
       'java -cp build Main controls'
     );
-    const terminalControlsRun = await workspace
-      .createTerminalSession()
-      .run('java -cp build Main terminal-controls');
+    const terminalSession = workspace.createTerminalSession();
+    terminalSession.resize(144, 55);
+    const terminalControlsRun = await terminalSession.run(
+      'java -cp build Main terminal-controls'
+    );
     const watchdogExpiry = await workspace.runCommand(
       'java -cp build Main watchdog-expire'
     );
