@@ -9,6 +9,9 @@ import {
   encodeTraceKernelSyscallResult,
   makeTraceKernelHost,
   makeTraceKernelSharedSyscallChannel,
+  TRACEKERNEL_SYSCALL_OPERATION_CODES,
+  TRACEKERNEL_SYSCALL_WIRE_SCHEMA,
+  TRACEKERNEL_SYSCALL_WIRE_VERSION,
   TraceKernelSharedSyscallServer,
   TraceKernelSyscallDispatcher,
   type TraceKernelRuntimeProvider,
@@ -166,6 +169,28 @@ function makeFixtureWorker(
 }
 
 async function main(): Promise<void> {
+  const operationCodes = Object.values(
+    TRACEKERNEL_SYSCALL_OPERATION_CODES
+  );
+  assertCondition(
+    TRACEKERNEL_SYSCALL_WIRE_SCHEMA === 'tracekernel.syscall.v1' &&
+      TRACEKERNEL_SYSCALL_WIRE_VERSION === 1 &&
+      operationCodes.length === 53 &&
+      new Set(operationCodes).size === operationCodes.length &&
+      operationCodes.every((code, index) => code === index + 1),
+    'The public syscall wire identity or append-only operation assignments changed.'
+  );
+  const identityFrame = encodeTraceKernelSyscallRequest({ op: 'identity' });
+  assertCondition(
+    new DataView(
+      identityFrame.buffer,
+      identityFrame.byteOffset,
+      identityFrame.byteLength
+    ).getUint32(0, true) ===
+      (0x544b5300 | TRACEKERNEL_SYSCALL_WIRE_VERSION),
+    'The frame magic no longer carries the public syscall wire version.'
+  );
+
   const requests: readonly TraceKernelSyscallRequest[] = [
     {
       op: 'pipe',
@@ -828,6 +853,9 @@ async function main(): Promise<void> {
 
   console.log(JSON.stringify({
     schema: 'tracekernel-013-transport-v1',
+    wireSchema: TRACEKERNEL_SYSCALL_WIRE_SCHEMA,
+    wireVersion: TRACEKERNEL_SYSCALL_WIRE_VERSION,
+    appendOnlyOperationAssignments: operationCodes.length,
     binaryCodecCoversEverySyscall: true,
     sharedFramesAreBounded: true,
     synchronousCallsCrossDedicatedWorkers: true,

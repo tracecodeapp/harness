@@ -1022,8 +1022,8 @@ CPU-bound worker code by changing process-table metadata. TraceKernel must add a
 runtime lease suspend/resume capability, and each language adapter must prove
 that capability, before exposing those signals as supported.
 
-CPU-bound compiled-runtime asynchronous signal-handler injection, the Java
-managed resize-notification surface, additional termios modes, positive socket
+CPU-bound compiled-runtime asynchronous signal-handler injection, additional
+termios modes, positive socket
 deadlines, UDP, broader DNS/address-family behavior, and Unix-domain sockets
 remain later subsystem slices. TraceJVM attaches through the same
 session/process/descriptor contracts rather than adapting the legacy CheerpJ

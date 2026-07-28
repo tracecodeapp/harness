@@ -15,11 +15,28 @@ import type {
 } from './syscalls';
 import type { TraceKernelStat } from './vfs';
 
-const FRAME_MAGIC = 0x544b5301;
+/**
+ * Version of the bounded binary syscall frame used across synchronous runtime
+ * worker boundaries. The low byte of every frame magic carries this value.
+ */
+export const TRACEKERNEL_SYSCALL_WIRE_VERSION = 1 as const;
+
+/** Stable name for the public 0.13 syscall frame contract. */
+export const TRACEKERNEL_SYSCALL_WIRE_SCHEMA =
+  'tracekernel.syscall.v1' as const;
+
+const FRAME_MAGIC =
+  0x544b5300 | TRACEKERNEL_SYSCALL_WIRE_VERSION;
 const FRAME_REQUEST = 1;
 const FRAME_RESPONSE = 2;
 
-const OP_CODES = {
+/**
+ * Append-only operation assignments for syscall wire version 1.
+ *
+ * Changing an existing number or payload shape requires a new wire version;
+ * adding an operation appends a new number and remains discoverable here.
+ */
+export const TRACEKERNEL_SYSCALL_OPERATION_CODES = Object.freeze({
   open: 1,
   read: 2,
   write: 3,
@@ -73,7 +90,9 @@ const OP_CODES = {
   environment: 51,
   tcgetwinsize: 52,
   tcsetwinsize: 53,
-} as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
+} as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>);
+
+const OP_CODES = TRACEKERNEL_SYSCALL_OPERATION_CODES;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
 

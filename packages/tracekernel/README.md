@@ -55,3 +55,34 @@ The browser JavaScript integration now maps the foundational event-driven
 MessagePort request path for blocking socket operations while synchronous
 filesystem APIs retain the SharedArrayBuffer path; both transports terminate at
 the same host-owned syscall dispatcher.
+
+## Public compatibility boundary
+
+The package root is the only supported code import. Deep imports into `src/` or
+`dist/` are private implementation details. Both ESM and CommonJS consumers use
+the same root export surface.
+
+Runtime adapters can identify the bounded binary protocol through:
+
+- `TRACEKERNEL_SYSCALL_WIRE_SCHEMA`
+- `TRACEKERNEL_SYSCALL_WIRE_VERSION`
+- `TRACEKERNEL_SYSCALL_OPERATION_CODES`
+
+The current schema is `tracekernel.syscall.v1`. Wire version 1 encodes its
+version in the low byte of the frame magic. Operation
+numbers are append-only for that version. Renumbering an operation or changing
+an existing payload shape requires a new wire version; a decoder rejects a
+different version with `EPROTO`. Effect values and errors remain host-local:
+the wire carries plain request/result data and POSIX-style error codes.
+
+## 0.13 boundary
+
+0.13.0 covers authoritative sessions, process lifecycle and topology,
+process-owned descriptors, TKFS, pipes, watches, terminals, watchdogs, local
+TCP, structured HTTP over the same TCP namespace, runtime leases, and the
+JavaScript/TypeScript, Python, C++, C#, and TraceJVM adapter contracts.
+
+Suspended jobs, CPU-bound asynchronous signal injection for compiled runtimes,
+positive socket deadlines, UDP, Unix-domain sockets, broader DNS/address-family
+behavior, additional termios modes, arbitrary external TCP, in-kernel TLS, and
+HTTP/2 are not 0.13.0 compatibility claims.

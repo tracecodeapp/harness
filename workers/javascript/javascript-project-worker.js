@@ -39,10 +39,11 @@ function decodeTraceKernelWatchEvent(frame) {
 }
 
 // packages/tracekernel/src/transport.ts
-var FRAME_MAGIC = 1414222593;
+var TRACEKERNEL_SYSCALL_WIRE_VERSION = 1;
+var FRAME_MAGIC = 1414222592 | TRACEKERNEL_SYSCALL_WIRE_VERSION;
 var FRAME_REQUEST = 1;
 var FRAME_RESPONSE = 2;
-var OP_CODES = {
+var TRACEKERNEL_SYSCALL_OPERATION_CODES = Object.freeze({
   open: 1,
   read: 2,
   write: 3,
@@ -96,7 +97,8 @@ var OP_CODES = {
   environment: 51,
   tcgetwinsize: 52,
   tcsetwinsize: 53
-};
+});
+var OP_CODES = TRACEKERNEL_SYSCALL_OPERATION_CODES;
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
     code,
@@ -1672,7 +1674,7 @@ var package_default = {
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
     "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
-    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-runtime-recovery.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-controlled-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-tkfs-backing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-adversarial-teardown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-job-control.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
+    "test:tracekernel-013": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-public-package.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-runtime-recovery.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-controlled-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-tkfs-backing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-adversarial-teardown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-workspace-job-control.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-transport.ts",
     "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-stdio.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
     "test:tracekernel-013-python-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-python-browser.ts",
     "test:tracekernel-013-csharp-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-csharp-browser.ts",
