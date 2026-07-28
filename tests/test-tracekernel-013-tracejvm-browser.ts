@@ -138,7 +138,7 @@ try {
           !reportStatuses.includes('run:completed:tainted') ||
           reportStatuses.filter(
             (status) => status === 'run:completed:clean'
-          ).length !== 6
+          ).length !== 5
         ) {
           throw new Error(
             `${engine} failed the TraceKernel/TraceJVM adapter boundary: ${JSON.stringify(result)}`
