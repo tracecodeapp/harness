@@ -140,7 +140,8 @@ async function testKernelLeaseUsesFreshWorkers(): Promise<void> {
           assertCondition(
             runRequest.mainClass === 'example.Main' &&
               runRequest.args?.[0] === 'argument' &&
-              runRequest.systemProperties?.mode === 'test',
+              runRequest.systemProperties?.mode === 'test' &&
+              runRequest.systemProperties?.['user.dir'] === '/workspace/service',
             `java process inputs changed: ${JSON.stringify(runRequest)}`
           );
           return completed({ stdout: 'argument\n' });

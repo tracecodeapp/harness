@@ -526,11 +526,13 @@ async function executeWithClient(
     classpath: available.filter((file) => file.path.endsWith('.jar')),
     mainClass,
     args: request.args,
-    systemProperties:
-      typeof options.systemProperties === 'object' &&
+    systemProperties: {
+      ...(typeof options.systemProperties === 'object' &&
       options.systemProperties !== null
         ? (options.systemProperties as Record<string, string>)
-        : undefined,
+        : {}),
+      'user.dir': request.cwd,
+    },
     signal,
     onStdout: emitOutput(onEvent, 'stdout'),
     onStderr: emitOutput(onEvent, 'stderr'),
