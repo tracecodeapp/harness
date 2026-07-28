@@ -60,6 +60,8 @@ export interface TraceJVMProjectClientContext {
    * generic Worker host and does not expose TraceKernel transport internals.
    */
   readonly host?: TraceJVMProjectHost;
+  /** Kernel owns fd 0, 1, and 2 for this invocation. */
+  readonly hostStandardDescriptors: boolean;
 }
 
 export type TraceJVMProjectClientFactory =
@@ -71,8 +73,8 @@ export const TRACEJVM_PROJECT_CAPABILITIES = Object.freeze({
   provider: 'tracejvm',
   javaVersion: '23',
   filesystem: 'live-kernel-syscalls',
-  descriptorStdio: false,
-  terminalStdin: false,
+  descriptorStdio: true,
+  terminalStdin: true,
   sockets: false,
   workerIsolation: 'per-invocation',
 } as const);
@@ -613,6 +615,11 @@ export function createTraceJVMProjectRunner(
           cwd: request.cwd,
           process: request.process,
           host: createProcessHost(request),
+          hostStandardDescriptors:
+            request.kernelSyscalls !== undefined &&
+            request.process?.descriptors?.includes(0) === true &&
+            request.process.descriptors?.includes(1) === true &&
+            request.process.descriptors?.includes(2) === true,
         }));
         if (
           (typeof client !== 'object' && typeof client !== 'function') ||

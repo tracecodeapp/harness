@@ -2,6 +2,9 @@ import {
   TraceJVMWorkerClient,
   type TraceJVMWorkerLike,
 } from '@tracecode/tracejvm';
+import {
+  createRuntimeCommandStdinPipeFromText,
+} from '../../packages/harness-core/src/index';
 import { createBrowserProjectWorkspace } from '../../packages/harness-browser/src/project';
 
 declare global {
@@ -10,6 +13,7 @@ declare global {
     firstRun: { stdout: string; stderr: string; exitCode: number };
     secondRun: { stdout: string; stderr: string; exitCode: number };
     filesystemRun: { stdout: string; stderr: string; exitCode: number };
+    stdinRun: { stdout: string; stderr: string; exitCode: number };
     sharedFile: string;
     randomFile: string;
     interrupted: {
@@ -46,6 +50,11 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         'public final class Main {',
         '  private static int count = 0;',
         '  public static void main(String[] args) throws Exception {',
+        '    if (args.length > 0 && args[0].equals("stdin")) {',
+        '      byte[] input = System.in.readNBytes(5);',
+        '      System.out.println("stdin:" + new String(input, java.nio.charset.StandardCharsets.UTF_8));',
+        '      return;',
+        '    }',
         '    if (args.length > 0 && args[0].equals("filesystem")) {',
         '      java.nio.file.Path path = java.nio.file.Path.of("shared.txt");',
         '      String prior = java.nio.file.Files.readString(path);',
@@ -112,6 +121,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
               wasmUrl: '/tracejvm/bjvm_main.wasm',
             },
             workingDirectory: context.cwd,
+            hostStandardDescriptors: context.hostStandardDescriptors,
             runtimeProfile: 'core',
             retirementAfterExecutions: 1,
           },
@@ -154,6 +164,12 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     const sharedFile = await workspace.readFile('shared.txt');
     const randomFile = await workspace.readFile('random.bin');
     await workspace.deleteFile('random-link.bin');
+    const stdinRun = await workspace.runCommand(
+      'java -cp build Main stdin',
+      {
+        stdinPipe: createRuntimeCommandStdinPipeFromText('hello'),
+      }
+    );
 
     const controller = new AbortController();
     let resolveReady!: () => void;
@@ -199,6 +215,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       firstRun,
       secondRun,
       filesystemRun,
+      stdinRun,
       sharedFile,
       randomFile,
       interrupted,

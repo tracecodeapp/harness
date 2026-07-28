@@ -119,15 +119,17 @@ try {
             'fs:js-before-java:nested:true:abZd:3:random.bin:true:true\n' ||
           result.sharedFile !== 'js-before-java|java' ||
           result.randomFile !== 'abZd' ||
+          result.stdinRun.exitCode !== 0 ||
+          result.stdinRun.stdout !== 'stdin:hello\n' ||
           result.interrupted.exitCode !== 130 ||
           result.interrupted.stderr !== '' ||
           result.restarted.exitCode !== 0 ||
           result.restarted.stdout !== '1:missing:missing:restarted\n' ||
-          result.workerCount !== 6 ||
+          result.workerCount !== 7 ||
           !reportStatuses.includes('compile:completed:not-applicable') ||
           reportStatuses.filter(
             (status) => status === 'run:completed:clean'
-          ).length !== 4
+          ).length !== 5
         ) {
           throw new Error(
             `${engine} failed the TraceKernel/TraceJVM adapter boundary: ${JSON.stringify(result)}`

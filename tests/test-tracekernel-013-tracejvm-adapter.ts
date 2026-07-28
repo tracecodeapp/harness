@@ -331,6 +331,7 @@ async function testProcessHostMapsGenericPosixCalls(): Promise<void> {
     createClient(context) {
       assertCondition(
         context.cwd === '/workspace/service' &&
+          context.hostStandardDescriptors === true &&
           context.process?.pid === 42 &&
           context.host !== undefined,
         `TraceJVM client did not receive its process-scoped host: ${JSON.stringify(context.process)}`

@@ -1346,7 +1346,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
-      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner, { kernelSyscalls: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
+      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, {
         recordExecutablePath: (path) => this.registerVirtualExecutable({ path, kind: 'cpp' }),
         entrypoint: this.entrypoint,
@@ -2414,7 +2414,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       request.runtime === 'javascript' ||
       request.runtime === 'cpp' ||
       request.runtime === 'csharp' ||
-      request.runtime === 'python';
+      request.runtime === 'python' ||
+      request.runtime === 'java';
     const stdinPipe = !descriptorStdio && request.stdio?.stdin === 'pipe'
       ? createRuntimeCommandStdinPipe()
       : !descriptorStdio && request.stdio?.stdin === 'inherit'
