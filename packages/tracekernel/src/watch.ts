@@ -10,9 +10,17 @@ import type {
 import { TraceKernelBadFileDescriptorError } from './errors';
 
 export type TraceKernelWatchEventType = 'change' | 'rename' | 'overflow';
+export type TraceKernelWatchEntryOperation = 'create' | 'delete';
 
 export interface TraceKernelWatchEvent {
   readonly eventType: TraceKernelWatchEventType;
+  /**
+   * Exact namespace mutation behind a Node-compatible `rename` event.
+   *
+   * Older TKW1 producers may omit this field. Consumers that need exact
+   * create/delete semantics must treat an omitted value as ambiguous.
+   */
+  readonly entryOperation?: TraceKernelWatchEntryOperation;
   /** Absolute path in the session namespace. Empty only for overflow. */
   readonly path: string;
 }
@@ -75,7 +83,11 @@ export function encodeTraceKernelWatchEvent(
   frame[4] = event.eventType === 'change'
     ? 1
     : event.eventType === 'rename'
-      ? 2
+      ? event.entryOperation === 'create'
+        ? 4
+        : event.entryOperation === 'delete'
+          ? 5
+          : 2
       : 3;
   new DataView(frame.buffer).setUint32(5, path.byteLength, true);
   frame.set(path, WATCH_FRAME_HEADER_BYTES);
@@ -94,7 +106,7 @@ export function decodeTraceKernelWatchEvent(
     });
   }
   const type = frame[4];
-  if (type !== 1 && type !== 2 && type !== 3) {
+  if (type !== 1 && type !== 2 && type !== 3 && type !== 4 && type !== 5) {
     throw Object.assign(
       new Error(`EPROTO: invalid TraceKernel watch event type ${type}`),
       { code: 'EPROTO' }
@@ -111,7 +123,16 @@ export function decodeTraceKernelWatchEvent(
     });
   }
   return Object.freeze({
-    eventType: type === 1 ? 'change' : type === 2 ? 'rename' : 'overflow',
+    eventType: type === 1
+      ? 'change'
+      : type === 2 || type === 4 || type === 5
+        ? 'rename'
+        : 'overflow',
+    ...(type === 4
+      ? { entryOperation: 'create' as const }
+      : type === 5
+        ? { entryOperation: 'delete' as const }
+        : {}),
     path: new TextDecoder().decode(frame.subarray(WATCH_FRAME_HEADER_BYTES)),
   });
 }
@@ -362,8 +383,19 @@ export class TraceKernelWatchRegistry {
       this.watches.values(),
       (watch) => Effect.forEach(
         mutation.paths,
-        (path) => watch.matches(path)
-          ? watch.publish({ eventType: mutation.eventType, path })
+        (path, index) => watch.matches(path)
+          ? watch.publish({
+              eventType: mutation.eventType,
+              ...(mutation.eventType === 'rename'
+                ? {
+                    entryOperation: this.entryOperation(
+                      mutation.operation,
+                      index
+                    ),
+                  }
+                : {}),
+              path,
+            })
           : Effect.void,
         { concurrency: 1, discard: true }
       ),
@@ -373,5 +405,27 @@ export class TraceKernelWatchRegistry {
 
   activeCount(): number {
     return this.watches.size;
+  }
+
+  private entryOperation(
+    operation: TraceKernelFileSystemMutationOperation,
+    pathIndex: number
+  ): TraceKernelWatchEntryOperation | undefined {
+    switch (operation) {
+      case 'mkdir':
+      case 'write':
+      case 'link':
+      case 'symlink':
+      case 'open-create':
+        return 'create';
+      case 'rmdir':
+      case 'unlink':
+      case 'clear':
+        return 'delete';
+      case 'rename':
+        return pathIndex === 0 ? 'delete' : 'create';
+      default:
+        return undefined;
+    }
   }
 }

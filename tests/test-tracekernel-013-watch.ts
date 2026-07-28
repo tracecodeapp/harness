@@ -108,6 +108,7 @@ async function main(): Promise<void> {
       const createEvent = decodeTraceKernelWatchEvent(first.value.bytes);
       assertCondition(
         createEvent.eventType === 'rename' &&
+          createEvent.entryOperation === 'create' &&
           createEvent.path === '/workspace/from-peer.txt',
         `watch did not report peer creation: ${JSON.stringify(createEvent)}`
       );
@@ -127,6 +128,62 @@ async function main(): Promise<void> {
         changed.value.op === 'read' &&
           decodeTraceKernelWatchEvent(changed.value.bytes).eventType === 'change',
         `watch did not distinguish content mutation: ${JSON.stringify(changed)}`
+      );
+
+      success(yield* writerSyscalls.dispatch({
+        op: 'rename',
+        sourcePath: '/workspace/from-peer.txt',
+        destinationPath: '/workspace/renamed-by-peer.txt',
+      }));
+      const renameSource = yield* watcherSyscalls.dispatch({
+        op: 'read',
+        fd: watched.value.fd,
+        maxBytes: 16 * 1024 + 9,
+      });
+      const renameDestination = yield* watcherSyscalls.dispatch({
+        op: 'read',
+        fd: watched.value.fd,
+        maxBytes: 16 * 1024 + 9,
+      });
+      success(renameSource);
+      success(renameDestination);
+      const renameSourceEvent = renameSource.value.op === 'read'
+        ? decodeTraceKernelWatchEvent(renameSource.value.bytes)
+        : undefined;
+      const renameDestinationEvent = renameDestination.value.op === 'read'
+        ? decodeTraceKernelWatchEvent(renameDestination.value.bytes)
+        : undefined;
+      assertCondition(
+        renameSourceEvent?.eventType === 'rename' &&
+          renameSourceEvent.entryOperation === 'delete' &&
+          renameSourceEvent.path === '/workspace/from-peer.txt' &&
+          renameDestinationEvent?.eventType === 'rename' &&
+          renameDestinationEvent.entryOperation === 'create' &&
+          renameDestinationEvent.path === '/workspace/renamed-by-peer.txt',
+        `watch did not preserve exact rename endpoint semantics: ${JSON.stringify({
+          renameSourceEvent,
+          renameDestinationEvent,
+        })}`
+      );
+
+      success(yield* writerSyscalls.dispatch({
+        op: 'unlink',
+        path: '/workspace/renamed-by-peer.txt',
+      }));
+      const deleted = yield* watcherSyscalls.dispatch({
+        op: 'read',
+        fd: watched.value.fd,
+        maxBytes: 16 * 1024 + 9,
+      });
+      success(deleted);
+      const deleteEvent = deleted.value.op === 'read'
+        ? decodeTraceKernelWatchEvent(deleted.value.bytes)
+        : undefined;
+      assertCondition(
+        deleteEvent?.eventType === 'rename' &&
+          deleteEvent.entryOperation === 'delete' &&
+          deleteEvent.path === '/workspace/renamed-by-peer.txt',
+        `watch did not report exact peer deletion: ${JSON.stringify(deleteEvent)}`
       );
 
       const constrained = yield* watcherSyscalls.dispatch({
@@ -179,6 +236,8 @@ async function main(): Promise<void> {
     processOwnedWatchDescriptors: true,
     crossProcessNotifications: true,
     createVsChangeSemantics: true,
+    exactCreateDeleteSemantics: true,
+    exactRenameEndpointSemantics: true,
     boundedQueueOverflowIsExplicit: true,
     eventDrivenPollReadiness: true,
     descriptorCloseStopsDelivery: true,

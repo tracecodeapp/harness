@@ -975,7 +975,11 @@ public static class KernelFileSystem
     }
 }
 
-public sealed record KernelFileWatchEvent(string EventType, string Path);
+public sealed record KernelFileWatchEvent(
+    string EventType,
+    string Path,
+    string? EntryOperation = null
+);
 
 [SupportedOSPlatform("browser")]
 public sealed class KernelFileWatcher : IDisposable
@@ -1032,7 +1036,7 @@ public sealed class KernelFileWatcher : IDisposable
             );
         }
         byte eventCode = header[4];
-        if (eventCode is < 1 or > 3)
+        if (eventCode is < 1 or > 5)
         {
             throw new TraceKernelException(
                 "EPROTO",
@@ -1055,10 +1059,15 @@ public sealed class KernelFileWatcher : IDisposable
         return new KernelFileWatchEvent(
             eventCode == 1
                 ? "change"
-                : eventCode == 2
+                : eventCode is 2 or 4 or 5
                     ? "rename"
                     : "overflow",
-            path
+            path,
+            eventCode == 4
+                ? "create"
+                : eventCode == 5
+                    ? "delete"
+                    : null
         );
     }
 

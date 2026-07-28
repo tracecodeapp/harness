@@ -541,6 +541,7 @@ async function main(): Promise<void> {
                 '    && watchExit.ExitCode == 0',
                 '    && watchedEvent != null',
                 '    && watchedEvent.EventType == "rename"',
+                '    && watchedEvent.EntryOperation == "create"',
                 '    && File.ReadAllText("watch-from-child.txt") == "watched"',
                 '    && value.Length == 5',
                 '    && value[0] == 0',
@@ -764,6 +765,7 @@ async function main(): Promise<void> {
         symbolicLinks: true,
         hardLinks: true,
         filesystemWatchDescriptors: true,
+        exactWatchEntrySemantics: true,
       }));
     } finally {
       await browser.close();

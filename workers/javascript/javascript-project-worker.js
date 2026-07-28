@@ -15,7 +15,7 @@ function decodeTraceKernelWatchEvent(frame) {
     });
   }
   const type = frame[4];
-  if (type !== 1 && type !== 2 && type !== 3) {
+  if (type !== 1 && type !== 2 && type !== 3 && type !== 4 && type !== 5) {
     throw Object.assign(
       new Error(`EPROTO: invalid TraceKernel watch event type ${type}`),
       { code: "EPROTO" }
@@ -32,7 +32,8 @@ function decodeTraceKernelWatchEvent(frame) {
     });
   }
   return Object.freeze({
-    eventType: type === 1 ? "change" : type === 2 ? "rename" : "overflow",
+    eventType: type === 1 ? "change" : type === 2 || type === 4 || type === 5 ? "rename" : "overflow",
+    ...type === 4 ? { entryOperation: "create" } : type === 5 ? { entryOperation: "delete" } : {},
     path: new TextDecoder().decode(frame.subarray(WATCH_FRAME_HEADER_BYTES))
   });
 }
@@ -88,7 +89,11 @@ var OP_CODES = {
   identity: 44,
   isatty: 45,
   tcgetpgrp: 46,
-  tcsetpgrp: 47
+  tcsetpgrp: 47,
+  seek: 48,
+  processInfo: 49,
+  processList: 50,
+  environment: 51
 };
 var OPERATIONS_BY_CODE = new Map(
   Object.entries(OP_CODES).map(([operation, code]) => [
@@ -318,6 +323,48 @@ function readAddress(reader) {
     port: reader.u32()
   });
 }
+function readProcessPhase(reader) {
+  const code = reader.u8();
+  if (code < 1 || code > 5) {
+    throw new TraceKernelTransportError(
+      "EPROTO",
+      `invalid process phase code ${code}`
+    );
+  }
+  return code === 1 ? "created" : code === 2 ? "starting" : code === 3 ? "running" : code === 4 ? "exiting" : "exited";
+}
+function readProcessInfo(reader) {
+  const pid = reader.i32();
+  const ppid = reader.i32();
+  const pgid = reader.i32();
+  const sid = reader.i32();
+  const phase = readProcessPhase(reader);
+  const runtime = reader.string();
+  const command = reader.string();
+  const argumentCount = reader.u32();
+  const args = [];
+  for (let index = 0; index < argumentCount; index += 1) {
+    args.push(reader.string());
+  }
+  const hasStartedAt = reader.u8();
+  if (hasStartedAt > 1) {
+    throw new TraceKernelTransportError(
+      "EPROTO",
+      `invalid process start-time flag ${hasStartedAt}`
+    );
+  }
+  return Object.freeze({
+    pid,
+    ppid,
+    pgid,
+    sid,
+    phase,
+    runtime,
+    command,
+    args: Object.freeze(args),
+    ...hasStartedAt ? { startedAt: reader.f64() } : {}
+  });
+}
 function writeSpawnStdioMode(writer, mode) {
   writer.u8(
     mode === void 0 ? 0 : mode === "pipe" ? 1 : mode === "inherit" ? 2 : 3
@@ -393,8 +440,12 @@ function encodeTraceKernelSyscallRequest(request) {
       writer.u8(request.noHang ? 1 : 0);
       break;
     case "identity":
+    case "processInfo":
       writer.u8(request.pid === void 0 ? 0 : 1);
       if (request.pid !== void 0) writer.i32(request.pid);
+      break;
+    case "processList":
+    case "environment":
       break;
     case "kill":
       writer.i32(request.pid);
@@ -472,6 +523,13 @@ function encodeTraceKernelSyscallRequest(request) {
       writer.byteArray(request.bytes);
       writer.u8(request.position === void 0 ? 0 : 1);
       if (request.position !== void 0) writer.f64(request.position);
+      break;
+    case "seek":
+      writer.i32(request.fd);
+      writer.f64(request.offset);
+      writer.u8(
+        request.whence === "set" ? 1 : request.whence === "current" ? 2 : 3
+      );
       break;
     case "close":
     case "dup":
@@ -800,6 +858,36 @@ function decodeTraceKernelSyscallResult(bytes) {
         sid: reader.i32()
       };
       break;
+    case "processInfo":
+      value = {
+        op: "processInfo",
+        process: readProcessInfo(reader)
+      };
+      break;
+    case "processList": {
+      const processCount = reader.u32();
+      const processes = [];
+      for (let index = 0; index < processCount; index += 1) {
+        processes.push(readProcessInfo(reader));
+      }
+      value = {
+        op: "processList",
+        processes: Object.freeze(processes)
+      };
+      break;
+    }
+    case "environment": {
+      const entryCount = reader.u32();
+      const env = {};
+      for (let index = 0; index < entryCount; index += 1) {
+        env[reader.string()] = reader.string();
+      }
+      value = {
+        op: "environment",
+        env: Object.freeze(env)
+      };
+      break;
+    }
     case "bind":
       value = { op: "bind", address: readAddress(reader) };
       break;
@@ -854,6 +942,9 @@ function decodeTraceKernelSyscallResult(bytes) {
       break;
     case "write":
       value = { op: "write", bytesWritten: reader.u32() };
+      break;
+    case "seek":
+      value = { op: "seek", offset: reader.f64() };
       break;
     case "stat":
       value = { op: "stat", stat: readStat(reader) };
@@ -1191,6 +1282,17 @@ var TraceKernelRuntimeFileClient = class {
       "write"
     ).bytesWritten;
   }
+  seek(fd2, offset, whence) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "seek",
+        fd: fd2,
+        offset,
+        whence
+      }),
+      "seek"
+    ).offset;
+  }
   closeDescriptor(fd2) {
     this.expectSuccess(
       this.transport.dispatchSync({ op: "close", fd: fd2 }),
@@ -1525,6 +1627,7 @@ var package_default = {
     "test:tracekernel-013-browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-stdio.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-javascript-browser.ts",
     "test:tracekernel-013-python-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-python-browser.ts",
     "test:tracekernel-013-csharp-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-csharp-browser.ts",
+    "test:tracekernel-013-tracejvm-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-tracejvm-browser.ts",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
@@ -1544,7 +1647,7 @@ var package_default = {
     "test:typescript-project-libs-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts --check",
     "test:java-sync": "pnpm generate:java-helper --check && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-harness-sync.ts",
     "test:python-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime.ts",
-    "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts",
+    "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-013-tracejvm-adapter.ts",
     "test:csharp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-project-fs-parity.ts",
     "test:csharp-worker-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-client-http.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-browser.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-lifecycle-browser.ts",
     "test:cpp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-runtime.ts",
@@ -1603,6 +1706,7 @@ var package_default = {
     "check:browser-project-performance": "node scripts/check-browser-project-performance.mjs"
   },
   devDependencies: {
+    "@tracecode/tracejvm": "link:../tracejvm",
     "@types/node": "^20.0.0",
     esbuild: "0.27.3",
     playwright: "^1.53.2",
@@ -1610,6 +1714,14 @@ var package_default = {
     tsup: "^8.5.0",
     tsx: "^4.21.0",
     typescript: "^5.0.0"
+  },
+  peerDependencies: {
+    "@tracecode/tracejvm": ">=0.1.0"
+  },
+  peerDependenciesMeta: {
+    "@tracecode/tracejvm": {
+      optional: true
+    }
   },
   pnpm: {
     overrides: {

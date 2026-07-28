@@ -737,9 +737,12 @@ published only after the authoritative namespace mutation commits, so host,
 editor, sibling-process, and self mutations share one ordering source.
 Directory watches may be recursive, queues are bounded, and dropped events
 produce an explicit overflow record instead of silently presenting a complete
-history. Browser JavaScript `fs.watch` and `fs.promises.watch` consume this
-descriptor asynchronously while synchronous filesystem mutations continue to
-use the SharedArrayBuffer syscall path.
+history. TKW1 retains Node-compatible `change`/`rename` events while exact
+create/delete semantics are carried by compatible extended event codes; a
+namespace rename is ordered as source-delete followed by destination-create.
+Browser JavaScript `fs.watch` and `fs.promises.watch` consume this descriptor
+asynchronously while synchronous filesystem mutations continue to use the
+SharedArrayBuffer syscall path.
 
 Device and proc descriptors and descriptor metadata mutation remain on the
 command-local compatibility surface. They should move only with their
@@ -883,7 +886,8 @@ The initial 0.13 branch now establishes:
   `readlink`, and `realpath` operations that preserve inode identity and raw
   link text; the legacy non-kernel runner continues to reject link snapshots;
 - managed C# `KernelFileWatcher` descriptors with bounded recursive queues,
-  fragmented frame reconstruction, explicit rename/change/overflow events, and
+  fragmented frame reconstruction, Node-compatible rename/change/overflow
+  events carrying exact create/delete namespace semantics, and
   close-on-dispose/process-exit; cross-language conformance observes a
   JavaScript child mutation through the C# parent watcher;
 - the independent TraceJVM runtime attached through the same process-scoped
@@ -892,11 +896,12 @@ The initial 0.13 branch now establishes:
   process pipes are kernel-owned, blocking Java socket calls suspend individual
   Java threads over kernel TCP, selectors multiplex kernel descriptor
   readiness, ordinary `WatchService` registrations consume kernel watch
-  descriptors and observe cross-runtime TKFS changes, and `ProcessBuilder`
-  creates isolated kernel-supervised children; `ProcessHandle` identity,
-  parent/child discovery, metadata, signals, asynchronous exit notification,
-  and liveness come from the kernel process table, while `System.getenv()` and
-  child environment inheritance come from the current process record;
+  descriptors and receive exact create/delete events for cross-runtime TKFS
+  changes without a later filesystem-state guess, and `ProcessBuilder` creates
+  isolated kernel-supervised children; `ProcessHandle` identity, parent/child
+  discovery, metadata, signals, asynchronous exit notification, and liveness
+  come from the kernel process table, while `System.getenv()` and child
+  environment inheritance come from the current process record;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic
