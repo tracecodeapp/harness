@@ -8167,8 +8167,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private async closeTraceKernelAuthority(): Promise<void> {
     const authority = this.traceKernelAuthority;
     if (!authority) return;
-    this.traceKernelAuthority = undefined;
-    await Effect.runPromise(Scope.close(authority.scope, Exit.void));
+    try {
+      await Effect.runPromise(Scope.close(authority.scope, Exit.void));
+    } finally {
+      if (this.traceKernelAuthority === authority) {
+        this.traceKernelAuthority = undefined;
+      }
+    }
   }
 
   private traceKernelPrincipal(actor: RuntimeWorkspaceActor): TraceKernelPrincipal {
@@ -10383,9 +10388,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.stopObservingExternalTraceKernelMutations();
     this.traceKernelBackingFileSystem.dispose();
     const authority = this.traceKernelAuthority;
-    this.traceKernelAuthority = undefined;
     if (authority) {
-      void Effect.runPromise(Scope.close(authority.scope, Exit.void)).catch(() => undefined);
+      void Effect.runPromise(Scope.close(authority.scope, Exit.void))
+        .catch(() => undefined)
+        .finally(() => {
+          if (this.traceKernelAuthority === authority) {
+            this.traceKernelAuthority = undefined;
+          }
+        });
     }
   }
 
