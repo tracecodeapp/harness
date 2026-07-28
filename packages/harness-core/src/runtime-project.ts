@@ -2072,6 +2072,22 @@ export type RuntimeProjectCommandRunner<
   readonly capabilities?: RuntimeProjectCommandRunnerCapabilities;
 };
 
+export function withRuntimeProjectCommandRunnerCapabilities<
+  Runner extends ((request: never) => Promise<RuntimeCommandResult>) & {
+    readonly capabilities?: RuntimeProjectCommandRunnerCapabilities;
+  },
+>(
+  runner: Runner,
+  capabilities: RuntimeProjectCommandRunnerCapabilities
+): Runner {
+  return Object.assign(runner, {
+    capabilities: Object.freeze({
+      ...runner.capabilities,
+      ...capabilities,
+    }),
+  });
+}
+
 export interface RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
   readonly cwd: string;

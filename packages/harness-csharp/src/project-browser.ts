@@ -11,7 +11,11 @@ import type {
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
-import { createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
+import {
+  createRuntimeProjectIoBridge,
+  runRuntimeProjectWorkerBridge,
+  withRuntimeProjectCommandRunnerCapabilities,
+} from '@tracecode/harness-core';
 import type { CSharpWorkerClient } from '../../harness-browser/src/csharp-worker-client';
 
 export type CSharpProjectFileEncoding = RuntimeFileEncoding;
@@ -89,7 +93,7 @@ export function createBrowserCSharpProjectRunner(
   options: BrowserCSharpProjectRunnerOptions = {}
 ): CSharpProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return (request) => {
+  return withRuntimeProjectCommandRunnerCapabilities((request) => {
     if (
       (request.project.symlinks?.length ?? 0) > 0 &&
       !request.kernelSyscalls
@@ -116,5 +120,5 @@ export function createBrowserCSharpProjectRunner(
           engineLease
         ),
     });
-  };
+  }, { descriptorStdio: true });
 }

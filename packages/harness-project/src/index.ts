@@ -1290,7 +1290,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     ): RuntimeProjectCommandRunner<Request> => {
       const descriptorStdio =
         options.descriptorStdio === true &&
-        runner.capabilities?.descriptorStdio !== false;
+        runner.capabilities?.descriptorStdio === true;
       return (async (request, ctx?: CommandContext) => {
         const commandContext = this.resolveCommandContext(ctx);
         const {
@@ -10101,10 +10101,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const executionHandle = this.processExecutionHandle(
       request.commandContext.process
     );
+    const descriptorStdio =
+      this.cppRunner.capabilities?.descriptorStdio === true;
     if (executionHandle) {
-      executionHandle.descriptorStdio = true;
+      executionHandle.descriptorStdio = descriptorStdio;
     }
-    this.startHostStandardInputPump(request.commandContext);
+    if (descriptorStdio) {
+      this.startHostStandardInputPump(request.commandContext);
+    }
     let result: RuntimeCommandResult;
     try {
       result = await this.cppRunner({
@@ -10125,6 +10129,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           : {}),
         ...(request.commandContext.terminal
           ? { terminal: request.commandContext.terminal }
+          : {}),
+        ...(!descriptorStdio && request.stdinPipe
+          ? { stdinPipe: request.stdinPipe }
           : {}),
         signal,
         project: await this.snapshotForCommand(request.commandContext.includeHiddenFiles === true),

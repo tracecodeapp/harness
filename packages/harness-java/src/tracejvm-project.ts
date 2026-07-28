@@ -14,6 +14,7 @@ import {
   runRuntimeProjectWorkerBridge,
   runtimeAbortSignalName,
   runtimeSignalExitCode,
+  withRuntimeProjectCommandRunnerCapabilities,
 } from '@tracecode/harness-core';
 import type {
   TraceJVMBinaryFile,
@@ -682,8 +683,8 @@ export function createTraceJVMProjectRunner(
     return operation;
   };
 
-  return (request) =>
-    runRuntimeProjectWorkerBridge({
+  return withRuntimeProjectCommandRunnerCapabilities(
+    (request) => runRuntimeProjectWorkerBridge({
       request,
       startPhase: request.source === 'compile' ? 'compile-start' : 'process-start',
       startMessage:
@@ -711,5 +712,7 @@ export function createTraceJVMProjectRunner(
       }),
       applyFileChange: options.applyFileChange,
       run: invoke,
-    });
+    }),
+    { descriptorStdio: TRACEJVM_PROJECT_CAPABILITIES.descriptorStdio }
+  );
 }

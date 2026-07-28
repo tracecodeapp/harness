@@ -11,7 +11,10 @@ import type {
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
-import { runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
+import {
+  runRuntimeProjectWorkerBridge,
+  withRuntimeProjectCommandRunnerCapabilities,
+} from '@tracecode/harness-core';
 import type { PythonWorkerClient } from '../../harness-browser/src/pyodide-worker-client';
 
 export type PythonProjectFileEncoding = RuntimeFileEncoding;
@@ -52,8 +55,8 @@ export function createBrowserPythonProjectRunner(
   workerClient: PyodidePythonProjectWorkerClient | PythonWorkerClient,
   options: BrowserPythonProjectRunnerOptions = {}
 ): BrowserPythonProjectCommandRunner {
-  return (request) =>
-    runRuntimeProjectWorkerBridge({
+  return withRuntimeProjectCommandRunnerCapabilities(
+    (request) => runRuntimeProjectWorkerBridge({
       request,
       startPhase: 'process-start',
       startMessage: 'Starting Python browser project command',
@@ -74,7 +77,9 @@ export function createBrowserPythonProjectRunner(
           workerRequest.signal,
           engineLease
         ),
-    });
+    }),
+    { descriptorStdio: true }
+  );
 }
 
 export const createPyodidePythonProjectRunner = createBrowserPythonProjectRunner;

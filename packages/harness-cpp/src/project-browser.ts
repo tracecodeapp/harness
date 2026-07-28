@@ -11,7 +11,10 @@ import type {
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
-import { runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
+import {
+  runRuntimeProjectWorkerBridge,
+  withRuntimeProjectCommandRunnerCapabilities,
+} from '@tracecode/harness-core';
 import type { CppWorkerClient } from '../../harness-browser/src/cpp-worker-client';
 
 export type CppProjectFileEncoding = RuntimeFileEncoding;
@@ -46,7 +49,7 @@ export function createBrowserCppProjectRunner(
   options: BrowserCppProjectRunnerOptions = {}
 ): CppProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return (request) => {
+  return withRuntimeProjectCommandRunnerCapabilities((request) => {
     return runRuntimeProjectWorkerBridge({
       request,
       startPhase: request.source === 'compile' ? 'compile-start' : 'process-start',
@@ -65,5 +68,5 @@ export function createBrowserCppProjectRunner(
           engineLease
         ),
     });
-  };
+  }, { descriptorStdio: true });
 }
