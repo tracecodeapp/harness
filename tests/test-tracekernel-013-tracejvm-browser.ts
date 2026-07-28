@@ -123,12 +123,19 @@ try {
           result.stdinRun.stdout !== 'stdin:hello\n' ||
           result.socketRun.exitCode !== 0 ||
           result.socketRun.stdout !== 'socket:pong\n' ||
+          result.processRun.exitCode !== 0 ||
+          !/^process:\d+:1:true:java-child\n$/u.test(
+            result.processRun.stdout
+          ) ||
+          result.childFile !== 'java-child' ||
           result.interrupted.exitCode !== 130 ||
           result.interrupted.stderr !== '' ||
           result.restarted.exitCode !== 0 ||
           result.restarted.stdout !== '1:missing:missing:restarted\n' ||
-          result.workerCount !== 8 ||
+          result.workerCount !== 10 ||
           !reportStatuses.includes('compile:completed:not-applicable') ||
+          !reportStatuses.includes('run:runtime-error:clean') ||
+          !reportStatuses.includes('run:completed:tainted') ||
           reportStatuses.filter(
             (status) => status === 'run:completed:clean'
           ).length !== 6

@@ -15,8 +15,10 @@ declare global {
     filesystemRun: { stdout: string; stderr: string; exitCode: number };
     stdinRun: { stdout: string; stderr: string; exitCode: number };
     socketRun: { stdout: string; stderr: string; exitCode: number };
+    processRun: { stdout: string; stderr: string; exitCode: number };
     sharedFile: string;
     randomFile: string;
+    childFile: string;
     interrupted: {
       stdout: string;
       stderr: string;
@@ -54,6 +56,17 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '    if (args.length > 0 && args[0].equals("stdin")) {',
         '      byte[] input = System.in.readNBytes(5);',
         '      System.out.println("stdin:" + new String(input, java.nio.charset.StandardCharsets.UTF_8));',
+        '      return;',
+        '    }',
+        '    if (args.length > 0 && args[0].equals("process")) {',
+        '      Process child = new ProcessBuilder("java", "-cp", "build", "Child").redirectErrorStream(true).start();',
+        '      String childOutput = new String(child.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();',
+        '      boolean childFailure = childOutput.contains("child-failure");',
+        '      int childExit = child.waitFor();',
+        '      String childFile = java.nio.file.Files.exists(java.nio.file.Path.of("process-child.txt"))',
+        '          ? java.nio.file.Files.readString(java.nio.file.Path.of("process-child.txt"))',
+        '          : "missing";',
+        '      System.out.println("process:" + child.pid() + ":" + childExit + ":" + childFailure + ":" + childFile);',
         '      return;',
         '    }',
         '    if (args.length > 0 && args[0].equals("filesystem")) {',
@@ -127,6 +140,16 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     }, {
       path: 'shared.txt',
       contents: 'snapshot-value',
+    }, {
+      path: 'Child.java',
+      contents: [
+        'public final class Child {',
+        '  public static void main(String[] args) throws Exception {',
+        '    java.nio.file.Files.writeString(java.nio.file.Path.of("process-child.txt"), "java-child");',
+        '    throw new RuntimeException("child-failure");',
+        '  }',
+        '}',
+      ].join('\n'),
     }],
     traceJVM: {
       createClient(context) {
@@ -162,7 +185,9 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
   });
 
   try {
-    const compile = await workspace.runCommand('javac -d build Main.java');
+    const compile = await workspace.runCommand(
+      'javac -d build Main.java Child.java'
+    );
     if (compile.exitCode !== 0) {
       throw new Error(`TraceJVM compile failed: ${JSON.stringify(compile)}`);
     }
@@ -192,6 +217,11 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     const socketRun = await workspace.runCommand(
       'java -cp build Main socket'
     );
+    const processRun = await workspace.runCommand(
+      'java -cp build Main process'
+    );
+    const childFile = await workspace.readFile('process-child.txt')
+      .catch(() => 'missing');
 
     const controller = new AbortController();
     let resolveReady!: () => void;
@@ -239,8 +269,10 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       filesystemRun,
       stdinRun,
       socketRun,
+      processRun,
       sharedFile,
       randomFile,
+      childFile,
       interrupted,
       restarted,
       classFileBase64,
