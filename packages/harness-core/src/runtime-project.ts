@@ -458,6 +458,25 @@ export interface RuntimeKernelSyscallBridge {
   close(): void;
 }
 
+export interface RuntimeKernelSignalNotification {
+  readonly signal: string;
+  readonly code: number;
+}
+
+/**
+ * Host-owned, non-terminating process notification stream.
+ *
+ * This is deliberately separate from `AbortSignal`: abort represents
+ * cancellation and may retire a runtime worker, while POSIX notifications
+ * such as SIGWINCH have a default disposition of ignore and must leave the
+ * process and its engine lease alive.
+ */
+export interface RuntimeKernelSignalBridge {
+  subscribe(
+    listener: (notification: RuntimeKernelSignalNotification) => void
+  ): () => void;
+}
+
 type RuntimeHttpBufferConstructor = {
   from(value: string, encoding: 'base64'): Uint8Array;
   from(value: Uint8Array): { toString(encoding: 'base64'): string };
@@ -2021,6 +2040,8 @@ export interface RuntimeProjectCommandRequest<
   project: RuntimeProjectSnapshot;
   kernelHttp?: RuntimeKernelHttpBridge;
   kernelSyscalls?: RuntimeKernelSyscallBridge;
+  /** Host-only live process notifications; never cloned into a worker request. */
+  kernelSignals?: RuntimeKernelSignalBridge;
   options?: Record<string, unknown>;
   signal?: AbortSignal;
   onEvent?: RuntimeCommandEventHandler;

@@ -293,6 +293,8 @@ function traceKernelSignalCode(signal) {
       return 4;
     case "SIGQUIT":
       return 5;
+    case "SIGWINCH":
+      return 6;
   }
 }
 function readTraceKernelSignal(reader, context) {
@@ -308,12 +310,24 @@ function readTraceKernelSignal(reader, context) {
       return "SIGHUP";
     case 5:
       return "SIGQUIT";
+    case 6:
+      return "SIGWINCH";
     default:
       throw new TraceKernelTransportError(
         "EPROTO",
         `invalid ${context} signal code ${code}`
       );
   }
+}
+function readTraceKernelTerminatingSignal(reader, context) {
+  const signal = readTraceKernelSignal(reader, context);
+  if (signal === "SIGWINCH") {
+    throw new TraceKernelTransportError(
+      "EPROTO",
+      `${context} cannot use non-terminating signal SIGWINCH.`
+    );
+  }
+  return signal;
 }
 function writeAddress(writer, address) {
   writer.string(address.host);
@@ -761,7 +775,7 @@ function decodeTraceKernelSyscallResult(bytes) {
           pid,
           termination: {
             kind: "signal",
-            signal: readTraceKernelSignal(reader, "termination"),
+            signal: readTraceKernelTerminatingSignal(reader, "termination"),
             exitCode
           }
         };
@@ -10218,7 +10232,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           { code: "ERR_INVALID_ARG_TYPE" }
         );
       }
-      if (signal !== "SIGHUP" && signal !== "SIGINT" && signal !== "SIGQUIT" && signal !== "SIGTERM" && signal !== "SIGKILL") {
+      if (signal !== "SIGHUP" && signal !== "SIGINT" && signal !== "SIGQUIT" && signal !== "SIGTERM" && signal !== "SIGWINCH" && signal !== "SIGKILL") {
         throw Object.assign(
           new TypeError(`Unknown signal: ${String(signal)}`),
           { code: "ERR_UNKNOWN_SIGNAL" }
@@ -14143,6 +14157,7 @@ function handleKernelHttpHostMessage(message) {
   if (type === "runtime-signal") {
     const signal = typeof payload?.signal === "string" ? payload.signal : "SIGTERM";
     const handled = command.executionState.dispatchSignal?.(signal) === true;
+    if (!handled && signal === "SIGWINCH") return true;
     if (!handled) {
       command.executionState.cancelled = true;
       command.executionState.abortController.abort({ signal });

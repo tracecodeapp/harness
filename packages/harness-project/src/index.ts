@@ -166,6 +166,8 @@ import type {
   RuntimeKernelHttpListenerInfo,
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
+  RuntimeKernelSignalBridge,
+  RuntimeKernelSignalNotification,
   RuntimeKernelSyscallBridge,
   RuntimeWorkspaceHttpClient,
   RuntimeWorkspaceHttpJsonRequestOptions,
@@ -737,6 +739,7 @@ interface RuntimeKernelProcessRecord {
 interface RuntimeKernelExecutionHandle {
   readonly kernelProcess: TraceKernelProcess;
   readonly abortController?: AbortController;
+  readonly signalChannel?: RuntimeKernelProcessSignalChannel;
   readonly hostStandardIo?: TraceKernelHostStandardIo;
   descriptorStdio?: boolean;
   hostOutputContext?: RuntimeCommandExecutionContext;
@@ -749,6 +752,58 @@ interface RuntimeKernelExecutionHandle {
     readonly name: string;
     readonly code: number;
   };
+}
+
+class RuntimeKernelProcessSignalChannel implements RuntimeKernelSignalBridge {
+  private readonly listeners = new Set<
+    (notification: RuntimeKernelSignalNotification) => void
+  >();
+  private readonly pending: RuntimeKernelSignalNotification[] = [];
+  private closed = false;
+
+  subscribe(
+    listener: (notification: RuntimeKernelSignalNotification) => void
+  ): () => void {
+    if (this.closed) return () => undefined;
+    this.listeners.add(listener);
+    for (const notification of this.pending.splice(0)) {
+      try {
+        listener(notification);
+      } catch {
+        // A runtime adapter cannot make kernel signal publication fail.
+      }
+    }
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  publish(
+    notification: RuntimeKernelSignalNotification
+  ): 'delivered' | 'queued' | 'closed' {
+    if (this.closed) return 'closed';
+    if (this.listeners.size === 0) {
+      // Signals are not an unbounded event log. Retaining the short startup
+      // window prevents a resize racing runner subscription from disappearing.
+      if (this.pending.length === 16) this.pending.shift();
+      this.pending.push(notification);
+      return 'queued';
+    }
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(notification);
+      } catch {
+        // Delivery failures preserve the signal's default disposition.
+      }
+    }
+    return 'delivered';
+  }
+
+  close(): void {
+    this.closed = true;
+    this.pending.length = 0;
+    this.listeners.clear();
+  }
 }
 
 interface RuntimeKernelFileDescriptorRecord {
@@ -1306,6 +1361,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             ...(signal ? { signal } : {}),
             kernelHttp: this.createKernelHttpBridge(commandContext),
             ...(kernelSyscalls ? { kernelSyscalls } : {}),
+            ...(executionHandle?.signalChannel
+              ? { kernelSignals: executionHandle.signalChannel }
+              : {}),
             onEvent: (event) => {
               if (!acceptingRunnerEvents) return;
               this.handleRuntimeCommandEvent(event, commandContext);
@@ -5341,10 +5399,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!signal || !snapshot || snapshot.phase === 'exited') return false;
     if (process.signalPolicy === 'system-only' && authority !== 'system') return false;
     if (signal.name === 'SIGWINCH') {
+      const delivery =
+        this.processExecutionHandle(process)?.signalChannel?.publish({
+          signal: signal.name,
+          code: signal.code,
+        }) ?? 'closed';
       this.recordKernelEvent('process-signal', process.pid, {
         signal: signal.name,
         signalCode: signal.code,
-        disposition: 'default-ignore',
+        disposition:
+          delivery === 'closed' ? 'default-ignore' : `runtime-${delivery}`,
       });
       return true;
     }
@@ -9770,6 +9834,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const executionHandle: RuntimeKernelExecutionHandle = {
       kernelProcess,
       abortController,
+      signalChannel: new RuntimeKernelProcessSignalChannel(),
       ...(hostStandardIo ? { hostStandardIo } : {}),
     };
     executionHandle.hostOutputContext = commandContext;
@@ -9811,6 +9876,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       launchHooks?.ready?.(process);
     } catch (error) {
       this.processTable.delete(process.pid);
+      executionHandle.signalChannel?.close();
       this.processExecutionHandles.delete(process.pid);
       clearKernelSignalHandler();
       await Effect.runPromise(
@@ -10090,6 +10156,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         });
       }
       this.processTable.delete(process.pid);
+      executionHandle.signalChannel?.close();
       this.processExecutionHandles.delete(process.pid);
       this.releaseForegroundProcessGroupMember(process);
       this.observeKernelReparentedChildren(process.pid);
@@ -10572,6 +10639,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         project: await this.snapshotForCommand(request.commandContext.includeHiddenFiles === true),
         kernelHttp: this.createKernelHttpBridge(request.commandContext),
         ...(kernelSyscalls ? { kernelSyscalls } : {}),
+        ...(executionHandle?.signalChannel
+          ? { kernelSignals: executionHandle.signalChannel }
+          : {}),
         onEvent: (event) => {
           this.handleRuntimeCommandEvent(event, request.commandContext);
         },

@@ -295,6 +295,7 @@ function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
       ? (payload as { signal: string }).signal
       : 'SIGTERM';
     const handled = command.executionState.dispatchSignal?.(signal) === true;
+    if (!handled && signal === 'SIGWINCH') return true;
     if (!handled) {
       command.executionState.cancelled = true;
       command.executionState.abortController.abort({ signal });

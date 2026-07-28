@@ -14,6 +14,7 @@ import type {
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
   RuntimeKernelInfo,
+  RuntimeKernelSignalBridge,
   RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
@@ -2432,7 +2433,13 @@ function createChildProcessApi(
     }
 
     kill(
-      signal: 'SIGHUP' | 'SIGINT' | 'SIGQUIT' | 'SIGKILL' | 'SIGTERM' = 'SIGTERM'
+      signal:
+        | 'SIGHUP'
+        | 'SIGINT'
+        | 'SIGQUIT'
+        | 'SIGKILL'
+        | 'SIGTERM'
+        | 'SIGWINCH' = 'SIGTERM'
     ): boolean {
       if (this.exitCode !== null || this.signalCode !== null) return false;
       syncDispatch({
@@ -4929,6 +4936,7 @@ interface BrowserJavaScriptProjectPendingMessage {
   httpRequests: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
   httpDispatchAbortControllers: Map<string, AbortController>;
   abortCleanup?: () => void;
+  kernelSignalCleanup?: () => void;
   signalGraceTimeoutId?: ReturnType<typeof setTimeout>;
 }
 
@@ -5015,6 +5023,7 @@ class BrowserJavaScriptProjectWorkerClient {
       engineLease: _engineLease,
       kernelHttp,
       kernelSyscalls,
+      kernelSignals,
       ...workerRequest
     } = request;
     return this.executeWithTimeout(
@@ -5024,6 +5033,7 @@ class BrowserJavaScriptProjectWorkerClient {
         onEvent,
         kernelHttp,
         kernelSyscalls,
+        kernelSignals,
         signal
       ),
       timeoutMs
@@ -5194,6 +5204,7 @@ class BrowserJavaScriptProjectWorkerClient {
     onEvent?: (event: RuntimeCommandEvent) => void,
     kernelHttp?: RuntimeKernelHttpBridge,
     kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge,
     signal?: AbortSignal
   ): Promise<RuntimeCommandResult> {
     const worker = this.getWorker();
@@ -5228,6 +5239,16 @@ class BrowserJavaScriptProjectWorkerClient {
           : {}),
       };
       worker.postMessage(message);
+      if (kernelSignals) {
+        pending.kernelSignalCleanup = kernelSignals.subscribe(
+          ({ signal: runtimeSignal }) => {
+            if (!this.pendingMessages.has(id)) return;
+            this.postWorkerMessage(id, 'runtime-signal', {
+              signal: runtimeSignal,
+            });
+          }
+        );
+      }
       if (signal) {
         const onAbort = (): void => {
           if (!this.pendingMessages.has(id)) return;
@@ -5408,6 +5429,7 @@ class BrowserJavaScriptProjectWorkerClient {
 
   private cleanupPendingKernelHttp(pending: BrowserJavaScriptProjectPendingMessage): void {
     pending.abortCleanup?.();
+    pending.kernelSignalCleanup?.();
     if (pending.signalGraceTimeoutId !== undefined) this.hostClearTimeout(pending.signalGraceTimeoutId);
     for (const listener of pending.httpListeners.values()) listener.close();
     pending.httpListeners.clear();
@@ -5626,6 +5648,7 @@ export function createBrowserJavaScriptProjectRunner(
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let signalGraceTimeoutId: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
+    let kernelSignalCleanup: (() => void) | undefined;
     let forcedResult: RuntimeCommandResult | undefined;
     let resolveForcedResult!: (result: RuntimeCommandResult) => void;
     const forcedResultPromise = new Promise<RuntimeCommandResult>((resolve) => {
@@ -5652,6 +5675,8 @@ export function createBrowserJavaScriptProjectRunner(
         request.signal?.removeEventListener('abort', abortListener);
         abortListener = undefined;
       }
+      kernelSignalCleanup?.();
+      kernelSignalCleanup = undefined;
     };
     const executionState: BrowserJavaScriptProjectExecutionState = {
       cancelled: false,
@@ -5659,6 +5684,11 @@ export function createBrowserJavaScriptProjectRunner(
     };
     const execution = runBrowserJavaScriptProjectRequest(request, options, executionState).finally(cleanup);
     void execution.catch(() => undefined);
+    if (request.kernelSignals) {
+      kernelSignalCleanup = request.kernelSignals.subscribe(({ signal }) => {
+        executionState.dispatchSignal?.(signal);
+      });
+    }
     timeoutId = hostSetTimeout(() => {
       if (forcedResult) return;
       const io = createRuntimeProjectIoBridge(request.onEvent);
@@ -6412,7 +6442,13 @@ export async function runBrowserJavaScriptProjectRequest(
       cwd: () => request.cwd,
       kill: (
         pid: number,
-        signal: 'SIGHUP' | 'SIGINT' | 'SIGQUIT' | 'SIGKILL' | 'SIGTERM' = 'SIGTERM'
+        signal:
+          | 'SIGHUP'
+          | 'SIGINT'
+          | 'SIGQUIT'
+          | 'SIGKILL'
+          | 'SIGTERM'
+          | 'SIGWINCH' = 'SIGTERM'
       ): true => {
         if (!Number.isSafeInteger(pid)) {
           throw Object.assign(
@@ -6425,6 +6461,7 @@ export async function runBrowserJavaScriptProjectRequest(
           signal !== 'SIGINT' &&
           signal !== 'SIGQUIT' &&
           signal !== 'SIGTERM' &&
+          signal !== 'SIGWINCH' &&
           signal !== 'SIGKILL'
         ) {
           throw Object.assign(

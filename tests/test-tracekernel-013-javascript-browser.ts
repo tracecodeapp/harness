@@ -717,11 +717,13 @@ async function main(): Promise<void> {
               path: 'terminal-control.js',
               contents: [
                 'const { terminal } = require("node:tracekernel");',
+                'let resizeSignals = 0;',
+                'process.on("SIGWINCH", () => { resizeSignals += 1; });',
                 'const foreground = terminal.foregroundProcessGroup();',
                 'const initialSize = terminal.windowSize();',
                 'const initialStreamSize = process.stdout.getWindowSize();',
                 'const resized = terminal.setWindowSize(66, 166);',
-                'console.log(JSON.stringify({',
+                'setTimeout(() => console.log(JSON.stringify({',
                 '  stdin: process.stdin.isTTY,',
                 '  stdout: process.stdout.isTTY,',
                 '  stderr: process.stderr.isTTY,',
@@ -733,7 +735,17 @@ async function main(): Promise<void> {
                 '  resized,',
                 '  streamRows: process.stdout.rows,',
                 '  streamColumns: process.stdout.columns,',
-                '}));',
+                '  resizeSignals,',
+                '})), 20);',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'terminal-default-ignore.js',
+              contents: [
+                'const { terminal } = require("node:tracekernel");',
+                'terminal.setWindowSize(67, 167);',
+                'setTimeout(() => console.log("winch-default-ignore"), 20);',
                 '',
               ].join('\n'),
             },
@@ -1079,6 +1091,9 @@ async function main(): Promise<void> {
           const terminalControl = await terminalSession.run(
             'node terminal-control.js'
           );
+          const terminalDefaultIgnore = await terminalSession.run(
+            'node terminal-default-ignore.js'
+          );
           const processIsolation = await workspace.runCommand('node isolation-parent.js');
           const javascript = await workspace.runCommand('node conformance.js');
           const descriptors = await workspace.runCommand('node descriptor-conformance.js');
@@ -1137,6 +1152,7 @@ async function main(): Promise<void> {
             watchdogControl,
             watchdogExpiry,
             terminalControl,
+            terminalDefaultIgnore,
             processIsolation,
             javascript,
             descriptors,
@@ -1253,8 +1269,16 @@ async function main(): Promise<void> {
             '"resized":{"rows":66,"columns":166}'
           ) &&
           result.terminalControl.stdout.includes('"streamRows":66') &&
-          result.terminalControl.stdout.includes('"streamColumns":166'),
+          result.terminalControl.stdout.includes('"streamColumns":166') &&
+          result.terminalControl.stdout.includes('"resizeSignals":1'),
         `The JavaScript terminal API did not use kernel-owned terminal state: ${JSON.stringify(result.terminalControl)}`
+      );
+      assertCondition(
+        result.terminalDefaultIgnore.exitCode === 0 &&
+          result.terminalDefaultIgnore.stdout.includes(
+            'winch-default-ignore'
+          ),
+        `An unhandled SIGWINCH did not preserve its default-ignore disposition: ${JSON.stringify(result.terminalDefaultIgnore)}`
       );
       assertCondition(
         result.processIsolation.exitCode === 0 &&
@@ -1387,9 +1411,9 @@ async function main(): Promise<void> {
         processOperations: [
           'node:child_process-spawn',
           'distinct-child-pid',
-            'detached-process-groups',
-            'negative-pgid-signals',
-            'SIGHUP/SIGQUIT-termination',
+          'detached-process-groups',
+          'negative-pgid-signals',
+          'SIGHUP/SIGQUIT-termination',
           'parent-pid-topology',
           'child-process-ref-unref',
           'orphan-reparenting',
@@ -1403,6 +1427,7 @@ async function main(): Promise<void> {
           'kernel-controlling-terminal',
           'kernel-foreground-process-group',
           'kernel-terminal-window-size',
+          'kernel-SIGWINCH-handler-and-default-ignore',
           'heap-and-global-isolation',
           'environment-copy-on-spawn',
           'descriptor-non-inheritance',
