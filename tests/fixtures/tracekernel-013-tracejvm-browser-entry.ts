@@ -66,12 +66,22 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '        file.readFully(contents);',
         '        random = new String(contents, java.nio.charset.StandardCharsets.UTF_8);',
         '      }',
+        '      java.nio.file.Path hardLink = java.nio.file.Path.of("random-hard.bin");',
+        '      java.nio.file.Path renamedLink = java.nio.file.Path.of("random-renamed.bin");',
+        '      java.nio.file.Path symbolicLink = java.nio.file.Path.of("random-link.bin");',
+        '      java.nio.file.Files.createLink(hardLink, java.nio.file.Path.of("random.bin"));',
+        '      java.nio.file.Files.createSymbolicLink(symbolicLink, java.nio.file.Path.of("random.bin"));',
+        '      String linkTarget = java.nio.file.Files.readSymbolicLink(symbolicLink).toString();',
+        '      java.nio.file.Files.move(hardLink, renamedLink);',
+        '      boolean sameFile = java.nio.file.Files.isSameFile(java.nio.file.Path.of("random.bin"), renamedLink);',
+        '      java.nio.file.Files.delete(symbolicLink);',
+        '      boolean linkDeleted = java.nio.file.Files.notExists(symbolicLink, java.nio.file.LinkOption.NOFOLLOW_LINKS);',
         '      String listed;',
         '      try (var entries = java.nio.file.Files.list(java.nio.file.Path.of("kernel-dir"))) {',
         '        listed = entries.map(entry -> entry.getFileName().toString()).sorted().findFirst().orElse("missing");',
         '      }',
         '      boolean millisecondTime = path.toFile().lastModified() > 1_000_000_000_000L;',
-        '      System.out.println("fs:" + prior + ":" + listed + ":" + millisecondTime + ":" + random + ":" + randomPointer);',
+        '      System.out.println("fs:" + prior + ":" + listed + ":" + millisecondTime + ":" + random + ":" + randomPointer + ":" + linkTarget + ":" + sameFile + ":" + linkDeleted);',
         '      return;',
         '    }',
         '    count += 1;',
@@ -143,6 +153,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     );
     const sharedFile = await workspace.readFile('shared.txt');
     const randomFile = await workspace.readFile('random.bin');
+    await workspace.deleteFile('random-link.bin');
 
     const controller = new AbortController();
     let resolveReady!: () => void;
@@ -164,6 +175,11 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     );
     await Promise.race([
       ready,
+      interruptedOperation.then((result) => {
+        throw new Error(
+          `TraceJVM loop exited before readiness: ${JSON.stringify(result)}`
+        );
+      }),
       new Promise<never>((_, reject) => {
         setTimeout(
           () => reject(new Error('TraceJVM loop did not become ready in time.')),

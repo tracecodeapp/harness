@@ -116,7 +116,7 @@ try {
           result.secondRun.stdout !== '1:missing:missing:second\n' ||
           result.filesystemRun.exitCode !== 0 ||
           result.filesystemRun.stdout !==
-            'fs:js-before-java:nested:true:abZd:3\n' ||
+            'fs:js-before-java:nested:true:abZd:3:random.bin:true:true\n' ||
           result.sharedFile !== 'js-before-java|java' ||
           result.randomFile !== 'abZd' ||
           result.interrupted.exitCode !== 130 ||
