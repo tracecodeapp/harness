@@ -24,9 +24,14 @@ export type TraceKernelSignal =
   | 'SIGINT'
   | 'SIGQUIT'
   | 'SIGKILL'
-  | 'SIGTERM';
-export type TraceKernelWatchdogSignal = Extract<
+  | 'SIGTERM'
+  | 'SIGWINCH';
+export type TraceKernelTerminatingSignal = Exclude<
   TraceKernelSignal,
+  'SIGWINCH'
+>;
+export type TraceKernelWatchdogSignal = Extract<
+  TraceKernelTerminatingSignal,
   'SIGTERM' | 'SIGKILL'
 >;
 
@@ -50,7 +55,7 @@ export interface TraceKernelProcessTerminationExit {
 
 export interface TraceKernelProcessTerminationSignal {
   readonly kind: 'signal';
-  readonly signal: TraceKernelSignal;
+  readonly signal: TraceKernelTerminatingSignal;
   readonly exitCode: number;
 }
 

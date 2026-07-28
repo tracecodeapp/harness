@@ -34,6 +34,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 async function main(): Promise<void> {
+  const deliveredSignals: string[] = [];
   const provider: TraceKernelRuntimeProvider = {
     runtime: 'terminal-test',
     initialize: Effect.succeed({
@@ -42,6 +43,10 @@ async function main(): Promise<void> {
           id: `terminal-lease-${process.pid}`,
           runtime: 'terminal-test',
           execute: () => Effect.never,
+          signal: (signal) =>
+            Effect.sync(() => {
+              deliveredSignals.push(`${process.pid}:${signal}`);
+            }),
           release: () => Effect.void,
         }),
     }),
@@ -115,12 +120,32 @@ async function main(): Promise<void> {
           resizedWindow.value.rows === 55 &&
           resizedWindow.value.columns === 144 &&
           terminal.snapshot().rows === 55 &&
-          terminal.snapshot().columns === 144,
+          terminal.snapshot().columns === 144 &&
+          deliveredSignals.includes(`${shell.pid}:SIGWINCH`) &&
+          shell.snapshot().phase === 'running',
         `Terminal inspection syscalls did not use kernel state: ${JSON.stringify({
           ttyResult,
           foregroundResult,
           initialWindowSize,
           resizedWindow,
+        })}`
+      );
+      const deliveredSignalCount = deliveredSignals.length;
+      const hostResizedTerminal = yield* session.resizeTerminal(
+        terminal.id,
+        160,
+        60
+      );
+      yield* Effect.yieldNow();
+      assertCondition(
+        hostResizedTerminal.columns === 160 &&
+          hostResizedTerminal.rows === 60 &&
+          deliveredSignals.length === deliveredSignalCount + 1 &&
+          deliveredSignals.at(-1) === `${shell.pid}:SIGWINCH` &&
+          shell.snapshot().phase === 'running',
+        `Host terminal resize did not asynchronously notify the foreground process: ${JSON.stringify({
+          hostResizedTerminal,
+          deliveredSignals,
         })}`
       );
       const ordinaryFd = yield* session.openFile(shell, 'ordinary.txt', {
@@ -256,8 +281,8 @@ async function main(): Promise<void> {
       const terminalSnapshot = session.terminalSnapshots()[0];
       assertCondition(
         terminalSnapshot?.name === '/dev/tty' &&
-          terminalSnapshot.columns === 144 &&
-          terminalSnapshot.rows === 55 &&
+          terminalSnapshot.columns === 160 &&
+          terminalSnapshot.rows === 60 &&
           terminalSnapshot.foregroundProcessGroupId === backgroundChild.snapshot().pgid,
         `Terminal snapshot is incomplete: ${JSON.stringify(terminalSnapshot)}`
       );
@@ -354,6 +379,7 @@ async function main(): Promise<void> {
     hangupSignalsForegroundGroup: true,
     terminalSyscallContract: true,
     terminalWindowSizeSyscalls: true,
+    windowResizeSignal: 'SIGWINCH-default-ignore',
   }, null, 2));
 }
 

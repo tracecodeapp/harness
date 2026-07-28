@@ -1,6 +1,10 @@
 import * as Effect from 'effect/Effect';
 import type { TraceKernelNetworkErrorCode } from './errors';
-import type { TraceKernelProcessPhase, TraceKernelSignal } from './model';
+import type {
+  TraceKernelProcessPhase,
+  TraceKernelSignal,
+  TraceKernelTerminatingSignal,
+} from './model';
 import type { TraceKernelSyscallDispatcher } from './syscalls';
 import type {
   TraceKernelSyscallErrorCode,
@@ -311,6 +315,8 @@ function traceKernelSignalCode(signal: TraceKernelSignal): number {
       return 4;
     case 'SIGQUIT':
       return 5;
+    case 'SIGWINCH':
+      return 6;
   }
 }
 
@@ -330,12 +336,28 @@ function readTraceKernelSignal(
       return 'SIGHUP';
     case 5:
       return 'SIGQUIT';
+    case 6:
+      return 'SIGWINCH';
     default:
       throw new TraceKernelTransportError(
         'EPROTO',
         `invalid ${context} signal code ${code}`
       );
   }
+}
+
+function readTraceKernelTerminatingSignal(
+  reader: BinaryFrameReader,
+  context: string
+): TraceKernelTerminatingSignal {
+  const signal = readTraceKernelSignal(reader, context);
+  if (signal === 'SIGWINCH') {
+    throw new TraceKernelTransportError(
+      'EPROTO',
+      `${context} cannot use non-terminating signal SIGWINCH.`
+    );
+  }
+  return signal;
 }
 
 function writeAddress(
@@ -1713,7 +1735,7 @@ export function decodeTraceKernelSyscallResult(
           pid,
           termination: {
             kind: 'signal',
-            signal: readTraceKernelSignal(reader, 'termination'),
+            signal: readTraceKernelTerminatingSignal(reader, 'termination'),
             exitCode,
           },
         };

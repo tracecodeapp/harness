@@ -220,6 +220,7 @@ async function main(): Promise<void> {
     { op: 'kill', pid: 102, signal: 'SIGHUP' },
     { op: 'kill', pid: 102, signal: 'SIGTERM' },
     { op: 'kill', pid: 102, signal: 'SIGQUIT' },
+    { op: 'kill', pid: 102, signal: 'SIGWINCH' },
     { op: 'setsid' },
     { op: 'setpgid', pid: 0, pgid: 0 },
     { op: 'isatty', fd: 0 },

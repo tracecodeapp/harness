@@ -681,6 +681,7 @@ const TRACEKERNEL_SIGNAL_NUMBERS = new Map<string, number>([
   ['SIGQUIT', 3],
   ['SIGKILL', 9],
   ['SIGTERM', 15],
+  ['SIGWINCH', 28],
 ]);
 const TRACEKERNEL_SIGNAL_NAMES_BY_NUMBER = new Map([...TRACEKERNEL_SIGNAL_NUMBERS.entries()].map(([name, number]) => [number, name]));
 const TRACEKERNEL_SENSITIVE_URL_PARAM_NAMES = new Set([
@@ -5339,6 +5340,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const snapshot = this.authoritativeProcessSnapshot(process);
     if (!signal || !snapshot || snapshot.phase === 'exited') return false;
     if (process.signalPolicy === 'system-only' && authority !== 'system') return false;
+    if (signal.name === 'SIGWINCH') {
+      this.recordKernelEvent('process-signal', process.pid, {
+        signal: signal.name,
+        signalCode: signal.code,
+        disposition: 'default-ignore',
+      });
+      return true;
+    }
     const executionHandle = this.processExecutionHandle(process);
     if (!executionHandle) return false;
     executionHandle.pendingSignal = {
@@ -5497,7 +5506,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const authority = this.traceKernelAuthority;
     const terminal = authority?.session.terminalSnapshots()[0];
     if (!authority || !terminal || terminal.closed) return;
-    Effect.runSync(
+    Effect.runFork(
       authority.session.resizeTerminal(terminal.id, columns, rows).pipe(
         Effect.catchAll(() => Effect.void)
       )
@@ -10030,9 +10039,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       await launchHooks?.afterDescriptorClose?.(process, commandContext);
       const pendingSignal = this.processExecutionHandle(process)?.pendingSignal;
-      const terminationSignal = pendingSignal
+      const normalizedTerminationSignal = pendingSignal
         ? normalizeTraceKernelSignal(pendingSignal.name)?.name
         : undefined;
+      const terminationSignal =
+        normalizedTerminationSignal === 'SIGWINCH'
+          ? undefined
+          : normalizedTerminationSignal;
       await Effect.runPromise(
         this.traceKernelControlledRuntime.complete(process.pid, {
           exitCode: processExitCode,

@@ -65,6 +65,7 @@ import type {
   TraceKernelRuntimeResult,
   TraceKernelSessionOptions,
   TraceKernelSignal,
+  TraceKernelTerminatingSignal,
   TraceKernelWatchdogSignal,
   TraceKernelWatchdogSnapshot,
 } from './model';
@@ -168,7 +169,7 @@ interface MutableProcessRecord {
   watchdog?: TraceKernelWatchdogSnapshot;
 }
 
-function signalExitCode(signal: TraceKernelSignal): number {
+function signalExitCode(signal: TraceKernelTerminatingSignal): number {
   if (signal === 'SIGHUP') return 129;
   if (signal === 'SIGINT') return 130;
   if (signal === 'SIGQUIT') return 131;
@@ -233,7 +234,7 @@ function processInfoProjection(
 export class TraceKernelProcess {
   private fiber?: Fiber.RuntimeFiber<TraceKernelProcessSnapshot, never>;
   private runtimeLease?: TraceKernelRuntimeLease;
-  private requestedSignal?: TraceKernelSignal;
+  private requestedSignal?: TraceKernelTerminatingSignal;
   readonly descriptors: TraceKernelDescriptorTable;
 
   constructor(
@@ -382,6 +383,15 @@ export class TraceKernelProcess {
           message: `EACCES: actor ${requester.kind}:${requester.id} cannot signal protected process ${this.pid}`,
         }));
       }
+      if (signal === 'SIGWINCH') {
+        const runtimeLease = this.runtimeLease;
+        if (!runtimeLease?.signal) return Effect.void;
+        return runtimeLease.signal(signal).pipe(
+          // SIGWINCH has a POSIX default disposition of ignore. A runtime
+          // without notification support must therefore remain alive.
+          Effect.catchAll(() => Effect.void)
+        );
+      }
       this.requestedSignal = signal;
       const fiber = this.fiber;
       const runtimeLease = this.runtimeLease;
@@ -492,7 +502,7 @@ export class TraceKernelProcess {
     );
   }
 
-  private forceSignal(signal: TraceKernelSignal): Effect.Effect<void> {
+  private forceSignal(signal: TraceKernelTerminatingSignal): Effect.Effect<void> {
     this.requestedSignal = signal;
     const recordSignalExit = Effect.sync(() =>
       this.finish({
@@ -1437,6 +1447,9 @@ export class TraceKernelSession {
         }));
       }
       terminal.resize(normalizedColumns, normalizedRows);
+      yield* this.signalTerminalForeground(terminal.id, 'SIGWINCH').pipe(
+        Effect.catchAll(() => Effect.void)
+      );
       return Object.freeze({
         rows: normalizedRows,
         columns: normalizedColumns,
@@ -1513,12 +1526,14 @@ export class TraceKernelSession {
     columns: number,
     rows: number
   ): Effect.Effect<TraceKernelTerminalSnapshot, Error> {
-    return this.terminalById(terminalId).pipe(
-      Effect.tap((terminal) =>
-        Effect.sync(() => terminal.resize(columns, rows))
-      ),
-      Effect.map((terminal) => terminal.snapshot())
-    );
+    return Effect.gen(this, function* () {
+      const terminal = yield* this.terminalById(terminalId);
+      terminal.resize(columns, rows);
+      yield* this.signalTerminalForeground(terminalId, 'SIGWINCH').pipe(
+        Effect.catchAll(() => Effect.void)
+      );
+      return terminal.snapshot();
+    });
   }
 
   releaseTerminalForegroundToHost(
