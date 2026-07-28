@@ -62,6 +62,7 @@ const OP_CODES = {
   isatty: 45,
   tcgetpgrp: 46,
   tcsetpgrp: 47,
+  seek: 48,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -561,6 +562,17 @@ export function encodeTraceKernelSyscallRequest(
       writer.u8(request.position === undefined ? 0 : 1);
       if (request.position !== undefined) writer.f64(request.position);
       break;
+    case 'seek':
+      writer.i32(request.fd);
+      writer.f64(request.offset);
+      writer.u8(
+        request.whence === 'set'
+          ? 1
+          : request.whence === 'current'
+            ? 2
+            : 3
+      );
+      break;
     case 'close':
     case 'dup':
     case 'fstat':
@@ -1021,6 +1033,26 @@ export function decodeTraceKernelSyscallRequest(
       };
       break;
     }
+    case 'seek': {
+      const fd = reader.i32();
+      const offset = reader.f64();
+      const whenceCode = reader.u8();
+      const whence = whenceCode === 1
+        ? 'set' as const
+        : whenceCode === 2
+          ? 'current' as const
+          : whenceCode === 3
+            ? 'end' as const
+            : undefined;
+      if (!whence) {
+        throw new TraceKernelTransportError(
+          'EPROTO',
+          `invalid seek whence code ${whenceCode}`
+        );
+      }
+      request = { op: 'seek', fd, offset, whence };
+      break;
+    }
     case 'close':
       request = { op: 'close', fd: reader.i32() };
       break;
@@ -1356,6 +1388,9 @@ export function encodeTraceKernelSyscallResult(
       break;
     case 'write':
       writer.u32(value.bytesWritten);
+      break;
+    case 'seek':
+      writer.f64(value.offset);
       break;
     case 'stat':
     case 'lstat':
@@ -1693,6 +1728,9 @@ export function decodeTraceKernelSyscallResult(
       break;
     case 'write':
       value = { op: 'write', bytesWritten: reader.u32() };
+      break;
+    case 'seek':
+      value = { op: 'seek', offset: reader.f64() };
       break;
     case 'stat':
       value = { op: 'stat', stat: readStat(reader) };
@@ -2285,6 +2323,22 @@ export class TraceKernelRuntimeFileClient {
       }),
       'write'
     ).bytesWritten;
+  }
+
+  seek(
+    fd: number,
+    offset: number,
+    whence: 'set' | 'current' | 'end'
+  ): number {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: 'seek',
+        fd,
+        offset,
+        whence,
+      }),
+      'seek'
+    ).offset;
   }
 
   closeDescriptor(fd: number): void {

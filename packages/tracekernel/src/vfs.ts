@@ -1,5 +1,8 @@
 import * as Effect from 'effect/Effect';
-import type { TraceKernelDescriptor } from './descriptors';
+import type {
+  TraceKernelDescriptor,
+  TraceKernelSeekWhence,
+} from './descriptors';
 import type {
   TraceKernelFileSystemMutation,
   TraceKernelFileSystemMutationContext,
@@ -7,6 +10,7 @@ import type {
 } from './watch';
 import {
   TraceKernelFileSystemError,
+  TraceKernelInvalidArgumentError,
   type TraceKernelFileSystemErrorCode,
 } from './errors';
 
@@ -1539,6 +1543,8 @@ export class TraceKernelOpenFileDescription {
             truncate: (length: number) => this.truncate(length),
           }
         : {}),
+      seek: (offset: number, whence: TraceKernelSeekWhence) =>
+        this.seek(offset, whence),
       stat: () => this.fileSystem.statOpen(this.file),
       duplicate: () => this.duplicate(),
       close: () => this.close(),
@@ -1601,10 +1607,44 @@ export class TraceKernelOpenFileDescription {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
         if (this.closed) return this.closedError();
-        return this.fileSystem.truncateOpen(this.file, length).pipe(
-          Effect.tap(() => Effect.sync(() => {
-            if (this.offset > length) this.offset = length;
-          }))
+        return this.fileSystem.truncateOpen(this.file, length);
+      })
+    );
+  }
+
+  private seek(
+    offset: number,
+    whence: TraceKernelSeekWhence
+  ): Effect.Effect<
+    number,
+    TraceKernelFileSystemError | TraceKernelInvalidArgumentError
+  > {
+    return this.mutex.withPermits(1)(
+      Effect.suspend((): Effect.Effect<
+        number,
+        TraceKernelFileSystemError | TraceKernelInvalidArgumentError
+      > => {
+        if (this.closed) return this.closedError();
+        const base = whence === 'set'
+          ? Effect.succeed(0)
+          : whence === 'current'
+            ? Effect.succeed(this.offset)
+            : this.fileSystem.statOpen(this.file).pipe(
+                Effect.map((stat) => stat.size)
+              );
+        return base.pipe(
+          Effect.flatMap((origin) => {
+            const nextOffset = origin + offset;
+            if (!Number.isSafeInteger(nextOffset) || nextOffset < 0) {
+              return Effect.fail(new TraceKernelInvalidArgumentError({
+                code: 'EINVAL',
+                argument: 'offset',
+                message: `EINVAL: seek would produce invalid offset ${nextOffset}`,
+              }));
+            }
+            this.offset = nextOffset;
+            return Effect.succeed(nextOffset);
+          })
         );
       })
     );

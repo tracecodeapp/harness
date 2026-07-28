@@ -174,6 +174,12 @@ export type TraceKernelSyscallRequest =
       readonly position?: number;
     }
   | {
+      readonly op: 'seek';
+      readonly fd: number;
+      readonly offset: number;
+      readonly whence: 'set' | 'current' | 'end';
+    }
+  | {
       readonly op: 'close';
       readonly fd: number;
     }
@@ -342,6 +348,7 @@ export type TraceKernelSyscallValue =
   | { readonly op: 'open'; readonly fd: number }
   | { readonly op: 'read'; readonly bytes: Uint8Array }
   | { readonly op: 'write'; readonly bytesWritten: number }
+  | { readonly op: 'seek'; readonly offset: number }
   | { readonly op: 'close' }
   | { readonly op: 'dup'; readonly fd: number }
   | { readonly op: 'dup2'; readonly fd: number }
@@ -743,6 +750,14 @@ export class TraceKernelSyscallDispatcher {
       case 'write':
         return this.process.write(request.fd, request.bytes, request.position).pipe(
           Effect.map((bytesWritten) => ({ op: 'write' as const, bytesWritten }))
+        );
+      case 'seek':
+        return this.process.seek(
+          request.fd,
+          request.offset,
+          request.whence
+        ).pipe(
+          Effect.map((offset) => ({ op: 'seek' as const, offset }))
         );
       case 'close':
         return this.process.close(request.fd).pipe(

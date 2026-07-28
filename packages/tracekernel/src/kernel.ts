@@ -12,8 +12,10 @@ import {
   type TraceKernelDescriptorDupError,
   type TraceKernelDescriptorInheritanceError,
   type TraceKernelDescriptorReadError,
+  type TraceKernelDescriptorSeekError,
   type TraceKernelDescriptorWriteError,
   type TraceKernelPipeOptions,
+  type TraceKernelSeekWhence,
 } from './descriptors';
 import {
   makeTraceKernelNullDescriptor,
@@ -281,6 +283,14 @@ export class TraceKernelProcess {
     position?: number
   ): Effect.Effect<number, TraceKernelDescriptorWriteError> {
     return this.descriptors.write(fd, bytes, position);
+  }
+
+  seek(
+    fd: number,
+    offset: number,
+    whence: TraceKernelSeekWhence
+  ): Effect.Effect<number, TraceKernelDescriptorSeekError> {
+    return this.descriptors.seek(fd, offset, whence);
   }
 
   close(fd: number): Effect.Effect<void, TraceKernelBadFileDescriptorError> {

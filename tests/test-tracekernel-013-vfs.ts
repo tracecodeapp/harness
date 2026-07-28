@@ -91,6 +91,33 @@ async function main(): Promise<void> {
       assertCondition(text(yield* reader.read(duplicateFd, 2)) === 'ef', 'Closing one dup invalidated the shared description.');
       yield* reader.close(duplicateFd);
 
+      const seekFd = yield* session.openFile(reader, 'offsets.txt', {
+        access: 'read-write',
+      });
+      const seekDuplicateFd = yield* reader.dup(seekFd);
+      assertCondition(
+        (yield* reader.seek(seekFd, 2, 'set')) === 2 &&
+          (yield* reader.seek(seekDuplicateFd, 1, 'current')) === 3,
+        'seek did not update the shared open-file description offset.'
+      );
+      assertCondition(
+        text(yield* reader.read(seekFd, 1)) === 'd',
+        'A dup did not observe the offset established by seek.'
+      );
+      assertCondition(
+        (yield* reader.seek(seekDuplicateFd, -2, 'end')) === 4 &&
+          text(yield* reader.read(seekFd, 2)) === 'ef',
+        'End-relative seek returned the wrong offset.'
+      );
+      yield* reader.seek(seekFd, 0, 'end');
+      yield* reader.ftruncate(seekDuplicateFd, 2);
+      assertCondition(
+        (yield* reader.seek(seekDuplicateFd, 0, 'current')) === 6,
+        'ftruncate incorrectly changed the open-file description offset.'
+      );
+      yield* reader.close(seekFd);
+      yield* reader.close(seekDuplicateFd);
+
       yield* session.writeFile('inode.txt', bytes('old-inode'));
       const oldInodeFd = yield* session.openFile(reader, 'inode.txt', { access: 'read' });
       yield* session.unlink('inode.txt');
@@ -312,6 +339,8 @@ async function main(): Promise<void> {
     authoritativeCrossProcessReads: true,
     independentOpenOffsets: true,
     dupSharesOffset: true,
+    seekSharesOffsetAcrossDup: true,
+    truncatePreservesOffset: true,
     unlinkPreservesOpenNode: true,
     atomicAppend: true,
     generationAdvancesOnMutation: true,

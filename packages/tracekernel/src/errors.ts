@@ -74,6 +74,7 @@ export class TraceKernelBadFileDescriptorError extends Data.TaggedError(
     | 'fcntl'
     | 'inherit'
     | 'poll'
+    | 'seek'
     | 'stat'
     | 'truncate';
   readonly message: string;

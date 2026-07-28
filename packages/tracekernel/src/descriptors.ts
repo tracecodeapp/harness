@@ -48,6 +48,8 @@ export interface TraceKernelDescriptorOperationContext {
   readonly sid: number;
 }
 
+export type TraceKernelSeekWhence = 'set' | 'current' | 'end';
+
 export interface TraceKernelDescriptor {
   readonly kind: TraceKernelDescriptorKind;
   readonly resourceId: string;
@@ -86,6 +88,10 @@ export interface TraceKernelDescriptor {
   ): Effect.Effect<TraceKernelDescriptorReadiness, Error>;
   stat?(): Effect.Effect<TraceKernelStat, Error>;
   truncate?(length: number): Effect.Effect<void, Error>;
+  seek?(
+    offset: number,
+    whence: TraceKernelSeekWhence
+  ): Effect.Effect<number, Error>;
   duplicate(): Effect.Effect<TraceKernelDescriptor, Error>;
   close(): Effect.Effect<void>;
 }
@@ -112,6 +118,10 @@ export type TraceKernelDescriptorWriteError =
   | TraceKernelBrokenPipeError
   | TraceKernelTerminalError
   | TraceKernelWouldBlockError;
+
+export type TraceKernelDescriptorSeekError =
+  | TraceKernelBadFileDescriptorError
+  | TraceKernelInvalidArgumentError;
 
 export interface TraceKernelDescriptorTableOptions {
   readonly maxDescriptors?: number;
@@ -545,6 +555,38 @@ export class TraceKernelDescriptorTable {
             operation: 'write',
             message: error.message,
           }))
+    );
+  }
+
+  seek(
+    fd: number,
+    offset: number,
+    whence: TraceKernelSeekWhence
+  ): Effect.Effect<number, TraceKernelDescriptorSeekError> {
+    const descriptor = this.descriptors.get(fd);
+    if (!descriptor?.seek) {
+      return Effect.fail(new TraceKernelBadFileDescriptorError({
+        fd,
+        operation: 'seek',
+        message: `EBADF: descriptor ${fd} does not support seek`,
+      }));
+    }
+    if (!Number.isSafeInteger(offset)) {
+      return Effect.fail(new TraceKernelInvalidArgumentError({
+        code: 'EINVAL',
+        argument: 'offset',
+        message: `EINVAL: invalid seek offset ${offset}`,
+      }));
+    }
+    return descriptor.seek(offset, whence).pipe(
+      Effect.mapError((error) =>
+        error instanceof TraceKernelInvalidArgumentError
+          ? error
+          : new TraceKernelBadFileDescriptorError({
+              fd,
+              operation: 'seek',
+              message: error.message,
+            }))
     );
   }
 

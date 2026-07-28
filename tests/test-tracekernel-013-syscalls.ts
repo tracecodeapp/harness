@@ -663,6 +663,39 @@ async function main(): Promise<void> {
         `Positioned read returned the wrong bytes: ${JSON.stringify(positioned)}`
       );
 
+      const sought = yield* syscalls.dispatch({
+        op: 'seek',
+        fd,
+        offset: -8,
+        whence: 'end',
+      });
+      success(sought);
+      assertCondition(
+        sought.value.op === 'seek' && sought.value.offset === 5,
+        `seek returned the wrong offset: ${JSON.stringify(sought)}`
+      );
+      const sequential = yield* syscalls.dispatch({
+        op: 'read',
+        fd,
+        maxBytes: 4,
+      });
+      success(sequential);
+      assertCondition(
+        sequential.value.op === 'read' &&
+          new TextDecoder().decode(sequential.value.bytes) === 'cont',
+        `seek did not move the sequential read offset: ${JSON.stringify(sequential)}`
+      );
+      const invalidSeek = yield* syscalls.dispatch({
+        op: 'seek',
+        fd,
+        offset: -100,
+        whence: 'end',
+      });
+      assertCondition(
+        !invalidSeek.ok && invalidSeek.error.code === 'EINVAL',
+        `seek admitted a negative resulting offset: ${JSON.stringify(invalidSeek)}`
+      );
+
       const descriptorStat = yield* syscalls.dispatch({ op: 'fstat', fd });
       success(descriptorStat);
       assertCondition(
