@@ -106,6 +106,18 @@ grace-period expiry force-interrupt the process and record signal termination.
 cleanup, lease release, and process-table removal remain attached to the same
 supervised process fiber in every path.
 
+`SIGWINCH` is a distinct non-terminating notification. Changing terminal
+window size through either a descriptor syscall or the host terminal session
+targets the terminal's authoritative foreground process group. Missing or
+failed runtime delivery preserves the POSIX default disposition of ignore:
+there is no grace deadline, forced interruption, or signal termination record.
+The binary syscall codec carries `SIGWINCH` for `kill`, but rejects it in a
+decoded process-termination record. Product runners receive live notifications
+through a process-scoped channel separate from `AbortSignal`, so notification
+delivery cannot retire an engine lease. The JavaScript worker maps that channel
+to ordinary `process.on("SIGWINCH")` handlers and proves both handled and
+unhandled behavior.
+
 Each process may own one kernel watchdog. The `watchdog` syscall arms, pets,
 disarms, or inspects it; its monotonic lifetime belongs to the process rather
 than a runtime event loop. Expiry delivers `SIGTERM` or unconditional
@@ -812,8 +824,12 @@ The initial 0.13 branch now establishes:
   foreground process-group transfer, background-read rejection, new-session
   detachment, host/process byte streams, and kernel-owned terminal snapshots;
 - terminal job-control syscalls (`isatty`, `tcgetpgrp`, and `tcsetpgrp`) across
-  JavaScript/TypeScript, C/C++, Python, and C#, including ordinary runtime API
-  surfaces rather than TraceKernel-only test hooks;
+  JavaScript/TypeScript, C/C++, Python, C#, and Java, including ordinary
+  runtime API surfaces rather than TraceKernel-only test hooks;
+- kernel-owned terminal window size and resize through JavaScript stream and
+  TraceKernel APIs, Python `os`/`termios`, C/C++ `ioctl`, and explicit managed
+  C# and Java host APIs, with `SIGWINCH` selection at the authoritative
+  foreground process group and live JavaScript handler delivery;
 - authoritative terminal-generated `VINTR` and `VQUIT` delivery to the
   foreground process group, plus `SIGHUP` delivery and controlling-session
   detachment when the terminal closes;
@@ -981,11 +997,11 @@ CPU-bound worker code by changing process-table metadata. TraceKernel must add a
 runtime lease suspend/resume capability, and each language adapter must prove
 that capability, before exposing those signals as supported.
 
-Terminal window-size ioctls and `SIGWINCH`, additional termios modes, positive
-socket deadlines, UDP, broader DNS/address-family behavior, and Unix-domain
-sockets remain later subsystem slices. TraceJVM should attach through the same
-session/process/descriptor contracts rather than adapting the legacy CheerpJ
-filesystem layout into the kernel.
+Compiled-runtime asynchronous signal-handler injection, additional termios
+modes, positive socket deadlines, UDP, broader DNS/address-family behavior,
+and Unix-domain sockets remain later subsystem slices. TraceJVM attaches
+through the same session/process/descriptor contracts rather than adapting the
+legacy CheerpJ filesystem layout into the kernel.
 
 The governing invariant is:
 
