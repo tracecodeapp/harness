@@ -150,8 +150,13 @@ export class TraceKernelControlledRuntime {
   ): Effect.Effect<TraceKernelRuntimeLease, Error> {
     return Effect.gen(this, function* () {
       if (this.entries.has(context.pid)) {
+        const existing = this.entries.get(context.pid)!;
         return yield* Effect.fail(
-          new Error(`TraceKernel process ${context.pid} already has a controlled runtime lease.`)
+          new Error(
+            `TraceKernel process ${context.pid} already has a controlled runtime lease ` +
+            `for ${JSON.stringify(existing.context.command)} while attaching ` +
+            `${JSON.stringify(context.command)}.`
+          )
         );
       }
       const completion = yield* Deferred.make<TraceKernelRuntimeResult, Error>();
