@@ -116,7 +116,15 @@ decoded process-termination record. Product runners receive live notifications
 through a process-scoped channel separate from `AbortSignal`, so notification
 delivery cannot retire an engine lease. The JavaScript worker maps that channel
 to ordinary `process.on("SIGWINCH")` handlers and proves both handled and
-unhandled behavior.
+unhandled behavior. Compiled workers receive the same process-owned state
+through a two-word shared mailbox: a monotonic sequence and the latest standard
+signal number. Standard signals may coalesce before the next runtime safe
+point rather than pretending the mailbox is an application event queue.
+Python drains it after kernel syscalls and invokes ordinary
+`signal.SIGWINCH` handlers; the C/C++ WASI shim does the same through ordinary
+`signal()`/`raise()` after terminal ioctl; C# publishes
+`KernelTerminal.WindowSizeChanged`. CPU-bound compiled code is not claimed to
+be asynchronously preemptible.
 
 Each process may own one kernel watchdog. The `watchdog` syscall arms, pets,
 disarms, or inspects it; its monotonic lifetime belongs to the process rather
@@ -741,9 +749,11 @@ resolver. An explicit `envp` is forwarded as child environment overrides; a
 null `envp` inherits the parent environment. Ordered
 `posix_spawn_file_actions_adddup2` and `addclose` operations run against the
 child descriptor table after inheritance and structured stdio setup.
-Arbitrary signal handlers, PATH-compatible executable search, stopped/continued
-child states, and `addopen` remain explicit later slices rather than silently
-falling back to WASI placeholders.
+Arbitrary asynchronously injected signal handlers, PATH-compatible executable
+search, stopped/continued child states, and `addopen` remain explicit later
+slices rather than silently falling back to WASI placeholders. The current
+WASI compatibility layer implements handler registration and synchronous
+`SIGWINCH` dispatch at kernel syscall safe points.
 
 Filesystem watches are now session resources exposed through process-owned
 descriptors. `watch(path)` installs an `fs-watch` descriptor; ordinary
@@ -829,7 +839,8 @@ The initial 0.13 branch now establishes:
 - kernel-owned terminal window size and resize through JavaScript stream and
   TraceKernel APIs, Python `os`/`termios`, C/C++ `ioctl`, and explicit managed
   C# and Java host APIs, with `SIGWINCH` selection at the authoritative
-  foreground process group and live JavaScript handler delivery;
+  foreground process group, live JavaScript handler delivery, Python and C/C++
+  syscall-safe-point handlers, and a managed C# window-resize event;
 - authoritative terminal-generated `VINTR` and `VQUIT` delivery to the
   foreground process group, plus `SIGHUP` delivery and controlling-session
   detachment when the terminal closes;
@@ -997,11 +1008,12 @@ CPU-bound worker code by changing process-table metadata. TraceKernel must add a
 runtime lease suspend/resume capability, and each language adapter must prove
 that capability, before exposing those signals as supported.
 
-Compiled-runtime asynchronous signal-handler injection, additional termios
-modes, positive socket deadlines, UDP, broader DNS/address-family behavior,
-and Unix-domain sockets remain later subsystem slices. TraceJVM attaches
-through the same session/process/descriptor contracts rather than adapting the
-legacy CheerpJ filesystem layout into the kernel.
+CPU-bound compiled-runtime asynchronous signal-handler injection, the Java
+managed resize-notification surface, additional termios modes, positive socket
+deadlines, UDP, broader DNS/address-family behavior, and Unix-domain sockets
+remain later subsystem slices. TraceJVM attaches through the same
+session/process/descriptor contracts rather than adapting the legacy CheerpJ
+filesystem layout into the kernel.
 
 The governing invariant is:
 
