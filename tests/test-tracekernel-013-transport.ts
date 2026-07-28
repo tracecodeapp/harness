@@ -216,6 +216,7 @@ async function main(): Promise<void> {
     { op: 'processInfo' },
     { op: 'processInfo', pid: 101 },
     { op: 'processList' },
+    { op: 'environment' },
     { op: 'kill', pid: 102, signal: 'SIGHUP' },
     { op: 'kill', pid: 102, signal: 'SIGTERM' },
     { op: 'kill', pid: 102, signal: 'SIGQUIT' },
@@ -406,6 +407,16 @@ async function main(): Promise<void> {
             args: ['Child'],
           },
         ],
+      },
+    },
+    {
+      ok: true,
+      value: {
+        op: 'environment',
+        env: {
+          LANG: 'C.UTF-8',
+          TRACE_VALUE: 'kernel-owned',
+        },
       },
     },
     {

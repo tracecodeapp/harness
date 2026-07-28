@@ -1120,6 +1120,17 @@ export class TraceKernelSession {
     );
   }
 
+  processEnvironment(
+    caller: TraceKernelProcess
+  ): Effect.Effect<
+    Readonly<Record<string, string>>,
+    TraceKernelProcessStateError
+  > {
+    return this.assertOwnedProcess(caller).pipe(
+      Effect.map(() => Object.freeze({ ...caller.snapshot().env }))
+    );
+  }
+
   createProcessSession(
     process: TraceKernelProcess
   ): Effect.Effect<

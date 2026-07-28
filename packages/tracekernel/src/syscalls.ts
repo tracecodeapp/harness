@@ -108,6 +108,7 @@ export type TraceKernelSyscallRequest =
   | { readonly op: 'identity'; readonly pid?: number }
   | { readonly op: 'processInfo'; readonly pid?: number }
   | { readonly op: 'processList' }
+  | { readonly op: 'environment' }
   | {
       readonly op: 'kill';
       readonly pid: number;
@@ -339,6 +340,10 @@ export type TraceKernelSyscallValue =
   | {
       readonly op: 'processList';
       readonly processes: readonly TraceKernelProcessInfo[];
+    }
+  | {
+      readonly op: 'environment';
+      readonly env: Readonly<Record<string, string>>;
     }
   | { readonly op: 'kill' }
   | { readonly op: 'setsid'; readonly sid: number; readonly pgid: number }
@@ -657,6 +662,13 @@ export class TraceKernelSyscallDispatcher {
           Effect.map((processes) => ({
             op: 'processList' as const,
             processes,
+          }))
+        );
+      case 'environment':
+        return this.session.processEnvironment(this.process).pipe(
+          Effect.map((env) => ({
+            op: 'environment' as const,
+            env,
           }))
         );
       case 'kill':

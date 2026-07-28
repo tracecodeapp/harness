@@ -1857,6 +1857,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'identity':
       case 'processInfo':
       case 'processList':
+      case 'environment':
       case 'kill':
       case 'setsid':
       case 'setpgid':

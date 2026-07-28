@@ -66,6 +66,7 @@ const OP_CODES = {
   seek: 48,
   processInfo: 49,
   processList: 50,
+  environment: 51,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>;
 
 type TraceKernelSyscallOperation = keyof typeof OP_CODES;
@@ -561,6 +562,7 @@ export function encodeTraceKernelSyscallRequest(
       if (request.pid !== undefined) writer.i32(request.pid);
       break;
     case 'processList':
+    case 'environment':
       break;
     case 'kill':
       writer.i32(request.pid);
@@ -1017,6 +1019,9 @@ export function decodeTraceKernelSyscallRequest(
     case 'processList':
       request = { op: 'processList' };
       break;
+    case 'environment':
+      request = { op: 'environment' };
+      break;
     case 'socket':
       request = { op: 'socket' };
       break;
@@ -1429,6 +1434,15 @@ export function encodeTraceKernelSyscallResult(
         writeProcessInfo(writer, process);
       }
       break;
+    case 'environment': {
+      const entries = Object.entries(value.env);
+      writer.u32(entries.length);
+      for (const [name, entryValue] of entries) {
+        writer.string(name);
+        writer.string(entryValue);
+      }
+      break;
+    }
     case 'socket':
     case 'open':
     case 'dup':
@@ -1797,6 +1811,18 @@ export function decodeTraceKernelSyscallResult(
       value = {
         op: 'processList',
         processes: Object.freeze(processes),
+      };
+      break;
+    }
+    case 'environment': {
+      const entryCount = reader.u32();
+      const env: Record<string, string> = {};
+      for (let index = 0; index < entryCount; index += 1) {
+        env[reader.string()] = reader.string();
+      }
+      value = {
+        op: 'environment',
+        env: Object.freeze(env),
       };
       break;
     }

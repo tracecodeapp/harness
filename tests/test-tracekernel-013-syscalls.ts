@@ -90,6 +90,7 @@ async function main(): Promise<void> {
         runtime: 'syscall-test',
         command: 'mutable-topology-child',
         parentPid: process.pid,
+        env: { PATH: '/usr/bin' },
       });
       yield* mutableTopologyChild.awaitStarted();
       const childTopologySyscalls = new TraceKernelSyscallDispatcher(
@@ -155,6 +156,18 @@ async function main(): Promise<void> {
           ),
         `processList did not expose the caller-visible process table: ${JSON.stringify(
           processList
+        )}`
+      );
+      const environment = yield* childTopologySyscalls.dispatch({
+        op: 'environment',
+      });
+      success(environment);
+      assertCondition(
+        environment.value.op === 'environment' &&
+          environment.value.env.PATH === '/usr/bin' &&
+          Object.isFrozen(environment.value.env),
+        `environment did not expose an immutable projection of the caller environment: ${JSON.stringify(
+          environment
         )}`
       );
       const createdSession = yield* childTopologySyscalls.dispatch({ op: 'setsid' });
