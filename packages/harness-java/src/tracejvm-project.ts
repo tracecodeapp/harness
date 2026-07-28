@@ -424,17 +424,15 @@ function createProcessHost(
           { name: 'ENOSYS' }
         );
       }
-      if (
-        hostRequest.payload !== undefined &&
-        !isRecord(hostRequest.payload)
-      ) {
+      const payload = hostRequest.payload;
+      if (payload !== undefined && !isRecord(payload)) {
         throw Object.assign(
           new Error('TraceJVM POSIX syscall payload must be an object.'),
           { name: 'EINVAL' }
         );
       }
       const result = await kernelSyscalls.dispatch({
-        ...(hostRequest.payload ?? {}),
+        ...(payload ?? {}),
         op: hostRequest.operation,
       });
       return unwrapKernelSyscallValue(hostRequest.operation, result);
