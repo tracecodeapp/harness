@@ -8,6 +8,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
+  RuntimeProjectProcessInfo,
 } from '@tracecode/harness-core';
 import {
   runRuntimeProjectWorkerBridge,
@@ -35,8 +36,34 @@ export interface TraceJVMProjectClient {
   terminate(): void;
 }
 
+export interface TraceJVMProjectHostRequest<Payload = unknown> {
+  readonly service: string;
+  readonly operation: string;
+  readonly payload?: Payload;
+}
+
+export interface TraceJVMProjectHost {
+  dispatch(request: TraceJVMProjectHostRequest): Promise<unknown> | unknown;
+}
+
+export interface TraceJVMProjectClientContext {
+  /**
+   * Process identity owning every descriptor and syscall issued by this
+   * invocation.
+   */
+  readonly process?: RuntimeProjectProcessInfo;
+  /**
+   * Present when this command is attached to TraceKernel's process-bound
+   * syscall dispatcher. This is structurally compatible with TraceJVM's
+   * generic Worker host and does not expose TraceKernel transport internals.
+   */
+  readonly host?: TraceJVMProjectHost;
+}
+
 export type TraceJVMProjectClientFactory =
-  () => TraceJVMProjectClient | Promise<TraceJVMProjectClient>;
+  (
+    context: TraceJVMProjectClientContext
+  ) => TraceJVMProjectClient | Promise<TraceJVMProjectClient>;
 
 export const TRACEJVM_PROJECT_CAPABILITIES = Object.freeze({
   provider: 'tracejvm',
@@ -335,6 +362,82 @@ function terminateClient(client: TraceJVMProjectClient | undefined): void {
   }
 }
 
+interface KernelSyscallWireResult {
+  readonly ok: boolean;
+  readonly value?: unknown;
+  readonly error?: {
+    readonly code?: string;
+    readonly message?: string;
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function unwrapKernelSyscallValue(
+  operation: string,
+  result: unknown
+): unknown {
+  if (!isRecord(result) || typeof result.ok !== 'boolean') {
+    throw Object.assign(
+      new Error('TraceKernel returned an invalid syscall response.'),
+      { name: 'EPROTO' }
+    );
+  }
+  const wire = result as unknown as KernelSyscallWireResult;
+  if (!wire.ok) {
+    const code =
+      isRecord(wire.error) && typeof wire.error.code === 'string'
+        ? wire.error.code
+        : 'EIO';
+    const message =
+      isRecord(wire.error) && typeof wire.error.message === 'string'
+        ? wire.error.message
+        : `${code}: TraceKernel syscall failed`;
+    throw Object.assign(new Error(message), { name: code });
+  }
+  if (
+    isRecord(wire.value) &&
+    wire.value.op === operation
+  ) {
+    const { op: _op, ...value } = wire.value;
+    return Object.keys(value).length === 0 ? undefined : value;
+  }
+  return wire.value;
+}
+
+function createProcessHost(
+  request: JavaProjectRequest
+): TraceJVMProjectHost | undefined {
+  const kernelSyscalls = request.kernelSyscalls;
+  if (!kernelSyscalls) return undefined;
+  return Object.freeze({
+    async dispatch(hostRequest: TraceJVMProjectHostRequest): Promise<unknown> {
+      if (hostRequest.service !== 'posix') {
+        throw Object.assign(
+          new Error(`TraceJVM host service is not available: ${hostRequest.service}`),
+          { name: 'ENOSYS' }
+        );
+      }
+      if (
+        hostRequest.payload !== undefined &&
+        !isRecord(hostRequest.payload)
+      ) {
+        throw Object.assign(
+          new Error('TraceJVM POSIX syscall payload must be an object.'),
+          { name: 'EINVAL' }
+        );
+      }
+      const result = await kernelSyscalls.dispatch({
+        ...(hostRequest.payload ?? {}),
+        op: hostRequest.operation,
+      });
+      return unwrapKernelSyscallValue(hostRequest.operation, result);
+    },
+  });
+}
+
 function unsupportedSnapshot(request: JavaProjectRequest): RuntimeCommandResult | undefined {
   if ((request.project.symlinks?.length ?? 0) > 0) {
     return {
@@ -501,7 +604,10 @@ export function createTraceJVMProjectRunner(
       bounded.signal?.addEventListener('abort', terminateActive, { once: true });
       try {
         if (bounded.signal?.aborted) return cancelledResult(bounded.signal);
-        client = await options.createClient();
+        client = await options.createClient(Object.freeze({
+          process: request.process,
+          host: createProcessHost(request),
+        }));
         if (
           (typeof client !== 'object' && typeof client !== 'function') ||
           client === null

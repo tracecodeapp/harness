@@ -27,7 +27,9 @@ function contentType(path: string): string {
   return 'application/octet-stream';
 }
 
-const traceJVMRoot = resolve('../tracejvm');
+const traceJVMRoot = resolve(
+  process.env.TRACECODE_TRACEJVM_ROOT ?? '../tracejvm'
+);
 const temporaryDirectory = mkdtempSync(
   join(tmpdir(), 'tracekernel-013-tracejvm-browser-')
 );

@@ -301,6 +301,95 @@ async function testClientReuseIsRejected(): Promise<void> {
   );
 }
 
+async function testProcessHostMapsGenericPosixCalls(): Promise<void> {
+  const dispatched: unknown[] = [];
+  const runRequest = request('run', []);
+  runRequest.kernelSyscalls = {
+    channel: {
+      buffer: new SharedArrayBuffer(264),
+      byteCapacity: 256,
+    },
+    async dispatch(syscall) {
+      dispatched.push(syscall);
+      if (
+        typeof syscall === 'object' &&
+        syscall !== null &&
+        (syscall as { op?: unknown }).op === 'open'
+      ) {
+        return { ok: true, value: { op: 'open', fd: 17 } };
+      }
+      return {
+        ok: false,
+        error: { code: 'EBADF', message: 'bad file descriptor' },
+      };
+    },
+    async service() {},
+    close() {},
+  };
+  const runner = createTraceJVMProjectRunner({
+    createClient(context) {
+      assertCondition(
+        context.process?.pid === 42 && context.host !== undefined,
+        `TraceJVM client did not receive its process-scoped host: ${JSON.stringify(context.process)}`
+      );
+      return {
+        async compile() {
+          throw new Error('compile should not run');
+        },
+        async run() {
+          const opened = await context.host!.dispatch({
+            service: 'posix',
+            operation: 'open',
+            payload: {
+              path: '/workspace/service/data.txt',
+              options: { read: true },
+            },
+          });
+          assertCondition(
+            JSON.stringify(opened) === JSON.stringify({ fd: 17 }),
+            `TraceKernel syscall value was not normalized: ${JSON.stringify(opened)}`
+          );
+          let failure: unknown;
+          try {
+            await context.host!.dispatch({
+              service: 'posix',
+              operation: 'close',
+              payload: { fd: 999 },
+            });
+          } catch (error) {
+            failure = error;
+          }
+          assertCondition(
+            failure instanceof Error &&
+              failure.name === 'EBADF' &&
+              failure.message === 'bad file descriptor',
+            `TraceKernel errno was not preserved for TraceJVM: ${String(failure)}`
+          );
+          return completed();
+        },
+        terminate() {},
+      };
+    },
+  });
+
+  const result = await runner(runRequest);
+  assertCondition(
+    result.exitCode === 0 &&
+      JSON.stringify(dispatched) === JSON.stringify([
+        {
+          path: '/workspace/service/data.txt',
+          options: { read: true },
+          op: 'open',
+        },
+        { fd: 999, op: 'close' },
+      ]),
+    `TraceJVM host calls did not reach the process syscall bridge: ${JSON.stringify({
+      result,
+      dispatched,
+    })}`
+  );
+}
+
 async function testBrowserWorkspaceCommitsArtifactsToTKFS(): Promise<void> {
   let clientCount = 0;
   const workspace = await createBrowserProjectWorkspace({
@@ -372,5 +461,7 @@ await testUnsupportedBoundaryIsExplicit();
 console.log('PASS: TraceJVM adapter exposes its current filesystem boundary');
 await testClientReuseIsRejected();
 console.log('PASS: TraceJVM adapter rejects mutable client reuse');
+await testProcessHostMapsGenericPosixCalls();
+console.log('PASS: TraceJVM generic POSIX host maps to process-scoped TraceKernel syscalls');
 await testBrowserWorkspaceCommitsArtifactsToTKFS();
 console.log('PASS: browser TraceJVM javac/java chains exchange artifacts through TKFS');

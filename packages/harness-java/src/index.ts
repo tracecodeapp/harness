@@ -26,7 +26,10 @@ export {
   TRACEJVM_PROJECT_CAPABILITIES,
   createTraceJVMProjectRunner,
   type TraceJVMProjectClient,
+  type TraceJVMProjectClientContext,
   type TraceJVMProjectClientFactory,
   type TraceJVMProjectExecutionReport,
+  type TraceJVMProjectHost,
+  type TraceJVMProjectHostRequest,
   type TraceJVMProjectRunnerOptions,
 } from './tracejvm-project';

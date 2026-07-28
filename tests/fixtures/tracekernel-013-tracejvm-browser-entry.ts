@@ -57,7 +57,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       ].join('\n'),
     }],
     traceJVM: {
-      createClient() {
+      createClient(context) {
         workerCount += 1;
         return new TraceJVMWorkerClient({
           engine: {
@@ -73,6 +73,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
           createWorker: () => new Worker('/tracejvm/browser-worker.js', {
             type: 'module',
           }) as unknown as TraceJVMWorkerLike,
+          ...(context.host ? { host: context.host } : {}),
         });
       },
       onExecutionReport(report) {
