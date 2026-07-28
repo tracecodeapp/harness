@@ -14,6 +14,7 @@ declare global {
     secondRun: { stdout: string; stderr: string; exitCode: number };
     filesystemRun: { stdout: string; stderr: string; exitCode: number };
     stdinRun: { stdout: string; stderr: string; exitCode: number };
+    socketRun: { stdout: string; stderr: string; exitCode: number };
     sharedFile: string;
     randomFile: string;
     interrupted: {
@@ -93,6 +94,24 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '      System.out.println("fs:" + prior + ":" + listed + ":" + millisecondTime + ":" + random + ":" + randomPointer + ":" + linkTarget + ":" + sameFile + ":" + linkDeleted);',
         '      return;',
         '    }',
+        '    if (args.length > 0 && args[0].equals("socket")) {',
+        '      java.net.InetAddress loopback = java.net.InetAddress.getLoopbackAddress();',
+        '      try (var server = new java.net.ServerSocket(0, 8, loopback)) {',
+        '        try (var client = new java.net.Socket(loopback, server.getLocalPort())) {',
+        '          client.getOutputStream().write("ping".getBytes(java.nio.charset.StandardCharsets.UTF_8));',
+        '          try (var accepted = server.accept()) {',
+        '            byte[] request = accepted.getInputStream().readNBytes(4);',
+        '            if (!new String(request, java.nio.charset.StandardCharsets.UTF_8).equals("ping")) {',
+        '              throw new IllegalStateException("unexpected request");',
+        '            }',
+        '            accepted.getOutputStream().write("pong".getBytes(java.nio.charset.StandardCharsets.UTF_8));',
+        '            byte[] response = client.getInputStream().readNBytes(4);',
+        '            System.out.println("socket:" + new String(response, java.nio.charset.StandardCharsets.UTF_8));',
+        '          }',
+        '        }',
+        '      }',
+        '      return;',
+        '    }',
         '    count += 1;',
         '    String mode = System.getProperty("mode", "missing");',
         '    String leaked = System.getProperty("tracejvm.leak", "missing");',
@@ -170,6 +189,9 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         stdinPipe: createRuntimeCommandStdinPipeFromText('hello'),
       }
     );
+    const socketRun = await workspace.runCommand(
+      'java -cp build Main socket'
+    );
 
     const controller = new AbortController();
     let resolveReady!: () => void;
@@ -216,6 +238,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       secondRun,
       filesystemRun,
       stdinRun,
+      socketRun,
       sharedFile,
       randomFile,
       interrupted,

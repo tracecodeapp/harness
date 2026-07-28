@@ -75,7 +75,7 @@ export const TRACEJVM_PROJECT_CAPABILITIES = Object.freeze({
   filesystem: 'live-kernel-syscalls',
   descriptorStdio: true,
   terminalStdin: true,
-  sockets: false,
+  sockets: 'tracekernel-local-tcp',
   workerIsolation: 'per-invocation',
 } as const);
 

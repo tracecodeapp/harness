@@ -121,15 +121,17 @@ try {
           result.randomFile !== 'abZd' ||
           result.stdinRun.exitCode !== 0 ||
           result.stdinRun.stdout !== 'stdin:hello\n' ||
+          result.socketRun.exitCode !== 0 ||
+          result.socketRun.stdout !== 'socket:pong\n' ||
           result.interrupted.exitCode !== 130 ||
           result.interrupted.stderr !== '' ||
           result.restarted.exitCode !== 0 ||
           result.restarted.stdout !== '1:missing:missing:restarted\n' ||
-          result.workerCount !== 7 ||
+          result.workerCount !== 8 ||
           !reportStatuses.includes('compile:completed:not-applicable') ||
           reportStatuses.filter(
             (status) => status === 'run:completed:clean'
-          ).length !== 5
+          ).length !== 6
         ) {
           throw new Error(
             `${engine} failed the TraceKernel/TraceJVM adapter boundary: ${JSON.stringify(result)}`
