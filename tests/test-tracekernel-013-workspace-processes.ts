@@ -697,14 +697,19 @@ async function main(): Promise<void> {
   const authoritativeFileMutations: Array<{
     readonly operation: string;
     readonly paths: readonly string[];
-    readonly directProcessCommit: boolean;
+    readonly originPid?: number;
   }> = [];
   const stopWatchingAuthoritativeFileMutations =
     authoritativeSession.fileSystem.watchMutations((mutation) => {
+      const origin = mutation.origin as
+        | { readonly pid?: unknown }
+        | undefined;
       authoritativeFileMutations.push({
         operation: mutation.operation,
         paths: mutation.paths,
-        directProcessCommit: mutation.origin === undefined,
+        ...(origin && Number.isSafeInteger(origin.pid)
+          ? { originPid: origin.pid as number }
+          : {}),
       });
     });
 
@@ -771,7 +776,7 @@ async function main(): Promise<void> {
       authoritativeFileMutations.some(
         (mutation) =>
           mutation.operation === 'write' &&
-          mutation.directProcessCommit &&
+          mutation.originPid === child.pid &&
           mutation.paths.includes('/workspace/child-owned.txt')
       ),
       `runtime path syscalls did not commit through the authoritative session: ${JSON.stringify(

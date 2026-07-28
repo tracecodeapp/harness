@@ -107,6 +107,7 @@ import {
   type TraceKernelHttp1Request,
   type TraceKernelHttp1Response,
   type TraceKernelHostStandardIo,
+  type TraceKernelFileSystemMutation,
   type TraceKernelFileSystemImage,
   type TraceKernelFileSystemPolicy,
   type TraceKernelHost,
@@ -1280,6 +1281,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.stopObservingExternalTraceKernelMutations =
       this.traceKernelBackingFileSystem.watchExternalMutations((mutation) => {
         this.fs.observeExternalTraceKernelMutation(mutation);
+        this.recordTraceKernelFileSystemMutation(mutation);
       });
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>,
@@ -4902,6 +4904,46 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ...(process?.pid !== undefined ? { pid: process.pid } : {}),
       ...(event.phase ? { phase: event.phase } : {}),
     }, commandContext, actor);
+  }
+
+  private recordTraceKernelFileSystemMutation(
+    mutation: TraceKernelFileSystemMutation
+  ): void {
+    const origin = mutation.origin as
+      | { readonly pid?: unknown }
+      | undefined;
+    if (!origin || !Number.isSafeInteger(origin.pid)) return;
+    const process = this.processTable.get(origin.pid as number);
+    const kernelProcess = process
+      ? this.kernelProcessFor(process)
+      : undefined;
+    if (!process || kernelProcess?.fileSystemMutationOrigin !== origin) return;
+    const snapshot = kernelProcess.snapshot();
+    const actor = this.journalActorFromProcess(snapshot, process.actor);
+    const op: Extract<KernelJournalRecord, { kind: 'fs' }>['op'] =
+      mutation.operation === 'mkdir'
+        ? 'mkdir'
+        : mutation.operation === 'rmdir'
+          ? 'rmdir'
+          : mutation.operation === 'unlink'
+            ? 'delete'
+            : mutation.operation === 'rename'
+              ? 'rename'
+              : 'write';
+    const paths = mutation.operation === 'rename'
+      ? mutation.paths.slice(0, 1)
+      : mutation.paths;
+    for (const path of paths) {
+      if (!isWithinWorkspace(this.cwd, path)) continue;
+      this.recordJournal({
+        kind: 'fs',
+        op,
+        path: toProjectPath(this.cwd, path),
+        actor: this.journalActorId(actor) ?? 'system:system',
+        pid: snapshot.pid,
+        phase: 'live',
+      }, undefined, actor, snapshot);
+    }
   }
 
   private journalHttpAuth(headers: Record<string, string> | undefined): Pick<Extract<KernelJournalRecord, { kind: 'http' }>, 'authPresent' | 'authFingerprint'> {

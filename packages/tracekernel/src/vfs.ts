@@ -1,6 +1,7 @@
 import * as Effect from 'effect/Effect';
 import type {
   TraceKernelDescriptor,
+  TraceKernelDescriptorOperationContext,
   TraceKernelSeekWhence,
 } from './descriptors';
 import type {
@@ -1509,10 +1510,16 @@ export class TraceKernelOpenFileDescription {
     path: string,
     cwd: string,
     options: TraceKernelOpenFileOptions,
-    onFullyClosed: (id: string) => void
+    onFullyClosed: (id: string) => void,
+    mutationContext?: TraceKernelFileSystemMutationContext
   ): Effect.Effect<TraceKernelOpenFileDescription, TraceKernelFileSystemError> {
     return Effect.gen(function* () {
-      const file = yield* fileSystem.prepareOpen(path, cwd, options);
+      const file = yield* fileSystem.prepareOpen(
+        path,
+        cwd,
+        options,
+        mutationContext
+      );
       const mutex = yield* Effect.makeSemaphore(1);
       return new TraceKernelOpenFileDescription(
         id,
@@ -1539,8 +1546,15 @@ export class TraceKernelOpenFileDescription {
         : {}),
       ...(access === 'write' || access === 'read-write'
         ? {
-            write: (bytes: Uint8Array, position?: number) => this.write(bytes, position),
-            truncate: (length: number) => this.truncate(length),
+            write: (
+              bytes: Uint8Array,
+              position?: number,
+              context?: TraceKernelDescriptorOperationContext
+            ) => this.write(bytes, position, context),
+            truncate: (
+              length: number,
+              context?: TraceKernelDescriptorOperationContext
+            ) => this.truncate(length, context),
           }
         : {}),
       seek: (offset: number, whence: TraceKernelSeekWhence) =>
@@ -1581,7 +1595,8 @@ export class TraceKernelOpenFileDescription {
 
   private write(
     bytes: Uint8Array,
-    position?: number
+    position?: number,
+    context?: TraceKernelDescriptorOperationContext
   ): Effect.Effect<number, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
@@ -1590,7 +1605,8 @@ export class TraceKernelOpenFileDescription {
           this.file,
           position ?? this.offset,
           Uint8Array.from(bytes),
-          this.options.append === true
+          this.options.append === true,
+          context ? { origin: context } : undefined
         ).pipe(
           Effect.tap((nextOffset) => position === undefined || this.options.append === true
             ? Effect.sync(() => {
@@ -1603,11 +1619,18 @@ export class TraceKernelOpenFileDescription {
     );
   }
 
-  private truncate(length: number): Effect.Effect<void, TraceKernelFileSystemError> {
+  private truncate(
+    length: number,
+    context?: TraceKernelDescriptorOperationContext
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
         if (this.closed) return this.closedError();
-        return this.fileSystem.truncateOpen(this.file, length);
+        return this.fileSystem.truncateOpen(
+          this.file,
+          length,
+          context ? { origin: context } : undefined
+        );
       })
     );
   }

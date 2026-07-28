@@ -946,7 +946,8 @@ export class TraceKernelSyscallDispatcher {
           Effect.zipRight(this.session.fileSystem.mkdir(
             request.path,
             request.options,
-            this.process.snapshot().cwd
+            this.process.snapshot().cwd,
+            { origin: this.process.fileSystemMutationOrigin }
           )),
           Effect.as({ op: 'mkdir' as const })
         );
@@ -958,7 +959,8 @@ export class TraceKernelSyscallDispatcher {
         }]).pipe(
           Effect.zipRight(this.session.fileSystem.rmdir(
             request.path,
-            this.process.snapshot().cwd
+            this.process.snapshot().cwd,
+            { origin: this.process.fileSystemMutationOrigin }
           )),
           Effect.as({ op: 'rmdir' as const })
         );
@@ -970,7 +972,8 @@ export class TraceKernelSyscallDispatcher {
         }]).pipe(
           Effect.zipRight(this.session.fileSystem.unlink(
             request.path,
-            this.process.snapshot().cwd
+            this.process.snapshot().cwd,
+            { origin: this.process.fileSystemMutationOrigin }
           )),
           Effect.as({ op: 'unlink' as const })
         );
@@ -990,7 +993,8 @@ export class TraceKernelSyscallDispatcher {
           Effect.zipRight(this.session.fileSystem.link(
             request.existingPath,
             request.newPath,
-            this.process.snapshot().cwd
+            this.process.snapshot().cwd,
+            { origin: this.process.fileSystemMutationOrigin }
           )),
           Effect.as({ op: 'link' as const })
         );
@@ -1003,7 +1007,8 @@ export class TraceKernelSyscallDispatcher {
           Effect.zipRight(this.session.fileSystem.symlink(
             request.target,
             request.linkPath,
-            this.process.snapshot().cwd
+            this.process.snapshot().cwd,
+            { origin: this.process.fileSystemMutationOrigin }
           )),
           Effect.as({ op: 'symlink' as const })
         );
@@ -1035,7 +1040,8 @@ export class TraceKernelSyscallDispatcher {
           Effect.zipRight(this.session.fileSystem.rename(
             request.sourcePath,
             request.destinationPath,
-            this.process.snapshot().cwd
+            this.process.snapshot().cwd,
+            { origin: this.process.fileSystemMutationOrigin }
           )),
           Effect.as({ op: 'rename' as const })
         );
@@ -1056,7 +1062,8 @@ export class TraceKernelSyscallDispatcher {
           Effect.zipRight(this.session.fileSystem.writeFile(
             request.path,
             request.bytes,
-            this.process.snapshot().cwd
+            this.process.snapshot().cwd,
+            { origin: this.process.fileSystemMutationOrigin }
           )),
           Effect.as({ op: 'writeFile' as const })
         );

@@ -11,6 +11,7 @@ import {
   type TraceKernelDescriptorDup3Error,
   type TraceKernelDescriptorDupError,
   type TraceKernelDescriptorInheritanceError,
+  type TraceKernelDescriptorOperationContext,
   type TraceKernelDescriptorReadError,
   type TraceKernelDescriptorSeekError,
   type TraceKernelDescriptorWriteError,
@@ -236,6 +237,7 @@ export class TraceKernelProcess {
   private runtimeLease?: TraceKernelRuntimeLease;
   private requestedSignal?: TraceKernelTerminatingSignal;
   private pendingSignal?: TraceKernelTerminatingSignal;
+  readonly fileSystemMutationOrigin: TraceKernelDescriptorOperationContext;
   readonly descriptors: TraceKernelDescriptorTable;
 
   constructor(
@@ -244,13 +246,20 @@ export class TraceKernelProcess {
     maxDescriptors: number,
     private readonly signalGracePeriodMs: number
   ) {
+    this.fileSystemMutationOrigin = Object.freeze({
+      get pid() {
+        return record.pid;
+      },
+      get pgid() {
+        return record.pgid;
+      },
+      get sid() {
+        return record.sid;
+      },
+    });
     this.descriptors = new TraceKernelDescriptorTable({
       maxDescriptors,
-      operationContext: () => ({
-        pid: this.record.pid,
-        pgid: this.record.pgid,
-        sid: this.record.sid,
-      }),
+      operationContext: () => this.fileSystemMutationOrigin,
     });
   }
 
@@ -2390,7 +2399,8 @@ export class TraceKernelSession {
         path,
         process.snapshot().cwd,
         options,
-        (closedId) => this.resources.delete(closedId)
+        (closedId) => this.resources.delete(closedId),
+        { origin: process.fileSystemMutationOrigin }
       );
       this.resources.set(resourceId, description);
       return yield* this.installDescriptor(process, description.descriptor());

@@ -87,7 +87,10 @@ export interface TraceKernelDescriptor {
     context?: TraceKernelDescriptorOperationContext
   ): Effect.Effect<TraceKernelDescriptorReadiness, Error>;
   stat?(): Effect.Effect<TraceKernelStat, Error>;
-  truncate?(length: number): Effect.Effect<void, Error>;
+  truncate?(
+    length: number,
+    context?: TraceKernelDescriptorOperationContext
+  ): Effect.Effect<void, Error>;
   seek?(
     offset: number,
     whence: TraceKernelSeekWhence
@@ -620,7 +623,10 @@ export class TraceKernelDescriptorTable {
         message: `EBADF: descriptor ${fd} does not support ftruncate`,
       }));
     }
-    return descriptor.truncate(Math.max(0, Math.floor(length))).pipe(
+    return descriptor.truncate(
+      Math.max(0, Math.floor(length)),
+      this.operationContext?.()
+    ).pipe(
       Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: 'truncate',
