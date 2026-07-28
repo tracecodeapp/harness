@@ -886,6 +886,15 @@ The initial 0.13 branch now establishes:
   fragmented frame reconstruction, explicit rename/change/overflow events, and
   close-on-dispose/process-exit; cross-language conformance observes a
   JavaScript child mutation through the C# parent watcher;
+- the independent TraceJVM runtime attached through the same process-scoped
+  host boundary rather than the legacy CheerpJ filesystem: ordinary Java file
+  and random-access APIs use authoritative TKFS, standard descriptors and
+  process pipes are kernel-owned, blocking Java socket calls suspend individual
+  Java threads over kernel TCP, and `ProcessBuilder` creates isolated
+  kernel-supervised Java children; `ProcessHandle` identity, parent/child
+  discovery, metadata, signals, asynchronous exit notification, and liveness
+  come from the kernel process table, while `System.getenv()` and child
+  environment inheritance come from the current process record;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic
@@ -945,8 +954,10 @@ host infrastructure rather than process state.
 
 The remaining adapter migration is intentionally narrower:
 
-1. attach TraceJVM through the same process, descriptor, TKFS, socket, and lease
-   contracts rather than adapting the legacy CheerpJ filesystem layout;
+1. finish TraceJVM's less common kernel surfaces: Java watch services,
+   selector-style multi-descriptor readiness, and an intentional Java API for
+   watchdog and terminal/process-group controls that have no standard Java
+   equivalent;
 2. remove the temporary legacy stdio feed only after every shipping legacy
    runtime has either migrated or been retired;
 3. make any adapter that wants pooling implement and prove its reset validation;
