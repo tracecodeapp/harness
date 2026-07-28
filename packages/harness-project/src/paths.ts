@@ -180,7 +180,8 @@ export function normalizeWorkspaceCwd(cwd: string | undefined): string {
   for (const part of raw.split('/')) {
     if (!part || part === '.') continue;
     if (part === '..') {
-      throw new Error(`Workspace cwd must not contain '..': ${raw}`);
+      parts.pop();
+      continue;
     }
     parts.push(part);
   }
