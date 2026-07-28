@@ -63,6 +63,10 @@ const execFileAsync = promisify(execFile);
 const testTextDecoder = new TextDecoder();
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);
+const javascriptProjectWorkerPath = join(
+  testDirectory,
+  '../workers/javascript/javascript-project-worker.js'
+);
 const expectedTraceKernelVersion = packageJson.version;
 type TestRuntimeProjectSnapshot = Awaited<ReturnType<RuntimeWorkspace['snapshot']>>;
 
@@ -6724,7 +6728,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
 }
 
 async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
-  const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/workers/javascript-project-worker.js')).href}?tracekernel-http=${Date.now()}`;
+  const workerUrl = `${pathToFileURL(javascriptProjectWorkerPath).href}?tracekernel-http=${Date.now()}`;
   const workspace = await createRuntimeWorkspace({
     files: [
       {
@@ -6829,7 +6833,7 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
 
 async function testExternalFetchFromJavaScriptWorker(): Promise<void> {
   const seen: Array<{ method: string; url: string; body?: string }> = [];
-  const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/workers/javascript-project-worker.js')).href}?tracekernel-external-http=${Date.now()}`;
+  const workerUrl = `${pathToFileURL(javascriptProjectWorkerPath).href}?tracekernel-external-http=${Date.now()}`;
   const workspace = await createRuntimeWorkspace({
     files: [{
       path: 'external-fetch.js',
