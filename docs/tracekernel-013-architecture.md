@@ -947,7 +947,11 @@ The initial 0.13 branch now establishes:
   nonblocking accept/connect/receive/send, consume-on-read connection errors,
   and deterministic teardown;
 - TCP syscall frames proven across two independent synchronous runtime workers;
-- exactly-once lease and resource cleanup assertions.
+- exactly-once lease and resource cleanup assertions;
+- repeated adversarial session teardown while pipe reads, TCP accepts, watch
+  reads, and child waits are simultaneously blocked, including idempotent
+  repeated shutdown and zero leaked processes, descriptors, sockets, watches,
+  or runtime leases.
 
 The pipe is intentionally the first descriptor resource. It exercises blocking,
 interruption, endpoint lifecycle, and backpressure before the same contracts are
