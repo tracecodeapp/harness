@@ -2112,6 +2112,8 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   isatty: 45,
   tcgetpgrp: 46,
   tcsetpgrp: 47,
+  tcgetwinsize: 52,
+  tcsetwinsize: 53,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
   Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
@@ -2537,11 +2539,17 @@ class PythonTraceKernelSyncClient {
         break;
       case 'isatty':
       case 'tcgetpgrp':
+      case 'tcgetwinsize':
         writer.i32(request.fd);
         break;
       case 'tcsetpgrp':
         writer.i32(request.fd);
         writer.i32(request.pgid);
+        break;
+      case 'tcsetwinsize':
+        writer.i32(request.fd);
+        writer.u32(request.rows);
+        writer.u32(request.columns);
         break;
       case 'identity':
         writer.u8(request.pid === undefined ? 0 : 1);
@@ -2993,6 +3001,15 @@ class PythonTraceKernelSyncClient {
       operation === 'tcsetpgrp'
     ) {
       value = { op: operation, pgid: reader.i32() };
+    } else if (
+      operation === 'tcgetwinsize' ||
+      operation === 'tcsetwinsize'
+    ) {
+      value = {
+        op: operation,
+        rows: reader.u32(),
+        columns: reader.u32(),
+      };
     } else if (operation === 'identity') {
       value = {
         op: operation,
@@ -4168,6 +4185,7 @@ async function executeProjectPythonUserCall(
           return { op: 'setsid' };
         case 'isatty':
         case 'tcgetpgrp':
+        case 'tcgetwinsize':
           return {
             op: String(input.op),
             fd: kernelTerminalFdForLocalFd(input.fd),
@@ -4177,6 +4195,13 @@ async function executeProjectPythonUserCall(
             op: 'tcsetpgrp',
             fd: kernelTerminalFdForLocalFd(input.fd),
             pgid: Number(input.pgid),
+          };
+        case 'tcsetwinsize':
+          return {
+            op: 'tcsetwinsize',
+            fd: kernelTerminalFdForLocalFd(input.fd),
+            rows: Number(input.rows),
+            columns: Number(input.columns),
           };
         case 'setpgid':
           return {
@@ -4961,6 +4986,22 @@ class _TraceKernelTerminalApi:
             "pgid": int(pgid),
         })["pgid"])
 
+    def window_size(self, fd=0):
+        _value = _TraceKernelProcessApi._call({
+            "op": "tcgetwinsize",
+            "fd": int(fd),
+        })
+        return int(_value["rows"]), int(_value["columns"])
+
+    def set_window_size(self, rows, columns, fd=0):
+        _value = _TraceKernelProcessApi._call({
+            "op": "tcsetwinsize",
+            "fd": int(fd),
+            "rows": int(rows),
+            "columns": int(columns),
+        })
+        return int(_value["rows"]), int(_value["columns"])
+
 class _TraceKernelSocketFile:
     def __init__(self, socket, mode="r", encoding=None, errors=None, newline=None):
         self._socket = socket
@@ -5303,6 +5344,26 @@ _original_tracekernel_os_set_blocking = getattr(os, "set_blocking", None)
 _original_tracekernel_os_isatty = getattr(os, "isatty", None)
 _original_tracekernel_os_tcgetpgrp = getattr(os, "tcgetpgrp", None)
 _original_tracekernel_os_tcsetpgrp = getattr(os, "tcsetpgrp", None)
+_original_tracekernel_os_get_terminal_size = getattr(
+    os,
+    "get_terminal_size",
+    None,
+)
+_previous_tracekernel_termios_module = sys.modules.get("termios")
+try:
+    _tracekernel_termios_module = importlib.import_module("termios")
+except ImportError:
+    _tracekernel_termios_module = types.ModuleType("termios")
+_original_tracekernel_termios_tcgetwinsize = getattr(
+    _tracekernel_termios_module,
+    "tcgetwinsize",
+    None,
+)
+_original_tracekernel_termios_tcsetwinsize = getattr(
+    _tracekernel_termios_module,
+    "tcsetwinsize",
+    None,
+)
 _original_tracekernel_o_cloexec = getattr(os, "O_CLOEXEC", None)
 _original_tracekernel_o_nonblock = getattr(os, "O_NONBLOCK", None)
 _tracekernel_o_cloexec = int(_original_tracekernel_o_cloexec or 0x80000)
@@ -5375,6 +5436,35 @@ def _restore_tracekernel_pipe_module():
             pass
     else:
         os.tcsetpgrp = _original_tracekernel_os_tcsetpgrp
+    if _original_tracekernel_os_get_terminal_size is None:
+        try:
+            delattr(os, "get_terminal_size")
+        except AttributeError:
+            pass
+    else:
+        os.get_terminal_size = _original_tracekernel_os_get_terminal_size
+    if _original_tracekernel_termios_tcgetwinsize is None:
+        try:
+            delattr(_tracekernel_termios_module, "tcgetwinsize")
+        except AttributeError:
+            pass
+    else:
+        _tracekernel_termios_module.tcgetwinsize = (
+            _original_tracekernel_termios_tcgetwinsize
+        )
+    if _original_tracekernel_termios_tcsetwinsize is None:
+        try:
+            delattr(_tracekernel_termios_module, "tcsetwinsize")
+        except AttributeError:
+            pass
+    else:
+        _tracekernel_termios_module.tcsetwinsize = (
+            _original_tracekernel_termios_tcsetwinsize
+        )
+    if _previous_tracekernel_termios_module is None:
+        sys.modules.pop("termios", None)
+    else:
+        sys.modules["termios"] = _previous_tracekernel_termios_module
     if _original_tracekernel_o_cloexec is None:
         try:
             delattr(os, "O_CLOEXEC")
@@ -5418,6 +5508,21 @@ os.tcgetpgrp = lambda fd: (
 os.tcsetpgrp = lambda fd, pgid: (
     _tracekernel_module.terminal.set_foreground_process_group(pgid, fd)
 )
+def _tracekernel_get_terminal_size(fd=1):
+    _rows, _columns = _tracekernel_module.terminal.window_size(fd)
+    return os.terminal_size((_columns, _rows))
+os.get_terminal_size = _tracekernel_get_terminal_size
+_tracekernel_termios_module.tcgetwinsize = (
+    lambda fd: _tracekernel_module.terminal.window_size(fd)
+)
+def _tracekernel_termios_tcsetwinsize(fd, size):
+    _tracekernel_module.terminal.set_window_size(
+        int(size[0]),
+        int(size[1]),
+        fd,
+    )
+_tracekernel_termios_module.tcsetwinsize = _tracekernel_termios_tcsetwinsize
+sys.modules["termios"] = _tracekernel_termios_module
 os.WNOHANG = int(getattr(os, "WNOHANG", 1))
 def _tracekernel_wait_status(_termination):
     if _termination["kind"] == "signal":

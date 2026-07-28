@@ -179,15 +179,28 @@ async function main(): Promise<void> {
               contents: [
                 'import os',
                 'import sys',
+                'import termios',
                 'from tracekernel import terminal',
                 'foreground = os.tcgetpgrp(0)',
                 'transferred = os.tcsetpgrp(0, foreground)',
+                'initial_os_size = os.get_terminal_size(1)',
+                'initial_termios_size = termios.tcgetwinsize(0)',
+                'initial_api_size = terminal.window_size()',
+                'resized = termios.tcsetwinsize(0, (66, 166))',
                 'valid = (',
                 '    os.isatty(0) and os.isatty(1) and os.isatty(2)',
                 '    and terminal.isatty(0)',
                 '    and terminal.foreground_process_group() == foreground',
                 '    and transferred == foreground',
                 '    and terminal.set_foreground_process_group(foreground) == foreground',
+                '    and initial_os_size == (144, 55)',
+                '    and initial_termios_size == (55, 144)',
+                '    and initial_api_size == (55, 144)',
+                '    and resized is None',
+                '    and os.get_terminal_size(1) == (166, 66)',
+                '    and terminal.window_size() == (66, 166)',
+                '    and terminal.set_window_size(77, 177) == (77, 177)',
+                '    and termios.tcgetwinsize(2) == (77, 177)',
                 ')',
                 'standard_input = input()',
                 'print(f"terminal:{str(valid).lower()}:{standard_input}")',
@@ -682,6 +695,7 @@ async function main(): Promise<void> {
             'python python-fd-parent.py'
           );
           const terminal = workspace.createTerminalSession();
+          terminal.resize(144, 55);
           const pendingTerminalControl = terminal.run(
             'python terminal-control.py'
           );
@@ -848,6 +862,9 @@ async function main(): Promise<void> {
           'os.isatty',
           'os.tcgetpgrp',
           'os.tcsetpgrp',
+          'os.get_terminal_size',
+          'termios.tcgetwinsize/tcsetwinsize',
+          'tracekernel.terminal.window_size',
           'tracekernel.terminal',
         ],
         childWait: [
