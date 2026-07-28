@@ -416,8 +416,23 @@ function createProcessHost(
 ): TraceJVMProjectHost | undefined {
   const kernelSyscalls = request.kernelSyscalls;
   if (!kernelSyscalls) return undefined;
+  const signalMailbox = request.kernelSignals?.mailbox;
+  const signalState = signalMailbox
+    ? new Int32Array(signalMailbox.buffer)
+    : undefined;
+  let signalSequence = 0;
   return Object.freeze({
     async dispatch(hostRequest: TraceJVMProjectHostRequest): Promise<unknown> {
+      if (
+        hostRequest.service === 'signal' &&
+        hostRequest.operation === 'poll'
+      ) {
+        if (!signalState) return 0;
+        const sequence = Atomics.load(signalState, 0);
+        if (sequence === signalSequence) return 0;
+        signalSequence = sequence;
+        return Atomics.load(signalState, 1);
+      }
       if (hostRequest.service !== 'posix') {
         throw Object.assign(
           new Error(`TraceJVM host service is not available: ${hostRequest.service}`),
