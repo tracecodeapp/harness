@@ -9533,7 +9533,7 @@ function formatBrowserJavaScriptErrorForStderr(error) {
 `;
 }
 function isBrowserJavaScriptUserStackFrame(line, sourcePath) {
-  return line.includes(sourcePath) || line.includes("/workspace/") || line.includes("/home/");
+  return line.includes(sourcePath) || line.includes("/workspace/");
 }
 function isBrowserJavaScriptInternalStackFrame(line) {
   return line.includes("/@fs/") || line.includes("/packages/harness-") || line.includes("/dist/browser/project.js") || line.includes("/workers/javascript-project-worker.js") || line.includes("javascript-project-worker.js:") || line.includes("blob:") || line.includes("runBrowserJavaScriptProjectRequest") || line.includes("executeEntrypoint") || line.includes("executeModule") || line.includes("resolveModulePath") || line.includes("requireModule") || line.includes("createHttpApi") || line.includes("registerHttpListener") || line.includes("at new Function") || line.includes("at new AsyncFunction");

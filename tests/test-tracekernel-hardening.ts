@@ -1372,6 +1372,7 @@ async function testBrowserJavaScriptSyntaxErrorsHideRunnerInternals(): Promise<v
   assertCondition(
     !result.stderr.includes('runBrowserJavaScriptProjectRequest') &&
       !result.stderr.includes('project-browser.ts') &&
+      !result.stderr.includes('test-tracekernel-hardening.ts') &&
       !result.stderr.includes('executeEntrypoint') &&
       !result.stderr.includes('executeModule'),
     `browser JS syntax errors should not expose runner internals: ${JSON.stringify(result.stderr)}`

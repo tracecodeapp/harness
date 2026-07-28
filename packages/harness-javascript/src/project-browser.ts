@@ -4833,8 +4833,7 @@ function formatBrowserJavaScriptErrorForStderr(error: unknown): string {
 function isBrowserJavaScriptUserStackFrame(line: string, sourcePath: string): boolean {
   return (
     line.includes(sourcePath) ||
-    line.includes('/workspace/') ||
-    line.includes('/home/')
+    line.includes('/workspace/')
   );
 }
 
