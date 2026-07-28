@@ -704,7 +704,11 @@ async function testWorkspaceFilesAndCommands(): Promise<void> {
   );
   workspace.dispose();
   const afterDispose = await workspace.runCommand('cat src/hello.txt');
-  assertCondition(afterDispose.exitCode === 0, 'native just-bash workspace dispose should be a safe no-op');
+  assertCondition(
+    afterDispose.exitCode === 1 &&
+      afterDispose.stderr === 'project session is no longer available\n',
+    'workspace disposal should be terminal and must not reopen a kernel session'
+  );
 }
 
 async function testWorkspaceConcurrentAppendFile(): Promise<void> {
@@ -1354,7 +1358,8 @@ async function testWorkspaceProcProcessState(): Promise<void> {
   assertCondition(
     selfFdInfo.exitCode === 0 &&
       selfFdInfo.stdout.includes('flags:\tw\n') &&
-      selfFdInfo.stdout.includes('target:\t/dev/stdout\n'),
+      selfFdInfo.stdout.includes('kind:\tpipe-writer\n') &&
+      /^target:\tpipe:\[host-stdout-[^\]]+\]$/m.test(selfFdInfo.stdout),
     `commands should observe their fd table through /proc/self/fdinfo: ${JSON.stringify(selfFdInfo)}`
   );
 
@@ -1406,7 +1411,9 @@ async function testWorkspaceProcProcessState(): Promise<void> {
   assertCondition(fdEntries.join(',') === '0,1,2', `kernel /proc/<pid>/fd should expose process descriptors: ${JSON.stringify(fdEntries)}`);
   const stdoutFdInfo = await workspace.readFile(`/proc/${pid}/fdinfo/1`);
   assertCondition(
-    stdoutFdInfo.includes('flags:\tw\n') && stdoutFdInfo.includes('target:\t/dev/stdout\n'),
+    stdoutFdInfo.includes('flags:\tw\n') &&
+      stdoutFdInfo.includes('kind:\tpipe-writer\n') &&
+      /^target:\tpipe:\[host-stdout-[^\]]+\]$/m.test(stdoutFdInfo),
     `kernel /proc/<pid>/fdinfo should expose descriptor metadata: ${JSON.stringify(stdoutFdInfo)}`
   );
   const sched = await workspace.readFile('/proc/tracekernel/sched');

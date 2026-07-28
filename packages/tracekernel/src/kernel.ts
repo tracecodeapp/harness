@@ -285,6 +285,9 @@ export class TraceKernelProcess {
   snapshot(): TraceKernelProcessSnapshot {
     return Object.freeze({
       ...immutableSnapshot(this.record),
+      ...(this.requestedSignal === undefined
+        ? {}
+        : { pendingSignal: this.requestedSignal }),
       descriptors: Object.freeze([...this.descriptors.snapshots()]),
     });
   }

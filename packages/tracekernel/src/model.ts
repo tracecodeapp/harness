@@ -88,6 +88,7 @@ export interface TraceKernelProcessSnapshot {
   readonly visible: boolean;
   readonly startedAt?: number;
   readonly endedAt?: number;
+  readonly pendingSignal?: TraceKernelTerminatingSignal;
   readonly termination?: TraceKernelProcessTermination;
   readonly stdout: string;
   readonly stderr: string;
