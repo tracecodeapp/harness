@@ -15,6 +15,7 @@ declare global {
     filesystemRun: { stdout: string; stderr: string; exitCode: number };
     stdinRun: { stdout: string; stderr: string; exitCode: number };
     socketRun: { stdout: string; stderr: string; exitCode: number };
+    selectorRun: { stdout: string; stderr: string; exitCode: number };
     processRun: { stdout: string; stderr: string; exitCode: number };
     sharedFile: string;
     randomFile: string;
@@ -128,6 +129,53 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '      }',
         '      boolean millisecondTime = path.toFile().lastModified() > 1_000_000_000_000L;',
         '      System.out.println("fs:" + prior + ":" + listed + ":" + millisecondTime + ":" + random + ":" + randomPointer + ":" + linkTarget + ":" + sameFile + ":" + linkDeleted);',
+        '      return;',
+        '    }',
+        '    if (args.length > 0 && args[0].equals("selector")) {',
+        '      java.net.InetAddress loopback = java.net.InetAddress.getLoopbackAddress();',
+        '      try (var selector = java.nio.channels.Selector.open();',
+        '           var server = java.nio.channels.ServerSocketChannel.open()) {',
+        '        server.bind(new java.net.InetSocketAddress(loopback, 0));',
+        '        server.configureBlocking(false);',
+        '        server.register(selector, java.nio.channels.SelectionKey.OP_ACCEPT);',
+        '        var address = (java.net.InetSocketAddress) server.getLocalAddress();',
+        '        try (var firstClient = java.nio.channels.SocketChannel.open(address);',
+        '             var secondClient = java.nio.channels.SocketChannel.open(address)) {',
+        '          boolean acceptReady = selector.select(2000) > 0;',
+        '          selector.selectedKeys().clear();',
+        '          try (var firstAccepted = server.accept();',
+        '               var secondAccepted = server.accept()) {',
+        '            if (firstAccepted == null || secondAccepted == null) throw new IllegalStateException("accept queue incomplete");',
+        '            firstAccepted.configureBlocking(false);',
+        '            secondAccepted.configureBlocking(false);',
+        '            firstAccepted.register(selector, java.nio.channels.SelectionKey.OP_READ);',
+        '            secondAccepted.register(selector, java.nio.channels.SelectionKey.OP_READ);',
+        '            firstClient.write(java.nio.ByteBuffer.wrap(new byte[] {(byte) \'A\'}));',
+        '            secondClient.write(java.nio.ByteBuffer.wrap(new byte[] {(byte) \'B\'}));',
+        '            int readyCount = selector.select(2000);',
+        '            java.util.Set<Character> received = new java.util.HashSet<>();',
+        '            for (var key : selector.selectedKeys()) {',
+        '              if (!key.isReadable()) continue;',
+        '              var channel = (java.nio.channels.SocketChannel) key.channel();',
+        '              var byteBuffer = java.nio.ByteBuffer.allocate(1);',
+        '              if (channel.read(byteBuffer) == 1) received.add((char) byteBuffer.array()[0]);',
+        '            }',
+        '            selector.selectedKeys().clear();',
+        '            Thread wakeup = new Thread(() -> {',
+        '              try { Thread.sleep(50); } catch (InterruptedException error) { throw new RuntimeException(error); }',
+        '              selector.wakeup();',
+        '            }, "selector-wakeup");',
+        '            long started = System.nanoTime();',
+        '            wakeup.start();',
+        '            int wakeupReady = selector.select(2000);',
+        '            long elapsedMillis = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);',
+        '            wakeup.join();',
+        '            boolean descriptorsReady = acceptReady && readyCount == 2 && received.equals(java.util.Set.of(\'A\', \'B\'));',
+        '            boolean wakeupWorked = wakeupReady == 0 && elapsedMillis < 1500;',
+        '            System.out.println("selector:" + descriptorsReady + ":" + wakeupWorked);',
+        '          }',
+        '        }',
+        '      }',
         '      return;',
         '    }',
         '    if (args.length > 0 && args[0].equals("socket")) {',
@@ -260,6 +308,9 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     const socketRun = await workspace.runCommand(
       'java -cp build Main socket'
     );
+    const selectorRun = await workspace.runCommand(
+      'java -cp build Main selector'
+    );
     const processRun = await workspace.runCommand(
       'java -cp build Main process'
     );
@@ -312,6 +363,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       filesystemRun,
       stdinRun,
       socketRun,
+      selectorRun,
       processRun,
       sharedFile,
       randomFile,
