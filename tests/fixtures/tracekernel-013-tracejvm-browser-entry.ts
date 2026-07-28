@@ -16,6 +16,7 @@ declare global {
     stdinRun: { stdout: string; stderr: string; exitCode: number };
     socketRun: { stdout: string; stderr: string; exitCode: number };
     selectorRun: { stdout: string; stderr: string; exitCode: number };
+    watchRun: { stdout: string; stderr: string; exitCode: number };
     processRun: { stdout: string; stderr: string; exitCode: number };
     sharedFile: string;
     randomFile: string;
@@ -47,7 +48,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     retirementRecommended: boolean;
   }> = [];
   const workspace = await createBrowserProjectWorkspace({
-    providers: ['java'],
+    providers: ['java', 'javascript'],
     env: { TRACE_PARENT: 'kernel-😀' },
     files: [{
       path: 'Main.java',
@@ -178,6 +179,38 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '      }',
         '      return;',
         '    }',
+        '    if (args.length > 0 && args[0].equals("watch")) {',
+        '      java.nio.file.Path directory = java.nio.file.Path.of("java-watch");',
+        '      java.nio.file.Files.createDirectories(directory);',
+        '      java.nio.file.Files.writeString(directory.resolve("modified.txt"), "before");',
+        '      java.nio.file.Files.writeString(directory.resolve("deleted.txt"), "before");',
+        '      boolean created = false;',
+        '      boolean modified = false;',
+        '      boolean deleted = false;',
+        '      int childExit;',
+        '      try (var watcher = java.nio.file.FileSystems.getDefault().newWatchService()) {',
+        '        directory.register(watcher,',
+        '            java.nio.file.StandardWatchEventKinds.ENTRY_CREATE,',
+        '            java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY,',
+        '            java.nio.file.StandardWatchEventKinds.ENTRY_DELETE);',
+        '        Process child = new ProcessBuilder("node", "watch-child.js").redirectErrorStream(true).start();',
+        '        childExit = child.waitFor();',
+        '        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);',
+        '        while (!(created && modified && deleted) && System.nanoTime() < deadline) {',
+        '          java.nio.file.WatchKey key = watcher.poll(250, java.util.concurrent.TimeUnit.MILLISECONDS);',
+        '          if (key == null) continue;',
+        '          for (java.nio.file.WatchEvent<?> event : key.pollEvents()) {',
+        '            String name = event.context() == null ? "" : event.context().toString();',
+        '            if (event.kind() == java.nio.file.StandardWatchEventKinds.ENTRY_CREATE && name.equals("created.txt")) created = true;',
+        '            if (event.kind() == java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY && name.equals("modified.txt")) modified = true;',
+        '            if (event.kind() == java.nio.file.StandardWatchEventKinds.ENTRY_DELETE && name.equals("deleted.txt")) deleted = true;',
+        '          }',
+        '          key.reset();',
+        '        }',
+        '      }',
+        '      System.out.println("watch:" + created + ":" + modified + ":" + deleted + ":" + childExit);',
+        '      return;',
+        '    }',
         '    if (args.length > 0 && args[0].equals("socket")) {',
         '      java.net.InetAddress loopback = java.net.InetAddress.getLoopbackAddress();',
         '      try (var server = new java.net.ServerSocket(0, 8, loopback)) {',
@@ -219,6 +252,14 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     }, {
       path: 'shared.txt',
       contents: 'snapshot-value',
+    }, {
+      path: 'watch-child.js',
+      contents: [
+        "const fs = require('node:fs');",
+        "fs.writeFileSync('java-watch/created.txt', 'created');",
+        "fs.writeFileSync('java-watch/modified.txt', 'after');",
+        "fs.unlinkSync('java-watch/deleted.txt');",
+      ].join('\n'),
     }, {
       path: 'Child.java',
       contents: [
@@ -311,6 +352,9 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     const selectorRun = await workspace.runCommand(
       'java -cp build Main selector'
     );
+    const watchRun = await workspace.runCommand(
+      'java -cp build Main watch'
+    );
     const processRun = await workspace.runCommand(
       'java -cp build Main process'
     );
@@ -364,6 +408,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       stdinRun,
       socketRun,
       selectorRun,
+      watchRun,
       processRun,
       sharedFile,
       randomFile,

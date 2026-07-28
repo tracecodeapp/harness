@@ -56,6 +56,15 @@ try {
       response.end(bundle);
       return;
     }
+    if (request.url === '/workers/javascript-project-worker.js') {
+      response.setHeader('content-type', 'text/javascript; charset=utf-8');
+      response.end(
+        readFileSync(
+          resolve('workers/javascript/javascript-project-worker.js')
+        )
+      );
+      return;
+    }
     if (request.url?.startsWith('/tracejvm/')) {
       const requested = request.url.slice('/tracejvm/'.length);
       const relative = requested === 'browser-worker.js'
@@ -125,6 +134,8 @@ try {
           result.socketRun.stdout !== 'socket:pong\n' ||
           result.selectorRun.exitCode !== 0 ||
           result.selectorRun.stdout !== 'selector:true:true\n' ||
+          result.watchRun.exitCode !== 0 ||
+          result.watchRun.stdout !== 'watch:true:true:true:0\n' ||
           result.processRun.exitCode !== 0 ||
           !/^process:\d+:true:true:true:true:true:true:1:true:false:java-child\n$/u.test(
             result.processRun.stdout
@@ -134,7 +145,7 @@ try {
           result.interrupted.stderr !== '' ||
           result.restarted.exitCode !== 0 ||
           result.restarted.stdout !== '1:missing:missing:restarted\n' ||
-          result.workerCount !== 12 ||
+          result.workerCount !== 13 ||
           !reportStatuses.includes('compile:completed:not-applicable') ||
           !reportStatuses.includes('run:runtime-error:clean') ||
           !reportStatuses.includes('run:completed:tainted') ||
