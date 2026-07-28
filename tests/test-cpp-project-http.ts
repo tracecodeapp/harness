@@ -156,10 +156,16 @@ const CPP_WATCHDOG_EXPIRY_PROGRAM = [
 ].join('\n');
 
 const CPP_TERMINAL_WINDOW_SIZE_PROGRAM = [
+  '#include <signal.h>',
   '#include <sys/ioctl.h>',
   '#include <unistd.h>',
   '#include <cstdio>',
+  'static volatile sig_atomic_t resize_signals = 0;',
+  'static void on_resize(int signal_number) {',
+  '  if (signal_number == SIGWINCH) ++resize_signals;',
+  '}',
   'int main() {',
+  '  if (signal(SIGWINCH, on_resize) == SIG_ERR) return 5;',
   '  winsize initial {};',
   '  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &initial) != 0) return 1;',
   '  winsize resized { 66, 166, 0, 0 };',
@@ -168,7 +174,8 @@ const CPP_TERMINAL_WINDOW_SIZE_PROGRAM = [
   '  if (ioctl(STDERR_FILENO, TIOCGWINSZ, &observed) != 0) return 3;',
   '  const bool valid = initial.ws_row == 55 && initial.ws_col == 144 &&',
   '    initial.ws_xpixel == 0 && initial.ws_ypixel == 0 &&',
-  '    observed.ws_row == 66 && observed.ws_col == 166;',
+  '    observed.ws_row == 66 && observed.ws_col == 166 &&',
+  '    resize_signals == 1;',
   '  std::printf("terminal-size:%s:%u:%u:%u:%u\\n",',
   '    valid ? "pass" : "fail",',
   '    initial.ws_row, initial.ws_col, observed.ws_row, observed.ws_col);',
@@ -1407,7 +1414,11 @@ async function main(): Promise<void> {
       const terminalWindowImports = WebAssembly.Module.imports(
         await WebAssembly.compile(terminalWindowBytes)
       );
-      for (const name of ['proc_tcgetwinsize', 'proc_tcsetwinsize']) {
+      for (const name of [
+        'proc_tcgetwinsize',
+        'proc_tcsetwinsize',
+        'proc_poll_signal',
+      ]) {
         assertCondition(
           terminalWindowImports.some(
             (item) =>

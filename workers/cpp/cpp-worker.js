@@ -2640,6 +2640,11 @@ class WasiProcess {
     this.onOutput = options.onOutput;
     this.kernelHttp = options.kernelHttp || null;
     this.kernelClient = options.kernelClient || null;
+    this.kernelSignalState =
+      options.kernelSignalMailbox?.buffer instanceof SharedArrayBuffer
+        ? new Int32Array(options.kernelSignalMailbox.buffer)
+        : null;
+    this.kernelSignalSequence = 0;
     this.process = options.process || {
       pid: 1,
       ppid: 0,
@@ -2893,6 +2898,13 @@ class WasiProcess {
         } catch (error) {
           return -cppTraceKernelErrno(error);
         }
+      },
+      proc_poll_signal: () => {
+        if (!this.kernelSignalState) return 0;
+        const sequence = Atomics.load(this.kernelSignalState, 0);
+        if (sequence === this.kernelSignalSequence) return 0;
+        this.kernelSignalSequence = sequence;
+        return Atomics.load(this.kernelSignalState, 1) | 0;
       },
       proc_identity: (kind, pid) => {
         if (!this.kernelClient) return -ENOTSUP;
@@ -5307,6 +5319,7 @@ async function runWasi(module, args, fs, options = {}) {
     kernelDevices: options.kernelDevices,
     kernelHttp: options.kernelHttp,
     kernelClient: options.kernelClient,
+    kernelSignalMailbox: options.kernelSignalMailbox,
     process: options.process,
     filestatSizeOffset: options.filestatSizeOffset,
     outputBudget: options.outputBudget,
@@ -12244,6 +12257,8 @@ __attribute__((import_module("tracecode_kernel"), import_name("proc_wait")))
 int __tracecode_proc_wait(int pid, int* status, int options);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_kill")))
 int __tracecode_proc_kill(int pid, int signal);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_poll_signal")))
+int __tracecode_proc_poll_signal(void);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_identity")))
 int __tracecode_proc_identity(int kind, int pid);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_fcntl")))
@@ -12270,6 +12285,47 @@ __attribute__((import_module("tracecode_kernel"), import_name("proc_tcgetwinsize
 int __tracecode_proc_tcgetwinsize(int fd, unsigned short* rows, unsigned short* columns);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_tcsetwinsize")))
 int __tracecode_proc_tcsetwinsize(int fd, unsigned short rows, unsigned short columns);
+
+typedef void (*__tracecode_signal_handler_t)(int);
+void __SIG_IGN(int signal_number) { (void)signal_number; }
+void __SIG_ERR(int signal_number) { (void)signal_number; }
+static __tracecode_signal_handler_t __tracecode_signal_handlers[64];
+
+__tracecode_signal_handler_t signal(
+  int signal_number,
+  __tracecode_signal_handler_t handler
+) {
+  __tracecode_signal_handler_t previous;
+  if (
+    signal_number <= 0 ||
+    signal_number >= 64 ||
+    signal_number == SIGKILL ||
+    signal_number == SIGSTOP
+  ) {
+    errno = EINVAL;
+    return __SIG_ERR;
+  }
+  previous = __tracecode_signal_handlers[signal_number];
+  __tracecode_signal_handlers[signal_number] = handler;
+  return previous;
+}
+
+int raise(int signal_number) {
+  __tracecode_signal_handler_t handler;
+  if (signal_number <= 0 || signal_number >= 64) {
+    errno = EINVAL;
+    return -1;
+  }
+  handler = __tracecode_signal_handlers[signal_number];
+  if (handler == SIG_IGN) return 0;
+  if (handler != SIG_DFL && handler != SIG_ERR) {
+    handler(signal_number);
+    return 0;
+  }
+  if (signal_number == SIGWINCH) return 0;
+  errno = ENOTSUP;
+  return -1;
+}
 
 int fcntl(int fd, int command, ...) {
   int result;
@@ -12707,6 +12763,10 @@ int __tracecode_ioctl(int fd, unsigned long request, ...) {
       size->ws_row,
       size->ws_col
     );
+    if (result == 0) {
+      int pending_signal = __tracecode_proc_poll_signal();
+      if (pending_signal > 0) raise(pending_signal);
+    }
   } else {
     errno = ENOTTY;
     return -1;
@@ -13483,7 +13543,12 @@ function emitProjectResultOutputEvents(events, result) {
   events.applyResultOutputBudget?.(result);
 }
 
-async function handleProjectCpp(request, messageId, kernelSyscallChannel) {
+async function handleProjectCpp(
+  request,
+  messageId,
+  kernelSyscallChannel,
+  kernelSignalMailbox
+) {
   const events = createProjectEventBridge(messageId, (stream, data) =>
     stream === 'stderr' ? sanitizeCppProjectDiagnostics(data, request) : data
   );
@@ -13583,6 +13648,7 @@ async function handleProjectCpp(request, messageId, kernelSyscallChannel) {
       kernelDevices: projectKernelDevices(request?.project),
       kernelHttp,
       kernelClient,
+      kernelSignalMailbox,
       process: request?.process,
       outputBudget: createProjectOutputByteBudget(),
       onOutput: (stream, data, device, outputDevice) => events.output(stream, data, device, outputDevice),
@@ -14775,6 +14841,7 @@ self.onmessage = (event) => {
     requestId,
     protocolToken,
     kernelSyscallChannel,
+    kernelSignalMailbox,
   } = event.data || {};
   if (type === 'compile-response') {
     const pending = pendingExternalCompiles.get(String(requestId || ''));
@@ -14823,7 +14890,12 @@ self.onmessage = (event) => {
               ? await handleCompileRunBatch(payload)
               : type === 'execute-project-cpp'
                 ? await withRuntimeUserAuthorityLockdown(
-                    () => handleProjectCpp(payload, id, kernelSyscallChannel),
+                    () => handleProjectCpp(
+                      payload,
+                      id,
+                      kernelSyscallChannel,
+                      kernelSignalMailbox
+                    ),
                     {
                       scope: self,
                       mode: payload?.projectUserAuthorityMode ?? 'temporary',
