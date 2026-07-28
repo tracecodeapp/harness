@@ -83,6 +83,8 @@ async function main(): Promise<void> {
       response.writeHead(200, {
         'Cache-Control': 'no-store',
         'Content-Type': contentType,
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+        'Cross-Origin-Opener-Policy': 'same-origin',
       });
       response.end(body);
     } catch {
