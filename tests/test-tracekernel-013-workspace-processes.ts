@@ -642,6 +642,9 @@ async function main(): Promise<void> {
       exitCode: 0,
     };
   };
+  Object.assign(nodeRunner, {
+    capabilities: Object.freeze({ descriptorStdio: true }),
+  });
 
   const workspace = await createRuntimeWorkspace({
     files: [
