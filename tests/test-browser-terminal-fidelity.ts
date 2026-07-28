@@ -84,10 +84,10 @@ async function testNativeCommandIdentity(): Promise<void> {
         'clang version 22.0.0-git20542-10\nTarget: wasm32-unknown-wasi\nThread model: posix\n',
         '',
       ],
-      ['dotnet --version', '10.0.9\n', ''],
+      ['dotnet --version', '10.0.10\n', ''],
       [
         'dotnet --info',
-        '.NET SDK:\n Version:           10.0.9\n\nRuntime Environment:\n OS Name:     tracekernel\n OS Platform: tracekernel\n RID:         tracekernel-x64\n\nHost:\n  Version:      10.0.9\n  Architecture: x64\n',
+        '.NET SDK:\n Version:           10.0.10\n\nRuntime Environment:\n OS Name:     tracekernel\n OS Platform: tracekernel\n RID:         tracekernel-x64\n\nHost:\n  Version:      10.0.10\n  Architecture: x64\n',
         '',
       ],
     ] as const;
