@@ -1,5 +1,6 @@
 import {
   TraceKernelDescriptorTable,
+  TraceKernelInvalidArgumentError,
   TraceKernelPipe,
   TraceKernelWatchRegistry,
   type TraceKernelDescriptor,
@@ -255,6 +256,44 @@ export class RuntimeKernelDescriptorManager {
     });
   }
 
+  seek(
+    pid: number,
+    fd: number,
+    offset: number,
+    whence: 'set' | 'current' | 'end'
+  ): Promise<number> {
+    return Effect.runPromise(
+      this.existingTable(pid, fd, 'seek').seek(fd, offset, whence)
+    );
+  }
+
+  private seekDescription(
+    context: RuntimeCommandExecutionContext | undefined,
+    description: RuntimeKernelOpenFileDescription,
+    offset: number,
+    whence: 'set' | 'current' | 'end'
+  ): Promise<number> {
+    return this.withNode(description.node, async () => {
+      this.assertDescriptionOpen(description, 'seek');
+      await this.refreshNode(context, description.node);
+      const base = whence === 'set'
+        ? 0
+        : whence === 'current'
+          ? description.offset
+          : description.node.bytes.byteLength;
+      const nextOffset = base + offset;
+      if (!Number.isSafeInteger(nextOffset) || nextOffset < 0) {
+        throw new TraceKernelInvalidArgumentError({
+          code: 'EINVAL',
+          argument: 'offset',
+          message: `EINVAL: seek would produce invalid offset ${nextOffset}`,
+        });
+      }
+      description.offset = nextOffset;
+      return nextOffset;
+    });
+  }
+
   fstat(
     pid: number,
     _context: RuntimeCommandExecutionContext | undefined,
@@ -326,7 +365,6 @@ export class RuntimeKernelDescriptorManager {
       const next = new Uint8Array(length);
       next.set(node.bytes.slice(0, length));
       await this.commitNode(context, node, next);
-      if (description.offset > length) description.offset = length;
     });
   }
 
@@ -660,6 +698,9 @@ export class RuntimeKernelDescriptorManager {
       ),
       truncate: (length) => attemptPromise(
         () => this.ftruncateDescription(context, description, length)
+      ),
+      seek: (offset, whence) => attemptPromise(
+        () => this.seekDescription(context, description, offset, whence)
       ),
       duplicate: () => Effect.try({
         try: () => {

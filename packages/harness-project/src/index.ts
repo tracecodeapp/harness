@@ -1831,6 +1831,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'getpeername':
       case 'getsockopt':
       case 'read':
+      case 'seek':
       case 'close':
       case 'dup':
       case 'dup2':
@@ -2112,6 +2113,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             request.position
           );
           return { ok: true, value: { op: 'write', bytesWritten } };
+        }
+        case 'seek': {
+          const offset = await this.kernelDescriptors.seek(
+            context?.process.pid ?? 0,
+            request.fd,
+            request.offset,
+            request.whence
+          );
+          return { ok: true, value: { op: 'seek', offset } };
         }
         case 'close':
           await this.kernelDescriptors.close(context?.process.pid ?? 0, request.fd);

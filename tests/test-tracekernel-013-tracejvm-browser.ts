@@ -115,8 +115,10 @@ try {
           result.secondRun.exitCode !== 0 ||
           result.secondRun.stdout !== '1:missing:missing:second\n' ||
           result.filesystemRun.exitCode !== 0 ||
-          result.filesystemRun.stdout !== 'fs:js-before-java:nested:true\n' ||
+          result.filesystemRun.stdout !==
+            'fs:js-before-java:nested:true:abZd:3\n' ||
           result.sharedFile !== 'js-before-java|java' ||
+          result.randomFile !== 'abZd' ||
           result.interrupted.exitCode !== 130 ||
           result.interrupted.stderr !== '' ||
           result.restarted.exitCode !== 0 ||

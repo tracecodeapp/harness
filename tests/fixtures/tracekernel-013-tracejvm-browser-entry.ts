@@ -11,6 +11,7 @@ declare global {
     secondRun: { stdout: string; stderr: string; exitCode: number };
     filesystemRun: { stdout: string; stderr: string; exitCode: number };
     sharedFile: string;
+    randomFile: string;
     interrupted: {
       stdout: string;
       stderr: string;
@@ -52,12 +53,25 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '      java.nio.file.Path nested = java.nio.file.Path.of("kernel-dir", "nested");',
         '      java.nio.file.Files.createDirectories(nested);',
         '      java.nio.file.Files.writeString(nested.resolve("child.txt"), "child");',
+        '      String random;',
+        '      long randomPointer;',
+        '      try (var file = new java.io.RandomAccessFile("random.bin", "rw")) {',
+        '        file.write("abcdef".getBytes(java.nio.charset.StandardCharsets.UTF_8));',
+        '        file.seek(2);',
+        '        file.write((int) \'Z\');',
+        '        randomPointer = file.getFilePointer();',
+        '        file.setLength(4);',
+        '        file.seek(0);',
+        '        byte[] contents = new byte[(int) file.length()];',
+        '        file.readFully(contents);',
+        '        random = new String(contents, java.nio.charset.StandardCharsets.UTF_8);',
+        '      }',
         '      String listed;',
         '      try (var entries = java.nio.file.Files.list(java.nio.file.Path.of("kernel-dir"))) {',
         '        listed = entries.map(entry -> entry.getFileName().toString()).sorted().findFirst().orElse("missing");',
         '      }',
         '      boolean millisecondTime = path.toFile().lastModified() > 1_000_000_000_000L;',
-        '      System.out.println("fs:" + prior + ":" + listed + ":" + millisecondTime);',
+        '      System.out.println("fs:" + prior + ":" + listed + ":" + millisecondTime + ":" + random + ":" + randomPointer);',
         '      return;',
         '    }',
         '    count += 1;',
@@ -110,6 +124,9 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
 
   try {
     const compile = await workspace.runCommand('javac -d build Main.java');
+    if (compile.exitCode !== 0) {
+      throw new Error(`TraceJVM compile failed: ${JSON.stringify(compile)}`);
+    }
     const classFileBase64 = await workspace.readFile(
       'build/Main.class',
       'base64'
@@ -125,6 +142,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       'java -cp build Main filesystem'
     );
     const sharedFile = await workspace.readFile('shared.txt');
+    const randomFile = await workspace.readFile('random.bin');
 
     const controller = new AbortController();
     let resolveReady!: () => void;
@@ -166,6 +184,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       secondRun,
       filesystemRun,
       sharedFile,
+      randomFile,
       interrupted,
       restarted,
       classFileBase64,
