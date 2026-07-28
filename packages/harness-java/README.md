@@ -72,6 +72,10 @@ random-access APIs use authoritative TKFS; stdin, stdout, stderr, pipes, and
 socket channels use process-owned descriptors; `ProcessBuilder` creates
 kernel-supervised children; selectors multiplex kernel readiness; and ordinary
 `WatchService` registrations observe live cross-runtime TKFS changes.
+The standalone `io.tracecode.tracekernel.TraceKernel` API adds process identity,
+watchdog arm/pet/disarm/status, `setsid`, `setpgid`, `tcgetpgrp`, and
+`tcsetpgrp` without patching `java.base`; the adapter routes those calls through
+the same generic host port to authoritative TraceKernel state.
 
 TraceJVM is independent of CheerpJ and its private filesystem/layout. The
 adapter remains default-off, requires a fresh disposable Worker for every

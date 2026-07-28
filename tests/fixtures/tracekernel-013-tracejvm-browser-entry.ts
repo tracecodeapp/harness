@@ -18,6 +18,14 @@ declare global {
     selectorRun: { stdout: string; stderr: string; exitCode: number };
     watchRun: { stdout: string; stderr: string; exitCode: number };
     processRun: { stdout: string; stderr: string; exitCode: number };
+    controlsRun: { stdout: string; stderr: string; exitCode: number };
+    terminalControlsRun: { stdout: string; stderr: string; exitCode: number };
+    watchdogExpiry: {
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+      handledSignal?: string;
+    };
     sharedFile: string;
     randomFile: string;
     childFile: string;
@@ -56,6 +64,51 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         'public final class Main {',
         '  private static int count = 0;',
         '  public static void main(String[] args) throws Exception {',
+        '    if (args.length > 0 && args[0].equals("terminal-controls")) {',
+        '      var identity = io.tracecode.tracekernel.TraceKernel.currentProcess();',
+        '      long foreground = io.tracecode.tracekernel.TraceKernel.terminalForegroundProcessGroup(0);',
+        '      long transferred = io.tracecode.tracekernel.TraceKernel.setTerminalForegroundProcessGroup(',
+        '          0, identity.processGroupId());',
+        '      System.out.println("terminal:" + (foreground == identity.processGroupId()',
+        '          && transferred == identity.processGroupId()));',
+        '      return;',
+        '    }',
+        '    if (args.length > 0 && args[0].equals("controls")) {',
+        '      var identity = io.tracecode.tracekernel.TraceKernel.currentProcess();',
+        '      var armed = io.tracecode.tracekernel.TraceKernel.armWatchdog(',
+        '          java.time.Duration.ofSeconds(5),',
+        '          io.tracecode.tracekernel.TraceKernel.WatchdogSignal.SIGKILL);',
+        '      var status = io.tracecode.tracekernel.TraceKernel.watchdogStatus();',
+        '      var petted = io.tracecode.tracekernel.TraceKernel.petWatchdog();',
+        '      var disarmed = io.tracecode.tracekernel.TraceKernel.disarmWatchdog();',
+        '      boolean identityMatches = identity.pid() == ProcessHandle.current().pid()',
+        '          && identity.parentPid() > 0',
+        '          && identity.processGroupId() > 0',
+        '          && identity.sessionId() > 0;',
+        '      boolean watchdogMatches = armed.armed()',
+        '          && status.armed()',
+        '          && petted.armed()',
+        '          && armed.signal() == io.tracecode.tracekernel.TraceKernel.WatchdogSignal.SIGKILL',
+        '          && petted.deadlineMillis() >= status.deadlineMillis()',
+        '          && !disarmed.armed()',
+        '          && !io.tracecode.tracekernel.TraceKernel.watchdogStatus().armed();',
+        '      Process groupChild = new ProcessBuilder("java", "-cp", "build", "GroupChild").start();',
+        '      String groupOutput = new String(groupChild.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();',
+        '      int groupExit = groupChild.waitFor();',
+        '      Process sessionChild = new ProcessBuilder("java", "-cp", "build", "SessionChild").start();',
+        '      String sessionOutput = new String(sessionChild.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();',
+        '      int sessionExit = sessionChild.waitFor();',
+        '      System.out.println("controls:" + identityMatches + ":" + watchdogMatches + ":"',
+        '          + (groupExit == 0 && groupOutput.equals("group:true")) + ":"',
+        '          + (sessionExit == 0 && sessionOutput.equals("session:true")));',
+        '      return;',
+        '    }',
+        '    if (args.length > 0 && args[0].equals("watchdog-expire")) {',
+        '      io.tracecode.tracekernel.TraceKernel.armWatchdog(',
+        '          java.time.Duration.ofMillis(40),',
+        '          io.tracecode.tracekernel.TraceKernel.WatchdogSignal.SIGKILL);',
+        '      while (true) count += 1;',
+        '    }',
         '    if (args.length > 0 && args[0].equals("stdin")) {',
         '      byte[] input = System.in.readNBytes(5);',
         '      System.out.println("stdin:" + new String(input, java.nio.charset.StandardCharsets.UTF_8));',
@@ -282,6 +335,33 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '  }',
         '}',
       ].join('\n'),
+    }, {
+      path: 'GroupChild.java',
+      contents: [
+        'public final class GroupChild {',
+        '  public static void main(String[] args) throws Exception {',
+        '    var before = io.tracecode.tracekernel.TraceKernel.currentProcess();',
+        '    long pgid = io.tracecode.tracekernel.TraceKernel.setProcessGroup(0, 0);',
+        '    var after = io.tracecode.tracekernel.TraceKernel.currentProcess();',
+        '    System.out.println("group:" + (pgid == before.pid() && after.processGroupId() == before.pid()));',
+        '  }',
+        '}',
+      ].join('\n'),
+    }, {
+      path: 'SessionChild.java',
+      contents: [
+        'public final class SessionChild {',
+        '  public static void main(String[] args) throws Exception {',
+        '    var before = io.tracecode.tracekernel.TraceKernel.currentProcess();',
+        '    var session = io.tracecode.tracekernel.TraceKernel.createSession();',
+        '    var after = io.tracecode.tracekernel.TraceKernel.currentProcess();',
+        '    System.out.println("session:" + (session.sessionId() == before.pid()',
+        '        && session.processGroupId() == before.pid()',
+        '        && after.sessionId() == before.pid()',
+        '        && after.processGroupId() == before.pid()));',
+        '  }',
+        '}',
+      ].join('\n'),
     }],
     traceJVM: {
       // This conformance source intentionally exercises the entire adapter
@@ -322,7 +402,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
 
   try {
     const compile = await workspace.runCommand(
-      'javac -d build Main.java Child.java Sleeper.java'
+      'javac -d build Main.java Child.java Sleeper.java GroupChild.java SessionChild.java'
     );
     if (compile.exitCode !== 0) {
       throw new Error(`TraceJVM compile failed: ${JSON.stringify(compile)}`);
@@ -361,6 +441,15 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
     );
     const processRun = await workspace.runCommand(
       'java -cp build Main process'
+    );
+    const controlsRun = await workspace.runCommand(
+      'java -cp build Main controls'
+    );
+    const terminalControlsRun = await workspace
+      .createTerminalSession()
+      .run('java -cp build Main terminal-controls');
+    const watchdogExpiry = await workspace.runCommand(
+      'java -cp build Main watchdog-expire'
     );
     const childFile = await workspace.readFile('process-child.txt')
       .catch(() => 'missing');
@@ -414,6 +503,9 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
       selectorRun,
       watchRun,
       processRun,
+      controlsRun,
+      terminalControlsRun,
+      watchdogExpiry,
       sharedFile,
       randomFile,
       childFile,

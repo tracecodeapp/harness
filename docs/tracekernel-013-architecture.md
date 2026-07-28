@@ -901,7 +901,10 @@ The initial 0.13 branch now establishes:
   isolated kernel-supervised children; `ProcessHandle` identity, parent/child
   discovery, metadata, signals, asynchronous exit notification, and liveness
   come from the kernel process table, while `System.getenv()` and child
-  environment inheritance come from the current process record;
+  environment inheritance come from the current process record; the standalone
+  `io.tracecode.tracekernel.TraceKernel` API exposes the kernel-owned process
+  identity, watchdog, session/process-group, and terminal foreground controls
+  that have no Java SE equivalent without coupling TraceJVM to Harness;
 - process-owned regular-file descriptors in the JavaScript runtime, including
   independent open offsets, shared offsets after `dup`, positioned I/O,
   append, `fstat`, `ftruncate`, FileHandle and stream integration, automatic
@@ -963,11 +966,9 @@ unconditionally instead of pooling mutable VM state.
 
 The remaining adapter migration is intentionally narrower:
 
-1. define an intentional Java API for watchdog and terminal/process-group
-   controls that have no standard Java equivalent;
-2. remove the temporary legacy stdio feed only after every shipping legacy
+1. remove the temporary legacy stdio feed only after every shipping legacy
    runtime has either migrated or been retired;
-3. make any adapter that wants pooling implement and prove its reset validation;
+2. make any adapter that wants pooling implement and prove its reset validation;
    adapters without it remain safe because their leases receive `destroy`.
 
 Suspended job control (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`, and `SIGCONT`) is a

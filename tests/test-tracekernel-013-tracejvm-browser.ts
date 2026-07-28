@@ -140,18 +140,23 @@ try {
           !/^process:\d+:true:true:true:true:true:true:1:true:false:java-child\n$/u.test(
             result.processRun.stdout
           ) ||
+          result.controlsRun.exitCode !== 0 ||
+          result.controlsRun.stdout !== 'controls:true:true:true:true\n' ||
+          result.terminalControlsRun.exitCode !== 0 ||
+          result.terminalControlsRun.stdout !== 'terminal:true\n' ||
+          result.watchdogExpiry.exitCode !== 137 ||
           result.childFile !== 'java-child' ||
           result.interrupted.exitCode !== 130 ||
           result.interrupted.stderr !== '' ||
           result.restarted.exitCode !== 0 ||
           result.restarted.stdout !== '1:missing:missing:restarted\n' ||
-          result.workerCount !== 13 ||
+          result.workerCount !== 18 ||
           !reportStatuses.includes('compile:completed:not-applicable') ||
           !reportStatuses.includes('run:runtime-error:clean') ||
           !reportStatuses.includes('run:completed:tainted') ||
           reportStatuses.filter(
             (status) => status === 'run:completed:clean'
-          ).length !== 5
+          ).length !== 8
         ) {
           throw new Error(
             `${engine} failed the TraceKernel/TraceJVM adapter boundary: ${JSON.stringify(result)}`
