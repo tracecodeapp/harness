@@ -47,6 +47,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
   }> = [];
   const workspace = await createBrowserProjectWorkspace({
     providers: ['java'],
+    env: { TRACE_PARENT: 'kernel-😀' },
     files: [{
       path: 'Main.java',
       contents: [
@@ -59,7 +60,9 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '      return;',
         '    }',
         '    if (args.length > 0 && args[0].equals("process")) {',
-        '      Process child = new ProcessBuilder("java", "-cp", "build", "Child", "trace-😀").redirectErrorStream(true).start();',
+        '      ProcessBuilder childBuilder = new ProcessBuilder("java", "-cp", "build", "Child", "trace-😀").redirectErrorStream(true);',
+        '      childBuilder.environment().put("TRACE_CHILD", "child-😀");',
+        '      Process child = childBuilder.start();',
         '      ProcessHandle childHandle = child.toHandle();',
         '      boolean aliveBefore = child.isAlive();',
         '      boolean listedAsChild = ProcessHandle.current().children().anyMatch(handle -> handle.pid() == child.pid());',
@@ -70,12 +73,13 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         '          && childInfo.startInstant().isPresent();',
         '      String childOutput = new String(child.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();',
         '      boolean childFailure = childOutput.contains("child-failure");',
+        '      boolean environmentMatches = childOutput.contains("env:kernel-😀:child-😀");',
         '      int childExit = child.waitFor();',
         '      boolean aliveAfter = child.isAlive();',
         '      String childFile = java.nio.file.Files.exists(java.nio.file.Path.of("process-child.txt"))',
         '          ? java.nio.file.Files.readString(java.nio.file.Path.of("process-child.txt"))',
         '          : "missing";',
-        '      System.out.println("process:" + child.pid() + ":" + aliveBefore + ":" + listedAsChild + ":" + parentMatches + ":" + infoMatches + ":" + childExit + ":" + childFailure + ":" + aliveAfter + ":" + childFile);',
+        '      System.out.println("process:" + child.pid() + ":" + aliveBefore + ":" + listedAsChild + ":" + parentMatches + ":" + infoMatches + ":" + environmentMatches + ":" + childExit + ":" + childFailure + ":" + aliveAfter + ":" + childFile);',
         '      return;',
         '    }',
         '    if (args.length > 0 && args[0].equals("filesystem")) {',
@@ -163,6 +167,7 @@ globalThis.runTraceKernelTraceJVMTest = async () => {
         'public final class Child {',
         '  public static void main(String[] args) throws Exception {',
         '    java.nio.file.Files.writeString(java.nio.file.Path.of("process-child.txt"), "java-child");',
+        '    System.out.println("env:" + System.getenv("TRACE_PARENT") + ":" + System.getenv("TRACE_CHILD"));',
         '    Thread.sleep(250);',
         '    throw new RuntimeException("child-failure");',
         '  }',
