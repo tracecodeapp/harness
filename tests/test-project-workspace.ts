@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import type { RuntimeWorkspaceStat } from '../packages/harness-core/src/runtime-project';
-import { MessageChannel } from 'node:worker_threads';
+import { MessageChannel, Worker as NodeWorker } from 'node:worker_threads';
 import {
   type JavaScriptProjectCommandRequest,
   type JavaProjectCommandRequest,
@@ -119,90 +119,43 @@ function stdinPipe(text: string) {
   return createRuntimeCommandStdinPipeFromText(text);
 }
 
-class FakeModuleWorker {
-  private static nextInstanceId = 1;
+class ThreadedModuleWorker {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
-  private workerOnMessage: ((event: MessageEvent) => void) | null = null;
-  private readonly queuedMessages: unknown[] = [];
-  private terminated = false;
-  private readonly instanceId = FakeModuleWorker.nextInstanceId++;
+  private readonly worker: NodeWorker;
 
-  constructor(private readonly url: string) {
-    void this.load();
+  constructor(url: string) {
+    this.worker = new NodeWorker(
+      [
+        'const { parentPort, workerData } = require("node:worker_threads");',
+        'const scope = {',
+        '  onmessage: null,',
+        '  postMessage(message) { parentPort.postMessage(message); },',
+        '};',
+        'globalThis.self = scope;',
+        'parentPort.on("message", (data) => scope.onmessage?.({ data }));',
+        'import(workerData.url).catch((error) => { queueMicrotask(() => { throw error; }); });',
+      ].join('\n'),
+      {
+        eval: true,
+        workerData: { url },
+      }
+    );
+    this.worker.on('message', (message) => {
+      this.onmessage?.({ data: message } as MessageEvent);
+    });
+    this.worker.on('error', (error) => {
+      this.onerror?.({ message: error.message, error } as ErrorEvent);
+    });
   }
 
   postMessage(message: unknown): void {
-    if (this.terminated) return;
-    // The production worker permanently removes ambient browser authority in
-    // its own realm. This fake shares the test process realm, so use the
-    // equivalent temporary boundary and restore the host after each command.
-    const candidate = message as {
-      runnerOptions?: { projectUserAuthorityMode?: 'temporary' | 'permanent' };
-    };
-    const deliveredMessage = candidate.runnerOptions?.projectUserAuthorityMode === 'permanent'
-      ? {
-          ...(message as Record<string, unknown>),
-          runnerOptions: { ...candidate.runnerOptions, projectUserAuthorityMode: 'temporary' as const },
-        }
-      : message;
-    if (!this.workerOnMessage) {
-      this.queuedMessages.push(deliveredMessage);
-      return;
-    }
-    this.workerOnMessage({ data: deliveredMessage } as MessageEvent);
+    this.worker.postMessage(message);
   }
 
   terminate(): void {
-    this.terminated = true;
-    this.workerOnMessage = null;
-    this.queuedMessages.length = 0;
+    void this.worker.terminate();
   }
-
-  private async load(): Promise<void> {
-    const previousSelf = (globalThis as typeof globalThis & { self?: unknown }).self;
-    const scope = {
-      onmessage: null as ((event: MessageEvent) => void) | null,
-      postMessage: (message: unknown) => {
-        if (this.terminated) return;
-        queueMicrotask(() => this.onmessage?.({ data: message } as MessageEvent));
-      },
-    };
-    try {
-      (globalThis as typeof globalThis & { self?: unknown }).self = scope as unknown as Window & typeof globalThis;
-      const importUrl = new URL(this.url);
-      importUrl.searchParams.set('fake-worker-instance', String(this.instanceId));
-      await import(importUrl.href);
-      this.workerOnMessage = scope.onmessage;
-      for (const message of this.queuedMessages.splice(0)) {
-        this.workerOnMessage?.({ data: message } as MessageEvent);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.onerror?.({ message } as ErrorEvent);
-    } finally {
-      (globalThis as typeof globalThis & { self?: unknown }).self = previousSelf;
-    }
-  }
-}
-
-const fakeWorkerAuthorityGlobals = [
-  'fetch', 'Headers', 'Request', 'Response', 'XMLHttpRequest', 'WebSocket',
-  'WebSocketStream', 'WebTransport', 'EventSource', 'indexedDB', 'caches',
-  'cookieStore', 'Worker', 'SharedWorker', 'BroadcastChannel', 'importScripts',
-] as const;
-
-function snapshotFakeWorkerHostGlobals(): () => void {
-  const global = globalThis as typeof globalThis & Record<string, unknown>;
-  const descriptors = new Map(
-    fakeWorkerAuthorityGlobals.map((name) => [name, Object.getOwnPropertyDescriptor(global, name)] as const)
-  );
-  return () => {
-    for (const [name, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(global, name, descriptor);
-      else delete global[name];
-    }
-  };
 }
 
 async function runCommandWithLiveInput(
@@ -449,6 +402,28 @@ async function waitForMacrotasks(count: number): Promise<void> {
   for (let index = 0; index < count; index += 1) {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
+}
+
+async function waitForAsyncValue<T>(
+  read: () => Promise<T>,
+  isReady: (value: T) => boolean,
+  timeoutMs = 3_000
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let value = await read();
+  while (!isReady(value) && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    value = await read();
+  }
+  return value;
+}
+
+async function waitForTraceKernelHttpListener(workspace: RuntimeWorkspace, port: number): Promise<string> {
+  const listenerEntry = `\thttp\t127.0.0.1\t${port}\t`;
+  return waitForAsyncValue(
+    () => workspace.readFile('/proc/tracekernel/net/listeners'),
+    (listeners) => listeners.includes(listenerEntry)
+  );
 }
 
 async function processPidForCommand(workspace: RuntimeWorkspace, command: string): Promise<string> {
@@ -5046,16 +5021,17 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
   const restrictedResult = await createBrowserJavaScriptProjectRunner({ allowMainThreadExecution: true, trustedMainThreadExecution: true })(asJsProjectRequest({
     code: [
       'const fs = require("node:fs");',
-      'try { fs.readFileSync(0, "utf8"); console.log("fd0:ok"); } catch (error) { console.log("fd0:" + error.code); }',
-      'try { fs.writeSync(1, "fd1-out\\n"); console.log("fd1:ok"); } catch (error) { console.log("fd1:" + error.code); }',
-      'try { process.stdin.resume(); let text = ""; process.stdin.on("data", (chunk) => text += chunk); await new Promise((resolve) => process.stdin.on("end", resolve)); console.log("stdin:" + text.trim()); } catch (error) { console.log("stdin:" + error.code); }',
-      'try { process.stdout.write("process-out\\n"); console.log("process:ok"); } catch (error) { console.log("process:" + error.code); }',
-      'try { fs.readFileSync("/dev/stdout", "utf8"); console.log("stdout-readfile:ok"); } catch (error) { console.log("stdout-readfile:" + error.code); }',
-      'try { await new Promise((resolve, reject) => fs.createReadStream("/dev/stdout").on("error", reject).on("end", resolve).resume()); console.log("stdout-stream:ok"); } catch (error) { console.log("stdout-stream:" + error.code); }',
-      'try { fs.copyFileSync("/dev/stdout", "stdout-copy.txt"); console.log("stdout-copy:ok"); } catch (error) { console.log("stdout-copy:" + error.code); }',
-      'try { const fd = fs.openSync("/dev/stdout", "r"); const buffer = Buffer.alloc(1); fs.readSync(fd, buffer, 0, 1, 0); console.log("stdout-read-open:ok"); } catch (error) { console.log("stdout-read-open:" + error.code); }',
-      'try { const fd = fs.openSync("/dev/stdin", "w"); fs.writeSync(fd, "stdin-write\\n"); console.log("stdin-write-open:ok"); } catch (error) { console.log("stdin-write-open:" + error.code); }',
-      'fs.writeFileSync("/dev/stderr", "stderr-ok\\n");',
+      'const diagnostics = [];',
+      'try { fs.readFileSync(0, "utf8"); diagnostics.push("fd0:ok"); } catch (error) { diagnostics.push("fd0:" + error.code); }',
+      'try { fs.writeSync(1, "fd1-out\\n"); diagnostics.push("fd1:ok"); } catch (error) { diagnostics.push("fd1:" + error.code); }',
+      'try { process.stdin.resume(); let text = ""; process.stdin.on("data", (chunk) => text += chunk); await new Promise((resolve) => process.stdin.on("end", resolve)); diagnostics.push("stdin:" + text.trim()); } catch (error) { diagnostics.push("stdin:" + error.code); }',
+      'try { process.stdout.write("process-out\\n"); diagnostics.push("process:ok"); } catch (error) { diagnostics.push("process:" + error.code); }',
+      'try { fs.readFileSync("/dev/stdout", "utf8"); diagnostics.push("stdout-readfile:ok"); } catch (error) { diagnostics.push("stdout-readfile:" + error.code); }',
+      'try { await new Promise((resolve, reject) => fs.createReadStream("/dev/stdout").on("error", reject).on("end", resolve).resume()); diagnostics.push("stdout-stream:ok"); } catch (error) { diagnostics.push("stdout-stream:" + error.code); }',
+      'try { fs.copyFileSync("/dev/stdout", "stdout-copy.txt"); diagnostics.push("stdout-copy:ok"); } catch (error) { diagnostics.push("stdout-copy:" + error.code); }',
+      'try { const fd = fs.openSync("/dev/stdout", "r"); const buffer = Buffer.alloc(1); fs.readSync(fd, buffer, 0, 1, 0); diagnostics.push("stdout-read-open:ok"); } catch (error) { diagnostics.push("stdout-read-open:" + error.code); }',
+      'try { const fd = fs.openSync("/dev/stdin", "w"); fs.writeSync(fd, "stdin-write\\n"); diagnostics.push("stdin-write-open:ok"); } catch (error) { diagnostics.push("stdin-write-open:" + error.code); }',
+      'fs.writeFileSync("/dev/stderr", diagnostics.join("\\n") + "\\nstderr-ok\\n");',
     ].join('\n'),
     source: 'argument',
     args: [],
@@ -5074,11 +5050,12 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
   }));
   assertCondition(restrictedResult.exitCode === 0, `browser node restricted kernel device inventory should succeed: ${restrictedResult.stderr}`);
   assertCondition(
-    restrictedResult.stdout === 'fd0:EBADF\nfd1:EBADF\nstdin:\nprocess:EBADF\nstdout-readfile:EBADF\nstdout-stream:EBADF\nstdout-copy:EBADF\nstdout-read-open:EBADF\nstdin-write-open:EBADF\n',
+    restrictedResult.stdout === '',
     `browser node fd/process stdio should respect restricted kernelDevices: ${JSON.stringify(restrictedResult)}`
   );
   assertCondition(
-    restrictedResult.stderr === 'stderr-ok\n',
+    restrictedResult.stderr ===
+      'fd0:EBADF\nfd1:EBADF\nstdin:\nprocess:EBADF\nstdout-readfile:EBADF\nstdout-stream:EBADF\nstdout-copy:EBADF\nstdout-read-open:EBADF\nstdin-write-open:EBADF\nstderr-ok\n',
     `browser node restricted kernelDevices should still allow configured stderr: ${JSON.stringify(restrictedResult)}`
   );
 }
@@ -6659,12 +6636,7 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
   const start = await terminal.run('node server.js &');
   assertCondition(start.exitCode === 0, `background server should start: ${JSON.stringify(start)}`);
 
-  let listeners = '';
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
-    if (listeners.includes('\thttp\t127.0.0.1\t3000\t')) break;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  const listeners = await waitForTraceKernelHttpListener(workspace, 3000);
   assertCondition(listeners.includes('\thttp\t127.0.0.1\t3000\t'), `tracekernel should expose HTTP listener: ${listeners}`);
 
   const apiResponse = await workspace.http.request({
@@ -6752,65 +6724,65 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
 }
 
 async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
-  const restoreHostGlobals = snapshotFakeWorkerHostGlobals();
-  try {
-    const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/src/project-browser-worker.ts')).href}?tracekernel-http=${Date.now()}`;
-    const workspace = await createRuntimeWorkspace({
-      files: [
-        {
-          path: 'server.js',
-          contents: [
-            'const http = require("node:http");',
-            'const server = http.createServer((req, res) => {',
-            '  res.writeHead(200, { "content-type": "text/plain" });',
-            '  res.end(req.method + " " + req.url + "\\n");',
-            '});',
-            'server.listen(3100, "127.0.0.1");',
-            'process.on("SIGTERM", () => server.close(() => console.log("worker-server-closed")));',
-            '',
-          ].join('\n'),
-        },
-        {
-          path: 'client.js',
-          contents: [
-            'const http = require("node:http");',
-            'http.get("http://localhost:3100/worker-client", (res) => {',
-            '  let body = "";',
-            '  res.setEncoding("utf8");',
-            '  res.on("data", (chunk) => { body += chunk; });',
-            '  res.on("end", () => { console.log(`${res.statusCode}:${body.trim()}`); });',
-            '}).on("error", (error) => { console.error(error.message); process.exitCode = 1; });',
-            '',
-          ].join('\n'),
-        },
-        {
-          path: 'duplicate.js',
-          contents: [
-            'const http = require("node:http");',
-            'http.createServer((_req, res) => res.end("duplicate"))',
-            '  .listen(3100, "127.0.0.1", () => console.log("unexpected-listen"));',
-            '',
-          ].join('\n'),
-        },
-      ],
-      kernel: { scheduler: { maxConcurrentCommands: 4 } },
-      nodeRunner: createBrowserJavaScriptProjectRunner({
-        workerUrl,
-        workerFactory: (url) => new FakeModuleWorker(String(url)),
-      }),
-    });
+  const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/workers/javascript-project-worker.js')).href}?tracekernel-http=${Date.now()}`;
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      {
+        path: 'server.js',
+        contents: [
+          'const http = require("node:http");',
+          'const server = http.createServer((req, res) => {',
+          '  res.writeHead(200, { "content-type": "text/plain" });',
+          '  res.end(req.method + " " + req.url + "\\n");',
+          '});',
+          'server.listen(3100, "127.0.0.1");',
+          'process.on("SIGTERM", () => server.close(() => console.log("worker-server-closed")));',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'client.js',
+        contents: [
+          'const http = require("node:http");',
+          'http.get("http://localhost:3100/worker-client", (res) => {',
+          '  let body = "";',
+          '  res.setEncoding("utf8");',
+          '  res.on("data", (chunk) => { body += chunk; });',
+          '  res.on("end", () => { console.log(`${res.statusCode}:${body.trim()}`); });',
+          '}).on("error", (error) => { console.error(error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'duplicate.js',
+        contents: [
+          'const http = require("node:http");',
+          'http.createServer((_req, res) => res.end("duplicate"))',
+          '  .listen(3100, "127.0.0.1", () => console.log("unexpected-listen"));',
+          '',
+        ].join('\n'),
+      },
+    ],
+    kernel: { scheduler: { maxConcurrentCommands: 4 } },
+    nodeRunner: createBrowserJavaScriptProjectRunner({
+      workerUrl,
+      workerFactory: (url) => new ThreadedModuleWorker(String(url)),
+    }),
+  });
 
+  try {
     const terminal = workspace.createTerminalSession();
     const start = await terminal.run('node server.js &');
     assertCondition(start.exitCode === 0, `worker-backed background server should start: ${JSON.stringify(start)}`);
 
-    let listeners = '';
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
-      if (listeners.includes('\thttp\t127.0.0.1\t3100\t')) break;
-      await new Promise((resolve) => setTimeout(resolve, 0));
+    const listeners = await waitForTraceKernelHttpListener(workspace, 3100);
+    if (!listeners.includes('\thttp\t127.0.0.1\t3100\t')) {
+      const processes = await workspace.readFile('/proc/tracekernel/processes');
+      const events = await workspace.readFile('/proc/tracekernel/events');
+      throw new Error(
+        `worker-backed HTTP listener should register with TraceKernel: ${listeners}\nprocesses:\n${processes}\nevents:\n${events}`
+      );
     }
-    assertCondition(listeners.includes('\thttp\t127.0.0.1\t3100\t'), `worker-backed HTTP listener should register with TraceKernel: ${listeners}`);
 
     const response = await workspace.runCommand('curl -s http://localhost:3100/worker');
     assertCondition(response.exitCode === 0, `worker-backed curl should succeed: ${JSON.stringify(response)}`);
@@ -6851,59 +6823,54 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
       `worker-backed signal handlers should close resources and exit naturally: ${JSON.stringify(waited)}`
     );
   } finally {
-    restoreHostGlobals();
+    workspace.dispose();
   }
 }
 
 async function testExternalFetchFromJavaScriptWorker(): Promise<void> {
-  const restoreHostGlobals = snapshotFakeWorkerHostGlobals();
   const seen: Array<{ method: string; url: string; body?: string }> = [];
-  try {
-    const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/src/project-browser-worker.ts')).href}?tracekernel-external-http=${Date.now()}`;
-    const workspace = await createRuntimeWorkspace({
-      files: [{
-        path: 'external-fetch.js',
-        contents: [
-          '(async () => {',
-          '  const response = await fetch("https://allowed.example/x", {',
-          '    method: "POST",',
-          '    headers: { "x-worker": "yes" },',
-          '    body: "worker-body",',
-          '  });',
-          '  console.log(response.status + ":" + response.headers.get("x-echo"));',
-          '  console.log(await response.text());',
-          '})().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });',
-          '',
-        ].join('\n'),
-      }],
-      externalHttp: {
-        hosts: ['allowed.example'],
-        fetch: async (request) => {
-          seen.push({ method: request.method, url: request.url, ...(request.body !== undefined ? { body: request.body } : {}) });
-          return { status: 209, headers: { 'x-echo': request.headers['x-worker'] ?? '' }, body: `${request.method}:${request.body ?? ''}\n` };
-        },
+  const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/workers/javascript-project-worker.js')).href}?tracekernel-external-http=${Date.now()}`;
+  const workspace = await createRuntimeWorkspace({
+    files: [{
+      path: 'external-fetch.js',
+      contents: [
+        '(async () => {',
+        '  const response = await fetch("https://allowed.example/x", {',
+        '    method: "POST",',
+        '    headers: { "x-worker": "yes" },',
+        '    body: "worker-body",',
+        '  });',
+        '  console.log(response.status + ":" + response.headers.get("x-echo"));',
+        '  console.log(await response.text());',
+        '})().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });',
+        '',
+      ].join('\n'),
+    }],
+    externalHttp: {
+      hosts: ['allowed.example'],
+      fetch: async (request) => {
+        seen.push({ method: request.method, url: request.url, ...(request.body !== undefined ? { body: request.body } : {}) });
+        return { status: 209, headers: { 'x-echo': request.headers['x-worker'] ?? '' }, body: `${request.method}:${request.body ?? ''}\n` };
       },
-      nodeRunner: createBrowserJavaScriptProjectRunner({
-        workerUrl,
-        workerFactory: (url) => new FakeModuleWorker(String(url)),
-      }),
-    });
-    try {
-      const result = await workspace.runCommand('node external-fetch.js');
-      assertCondition(result.exitCode === 0, `browser JS worker fetch should succeed through kernel bridge: ${JSON.stringify(result)}`);
-      assertCondition(
-        result.stdout === '209:yes\nPOST:worker-body\n\n',
-        `browser JS worker external fetch response mismatch: ${JSON.stringify(result.stdout)}`
-      );
-      assertCondition(
-        seen.length === 1 && seen[0]?.method === 'POST' && seen[0]?.url === 'https://allowed.example/x' && seen[0]?.body === 'worker-body',
-        `browser JS worker fetch should reach host delegate: ${JSON.stringify(seen)}`
-      );
-    } finally {
-      workspace.dispose();
-    }
+    },
+    nodeRunner: createBrowserJavaScriptProjectRunner({
+      workerUrl,
+      workerFactory: (url) => new ThreadedModuleWorker(String(url)),
+    }),
+  });
+  try {
+    const result = await workspace.runCommand('node external-fetch.js');
+    assertCondition(result.exitCode === 0, `browser JS worker fetch should succeed through kernel bridge: ${JSON.stringify(result)}`);
+    assertCondition(
+      result.stdout === '209:yes\nPOST:worker-body\n\n',
+      `browser JS worker external fetch response mismatch: ${JSON.stringify(result.stdout)}`
+    );
+    assertCondition(
+      seen.length === 1 && seen[0]?.method === 'POST' && seen[0]?.url === 'https://allowed.example/x' && seen[0]?.body === 'worker-body',
+      `browser JS worker fetch should reach host delegate: ${JSON.stringify(seen)}`
+    );
   } finally {
-    restoreHostGlobals();
+    workspace.dispose();
   }
 }
 
@@ -6934,14 +6901,10 @@ async function testTraceKernelHttpBindSemantics(): Promise<void> {
   const start = await terminal.run('node ephemeral.js &');
   assertCondition(start.exitCode === 0, `ephemeral HTTP server should start: ${JSON.stringify(start)}`);
 
-  let port = '';
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (await workspace.exists('port.txt')) {
-      port = (await workspace.readFile('port.txt')).trim();
-      if (port) break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  const port = await waitForAsyncValue(
+    async () => await workspace.exists('port.txt') ? (await workspace.readFile('port.txt')).trim() : '',
+    (candidate) => candidate.length > 0
+  );
   assertCondition(Number(port) >= 49152, `listen(0) should allocate an ephemeral port: ${port}`);
   const listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
   assertCondition(
@@ -7033,12 +6996,7 @@ async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
   const start = await terminal.run('python server.py &');
   assertCondition(start.exitCode === 0, `Python background server should start: ${JSON.stringify(start)}`);
 
-  let listeners = '';
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
-    if (listeners.includes('\thttp\t127.0.0.1\t3200\t')) break;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  const listeners = await waitForTraceKernelHttpListener(workspace, 3200);
   assertCondition(listeners.includes('\thttp\t127.0.0.1\t3200\t'), `Python runner bridge should register HTTP listener: ${listeners}`);
 
   const response = await workspace.runCommand('curl -s -X POST -d payload http://localhost:3200/asgi');
@@ -7166,12 +7124,7 @@ async function testTraceKernelHttpJavaRunnerBridge(): Promise<void> {
   const start = await terminal.run('java Server &');
   assertCondition(start.exitCode === 0, `Java background server should start: ${JSON.stringify(start)}`);
 
-  let listeners = '';
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
-    if (listeners.includes('\thttp\t127.0.0.1\t3220\t')) break;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  const listeners = await waitForTraceKernelHttpListener(workspace, 3220);
   assertCondition(listeners.includes('\thttp\t127.0.0.1\t3220\t'), `Java runner bridge should register HTTP listener: ${listeners}`);
 
   const response = await workspace.runCommand('curl -s -X POST -d payload http://localhost:3220/java');
