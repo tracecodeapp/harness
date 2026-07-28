@@ -485,6 +485,8 @@ public sealed record ProcessIdentity(
     int SessionId
 );
 
+public sealed record TerminalWindowSize(int Rows, int Columns);
+
 [SupportedOSPlatform("browser")]
 public static class KernelTerminal
 {
@@ -528,6 +530,48 @@ public static class KernelTerminal
         });
         return value.GetProperty("pgid").GetInt32();
     }
+
+    public static TerminalWindowSize GetWindowSize(int descriptor = 0)
+    {
+        ValidateDescriptor(descriptor);
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "tcgetwinsize",
+            fd = descriptor,
+        });
+        return ReadWindowSize(value);
+    }
+
+    public static TerminalWindowSize SetWindowSize(
+        int rows,
+        int columns,
+        int descriptor = 0
+    )
+    {
+        ValidateDescriptor(descriptor);
+        if (rows <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(rows));
+        }
+        if (columns <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(columns));
+        }
+        JsonElement value = KernelInterop.Call(new
+        {
+            op = "tcsetwinsize",
+            fd = descriptor,
+            rows,
+            columns,
+        });
+        return ReadWindowSize(value);
+    }
+
+    private static TerminalWindowSize ReadWindowSize(JsonElement value) =>
+        new(
+            value.GetProperty("rows").GetInt32(),
+            value.GetProperty("columns").GetInt32()
+        );
 
     private static void ValidateDescriptor(int descriptor)
     {

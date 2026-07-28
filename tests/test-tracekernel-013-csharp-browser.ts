@@ -183,13 +183,23 @@ async function main(): Promise<void> {
                 'var disarmed = TraceKernel.Watchdog.Disarm();',
                 'var currentIdentity = TraceKernel.KernelProcess.GetCurrentIdentity();',
                 'int foregroundProcessGroup = TraceKernel.KernelTerminal.GetForegroundProcessGroup();',
+                'var initialWindowSize = TraceKernel.KernelTerminal.GetWindowSize(1);',
+                'var resizedWindow = TraceKernel.KernelTerminal.SetWindowSize(',
+                '    66,',
+                '    166,',
+                '    0',
+                ');',
                 'bool managedTerminal = TraceKernel.KernelTerminal.IsTerminal(0)',
                 '    && TraceKernel.KernelTerminal.IsTerminal(1)',
                 '    && TraceKernel.KernelTerminal.IsTerminal(2)',
                 '    && foregroundProcessGroup == currentIdentity.ProcessGroupId',
                 '    && TraceKernel.KernelTerminal.SetForegroundProcessGroup(',
                 '        foregroundProcessGroup',
-                '    ) == foregroundProcessGroup;',
+                '    ) == foregroundProcessGroup',
+                '    && initialWindowSize == new TraceKernel.TerminalWindowSize(55, 144)',
+                '    && resizedWindow == new TraceKernel.TerminalWindowSize(66, 166)',
+                '    && TraceKernel.KernelTerminal.GetWindowSize(2)',
+                '        == new TraceKernel.TerminalWindowSize(66, 166);',
                 'bool managedIdentity = currentIdentity.ProcessId > 1',
                 '    && currentIdentity.ParentProcessId == 1',
                 '    && currentIdentity.ProcessGroupId == currentIdentity.ProcessId',
@@ -702,6 +712,7 @@ async function main(): Promise<void> {
         });
         try {
           const terminal = workspace.createTerminalSession();
+          terminal.resize(144, 55);
           const pendingCommand = terminal.run('dotnet run --project App.csproj');
           await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
           if (
@@ -747,6 +758,7 @@ async function main(): Promise<void> {
         managedProcessGroups: true,
         managedPosixTerminationSignals: true,
         managedTerminalJobControl: true,
+        managedTerminalWindowSize: true,
         managedTopologyMutation: true,
         managedNonblockingWait: true,
         managedWaitSelectors: ['any', 'caller-pgid', 'named-pgid', 'ECHILD'],

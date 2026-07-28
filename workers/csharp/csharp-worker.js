@@ -203,6 +203,8 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   isatty: 45,
   tcgetpgrp: 46,
   tcsetpgrp: 47,
+  tcgetwinsize: 52,
+  tcsetwinsize: 53,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -547,11 +549,17 @@ class CSharpTraceKernelSyncClient {
         break;
       case 'isatty':
       case 'tcgetpgrp':
+      case 'tcgetwinsize':
         writer.i32(request.fd);
         break;
       case 'tcsetpgrp':
         writer.i32(request.fd);
         writer.i32(request.pgid);
+        break;
+      case 'tcsetwinsize':
+        writer.i32(request.fd);
+        writer.u32(request.rows);
+        writer.u32(request.columns);
         break;
       case 'identity':
         writer.u8(request.pid === undefined ? 0 : 1);
@@ -943,6 +951,15 @@ class CSharpTraceKernelSyncClient {
       operation === 'tcsetpgrp'
     ) {
       value = { op: operation, pgid: reader.i32() };
+    } else if (
+      operation === 'tcgetwinsize' ||
+      operation === 'tcsetwinsize'
+    ) {
+      value = {
+        op: operation,
+        rows: reader.u32(),
+        columns: reader.u32(),
+      };
     } else if (operation === 'identity') {
       value = {
         op: operation,
