@@ -30,6 +30,8 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium firefox webkit
       - name: Test project providers across engines
         run: pnpm test:project-browser-matrix
+      - name: Test live cross-provider TKFS across engines
+        run: pnpm test:project-live-fs-browser-matrix
       - name: Test Project persistence across engines
         run: pnpm test:kernel-storage-browser-matrix
       - name: Test Classic providers across engines

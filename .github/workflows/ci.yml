@@ -52,6 +52,8 @@ jobs:
         run: pnpm test:csharp-runtime
       - name: Test JavaScript runtime
         run: timeout 5m pnpm test:js-runtime
+      - name: Test TraceKernel 0.13 release gates
+        run: timeout 15m pnpm test:tracekernel-013-release:ci
       - name: Test project and shared runtime contracts
         run: |
           pnpm test:project

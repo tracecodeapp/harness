@@ -69,6 +69,87 @@ embedding TraceCode product policy into TraceJVM.
   entry and release artifacts.
 - Generated worker and runtime assets match their checked-in sources.
 
+## Executable beta release profiles
+
+The release criteria are executable rather than a prose-only checklist:
+
+```bash
+# Required on every Harness pull request. Uses bounded soak counts.
+pnpm test:tracekernel-013-release:ci
+
+# Required before tagging a beta. Runs the extended soak, every real browser
+# adapter, the three-engine provider/live-TKFS matrices, TraceJVM's independent
+# release suite, and packed artifact gates.
+TRACECODE_TRACEJVM_ROOT=/absolute/path/to/tracejvm \
+  pnpm test:tracekernel-013-release:full
+
+# Independently rerunnable release surfaces.
+pnpm test:tracekernel-013-release:tracejvm
+pnpm test:tracekernel-013-release:artifacts
+```
+
+The CI profile runs:
+
+- the complete non-browser TraceKernel conformance suite;
+- a bounded mixed-runtime process/session soak;
+- the real JavaScript/TypeScript browser adapter;
+- Python spawning JavaScript with shared TKFS, pipes, process groups, watches,
+  signals, watchdogs, and TCP;
+- C++ spawning JavaScript and nested C++, plus JavaScript spawning C++, using
+  POSIX descriptors, `posix_spawn`, `waitpid`, signals, watchdogs, and BSD
+  sockets; and
+- C# spawning JavaScript and C#, with shared TKFS, descriptors, watches,
+  process groups, signals, watchdogs, and TCP.
+
+The full profile additionally requires:
+
+- 1,000 sequential mixed-runtime children in one session;
+- 100 complete session create/teardown cycles with ten processes per session;
+- 100 adversarial teardown rounds with blocked pipe reads, watch reads, TCP
+  accepts, and child waits;
+- Python/JavaScript live filesystem visibility in Chromium, Firefox, and
+  WebKit;
+- the Python, JavaScript, TypeScript, C#, and C++ project providers in
+  Chromium, Firefox, and WebKit;
+- the independent TraceJVM package, compatibility, runtime-profile, and
+  lifecycle-stress suites;
+- TraceKernel/TraceJVM integration in Chromium, Firefox, and WebKit; and
+- the production build, packed surface, language-package surface, copied asset
+  parity, and packed example consumer.
+
+The mixed-runtime soak uses deliberately minimal runtime providers named for
+the five adapters. Its job is to stress kernel process, lease, TKFS,
+descriptor, pipe, socket, and teardown invariants at high iteration counts.
+It does not substitute for the real browser adapter suites; both are required.
+
+## Invariants checked
+
+The release gates fail if any of these conditions are observed:
+
+- a child remains in the process table after exactly-once reaping;
+- a session leaves a process, zombie, descriptor, watch, terminal, socket,
+  listener, port binding, or runtime lease behind;
+- a child receives a parent-private descriptor without an explicit mapping;
+- one process observes another process's heap, globals, prototype mutations,
+  or process-scoped environment changes;
+- a filesystem mutation is not committed through TKFS or is attributed to a
+  forged/non-owning process origin;
+- a runtime crash, watchdog expiry, signal, or repeated shutdown releases a
+  lease more than once;
+- pipe EOF, backpressure, TCP fragmentation, half-close, or listener ownership
+  diverges from the kernel descriptor model; or
+- generated, packed, and copied release artifacts differ.
+
+Physical iPad validation remains a manual release sign-off because it cannot be
+represented truthfully by desktop CI. WebKit iPad emulation belongs to
+TraceJVM's independent standalone release suite, but it is not recorded as a
+physical-device pass.
+
+The scheduled generic provider matrix continues to monitor CheerpJ for legacy
+compatibility. It is intentionally not a TraceKernel 0.13 release dependency:
+Java 0.13 is gated by the independent TraceJVM release and integration suites
+above.
+
 ## Deliberately deferred to 0.13.x or later
 
 - suspended job control (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`, `SIGCONT`);
