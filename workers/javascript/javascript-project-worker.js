@@ -1541,7 +1541,7 @@ var TraceKernelRuntimeFileClient = class {
 // package.json
 var package_default = {
   name: "@tracecode/harness",
-  version: "0.13.0-beta1",
+  version: "0.13.0-beta2",
   license: "AGPL-3.0-only",
   homepage: "https://tracecode.app",
   repository: {

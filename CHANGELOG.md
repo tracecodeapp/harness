@@ -6,6 +6,39 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.13.0-beta2] - 2026-07-29
+
+This beta completes the first production-shaped Java path for the kernelized
+0.13 architecture. TraceJVM is now the default Project runtime, with the
+previous CheerpJ provider retained only as an explicit rollback.
+
+### Added
+
+- Added the TraceJVM Project adapter for Java 23 compilation and execution,
+  including TKFS artifact exchange, classpaths, executable JARs, streaming
+  output, cancellation, worker retirement, and process-scoped POSIX host calls.
+- Added cross-browser TraceJVM Project gates and a semantic trace differential
+  against native Java and the previous browser provider.
+- Added support for compressed executable JAR manifests.
+
+### Changed
+
+- Made TraceJVM the default browser Project Java runtime. Applications must
+  inject `traceJVM.createClient`; the previous Java provider is available only
+  through the explicit `javaRuntime: "legacy"` rollback and is never selected
+  implicitly.
+- Precompiled the Java trace execution runner and reduced work after the trace
+  event limit is reached.
+
+### Fixed
+
+- Hardened Java instrumentation around constructor delegation, casted list
+  operations, trace-runner startup, and repeated isolated execution.
+- Preserved native terminal signal semantics through TraceKernel, including
+  catchable signals, process-group targeting across multiple terminals,
+  deterministic cleanup, native `wait` status, and syscall errors that no
+  longer expose kernel implementation types.
+
 ## [0.13.0-beta1] - 2026-07-28
 
 This beta is the first release of the kernelized 0.13 architecture. It is
