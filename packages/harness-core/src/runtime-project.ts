@@ -716,6 +716,12 @@ export interface RuntimeCommandOptions {
   args?: string[];
   presentation?: 'programmatic' | 'terminal';
   terminal?: RuntimeProjectTerminalCapabilities;
+  /**
+   * Opaque identity of the interactive terminal that owns this foreground
+   * command. Workspace hosts use it to keep concurrent terminal process
+   * groups independent; runtimes must not interpret it.
+   */
+  terminalSessionId?: string;
   /** Process file-creation mask. Defaults to 0022 for a fresh shell. */
   umask?: number;
   foreground?: boolean;

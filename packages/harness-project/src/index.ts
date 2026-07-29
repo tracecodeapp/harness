@@ -1188,6 +1188,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processTable = new Map<number, RuntimeKernelProcessRecord>();
   private readonly processExecutionHandles =
     new Map<number, RuntimeKernelExecutionHandle>();
+  private readonly terminalForegroundProcesses = new Map<string, number>();
   private readonly controlPlaneProcessDisposals = new Set<Promise<void>>();
   private readonly zombieProcessTable = new Map<number, RuntimeKernelZombieRecord>();
   private readonly processWaitRequests = new Set<number>();
@@ -1215,6 +1216,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private nextHttpRequestSeq = 1;
   private nextEphemeralHttpPort = 49152;
   private nextTemporaryEntry = 1;
+  private nextTerminalSessionId = 1;
   private activeHttpRequests = 0;
   private activeExternalHttpRequests = 0;
   private workspaceExternalHttpRequestCount = 0;
@@ -5073,8 +5075,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private runtimeTerminationSignal(
     process: RuntimeKernelProcessRecord
   ): { readonly name: string; readonly code?: number } | undefined {
-    const delivered = this.processExecutionHandle(process)?.pendingSignal;
-    if (delivered) return delivered;
+    const executionHandle = this.processExecutionHandle(process);
+    if (executionHandle) return executionHandle.pendingSignal;
     if (!process.signal) return undefined;
     return {
       name: process.signal,
@@ -5110,7 +5112,23 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       code: signal.code,
     };
     this.recordKernelEvent('process-signal', process.pid, { signal: signal.name, signalCode: signal.code });
-    const abortController = this.processExecutionHandle(process)?.abortController;
+    const delivery = executionHandle.signalChannel?.publish({
+      signal: signal.name,
+      code: signal.code,
+    }) ?? 'closed';
+    if (delivery === 'delivered') {
+      this.recordKernelEvent('process-signal-delivery', process.pid, {
+        signal: signal.name,
+        signalCode: signal.code,
+        disposition: 'runtime-delivered',
+      });
+      return true;
+    }
+    // Shell builtins and adapters without a live signal subscription still
+    // use AbortSignal as their interrupt boundary. Do not abort a subscribed
+    // runtime: doing so cancels the parent shell before the child can run a
+    // catchable signal handler and finish during TraceKernel's grace period.
+    const abortController = executionHandle.abortController;
     if (abortController && !abortController.signal.aborted) {
       abortController.abort({ signal: signal.name, signalCode: signal.code, pid: process.pid });
     }
@@ -5178,8 +5196,27 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private signalTerminalForeground(
+    terminalSessionId: string,
     signal: 'SIGINT' | 'SIGQUIT'
   ): boolean {
+    const foregroundPid = this.terminalForegroundProcesses.get(terminalSessionId);
+    const foregroundProcess = foregroundPid === undefined
+      ? undefined
+      : this.findProcessRecord(foregroundPid);
+    const foregroundSnapshot = foregroundProcess
+      ? this.authoritativeProcessSnapshot(foregroundProcess)
+      : undefined;
+    if (foregroundSnapshot && foregroundSnapshot.phase !== 'exited') {
+      const result = this.signalProcessGroup(foregroundSnapshot.pgid, signal);
+      this.recordKernelEvent('process-group-signal', undefined, {
+        pgid: foregroundSnapshot.pgid,
+        signal,
+        count: result.signaled,
+        authority: 'tracekernel-terminal-session',
+        terminalSessionId,
+      });
+      return result.signaled > 0;
+    }
     const authority = this.traceKernelAuthority;
     const terminal = authority?.session.terminalSnapshots()[0];
     if (authority && terminal && !terminal.closed) {
@@ -5334,12 +5371,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       signal: outcome?.signal,
     });
     return {
-      stdout: [
-        `pid\t${process.pid}`,
-        `exitCode\t${outcome?.exitCode ?? 0}`,
-        ...(outcome?.signal ? [`signal\t${outcome.signal}`] : []),
-        ...(outcome?.signalCode !== undefined ? [`signalCode\t${outcome.signalCode}`] : []),
-      ].join('\n') + '\n',
+      stdout: commandName === 'tracekernelctl'
+        ? [
+            `pid\t${process.pid}`,
+            `exitCode\t${outcome?.exitCode ?? 0}`,
+            ...(outcome?.signal ? [`signal\t${outcome.signal}`] : []),
+            ...(outcome?.signalCode !== undefined ? [`signalCode\t${outcome.signalCode}`] : []),
+          ].join('\n') + '\n'
+        : '',
       stderr: '',
       exitCode: outcome?.exitCode ?? 0,
     };
@@ -9393,6 +9432,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
     executionHandle.hostOutputContext = commandContext;
     this.processExecutionHandles.set(process.pid, executionHandle);
+    if (foreground && options.terminalSessionId) {
+      this.terminalForegroundProcesses.set(options.terminalSessionId, process.pid);
+    }
     this.startHostStandardOutputDrains(executionHandle);
     this.processTable.set(process.pid, process);
     options.onProcessStart?.(process.pid);
@@ -9418,6 +9460,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           engineLeaseReleased = true;
           const attachment = engineAttachment;
           engineAttachment = undefined;
+          if (
+            disposition.kind === 'destroy' &&
+            executionHandle.pendingSignal &&
+            !abortController.signal.aborted
+          ) {
+            abortController.abort({
+              signal: executionHandle.pendingSignal.name,
+              signalCode: executionHandle.pendingSignal.code,
+              pid: process.pid,
+            });
+          }
           await attachment?.release(disposition);
         },
       })
@@ -9429,6 +9482,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.processTable.delete(process.pid);
       executionHandle.signalChannel?.close();
       this.processExecutionHandles.delete(process.pid);
+      if (
+        options.terminalSessionId &&
+        this.terminalForegroundProcesses.get(options.terminalSessionId) === process.pid
+      ) {
+        this.terminalForegroundProcesses.delete(options.terminalSessionId);
+      }
       clearKernelSignalHandler();
       await Effect.runPromise(
         this.traceKernelControlledRuntime.fail(
@@ -9713,6 +9772,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.processTable.delete(process.pid);
       executionHandle.signalChannel?.close();
       this.processExecutionHandles.delete(process.pid);
+      if (
+        options.terminalSessionId &&
+        this.terminalForegroundProcesses.get(options.terminalSessionId) === process.pid
+      ) {
+        this.terminalForegroundProcesses.delete(options.terminalSessionId);
+      }
       this.observeKernelReparentedChildren(process.pid);
       if (retainProcessOnExit) {
         this.recordKernelEvent('process-zombie', process.pid, {
@@ -10010,13 +10075,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     parent?: RuntimeKernelProcessRecord
   ): RuntimeProjectTerminalSession {
     this.assertNotDestroyed();
+    const terminalSessionId = `terminal-${this.nextTerminalSessionId++}`;
     return new RuntimeProjectWorkspaceTerminalSession(
       {
         workspaceRoot: this.cwd,
         kernelInfo: this.kernelInfo,
         resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
-        runCommand: (command, commandOptions) => this.runCommandAs(command, commandOptions, parent),
-        signalForeground: (signal) => this.signalTerminalForeground(signal),
+        runCommand: (command, commandOptions) => this.runCommandAs(command, {
+          ...commandOptions,
+          terminalSessionId,
+        }, parent),
+        signalForeground: (signal) => this.signalTerminalForeground(terminalSessionId, signal),
         terminalInputRouter: {
           write: (data) => this.writeKernelTerminalInput(data),
           end: () => this.endKernelTerminalInput(),

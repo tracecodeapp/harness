@@ -1167,7 +1167,10 @@ var TraceKernelRuntimeSyscallError = class extends Error {
     super(message);
     this.code = code;
   }
-  name = "TraceKernelRuntimeSyscallError";
+  // Runtime code should observe the same public error identity as a native
+  // Node syscall. The concrete bridge class remains available to hosts for
+  // `instanceof` checks, but its stack must not expose TraceKernel internals.
+  name = "Error";
 };
 var TraceKernelRuntimeFileClient = class {
   constructor(transport, options = {}) {
@@ -14165,7 +14168,6 @@ function handleKernelHttpHostMessage(message) {
     if (!handled) {
       command.executionState.cancelled = true;
       command.executionState.abortController.abort({ signal });
-      command.executionState.cleanupHostGlobals?.();
     }
     return true;
   }

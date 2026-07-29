@@ -299,7 +299,6 @@ function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
     if (!handled) {
       command.executionState.cancelled = true;
       command.executionState.abortController.abort({ signal });
-      command.executionState.cleanupHostGlobals?.();
     }
     return true;
   }

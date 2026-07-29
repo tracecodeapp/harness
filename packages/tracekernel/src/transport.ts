@@ -2336,7 +2336,10 @@ export class TraceKernelSharedGenerationSource implements TraceKernelGenerationS
 }
 
 export class TraceKernelRuntimeSyscallError extends Error {
-  readonly name = 'TraceKernelRuntimeSyscallError';
+  // Runtime code should observe the same public error identity as a native
+  // Node syscall. The concrete bridge class remains available to hosts for
+  // `instanceof` checks, but its stack must not expose TraceKernel internals.
+  readonly name = 'Error';
 
   constructor(
     readonly code: TraceKernelSyscallErrorCode,

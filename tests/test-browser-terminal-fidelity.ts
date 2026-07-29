@@ -1,5 +1,8 @@
 #!/usr/bin/env npx tsx
 
+import { Worker as NodeWorker } from 'node:worker_threads';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   createRuntimeCommandStdinPipeFromText,
   type RuntimeCommandEvent,
@@ -11,6 +14,50 @@ import { createBrowserJavaProjectRunner } from '../packages/harness-java/src/pro
 import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
 import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/project-browser';
 import packageJson from '../package.json' with { type: 'json' };
+
+const testDirectory = dirname(fileURLToPath(import.meta.url));
+const javascriptProjectWorkerUrl = pathToFileURL(
+  join(testDirectory, '../workers/javascript/javascript-project-worker.js')
+).href;
+
+class ThreadedModuleWorker {
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  private readonly worker: NodeWorker;
+
+  constructor(url: string) {
+    this.worker = new NodeWorker(
+      [
+        'const { parentPort, workerData } = require("node:worker_threads");',
+        'const scope = {',
+        '  onmessage: null,',
+        '  postMessage(message) { parentPort.postMessage(message); },',
+        '};',
+        'globalThis.self = scope;',
+        'parentPort.on("message", (data) => scope.onmessage?.({ data }));',
+        'import(workerData.url).catch((error) => { queueMicrotask(() => { throw error; }); });',
+      ].join('\n'),
+      {
+        eval: true,
+        workerData: { url },
+      }
+    );
+    this.worker.on('message', (message) => {
+      this.onmessage?.({ data: message } as MessageEvent);
+    });
+    this.worker.on('error', (error) => {
+      this.onerror?.({ message: error.message, error } as ErrorEvent);
+    });
+  }
+
+  postMessage(message: unknown): void {
+    this.worker.postMessage(message);
+  }
+
+  terminate(): void {
+    void this.worker.terminate();
+  }
+}
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -320,8 +367,8 @@ async function testBrowserJavaScriptTerminalSurface(): Promise<void> {
   const workspace = await createBrowserProjectWorkspace({
     providers: ['javascript'],
     nodeProject: {
-      allowMainThreadExecution: true,
-      trustedMainThreadExecution: true,
+      workerUrl: `${javascriptProjectWorkerUrl}?terminal-network=${Date.now()}`,
+      workerFactory: (url) => new ThreadedModuleWorker(String(url)),
     },
     externalHttp: {
       allowHttp: true,
@@ -841,7 +888,8 @@ async function testInteractiveTerminalContract(): Promise<void> {
     const stopped = await otherTerminal.run('pkill -x sleep; wait');
     const noSleepingProcess = await otherTerminal.run('pgrep -x sleep');
     assertCondition(
-      stopped.exitCode === 0 && noSleepingProcess.exitCode === 1,
+      stopped.exitCode === 143 && stopped.stdout === '' && stopped.stderr === '' &&
+        noSleepingProcess.exitCode === 1,
       `background jobs should be signalable and reapable from their shell: ${JSON.stringify({ stopped, noSleepingProcess })}`
     );
     await otherTerminal.run('sleep 300 &');
@@ -911,8 +959,8 @@ async function testBrowserProcessAndNetworkInspection(): Promise<void> {
   const workspace = await createBrowserProjectWorkspace({
     providers: ['javascript'],
     nodeProject: {
-      allowMainThreadExecution: true,
-      trustedMainThreadExecution: true,
+      workerUrl: `${javascriptProjectWorkerUrl}?process-network=${Date.now()}`,
+      workerFactory: (url) => new ThreadedModuleWorker(String(url)),
     },
     files: [{
       path: 'server.js',
@@ -1092,7 +1140,10 @@ async function testBrowserProcessAndNetworkInspection(): Promise<void> {
     assertCondition(missing.exitCode === 1 && missing.stdout === '', 'pgrep should return 1 when no process matches');
     assertCondition(secondServerTerminal.interrupt(), 'the second server should remain independently interruptible');
     const secondServerResult = await secondServerRun;
-    assertCondition(secondServerResult.exitCode === 130, 'the second listener should stop with SIGINT');
+    assertCondition(
+      secondServerResult.exitCode === 130,
+      `the second listener should stop with SIGINT: ${JSON.stringify(secondServerResult)}`
+    );
   } finally {
     workspace.dispose();
   }

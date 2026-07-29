@@ -5650,16 +5650,27 @@ export function createBrowserJavaScriptProjectRunner(
     let kernelSignalCleanup: (() => void) | undefined;
     let forcedResult: RuntimeCommandResult | undefined;
     let resolveForcedResult!: (result: RuntimeCommandResult) => void;
+    let resolveForcedCleanup!: () => void;
     const forcedResultPromise = new Promise<RuntimeCommandResult>((resolve) => {
       resolveForcedResult = resolve;
+    });
+    const forcedCleanupPromise = new Promise<void>((resolve) => {
+      resolveForcedCleanup = resolve;
     });
     const forceResult = (result: RuntimeCommandResult): void => {
       if (forcedResult) return;
       executionState.cancelled = true;
       executionState.abortController.abort();
-      executionState.cleanupHostGlobals?.();
       forcedResult = result;
-      resolveForcedResult(result);
+      // Let the runtime observe cancellation before clearing its tracked host
+      // task. Clearing a timer that `drain()` is currently awaiting strands
+      // teardown forever; one host turn preserves that checkpoint while still
+      // preventing a subsequent command from seeing patched globals.
+      hostSetTimeout(() => {
+        executionState.cleanupHostGlobals?.();
+        resolveForcedCleanup();
+        resolveForcedResult(result);
+      }, 0);
     };
     const cleanup = (): void => {
       if (timeoutId !== undefined) {
@@ -5685,7 +5696,16 @@ export function createBrowserJavaScriptProjectRunner(
     void execution.catch(() => undefined);
     if (request.kernelSignals) {
       kernelSignalCleanup = request.kernelSignals.subscribe(({ signal }) => {
-        executionState.dispatchSignal?.(signal);
+        const handled = executionState.dispatchSignal?.(signal) === true;
+        if (handled || signal === 'SIGWINCH' || forcedResult) return;
+        const signalController = new AbortController();
+        signalController.abort({ signal });
+        forceResult(
+          runtimeProjectInfrastructureFailure(
+            Object.assign(new Error('Execution interrupted'), { name: 'AbortError' }),
+            signalController.signal
+          )
+        );
       });
     }
     timeoutId = hostSetTimeout(() => {
@@ -5728,7 +5748,12 @@ export function createBrowserJavaScriptProjectRunner(
       if (request.signal.aborted) abortListener();
     }
     try {
-      return await Promise.race([execution, forcedResultPromise]);
+      const result = await Promise.race([execution, forcedResultPromise]);
+      if (forcedResult) {
+        await forcedCleanupPromise;
+        return forcedResult;
+      }
+      return result;
     } catch (error) {
       if (forcedResult) return forcedResult;
       throw error;
