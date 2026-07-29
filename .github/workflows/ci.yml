@@ -20,9 +20,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -33,34 +33,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile=false
-      - name: Install browser test runtime
-        run: pnpm exec playwright install --with-deps chromium
       - name: Check generated runtime metadata
         run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync
       - name: Typecheck
         run: pnpm typecheck
-      - name: Test trace adapters and Python runtime
-        run: |
-          pnpm test:trace-adapters
-          pnpm test:python-sync
-          pnpm test:python-runtime
-      - name: Test Java runtime
-        run: |
-          pnpm test:java-sync
-          pnpm test:java-runtime
-      - name: Test C# runtime
-        run: pnpm test:csharp-runtime
-      - name: Test JavaScript runtime
-        run: timeout 5m pnpm test:js-runtime
-      - name: Test TraceKernel 0.13 release gates
-        run: timeout 15m pnpm test:tracekernel-013-release:ci
-      - name: Test project and shared runtime contracts
-        run: |
-          pnpm test:project
-          pnpm test:kernel-storage-browser
-          pnpm test:runtime-contract
-          pnpm test:standalone-boundary
       - name: Build
         run: pnpm build
       - name: Test package surfaces and smoke
-        run: pnpm test:packaged-surface && pnpm test:language-packages && pnpm test:smoke && pnpm test:asset-sync
+        run: pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync

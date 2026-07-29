@@ -182,7 +182,13 @@ running. Device reports are written beneath the ignored
 two passing reports from the same device, with the second produced after the
 background/foreground transition.
 
-The scheduled generic provider matrix continues to monitor CheerpJ for legacy
+GitHub Actions is deliberately limited to generated-metadata checks,
+typechecking, builds, package-surface checks, and the workspace smoke test.
+Language-runtime suites, browser compatibility matrices, performance matrices,
+TraceKernel release profiles, and physical-device validation run locally. They
+must not be added to automatic or scheduled GitHub workflows.
+
+The local generic provider matrix can continue to monitor CheerpJ for legacy
 compatibility. It is intentionally not a TraceKernel 0.13 release dependency:
 Java 0.13 is gated by the independent TraceJVM release and integration suites
 above.
