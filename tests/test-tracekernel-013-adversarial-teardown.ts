@@ -14,8 +14,24 @@ function assertCondition(condition: unknown, message: string): asserts condition
   if (!condition) throw new Error(message);
 }
 
-const rounds = 12;
-const processesPerRound = 5;
+function positiveInteger(name: string, fallback: number): number {
+  const configured = process.env[name]?.trim();
+  if (!configured) return fallback;
+  const value = Number(configured);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive safe integer.`);
+  }
+  return value;
+}
+
+const rounds = positiveInteger(
+  'TRACECODE_TRACEKERNEL_ADVERSARIAL_ROUNDS',
+  12
+);
+const processesPerRound = positiveInteger(
+  'TRACECODE_TRACEKERNEL_ADVERSARIAL_PROCESSES',
+  5
+);
 let leaseReleases = 0;
 
 const provider: TraceKernelRuntimeProvider = {
